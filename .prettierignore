@@ -3,6 +3,7 @@ dist
 apps/desktop/dist-electron
 apps/desktop/dist-types
 apps/desktop/release
+apps/desktop/.koed-runtime
 models
 vendor
 coverage

@@ -4,6 +4,7 @@ import { createEmbeddingWorkflow } from "./embedding-workflow.js";
 import type { WorkerEnvConfig } from "./env-config.js";
 
 const workerEnv: WorkerEnvConfig = {
+  teamCollaborationEnabled: false,
   queueBackend: "bullmq",
   redisUrl: "redis://localhost:6379",
   databaseConfigured: true,
@@ -21,6 +22,9 @@ const workerEnv: WorkerEnvConfig = {
   rawProjectionActorLimit: 10,
   crossIdentitySyncIntervalMs: 1000,
   crossIdentitySyncStaleAfterSeconds: 86400,
+  retentionPurgeIntervalMs: 1000,
+  collaborationReplayPruneIntervalMs: 60000,
+  collaborationReplayPruneBatchLimit: 1000,
   koedHome: "/tmp/koed-test",
   historicalImport: {
     maxRows: 100,

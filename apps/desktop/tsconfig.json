@@ -7,6 +7,9 @@
     "erasableSyntaxOnly": false,
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@koed/shared": ["packages/shared/dist/index.d.ts"]
+    },
     "outDir": "dist-types",
     "rootDir": "src"
   },

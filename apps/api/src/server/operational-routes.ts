@@ -729,7 +729,8 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: await crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability(),
+        teamCollaborationEnabled: config.teamCollaborationEnabled
       },
       "public"
     )
@@ -740,7 +741,7 @@ export const registerOperationalRoutes = (
     const query = capabilitiesAuthenticatedQuerySchema.parse(request.query);
     let entitlement: CommercialEntitlementInput | null = null;
     let billing: CommercialBillingInput | null = null;
-    if (query.teamId) {
+    if (query.teamId && config.teamCollaborationEnabled) {
       const repo = requireRepository();
       const gate = await repo.getTeamEntitlementGate(
         { userId: user.id },
@@ -775,7 +776,8 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: await crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability(),
+        teamCollaborationEnabled: config.teamCollaborationEnabled
       },
       "authenticated",
       entitlement,

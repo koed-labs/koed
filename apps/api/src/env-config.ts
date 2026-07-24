@@ -7,6 +7,7 @@ import {
   resolveSupportedRerankerModelConfig,
   validateEnvelopeEncryptionProviderEnvironment
 } from "@koed/shared";
+import { resolveTeamCollaborationEnabled } from "./server/team-collaboration-feature.js";
 
 export interface ApiEnvConfig {
   host: string;
@@ -61,12 +62,16 @@ export const resolveApiEnv = (
     environment.WORK_QUEUE_BACKEND?.trim() === "local" ? "local" : "bullmq";
   resolveSupportedRerankerModelConfig(resolveRerankerKeyFromEnv(environment));
   requireWorkosAuthKitEnv(environment);
+  resolveTeamCollaborationEnabled(environment);
   if (nodeEnv === "production") {
+    const localEdgeRuntime = environment.KOED_RUNTIME_MODE !== "external";
     requireEnv(
       [
         "DATABASE_URL",
         ...(queueBackend === "bullmq" ? ["REDIS_URL"] : []),
         "API_TOKEN_PEPPER",
+        ...(localEdgeRuntime ? ["COLLABORATION_LOCAL_BROKER_SECRET"] : []),
+        "COLLABORATION_REALTIME_CURSOR_SECRET",
         "EMBEDDING_SERVICE_TOKEN",
         "CORS_ORIGINS"
       ],

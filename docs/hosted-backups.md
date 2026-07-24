@@ -29,7 +29,14 @@ the plaintext archive even if encryption/manifest work fails, and creates:
 - a sidecar manifest containing timestamp, redacted database URL, encrypted
   archive size, encrypted archive SHA-256, RPO/RTO metadata, and non-secret
   envelope metadata. Archive ciphertext stays in the `.dump.enc` file, not in
-  the manifest;
+  the manifest. The manifest also carries:
+  - a content-free collaboration transport summary containing only row counts
+    and SHA-256 digests for actual collaboration threads, messages, encrypted
+    field companions, outbox rows, grouped key references, and zero-valued
+    broken-link/authorization-binding counters;
+  - an encrypted synthetic collaboration restore sentinel set containing
+    ciphertext and integrity hashes, never its thread name, topic, message
+    body, metadata, or provenance plaintext;
 - a redacted backup status JSON file if `--status-path` or
   `KOED_BACKUP_STATUS_PATH` is set.
 
@@ -87,9 +94,42 @@ pnpm hosted:backup -- restore-smoke \
   --status-path /var/lib/koed/backup-status.json
 ```
 
-The command decrypts to a temporary local file, runs `pg_restore --clean
---if-exists --no-owner --no-acl` into the explicit target URL, and deletes the
-temporary plaintext file. The target database name must look disposable
+Before `pg_dump`, `create` reads actual collaboration storage through a
+content-free SQL summary. It repeats the same read-only summary after `pg_dump`
+and fails the backup if collaboration data changed during that interval. The
+summary hashes complete stored rows for collaboration threads, messages,
+collaboration encrypted companions, and collaboration outbox entries. A
+separate digest covers grouped provider mode/key id/key version references.
+Relationship counters require message-to-thread, companion-to-source,
+outbox-to-resource, and companion authorization-scope bindings to be intact.
+Human-readable collaboration fields are encrypted in these tables and are
+never selected or decrypted for this transport summary.
+
+`restore-smoke` decrypts to a temporary local file and runs `pg_restore --clean
+--if-exists --no-owner --no-acl` into the explicit target URL. Before adding any
+synthetic rows, it computes the same content-free summary on the target and
+requires an exact match with the stable source summary stored in the manifest.
+This is the `pg_dump` transport proof for pre-existing collaboration rows. An
+all-zero source is recorded as `empty` and must restore to the same all-zero
+summary; it is not treated as a skipped check. Missing summary metadata, source
+churn around `pg_dump`, broken links/bindings, malformed output, or any restored
+count/digest mismatch fails closed.
+
+After transport equivalence passes, encrypted backups run a separate synthetic
+proof. The command seeds the manifest's encrypted synthetic thread, message,
+five encrypted companions, and linked outbox rows only into the disposable
+target. It checks their relationships and archive-provider key references,
+then selects the companions through the synthetic owner's authorization
+boundary and decrypts them with the retained provider key. This proves the
+restored schema can accept the production-shaped records and that provider-key
+access/decrypt works; it does not prove the synthetic rows were transported by
+`pg_dump`. Missing provider access, a missing or changed key reference,
+malformed sentinel metadata, unauthorized selection, or failed decrypt fails
+closed without exposing plaintext in status output. Neither proof mutates the
+source database. Archives created before the transport-summary/sentinel
+manifest contract must be re-created before they can pass this restore smoke.
+
+The target database name must look disposable
 (`restore`, `smoke`, `scratch`, `tmp`, or `test`) and must be repeated with
 `--confirm-restore-smoke-target` before destructive restore is allowed.
 Operators should create and destroy the disposable target database outside this

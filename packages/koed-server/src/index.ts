@@ -47,11 +47,28 @@ export {
 } from "./package-runtime.js";
 export {
   collectUpstreamRegistryStatus,
+  getActiveUpstreamBackend,
   listUpstreamBackends,
   refreshUpstreamBackendCapabilities,
   registerUpstreamBackend,
-  removeUpstreamBackend
+  removeUpstreamBackend,
+  setActiveUpstreamBackend
 } from "./upstream-registry.js";
+export {
+  DESKTOP_COLLABORATION_BROKER_COMMAND_TIMEOUT_MS,
+  DESKTOP_COLLABORATION_BROKER_HANDSHAKE_TIMEOUT_MS,
+  DESKTOP_COLLABORATION_BROKER_MAX_MESSAGE_BYTES,
+  DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
+  DESKTOP_COLLABORATION_BROKER_SHUTDOWN_TIMEOUT_MS,
+  desktopCollaborationBrokerChildMessageSchema,
+  desktopCollaborationBrokerChildErrorCodeSchema,
+  desktopCollaborationBrokerParentMessageSchema,
+  measureDesktopCollaborationBrokerMessageBytes
+} from "./desktop-collaboration-broker-contract.js";
+export {
+  createDesktopCollaborationBroker,
+  runDesktopCollaborationBrokerProcess
+} from "./desktop-collaboration-broker.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export {
   deviceIdentityLockTarget,
@@ -75,6 +92,7 @@ export type {
   LocalPostgresRuntimeStopResult
 } from "./local-postgres-runtime.js";
 export type {
+  LocalModelInstallProgress,
   LocalModelInstallResult,
   LocalModelKind,
   LocalModelManifest,
@@ -106,6 +124,10 @@ export type {
   ServerPackageState,
   ServerPackageStatus
 } from "./package-runtime.js";
+export type {
+  DesktopCollaborationBrokerChildMessage,
+  DesktopCollaborationBrokerParentMessage
+} from "./desktop-collaboration-broker-contract.js";
 export type {
   UpstreamBackendRecord,
   UpstreamBackendRegistry,

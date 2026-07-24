@@ -4,17 +4,30 @@ import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
+  capturedSessionSyncUploadPackageManifestSchema,
   crossIdentitySyncDigest,
+  crossIdentitySyncDeterministicUuid,
   type CapturedSessionSyncChangeV1,
   type CapturedSessionSyncContributorV1,
   type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncSummaryNodeV1,
+  type CapturedSessionSyncUploadPackageManifest,
   type EncryptedJsonPackage,
   type EnvelopeEncryptionProvider,
   type RecipientKeyMaterial
 } from "@koed/shared";
 import { upsertEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
+import { safeConversationMetadataForEncryptedStorage } from "./conversation-item-repository.js";
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
 import { recordAuditEventWithClient } from "./audit-repository.js";
+import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
+import {
+  buildCapturedSessionSyncContributor,
+  buildCapturedSessionSyncEvent,
+  capturedSessionSyncManifestMatchesContributors,
+  capturedSessionSyncContentFromUnknown,
+  canonicalSyncJsonObject
+} from "./cross-identity-sync-canonical.js";
 import type { RecordAuditEventInput } from "./types.js";
 import type { ActorContext } from "./types.js";
 
@@ -60,6 +73,16 @@ export type SyncQueueEntryState =
   | "failed"
   | "cancelled";
 
+const ENCRYPTED_CONVERSATION_ITEM_TEXT = "[koed encrypted conversation item]";
+const ENCRYPTED_MEMORY_NODE_TEXT = "[koed encrypted memory node]";
+const ENCRYPTED_MEMORY_NODE_JSON = {
+  contentEncrypted: true,
+  encryptedSourceTable: "memory_nodes"
+};
+
+const hasEncryptableText = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+
 export class SyncIdempotencyConflictError extends Error {
   statusCode = 409;
   constructor() {
@@ -97,6 +120,7 @@ export interface MemoryReplicaRecord {
   logicalMemoryId: string;
   deploymentIdentityId: string;
   ownerUserId: string;
+  ownerPrincipalId: string;
   replicaRole: SyncReplicaRole;
   localSessionId: string | null;
   freshnessStatus: string;
@@ -105,6 +129,7 @@ export interface MemoryReplicaRecord {
 export interface LogicalMemoryRecord {
   id: string;
   ownerUserId: string;
+  ownerPrincipalId: string;
   originDeploymentIdentityId: string;
   sourceBoundary: SyncSourceBoundary;
   originSourceId: string;
@@ -131,9 +156,13 @@ export interface CrossIdentitySyncRelationshipRecord {
   sourceCursor: number;
   targetProcessingCursor: number;
   packageSequence: number;
+  sourceSummaryRevisionHash: string | null;
+  targetSummaryRevisionHash: string | null;
   lastPackageId: string | null;
   lastSyncedAt: string | null;
   staleAfter: string | null;
+  pausedAt: string | null;
+  stateBeforePause: SyncRelationshipState | null;
   revokedAt: string | null;
   revocationId: string | null;
 }
@@ -145,7 +174,7 @@ export interface SyncPackageUploadSessionRecord {
   state: SyncPackageState;
   packageFormatVersion: number;
   requestHash: string;
-  packageManifest: Record<string, unknown>;
+  packageManifest: CapturedSessionSyncUploadPackageManifest;
   packageChecksum: string;
   sourceSequence: number;
   fromCursor: number;
@@ -261,6 +290,22 @@ export interface CrossIdentitySyncRepository {
     relationshipId: string;
     localUserId: string;
   }): Promise<CrossIdentitySyncRelationshipRecord | null>;
+  pauseCrossIdentitySyncRelationship(
+    actor: ActorContext,
+    syncRelationshipId: string
+  ): Promise<CrossIdentitySyncRelationshipRecord | null>;
+  quarantineCrossIdentitySyncForUpstreamBackend(
+    actor: ActorContext,
+    upstreamBackendId: string
+  ): Promise<{
+    relationshipCount: number;
+    outboxEntryCount: number;
+    uploadSessionCount: number;
+  }>;
+  resumeCrossIdentitySyncRelationship(
+    actor: ActorContext,
+    syncRelationshipId: string
+  ): Promise<CrossIdentitySyncRelationshipRecord | null>;
   createTargetSyncRelationship(
     actor: SyncActorContext,
     input: {
@@ -286,6 +331,10 @@ export interface CrossIdentitySyncRepository {
   getCrossIdentitySyncRelationship(
     actor: SyncActorContext,
     id: string
+  ): Promise<CrossIdentitySyncRelationshipRecord | null>;
+  getSourceSyncRelationshipForSession(
+    actor: ActorContext,
+    sessionId: string
   ): Promise<CrossIdentitySyncRelationshipRecord | null>;
   getSyncRelationshipForService(
     id: string,
@@ -327,9 +376,18 @@ export interface CrossIdentitySyncRepository {
     relationship: CrossIdentitySyncRelationshipRecord;
     session: CapturedSessionSyncPackageV1["session"];
     changes: CapturedSessionSyncChangeV1[];
+    summaryNodes: CapturedSessionSyncSummaryNodeV1[];
+    summarySnapshotIncluded: boolean;
+    summaryRevisionHash: string;
     fromCursor: number;
     toCursor: number;
   } | null>;
+  getSharedMemoryLcmSyncState(input: {
+    relationshipId: string;
+    ownerUserId: string;
+    sessionId: string;
+    representation: "lcm_leaves" | "lcm_rollups";
+  }): Promise<"pending" | "ready">;
   createSyncPackageUploadSession(
     actor: SyncActorContext,
     input: {
@@ -337,7 +395,7 @@ export interface CrossIdentitySyncRepository {
       protocolPackageId: string;
       idempotencyKey: string;
       requestHash: string;
-      packageManifest: Record<string, unknown>;
+      packageManifest: CapturedSessionSyncUploadPackageManifest;
       packageChecksum: string;
       totalBytes: number;
       expectedChunkCount: number;
@@ -464,17 +522,19 @@ export interface CrossIdentitySyncRepository {
     relationshipId: string;
     uploadSessionId: string;
     package: CapturedSessionSyncPackageV1;
-  }): Promise<{ eventIds: string[]; invalidatedEventIds: string[] }>;
-  listDerivedMemoryNodeIdsForSyncRelationship(input: {
-    relationshipId: string;
-    ownerUserId: string;
-  }): Promise<string[]>;
+  }): Promise<{
+    eventIds: string[];
+    invalidatedEventIds: string[];
+    summaryNodeIds: string[];
+    invalidatedSummaryNodeIds: string[];
+  }>;
   acknowledgeSourceSyncPackage(input: {
     relationshipId: string;
     packageId: string;
     sourceCursor: number;
     targetProcessingCursor: number;
     packageSequence: number;
+    summaryRevisionHash: string | null;
     staleAfterSeconds: number;
   }): Promise<void>;
   markSourceSyncProcessing(input: {
@@ -589,6 +649,7 @@ const mapExternalUser = (r: Row): ExternalSyncUserIdentityRecord => ({
 const mapLogical = (r: Row): LogicalMemoryRecord => ({
   id: String(r.id),
   ownerUserId: String(r.owner_user_id),
+  ownerPrincipalId: String(r.owner_principal_id),
   originDeploymentIdentityId: String(r.origin_deployment_identity_id),
   sourceBoundary: r.source_boundary as SyncSourceBoundary,
   originSourceId: String(r.origin_source_id),
@@ -600,6 +661,7 @@ const mapReplica = (r: Row): MemoryReplicaRecord => ({
   logicalMemoryId: String(r.logical_memory_id),
   deploymentIdentityId: String(r.deployment_identity_id),
   ownerUserId: String(r.owner_user_id),
+  ownerPrincipalId: String(r.owner_principal_id),
   replicaRole: r.replica_role as SyncReplicaRole,
   localSessionId: optionalString(r.local_session_id),
   freshnessStatus: String(r.freshness_status)
@@ -623,9 +685,14 @@ const mapRelationship = (r: Row): CrossIdentitySyncRelationshipRecord => ({
   sourceCursor: numberValue(r.source_cursor),
   targetProcessingCursor: numberValue(r.target_processing_cursor),
   packageSequence: numberValue(r.package_sequence),
+  sourceSummaryRevisionHash: optionalString(r.source_summary_revision_hash),
+  targetSummaryRevisionHash: optionalString(r.target_summary_revision_hash),
   lastPackageId: optionalString(r.last_package_id),
   lastSyncedAt: iso(r.last_synced_at),
   staleAfter: iso(r.stale_after),
+  pausedAt: iso(r.paused_at),
+  stateBeforePause:
+    (r.state_before_pause as SyncRelationshipState | null | undefined) ?? null,
   revokedAt: iso(r.revoked_at),
   revocationId: optionalString(r.revocation_id)
 });
@@ -636,7 +703,9 @@ const mapUpload = (r: Row): SyncPackageUploadSessionRecord => ({
   state: r.state as SyncPackageState,
   packageFormatVersion: numberValue(r.package_format_version),
   requestHash: String(r.request_hash),
-  packageManifest: objectValue(r.package_manifest),
+  packageManifest: capturedSessionSyncUploadPackageManifestSchema.parse(
+    r.package_manifest
+  ),
   packageChecksum: String(r.package_checksum),
   sourceSequence: numberValue(r.source_sequence),
   fromCursor: numberValue(r.from_cursor),
@@ -695,7 +764,7 @@ const lockActiveSyncDeviceCredential = async (
         and credential.owner_user_id = $2
         and credential.revoked_at is null
         and (credential.expires_at is null or credential.expires_at > now())
-        and ('sync' = any(credential.operation_families) or '*' = any(credential.operation_families))
+        and 'sync' = any(credential.operation_families)
         and owner.disabled_at is null
         and owner.deleted_at is null
       for update of credential`,
@@ -719,27 +788,6 @@ const relationshipCredentialClause = (
        and bound_credential.lineage_id = presented_credential.lineage_id
   ))`;
 
-const contentFromUnknown = (value: unknown): string => {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value))
-    return value.map(contentFromUnknown).filter(Boolean).join("\n");
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  for (const key of ["content", "text", "message", "output", "result"]) {
-    const content = contentFromUnknown(record[key]);
-    if (content) return content;
-  }
-  return "";
-};
-const sanitizedEventMetadata = (
-  metadata: Record<string, unknown>
-): Record<string, unknown> =>
-  Object.fromEntries(
-    ["includeInLcm", "semanticUnitType", "rawEventType", "sourceRole"]
-      .filter((key) => metadata[key] !== undefined)
-      .map((key) => [key, metadata[key]])
-  );
-
 const recordSyncAuditEventWithClient = async (
   client: pg.PoolClient,
   input: RecordAuditEventInput & { metadata: { eventKey: string } }
@@ -752,19 +800,79 @@ const recordSyncAuditEventWithClient = async (
   await recordAuditEventWithClient(client, input);
 };
 
+const ensureOwnerPrivateReplicaRetentionPolicy = async (
+  client: pg.PoolClient,
+  input: {
+    ownerPrivateReplicaId: string;
+    logicalMemoryId: string;
+    ownerUserId: string;
+  }
+): Promise<void> => {
+  const policyId = randomUUID();
+  const effectiveAt = new Date();
+  const target = {
+    scope: "owner_private_replica" as const,
+    ownerPrivateReplicaId: input.ownerPrivateReplicaId,
+    logicalMemoryId: input.logicalMemoryId
+  };
+  const policyHash = crossIdentitySyncDigest({
+    policyId,
+    version: 1,
+    target,
+    retentionSeconds: 0,
+    deletionGraceSeconds: 0,
+    backupRetentionSeconds: 0,
+    effectiveAt: effectiveAt.toISOString()
+  });
+  await client.query(
+    `insert into retention_policies (
+       policy_id, version, scope, owner_private_replica_id, logical_memory_id,
+       retention_seconds, deletion_grace_seconds, backup_retention_seconds,
+       policy_hash, created_by_user_id, effective_at
+     ) values ($1,1,'owner_private_replica',$2,$3,0,0,0,$4,$5,$6)
+     on conflict do nothing`,
+    [
+      policyId,
+      input.ownerPrivateReplicaId,
+      input.logicalMemoryId,
+      policyHash,
+      input.ownerUserId,
+      effectiveAt
+    ]
+  );
+};
+
 export const createCrossIdentitySyncRepository = (
   pool: pg.Pool,
-  options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider } = {}
+  options: {
+    envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+    ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  } = {}
 ): CrossIdentitySyncRepository => {
+  const requireOwnerPrivateReplicaEnvelopeEncryptionProvider =
+    (): EnvelopeEncryptionProvider => {
+      if (!options.ownerPrivateReplicaEnvelopeEncryptionProvider) {
+        throw new SyncStateConflictError(
+          "Owner-private replica envelope encryption provider required for synchronized Memory"
+        );
+      }
+      return options.ownerPrivateReplicaEnvelopeEncryptionProvider;
+    };
   const hydrateField = async (
     actor: ActorContext,
-    sourceTable: "memory_events" | "conversation_items",
+    sourceTable: "memory_events" | "conversation_items" | "memory_nodes",
     sourceId: string,
     sourceColumn: string,
     fallback: unknown
   ): Promise<unknown> => {
-    if (!options.envelopeEncryptionProvider) return fallback;
+    if (
+      !options.envelopeEncryptionProvider &&
+      !options.ownerPrivateReplicaEnvelopeEncryptionProvider
+    ) {
+      return fallback;
+    }
     const result = await pool.query<{
+      encryption_scope: string;
       envelope_version: number;
       provider_mode: string;
       key_id: string;
@@ -781,12 +889,21 @@ export const createCrossIdentitySyncRepository = (
       envelope_created_at: Date;
       envelope_reencrypted_at: Date | null;
     }>(
-      "select envelope_version,provider_mode,key_id,key_version,scope,provenance,algorithm,ciphertext,nonce,tag,wrapped_dek,ciphertext_location,aad,envelope_created_at,envelope_reencrypted_at from encrypted_field_payloads where owner_user_id = $1 and source_table = $2 and source_id = $3 and source_column = $4 and invalidated_at is null limit 1",
+      "select encryption_scope,envelope_version,provider_mode,key_id,key_version,scope,provenance,algorithm,ciphertext,nonce,tag,wrapped_dek,ciphertext_location,aad,envelope_created_at,envelope_reencrypted_at from encrypted_field_payloads where owner_user_id = $1 and source_table = $2 and source_id = $3 and source_column = $4 and invalidated_at is null limit 1",
       [actor.userId, sourceTable, sourceId, sourceColumn]
     );
     const row = result.rows[0];
     if (!row) return fallback;
-    const plaintext = await options.envelopeEncryptionProvider.decrypt({
+    const provider =
+      row.encryption_scope === "owner_private_replica"
+        ? options.ownerPrivateReplicaEnvelopeEncryptionProvider
+        : options.envelopeEncryptionProvider;
+    if (!provider) {
+      throw new Error(
+        `Envelope encryption provider is unavailable for ${row.encryption_scope}`
+      );
+    }
+    const plaintext = await provider.decrypt({
       version: row.envelope_version,
       providerMode: row.provider_mode,
       keyId: row.key_id,
@@ -804,6 +921,195 @@ export const createCrossIdentitySyncRepository = (
       reencryptedAt: row.envelope_reencrypted_at?.toISOString() ?? null
     } as never);
     return JSON.parse(Buffer.from(plaintext).toString("utf8"));
+  };
+
+  const readSessionSummarySnapshot = async (input: {
+    actor: ActorContext;
+    sessionId: string;
+  }): Promise<{
+    completeLeaves: boolean;
+    completeRollups: boolean;
+    nodes: CapturedSessionSyncSummaryNodeV1[];
+    revisionHash: string;
+  }> => {
+    const nodeResult = await pool.query<Row>(
+      `select *
+         from memory_nodes
+        where owner_user_id=$1
+          and session_id=$2
+          and visibility='personal'
+          and invalidated_at is null
+          and personal_deleted_at is null
+        order by depth asc,created_at asc,id asc`,
+      [input.actor.userId, input.sessionId]
+    );
+    const nodeIds = nodeResult.rows.map((row) => String(row.id));
+    if (nodeIds.length === 0) {
+      return {
+        completeLeaves: false,
+        completeRollups: false,
+        nodes: [],
+        revisionHash: crossIdentitySyncDigest([])
+      };
+    }
+    const sourceResult = await pool.query<Row>(
+      `select source.memory_node_id,source.memory_event_id,source.source_order,
+              event.session_id
+         from memory_node_sources source
+         join memory_events event on event.id=source.memory_event_id
+        where source.memory_node_id=any($1::uuid[])
+        order by source.memory_node_id,source.source_order`,
+      [nodeIds]
+    );
+    const childResult = await pool.query<Row>(
+      `select parent_memory_node_id,child_memory_node_id,child_order
+         from memory_node_children
+        where parent_memory_node_id=any($1::uuid[])
+        order by parent_memory_node_id,child_order`,
+      [nodeIds]
+    );
+    const sourceIdsByNode = new Map<string, string[]>();
+    for (const row of sourceResult.rows) {
+      if (String(row.session_id) !== input.sessionId) {
+        throw new SyncStateConflictError(
+          "LCM summary source crosses its Captured Session boundary"
+        );
+      }
+      const nodeId = String(row.memory_node_id);
+      const sourceIds = sourceIdsByNode.get(nodeId) ?? [];
+      sourceIds.push(String(row.memory_event_id));
+      sourceIdsByNode.set(nodeId, sourceIds);
+    }
+    const childIdsByNode = new Map<string, string[]>();
+    const nodeIdSet = new Set(nodeIds);
+    for (const row of childResult.rows) {
+      const childId = String(row.child_memory_node_id);
+      if (!nodeIdSet.has(childId)) {
+        throw new SyncStateConflictError(
+          "LCM summary child crosses its Captured Session boundary"
+        );
+      }
+      const nodeId = String(row.parent_memory_node_id);
+      const childIds = childIdsByNode.get(nodeId) ?? [];
+      childIds.push(childId);
+      childIdsByNode.set(nodeId, childIds);
+    }
+    const pendingLeaves = nodeResult.rows.some(
+      (row) => row.kind === "leaf" && !optionalString(row.summary_model)
+    );
+    const pendingRollups = nodeResult.rows.some(
+      (row) => row.kind === "rollup" && !optionalString(row.summary_model)
+    );
+    if (pendingLeaves) {
+      return {
+        completeLeaves: false,
+        completeRollups: false,
+        nodes: [],
+        revisionHash: crossIdentitySyncDigest([])
+      };
+    }
+    const nodes: CapturedSessionSyncSummaryNodeV1[] = [];
+    for (const row of nodeResult.rows) {
+      if (!optionalString(row.summary_model)) continue;
+      const originNodeId = String(row.id);
+      const kind = String(row.kind);
+      const lcmAlgorithmVersion = optionalString(row.lcm_algorithm_version);
+      const summaryModel = optionalString(row.summary_model);
+      const summaryPromptVersion = optionalString(row.summary_prompt_version);
+      const summaryStructuredSchemaVersion = optionalString(
+        row.summary_structured_schema_version
+      );
+      const sourceHash = optionalString(row.source_hash);
+      const sourceOriginEventIds = sourceIdsByNode.get(originNodeId) ?? [];
+      const childOriginNodeIds = childIdsByNode.get(originNodeId) ?? [];
+      const sourceEventCount = numberValue(row.source_event_count);
+      const sourceTokenEstimate = numberValue(row.source_token_estimate);
+      const summaryTokenEstimate = numberValue(row.summary_token_estimate);
+      if (
+        (kind !== "leaf" && kind !== "rollup") ||
+        !lcmAlgorithmVersion ||
+        !summaryModel ||
+        !summaryPromptVersion ||
+        !summaryStructuredSchemaVersion ||
+        !sourceHash ||
+        !/^[a-f0-9]{64}$/.test(sourceHash) ||
+        sourceOriginEventIds.length === 0 ||
+        sourceEventCount !== sourceOriginEventIds.length ||
+        sourceTokenEstimate < 0 ||
+        summaryTokenEstimate <= 0 ||
+        (kind === "leaf" && childOriginNodeIds.length !== 0) ||
+        (kind === "rollup" && childOriginNodeIds.length === 0)
+      ) {
+        throw new SyncStateConflictError(
+          "LCM summary provenance is incomplete"
+        );
+      }
+      const summaryTextValue = await hydrateField(
+        input.actor,
+        "memory_nodes",
+        originNodeId,
+        "summary_text",
+        row.summary_text
+      );
+      const structuredValue = await hydrateField(
+        input.actor,
+        "memory_nodes",
+        originNodeId,
+        "summary_structured_json",
+        row.summary_structured_json
+      );
+      if (
+        typeof summaryTextValue !== "string" ||
+        summaryTextValue.length === 0 ||
+        !structuredValue ||
+        typeof structuredValue !== "object" ||
+        Array.isArray(structuredValue)
+      ) {
+        throw new SyncStateConflictError("LCM summary content is unavailable");
+      }
+      const summaryStructuredJson = canonicalSyncJsonObject(
+        structuredValue as Record<string, unknown>,
+        "LCM structured summary"
+      );
+      if (
+        typeof summaryStructuredJson.summary_text !== "string" ||
+        summaryStructuredJson.summary_text !== summaryTextValue
+      ) {
+        throw new SyncStateConflictError(
+          "LCM summary text and structured summary do not match"
+        );
+      }
+      const base = {
+        originNodeId,
+        kind,
+        depth: numberValue(row.depth),
+        lcmAlgorithmVersion,
+        summaryText: summaryTextValue,
+        summaryModel,
+        summaryPromptVersion,
+        summaryStructuredJson,
+        summaryStructuredSchemaVersion,
+        sourceOriginEventIds,
+        childOriginNodeIds,
+        sourceHash,
+        sourceEventCount,
+        sourceTokenEstimate,
+        summaryTokenEstimate,
+        createdAt: iso(row.created_at)!,
+        updatedAt: iso(row.updated_at)!
+      } satisfies Omit<CapturedSessionSyncSummaryNodeV1, "revisionHash">;
+      nodes.push({
+        ...base,
+        revisionHash: crossIdentitySyncDigest(base)
+      });
+    }
+    return {
+      completeLeaves: nodes.some((node) => node.kind === "leaf"),
+      completeRollups:
+        !pendingRollups && nodes.some((node) => node.kind === "rollup"),
+      nodes,
+      revisionHash: crossIdentitySyncDigest(nodes)
+    };
   };
 
   const queueInsert = async (
@@ -982,7 +1288,7 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const logicalResult = await client.query(
-          "insert into logical_memories (id,owner_user_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$3,'captured_session',$4::uuid::text,$4::uuid,$5) on conflict (origin_deployment_identity_id,source_boundary,origin_source_id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id returning *",
+          "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$2,$3,'captured_session',$4::uuid::text,$4::uuid,$5) on conflict (origin_deployment_identity_id,source_boundary,origin_source_id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id returning *",
           [
             input.logicalMemoryId,
             actor.userId,
@@ -994,7 +1300,7 @@ export const createCrossIdentitySyncRepository = (
         if (!logicalResult.rows[0]) throw new SyncIdempotencyConflictError();
         const logical = mapLogical(logicalResult.rows[0] as Row);
         const replicaResult = await client.query(
-          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,replica_role,source_boundary,local_session_id,freshness_status) values ($1,$2,$3,$4,'source','captured_session',$5,'fresh') on conflict (logical_memory_id,deployment_identity_id,replica_role) do update set updated_at=now() where memory_replicas.id=excluded.id returning *",
+          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,owner_principal_id,replica_role,source_boundary,local_session_id,encryption_scope,freshness_status) values ($1,$2,$3,$4,$4,'source','captured_session',$5,'personal','fresh') on conflict (logical_memory_id,deployment_identity_id,replica_role) do update set updated_at=now() where memory_replicas.id=excluded.id and memory_replicas.owner_principal_id=excluded.owner_principal_id returning *",
           [
             input.localReplicaId,
             logical.id,
@@ -1005,7 +1311,7 @@ export const createCrossIdentitySyncRepository = (
         );
         const replica = mapReplica(replicaResult.rows[0] as Row);
         const relationshipResult = await client.query(
-          "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,state,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'source',$3,$4,$5,$6,$7,'captured_session','paused',$8,$9,$10::jsonb,$11::jsonb) on conflict (id) do update set updated_at=cross_identity_sync_relationships.updated_at where cross_identity_sync_relationships.local_user_id=excluded.local_user_id and cross_identity_sync_relationships.remote_deployment_identity_id=excluded.remote_deployment_identity_id and cross_identity_sync_relationships.remote_user_identity_id=excluded.remote_user_identity_id and cross_identity_sync_relationships.creation_request_hash=excluded.creation_request_hash returning *",
+          "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,state,paused_at,state_before_pause,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'source',$3,$4,$5,$6,$7,'captured_session','paused',now(),'created',$8,$9,$10::jsonb,$11::jsonb) on conflict (id) do update set updated_at=cross_identity_sync_relationships.updated_at where cross_identity_sync_relationships.local_user_id=excluded.local_user_id and cross_identity_sync_relationships.remote_deployment_identity_id=excluded.remote_deployment_identity_id and cross_identity_sync_relationships.remote_user_identity_id=excluded.remote_user_identity_id and cross_identity_sync_relationships.creation_request_hash=excluded.creation_request_hash returning *",
           [
             input.relationshipId,
             logical.id,
@@ -1085,7 +1391,12 @@ export const createCrossIdentitySyncRepository = (
         await client.query("begin");
         const result = await client.query<Row>(
           `update cross_identity_sync_relationships
-              set state=case when state='paused' then 'created' else state end,
+              set state=case
+                    when state='paused' then coalesce(state_before_pause, 'created'::sync_relationship_state)
+                    else state
+                  end,
+                  paused_at=null,
+                  state_before_pause=null,
                   updated_at=now()
             where id=$1
               and local_user_id=$2
@@ -1111,6 +1422,303 @@ export const createCrossIdentitySyncRepository = (
         );
         await client.query("commit");
         return mapRelationship(result.rows[0]);
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async pauseCrossIdentitySyncRelationship(actor, syncRelationshipId) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const currentResult = await client.query<Row>(
+          `select *
+             from cross_identity_sync_relationships
+            where id=$1
+              and local_user_id=$2
+              and side='source'
+            for update`,
+          [syncRelationshipId, actor.userId]
+        );
+        const current = currentResult.rows[0];
+        if (!current || current.revoked_at) {
+          await client.query("rollback");
+          return null;
+        }
+        if (current.state === "paused") {
+          await client.query("commit");
+          return mapRelationship(current);
+        }
+        if (
+          ![
+            "created",
+            "uploading",
+            "uploaded",
+            "verified",
+            "processing",
+            "partially_available",
+            "ready",
+            "stale"
+          ].includes(String(current.state))
+        ) {
+          await client.query("rollback");
+          return null;
+        }
+        const paused = await client.query<Row>(
+          `update cross_identity_sync_relationships
+              set state_before_pause=state,
+                  state='paused',
+                  paused_at=now(),
+                  updated_at=now()
+            where id=$1
+              and local_user_id=$2
+              and side='source'
+              and revoked_at is null
+              and state<>'paused'
+            returning *`,
+          [syncRelationshipId, actor.userId]
+        );
+        const pausedRow = paused.rows[0];
+        if (!pausedRow) {
+          await client.query("rollback");
+          return null;
+        }
+        await client.query(
+          `update sync_outbox_entries
+              set state='pending',
+                  attempt_count=greatest(attempt_count-1,0),
+                  available_at=now(),
+                  locked_at=null,
+                  claim_token=null,
+                  lease_expires_at=null,
+                  processed_at=null,
+                  updated_at=now()
+            where sync_relationship_id=$1
+              and state='processing'
+              and payload_manifest->>'kind' is distinct from 'revocation'`,
+          [syncRelationshipId]
+        );
+        await recordSyncAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "cross_identity_sync.relationship.paused",
+          targetTable: "cross_identity_sync_relationships",
+          targetId: syncRelationshipId,
+          metadata: {
+            eventKey: `pause:${iso(pausedRow.paused_at)}`,
+            stateBeforePause: String(pausedRow.state_before_pause)
+          }
+        });
+        await client.query("commit");
+        return mapRelationship(pausedRow);
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async quarantineCrossIdentitySyncForUpstreamBackend(
+      actor,
+      upstreamBackendId
+    ) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const relationships = await client.query<Row>(
+          `update cross_identity_sync_relationships relationship
+              set state_before_pause=relationship.state,
+                  state='paused',
+                  paused_at=now(),
+                  updated_at=now()
+             from deployment_identities remote_deployment
+            where relationship.remote_deployment_identity_id=remote_deployment.id
+              and relationship.local_user_id=$1
+              and relationship.side='source'
+              and relationship.revoked_at is null
+              and relationship.state in (
+                'created',
+                'uploading',
+                'uploaded',
+                'verified',
+                'processing',
+                'partially_available',
+                'ready',
+                'stale'
+              )
+              and remote_deployment.upstream_backend_id=$2
+            returning relationship.*`,
+          [actor.userId, upstreamBackendId]
+        );
+        const relationshipIds = relationships.rows.map((row) => String(row.id));
+        if (relationshipIds.length === 0) {
+          await client.query("commit");
+          return {
+            relationshipCount: 0,
+            outboxEntryCount: 0,
+            uploadSessionCount: 0
+          };
+        }
+        const outbox = await client.query(
+          `update sync_outbox_entries
+              set state='cancelled',
+                  locked_at=null,
+                  claim_token=null,
+                  lease_expires_at=null,
+                  processed_at=now(),
+                  last_error_message=null,
+                  updated_at=now()
+            where sync_relationship_id=any($1::uuid[])
+              and state in ('pending','processing')`,
+          [relationshipIds]
+        );
+        const uploads = await client.query(
+          `update sync_package_upload_sessions
+              set state='failed',
+                  failed_at=coalesce(failed_at,now()),
+                  last_error_message='UpstreamBackendDisconnected',
+                  updated_at=now()
+            where sync_relationship_id=any($1::uuid[])
+              and state in ('created','uploading','uploaded','verified','processing')`,
+          [relationshipIds]
+        );
+        for (const row of relationships.rows) {
+          await recordSyncAuditEventWithClient(client, {
+            actorUserId: actor.userId,
+            ownerUserId: actor.userId,
+            visibility: "personal",
+            action: "cross_identity_sync.relationship.backend_disconnected",
+            targetTable: "cross_identity_sync_relationships",
+            targetId: String(row.id),
+            metadata: {
+              eventKey: `backend-disconnected:${upstreamBackendId}:${iso(row.paused_at)}`,
+              upstreamBackendId
+            }
+          });
+        }
+        await client.query("commit");
+        return {
+          relationshipCount: relationships.rowCount ?? relationshipIds.length,
+          outboxEntryCount: outbox.rowCount ?? 0,
+          uploadSessionCount: uploads.rowCount ?? 0
+        };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async resumeCrossIdentitySyncRelationship(actor, syncRelationshipId) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const currentResult = await client.query<Row>(
+          `select relationship.*,
+                  exists (
+                    select 1
+                      from memory_replicas replica
+                      join sync_semantic_changes change
+                        on change.session_id=replica.local_session_id
+                     where replica.id=relationship.local_replica_id
+                       and change.cursor>relationship.source_cursor
+                  ) as has_unsynced_changes,
+                  exists (
+                    select 1
+                      from sync_package_upload_sessions upload
+                     where upload.sync_relationship_id=relationship.id
+                       and upload.state not in ('completed','failed')
+                  ) as has_incomplete_package
+             from cross_identity_sync_relationships relationship
+            where relationship.id=$1
+              and relationship.local_user_id=$2
+              and relationship.side='source'
+            for update of relationship`,
+          [syncRelationshipId, actor.userId]
+        );
+        const current = currentResult.rows[0];
+        if (!current || current.revoked_at || current.state === "revoked") {
+          await client.query("rollback");
+          return null;
+        }
+        if (current.state !== "paused") {
+          await client.query("commit");
+          return mapRelationship(current);
+        }
+        const stateBeforePause = String(
+          current.state_before_pause
+        ) as SyncRelationshipState;
+        const resumed = await client.query<Row>(
+          `update cross_identity_sync_relationships
+              set state=state_before_pause,
+                  paused_at=null,
+                  state_before_pause=null,
+                  updated_at=now()
+            where id=$1
+              and local_user_id=$2
+              and side='source'
+              and state='paused'
+              and revoked_at is null
+            returning *`,
+          [syncRelationshipId, actor.userId]
+        );
+        const resumedRow = resumed.rows[0];
+        if (!resumedRow) {
+          await client.query("rollback");
+          return null;
+        }
+        const needsWork =
+          !["ready", "stale"].includes(stateBeforePause) ||
+          current.has_unsynced_changes === true ||
+          current.has_incomplete_package === true;
+        if (needsWork) {
+          await client.query(
+            `insert into sync_outbox_entries (
+               sync_relationship_id,idempotency_key,request_hash,payload_manifest
+             ) values ($1,'changes',$2,'{}')
+             on conflict (sync_relationship_id,idempotency_key) do update
+               set state='pending',
+                   attempt_count=case
+                     when sync_outbox_entries.state in ('failed','cancelled','completed') then 0
+                     else sync_outbox_entries.attempt_count
+                   end,
+                   available_at=now(),
+                   locked_at=null,
+                   claim_token=null,
+                   lease_expires_at=null,
+                   processed_at=null,
+                   last_error_message=case
+                     when sync_outbox_entries.state in ('failed','cancelled') then null
+                     else sync_outbox_entries.last_error_message
+                   end,
+                   updated_at=now()`,
+            [
+              syncRelationshipId,
+              crossIdentitySyncDigest({
+                relationshipId: syncRelationshipId,
+                initial: true
+              })
+            ]
+          );
+        }
+        await recordSyncAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "cross_identity_sync.relationship.resumed",
+          targetTable: "cross_identity_sync_relationships",
+          targetId: syncRelationshipId,
+          metadata: {
+            eventKey: `resume:${iso(current.paused_at)}`,
+            resumedState: stateBeforePause,
+            workRequeued: needsWork
+          }
+        });
+        await client.query("commit");
+        return mapRelationship(resumedRow);
       } catch (error) {
         await client.query("rollback");
         throw error;
@@ -1162,19 +1770,25 @@ export const createCrossIdentitySyncRepository = (
           ? String(existingDeviceBinding.rows[0].device_credential_id)
           : actor.deviceCredentialId;
         const sessionResult = await client.query(
-          "insert into sessions (owner_user_id,visibility,external_session_id,source_runtime,capture_method,idempotency_key,source_kind,source_adapter_version,metadata,captured_at) values ($1,'personal',$2,$3,'api',$4,'koed_sync',$5,$6::jsonb,$7) on conflict (owner_user_id,visibility,idempotency_key) where idempotency_key is not null do update set updated_at=now() returning *",
+          `insert into sessions (
+             owner_user_id, visibility, external_session_id, source_runtime,
+             capture_method, idempotency_key, source_kind,
+             source_adapter_version, metadata, captured_at
+           ) values ($1, 'personal', null, $2, 'api', $3, 'koed_sync', $4, $5::jsonb, $6)
+           on conflict (owner_user_id, visibility, idempotency_key)
+             where idempotency_key is not null
+           do update set external_session_id=null,
+                         metadata=excluded.metadata,
+                         updated_at=now()
+           returning *`,
           [
             actor.userId,
-            input.session.externalSessionId,
             input.session.sourceRuntime,
             `sync:${input.logicalMemoryId}:session`,
             input.session.sourceAdapterVersion,
             JSON.stringify({
               syncReplica: true,
-              originSessionId: input.originSessionId,
-              ...(input.session.title
-                ? { threadName: input.session.title }
-                : {})
+              contentEncrypted: true
             }),
             input.session.capturedAt
           ]
@@ -1182,30 +1796,37 @@ export const createCrossIdentitySyncRepository = (
         if (!sessionResult.rows[0]) throw new SyncIdempotencyConflictError();
         const sessionId = String((sessionResult.rows[0] as Row).id);
         const logicalResult = await client.query(
-          "insert into logical_memories (id,owner_user_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$3,'captured_session',$4,$5,$6) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.origin_source_id=excluded.origin_source_id returning *",
+          "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$7,$3,'captured_session',$4,$5,$6) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.origin_source_id=excluded.origin_source_id returning *",
           [
             input.logicalMemoryId,
             actor.userId,
             input.remoteDeploymentIdentityId,
             input.originSessionId,
             sessionId,
-            `captured-session:${input.originSessionId}`
+            `captured-session:${input.originSessionId}`,
+            input.remoteUserIdentityId
           ]
         );
         if (!logicalResult.rows[0]) throw new SyncIdempotencyConflictError();
         const logical = mapLogical(logicalResult.rows[0] as Row);
         const replicaResult = await client.query(
-          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,replica_role,source_boundary,local_session_id,freshness_status) values ($1,$2,$3,$4,'target','captured_session',$5,'unknown') on conflict (id) do update set updated_at=now() where memory_replicas.logical_memory_id=excluded.logical_memory_id and memory_replicas.owner_user_id=excluded.owner_user_id returning *",
+          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,owner_principal_id,replica_role,source_boundary,local_session_id,encryption_scope,freshness_status) values ($1,$2,$3,$4,$6,'target','captured_session',$5,'owner_private_replica','unknown') on conflict (id) do update set updated_at=now() where memory_replicas.logical_memory_id=excluded.logical_memory_id and memory_replicas.owner_user_id=excluded.owner_user_id and memory_replicas.owner_principal_id=excluded.owner_principal_id returning *",
           [
             input.localReplicaId,
             logical.id,
             input.localDeploymentIdentityId,
             actor.userId,
-            sessionId
+            sessionId,
+            input.remoteUserIdentityId
           ]
         );
         if (!replicaResult.rows[0]) throw new SyncIdempotencyConflictError();
         const replica = mapReplica(replicaResult.rows[0] as Row);
+        await ensureOwnerPrivateReplicaRetentionPolicy(client, {
+          ownerPrivateReplicaId: replica.id,
+          logicalMemoryId: logical.id,
+          ownerUserId: actor.userId
+        });
         const relationshipResult = await client.query(
           "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,device_credential_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'target',$3,$4,$5,$6,$7,$8,'captured_session',$9,$10,$11::jsonb,$12::jsonb) on conflict (id) do update set updated_at=cross_identity_sync_relationships.updated_at where cross_identity_sync_relationships.local_user_id=excluded.local_user_id and cross_identity_sync_relationships.device_credential_id=excluded.device_credential_id and cross_identity_sync_relationships.creation_request_hash=excluded.creation_request_hash returning *",
           [
@@ -1276,6 +1897,21 @@ export const createCrossIdentitySyncRepository = (
       } finally {
         client.release();
       }
+    },
+    async getSourceSyncRelationshipForSession(actor, sessionId) {
+      const result = await pool.query<Row>(
+        `select relationship.*
+           from cross_identity_sync_relationships relationship
+           join memory_replicas replica
+             on replica.id=relationship.local_replica_id
+          where relationship.side='source'
+            and relationship.local_user_id=$1
+            and replica.local_session_id=$2
+          order by relationship.created_at desc
+          limit 1`,
+        [actor.userId, sessionId]
+      );
+      return result.rows[0] ? mapRelationship(result.rows[0]) : null;
     },
     async getSyncRelationshipForService(id, side) {
       const result = await pool.query(
@@ -1348,7 +1984,7 @@ export const createCrossIdentitySyncRepository = (
             and credential.owner_user_id=relationship.local_user_id
             and credential.revoked_at is null
             and (credential.expires_at is null or credential.expires_at>now())
-            and ('sync'=any(credential.operation_families) or '*'=any(credential.operation_families))
+            and 'sync'=any(credential.operation_families)
             and remote_user.status='active'
             and remote_user.revoked_at is null
           limit 1`,
@@ -1423,7 +2059,7 @@ export const createCrossIdentitySyncRepository = (
     },
     async readCapturedSessionSyncDelta(input) {
       const relationshipResult = await pool.query(
-        "select sr.*,lm.local_session_id,di.protocol_deployment_id from cross_identity_sync_relationships sr join logical_memories lm on lm.id=sr.logical_memory_id join memory_replicas mr on mr.id=sr.local_replica_id join deployment_identities di on di.id=mr.deployment_identity_id where sr.id=$1 and sr.side='source' and sr.revoked_at is null for update",
+        "select sr.*,lm.local_session_id,di.protocol_deployment_id from cross_identity_sync_relationships sr join logical_memories lm on lm.id=sr.logical_memory_id join memory_replicas mr on mr.id=sr.local_replica_id join deployment_identities di on di.id=mr.deployment_identity_id where sr.id=$1 and sr.side='source' and sr.state<>'paused' and sr.revoked_at is null for update",
         [input.relationshipId]
       );
       const row = relationshipResult.rows[0] as Row | undefined;
@@ -1482,15 +2118,14 @@ export const createCrossIdentitySyncRepository = (
           });
           continue;
         }
-        const payload = objectValue(
-          await hydrateField(
-            actor,
-            "memory_events",
-            String(changeRow.id),
-            "payload",
-            changeRow.payload
-          )
+        const hydratedEventPayload = await hydrateField(
+          actor,
+          "memory_events",
+          String(changeRow.id),
+          "payload",
+          changeRow.payload
         );
+        const payload = objectValue(hydratedEventPayload);
         const contributorResult = await pool.query(
           "select ci.* from memory_event_sources mes join conversation_items ci on ci.id=mes.conversation_item_id where mes.memory_event_id=$1 order by mes.source_order,ci.source_sequence nulls last,ci.id",
           [changeRow.id]
@@ -1518,16 +2153,42 @@ export const createCrossIdentitySyncRepository = (
             "raw_json",
             contributor.raw_json
           );
+          const hydratedMetadata = canonicalSyncJsonObject(
+            await hydrateField(
+              actor,
+              "conversation_items",
+              String(contributor.id),
+              "metadata",
+              contributor.metadata
+            ),
+            "conversation item metadata"
+          );
+          const hydratedTransportChunkText = await hydrateField(
+            actor,
+            "conversation_items",
+            String(contributor.id),
+            "transport_chunk_text",
+            contributor.transport_chunk_text
+          );
           const content =
             typeof hydratedRawText === "string" && hydratedRawText
               ? hydratedRawText
-              : contentFromUnknown(hydratedRawJson);
+              : capturedSessionSyncContentFromUnknown(hydratedRawJson);
           const actorValue =
-            objectValue(contributor.metadata).actor ??
-            contributor.source_event_type;
+            hydratedMetadata.actor ?? contributor.source_event_type;
           const kindValue =
             contributor.source_event_type ?? contributor.source_record_type;
-          const canonical = {
+          let rawText: string | null;
+          if (hydratedRawText === null) {
+            rawText = null;
+          } else if (typeof hydratedRawText === "string") {
+            rawText = hydratedRawText;
+          } else {
+            throw new SyncStateConflictError(
+              "Conversation item raw text must be a string"
+            );
+          }
+          const canonical = buildCapturedSessionSyncContributor({
             originItemId: String(contributor.id),
             actor: typeof actorValue === "string" ? actorValue : "unknown",
             kind: typeof kindValue === "string" ? kindValue : "unknown",
@@ -1544,19 +2205,64 @@ export const createCrossIdentitySyncRepository = (
             sourceSequence:
               contributor.source_sequence === null
                 ? null
-                : numberValue(contributor.source_sequence)
-          };
-          contributors.push({
-            ...canonical,
-            revisionHash: crossIdentitySyncDigest(canonical)
+                : numberValue(contributor.source_sequence),
+            sourceKind: String(contributor.source_kind),
+            sourceAdapterVersion: String(contributor.source_adapter_version),
+            sourceTransport: String(contributor.source_transport),
+            sourceRecordType: String(contributor.source_record_type),
+            sourceEventType: optionalString(contributor.source_event_type),
+            rawJson: hydratedRawJson,
+            rawText,
+            metadata: hydratedMetadata,
+            logicalSourceId: optionalString(contributor.logical_source_id),
+            transportChunkIndex: numberValue(contributor.transport_chunk_index),
+            transportChunkCount: numberValue(contributor.transport_chunk_count),
+            transportChunkText: optionalString(hydratedTransportChunkText),
+            transportChunkEncoding: optionalString(
+              contributor.transport_chunk_encoding
+            ),
+            projectionStatus: String(
+              contributor.projection_status
+            ) as CapturedSessionSyncContributorV1["projectionStatus"],
+            projectionVersion: optionalString(contributor.projection_version),
+            projectionPolicyRevision:
+              contributor.projection_policy_revision === null
+                ? null
+                : numberValue(contributor.projection_policy_revision),
+            memoryExcludedAt: iso(contributor.memory_excluded_at),
+            memoryExclusionReason: optionalString(
+              contributor.memory_exclusion_reason
+            )
           });
+          contributors.push(canonical);
         }
-        const eventBase = {
+        const eventMetadata = canonicalSyncJsonObject(
+          objectValue(payload.metadata),
+          "memory event metadata"
+        );
+        if (
+          !capturedSessionSyncManifestMatchesContributors(
+            eventMetadata,
+            contributors
+          )
+        ) {
+          throw new SyncStateConflictError(
+            "Memory Event contributor snapshot is not stable"
+          );
+        }
+        const event = buildCapturedSessionSyncEvent({
           originEventId: String(changeRow.id),
           eventType: String(changeRow.event_type),
           actor: typeof payload.actor === "string" ? payload.actor : "system",
           content: typeof payload.content === "string" ? payload.content : "",
-          metadata: sanitizedEventMetadata(objectValue(payload.metadata)),
+          metadata: eventMetadata,
+          includeInEmbedding: Boolean(changeRow.include_in_embedding),
+          includeInLcm: Boolean(changeRow.include_in_lcm),
+          projectionPolicyKey: optionalString(changeRow.projection_policy_key),
+          projectionPolicyRevision:
+            changeRow.projection_policy_revision === null
+              ? null
+              : numberValue(changeRow.projection_policy_revision),
           tokenCount:
             changeRow.token_count === null
               ? null
@@ -1569,19 +2275,30 @@ export const createCrossIdentitySyncRepository = (
               ? null
               : numberValue(changeRow.source_sequence),
           contributors
-        };
-        const revisionHash = crossIdentitySyncDigest(eventBase);
+        });
         changes.push({
           cursor,
           operation: "upsert",
-          originEventId: eventBase.originEventId,
-          revisionHash,
-          event: { ...eventBase, revisionHash }
+          originEventId: event.originEventId,
+          revisionHash: event.revisionHash,
+          event
         });
       }
       const toCursor = changes.length
         ? Math.max(...changes.map((change) => change.cursor))
         : relationship.sourceCursor;
+      const summarySnapshot = await readSessionSummarySnapshot({
+        actor,
+        sessionId
+      });
+      const summarySnapshotChanged =
+        summarySnapshot.revisionHash !== relationship.sourceSummaryRevisionHash;
+      const summarySnapshotIncluded =
+        summarySnapshotChanged &&
+        (summarySnapshot.completeLeaves ||
+          (relationship.sourceSummaryRevisionHash !== null &&
+            summarySnapshot.nodes.length === 0));
+      const summaryNodes = summarySnapshotIncluded ? summarySnapshot.nodes : [];
       return {
         relationship,
         session: {
@@ -1597,9 +2314,96 @@ export const createCrossIdentitySyncRepository = (
           sourceAdapterVersion: optionalString(session.source_adapter_version)
         },
         changes,
+        summaryNodes,
+        summarySnapshotIncluded,
+        summaryRevisionHash: summarySnapshotIncluded
+          ? summarySnapshot.revisionHash
+          : crossIdentitySyncDigest([]),
         fromCursor: relationship.sourceCursor,
         toCursor
       };
+    },
+    async getSharedMemoryLcmSyncState(input) {
+      const relationshipResult = await pool.query<Row>(
+        `select relationship.*
+           from cross_identity_sync_relationships relationship
+           join memory_replicas replica
+             on replica.id=relationship.local_replica_id
+          where relationship.id=$1
+            and relationship.side='source'
+            and relationship.local_user_id=$2
+            and relationship.revoked_at is null
+            and relationship.state not in ('failed','revoked','purge_pending')
+            and replica.local_session_id=$3
+          limit 1`,
+        [input.relationshipId, input.ownerUserId, input.sessionId]
+      );
+      const row = relationshipResult.rows[0];
+      if (!row) return "pending";
+      const relationship = mapRelationship(row);
+      const snapshot = await readSessionSummarySnapshot({
+        actor: { userId: input.ownerUserId },
+        sessionId: input.sessionId
+      });
+      const complete =
+        input.representation === "lcm_leaves"
+          ? snapshot.completeLeaves
+          : snapshot.completeLeaves && snapshot.completeRollups;
+      if (!complete) return "pending";
+      if (relationship.sourceSummaryRevisionHash === snapshot.revisionHash) {
+        return "ready";
+      }
+      await pool.query(
+        `insert into sync_outbox_entries (
+           sync_relationship_id,idempotency_key,request_hash,payload_manifest
+         ) values (
+           $1,$2,$3,jsonb_build_object('kind','summary_snapshot','sessionId',$4::uuid)
+         )
+         on conflict (sync_relationship_id,idempotency_key) do update set
+           state=case
+             when sync_outbox_entries.state='processing'
+               then sync_outbox_entries.state
+             else 'pending'::sync_queue_entry_state
+           end,
+           attempt_count=case
+             when sync_outbox_entries.state='processing'
+               then sync_outbox_entries.attempt_count
+             else 0
+           end,
+           available_at=case
+             when sync_outbox_entries.state='processing'
+               then sync_outbox_entries.available_at
+             else now()
+           end,
+           processed_at=case
+             when sync_outbox_entries.state='processing'
+               then sync_outbox_entries.processed_at
+             else null
+           end,
+           claim_token=case
+             when sync_outbox_entries.state='processing'
+               then sync_outbox_entries.claim_token
+             else null
+           end,
+           lease_expires_at=case
+             when sync_outbox_entries.state='processing'
+               then sync_outbox_entries.lease_expires_at
+             else null
+           end,
+           last_error_message=case
+             when sync_outbox_entries.state='processing'
+               then sync_outbox_entries.last_error_message
+             else null
+           end,
+           updated_at=now()`,
+        [
+          input.relationshipId,
+          `summary-snapshot:${snapshot.revisionHash}`,
+          snapshot.revisionHash,
+          input.sessionId
+        ]
+      );
+      return "pending";
     },
     async createSyncPackageUploadSession(actor, input) {
       assertSafeControlManifest(input.packageManifest);
@@ -1700,7 +2504,7 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const uploadResult = await client.query(
-          `select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) and ${relationshipCredentialClause("sr", 4)} for update`,
+          `select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.state<>'paused' and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) and ${relationshipCredentialClause("sr", 4)} for update`,
           [
             input.uploadSessionId,
             actor.userId,
@@ -1844,6 +2648,8 @@ export const createCrossIdentitySyncRepository = (
             and upload.sync_relationship_id=$2
             and relationship.id=upload.sync_relationship_id
             and relationship.side='source'
+            and relationship.state<>'paused'
+            and relationship.revoked_at is null
             and upload.state in ('created','uploading')
             and upload.chunk_count < upload.expected_chunk_count
           returning upload.id`,
@@ -1860,7 +2666,7 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const result = await client.query(
-          `select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) and ${relationshipCredentialClause("sr", 4)} for update`,
+          `select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.state<>'paused' and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) and ${relationshipCredentialClause("sr", 4)} for update`,
           [
             uploadSessionId,
             actor.userId,
@@ -2023,7 +2829,7 @@ export const createCrossIdentitySyncRepository = (
             and credential.owner_user_id=relationship.local_user_id
             and credential.revoked_at is null
             and (credential.expires_at is null or credential.expires_at>now())
-            and ('sync'=any(credential.operation_families) or '*'=any(credential.operation_families))
+            and 'sync'=any(credential.operation_families)
             and remote_user.id=relationship.remote_user_identity_id
             and remote_user.status='active'
             and remote_user.revoked_at is null
@@ -2046,14 +2852,38 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (input.queue === "inbox") {
+          await client.query(
+            `update sync_inbox_entries entry
+                set state='completed',processed_at=now(),locked_at=null,
+                    claim_token=null,lease_expires_at=null,
+                    last_error_message=null,updated_at=now()
+               from sync_package_upload_sessions upload,
+                    cross_identity_sync_relationships relationship
+              where upload.id=entry.upload_session_id
+                and relationship.id=entry.sync_relationship_id
+                and relationship.side='target'
+                and relationship.revoked_at is null
+                and relationship.package_sequence>upload.source_sequence
+                and relationship.target_processing_cursor>=upload.to_cursor
+                and (
+                  entry.state='pending'
+                  or (entry.state='processing' and entry.lease_expires_at<=now())
+                )`
+          );
+        }
         const expired = await client.query<Row>(
-          `select id,sync_relationship_id,upload_session_id,idempotency_key,payload_manifest->>'kind' as payload_kind
-           from ${table}
-           where state='processing'
-             and lease_expires_at<=now()
-             and attempt_count>=max_attempts
-           order by lease_expires_at,created_at
-           for update skip locked
+          `select entry.id,entry.sync_relationship_id,entry.upload_session_id,
+                  entry.idempotency_key,entry.payload_manifest->>'kind' as payload_kind
+           from ${table} entry
+           join cross_identity_sync_relationships relationship
+             on relationship.id=entry.sync_relationship_id
+           where entry.state='processing'
+             and entry.lease_expires_at<=now()
+             and entry.attempt_count>=entry.max_attempts
+             and relationship.state<>'paused'
+           order by entry.lease_expires_at,entry.created_at
+           for update of relationship,entry skip locked
            limit 1`
         );
         const expiredRow = expired.rows[0];
@@ -2167,7 +2997,7 @@ export const createCrossIdentitySyncRepository = (
                 );
               }
               const relationship = await client.query<Row>(
-                "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class='SyncQueueLeaseExpiredError',updated_at=now() where id=$1 and revoked_at is null returning local_replica_id,local_user_id",
+                "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class='SyncQueueLeaseExpiredError',updated_at=now() where id=$1 and state<>'paused' and revoked_at is null returning local_replica_id,local_user_id",
                 [recoveredRow.sync_relationship_id]
               );
               if (relationship.rows[0]) {
@@ -2196,8 +3026,42 @@ export const createCrossIdentitySyncRepository = (
           }
         }
         const result = await client.query(
-          `with candidate as (select id from ${table} where (state='pending' or (state='processing' and lease_expires_at<=now())) and available_at<=now() and attempt_count<max_attempts order by available_at,created_at for update skip locked limit 1) update ${table} q set state='processing',attempt_count=attempt_count+1,locked_at=now(),claim_token=gen_random_uuid(),lease_expires_at=now()+($1::int*interval '1 millisecond'),updated_at=now() from candidate where q.id=candidate.id returning q.*`,
-          [input.leaseMs]
+          `with candidate as (
+             select entry.id
+               from ${table} entry
+               join cross_identity_sync_relationships relationship
+                 on relationship.id=entry.sync_relationship_id
+              where (entry.state='pending' or (entry.state='processing' and entry.lease_expires_at<=now()))
+                and entry.available_at<=now()
+                and entry.attempt_count<entry.max_attempts
+                and (
+                  ($2='outbox'
+                    and relationship.side='source'
+                    and (
+                      (entry.payload_manifest->>'kind'='revocation'
+                        and relationship.state='revoked')
+                      or (entry.payload_manifest->>'kind' is distinct from 'revocation'
+                        and relationship.revoked_at is null
+                        and relationship.state not in ('paused','failed','revoked','purge_pending'))
+                    ))
+                  or ($2='inbox'
+                    and relationship.side='target'
+                    and relationship.revoked_at is null
+                    and relationship.state not in ('paused','failed','revoked','purge_pending'))
+                )
+              order by entry.available_at,entry.created_at
+              for update of relationship,entry skip locked
+              limit 1
+           )
+           update ${table} q
+              set state='processing',attempt_count=attempt_count+1,locked_at=now(),
+                  claim_token=gen_random_uuid(),
+                  lease_expires_at=now()+($1::int*interval '1 millisecond'),
+                  updated_at=now()
+             from candidate
+            where q.id=candidate.id
+            returning q.*`,
+          [input.leaseMs, input.queue]
         );
         await client.query("commit");
         return result.rows[0] ? mapQueue(result.rows[0] as Row) : null;
@@ -2270,6 +3134,30 @@ export const createCrossIdentitySyncRepository = (
       try {
         await client.query("begin");
         const errorClass = input.errorClass.slice(0, 120);
+        if (input.queue === "inbox") {
+          const superseded = await client.query(
+            `update sync_inbox_entries entry
+                set state='completed',processed_at=now(),claim_token=null,
+                    lease_expires_at=null,last_error_message=null,updated_at=now()
+               from sync_package_upload_sessions upload,
+                    cross_identity_sync_relationships relationship
+              where entry.id=$1
+                and entry.state='processing'
+                and entry.claim_token=$2
+                and entry.lease_expires_at>now()
+                and upload.id=entry.upload_session_id
+                and relationship.id=entry.sync_relationship_id
+                and relationship.side='target'
+                and relationship.package_sequence>upload.source_sequence
+                and relationship.target_processing_cursor>=upload.to_cursor
+              returning entry.id`,
+            [input.id, input.claimToken]
+          );
+          if (superseded.rowCount === 1) {
+            await client.query("commit");
+            return true;
+          }
+        }
         const result = await client.query<Row>(
           `update ${table} set
              state=case
@@ -2301,7 +3189,7 @@ export const createCrossIdentitySyncRepository = (
             );
           }
           const relationship = await client.query<Row>(
-            "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class=$2,updated_at=now() where id=$1 and revoked_at is null returning local_replica_id,local_user_id",
+            "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class=$2,updated_at=now() where id=$1 and state<>'paused' and revoked_at is null returning local_replica_id,local_user_id",
             [result.rows[0].sync_relationship_id, errorClass]
           );
           if (relationship.rows[0]) {
@@ -2340,10 +3228,15 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       const eventIds: string[] = [];
       const invalidatedEventIds: string[] = [];
+      const summaryNodeIds: string[] = [];
+      const invalidatedSummaryNodeIds: string[] = [];
       try {
         await client.query("begin");
+        const ownerPrivateReplicaEncryptionProvider =
+          requireOwnerPrivateReplicaEnvelopeEncryptionProvider();
         const relationshipResult = await client.query(
-          `select relationship.*
+          `select relationship.*,
+                  upload.package_manifest as upload_package_manifest
              from cross_identity_sync_relationships relationship
              join users owner on owner.id=relationship.local_user_id
              join device_credentials bound_credential on bound_credential.id=relationship.device_credential_id
@@ -2362,7 +3255,7 @@ export const createCrossIdentitySyncRepository = (
               and credential.owner_user_id=relationship.local_user_id
               and credential.revoked_at is null
               and (credential.expires_at is null or credential.expires_at>now())
-              and ('sync'=any(credential.operation_families) or '*'=any(credential.operation_families))
+              and 'sync'=any(credential.operation_families)
               and remote_user.status='active'
               and remote_user.revoked_at is null
             for update of relationship`,
@@ -2373,6 +3266,23 @@ export const createCrossIdentitySyncRepository = (
           throw new SyncStateConflictError();
         }
         const relationship = mapRelationship(relationshipRow);
+        const uploadManifest = objectValue(
+          relationshipRow.upload_package_manifest
+        );
+        const manifestSummaryRevisionHash = optionalString(
+          uploadManifest.summaryRevisionHash
+        );
+        const summarySnapshotIncluded = manifestSummaryRevisionHash !== null;
+        if (
+          (summarySnapshotIncluded &&
+            manifestSummaryRevisionHash !==
+              input.package.summaryRevisionHash) ||
+          (!summarySnapshotIncluded && input.package.summaryNodes.length > 0)
+        ) {
+          throw new SyncStateConflictError(
+            "Sync package summary snapshot does not match its manifest"
+          );
+        }
         if (
           input.package.toCursor === relationship.targetProcessingCursor &&
           input.package.packageSequence === relationship.packageSequence &&
@@ -2385,6 +3295,13 @@ export const createCrossIdentitySyncRepository = (
               input.package.changes.map((change) => change.originEventId)
             ]
           );
+          const replaySummaryMappings = await client.query<Row>(
+            "select local_memory_node_id,active from sync_summary_node_mappings where sync_relationship_id=$1 and origin_node_id=any($2::uuid[]) and local_memory_node_id is not null",
+            [
+              relationship.id,
+              input.package.summaryNodes.map((node) => node.originNodeId)
+            ]
+          );
           await client.query("commit");
           return {
             eventIds: replayMappings.rows
@@ -2392,7 +3309,13 @@ export const createCrossIdentitySyncRepository = (
               .map((row) => String(row.local_memory_event_id)),
             invalidatedEventIds: replayMappings.rows
               .filter((row) => !row.active)
-              .map((row) => String(row.local_memory_event_id))
+              .map((row) => String(row.local_memory_event_id)),
+            summaryNodeIds: replaySummaryMappings.rows
+              .filter((row) => Boolean(row.active))
+              .map((row) => String(row.local_memory_node_id)),
+            invalidatedSummaryNodeIds: replaySummaryMappings.rows
+              .filter((row) => !row.active)
+              .map((row) => String(row.local_memory_node_id))
           };
         }
         if (
@@ -2406,13 +3329,19 @@ export const createCrossIdentitySyncRepository = (
           );
         }
         const replicaResult = await client.query<Row>(
-          "select mr.local_session_id from memory_replicas mr where mr.id=$1 and mr.owner_user_id=$2",
+          "select mr.local_session_id,mr.owner_principal_id from memory_replicas mr where mr.id=$1 and mr.owner_user_id=$2",
           [relationship.localReplicaId, relationship.localUserId]
         );
         const sessionId =
           optionalString(replicaResult.rows[0]?.local_session_id) ?? "";
+        const ownerPrincipalId =
+          optionalString(replicaResult.rows[0]?.owner_principal_id) ?? "";
         if (!sessionId)
           throw new SyncStateConflictError("Target replica session missing");
+        if (!ownerPrincipalId)
+          throw new SyncStateConflictError(
+            "Target replica owner principal missing"
+          );
         for (const change of input.package.changes) {
           const active = await client.query<Row>(
             "select * from sync_event_mappings where sync_relationship_id=$1 and origin_event_id=$2 and active=true for update",
@@ -2451,100 +3380,213 @@ export const createCrossIdentitySyncRepository = (
           }
           const contributorIds: string[] = [];
           for (const contributor of change.event.contributors) {
+            const encryptedColumns = [
+              "raw_json",
+              ...(hasEncryptableText(contributor.rawText) ? ["raw_text"] : []),
+              ...(hasEncryptableText(contributor.transportChunkText)
+                ? ["transport_chunk_text"]
+                : []),
+              "metadata"
+            ];
+            const metadataForStorage =
+              safeConversationMetadataForEncryptedStorage(
+                contributor.metadata,
+                "encryptedConversationItemColumns",
+                encryptedColumns
+              );
             const itemResult = await client.query<Row>(
-              "insert into conversation_items (owner_user_id,visibility,session_id,source_kind,source_adapter_version,source_transport,external_item_id,source_record_type,source_event_type,source_sequence,event_time,observed_at,raw_json,raw_text,source_hash,idempotency_key,projection_status,projection_version,metadata) values ($1,'personal',$2,'koed_sync','1','cross_identity_sync',$3,'sync_canonical',$4,$5,$6,$6,$7::jsonb,$8,$9,$10,'projected','sync-v1',$11::jsonb) on conflict (owner_user_id,idempotency_key) where visibility='personal' do update set projection_status='projected' returning id",
+              `insert into conversation_items (
+                 id,owner_user_id,visibility,session_id,source_kind,
+                 source_adapter_version,source_transport,external_item_id,
+                 source_record_type,source_event_type,source_sequence,event_time,
+                 observed_at,raw_json,raw_text,source_hash,idempotency_key,
+                 canonical_item_key,projection_status,projection_version,
+                 projection_policy_revision,memory_excluded_at,
+                 memory_exclusion_reason,metadata,logical_source_id,
+                 transport_chunk_index,transport_chunk_count,
+                 transport_chunk_text,transport_chunk_encoding
+               ) values (
+                 $1,$2,'personal',$3,$4,$5,$6,$7,$8,$9,$10,$11::timestamptz,
+                 $12::timestamptz,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,
+                 $22,$23::jsonb,$24,$25,$26,$27,$28
+               )
+               on conflict (owner_user_id,canonical_item_key)
+               where visibility='personal'
+               do update set
+                 session_id = excluded.session_id,
+                 source_kind = excluded.source_kind,
+                 source_adapter_version = excluded.source_adapter_version,
+                 source_transport = excluded.source_transport,
+                 external_item_id = excluded.external_item_id,
+                 source_record_type = excluded.source_record_type,
+                 source_event_type = excluded.source_event_type,
+                 source_sequence = excluded.source_sequence,
+                 event_time = excluded.event_time,
+                 observed_at = excluded.observed_at,
+                 raw_json = excluded.raw_json,
+                 raw_text = excluded.raw_text,
+                 source_hash = excluded.source_hash,
+                 idempotency_key = excluded.idempotency_key,
+                 projection_status = excluded.projection_status,
+                 projection_version = excluded.projection_version,
+                 projection_policy_revision = excluded.projection_policy_revision,
+                 memory_excluded_at = excluded.memory_excluded_at,
+                 memory_exclusion_reason = excluded.memory_exclusion_reason,
+                 metadata = excluded.metadata,
+                 logical_source_id = excluded.logical_source_id,
+                 transport_chunk_index = excluded.transport_chunk_index,
+                 transport_chunk_count = excluded.transport_chunk_count,
+                 transport_chunk_text = excluded.transport_chunk_text,
+                 transport_chunk_encoding = excluded.transport_chunk_encoding
+               where conversation_items.owner_user_id = excluded.owner_user_id
+                 and conversation_items.session_id = excluded.session_id
+                 and conversation_items.visibility = 'personal'
+              returning id`,
               [
+                randomUUID(),
                 relationship.localUserId,
                 sessionId,
+                contributor.sourceKind,
+                contributor.sourceAdapterVersion,
+                contributor.sourceTransport,
                 contributor.originItemId,
-                contributor.kind,
+                contributor.sourceRecordType,
+                contributor.sourceEventType,
                 contributor.sourceSequence,
+                contributor.sourceEventTime,
                 contributor.sourceEventTime ?? change.event.capturedAt,
                 JSON.stringify({
                   contentEncrypted: true,
                   encryptedSourceTable: "conversation_items",
                   encryptedSourceColumn: "raw_json"
                 }),
-                "[koed encrypted conversation item]",
+                contributor.rawText === null
+                  ? null
+                  : ENCRYPTED_CONVERSATION_ITEM_TEXT,
                 contributor.revisionHash,
                 `sync:${relationship.id}:item:${contributor.originItemId}:${contributor.revisionHash}`,
-                JSON.stringify({
-                  actor: contributor.actor,
-                  toolName: contributor.toolName,
-                  toolCallId: contributor.toolCallId,
-                  syncCanonical: true
-                })
+                `sync:${relationship.id}:canonical-item:${contributor.originItemId}`,
+                contributor.projectionStatus,
+                contributor.projectionVersion,
+                contributor.projectionPolicyRevision,
+                contributor.memoryExcludedAt,
+                contributor.memoryExclusionReason,
+                JSON.stringify(metadataForStorage),
+                contributor.logicalSourceId,
+                contributor.transportChunkIndex,
+                contributor.transportChunkCount,
+                hasEncryptableText(contributor.transportChunkText)
+                  ? ENCRYPTED_CONVERSATION_ITEM_TEXT
+                  : contributor.transportChunkText,
+                contributor.transportChunkEncoding
               ]
             );
+            if (itemResult.rows.length !== 1) {
+              throw new SyncStateConflictError(
+                "Synchronized conversation item identity conflicts with another replica"
+              );
+            }
             const itemId = String(itemResult.rows[0]!.id);
             contributorIds.push(itemId);
-            if (options.envelopeEncryptionProvider) {
-              await upsertEncryptedFieldPayloadWithClient(
-                client,
-                { userId: relationship.localUserId },
-                options.envelopeEncryptionProvider,
-                {
-                  sourceTable: "conversation_items",
-                  sourceId: itemId,
-                  sourceColumn: "raw_json",
-                  plaintext: {
-                    content: contributor.content,
-                    actor: contributor.actor,
-                    kind: contributor.kind,
-                    toolName: contributor.toolName,
-                    toolCallId: contributor.toolCallId
-                  },
-                  rowFamily: "conversation_item",
-                  scope: {
-                    tenantId: relationship.localUserId,
-                    objectClass: "conversation_item"
-                  },
-                  aad: {
-                    syncRelationshipId: relationship.id,
-                    originItemId: contributor.originItemId
-                  }
+            await upsertEncryptedFieldPayloadWithClient(
+              client,
+              { userId: relationship.localUserId },
+              ownerPrivateReplicaEncryptionProvider,
+              {
+                sourceTable: "conversation_items",
+                sourceId: itemId,
+                sourceColumn: "raw_json",
+                plaintext: contributor.rawJson,
+                visibility: "owner_private_replica",
+                ownerPrincipalId,
+                rowFamily: "conversation_item",
+                scope: {
+                  tenantId: relationship.localUserId,
+                  objectClass: "conversation_item"
+                },
+                aad: {
+                  syncRelationshipId: relationship.id,
+                  originItemId: contributor.originItemId
                 }
-              );
+              }
+            );
+            const encryptedContributorInput = {
+              visibility: "owner_private_replica" as const,
+              ownerPrincipalId,
+              rowFamily: "conversation_item",
+              scope: {
+                tenantId: relationship.localUserId,
+                objectClass: "conversation_item"
+              },
+              aad: {
+                syncRelationshipId: relationship.id,
+                originItemId: contributor.originItemId
+              }
+            };
+            if (hasEncryptableText(contributor.rawText)) {
               await upsertEncryptedFieldPayloadWithClient(
                 client,
                 { userId: relationship.localUserId },
-                options.envelopeEncryptionProvider,
+                ownerPrivateReplicaEncryptionProvider,
                 {
                   sourceTable: "conversation_items",
                   sourceId: itemId,
                   sourceColumn: "raw_text",
-                  plaintext: contributor.content,
-                  rowFamily: "conversation_item",
-                  scope: {
-                    tenantId: relationship.localUserId,
-                    objectClass: "conversation_item"
-                  },
-                  aad: {
-                    syncRelationshipId: relationship.id,
-                    originItemId: contributor.originItemId
-                  }
+                  plaintext: contributor.rawText,
+                  ...encryptedContributorInput
                 }
               );
             }
+            if (hasEncryptableText(contributor.transportChunkText)) {
+              await upsertEncryptedFieldPayloadWithClient(
+                client,
+                { userId: relationship.localUserId },
+                ownerPrivateReplicaEncryptionProvider,
+                {
+                  sourceTable: "conversation_items",
+                  sourceId: itemId,
+                  sourceColumn: "transport_chunk_text",
+                  plaintext: contributor.transportChunkText,
+                  ...encryptedContributorInput
+                }
+              );
+            }
+            await upsertEncryptedFieldPayloadWithClient(
+              client,
+              { userId: relationship.localUserId },
+              ownerPrivateReplicaEncryptionProvider,
+              {
+                sourceTable: "conversation_items",
+                sourceId: itemId,
+                sourceColumn: "metadata",
+                plaintext: contributor.metadata,
+                ...encryptedContributorInput
+              }
+            );
           }
           const eventId = randomUUID();
           const payload = {
             actor: change.event.actor,
             content: change.event.content,
-            metadata: {
-              ...change.event.metadata,
-              syncRelationshipId: relationship.id,
-              originEventId: change.originEventId,
-              includeInLcm: change.event.metadata.includeInLcm ?? true
-            },
-            workspaceId: "cross-identity-sync"
+            metadata: change.event.metadata
           };
           await client.query(
-            "insert into memory_events (id,actor_user_id,owner_user_id,visibility,event_type,capture_method,session_id,idempotency_key,source_hash,payload,token_count,seal_reason,source_event_time,source_sequence,captured_at) values ($1,$2,$2,'personal',$3,'api',$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12)",
+            `insert into memory_events (
+               id,actor_user_id,owner_user_id,visibility,event_type,source_runtime,
+               capture_method,session_id,idempotency_key,source_hash,payload,
+               include_in_embedding,include_in_lcm,projection_policy_key,
+               projection_policy_revision,token_count,seal_reason,
+               source_event_time,source_sequence,captured_at
+             ) values (
+               $1,$2,$2,'personal',$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,
+               $14,$15,$16,$17,$18
+             )`,
             [
               eventId,
               relationship.localUserId,
               change.event.eventType,
+              input.package.session.sourceRuntime,
+              input.package.session.captureMethod,
               sessionId,
               `sync:${relationship.id}:event:${change.originEventId}:${change.revisionHash}`,
               change.revisionHash,
@@ -2554,11 +3596,12 @@ export const createCrossIdentitySyncRepository = (
                 encryptedSourceColumn: "payload",
                 actor: change.event.actor,
                 content: "[koed encrypted memory event]",
-                metadata: {
-                  syncRelationshipId: relationship.id,
-                  originEventId: change.originEventId
-                }
+                metadata: {}
               }),
+              change.event.includeInEmbedding,
+              change.event.includeInLcm,
+              change.event.projectionPolicyKey,
+              change.event.projectionPolicyRevision,
               change.event.tokenCount,
               change.event.sealReason,
               change.event.sourceEventTime,
@@ -2566,19 +3609,17 @@ export const createCrossIdentitySyncRepository = (
               change.event.capturedAt
             ]
           );
-          if (!options.envelopeEncryptionProvider)
-            throw new SyncStateConflictError(
-              "Envelope encryption provider required for synchronized Memory"
-            );
           await upsertEncryptedFieldPayloadWithClient(
             client,
             { userId: relationship.localUserId },
-            options.envelopeEncryptionProvider,
+            ownerPrivateReplicaEncryptionProvider,
             {
               sourceTable: "memory_events",
               sourceId: eventId,
               sourceColumn: "payload",
               plaintext: payload,
+              visibility: "owner_private_replica",
+              ownerPrincipalId,
               rowFamily: "memory_event",
               scope: {
                 tenantId: relationship.localUserId,
@@ -2608,21 +3649,350 @@ export const createCrossIdentitySyncRepository = (
           );
           eventIds.push(eventId);
         }
+        if (summarySnapshotIncluded) {
+          const originEventIds = [
+            ...new Set(
+              input.package.summaryNodes.flatMap(
+                (node) => node.sourceOriginEventIds
+              )
+            )
+          ];
+          const eventMappingResult = await client.query<Row>(
+            `select origin_event_id,local_memory_event_id
+               from sync_event_mappings
+              where sync_relationship_id=$1
+                and active=true
+                and origin_event_id=any($2::uuid[])
+                and local_memory_event_id is not null`,
+            [relationship.id, originEventIds]
+          );
+          const localEventIdByOrigin = new Map(
+            eventMappingResult.rows.map((row) => [
+              String(row.origin_event_id),
+              String(row.local_memory_event_id)
+            ])
+          );
+          if (localEventIdByOrigin.size !== originEventIds.length) {
+            throw new SyncStateConflictError(
+              "LCM summary references unavailable synchronized Memory Events"
+            );
+          }
+          const localNodeIdByOrigin = new Map(
+            input.package.summaryNodes.map((node) => [
+              node.originNodeId,
+              crossIdentitySyncDeterministicUuid({
+                kind: "synchronized_lcm_summary_node",
+                relationshipId: relationship.id,
+                originNodeId: node.originNodeId,
+                revisionHash: node.revisionHash
+              })
+            ])
+          );
+          const requestedOriginNodeIds = new Set(
+            input.package.summaryNodes.map((node) => node.originNodeId)
+          );
+          const previousMappings = await client.query<Row>(
+            `select *
+               from sync_summary_node_mappings
+              where sync_relationship_id=$1
+                and active=true
+              for update`,
+            [relationship.id]
+          );
+          for (const mapping of previousMappings.rows) {
+            if (requestedOriginNodeIds.has(String(mapping.origin_node_id))) {
+              continue;
+            }
+            const previousNodeId = optionalString(mapping.local_memory_node_id);
+            if (previousNodeId) {
+              await client.query(
+                `update memory_nodes
+                    set invalidated_at=now(),
+                        invalidation_reason='sync_summary_snapshot_replaced',
+                        updated_at=now()
+                  where id=$1 and invalidated_at is null`,
+                [previousNodeId]
+              );
+              await client.query(
+                `update memory_embeddings
+                    set invalidated_at=now(),
+                        invalidation_reason='sync_summary_snapshot_replaced'
+                  where memory_node_id=$1 and invalidated_at is null`,
+                [previousNodeId]
+              );
+              await client.query(
+                `update encrypted_field_payloads
+                    set invalidated_at=now(),updated_at=now()
+                  where source_table='memory_nodes'
+                    and source_id=$1
+                    and invalidated_at is null`,
+                [previousNodeId]
+              );
+              invalidatedSummaryNodeIds.push(previousNodeId);
+            }
+            await client.query(
+              `update sync_summary_node_mappings
+                  set active=false,invalidated_at=now(),updated_at=now()
+                where id=$1`,
+              [mapping.id]
+            );
+          }
+          for (const node of input.package.summaryNodes) {
+            const existing = previousMappings.rows.find(
+              (mapping) => String(mapping.origin_node_id) === node.originNodeId
+            );
+            const existingLocalNodeId = optionalString(
+              existing?.local_memory_node_id
+            );
+            if (
+              existing &&
+              String(existing.revision_hash) === node.revisionHash &&
+              existingLocalNodeId
+            ) {
+              summaryNodeIds.push(existingLocalNodeId);
+              continue;
+            }
+            const previousNodeId = existingLocalNodeId;
+            if (existing) {
+              if (previousNodeId) {
+                await client.query(
+                  `update memory_nodes
+                      set invalidated_at=now(),
+                          invalidation_reason='sync_summary_revision_replaced',
+                          updated_at=now()
+                    where id=$1 and invalidated_at is null`,
+                  [previousNodeId]
+                );
+                await client.query(
+                  `update memory_embeddings
+                      set invalidated_at=now(),
+                          invalidation_reason='sync_summary_revision_replaced'
+                    where memory_node_id=$1 and invalidated_at is null`,
+                  [previousNodeId]
+                );
+                await client.query(
+                  `update encrypted_field_payloads
+                      set invalidated_at=now(),updated_at=now()
+                    where source_table='memory_nodes'
+                      and source_id=$1
+                      and invalidated_at is null`,
+                  [previousNodeId]
+                );
+                invalidatedSummaryNodeIds.push(previousNodeId);
+              }
+              await client.query(
+                `update sync_summary_node_mappings
+                    set active=false,invalidated_at=now(),updated_at=now()
+                  where id=$1`,
+                [existing.id]
+              );
+            }
+            const localNodeId = localNodeIdByOrigin.get(node.originNodeId)!;
+            const sourceItems =
+              node.kind === "leaf"
+                ? node.sourceOriginEventIds.map((originEventId, position) => ({
+                    kind: "memory_event",
+                    sourceTable: "memory_events",
+                    sourceId: localEventIdByOrigin.get(originEventId),
+                    visibility: "personal",
+                    payload: {
+                      originEventId,
+                      sessionId,
+                      syncRelationshipId: relationship.id
+                    },
+                    position
+                  }))
+                : node.childOriginNodeIds.map((originNodeId, position) => ({
+                    kind: "lcm_child",
+                    nodeId: localNodeIdByOrigin.get(originNodeId),
+                    payload: {
+                      originNodeId,
+                      sessionId,
+                      syncRelationshipId: relationship.id
+                    },
+                    position
+                  }));
+            if (
+              sourceItems.some((item) =>
+                "sourceId" in item ? !item.sourceId : !item.nodeId
+              )
+            ) {
+              throw new SyncStateConflictError(
+                "LCM summary provenance graph is incomplete"
+              );
+            }
+            const localSourceHash = crossIdentitySyncDigest({
+              relationshipId: relationship.id,
+              originNodeId: node.originNodeId,
+              revisionHash: node.revisionHash
+            });
+            await client.query(
+              `insert into memory_nodes (
+                 id,owner_user_id,session_id,created_by_user_id,visibility,
+                 kind,depth,summary_text,body_text,capture_method,
+                 idempotency_key,source_hash,summary_model,
+                 summary_prompt_version,lcm_algorithm_version,
+                 source_items_json,source_event_count,source_token_estimate,
+                 summary_token_estimate,summary_structured_json,
+                 summary_structured_schema_version,captured_at,created_at,
+                 updated_at
+               ) values (
+                 $1,$2,$3,$2,'personal',$4,$5,$6,$6,'mcp',$7,$8,$9,$10,$11,
+                 $12::jsonb,$13,$14,$15,$16::jsonb,$17,$18::timestamptz,
+                 $19::timestamptz,$20::timestamptz
+               )`,
+              [
+                localNodeId,
+                relationship.localUserId,
+                sessionId,
+                node.kind,
+                node.depth,
+                ENCRYPTED_MEMORY_NODE_TEXT,
+                `sync:${relationship.id}:node:${node.originNodeId}:${node.revisionHash}`,
+                localSourceHash,
+                node.summaryModel,
+                node.summaryPromptVersion,
+                node.lcmAlgorithmVersion,
+                JSON.stringify(ENCRYPTED_MEMORY_NODE_JSON),
+                node.sourceEventCount,
+                node.sourceTokenEstimate,
+                node.summaryTokenEstimate,
+                JSON.stringify(ENCRYPTED_MEMORY_NODE_JSON),
+                node.summaryStructuredSchemaVersion,
+                node.createdAt,
+                node.createdAt,
+                node.updatedAt
+              ]
+            );
+            for (const [sourceColumn, plaintext] of [
+              ["summary_text", node.summaryText],
+              ["body_text", node.summaryText],
+              ["source_items_json", sourceItems],
+              ["summary_structured_json", node.summaryStructuredJson]
+            ] as const) {
+              await upsertEncryptedFieldPayloadWithClient(
+                client,
+                { userId: relationship.localUserId },
+                ownerPrivateReplicaEncryptionProvider,
+                {
+                  sourceTable: "memory_nodes",
+                  sourceId: localNodeId,
+                  sourceColumn,
+                  plaintext,
+                  visibility: "owner_private_replica",
+                  ownerPrincipalId,
+                  rowFamily: "memory_node",
+                  scope: {
+                    tenantId: relationship.localUserId,
+                    objectClass: "memory_node"
+                  },
+                  aad: {
+                    syncRelationshipId: relationship.id,
+                    originNodeId: node.originNodeId,
+                    revisionHash: node.revisionHash
+                  }
+                }
+              );
+            }
+            await client.query(
+              `insert into sync_summary_node_mappings (
+                 sync_relationship_id,origin_node_id,revision_hash,
+                 local_memory_node_id
+               ) values ($1,$2,$3,$4)`,
+              [
+                relationship.id,
+                node.originNodeId,
+                node.revisionHash,
+                localNodeId
+              ]
+            );
+            summaryNodeIds.push(localNodeId);
+          }
+          for (const node of input.package.summaryNodes) {
+            const localNodeId = localNodeIdByOrigin.get(node.originNodeId)!;
+            for (
+              let sourceOrder = 0;
+              sourceOrder < node.sourceOriginEventIds.length;
+              sourceOrder += 1
+            ) {
+              await client.query(
+                `insert into memory_node_sources (
+                   memory_node_id,memory_event_id,source_order
+                 ) values ($1,$2,$3) on conflict do nothing`,
+                [
+                  localNodeId,
+                  localEventIdByOrigin.get(
+                    node.sourceOriginEventIds[sourceOrder]!
+                  ),
+                  sourceOrder
+                ]
+              );
+            }
+            for (
+              let childOrder = 0;
+              childOrder < node.childOriginNodeIds.length;
+              childOrder += 1
+            ) {
+              await client.query(
+                `insert into memory_node_children (
+                   parent_memory_node_id,child_memory_node_id,child_order
+                 ) values ($1,$2,$3) on conflict do nothing`,
+                [
+                  localNodeId,
+                  localNodeIdByOrigin.get(node.childOriginNodeIds[childOrder]!),
+                  childOrder
+                ]
+              );
+            }
+          }
+        }
         await client.query(
-          "update cross_identity_sync_relationships set target_processing_cursor=$2,package_sequence=$3,last_package_id=$4,state='partially_available',updated_at=now() where id=$1",
+          `update cross_identity_sync_relationships
+              set source_cursor = greatest(source_cursor, $2),
+                  target_processing_cursor = $2,
+                  package_sequence = $3,
+                  last_package_id = $4,
+                  target_summary_revision_hash = case
+                    when $5::text is null then target_summary_revision_hash
+                    else $5
+                  end,
+                  state = 'partially_available',
+                  updated_at = now()
+            where id=$1`,
           [
             relationship.id,
             input.package.toCursor,
             input.package.packageSequence,
-            input.package.packageId
+            input.package.packageId,
+            summarySnapshotIncluded ? input.package.summaryRevisionHash : null
           ]
+        );
+        await client.query(
+          `update memory_replicas
+              set latest_revision = greatest(latest_revision, $2),
+                  last_synced_at = now(),
+                  updated_at = now()
+            where id = $1`,
+          [relationship.localReplicaId, input.package.toCursor]
+        );
+        await client.query(
+          `update logical_memories
+              set latest_source_revision = greatest(latest_source_revision, $2),
+                  updated_at = now()
+            where id = $1`,
+          [relationship.logicalMemoryId, input.package.toCursor]
         );
         await client.query(
           "update sync_package_upload_sessions set state='completed',completed_at=now(),updated_at=now() where id=$1",
           [input.uploadSessionId]
         );
         await client.query("commit");
-        return { eventIds, invalidatedEventIds };
+        return {
+          eventIds,
+          invalidatedEventIds,
+          summaryNodeIds,
+          invalidatedSummaryNodeIds
+        };
       } catch (error) {
         await client.query("rollback");
         throw error;
@@ -2630,36 +4000,58 @@ export const createCrossIdentitySyncRepository = (
         client.release();
       }
     },
-    async listDerivedMemoryNodeIdsForSyncRelationship(input) {
-      const result = await pool.query<Row>(
-        `select distinct node.id
-         from memory_nodes node
-         join memory_node_sources source on source.memory_node_id=node.id
-         join sync_event_mappings mapping
-           on mapping.local_memory_event_id=source.memory_event_id
-          and mapping.active=true
-         where node.owner_user_id=$1
-           and node.visibility='personal'
-           and node.invalidated_at is null
-           and node.personal_deleted_at is null
-           and mapping.sync_relationship_id=$2
-         order by node.id`,
-        [input.ownerUserId, input.relationshipId]
-      );
-      return result.rows.map((row) => String(row.id));
-    },
     async acknowledgeSourceSyncPackage(input) {
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const source = await client.query<{
+          state: SyncRelationshipState;
+          local_user_id: string;
+          logical_memory_id: string;
+          local_session_id: string;
+        }>(
+          `select relationship.state,
+                  relationship.local_user_id,
+                  relationship.logical_memory_id,
+                  replica.local_session_id
+             from cross_identity_sync_relationships relationship
+             join memory_replicas replica
+               on replica.id = relationship.local_replica_id
+            where relationship.id = $1
+              and relationship.side = 'source'
+            for update of relationship`,
+          [input.relationshipId]
+        );
         const relationship = await client.query(
-          "update cross_identity_sync_relationships set source_cursor=$2,target_processing_cursor=$3,package_sequence=$4,last_package_id=$5,state='ready',last_synced_at=now(),stale_after=now()+($6::int*interval '1 second'),updated_at=now() where id=$1 and side='source' and revoked_at is null and source_cursor<=$2 and target_processing_cursor<=$3 and (package_sequence<$4 or (package_sequence=$4 and source_cursor=$2 and last_package_id=$5)) returning id",
+          `update cross_identity_sync_relationships
+              set source_cursor=$2,
+                  target_processing_cursor=$3,
+                  package_sequence=$4,
+                  last_package_id=$5,
+                  source_summary_revision_hash=case
+                    when $6::text is null then source_summary_revision_hash
+                    else $6
+                  end,
+                  state='ready',
+                  last_synced_at=now(),
+                  stale_after=now()+($7::int*interval '1 second'),
+                  updated_at=now()
+            where id=$1
+              and side='source'
+              and state not in ('paused','failed','revoked','purge_pending')
+              and revoked_at is null
+              and source_cursor<=$2
+              and target_processing_cursor<=$3
+              and (package_sequence<$4 or
+                   (package_sequence=$4 and source_cursor=$2 and last_package_id=$5))
+            returning id`,
           [
             input.relationshipId,
             input.sourceCursor,
             input.targetProcessingCursor,
             input.packageSequence,
             input.packageId,
+            input.summaryRevisionHash,
             input.staleAfterSeconds
           ]
         );
@@ -2667,6 +4059,40 @@ export const createCrossIdentitySyncRepository = (
           throw new SyncStateConflictError(
             "Source sync relationship can no longer acknowledge this package"
           );
+        }
+        const acknowledgedSource = source.rows[0];
+        if (
+          acknowledgedSource?.state === "processing" &&
+          (!acknowledgedSource.local_user_id ||
+            !acknowledgedSource.logical_memory_id ||
+            !acknowledgedSource.local_session_id)
+        ) {
+          throw new SyncStateConflictError(
+            "Source sync relationship is not bound to Personal Memory"
+          );
+        }
+        if (acknowledgedSource?.state === "processing") {
+          await appendCollaborationOutboxEventWithClient(client, {
+            family: "personal_memory_changed",
+            scope: "personal",
+            personalOwnerUserId: acknowledgedSource.local_user_id,
+            teamId: null,
+            teamWorkspaceId: null,
+            threadId: null,
+            messageId: null,
+            shareGrantId: null,
+            logicalMemoryId: acknowledgedSource.logical_memory_id,
+            resourceType: "personal_memory_entry",
+            resourceId: acknowledgedSource.local_session_id,
+            actorPrincipalId: acknowledgedSource.local_user_id,
+            mutationId: crossIdentitySyncDeterministicUuid({
+              kind: "personal_memory_changed",
+              relationshipId: input.relationshipId,
+              packageId: input.packageId,
+              sourceCursor: input.sourceCursor,
+              targetProcessingCursor: input.targetProcessingCursor
+            })
+          });
         }
         await client.query(
           "update sync_package_upload_sessions set state='completed',completed_at=now(),updated_at=now() where sync_relationship_id=$1 and protocol_package_id=$2",
@@ -2702,7 +4128,7 @@ export const createCrossIdentitySyncRepository = (
     },
     async markSourceSyncUploadCommitted(input) {
       await pool.query(
-        "update sync_package_upload_sessions upload set state='uploaded',uploaded_at=coalesce(uploaded_at,now()),updated_at=now() from cross_identity_sync_relationships relationship where upload.sync_relationship_id=relationship.id and relationship.id=$1 and relationship.side='source' and relationship.revoked_at is null and upload.protocol_package_id=$2 and upload.state in ('created','uploading','uploaded')",
+        "update sync_package_upload_sessions upload set state='uploaded',uploaded_at=coalesce(uploaded_at,now()),updated_at=now() from cross_identity_sync_relationships relationship where upload.sync_relationship_id=relationship.id and relationship.id=$1 and relationship.side='source' and relationship.state<>'paused' and relationship.revoked_at is null and upload.protocol_package_id=$2 and upload.state in ('created','uploading','uploaded')",
         [input.relationshipId, input.packageId]
       );
     },
@@ -2825,7 +4251,7 @@ export const createCrossIdentitySyncRepository = (
         const queueTable =
           side === "source" ? "sync_outbox_entries" : "sync_inbox_entries";
         const retried = await client.query(
-          `update ${queueTable} set state='pending',attempt_count=0,available_at=now(),locked_at=null,claim_token=null,lease_expires_at=null,processed_at=null,last_error_message=null,updated_at=now() where sync_relationship_id=$1 and state='failed' returning id`,
+          `update ${queueTable} set state='pending',attempt_count=0,available_at=now(),locked_at=null,claim_token=null,lease_expires_at=null,processed_at=null,last_error_message=null,updated_at=now() where sync_relationship_id=$1 and state in ('pending','failed') returning id`,
           [syncRelationshipId]
         );
         if (retried.rowCount === 0) {
@@ -2883,7 +4309,7 @@ export const createCrossIdentitySyncRepository = (
         }
         const revocationId = randomUUID();
         const result = await client.query(
-          `update cross_identity_sync_relationships relationship set state='revoked',revoked_at=now(),revoked_by_user_id=$2,revocation_reason=nullif(trim($3),''),revocation_id=$4,revocation_sequence=package_sequence+1,revocation_origin=side,updated_at=now() where id=$1 and local_user_id=$2 and revoked_at is null and ${relationshipCredentialClause("relationship", 5)} returning relationship.*`,
+          `update cross_identity_sync_relationships relationship set state='revoked',paused_at=null,state_before_pause=null,revoked_at=now(),revoked_by_user_id=$2,revocation_reason=nullif(trim($3),''),revocation_id=$4,revocation_sequence=package_sequence+1,revocation_origin=side,updated_at=now() where id=$1 and local_user_id=$2 and revoked_at is null and ${relationshipCredentialClause("relationship", 5)} returning relationship.*`,
           [
             input.syncRelationshipId,
             actor.userId,
@@ -2962,7 +4388,7 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const result = await client.query(
-          `update cross_identity_sync_relationships relationship set state='revoked',revoked_at=coalesce(revoked_at,now()),revoked_by_user_id=$2,revocation_reason=coalesce(revocation_reason,'remote_sync_revoked'),revocation_id=coalesce(revocation_id,$3),revocation_sequence=greatest(coalesce(revocation_sequence,0),$4),revocation_origin='source',updated_at=now() where id=$1 and local_user_id=$2 and side='target' and ${relationshipCredentialClause("relationship", 5)} and (revocation_id is null or revocation_id=$3) returning relationship.*`,
+          `update cross_identity_sync_relationships relationship set state='revoked',paused_at=null,state_before_pause=null,revoked_at=coalesce(revoked_at,now()),revoked_by_user_id=$2,revocation_reason=coalesce(revocation_reason,'remote_sync_revoked'),revocation_id=coalesce(revocation_id,$3),revocation_sequence=greatest(coalesce(revocation_sequence,0),$4),revocation_origin='source',updated_at=now() where id=$1 and local_user_id=$2 and side='target' and ${relationshipCredentialClause("relationship", 5)} and (revocation_id is null or revocation_id=$3) returning relationship.*`,
           [
             input.syncRelationshipId,
             actor.userId,
@@ -2987,6 +4413,49 @@ export const createCrossIdentitySyncRepository = (
           "update sync_package_upload_sessions set state='failed',failed_at=coalesce(failed_at,now()),last_error_message='SyncRelationshipRevoked',updated_at=now() where sync_relationship_id=$1 and state not in ('completed','failed')",
           [input.syncRelationshipId]
         );
+        const relationship = result.rows[0] as Row;
+        const affectedGrants = await client.query<Row>(
+          `select g.id,g.team_id,g.team_workspace_id,g.logical_memory_id
+             from team_session_share_grants g
+            where g.logical_memory_id=$1
+              and g.remote_replica_id=$2
+              and g.lifecycle='active'
+            for update`,
+          [relationship.logical_memory_id, relationship.local_replica_id]
+        );
+        if (affectedGrants.rows.length > 0) {
+          await client.query(
+            `update team_memory_representations
+                set state='stale',stale_at=coalesce(stale_at,now()),
+                    freshness_evaluated_at=now(),
+                    record_version=record_version+1,updated_at=now()
+              where share_grant_id=any($1::uuid[])
+                and state='available'`,
+            [affectedGrants.rows.map((grant) => grant.id)]
+          );
+          for (const grant of affectedGrants.rows) {
+            await appendCollaborationOutboxEventWithClient(client, {
+              family: "representation_changed",
+              scope: "team",
+              personalOwnerUserId: null,
+              teamId: String(grant.team_id),
+              teamWorkspaceId: String(grant.team_workspace_id),
+              threadId: null,
+              messageId: null,
+              shareGrantId: String(grant.id),
+              logicalMemoryId: String(grant.logical_memory_id),
+              resourceType: "team_session_share_grant",
+              resourceId: String(grant.id),
+              actorPrincipalId: actor.userId,
+              mutationId: crossIdentitySyncDeterministicUuid({
+                kind: "sync_revoked_representation_stale",
+                relationshipId: input.syncRelationshipId,
+                revocationId: input.revocationId,
+                shareGrantId: String(grant.id)
+              })
+            });
+          }
+        }
         await recordSyncAuditEventWithClient(client, {
           actorUserId: actor.userId,
           ownerUserId: actor.userId,

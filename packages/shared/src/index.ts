@@ -1,5 +1,177 @@
 import { createHash } from "node:crypto";
 
+// Internal bootstrap identity shared by local capture and Desktop credentials.
+export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
+
+export {
+  resolveTeamCollaborationEnabled,
+  teamCollaborationFeatureEnvironmentName
+} from "./team-collaboration-feature.js";
+
+export {
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT,
+  PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
+  personalDesktopConversationCursorSchema,
+  personalDesktopConversationEventSchema,
+  personalDesktopChangeEventRefSchema,
+  personalDesktopChangeSchema,
+  personalDesktopErrorSchema,
+  personalDesktopEventPageInputSchema,
+  personalDesktopEventsDataSchema,
+  personalDesktopProjectSchema,
+  personalDesktopProjectsDataSchema,
+  personalDesktopProjectThreadSchema,
+  personalDesktopRequestSchema,
+  personalDesktopResultSchema,
+  personalDesktopSessionProjectDataSchema,
+  personalDesktopSessionProjectInputSchema
+} from "./personal-desktop-contract.js";
+export type {
+  PersonalDesktopApi,
+  PersonalDesktopConversationCursor,
+  PersonalDesktopConversationEvent,
+  PersonalDesktopChange,
+  PersonalDesktopEventPageInput,
+  PersonalDesktopProject,
+  PersonalDesktopProjectThread,
+  PersonalDesktopRequest,
+  PersonalDesktopResult,
+  PersonalDesktopSessionProjectInput
+} from "./personal-desktop-contract.js";
+
+export {
+  calculateCollaborationReconnectDelay,
+  COLLABORATION_CONTRACT_VERSION,
+  COLLABORATION_DEFAULT_LIMITS,
+  COLLABORATION_DECRYPT_BATCH_MAX_ITEMS,
+  COLLABORATION_DEPLOYMENT_MESSAGE_MAX_PER_MINUTE,
+  COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS,
+  COLLABORATION_CONNECTION_ATTEMPT_MAX_PER_MINUTE,
+  COLLABORATION_CHANNEL_CREATION_MAX_PER_HOUR,
+  COLLABORATION_HISTORY_PAGE_MAX_ITEMS,
+  COLLABORATION_INVITE_CREATION_MAX_PER_HOUR,
+  COLLABORATION_MAX_DM_PARTICIPANTS,
+  COLLABORATION_MESSAGE_BURST_MAX_COUNT,
+  COLLABORATION_MESSAGE_BURST_WINDOW_MS,
+  COLLABORATION_MESSAGE_MAX_UTF8_BYTES,
+  COLLABORATION_MESSAGE_SUSTAINED_MAX_COUNT,
+  COLLABORATION_MESSAGE_SUSTAINED_WINDOW_MS,
+  COLLABORATION_NAME_MAX_CODE_POINTS,
+  COLLABORATION_REALTIME_CURSOR_MAX_BYTES,
+  COLLABORATION_RECONNECT_BACKOFF_CAP_MS,
+  COLLABORATION_RECONNECT_MAX_ATTEMPTS,
+  COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS,
+  COLLABORATION_RECONNECT_WINDOW_MS,
+  COLLABORATION_RENDERED_ROW_MAX_COUNT,
+  COLLABORATION_RENDERER_ACK_DEADLINE_MS,
+  COLLABORATION_RENDERER_MAX_PENDING_BYTES,
+  COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
+  COLLABORATION_SEND_RETRY_MAX_ATTEMPTS,
+  COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
+  COLLABORATION_SPLIT_VIEW_BREAKPOINT_PX,
+  COLLABORATION_SPLIT_VIEW_DISCUSSION_MIN_PX,
+  COLLABORATION_SPLIT_VIEW_SOURCE_MIN_PX,
+  COLLABORATION_TEAM_MESSAGE_MAX_PER_MINUTE,
+  COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES,
+  collaborationActionGrantIntentSchema,
+  collaborationActionGrantReferenceSchema,
+  collaborationActionGrantStatusSchema,
+  collaborationBackendIdentitySchema,
+  collaborationCommandResultSchema,
+  collaborationConnectionEventSchema,
+  collaborationDurableSendAuthoritySchema,
+  collaborationDurableSendEventSchema,
+  collaborationDurableSendSchema,
+  collaborationConnectionSchema,
+  isPersonalCollaborationSelection,
+  isTeamCollaborationSelection,
+  collaborationDeliveryIdSchema,
+  collaborationDisplayNameSchema,
+  collaborationIdentifierSchema,
+  collaborationInvitationPageSchema,
+  collaborationInvitationSchema,
+  collaborationLimitsSchema,
+  collaborationMessageBodySchema,
+  collaborationMessagePageSchema,
+  collaborationMessageSchema,
+  collaborationMembershipSchema,
+  collaborationNameSchema,
+  collaborationOpaqueCursorSchema,
+  personalMemoryEntrySchema,
+  collaborationPersonSchema,
+  collaborationReadStateSchema,
+  collaborationRealtimeControlSchema,
+  collaborationRealtimeCursorSchema,
+  collaborationRealtimeEventFamilySchema,
+  collaborationRealtimeSnapshotSchema,
+  collaborationRemoteBackendUrlSchema,
+  collaborationRendererCommandSchema,
+  collaborationRendererEventSchema,
+  collaborationSafeErrorSchema,
+  collaborationSafeErrorMessages,
+  collaborationSelectionSchema,
+  collaborationSnapshotSchema,
+  collaborationSubscriptionSchema,
+  collaborationTeamPersonSchema,
+  collaborationThreadSchema,
+  collaborationThreadReferenceSchema,
+  collaborationTimestampSchema,
+  collaborationTopicDescriptionSchema,
+  collaborationViewSchema,
+  collaborationWorkspaceSchema,
+  collaborationWorkspaceAccessSchema,
+  sharedMemoryConsentSchema,
+  sharedMemoryEventSourceKindSchema,
+  sharedMemoryRepresentationSchema,
+  sharedMemoryGrantSchema,
+  sharedMemoryPreviewSchema,
+  sharedMemorySessionSchema,
+  sharedMemorySessionReferenceSchema,
+  sharedMemorySourceItemSchema,
+  sharedMemorySourcePageSchema
+} from "./collaboration-contract.js";
+export type {
+  CollaborationActionGrantIntent,
+  CollaborationActionGrantReference,
+  CollaborationActionGrantStatus,
+  CollaborationBackendIdentity,
+  CollaborationCommandResult,
+  CollaborationConnection,
+  CollaborationDurableSend,
+  CollaborationLimits,
+  CollaborationMessage,
+  CollaborationMessagePage,
+  PersonalMemoryEntry,
+  CollaborationMembership,
+  CollaborationInvitation,
+  CollaborationInvitationPage,
+  CollaborationPerson,
+  CollaborationTeamPerson,
+  CollaborationReadState,
+  CollaborationRealtimeControl,
+  CollaborationRealtimeSnapshot,
+  CollaborationRendererCommand,
+  CollaborationRendererEvent,
+  CollaborationSafeError,
+  CollaborationSelection,
+  CollaborationSnapshot,
+  CollaborationSubscription,
+  CollaborationThread,
+  CollaborationThreadReference,
+  CollaborationView,
+  CollaborationWorkspace,
+  CollaborationWorkspaceAccess,
+  SharedMemoryConsent,
+  SharedMemoryGrant,
+  SharedMemoryPreview,
+  SharedMemoryRepresentation,
+  SharedMemorySession,
+  SharedMemorySessionReference,
+  SharedMemorySourceItem,
+  SharedMemorySourcePage
+} from "./collaboration-contract.js";
+
 export {
   fetchWithTimeout,
   fetchBoundedJsonObject,
@@ -16,6 +188,7 @@ export {
   createHttpManagedKmsKeyring,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
+  createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createRecipientPrivateKeyEnvelopeEncryptionProvider,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   createUnsupportedEnvelopeEncryptionProvider,
@@ -32,6 +205,12 @@ export {
   generateRecipientKeyMaterial,
   InvalidEncryptedPayloadEnvelopeError,
   ManagedKmsProviderError,
+  OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY_ENV,
+  OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION_ENV,
   RECIPIENT_PUBLIC_KEY_PROVIDER_MODE,
   RECIPIENT_RSA_JWK_ALGORITHM,
   RECIPIENT_RSA_KEY_BITS,
@@ -73,6 +252,10 @@ export type {
   HostProofStore
 } from "./device-identity.js";
 export {
+  highRiskActionGrantCommitment,
+  highRiskActionGrantCommitmentHash
+} from "./high-risk-action-grant-commitment.js";
+export {
   deriveLocalProjectId,
   hmacProjectValue,
   isPortableGitRemote,
@@ -82,16 +265,62 @@ export {
   safeProjectMetadataForRemote
 } from "./project-metadata.js";
 export {
+  clearCollaborationActionGrantCustodyForBackend,
+  deleteCollaborationActionGrantCustody,
+  clearCollaborationPendingTeamSends,
+  deleteCollaborationPendingSend,
+  deleteDesktopLocalCredential,
   deleteLocalEdgeClientCredential,
   deleteUpstreamCredentialSecret,
+  desktopLocalCredentialReferenceFor,
   localEdgeClientCredentialReferenceFor,
   parseUpstreamCredentialReference,
+  readCollaborationActionGrantCustodyStatus,
+  listCollaborationPendingSends,
+  readDesktopLocalCredentialAuthorization,
   readLocalEdgeClientCredentialAuthorization,
   readUpstreamCredentialAuthorization,
+  resolveCollaborationActionGrantSecret,
+  rotateDesktopLocalCredential,
+  storeCollaborationActionGrantCustody,
+  storeCollaborationPendingSend,
+  storeDesktopLocalCredential,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret,
+  updateCollaborationActionGrantCustodyStatus,
+  updateCollaborationPendingSendState,
   upstreamCredentialReferenceFor,
+  verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
+} from "./upstream-credential-store.js";
+export {
+  SHARED_MEMORY_AUTHORITY_ACTION,
+  sharedMemoryConsentActionGrantBinding,
+  sharedMemoryGrantManagementRequestHash,
+  sharedMemoryGrantManagementScopeHash,
+  sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryRepresentationActionGrantBinding,
+  sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryShareActionGrantBinding
+} from "./shared-memory-action-grant.js";
+export type {
+  SharedMemoryActionGrantBinding,
+  SharedMemoryRepresentation as SharedMemoryActionGrantRepresentation
+} from "./shared-memory-action-grant.js";
+export { DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES } from "./upstream-credential-store.js";
+export type {
+  CollaborationActionGrantAccessInput,
+  CollaborationActionGrantCustodyInput,
+  CollaborationActionGrantMethod,
+  CollaborationActionGrantOperationFamily,
+  CollaborationActionGrantResolveInput,
+  CollaborationActionGrantState,
+  CollaborationActionGrantStatusRecord,
+  CollaborationPendingSendInput,
+  CollaborationPendingSendRecord,
+  DesktopLocalCredentialAuthorization,
+  DesktopLocalCredentialInput,
+  DesktopLocalCredentialOperationFamily
 } from "./upstream-credential-store.js";
 export type {
   EncryptedPayloadEnvelope,
@@ -132,20 +361,52 @@ export {
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
+  capturedSessionSyncUploadPackageManifestSchema,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
   crossIdentitySyncPackageRequestHash,
+  crossIdentitySyncSummaryNodeRevisionHash,
   isCapturedSessionSyncChunkV1,
   isCapturedSessionSyncPackageV1
 } from "./cross-identity-sync.js";
+export {
+  koedLocalWorkSignalPath,
+  requestKoedLocalWork,
+  watchKoedLocalWork
+} from "./local-work-signal.js";
+export type { KoedLocalWorkSignal } from "./local-work-signal.js";
 export type {
   CapturedSessionSyncChangeOperation,
   CapturedSessionSyncChangeV1,
   CapturedSessionSyncChunkV1,
   CapturedSessionSyncContributorV1,
   CapturedSessionSyncEventV1,
-  CapturedSessionSyncPackageV1
+  CapturedSessionSyncPackageV1,
+  CapturedSessionSyncSummaryNodeV1,
+  CapturedSessionSyncUploadPackageManifest
 } from "./cross-identity-sync.js";
+export {
+  SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION,
+  SHARED_SOURCE_PREVIEW_SCHEMA_VERSION,
+  sharedMemoryGrantScopedSourceId,
+  sharedSourceArtifactHash,
+  sharedSourceArtifactId,
+  sharedSourcePreviewHash,
+  sharedSourcePreviewId
+} from "./shared-source-artifact.js";
+export type {
+  SharedSourceArtifactBindingV1,
+  SharedSourceArtifactItemType,
+  SharedSourceArtifactItemV1,
+  SharedSourceArtifactManifestEntryV1,
+  SharedSourceArtifactPolicyBindingV1,
+  SharedSourceArtifactReference,
+  SharedSourceArtifactRepresentation,
+  SharedSourceArtifactSyncBindingV1,
+  SharedSourceArtifactV1,
+  SharedSourcePreviewReference,
+  SharedSourcePreviewV1
+} from "./shared-source-artifact.js";
 export type {
   NormalizedGitRemote,
   ProjectMetadataV1,
@@ -351,7 +612,11 @@ export const requireEnv = (
 ): void => {
   const missing = names.filter((name) => {
     const value = environment[name];
-    return value === undefined || value.trim() === "";
+    return (
+      value === undefined ||
+      value.trim() === "" ||
+      value.trim().startsWith("replace_with_generated")
+    );
   });
 
   if (missing.length > 0) {

@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   CURATED_MEMORY_REVIEW_MAX_EVIDENCE,
-  readLocalEdgeClientCredentialAuthorization
+  readLocalEdgeClientCredentialAuthorization,
+  watchKoedLocalWork
 } from "@koed/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -174,14 +175,9 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
   async search(
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
-    return await this.client.upstreamOperation(
-      {
-        upstreamBackendId: this.upstreamBackendId,
-        operationFamily: "team_workspace_read",
-        method: "POST",
-        path: "/v1/memory/search",
-        body: input
-      },
+    return await this.client.teamMemorySearch(
+      this.upstreamBackendId,
+      input,
       this.authorization
     );
   }
@@ -198,27 +194,17 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
       sourceBefore?: string;
     } = {}
   ): Promise<Record<string, unknown>> {
-    const params = new URLSearchParams();
-    if (input.searchDomain) params.set("search_domain", input.searchDomain);
-    if (input.sessionId) params.set("session_id", input.sessionId);
-    if (input.workspaceId) params.set("workspace_id", input.workspaceId);
-    if (input.teamWorkspaceId) {
-      params.set("team_workspace_id", input.teamWorkspaceId);
-    }
-    if (input.recentDays !== undefined) {
-      params.set("recent_days", String(input.recentDays));
-    }
-    if (input.sourceAfter) params.set("source_after", input.sourceAfter);
-    if (input.sourceBefore) params.set("source_before", input.sourceBefore);
-    const query = params.toString();
-    return await this.client.upstreamOperation(
+    return await this.client.teamMemoryExpand(
+      this.upstreamBackendId,
+      nodeId,
       {
-        upstreamBackendId: this.upstreamBackendId,
-        operationFamily: "team_workspace_read",
-        method: "GET",
-        path: `/v1/memory/nodes/${encodeURIComponent(nodeId)}/expand${
-          query ? `?${query}` : ""
-        }`
+        search_domain: input.searchDomain,
+        session_id: input.sessionId,
+        workspace_id: input.workspaceId,
+        team_workspace_id: input.teamWorkspaceId,
+        recent_days: input.recentDays,
+        source_after: input.sourceAfter,
+        source_before: input.sourceBefore
       },
       this.authorization
     );
@@ -365,6 +351,20 @@ const backgroundLcmSummaryService = startLcmSummaryService(client, {
   serviceConfig: resolveLcmSummaryServiceConfig(process.env),
   workerConfig: resolveLcmSummaryWorkerConfig(process.env)
 });
+const localLcmWorkWatcher = backgroundLcmSummaryService
+  ? await watchKoedLocalWork(
+      path.resolve(
+        process.env.KOED_HOME?.trim() || path.join(os.homedir(), ".koed")
+      ),
+      "lcm-summary",
+      () => backgroundLcmSummaryService.nudge("share_bound_summary_requested"),
+      (error) =>
+        logger.warn(
+          { err: error },
+          "local LCM Summary Service work signal failed"
+        )
+    )
+  : null;
 const backgroundCuratedMemoryReviewService = startCuratedMemoryReviewService(
   client,
   { workerConfig: resolveCuratedMemoryReviewConfig(process.env) }
@@ -909,6 +909,7 @@ const cleanup = () => {
   cleanedUp = true;
   logger.info("koed MCP server shutting down");
   answerBridgeHandle.close();
+  localLcmWorkWatcher?.stop();
   backgroundLcmSummaryService?.stop();
   backgroundCuratedMemoryReviewService.stop();
 };

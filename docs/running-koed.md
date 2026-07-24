@@ -28,6 +28,25 @@ For server/private VPS terminology and migration notes, see
 Codex bootstrap when needed, and keeps the startup screen visible until the
 system is ready.
 
+After a verified setup, Desktop resumes its managed local `koed-server` before
+loading the main window. A fresh or incomplete setup opens the guided setup
+without silently installing runtime or model assets. After explicit User
+confirmation, Desktop checks and runs the package, native runtime, embedding
+model, local services, Codex integration, and final verification stages in
+order. Completed stages are skipped. Only the active stage is shown as running,
+model download progress comes from transferred artifact bytes, and a failure
+stops the workflow with a retry that re-inspects local state. The automatic
+resume wait is bounded so broken local runtime state remains diagnosable from
+the app.
+
+The normal Desktop surface is a product UI rather than an operations dashboard.
+It keeps successful setup details collapsed, surfaces remediation only when
+needed, and leaves Personal available during Team outages. Team enrollment,
+reconnect, backend change, and failure-recovery behavior is documented in
+[Koed Desktop](desktop-ui.md). Advanced Diagnostics remains available for
+Operator troubleshooting without exposing reusable credentials to the
+renderer.
+
 `koed-server` owns `KOED_HOME`, runs API, Worker, and Explorer as supervised
 local app processes, and records runtime state under `KOED_HOME/run`. In
 external dependency mode, Docker Compose or another dependency launcher is
@@ -54,6 +73,15 @@ Use `identity rotate --json` only for explicit repair/replacement: it preserves 
 
 `stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Explorer, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
+API, Worker, Explorer, and the bundled-local native Embedding Service are
+essential managed children. After startup, an unexpected exit or process error
+from any one of them makes the supervisor stop the remaining managed children,
+stop owned bundled-local dependencies, remove its runtime ownership state, and
+exit nonzero. The supervisor does not restart individual children in-process;
+the deployment supervisor restarts the complete service set. SIGINT, SIGTERM,
+and an identity-bound `koed-server stop` request use the same idempotent cleanup
+path and exit cleanly.
+
 In a source checkout, the supervisor launches the built API, Worker, and Explorer
 Node entry points directly. Recorded process IDs therefore identify the service
 processes themselves, so stop and restart do not leave package-manager child
@@ -68,6 +96,23 @@ node packages/koed-server/dist/cli.js upstream enroll status --id team-vps --jso
 node packages/koed-server/dist/cli.js upstream enroll cancel --id team-vps --json
 node packages/koed-server/dist/cli.js upstream disconnect --id team-vps --json
 ```
+
+Desktop collaboration is carried by a separate authenticated local broker
+started and supervised with the local `koed-server`. Electron main launches the
+broker command internally and bridges its typed protocol to the allowlisted
+preload API; it is not an Operator-facing network service. The broker owns the
+active upstream connection, capability refresh, subscriptions, durable cursors,
+replay, reconnect, and protected Team-state clearing. Desktop remains usable
+for Personal notes, Personal channels, and Personal Memory when no Team backend
+is enrolled or the remote backend is unavailable.
+
+API and Worker must receive the same `KOED_TEAM_COLLABORATION_ENABLED` value.
+Changing it requires restarting both processes. Disabling it removes Team
+capabilities and Team routes/jobs while retaining Personal collaboration and
+Personal Memory. See [Configuration](configuration.md) for the exact disabled
+surface and required collaboration secrets. Desktop-managed local edges default
+the shared value to `true`; standalone server deployments remain disabled until
+the Operator enables them explicitly.
 
 `upstream enroll start` requires a registered upstream backend with fresh
 validated capabilities and at least one explicitly enabled route-policy family.
@@ -150,6 +195,23 @@ relationship status and redacted `/ops/status` sync metrics to diagnose queue
 lag, retries, stale replicas, and failure classes; do not inspect encrypted
 package rows as an operational workflow.
 
+`hasSynchronizedRevision` means at least one target revision completed; it may
+remain true while a newer revision is processing or after the sync relationship
+is revoked. Use `syncState` for current transfer and freshness state. Stale,
+processing, and partially available replicas are excluded from Recall. Sync
+revocation stops future packages but does not revoke a Share Grant; Share Grant
+revocation removes ordinary Team access, starts the independent grant-scoped
+retention clock, and does not delete the owner-private target replica. An
+untouched pending purge may be canceled by restoring the grant; claimed purge
+work cannot be restored.
+
+Target processing reconstructs authorized source records and creates fresh
+target-owned embeddings with the target Embedding Service. Source vectors and
+source-local Memory Node identities never cross the sync boundary. A complete
+summary snapshot revision atomically replaces its predecessor; an authoritative
+empty snapshot removes the prior target nodes and embeddings, while an
+Event-only package leaves the acknowledged summary snapshot unchanged.
+
 ## Personal Device Sync V1
 
 Personal Device Sync V1 is protocol-only in this build; no CLI command, API,
@@ -215,6 +277,18 @@ services on the Compose network:
 pnpm env:setup
 docker compose --env-file .env -f examples/server-compose/docker-compose.yml up -d --build
 ```
+
+Keep the generated `.env` stable across Compose recreation and upgrades. The
+server receives separate general and owner-private encryption provider settings,
+along with persistent collaboration cursor and broker secrets, from that file.
+Changing them requires an explicit rotation or rewrap operation; silently
+regenerating them would make existing encrypted data or durable cursors unusable.
+
+The server Compose wrapper sets `restart: unless-stopped` on `koed-server`,
+Postgres, Redis, and the Embedding Service. Dependency containers therefore
+recover after unexpected exits, and a nonzero supervisor exit restarts the
+coherent API/Worker/Explorer set. Manual `docker compose stop` and `docker
+compose down` remain stopped until the Operator starts the stack again.
 
 The default local test endpoints are `http://localhost:3300` for the API and
 `http://localhost:5174` for Explorer. In a real private VPS or Team self-hosted
@@ -282,7 +356,7 @@ Then open `http://<WSL_IP>:<port>` for the API or Explorer. Native Windows packa
 
 ### Packaged Desktop first-run
 
-Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists `KOED_HOME/config/local-ports.json`, and checks `runtime status/install` plus `models status/install` before local startup continues. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
+Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
 
 `desktop:package` and `desktop:package:smoke:mac` build unsigned local smoke artifacts. `desktop:package:internal:mac` prepares unsigned macOS `dmg` and `zip` outputs for internal testing, including packaged native runtime assets when `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. New GitHub Releases upload these unsigned Desktop assets and checksums after packaged-native smoke passes. Signed/notarized release artifacts still require future Developer ID credential setup.
 

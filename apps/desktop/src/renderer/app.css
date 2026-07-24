@@ -1,0 +1,236 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  min-height: 0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.desktop-global-notice {
+  align-items: center;
+  background: color-mix(in oklch, var(--warning) 14%, var(--background));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  font-size: 0.8125rem;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 6px 12px;
+}
+
+.desktop-global-notice button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  height: 28px;
+  place-items: center;
+  width: 28px;
+}
+
+.desktop-global-notice svg {
+  height: 16px;
+  width: 16px;
+}
+
+.desktop-event-inspector {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+}
+
+.desktop-action-grants {
+  background: var(--background);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+}
+
+.desktop-action-grants article {
+  align-items: center;
+  display: grid;
+  font-size: 0.8125rem;
+  gap: 10px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  min-height: 44px;
+  padding: 6px 12px;
+}
+
+.desktop-action-grants article + article {
+  border-top: 1px solid var(--border);
+}
+
+.desktop-action-grants article > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+}
+
+.desktop-action-grants small {
+  color: var(--muted-foreground);
+}
+
+.desktop-action-grant-icon,
+.desktop-action-grant-icon svg {
+  height: 18px;
+  width: 18px;
+}
+
+.desktop-action-grants [data-state="executing"] svg,
+.desktop-action-grants [data-state="approved"] svg {
+  animation: desktop-spin 800ms linear infinite;
+}
+
+.desktop-command-dialog {
+  inline-size: min(560px, calc(100vw - 32px));
+  max-block-size: min(620px, calc(100dvh - 48px));
+  padding: 0;
+  overflow: hidden;
+}
+
+.desktop-command-search {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-block-size: 52px;
+  padding-inline: 16px;
+  border-block-end: 1px solid var(--border);
+}
+
+.desktop-command-search svg {
+  inline-size: 18px;
+  block-size: 18px;
+  color: var(--muted-foreground);
+}
+
+.desktop-command-search input {
+  min-inline-size: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+}
+
+.desktop-command-list {
+  display: grid;
+  max-block-size: min(520px, calc(100dvh - 112px));
+  gap: 2px;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.desktop-command-list button {
+  display: grid;
+  min-inline-size: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  min-block-size: 38px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground);
+  text-align: start;
+  cursor: pointer;
+}
+
+.desktop-command-list button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.desktop-command-list span,
+.desktop-command-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-command-list small,
+.desktop-command-list p {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
+.desktop-command-list p {
+  margin: 24px;
+  text-align: center;
+}
+
+@keyframes desktop-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.desktop-event-inspector div {
+  display: grid;
+  gap: 4px;
+}
+
+.desktop-event-inspector dt {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
+.desktop-event-inspector dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.desktop-command-dialog {
+  max-width: 560px;
+}
+
+.desktop-command-dialog label {
+  align-items: center;
+  border: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.desktop-command-dialog input {
+  background: transparent;
+  border: 0;
+  color: var(--foreground);
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+
+.desktop-command-dialog svg {
+  height: 18px;
+  width: 18px;
+}
+
+.desktop-command-dialog p {
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  margin: 12px 0 0;
+}
+
+.desktop-live-region {
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}

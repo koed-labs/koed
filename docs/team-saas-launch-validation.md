@@ -13,12 +13,14 @@ Run from the repository root.
 pnpm team-fixture:seed
 pnpm team-launch:validate
 pnpm team-launch:validate --with-automated-tests
-pnpm team-launch:validate --with-staged-remote \
-  --base-url https://koed.example.com \
-  --session-cookie 'cm_session=...' \
-  --device-credential 'device-key:secret' \
-  --api-token koed_...
+pnpm team-launch:validate --with-staged-remote
 ```
+
+For staged validation, supply target URLs and credentials through the
+`KOED_LAUNCH_*` environment variables listed in
+[Configuration](configuration.md). Use an ephemeral shell or deployment secret
+injection; do not place bearer values in shell history, committed files, or the
+validation report.
 
 `pnpm team-fixture:seed` resets only the synthetic fixture rows, seeds the
 fixture, runs migrations, and validates the fixture's access expectations.
@@ -51,16 +53,30 @@ database. A genuinely separate server may use the same database name.
 
 `pnpm team-launch:validate --with-staged-remote` validates the fixture and also
 probes a running hosted/private backend over HTTP. It proves public and
-authenticated capability discovery are reachable without leaking secrets, Team
-Workspace answer and graph routes accept browser sessions and scoped device
-credentials, scoped device credentials can call Team Workspace search, browser
-sessions can call graph detail/expand routes, API Tokens cannot enter Team
-Workspace recall or graph routes, and no staged credential value is echoed in
-JSON responses. It uses deterministic fixture Workspace and node IDs by default.
+authenticated capability discovery are reachable without leaking secrets, and
+browser sessions and scoped device credentials can use the dedicated Shared
+Memory Workspace Share Grant list, representation timeline, and representation
+detail APIs. The same credentials must receive `404` from generic Team search,
+answer/Evidence Bundle, graph, graph detail, and expansion surfaces because
+those representations are unavailable in V1. No staged credential value may be
+echoed in JSON responses. The harness also reads the target's current
+capabilities and OpenAPI contract, then attempts every active Team,
+collaboration, Shared Memory, retention, high-risk, and realtime operation with
+the supplied Personal API Token. Every attempt must fail at authentication with
+`401` or `403`; request validation, resource lookup, and mutation must not run.
+Routes excluded from the advertised deployment profile are not treated as
+active test cases. The harness uses deterministic fixture Workspace and node IDs
+by default.
+Set `KOED_LAUNCH_BROWSER_ORIGIN` or pass `--browser-origin` with the exact
+Explorer origin accepted by the target deployment. Session-authenticated write
+probes send that origin together with same-site browser metadata so the harness
+exercises the production CSRF boundary instead of bypassing or accidentally
+failing before route authorization.
 Set
 `KOED_LAUNCH_LOCAL_EDGE_BASE_URL` and `KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID` when a
-local-edge instance should also proxy the Team answer route through
-`/v1/local-edge/upstream-operations`.
+local-edge instance should also prove `/v1/local-edge/team-memory/answer` fails
+closed with `403` or `404`; generic local-edge Team answer is not a V1 positive
+path.
 
 The report is suitable for local or disposable staging validation databases. Do
 not seed the deterministic fixture into production. `API_TOKEN_PEPPER` is
@@ -74,24 +90,25 @@ The fixture validation command directly covers:
 
 - Synthetic user sessions when `API_TOKEN_PEPPER` is configured.
 - Team and Workspace data shape.
-- Authorized Team-visible recall of shared personal memory.
-- Revoked-share and private-memory exclusion.
+- Authorized listing and reading of Shared Memory representations through
+  dedicated Share Grant list/timeline/detail APIs.
+- Revoked-share and Personal Memory exclusion from those representation APIs.
 - Removed Workspace member access loss with Team-retained knowledge.
-- Personal soft-deletion with Team-retained recall.
+- Personal soft-deletion with a retained Shared Memory representation.
 
 The `--with-automated-tests` path additionally runs focused repository tests
 for:
 
 - Authorization-before-decrypt guardrails for encrypted Memory companions on
-  implemented personal and Team Workspace paths.
-- Remote Team route contracts: Team Workspace recall, graph, source expansion,
-  and Evidence Bundle routes require browser sessions or scoped device
-  credentials, while API Tokens remain personal-memory only.
+  implemented Personal Memory and Shared Memory representation paths.
+- Remote route contracts: browser sessions and scoped device credentials use
+  dedicated Shared Memory Share Grant list/timeline/detail APIs. Generic Team
+  search, answer/Evidence Bundle, graph, source expansion, and evidence routes
+  remain unavailable and fail closed. API Tokens remain Personal Memory only.
 - Local-edge fail-closed behavior for stale credentials, stale capabilities,
   disabled upstream route policy, and disabled/private/paused Capture Policy.
-- Candidate-selection and provenance boundaries: revoked Workspace Access,
-  revoked Share Grants, and private memory are excluded before decrypt, rerank,
-  source expansion, evidence construction, or display.
+- Representation boundaries: revoked Workspace Access, revoked Share Grants,
+  and Personal Memory are excluded before Shared Memory decrypt or display.
 - Encrypted fixture-boundary regressions for shared, private, revoked,
   removed-member, and suspended-entitlement cases. These assert authorization
   happens before decrypt and raw Memory is absent from encrypted storage
@@ -102,29 +119,37 @@ for:
   and entitlement allowance.
 - Redacted API request logging, status, diagnostics, queue-count, backup, and
   hosted operations surfaces for raw Memory and secret sentinels.
-- Staged remote HTTP probes for the same Team Workspace route contracts when
+- Staged remote HTTP probes for the same Shared Memory route contracts when
   run with `--with-staged-remote` against a seeded target backend, including
-  public/authenticated capability discovery and API-token rejection from Team
-  answer and graph routes.
+  positive grant/list/timeline/detail reads, fail-closed generic Team-memory
+  surfaces, public/authenticated capability discovery, and generated API-token
+  rejection coverage for every active Team-authority route advertised by
+  OpenAPI.
 
 Each printed gate command uses explicit Vitest file and test-name filters. A
 failed command stops the run, identifies the failed gate, exits non-zero, and
 still removes an automatically provisioned test database.
 
-## Manual Gates
+## Desktop And Manual Gates
 
-These remain manual until the Electron app and cloud-only modules expose stable
-test surfaces:
+`pnpm --filter @koed/desktop test:browser` exercises the built Electron
+collaboration surface, including Team and Workspace navigation, Shared Memory,
+companion discussion, invitations, realtime update application, reconnect, and
+revocation state clearing. It is local UI evidence; it does not replace a
+multi-User staged pass.
 
-- Electron connects to the target backend and shows the correct account context.
-- Electron guides MCP Server and Supported Capture Hook setup.
-- A real captured session can be shared, recalled by another member, and
-  inspected through the UI.
-- Browser-level checks should confirm the automated remote-Team route contracts
-  are visible in the app state and cannot be bypassed through stale local
-  settings.
-- Staging support/admin workflows prove customer content is not visible unless a
-  separately approved break-glass flow exists.
+The staged pass verifies enrollment and account context, a real synchronized
+Captured Session shared to another member, live channel and companion updates
+without refresh, Workspace read/write boundaries, revocation state clearing,
+and Personal availability during a Team-backend outage. Support or
+administrative content access requires the separately approved break-glass
+flow; ordinary support surfaces must remain content-free.
+
+Use the
+[Two-User VPS Dogfood Runbook](two-user-vps-dogfood-runbook.md) for the
+repeatable two-Desktop procedure, including isolated local profile state,
+database reset rules, per-representation sharing checks, restart/catch-up, and
+negative authorization tests.
 
 ## Staging Gates
 

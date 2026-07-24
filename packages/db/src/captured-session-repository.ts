@@ -37,6 +37,14 @@ export interface CapturedSessionRepository {
     actor: ActorContext,
     sessionId: string
   ): Promise<CapturedSessionRecord | null>;
+  listCapturedSessionSummaries(
+    actor: ActorContext,
+    input?: { limit?: number }
+  ): Promise<CapturedSessionSummaryRecord[]>;
+  getCapturedSessionSummary(
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<CapturedSessionSummaryRecord | null>;
   updateCapturedSessionTitle(
     actor: ActorContext,
     sessionId: string,
@@ -68,6 +76,25 @@ export interface CapturedSessionRepository {
 
 export interface CapturedSessionRepositoryOptions {
   transactionClient?: pg.PoolClient;
+}
+
+export interface CapturedSessionSummaryRecord {
+  sessionId: string;
+  logicalMemoryId: string | null;
+  title: string;
+  projectName: string | null;
+  updatedAt: string;
+  eventCount: number;
+  hasSynchronizedRevision: boolean;
+  syncState:
+    | "not_started"
+    | "paused"
+    | "processing"
+    | "partially_available"
+    | "ready"
+    | "stale"
+    | "failed"
+    | "revoked";
 }
 
 type CapturedSessionRow = {
@@ -111,6 +138,113 @@ type CapturedSessionTitleCandidateRow = {
     content: string;
     capturedAt: string;
   }> | null;
+};
+
+type CapturedSessionSummaryRow = {
+  session_id: string;
+  logical_memory_id: string | null;
+  title: string | null;
+  project_name: string | null;
+  latest_activity_at: Date;
+  event_count: string | number;
+  has_synchronized_revision: boolean;
+  sync_state: CapturedSessionSummaryRecord["syncState"] | null;
+};
+
+const mapCapturedSessionSummary = (
+  row: CapturedSessionSummaryRow
+): CapturedSessionSummaryRecord => ({
+  sessionId: row.session_id,
+  logicalMemoryId: row.logical_memory_id,
+  title: normalizeSessionTitle(row.title) ?? "Captured Session",
+  projectName: row.project_name,
+  updatedAt: row.latest_activity_at.toISOString(),
+  eventCount: Number(row.event_count),
+  hasSynchronizedRevision: row.has_synchronized_revision,
+  syncState: row.sync_state ?? "not_started"
+});
+
+export const getCapturedSessionSummaryWithClient = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  sessionId: string
+): Promise<CapturedSessionSummaryRecord | null> => {
+  const result = await client.query<CapturedSessionSummaryRow>(
+    `
+      select
+        s.id as session_id,
+        lm.id as logical_memory_id,
+        nullif(btrim(s.metadata ->> 'threadName'), '') as title,
+        coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+        greatest(
+          s.updated_at,
+          coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
+        ) as latest_activity_at,
+        count(me.id)::text as event_count,
+        coalesce(
+          relationship.source_cursor > 0
+            and relationship.last_synced_at is not null
+            and relationship.revoked_at is null
+            and relationship.state not in ('failed', 'revoked', 'purge_pending'),
+          false
+        ) as has_synchronized_revision,
+        case
+          when relationship.revoked_at is not null
+            or relationship.state in ('revoked', 'purge_pending') then 'revoked'
+          when relationship.state in ('created', 'uploading', 'uploaded', 'verified')
+            then 'processing'
+          else relationship.state::text
+        end as sync_state
+      from sessions s
+      left join memory_events me
+        on me.session_id = s.id
+       and me.owner_user_id = $1
+       and me.visibility = 'personal'
+       and me.invalidated_at is null
+       and me.personal_deleted_at is null
+      left join logical_memories lm
+        on lm.local_session_id = s.id
+       and lm.owner_user_id = $1
+       and lm.owner_principal_id = $1
+       and lm.source_boundary = 'captured_session'
+       and lm.lifecycle in ('active', 'stale')
+      left join lateral (
+        select relationship.state, relationship.revoked_at,
+               relationship.source_cursor, relationship.last_synced_at
+        from cross_identity_sync_relationships relationship
+        where relationship.logical_memory_id = lm.id
+          and relationship.local_user_id = $1
+          and relationship.local_replica_id in (
+            select replica.id
+            from memory_replicas replica
+            where replica.logical_memory_id = lm.id
+              and replica.local_session_id = s.id
+              and replica.owner_user_id = $1
+              and replica.owner_principal_id = $1
+              and replica.replica_role = 'source'
+          )
+          and relationship.side = 'source'
+        order by relationship.revoked_at nulls first, relationship.updated_at desc
+        limit 1
+      ) relationship on true
+      where s.id = $2
+        and s.owner_user_id = $1
+        and s.visibility = 'personal'
+        and s.invalidated_at is null
+        and s.personal_deleted_at is null
+        and exists (
+          select 1
+          from users owner
+          where owner.id = $1
+            and owner.disabled_at is null
+            and owner.deleted_at is null
+        )
+      group by s.id, lm.id, relationship.state, relationship.revoked_at,
+               relationship.source_cursor, relationship.last_synced_at
+    `,
+    [actor.userId, sessionId]
+  );
+  return result.rows[0] ? mapCapturedSessionSummary(result.rows[0]) : null;
 };
 
 const projectReference = (
@@ -690,6 +824,84 @@ export const createCapturedSessionRepository = (
       [actor.userId, sessionId]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  },
+
+  async listCapturedSessionSummaries(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 200, 1), 500);
+    const result = await pool.query<CapturedSessionSummaryRow>(
+      `
+        select
+          s.id as session_id,
+          lm.id as logical_memory_id,
+          nullif(btrim(s.metadata ->> 'threadName'), '') as title,
+          coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+          greatest(
+            s.updated_at,
+            coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
+          ) as latest_activity_at,
+          count(me.id)::text as event_count,
+          coalesce(
+            relationship.source_cursor > 0
+              and relationship.last_synced_at is not null
+              and relationship.revoked_at is null
+              and relationship.state not in ('failed', 'revoked', 'purge_pending'),
+            false
+          ) as has_synchronized_revision,
+          case
+            when relationship.revoked_at is not null
+              or relationship.state in ('revoked', 'purge_pending') then 'revoked'
+            when relationship.state in ('created', 'uploading', 'uploaded', 'verified')
+              then 'processing'
+            else relationship.state::text
+          end as sync_state
+        from sessions s
+        left join memory_events me
+          on me.session_id = s.id
+         and me.owner_user_id = $1
+         and me.visibility = 'personal'
+         and me.invalidated_at is null
+         and me.personal_deleted_at is null
+        left join logical_memories lm
+          on lm.local_session_id = s.id
+         and lm.owner_user_id = $1
+         and lm.owner_principal_id = $1
+         and lm.source_boundary = 'captured_session'
+         and lm.lifecycle in ('active', 'stale')
+        left join lateral (
+          select relationship.state, relationship.revoked_at,
+                 relationship.source_cursor, relationship.last_synced_at
+          from cross_identity_sync_relationships relationship
+          where relationship.logical_memory_id = lm.id
+            and relationship.local_user_id = $1
+            and relationship.local_replica_id in (
+              select replica.id
+              from memory_replicas replica
+              where replica.logical_memory_id = lm.id
+                and replica.local_session_id = s.id
+                and replica.owner_user_id = $1
+                and replica.owner_principal_id = $1
+                and replica.replica_role = 'source'
+            )
+            and relationship.side = 'source'
+          order by relationship.revoked_at nulls first, relationship.updated_at desc
+          limit 1
+        ) relationship on true
+        where s.owner_user_id = $1
+          and s.visibility = 'personal'
+          and s.invalidated_at is null
+          and s.personal_deleted_at is null
+        group by s.id, lm.id, relationship.state, relationship.revoked_at,
+                 relationship.source_cursor, relationship.last_synced_at
+        order by latest_activity_at desc, s.id desc
+        limit $2
+      `,
+      [actor.userId, limit]
+    );
+    return result.rows.map(mapCapturedSessionSummary);
+  },
+
+  async getCapturedSessionSummary(actor, sessionId) {
+    return getCapturedSessionSummaryWithClient(pool, actor, sessionId);
   },
 
   async listCapturedSessionsNeedingTitles(actor, input = {}) {

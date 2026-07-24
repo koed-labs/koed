@@ -15,6 +15,11 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  LOCAL_PERSONAL_USER_EMAIL,
+  readDesktopLocalCredentialAuthorization,
+  storeDesktopLocalCredential
+} from "@koed/shared";
+import {
   assertKoedAppRuntimeAvailable,
   resolveKoedAppRuntime,
   type KoedAppRuntime
@@ -41,7 +46,6 @@ import {
 import { allocateAndPersistLocalPorts } from "./ports.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { collectKoedServerStatus } from "./status.js";
-import { stopKoedServer } from "./stop.js";
 import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
 import { maintainSupervisorLog } from "./supervisor-log.js";
 import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
@@ -69,6 +73,7 @@ export interface KoedServerStartOptions {
   spawnSync?: SpawnSyncLike;
   spawn?: SpawnLike;
   collectStatus?: typeof collectKoedServerStatus;
+  signal?: AbortSignal;
 }
 
 const runCommand = (
@@ -94,11 +99,6 @@ const runCommand = (
   }
 };
 
-const parseCreatedApiToken = (output: string): string | null => {
-  const match = /^Token:\s*(\S+)$/m.exec(output);
-  return match?.[1] ?? null;
-};
-
 const importRuntimeDbModule = async <T>(
   runtime: KoedAppRuntime,
   modulePath: string
@@ -113,62 +113,109 @@ const createOpaqueSecret = (prefix: string): string =>
 const hashApiToken = (apiTokenPepper: string, token: string): string =>
   createHash("sha256").update(`${apiTokenPepper}${token}`).digest("hex");
 
-const provisionPackagedDesktopApiToken = async (
-  paths: KoedServerPaths,
+const desktopLocalOperationFamilies = [
+  "personal_collaboration_read",
+  "personal_collaboration_write"
+] as const;
+
+interface DesktopApiTokenRepository {
+  findUserByEmail: (email: string) => Promise<{ id: string } | null>;
+  createUser: (input: {
+    email: string;
+    displayName: string | null;
+    passwordHash: string | null;
+  }) => Promise<{ id: string }>;
+  createApiToken: (input: {
+    ownerUserId: string;
+    name: string;
+    tokenHash: string;
+    tokenPrefix: string;
+    scopes: string[];
+    audit: { actorUserId: string | null; actorType: string };
+  }) => Promise<unknown>;
+}
+
+const withDesktopApiTokenRepository = async <T>(
   runtime: KoedAppRuntime,
-  environment: NodeJS.ProcessEnv
-): Promise<string> => {
-  const [{ createDbPool }, { createDb }, { createUserApiTokenRepository }] =
+  environment: NodeJS.ProcessEnv,
+  operation: (repo: DesktopApiTokenRepository) => Promise<T>
+): Promise<T> => {
+  const [{ createDbPool, createDb }, { createUserApiTokenRepository }] =
     await Promise.all([
       importRuntimeDbModule<{
         createDbPool: (config?: { connectionString?: string }) => unknown;
+        createDb: (pool: unknown) => unknown;
       }>(runtime, "dist/connection.js"),
-      importRuntimeDbModule<{ createDb: (pool: unknown) => unknown }>(
-        runtime,
-        "dist/connection.js"
-      ),
       importRuntimeDbModule<{
-        createUserApiTokenRepository: (db: unknown) => {
-          findUserByEmail: (email: string) => Promise<{ id: string } | null>;
-          createUser: (input: {
-            email: string;
-            displayName: string | null;
-            passwordHash: string | null;
-          }) => Promise<{ id: string }>;
-          createApiToken: (input: {
-            ownerUserId: string;
-            name: string;
-            tokenHash: string;
-            tokenPrefix: string;
-            scopes: string[];
-            audit: { actorUserId: string | null; actorType: string };
-          }) => Promise<unknown>;
-        };
+        createUserApiTokenRepository: (
+          db: unknown
+        ) => DesktopApiTokenRepository;
       }>(runtime, "dist/user-api-token-repository.js")
     ]);
-  if (!environment.API_TOKEN_PEPPER?.trim()) {
-    throw new Error(
-      "API_TOKEN_PEPPER is required before provisioning Desktop API Token."
-    );
-  }
   const pool = createDbPool({
     connectionString: environment.DATABASE_URL
   }) as { end: () => Promise<void> };
   try {
-    const repo = createUserApiTokenRepository(createDb(pool));
-    const email = "desktop@koed.local";
-    const owner =
-      (await repo.findUserByEmail(email)) ??
-      (await repo.createUser({
-        email,
-        displayName: null,
-        passwordHash: null
-      }));
+    return await operation(createUserApiTokenRepository(createDb(pool)));
+  } finally {
+    await pool.end();
+  }
+};
+
+const resolveActiveDesktopOwner = async (
+  repo: DesktopApiTokenRepository
+): Promise<{ id: string }> =>
+  (await repo.findUserByEmail(LOCAL_PERSONAL_USER_EMAIL)) ??
+  repo.createUser({
+    email: LOCAL_PERSONAL_USER_EMAIL,
+    displayName: null,
+    passwordHash: null
+  });
+
+export const provisionDesktopLocalCredential = (
+  paths: KoedServerPaths,
+  ownerUserId: string
+): void => {
+  const existing = readDesktopLocalCredentialAuthorization(paths.koedHome);
+  if (!existing) {
+    storeDesktopLocalCredential(paths.koedHome, {
+      ownerUserId,
+      operationFamilies: [...desktopLocalOperationFamilies]
+    });
+    return;
+  }
+  if (existing.ownerUserId !== ownerUserId.toLowerCase()) {
+    throw new Error(
+      "Stored Desktop Local Credential does not match the active Personal owner."
+    );
+  }
+  if (
+    existing.operationFamilies.length !==
+      desktopLocalOperationFamilies.length ||
+    !desktopLocalOperationFamilies.every((family) =>
+      existing.operationFamilies.includes(family)
+    )
+  ) {
+    throw new Error(
+      "Stored Desktop Local Credential does not have the required Personal operation families."
+    );
+  }
+};
+
+const provisionDesktopApiTokenWithRepository = async (
+  paths: KoedServerPaths,
+  runtime: KoedAppRuntime,
+  environment: NodeJS.ProcessEnv,
+  apiTokenPepper: string
+): Promise<string> => {
+  return withDesktopApiTokenRepository(runtime, environment, async (repo) => {
+    const owner = await resolveActiveDesktopOwner(repo);
+    provisionDesktopLocalCredential(paths, owner.id);
     const token = createOpaqueSecret("cmt");
     await repo.createApiToken({
       ownerUserId: owner.id,
       name: "Koed Desktop",
-      tokenHash: hashApiToken(environment.API_TOKEN_PEPPER, token),
+      tokenHash: hashApiToken(apiTokenPepper, token),
       tokenPrefix: token.slice(0, 12),
       scopes: [],
       audit: { actorUserId: null, actorType: "local_operator_script" }
@@ -179,58 +226,30 @@ const provisionPackagedDesktopApiToken = async (
       source: "environment"
     });
     return token;
-  } finally {
-    await pool.end();
-  }
+  });
 };
 
 export const provisionDesktopApiToken = async (
   paths: KoedServerPaths,
   runtime: KoedAppRuntime,
-  environment: NodeJS.ProcessEnv,
-  spawnSync: SpawnSyncLike
+  environment: NodeJS.ProcessEnv
 ): Promise<string | null> => {
   if (environment.KOED_AUTO_PORTS !== "1") {
     return null;
   }
-  console.log("> Provision Koed Desktop API Token");
-  if (runtime.kind === "packaged") {
-    return provisionPackagedDesktopApiToken(paths, runtime, environment);
-  }
-  const result = spawnSync(
-    "pnpm",
-    [
-      "api-token:create",
-      "--owner-email",
-      "desktop@koed.local",
-      "--name",
-      "Koed Desktop"
-    ],
-    {
-      cwd: paths.repoRoot,
-      env: environment,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"]
-    }
-  );
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
+  const apiTokenPepper = environment.API_TOKEN_PEPPER;
+  if (!apiTokenPepper?.trim()) {
     throw new Error(
-      `Provision Koed Desktop API Token failed with exit code ${result.status ?? 1}: ${(result.stderr || result.stdout || "").trim()}`
+      "API_TOKEN_PEPPER is required before provisioning Desktop API Token."
     );
   }
-  const token = parseCreatedApiToken(result.stdout ?? "");
-  if (!token) {
-    throw new Error("Provision Koed Desktop API Token did not return a token.");
-  }
-  writeExplorerCredential(paths, {
-    apiToken: token,
-    provisionedAt: new Date().toISOString(),
-    source: "environment"
-  });
-  return token;
+  console.log("> Provision Koed Desktop API Token");
+  return provisionDesktopApiTokenWithRepository(
+    paths,
+    runtime,
+    environment,
+    apiTokenPepper
+  );
 };
 
 const spawnManagedProcess = (
@@ -526,7 +545,45 @@ const localServiceEnv = (
       repoEnv.API_DATA_ENCRYPTION_KEY ??
       environment.DATA_ENCRYPTION_KEY ??
       repoEnv.DATA_ENCRYPTION_KEY,
+    OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:
+      environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY ??
+      repoEnv.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY,
+    OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER:
+      environment.OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER ??
+      repoEnv.OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER,
+    OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID:
+      environment.OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID ??
+      repoEnv.OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID,
+    OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION:
+      environment.OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION ??
+      repoEnv.OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION,
+    OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL:
+      environment.OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL ??
+      repoEnv.OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL,
+    OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN:
+      environment.OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN ??
+      repoEnv.OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN,
     API_TOKEN_PEPPER: environment.API_TOKEN_PEPPER ?? repoEnv.API_TOKEN_PEPPER,
+    COLLABORATION_LOCAL_BROKER_SECRET: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "COLLABORATION_LOCAL_BROKER_SECRET"
+    ),
+    COLLABORATION_REALTIME_CURSOR_SECRET: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "COLLABORATION_REALTIME_CURSOR_SECRET"
+    ),
+    COLLABORATION_REALTIME_STREAM_MAX_CLIENTS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "COLLABORATION_REALTIME_STREAM_MAX_CLIENTS"
+    ),
+    COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL"
+    ),
     EMBEDDING_SERVICE_URL:
       serverConfig.dependencyMode === "external"
         ? (serverConfig.external?.embeddingServiceUrl ??
@@ -538,15 +595,15 @@ const localServiceEnv = (
     EMBEDDING_SERVICE_TOKEN:
       environment.EMBEDDING_SERVICE_TOKEN ?? repoEnv.EMBEDDING_SERVICE_TOKEN,
     EMBEDDING_MODEL:
-      repoEnv.EMBEDDING_MODEL_KEY ??
       environment.EMBEDDING_MODEL_KEY ??
       environment.EMBEDDING_MODEL ??
+      repoEnv.EMBEDDING_MODEL_KEY ??
       embeddingModel.key,
     MODEL_KEY:
-      repoEnv.EMBEDDING_MODEL_KEY ??
       environment.EMBEDDING_MODEL_KEY ??
       environment.MODEL_KEY ??
       environment.EMBEDDING_MODEL ??
+      repoEnv.EMBEDDING_MODEL_KEY ??
       embeddingModel.key,
     EMBEDDING_MODEL_PATH:
       serverConfig.dependencyMode === "bundled-local"
@@ -557,95 +614,98 @@ const localServiceEnv = (
         ? localEmbeddingModelPath
         : (environment.EMBEDDING_MODEL_PATH ?? environment.MODEL_PATH),
     RERANKER_KEY:
-      repoEnv.EMBEDDING_RERANKER_KEY ??
       environment.EMBEDDING_RERANKER_KEY ??
-      environment.RERANKER_KEY,
+      environment.RERANKER_KEY ??
+      repoEnv.EMBEDDING_RERANKER_KEY,
     EMBEDDING_RERANKER_MODEL_PATH:
       serverConfig.dependencyMode === "bundled-local"
         ? localRerankerModelPath
-        : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
-          environment.EMBEDDING_RERANKER_MODEL_PATH),
+        : (environment.EMBEDDING_RERANKER_MODEL_PATH ??
+          repoEnv.EMBEDDING_RERANKER_MODEL_PATH),
     RERANKER_MODEL_PATH:
       serverConfig.dependencyMode === "bundled-local"
         ? localRerankerModelPath
-        : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
-          environment.EMBEDDING_RERANKER_MODEL_PATH ??
-          repoEnv.RERANKER_MODEL_PATH ??
-          environment.RERANKER_MODEL_PATH),
+        : (environment.EMBEDDING_RERANKER_MODEL_PATH ??
+          environment.RERANKER_MODEL_PATH ??
+          repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
+          repoEnv.RERANKER_MODEL_PATH),
     LLAMA_SERVER_BINARY:
       environment.LLAMA_SERVER_BINARY ??
       repoEnv.EMBEDDING_LLAMA_SERVER_BINARY ??
       environment.EMBEDDING_LLAMA_SERVER_BINARY,
     LLAMA_N_CTX:
-      repoEnv.EMBEDDING_LLAMA_N_CTX ??
       environment.EMBEDDING_LLAMA_N_CTX ??
-      environment.LLAMA_N_CTX,
+      environment.LLAMA_N_CTX ??
+      repoEnv.EMBEDDING_LLAMA_N_CTX,
     LLAMA_N_THREADS:
-      repoEnv.EMBEDDING_LLAMA_N_THREADS ??
       environment.EMBEDDING_LLAMA_N_THREADS ??
-      environment.LLAMA_N_THREADS,
+      environment.LLAMA_N_THREADS ??
+      repoEnv.EMBEDDING_LLAMA_N_THREADS,
     LLAMA_N_BATCH:
-      repoEnv.EMBEDDING_LLAMA_N_BATCH ??
       environment.EMBEDDING_LLAMA_N_BATCH ??
-      environment.LLAMA_N_BATCH,
+      environment.LLAMA_N_BATCH ??
+      repoEnv.EMBEDDING_LLAMA_N_BATCH,
     LLAMA_BATCH_TOKEN_HEADROOM:
-      repoEnv.EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM ??
       environment.EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM ??
-      environment.LLAMA_BATCH_TOKEN_HEADROOM,
+      environment.LLAMA_BATCH_TOKEN_HEADROOM ??
+      repoEnv.EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM,
     LLAMA_N_UBATCH:
-      repoEnv.EMBEDDING_LLAMA_N_UBATCH ??
       environment.EMBEDDING_LLAMA_N_UBATCH ??
-      environment.LLAMA_N_UBATCH,
+      environment.LLAMA_N_UBATCH ??
+      repoEnv.EMBEDDING_LLAMA_N_UBATCH,
     LLAMA_PARALLEL:
-      repoEnv.EMBEDDING_LLAMA_PARALLEL ??
       environment.EMBEDDING_LLAMA_PARALLEL ??
-      environment.LLAMA_PARALLEL,
+      environment.LLAMA_PARALLEL ??
+      repoEnv.EMBEDDING_LLAMA_PARALLEL,
     LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS:
-      repoEnv.EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS ??
       environment.EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS ??
-      environment.LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS,
+      environment.LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS ??
+      repoEnv.EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS,
     LLAMA_EMBEDDING_SERVER_PORT:
-      repoEnv.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT ??
       environment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT ??
-      environment.LLAMA_EMBEDDING_SERVER_PORT,
+      environment.LLAMA_EMBEDDING_SERVER_PORT ??
+      repoEnv.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT,
     RERANKER_BATCH_LIMIT:
-      repoEnv.EMBEDDING_RERANKER_BATCH_LIMIT ??
       environment.EMBEDDING_RERANKER_BATCH_LIMIT ??
-      environment.RERANKER_BATCH_LIMIT,
+      environment.RERANKER_BATCH_LIMIT ??
+      repoEnv.EMBEDDING_RERANKER_BATCH_LIMIT,
     RERANKER_CONTEXT_PER_SLOT:
-      repoEnv.EMBEDDING_RERANKER_CONTEXT_PER_SLOT ??
       environment.EMBEDDING_RERANKER_CONTEXT_PER_SLOT ??
-      environment.RERANKER_CONTEXT_PER_SLOT,
+      environment.RERANKER_CONTEXT_PER_SLOT ??
+      repoEnv.EMBEDDING_RERANKER_CONTEXT_PER_SLOT,
     LLAMA_RERANKER_SERVER_PORT:
-      repoEnv.EMBEDDING_LLAMA_RERANKER_SERVER_PORT ??
       environment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT ??
-      environment.LLAMA_RERANKER_SERVER_PORT,
+      environment.LLAMA_RERANKER_SERVER_PORT ??
+      repoEnv.EMBEDDING_LLAMA_RERANKER_SERVER_PORT,
     RERANKER_LLAMA_N_CTX:
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_CTX ??
       environment.EMBEDDING_RERANKER_LLAMA_N_CTX ??
-      environment.RERANKER_LLAMA_N_CTX,
+      environment.RERANKER_LLAMA_N_CTX ??
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_CTX,
     RERANKER_LLAMA_N_THREADS:
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_THREADS ??
       environment.EMBEDDING_RERANKER_LLAMA_N_THREADS ??
-      environment.RERANKER_LLAMA_N_THREADS,
+      environment.RERANKER_LLAMA_N_THREADS ??
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_THREADS,
     RERANKER_LLAMA_N_BATCH:
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_BATCH ??
       environment.EMBEDDING_RERANKER_LLAMA_N_BATCH ??
-      environment.RERANKER_LLAMA_N_BATCH,
+      environment.RERANKER_LLAMA_N_BATCH ??
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_BATCH,
     RERANKER_LLAMA_N_UBATCH:
-      repoEnv.EMBEDDING_RERANKER_LLAMA_N_UBATCH ??
       environment.EMBEDDING_RERANKER_LLAMA_N_UBATCH ??
-      environment.RERANKER_LLAMA_N_UBATCH,
+      environment.RERANKER_LLAMA_N_UBATCH ??
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_UBATCH,
     RERANKER_PARALLEL:
-      repoEnv.EMBEDDING_RERANKER_PARALLEL ??
       environment.EMBEDDING_RERANKER_PARALLEL ??
-      environment.RERANKER_PARALLEL,
+      environment.RERANKER_PARALLEL ??
+      repoEnv.EMBEDDING_RERANKER_PARALLEL,
     RERANKER_PROMPT_CACHE_ENABLED:
-      repoEnv.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
       environment.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
-      environment.RERANKER_PROMPT_CACHE_ENABLED,
+      environment.RERANKER_PROMPT_CACHE_ENABLED ??
+      repoEnv.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED,
     CORS_ORIGINS: corsOrigins(environment, repoEnv),
-    COOKIE_SECURE: repoEnv.API_COOKIE_SECURE ?? environment.COOKIE_SECURE,
+    COOKIE_SECURE: prefixedApiEnv(environment, repoEnv, "COOKIE_SECURE"),
+    EXPLORER_PUBLIC_URL:
+      prefixedApiEnv(environment, repoEnv, "EXPLORER_PUBLIC_URL") ??
+      resolveExplorerUrl(environment, repoEnv),
     EXPLORER_API_BASE_URL: resolveApiUrl(environment, repoEnv),
     VITE_KOED_API_BASE_URL: resolveApiUrl(environment, repoEnv)
   };
@@ -675,39 +735,116 @@ const waitForChildExit = (
 
 export const stopChildProcess = async (
   child: ChildProcess | undefined,
-  timeoutMs = 5_000
+  timeoutMs = 5_000,
+  label = "managed child"
 ): Promise<void> => {
   if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
   child.kill("SIGTERM");
   if (await waitForChildExit(child, timeoutMs)) return;
   child.kill("SIGKILL");
   if (!(await waitForChildExit(child, timeoutMs))) {
-    throw new Error(
-      `Timed out stopping native Embedding Service process ${child.pid}.`
-    );
+    throw new Error(`Timed out stopping ${label} process ${child.pid}.`);
   }
 };
 
-export const waitForManagedProcessExits = async (
-  children: Record<string, ChildProcess>
-): Promise<void> =>
-  new Promise<void>((resolvePromise, rejectPromise) => {
-    const entries = Object.entries(children);
-    const exits = new Set<string>();
-    const recordExit = (name: string) => {
-      exits.add(name);
-      if (exits.size === entries.length) resolvePromise();
-    };
-    for (const [name, child] of entries) {
-      if (child.exitCode != null || child.signalCode != null) {
-        recordExit(name);
-        continue;
-      }
-      child.once("exit", () => recordExit(name));
-      child.once("error", rejectPromise);
+const createManagedProcessMonitor = (
+  options: {
+    expectedSignals?: readonly NodeJS.Signals[];
+  } = {}
+): {
+  watch: (name: string, child: ChildProcess) => void;
+  result: Promise<void>;
+  dispose: () => void;
+} => {
+  const expectedSignals = new Set(
+    options.expectedSignals ?? (["SIGINT", "SIGTERM"] as const)
+  );
+  const listeners = new Map<
+    ChildProcess,
+    {
+      exit: (code: number | null, signal: NodeJS.Signals | null) => void;
+      error: (error: Error) => void;
     }
-    if (entries.length === 0) resolvePromise();
+  >();
+  let resolveResult!: () => void;
+  let rejectResult!: (error: Error) => void;
+  const result = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolveResult = resolvePromise;
+    rejectResult = rejectPromise;
   });
+  let settled = false;
+  const dispose = () => {
+    for (const [child, listener] of listeners) {
+      child.off("exit", listener.exit);
+      child.off("error", listener.error);
+    }
+    listeners.clear();
+  };
+  const settle = (error?: Error) => {
+    if (settled) return;
+    settled = true;
+    dispose();
+    if (error) rejectResult(error);
+    else resolveResult();
+  };
+  const recordExit = (
+    name: string,
+    code: number | null,
+    signal: NodeJS.Signals | null
+  ) => {
+    if (signal && expectedSignals.has(signal)) {
+      settle();
+      return;
+    }
+    settle(
+      new Error(
+        `Essential managed child ${name} exited unexpectedly with ${
+          signal ? `signal ${signal}` : `code ${code ?? "unknown"}`
+        }.`
+      )
+    );
+  };
+  return {
+    watch: (name, child) => {
+      if (settled) return;
+      if (child.exitCode != null || child.signalCode != null) {
+        recordExit(name, child.exitCode, child.signalCode);
+        return;
+      }
+      const listener = {
+        exit: (code: number | null, signal: NodeJS.Signals | null) =>
+          recordExit(name, code, signal),
+        error: (error: Error) =>
+          settle(
+            new Error(
+              `Essential managed child ${name} failed: ${error.message}`,
+              {
+                cause: error
+              }
+            )
+          )
+      };
+      listeners.set(child, listener);
+      child.once("exit", listener.exit);
+      child.once("error", listener.error);
+    },
+    result,
+    dispose
+  };
+};
+
+export const waitForManagedProcessExits = (
+  children: Record<string, ChildProcess>,
+  options: {
+    expectedSignals?: readonly NodeJS.Signals[];
+  } = {}
+): Promise<void> => {
+  const entries = Object.entries(children);
+  if (entries.length === 0) return Promise.resolve();
+  const monitor = createManagedProcessMonitor(options);
+  for (const [name, child] of entries) monitor.watch(name, child);
+  return monitor.result;
+};
 
 export const startKoedServer = async ({
   environment = process.env,
@@ -715,7 +852,8 @@ export const startKoedServer = async ({
   timeoutMs = 180_000,
   spawnSync = nodeSpawnSync as SpawnSyncLike,
   spawn = nodeSpawn as SpawnLike,
-  collectStatus = collectKoedServerStatus
+  collectStatus = collectKoedServerStatus,
+  signal
 }: KoedServerStartOptions = {}): Promise<void> => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
@@ -813,69 +951,92 @@ export const startKoedServer = async ({
   let startedNativePostgres = false;
   let nativeEmbeddingProcess: ChildProcess | undefined;
   const managedChildren: Record<string, ChildProcess> = {};
+  const managedProcessMonitor = createManagedProcessMonitor({
+    expectedSignals: []
+  });
+  const managedProcessOutcome = managedProcessMonitor.result.then(
+    () => ({ error: null }),
+    (error: unknown) => ({ error })
+  );
+  const manageChild = (name: string, child: ChildProcess): ChildProcess => {
+    managedChildren[name] = child;
+    managedProcessMonitor.watch(name, child);
+    return child;
+  };
+  let runtimeStateWritten = false;
   let stopSupervisorExitMonitor: () => void = () => undefined;
   const runtimeStateOwnedByCurrentProcess = (): boolean => {
     try {
       const runtime = JSON.parse(
         readFileSync(paths.runtimeStatePath, "utf8")
       ) as Partial<KoedServerRuntimeState>;
-      return runtime.pid === process.pid;
+      return (
+        runtime.pid === process.pid && runtime.startedAt === supervisorStartedAt
+      );
     } catch {
-      return true;
+      return false;
     }
   };
 
-  const cleanupStartedResources = async () => {
-    const cleanupErrors: string[] = [];
-    for (const name of [
-      "codexTranscriptWatcher",
-      "explorer",
-      "worker",
-      "api"
-    ]) {
-      try {
-        await stopChildProcess(managedChildren[name]);
-      } catch (error) {
-        cleanupErrors.push(
-          error instanceof Error ? error.message : String(error)
-        );
+  let cleanupPromise: Promise<void> | undefined;
+  const cleanupStartedResources = (): Promise<void> => {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+      const cleanupErrors: string[] = [];
+      const shutdownOrder = [
+        "codexTranscriptWatcher",
+        "explorer",
+        "worker",
+        "api",
+        "embeddingService"
+      ];
+      for (const name of shutdownOrder) {
+        try {
+          await stopChildProcess(managedChildren[name], 5_000, name);
+        } catch (error) {
+          cleanupErrors.push(
+            error instanceof Error ? error.message : String(error)
+          );
+        }
       }
-    }
-    try {
-      await stopChildProcess(nativeEmbeddingProcess);
-    } catch (error) {
-      cleanupErrors.push(
-        error instanceof Error ? error.message : String(error)
-      );
-    }
-    if (startedNativePostgres) {
-      const stopped = stopLocalPostgresRuntime(paths, refreshedEnv, {
-        spawnSync
-      });
-      if (!stopped.ok) {
-        cleanupErrors.push(stopped.error ?? stopped.message);
+      if (
+        nativeEmbeddingProcess &&
+        !Object.values(managedChildren).includes(nativeEmbeddingProcess)
+      ) {
+        try {
+          await stopChildProcess(
+            nativeEmbeddingProcess,
+            5_000,
+            "embeddingService"
+          );
+        } catch (error) {
+          cleanupErrors.push(
+            error instanceof Error ? error.message : String(error)
+          );
+        }
       }
-    }
-    if (cleanupErrors.length > 0) {
-      throw new Error(cleanupErrors.join("; "));
-    }
+      if (startedNativePostgres) {
+        const stopped = stopLocalPostgresRuntime(paths, refreshedEnv, {
+          spawnSync
+        });
+        startedNativePostgres = false;
+        if (!stopped.ok) {
+          cleanupErrors.push(stopped.error ?? stopped.message);
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        throw new Error(cleanupErrors.join("; "));
+      }
+    })();
+    return cleanupPromise;
   };
-  let shuttingDown = false;
-  const shutdown = () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    void (async () => {
-      if (!runtimeStateOwnedByCurrentProcess()) {
-        process.exit(0);
-      }
-      await stopChildProcess(nativeEmbeddingProcess);
-      stopKoedServer({ environment: refreshedEnv, spawnSync });
-      process.exit(0);
-    })().catch((error: unknown) => {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
-    });
-  };
+  let requestShutdown: () => void = () => undefined;
+  const shutdownRequested = new Promise<void>((resolveShutdown) => {
+    requestShutdown = resolveShutdown;
+  });
+  const shutdown = () => requestShutdown();
+  if (signal?.aborted) requestShutdown();
+  else signal?.addEventListener("abort", shutdown, { once: true });
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
@@ -958,6 +1119,9 @@ export const startKoedServer = async ({
       });
       Object.assign(refreshedEnv, result.env);
       nativeEmbeddingProcess = result.process;
+      if (nativeEmbeddingProcess) {
+        manageChild("embeddingService", nativeEmbeddingProcess);
+      }
       if (!result.ok) {
         throw new Error(
           `Bundled-local native Embedding Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
@@ -983,95 +1147,85 @@ export const startKoedServer = async ({
       refreshedRepoEnv.EXPLORER_WEB_HOST ??
       "127.0.0.1";
 
-    const children: Record<string, ChildProcess> & {
-      api: ChildProcess;
-      worker: ChildProcess;
-      explorer: ChildProcess;
-    } = {
-      ...(nativeEmbeddingProcess
-        ? { embeddingService: nativeEmbeddingProcess }
-        : {}),
-      api:
-        appRuntime.kind === "packaged"
-          ? spawnManagedProcess(
-              paths,
-              "API",
-              process.execPath,
-              [appRuntime.apiEntry],
-              refreshedEnv,
-              spawn,
-              resolve(appRuntime.root, "api")
-            )
-          : spawnManagedProcess(
-              paths,
-              "API",
-              process.execPath,
-              [resolve(paths.repoRoot, "apps/api/dist/index.js")],
-              refreshedEnv,
-              spawn,
-              resolve(paths.repoRoot, "apps/api")
-            ),
-      worker:
-        appRuntime.kind === "packaged"
-          ? spawnManagedProcess(
-              paths,
-              "Worker",
-              process.execPath,
-              [appRuntime.workerEntry],
-              refreshedEnv,
-              spawn,
-              resolve(appRuntime.root, "worker")
-            )
-          : spawnManagedProcess(
-              paths,
-              "Worker",
-              process.execPath,
-              [resolve(paths.repoRoot, "apps/worker/dist/index.js")],
-              refreshedEnv,
-              spawn,
-              resolve(paths.repoRoot, "apps/worker")
-            ),
-      explorer:
-        appRuntime.kind === "packaged"
-          ? spawnManagedProcess(
-              paths,
-              "Explorer",
-              process.execPath,
-              [
-                resolve(currentDir, "explorer-static-server.js"),
-                appRuntime.explorerDist,
-                "--host",
-                explorerHost,
-                "--port",
-                explorerPort
-              ],
-              refreshedEnv,
-              spawn,
-              appRuntime.explorerDist
-            )
-          : spawnManagedProcess(
-              paths,
-              "Explorer",
-              process.execPath,
-              [
-                resolve(paths.repoRoot, "node_modules/vite/bin/vite.js"),
-                "preview",
-                "--host",
-                explorerHost,
-                "--port",
-                explorerPort
-              ],
-              refreshedEnv,
-              spawn,
-              resolve(paths.repoRoot, "apps/explorer")
-            )
-    };
-
-    Object.assign(managedChildren, {
-      api: children.api,
-      worker: children.worker,
-      explorer: children.explorer
-    });
+    const api =
+      appRuntime.kind === "packaged"
+        ? spawnManagedProcess(
+            paths,
+            "API",
+            process.execPath,
+            [appRuntime.apiEntry],
+            refreshedEnv,
+            spawn,
+            resolve(appRuntime.root, "api")
+          )
+        : spawnManagedProcess(
+            paths,
+            "API",
+            process.execPath,
+            [resolve(paths.repoRoot, "apps/api/dist/index.js")],
+            refreshedEnv,
+            spawn,
+            resolve(paths.repoRoot, "apps/api")
+          );
+    manageChild("api", api);
+    const worker =
+      appRuntime.kind === "packaged"
+        ? spawnManagedProcess(
+            paths,
+            "Worker",
+            process.execPath,
+            [appRuntime.workerEntry],
+            refreshedEnv,
+            spawn,
+            resolve(appRuntime.root, "worker")
+          )
+        : spawnManagedProcess(
+            paths,
+            "Worker",
+            process.execPath,
+            [resolve(paths.repoRoot, "apps/worker/dist/index.js")],
+            refreshedEnv,
+            spawn,
+            resolve(paths.repoRoot, "apps/worker")
+          );
+    manageChild("worker", worker);
+    const explorer =
+      appRuntime.kind === "packaged"
+        ? spawnManagedProcess(
+            paths,
+            "Explorer",
+            process.execPath,
+            [
+              resolve(currentDir, "explorer-static-server.js"),
+              appRuntime.explorerDist,
+              "--host",
+              explorerHost,
+              "--port",
+              explorerPort,
+              "--api-url",
+              apiUrl
+            ],
+            refreshedEnv,
+            spawn,
+            appRuntime.explorerDist
+          )
+        : spawnManagedProcess(
+            paths,
+            "Explorer",
+            process.execPath,
+            [
+              resolve(paths.repoRoot, "node_modules/vite/bin/vite.js"),
+              "preview",
+              "--host",
+              explorerHost,
+              "--port",
+              explorerPort
+            ],
+            refreshedEnv,
+            spawn,
+            resolve(paths.repoRoot, "apps/explorer")
+          );
+    manageChild("explorer", explorer);
 
     const runtime: KoedServerRuntimeState = {
       pid: process.pid,
@@ -1087,9 +1241,9 @@ export const startKoedServer = async ({
         ...(nativeEmbeddingProcess
           ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }
           : {}),
-        api: children.api.pid ?? 0,
-        worker: children.worker.pid ?? 0,
-        explorer: children.explorer.pid ?? 0
+        api: api.pid ?? 0,
+        worker: worker.pid ?? 0,
+        explorer: explorer.pid ?? 0
       }
     };
     writeFileSync(
@@ -1099,10 +1253,17 @@ export const startKoedServer = async ({
         mode: 0o600
       }
     );
-    stopSupervisorExitMonitor = monitorSupervisorExitRequest(paths, {
-      pid: process.pid,
-      startedAt: supervisorStartedAt
-    });
+    runtimeStateWritten = true;
+    stopSupervisorExitMonitor = monitorSupervisorExitRequest(
+      paths,
+      {
+        pid: process.pid,
+        startedAt: supervisorStartedAt
+      },
+      {
+        onExit: requestShutdown
+      }
+    );
 
     console.log(
       JSON.stringify(
@@ -1129,8 +1290,7 @@ export const startKoedServer = async ({
       const desktopApiToken = await provisionDesktopApiToken(
         paths,
         appRuntime,
-        refreshedEnv,
-        spawnSync
+        refreshedEnv
       );
       if (desktopApiToken) {
         Object.assign(refreshedEnv, {
@@ -1163,8 +1323,7 @@ export const startKoedServer = async ({
           ? resolve(appRuntime.root, "mcp-server")
           : resolve(paths.repoRoot, "packages", "mcp-server")
       );
-      children.codexTranscriptWatcher = watcher;
-      managedChildren.codexTranscriptWatcher = watcher;
+      manageChild("codexTranscriptWatcher", watcher);
       runtime.services.push("codex-transcript-watcher");
       runtime.processes = {
         ...runtime.processes,
@@ -1196,7 +1355,13 @@ export const startKoedServer = async ({
       "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
     );
 
-    await waitForManagedProcessExits(children);
+    await Promise.race([
+      shutdownRequested,
+      managedProcessOutcome.then(({ error }) => {
+        if (error) throw error;
+      })
+    ]);
+    await cleanupStartedResources();
   } catch (error) {
     try {
       await cleanupStartedResources();
@@ -1215,5 +1380,11 @@ export const startKoedServer = async ({
     stopSupervisorLogMaintenance();
     process.off("SIGINT", shutdown);
     process.off("SIGTERM", shutdown);
+    signal?.removeEventListener("abort", shutdown);
+    managedProcessMonitor.dispose();
+    if (runtimeStateWritten && runtimeStateOwnedByCurrentProcess()) {
+      rmSync(paths.runtimeStatePath, { force: true });
+    }
+    rmSync(supervisorLock.lockPath, { force: true });
   }
 };

@@ -203,8 +203,17 @@ Producing natural-language answers or summaries from evidence.
 _Avoid_: Recall, retrieval, embedding
 
 **Team**:
-A collaboration boundary for shared memory access.
+A collaboration boundary for shared memory access and member communication.
 _Avoid_: Operator, customer, account
+
+**Team Chat Thread**:
+A Team-scoped channel or direct-message stream for member-authored communication.
+_Avoid_: Conversation, Captured Session, Workspace, Share Grant
+
+**Team Chat Message**:
+A member-authored item in a Team Chat Thread. It is collaboration data, not
+Memory, unless a future explicit policy admits it to capture.
+_Avoid_: Memory Event, Conversation Item, Agent message
 
 **Team Membership**:
 A User's participation state and role within a Team.

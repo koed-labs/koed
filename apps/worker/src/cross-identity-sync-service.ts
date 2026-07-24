@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { scheduleCompaction } from "@koed/core";
 import type { MemorySourceRepository } from "@koed/db";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
@@ -68,6 +67,7 @@ class SyncAuthorizationRevokedError extends Error {
 const CAPTURED_SESSION_SYNC_MAX_PLAINTEXT_PACKAGE_BYTES = Math.floor(
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES * 0.75
 );
+const CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES_PER_PACKAGE = 10_000;
 
 export interface CrossIdentitySyncService {
   start(): void;
@@ -77,29 +77,78 @@ export interface CrossIdentitySyncService {
 
 const packagePartitions = (
   base: CapturedSessionSyncPackageV1,
-  changes: CapturedSessionSyncChangeV1[]
+  changes: CapturedSessionSyncChangeV1[],
+  summaryNodes: CapturedSessionSyncPackageV1["summaryNodes"],
+  summarySnapshotIncluded: boolean
 ): CapturedSessionSyncPackageV1[] => {
   const partitions: CapturedSessionSyncPackageV1[] = [];
-  let current: CapturedSessionSyncChangeV1[] = [];
-  for (const change of changes) {
-    const candidate = [...current, change];
+  const records = [
+    ...changes.map((change) => ({ kind: "change" as const, change })),
+    ...summaryNodes.map((summaryNode) => ({
+      kind: "summaryNode" as const,
+      summaryNode
+    }))
+  ];
+  let currentChanges: CapturedSessionSyncChangeV1[] = [];
+  let currentSummaryNodes: CapturedSessionSyncPackageV1["summaryNodes"] = [];
+  const partition = (
+    partitionChanges: CapturedSessionSyncChangeV1[],
+    partitionSummaryNodes: CapturedSessionSyncPackageV1["summaryNodes"]
+  ): CapturedSessionSyncPackageV1 => ({
+    ...base,
+    changes: partitionChanges,
+    summaryNodes: partitionSummaryNodes,
+    summaryRevisionHash: crossIdentitySyncDigest(partitionSummaryNodes)
+  });
+  for (const record of records) {
+    const candidateChanges =
+      record.kind === "change"
+        ? [...currentChanges, record.change]
+        : currentChanges;
+    const candidateSummaryNodes =
+      record.kind === "summaryNode"
+        ? [...currentSummaryNodes, record.summaryNode]
+        : currentSummaryNodes;
     const bytes = Buffer.byteLength(
-      JSON.stringify({ ...base, changes: candidate }),
+      JSON.stringify(partition(candidateChanges, candidateSummaryNodes)),
       "utf8"
     );
-    if (bytes > CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES && current.length > 0) {
-      partitions.push({ ...base, changes: current });
-      current = [change];
+    if (
+      bytes > CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES &&
+      currentChanges.length + currentSummaryNodes.length > 0
+    ) {
+      partitions.push(partition(currentChanges, currentSummaryNodes));
+      currentChanges = record.kind === "change" ? [record.change] : [];
+      currentSummaryNodes =
+        record.kind === "summaryNode" ? [record.summaryNode] : [];
+      const singleRecordBytes = Buffer.byteLength(
+        JSON.stringify(partition(currentChanges, currentSummaryNodes)),
+        "utf8"
+      );
+      if (singleRecordBytes > CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES) {
+        throw new InvalidSyncPackageError(
+          record.kind === "change"
+            ? "A synchronized Memory Event exceeds the chunk limit"
+            : "A synchronized LCM Summary exceeds the chunk limit"
+        );
+      }
     } else {
       if (bytes > CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES) {
         throw new InvalidSyncPackageError(
-          "A synchronized Memory Event exceeds the chunk limit"
+          record.kind === "change"
+            ? "A synchronized Memory Event exceeds the chunk limit"
+            : "A synchronized LCM Summary exceeds the chunk limit"
         );
       }
-      current = candidate;
+      currentChanges = candidateChanges;
+      currentSummaryNodes = candidateSummaryNodes;
     }
   }
-  if (current.length > 0) partitions.push({ ...base, changes: current });
+  if (currentChanges.length + currentSummaryNodes.length > 0) {
+    partitions.push(partition(currentChanges, currentSummaryNodes));
+  } else if (summarySnapshotIncluded) {
+    partitions.push(partition([], []));
+  }
   return partitions;
 };
 
@@ -209,7 +258,7 @@ export const withLeaseHeartbeat = async <T>(input: {
 
 export const createCrossIdentitySyncService = (options: {
   repository: MemorySourceRepository;
-  rootEncryptionProvider: EnvelopeEncryptionProvider;
+  recipientKeyEncryptionProvider: EnvelopeEncryptionProvider;
   embeddingWorkflow: EmbeddingWorkflow;
   koedHome: string;
   fetch?: typeof fetch;
@@ -270,10 +319,23 @@ export const createCrossIdentitySyncService = (options: {
   };
 
   const prepareSourcePackage = async (relationshipId: string) => {
-    const delta = await options.repository.readCapturedSessionSyncDelta({
+    const deltaResult = await options.repository.readCapturedSessionSyncDelta({
       relationshipId
     });
-    if (!delta || delta.changes.length === 0) return null;
+    const delta = deltaResult as
+      | (NonNullable<typeof deltaResult> & {
+          summaryNodes?: CapturedSessionSyncPackageV1["summaryNodes"];
+        })
+      | null;
+    const summaryNodes = delta?.summaryNodes ?? [];
+    if (
+      !delta ||
+      (delta.changes.length === 0 &&
+        summaryNodes.length === 0 &&
+        !delta.summarySnapshotIncluded)
+    ) {
+      return null;
+    }
     const transport =
       await options.repository.getSyncTransportContext(relationshipId);
     if (!transport || !transport.remoteBaseUrl) {
@@ -312,7 +374,7 @@ export const createCrossIdentitySyncService = (options: {
     const packageId = randomUUID();
     const packageBase: Omit<
       CapturedSessionSyncPackageV1,
-      "changes" | "toCursor"
+      "changes" | "summaryNodes" | "summaryRevisionHash" | "toCursor"
     > = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
@@ -342,37 +404,81 @@ export const createCrossIdentitySyncService = (options: {
       session: delta.session
     };
     const selectedChanges: CapturedSessionSyncChangeV1[] = [];
-    for (const change of delta.changes) {
-      const candidate = [...selectedChanges, change];
-      const candidateBytes = Buffer.byteLength(
+    if (
+      summaryNodes.length > CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES_PER_PACKAGE
+    ) {
+      throw new InvalidSyncPackageError(
+        "Complete LCM Summary snapshot exceeds the node limit"
+      );
+    }
+    const selectedSummaryNodes = [...summaryNodes];
+    const packageBytes = (candidateChanges: CapturedSessionSyncChangeV1[]) => {
+      const candidateToCursor =
+        candidateChanges.at(-1)?.cursor ?? delta.fromCursor;
+      return Buffer.byteLength(
         JSON.stringify({
           ...packageBase,
-          toCursor: change.cursor,
-          changes: candidate
+          toCursor: candidateToCursor,
+          changes: candidateChanges,
+          summaryNodes: selectedSummaryNodes,
+          summaryRevisionHash: crossIdentitySyncDigest(selectedSummaryNodes)
         }),
         "utf8"
       );
+    };
+    if (
+      selectedSummaryNodes.length > 0 &&
+      packageBytes([]) > CAPTURED_SESSION_SYNC_MAX_PLAINTEXT_PACKAGE_BYTES
+    ) {
+      throw new InvalidSyncPackageError(
+        "Complete LCM Summary snapshot exceeds the package limit"
+      );
+    }
+    for (const change of delta.changes) {
+      const candidateChanges = [...selectedChanges, change];
+      if (candidateChanges.length > CAPTURED_SESSION_SYNC_MAX_CHANGES) {
+        break;
+      }
+      const candidateBytes = packageBytes(candidateChanges);
       if (
         candidateBytes > CAPTURED_SESSION_SYNC_MAX_PLAINTEXT_PACKAGE_BYTES &&
-        selectedChanges.length > 0
+        (selectedChanges.length > 0 || selectedSummaryNodes.length > 0)
       ) {
         break;
       }
+      if (candidateBytes > CAPTURED_SESSION_SYNC_MAX_PLAINTEXT_PACKAGE_BYTES) {
+        throw new InvalidSyncPackageError(
+          "A synchronized record exceeds the package limit"
+        );
+      }
       selectedChanges.push(change);
     }
-    const toCursor = selectedChanges.at(-1)?.cursor;
-    if (toCursor === undefined) {
+    if (
+      selectedChanges.length + selectedSummaryNodes.length === 0 &&
+      !delta.summarySnapshotIncluded
+    ) {
       throw new InvalidSyncPackageError(
-        "A synchronized Memory Event exceeds the package limit"
+        "A synchronized record exceeds the package limit"
       );
     }
+    const toCursor = selectedChanges.at(-1)?.cursor ?? delta.fromCursor;
     const base: CapturedSessionSyncPackageV1 = {
       ...packageBase,
       toCursor,
-      changes: selectedChanges
+      changes: selectedChanges,
+      summaryNodes: selectedSummaryNodes,
+      summaryRevisionHash: crossIdentitySyncDigest(selectedSummaryNodes)
     };
+    if (!isCapturedSessionSyncPackageV1(base)) {
+      throw new InvalidSyncPackageError("Source sync package is invalid");
+    }
     const packageDigest = crossIdentitySyncDigest(base);
-    const partitions = packagePartitions(base, selectedChanges);
+    const partitions = packagePartitions(
+      base,
+      selectedChanges,
+      selectedSummaryNodes,
+      delta.summarySnapshotIncluded
+    );
     const encrypted = await Promise.all(
       partitions.map(async (partition, chunkIndex) => {
         const chunk: CapturedSessionSyncChunkV1 = {
@@ -446,9 +552,12 @@ export const createCrossIdentitySyncService = (options: {
           format: CAPTURED_SESSION_SYNC_FORMAT,
           formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
           packageDigest,
+          summaryRevisionHash: delta.summarySnapshotIncluded
+            ? base.summaryRevisionHash
+            : null,
           recipientKeyId: recipient.keyId,
           recipientKeyVersion: recipient.keyVersion,
-          recordCount: base.changes.length
+          recordCount: base.changes.length + base.summaryNodes.length
         },
         packageChecksum,
         totalBytes,
@@ -716,7 +825,11 @@ export const createCrossIdentitySyncService = (options: {
         "GET"
       );
       const relationshipPayload = remoteRelationship.relationship as
-        | { state?: unknown; targetProcessingCursor?: unknown }
+        | {
+            state?: unknown;
+            targetProcessingCursor?: unknown;
+            packageSequence?: unknown;
+          }
         | undefined;
       const remoteState =
         typeof relationshipPayload?.state === "string"
@@ -724,6 +837,9 @@ export const createCrossIdentitySyncService = (options: {
           : "";
       const remoteProcessingCursor = Number(
         relationshipPayload?.targetProcessingCursor
+      );
+      const remotePackageSequence = Number(
+        relationshipPayload?.packageSequence
       );
       if (["failed", "revoked", "purge_pending"].includes(remoteState)) {
         const error = new Error(
@@ -736,7 +852,9 @@ export const createCrossIdentitySyncService = (options: {
       const targetProcessingComplete =
         ["ready", "stale"].includes(remoteState) &&
         Number.isSafeInteger(remoteProcessingCursor) &&
-        remoteProcessingCursor >= upload.toCursor;
+        remoteProcessingCursor >= upload.toCursor &&
+        Number.isSafeInteger(remotePackageSequence) &&
+        remotePackageSequence >= upload.sourceSequence;
       if (!targetProcessingComplete) {
         if (
           ![
@@ -769,14 +887,26 @@ export const createCrossIdentitySyncService = (options: {
         });
         return true;
       }
-      await options.repository.acknowledgeSourceSyncPackage({
+      const summaryRevisionHash = upload.packageManifest.summaryRevisionHash;
+      if (
+        summaryRevisionHash !== null &&
+        (typeof summaryRevisionHash !== "string" ||
+          !/^[0-9a-f]{64}$/i.test(summaryRevisionHash))
+      ) {
+        throw new InvalidSyncPackageError(
+          "Sync package summary revision is missing"
+        );
+      }
+      const acknowledgement = {
         relationshipId: upload.syncRelationshipId,
         packageId: upload.protocolPackageId,
         sourceCursor: upload.toCursor,
         targetProcessingCursor: remoteProcessingCursor,
         packageSequence: upload.sourceSequence,
+        summaryRevisionHash,
         staleAfterSeconds: options.staleAfterSeconds
-      });
+      };
+      await options.repository.acknowledgeSourceSyncPackage(acknowledgement);
       if (
         !(await options.repository.completeSyncQueueEntry({
           queue: "outbox",
@@ -863,7 +993,7 @@ export const createCrossIdentitySyncService = (options: {
         throw new Error("Sync recipient private key is unavailable");
       const provider =
         await createRecipientPrivateKeyEnvelopeEncryptionProvider(
-          options.rootEncryptionProvider,
+          options.recipientKeyEncryptionProvider,
           material
         );
       const decrypted: CapturedSessionSyncChunkV1[] = [];
@@ -919,12 +1049,18 @@ export const createCrossIdentitySyncService = (options: {
       }
       const merged: CapturedSessionSyncPackageV1 = {
         ...first.package,
-        changes: decrypted.flatMap((chunk) => chunk.package.changes)
+        changes: decrypted.flatMap((chunk) => chunk.package.changes),
+        summaryNodes: decrypted.flatMap((chunk) => chunk.package.summaryNodes),
+        summaryRevisionHash: crossIdentitySyncDigest(
+          decrypted.flatMap((chunk) => chunk.package.summaryNodes)
+        )
       };
       const mergedBytes = Buffer.byteLength(JSON.stringify(merged), "utf8");
       const manifestRecordCount = persisted.upload.packageManifest.recordCount;
       if (
         merged.changes.length > CAPTURED_SESSION_SYNC_MAX_CHANGES ||
+        merged.summaryNodes.length >
+          CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES_PER_PACKAGE ||
         mergedBytes > CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES ||
         !isCapturedSessionSyncPackageV1(merged) ||
         merged.packageId !== persisted.upload.protocolPackageId ||
@@ -933,7 +1069,8 @@ export const createCrossIdentitySyncService = (options: {
         merged.fromCursor !== persisted.upload.fromCursor ||
         merged.toCursor !== persisted.upload.toCursor ||
         !Number.isSafeInteger(manifestRecordCount) ||
-        manifestRecordCount !== merged.changes.length ||
+        manifestRecordCount !==
+          merged.changes.length + merged.summaryNodes.length ||
         crossIdentitySyncDigest(merged) !== first.packageDigest ||
         crossIdentitySyncPackageRequestHash(merged) !==
           persisted.upload.requestHash ||
@@ -977,45 +1114,19 @@ export const createCrossIdentitySyncService = (options: {
         renew: renewClaim,
         operation: () =>
           options.embeddingWorkflow.embedSources(
-            applied.eventIds.map((eventId) => ({
-              sourceType: "memory_event",
-              sourceId: eventId
-            })),
+            [
+              ...applied.eventIds.map((eventId) => ({
+                sourceType: "memory_event" as const,
+                sourceId: eventId
+              })),
+              ...applied.summaryNodeIds.map((nodeId) => ({
+                sourceType: "memory_node" as const,
+                sourceId: nodeId
+              }))
+            ],
             { beforeBatch: renewClaim }
           )
       });
-      if (
-        applied.eventIds.length > 0 ||
-        applied.invalidatedEventIds.length > 0
-      ) {
-        const compaction = await scheduleCompaction({
-          repository: options.repository,
-          requesterContext: { userId: transport.relationship.localUserId },
-          visibility: "personal"
-        });
-        const nodeIds = [
-          ...compaction.leafNodeIds,
-          ...(compaction.rollupNodeId ? [compaction.rollupNodeId] : [])
-        ];
-        const derivedNodeIds =
-          await options.repository.listDerivedMemoryNodeIdsForSyncRelationship({
-            relationshipId: entry.syncRelationshipId,
-            ownerUserId: transport.relationship.localUserId
-          });
-        await renewClaim();
-        await withLeaseHeartbeat({
-          leaseMs,
-          renew: renewClaim,
-          operation: () =>
-            options.embeddingWorkflow.embedSources(
-              [...new Set([...nodeIds, ...derivedNodeIds])].map((nodeId) => ({
-                sourceType: "memory_node",
-                sourceId: nodeId
-              })),
-              { beforeBatch: renewClaim }
-            )
-        });
-      }
       await renewClaim();
       await options.repository.markTargetSyncReady({
         relationshipId: entry.syncRelationshipId,
@@ -1023,6 +1134,23 @@ export const createCrossIdentitySyncService = (options: {
         packageId: merged.packageId,
         staleAfterSeconds: options.staleAfterSeconds
       });
+      const continuousRepresentations =
+        await options.repository.advanceContinuousGrantRepresentations({
+          remoteReplicaId: transport.relationship.localReplicaId,
+          sourceRevision: merged.toCursor
+        });
+      if (continuousRepresentations.advanced > 0) {
+        options.logger.info(
+          {
+            event: {
+              name: "shared_memory.continuous_representations.advanced",
+              category: "sync"
+            },
+            advanced: continuousRepresentations.advanced
+          },
+          "Continuous Shared Memory representations advanced"
+        );
+      }
       if (
         !(await options.repository.completeSyncQueueEntry({
           queue: "inbox",

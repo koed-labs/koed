@@ -11,6 +11,14 @@ describe("resolveApiEnv", () => {
     });
   });
 
+  it("validates the Team collaboration feature switch", () => {
+    expect(() =>
+      resolveApiEnv({ KOED_TEAM_COLLABORATION_ENABLED: "TRUE" })
+    ).toThrow(
+      'KOED_TEAM_COLLABORATION_ENABLED must be exactly "true" or "false"'
+    );
+  });
+
   it("uses production defaults", () => {
     expect(
       resolveApiEnv({
@@ -20,6 +28,8 @@ describe("resolveApiEnv", () => {
         API_DATA_ENCRYPTION_KEY: "key",
         API_ENVELOPE_ENCRYPTION_PROVIDER: "local_test_key",
         API_TOKEN_PEPPER: "pepper",
+        COLLABORATION_LOCAL_BROKER_SECRET: "local-broker-secret",
+        COLLABORATION_REALTIME_CURSOR_SECRET: "realtime-secret",
         EMBEDDING_SERVICE_TOKEN: "token",
         CORS_ORIGINS: "http://localhost:5174"
       })
@@ -95,7 +105,7 @@ describe("resolveApiEnv", () => {
 
   it("requires production secrets and service URLs", () => {
     expect(() => resolveApiEnv({ NODE_ENV: "production" })).toThrow(
-      "DATABASE_URL, REDIS_URL, API_TOKEN_PEPPER, EMBEDDING_SERVICE_TOKEN, CORS_ORIGINS"
+      "DATABASE_URL, REDIS_URL, API_TOKEN_PEPPER, COLLABORATION_LOCAL_BROKER_SECRET, COLLABORATION_REALTIME_CURSOR_SECRET, EMBEDDING_SERVICE_TOKEN, CORS_ORIGINS"
     );
     expect(() =>
       resolveApiEnv({
@@ -103,11 +113,29 @@ describe("resolveApiEnv", () => {
         DATABASE_URL: "postgres://localhost/db",
         REDIS_URL: "redis://localhost:6379",
         API_TOKEN_PEPPER: "pepper",
+        COLLABORATION_LOCAL_BROKER_SECRET: "local-broker-secret",
+        COLLABORATION_REALTIME_CURSOR_SECRET: "realtime-secret",
         EMBEDDING_SERVICE_TOKEN: "token",
         CORS_ORIGINS: "http://localhost:5174"
       })
     ).toThrow(
       "Missing required environment variable: API_DATA_ENCRYPTION_KEY (or DATA_ENCRYPTION_KEY)"
+    );
+  });
+
+  it("requires Personal collaboration realtime secrets when Team collaboration is disabled", () => {
+    expect(() =>
+      resolveApiEnv({
+        NODE_ENV: "production",
+        KOED_TEAM_COLLABORATION_ENABLED: "false",
+        WORK_QUEUE_BACKEND: "local",
+        DATABASE_URL: "postgres://localhost/db",
+        API_TOKEN_PEPPER: "pepper",
+        EMBEDDING_SERVICE_TOKEN: "token",
+        CORS_ORIGINS: "https://api.example.test"
+      })
+    ).toThrow(
+      "COLLABORATION_LOCAL_BROKER_SECRET, COLLABORATION_REALTIME_CURSOR_SECRET"
     );
   });
 
@@ -120,8 +148,27 @@ describe("resolveApiEnv", () => {
         DATA_ENCRYPTION_KEY: "key",
         API_ENVELOPE_ENCRYPTION_PROVIDER: "local_test_key",
         API_TOKEN_PEPPER: "pepper",
+        COLLABORATION_LOCAL_BROKER_SECRET: "local-broker-secret",
+        COLLABORATION_REALTIME_CURSOR_SECRET: "realtime-secret",
         EMBEDDING_SERVICE_TOKEN: "token",
         CORS_ORIGINS: "http://localhost:5174"
+      })
+    ).not.toThrow();
+  });
+
+  it("does not require a local broker secret for an external server runtime", () => {
+    expect(() =>
+      resolveApiEnv({
+        NODE_ENV: "production",
+        KOED_RUNTIME_MODE: "external",
+        WORK_QUEUE_BACKEND: "local",
+        DATABASE_URL: "postgres://localhost/db",
+        DATA_ENCRYPTION_KEY: "key",
+        API_ENVELOPE_ENCRYPTION_PROVIDER: "local_test_key",
+        API_TOKEN_PEPPER: "pepper",
+        COLLABORATION_REALTIME_CURSOR_SECRET: "realtime-secret",
+        EMBEDDING_SERVICE_TOKEN: "token",
+        CORS_ORIGINS: "https://api.example.test"
       })
     ).not.toThrow();
   });
@@ -134,8 +181,18 @@ describe("resolveApiEnv", () => {
       WORK_QUEUE_BACKEND: "local",
       DATABASE_URL: "postgres://localhost/db",
       API_TOKEN_PEPPER: "pepper",
+      COLLABORATION_LOCAL_BROKER_SECRET: "local-broker-secret",
+      COLLABORATION_REALTIME_CURSOR_SECRET: "realtime-secret",
       EMBEDDING_SERVICE_TOKEN: "token",
       CORS_ORIGINS: "https://app.koed.example"
+    };
+    const ownerPrivateKms = {
+      OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID: "managed-kms:owner-private-key",
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION: "1",
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL:
+        "https://kms.koed.example",
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN: "owner-secret-token"
     };
 
     expect(() => resolveApiEnv(base)).toThrow(
@@ -157,7 +214,8 @@ describe("resolveApiEnv", () => {
         MANAGED_KMS_KEY_ID: "managed-kms:tenant-key",
         MANAGED_KMS_KEY_VERSION: "1",
         MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example",
-        MANAGED_KMS_AUTH_TOKEN: "secret-token"
+        MANAGED_KMS_AUTH_TOKEN: "secret-token",
+        ...ownerPrivateKms
       })
     ).not.toThrow();
     expect(() =>
@@ -167,7 +225,8 @@ describe("resolveApiEnv", () => {
         MANAGED_KMS_KEY_ID: "cmek:customer-key",
         MANAGED_KMS_KEY_VERSION: "1",
         MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example",
-        MANAGED_KMS_AUTH_TOKEN: "secret-token"
+        MANAGED_KMS_AUTH_TOKEN: "secret-token",
+        ...ownerPrivateKms
       })
     ).not.toThrow();
   });
@@ -178,6 +237,8 @@ describe("resolveApiEnv", () => {
       WORK_QUEUE_BACKEND: "local",
       DATABASE_URL: "postgres://localhost/db",
       API_TOKEN_PEPPER: "pepper",
+      COLLABORATION_LOCAL_BROKER_SECRET: "local-broker-secret",
+      COLLABORATION_REALTIME_CURSOR_SECRET: "realtime-secret",
       EMBEDDING_SERVICE_TOKEN: "token",
       CORS_ORIGINS: "https://app.koed.example"
     };

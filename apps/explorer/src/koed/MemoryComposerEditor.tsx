@@ -7,7 +7,7 @@ import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 
-import { cn } from "../lib/cn";
+import { cn } from "@koed/ui";
 
 function setRootPlainText(value: string) {
   const root = $getRoot();

@@ -9,8 +9,9 @@ import {
   writeFileSync
 } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { resolveCaptureVerificationConfig } from "./verify-codex-capture-hook-lib.mjs";
 
 const parseEnvFile = (filePath) => {
   if (!existsSync(filePath)) return {};
@@ -28,29 +29,30 @@ const parseEnvFile = (filePath) => {
       })
   );
 };
-const usableToken = (value) => {
-  const token = value?.trim();
-  return token && !token.includes("replace_with_token") ? token : null;
+const parseJsonFile = (filePath) => {
+  if (!existsSync(filePath)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 };
 const rootEnv = parseEnvFile(path.resolve(".env"));
 const explorerEnv = parseEnvFile(path.resolve("apps/explorer/.env.local"));
-const apiUrl = (
-  process.env.MEMORY_API_URL ??
-  rootEnv.MEMORY_API_URL ??
-  (process.env.API_HOST_PORT
-    ? `http://localhost:${process.env.API_HOST_PORT}`
-    : null) ??
-  (rootEnv.API_HOST_PORT
-    ? `http://localhost:${rootEnv.API_HOST_PORT}`
-    : null) ??
-  "http://localhost:3300"
-).replace(/\/+$/, "");
-const apiToken =
-  usableToken(process.env.MEMORY_API_TOKEN) ??
-  usableToken(rootEnv.MEMORY_API_TOKEN) ??
-  usableToken(process.env.VITE_KOED_API_TOKEN) ??
-  usableToken(rootEnv.VITE_KOED_API_TOKEN) ??
-  usableToken(explorerEnv.VITE_KOED_API_TOKEN);
+const hookConfigPath =
+  process.env.MEMORY_HOOK_CONFIG ??
+  path.join(
+    process.env.KOED_HOME ?? path.join(homedir(), ".koed"),
+    "config.json"
+  );
+const hookConfig = parseJsonFile(hookConfigPath);
+const { apiUrl, apiToken } = resolveCaptureVerificationConfig({
+  environment: process.env,
+  rootEnv,
+  explorerEnv,
+  hookConfig
+});
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const hookPath =
   process.env.MEMORY_CAPTURE_HOOK_PATH ??

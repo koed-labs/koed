@@ -27,6 +27,7 @@ import {
   runTranscriptCatchup,
   selectRawConversationItemsForHook,
   selectCaptureItems,
+  shouldDeferPageEndingAssistantEventForHook,
   shouldReadTranscriptForHook,
   stateScopeKey,
   transcriptCatchupApiRequestTimeoutMs,
@@ -686,7 +687,7 @@ describe("Codex capture hook transcript parsing", () => {
   });
 
   it("keeps transcript checkpoints stable when the API token changes", () => {
-    const workspaceId = "/home/mark/code/koed/koed-self-hosted";
+    const workspaceId = "/home/test-user/code/koed/koed-self-hosted";
 
     expect(
       stateScopeKey(
@@ -704,7 +705,7 @@ describe("Codex capture hook transcript parsing", () => {
   });
 
   it("keeps transcript checkpoints separate for different API token owners", () => {
-    const workspaceId = "/home/mark/code/koed/koed-self-hosted";
+    const workspaceId = "/home/test-user/code/koed/koed-self-hosted";
 
     expect(
       stateScopeKey(
@@ -3029,6 +3030,70 @@ Do the thing.
       "SubagentStop"
     ]) {
       expect(shouldReadTranscriptForHook({ hook_event_name })).toBe(true);
+    }
+  });
+
+  it("consumes a page-ending assistant row only when the hook confirms the turn is complete", () => {
+    expect(
+      shouldDeferPageEndingAssistantEventForHook({
+        hook_event_name: "PostToolUse"
+      })
+    ).toBe(true);
+    expect(
+      shouldDeferPageEndingAssistantEventForHook({ hook_event_name: "Stop" })
+    ).toBe(false);
+    expect(
+      shouldDeferPageEndingAssistantEventForHook({
+        hook_event_name: "SubagentStop"
+      })
+    ).toBe(false);
+  });
+
+  it("advances a Stop checkpoint through the final assistant row before adding the control", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-stop-tail-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const finalAssistantLine = `${JSON.stringify({
+      timestamp: "2026-05-01T10:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "Terminal answer" }
+    })}\n`;
+    fs.writeFileSync(transcriptPath, finalAssistantLine);
+    const payload = {
+      hook_event_name: "Stop" as const,
+      session_id: "terminal-assistant-thread",
+      turn_id: "terminal-assistant-turn",
+      transcript_bytes_at_hook: Buffer.byteLength(finalAssistantLine)
+    };
+
+    try {
+      const parsed = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope",
+        readThroughOffset: payload.transcript_bytes_at_hook,
+        deferPageEndingAssistantEvent:
+          shouldDeferPageEndingAssistantEventForHook(payload)
+      });
+      const items = selectRawConversationItemsForHook({
+        transcriptRecords: parsed.records,
+        indexOffset: parsed.indexOffset,
+        transcriptPath,
+        payload,
+        effectiveContext: effectiveCaptureContext(payload),
+        mode: "catchup",
+        transcriptCheckpointOffset: parsed.checkpoint?.offset,
+        transcriptBytesAtHook: payload.transcript_bytes_at_hook
+      });
+
+      expect(parsed.records).toHaveLength(1);
+      expect(parsed.checkpoint?.offset).toBe(payload.transcript_bytes_at_hook);
+      expect(items.map((item) => item.sourceEventType)).toEqual([
+        "agent_message",
+        "Stop"
+      ]);
+      expect(items[0]?.rawText).toBe("Terminal answer");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

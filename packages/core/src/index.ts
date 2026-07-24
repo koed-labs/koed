@@ -453,7 +453,6 @@ export interface SearchMemoryInput {
   searchDomain?: MemorySearchDomain;
   sessionId?: string;
   workspaceId?: string;
-  teamWorkspaceId?: string;
   limit?: number;
   recentDays?: number;
   sourceAfter?: string;
@@ -485,6 +484,8 @@ export interface ScheduleCompactionInput {
   workClass?: MemoryWorkClass;
   sessionId?: string;
   finalize?: boolean;
+  force?: boolean;
+  requestedRepresentation?: "lcm_leaves" | "lcm_rollups";
 }
 
 export interface MemoryEventRecord {
@@ -612,7 +613,6 @@ export interface MemoryEngineRepository {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       workspaceId?: string;
-      teamWorkspaceId?: string;
       limit?: number;
       recentDays?: number;
       sourceAfter?: string;
@@ -632,6 +632,8 @@ export interface MemoryEngineRepository {
       workClass?: MemoryWorkClass;
       sessionId?: string;
       finalize?: boolean;
+      force?: boolean;
+      requestedRepresentation?: "lcm_leaves" | "lcm_rollups";
     }
   ): Promise<CompactionResult>;
   expandMemoryNode(
@@ -641,7 +643,6 @@ export interface MemoryEngineRepository {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       workspaceId?: string;
-      teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
@@ -733,7 +734,6 @@ export const expandMemoryNode = async (
     searchDomain?: MemorySearchDomain;
     sessionId?: string;
     workspaceId?: string;
-    teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
     sourceBefore?: string;
@@ -744,7 +744,6 @@ export const expandMemoryNode = async (
     searchDomain: requesterContext.searchDomain,
     sessionId: requesterContext.sessionId,
     workspaceId: requesterContext.workspaceId,
-    teamWorkspaceId: requesterContext.teamWorkspaceId,
     recentDays: requesterContext.recentDays,
     sourceAfter: requesterContext.sourceAfter,
     sourceBefore: requesterContext.sourceBefore
@@ -772,7 +771,6 @@ export const createMemoryEngine = (repository: MemoryEngineRepository) => ({
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       workspaceId?: string;
-      teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;

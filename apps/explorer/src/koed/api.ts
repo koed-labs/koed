@@ -4,6 +4,7 @@ import type {
   GraphEvent,
   GraphNode,
   GraphThreadIndexResponse,
+  HighRiskBrowserActivation,
   LocalMemoryAgentFlowKey,
   LocalMemoryAgentFlowSettings,
   LocalMemoryAgentSettings,
@@ -142,6 +143,35 @@ export async function loadDeviceEnrollmentChallenge(
   return response.challenge;
 }
 
+export type BrowserAuthProvider = "local" | "workos";
+
+export async function loadBrowserAuthProviders(): Promise<
+  BrowserAuthProvider[]
+> {
+  const response = await requestJson<{
+    auth?: { providers?: unknown };
+  }>("/v1/capabilities", "");
+  if (!Array.isArray(response.auth?.providers)) return [];
+  return response.auth.providers.filter(
+    (provider): provider is BrowserAuthProvider =>
+      provider === "local" || provider === "workos"
+  );
+}
+
+export async function loginWithLocalSession(
+  email: string,
+  password: string
+): Promise<void> {
+  await requestJson<{ user: unknown }>("/auth/login", "", {
+    method: "POST",
+    body: JSON.stringify({ email, password })
+  });
+}
+
+export async function requireBrowserSession(): Promise<void> {
+  await requestJson<{ user: unknown }>("/me", "");
+}
+
 export async function approveDeviceEnrollmentChallenge(
   challengeId: string
 ): Promise<DeviceEnrollmentChallenge> {
@@ -172,6 +202,29 @@ export async function denyDeviceEnrollmentChallenge(
     }
   );
   return response.challenge;
+}
+
+export async function loadHighRiskBrowserActivation(
+  selector: string
+): Promise<HighRiskBrowserActivation> {
+  return requestJson<HighRiskBrowserActivation>(
+    `/v1/high-risk/browser-activations/${encodeURIComponent(selector)}`,
+    ""
+  );
+}
+
+export async function decideHighRiskBrowserActivation(
+  selector: string,
+  decision: "approve" | "deny"
+): Promise<HighRiskBrowserActivation> {
+  return requestJson<HighRiskBrowserActivation>(
+    `/v1/high-risk/browser-activations/${encodeURIComponent(selector)}/decision`,
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify({ decision })
+    }
+  );
 }
 
 export async function loadMemoryQuestionShells(

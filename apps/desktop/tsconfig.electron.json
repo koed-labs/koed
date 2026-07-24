@@ -5,6 +5,9 @@
     "declarationMap": false,
     "outDir": "dist-electron",
     "rootDir": "src",
+    "paths": {
+      "@koed/shared": ["packages/shared/dist/index.d.ts"]
+    },
     "types": ["node"]
   },
   "include": [

@@ -1,0 +1,279 @@
+.koed-onboarding {
+  display: grid;
+  min-block-size: 100dvh;
+  place-items: center;
+  overflow: auto;
+  padding: 32px 20px;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.koed-setup-card,
+.koed-trust-guide {
+  inline-size: min(620px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--card-foreground);
+}
+
+.koed-setup-header,
+.koed-trust-guide > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-setup-header h1,
+.koed-trust-guide h1,
+.koed-trust-guide h2 {
+  margin: 0;
+}
+
+.koed-setup-header h1,
+.koed-trust-guide h1 {
+  font-size: 20px;
+}
+
+.koed-setup-header p,
+.koed-trust-guide header p,
+.koed-trust-lesson p {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+.koed-setup-error {
+  margin: 16px 24px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--destructive);
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--destructive) 8%, transparent);
+  color: var(--destructive-foreground);
+  font-size: 13px;
+}
+
+.koed-setup-loading {
+  display: flex;
+  min-block-size: 320px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+}
+
+.koed-setup-progress {
+  block-size: 4px;
+  overflow: hidden;
+  background: var(--muted);
+}
+
+.koed-setup-progress > span {
+  display: block;
+  block-size: 100%;
+  background: var(--primary);
+  transition: inline-size 180ms ease;
+}
+
+.koed-setup-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.koed-setup-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-block-size: 61px;
+  padding: 10px 24px;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-setup-step[data-state="pending"] {
+  color: var(--muted-foreground);
+}
+
+.koed-setup-step-copy {
+  display: grid;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.koed-setup-step-copy > strong {
+  color: var(--foreground);
+  font-size: 13px;
+}
+
+.koed-setup-step[data-state="pending"] .koed-setup-step-copy > strong {
+  color: var(--muted-foreground);
+}
+
+.koed-setup-step-copy > span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.koed-setup-state {
+  display: grid;
+  inline-size: 22px;
+  block-size: 22px;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.koed-setup-state svg {
+  inline-size: 17px;
+  block-size: 17px;
+}
+
+.koed-setup-step[data-state="complete"] .koed-setup-state {
+  color: var(--success);
+}
+
+.koed-setup-step[data-state="failed"] .koed-setup-state {
+  color: var(--destructive);
+}
+
+.koed-setup-complete,
+.koed-setup-percent {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.koed-setup-complete {
+  color: var(--success);
+}
+
+.koed-setup-percent {
+  color: var(--muted-foreground);
+}
+
+.koed-setup-download {
+  font-variant-numeric: tabular-nums;
+}
+
+.koed-setup-footer,
+.koed-trust-guide > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px;
+}
+
+.koed-setup-footer > span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.koed-trust-guide {
+  margin: auto;
+}
+
+.koed-trust-guide > header p {
+  margin: 2px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.koed-trust-lesson {
+  min-block-size: 180px;
+  padding: 32px 24px;
+}
+
+.koed-trust-lesson h2 {
+  font-size: 17px;
+}
+
+.koed-trust-lesson p {
+  max-inline-size: 58ch;
+  margin-block-start: 10px;
+  color: var(--foreground);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.koed-button {
+  display: inline-flex;
+  min-block-size: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.koed-button-secondary {
+  border-color: var(--border);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.koed-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.koed-button svg {
+  inline-size: 16px;
+}
+
+.koed-health-affordance {
+  display: flex;
+  inline-size: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--warning);
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--warning) 8%, var(--background));
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: start;
+}
+
+.koed-health-affordance[data-state="fault"] {
+  border-color: var(--destructive);
+}
+
+.koed-health-affordance svg {
+  inline-size: 15px;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 600px) {
+  .koed-onboarding {
+    padding: 0;
+  }
+
+  .koed-setup-card,
+  .koed-trust-guide {
+    min-block-size: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .koed-setup-step {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .koed-setup-complete,
+  .koed-setup-percent {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

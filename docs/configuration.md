@@ -28,6 +28,15 @@ operator-facing boundary and migration notes.
 Source checkouts default to `runtimeMode: "developer"` and
 `dependencyMode: "external"`.
 
+Configuration precedence is deterministic: values already present in the
+launching process environment take precedence over app-local `.env` files,
+which are loaded with overwrite disabled. For `koed-server` mode and dependency
+settings, explicit process-environment values also override
+`KOED_HOME/config/server.json`; absent values fall back to that file and then to
+documented defaults. API and Worker processes in one deployment must be started
+from the same resolved environment. Changing `.env` after startup has no effect
+until the affected processes are restarted.
+
 External dependency mode means the Operator manages Postgres, Redis/BullMQ, and
 the Embedding Service lifecycle. The services may be launched by Docker Compose,
 systemd, Homebrew, managed infrastructure, or another Operator-managed path.
@@ -45,6 +54,37 @@ Supported mode fields:
   `koed-managed-cloud` are accepted. If omitted, `local-personal` runtime mode
   reports `local_personal`; other source checkout runs report `developer`.
 - `KOED_RUNTIME_MODE`: `local-personal`, `external`, or `developer`.
+- `KOED_TEAM_COLLABORATION_ENABLED`: the shared API/Worker Team collaboration switch.
+  It accepts only `true` or `false`. Operator-managed server deployments default
+  to `false`. A Desktop-managed local edge defaults to `true` so the packaged
+  collaboration client can mediate enrolled Team backends; an explicit `false`
+  still disables its Team surfaces. When disabled,
+  capability discovery reports Team Workspaces, collaboration, Share Grants,
+  Cross-Identity Sync, remote upstreams, and device enrollment unavailable.
+  Team chat, Shared Memory, Team realtime, retention, high-risk, support, Team
+  lifecycle, Cross-Identity Sync, enrollment, and upstream local-edge requests
+  receive an empty `404` before repository access, content materialization,
+  mutation, or upstream routing. Scope-discriminated realtime acknowledgements
+  may validate and decrypt the signed cursor only to reject a Team scope.
+  Personal Memory capture, recall, graph, API Token, session APIs, Personal
+  notes and channels, Personal realtime, and the local Personal broker remain
+  available. The Worker continues Personal Projection, embedding, LCM, and
+  deletion reembedding, but does not start Cross-Identity Sync, retention purge,
+  collaboration replay pruning, or other Team collaboration jobs. Restart both
+  API and Worker after changing the value.
+
+Authentication providers are part of the deployment capability contract.
+Private VPS and Team Self-Hosted profiles expose local session authentication;
+Team Self-Hosted may additionally expose WorkOS/AuthKit when configured.
+Koed-managed cloud never advertises local session authentication and exposes
+WorkOS/AuthKit only when it is configured. Local session authentication alone
+does not establish verified Team identity. Outside the isolated `developer`
+profile, Team creation, high-risk Team administration, and invite acceptance
+require a current verified WorkOS/AuthKit identity in the configured provider
+environment whose email matches the local User and, for invite acceptance, the
+email-bound, backend-bound, one-time invite token. A deployment without that
+verified identity path remains fail-closed for those Team-authority operations.
+
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
 - `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it; external runtime mode disables it and requires explicit `true`. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
 - `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
@@ -165,7 +205,11 @@ under `KOED_HOME/config/upstream-backends.json`. This registry is first-class
 local configuration, not a loose environment-variable convention. It stores the
 upstream id, display name, base URL, deployment profile, cached public
 capabilities, validation timestamps, credential status/reference metadata, and
-route-policy metadata.
+route-policy metadata. It also stores one explicit `activeBackendId` for Desktop
+and implicit local-edge Team routing. Registry array order is never authority;
+an operation without an explicit backend id fails closed when no active backend
+is selected. Connecting selects the enrolled backend, while cancellation,
+disconnect, or removal clears the selection when it targets that backend.
 
 The registry must not contain reusable upstream credentials, WorkOS secrets,
 API Tokens, device secrets, bearer tokens, token prefixes, or database
@@ -173,9 +217,14 @@ credentials. Upstream URLs with username/password material, query strings, or
 fragments are rejected. Remote upstreams must use HTTPS; HTTP is accepted only
 for exact loopback targets (`localhost`, `127.0.0.1`, or `::1`) used by local
 development. Upstream requests reject redirects so an accepted endpoint cannot
-downgrade credential or Memory traffic. Device/upstream credential material is
-handled by the separate credential model; this registry only records non-secret
-existence and status metadata.
+downgrade credential or Memory traffic. Each outbound request resolves its host
+once, rejects forbidden, link-local, metadata, disguised-loopback, and mixed
+network-trust targets, and pins the approved address for the connection. Private
+network targets are accepted only when their exact registered backend is marked
+`private_vps` or `team_self_hosted`; managed-cloud registrations remain
+public-network only. Device/upstream credential material is handled by the
+separate credential model; this registry only records non-secret existence and
+status metadata.
 
 Live local-edge upstream proxying needs separate upstream relay authorization.
 The registry may record a sanitized credential `reference`, but the reusable
@@ -198,7 +247,7 @@ Supported commands:
 koed-server upstream register --url https://koed.example.test --id team-vps --name "Team VPS" --profile private_vps --json
 koed-server upstream list --json
 koed-server upstream refresh --id team-vps --json
-koed-server upstream policy --id team-vps --team-workspace-read enabled --share-grant-management enabled --json
+koed-server upstream policy --id team-vps --team-workspace-read enabled --share-grant-management enabled --admin enabled --json
 koed-server upstream enroll start --id team-vps --json
 koed-server upstream enroll status --id team-vps --json
 koed-server upstream enroll cancel --id team-vps --json
@@ -210,12 +259,19 @@ Capability refresh calls the upstream public `/v1/capabilities` endpoint,
 requires the versioned Koed capability schema, and records `validated`,
 `stale`, `failed`, or `not_checked` cache state. The cache expires after the
 local freshness window and status/doctor report stale or failed caches as
-attention items. Route-policy defaults are fail-closed: registering an upstream
+attention items. While Koed Desktop is connected, its local collaboration
+broker revalidates the active backend before that window expires and retries a
+failed refresh without accepting stale capabilities. Headless Operators can use
+`upstream refresh` to revalidate explicitly. Route-policy defaults are
+fail-closed: registering an upstream
 does not enable capture-bearing writes, Team Workspace recall, Share Grant
 management, sync/offload, or admin operations. Operators must explicitly enable
 allowed operation families with `koed-server upstream policy`; later routing and
 sync work must consume the cached capabilities and route policy before enabling
-remote-dependent surfaces.
+remote-dependent surfaces. Enabling the `--admin` route policy for
+browser-mediated enrollment requests the narrow `action_grant` device family,
+not reusable `admin` authority. Every resulting administration request still
+requires an exact one-use grant produced by fresh browser confirmation.
 
 Enrollment orchestration state is separate from the upstream backend registry.
 `upstream enroll start/status/cancel` and `upstream disconnect` record only
@@ -315,9 +371,37 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   app rows, diagnostics, logs, or client-visible configuration.
   After a KMS key version is rotated, run `pnpm hosted:encryption-rewrap` in
   bounded batches to rewrap encrypted-field DEKs to the configured current key
-  version without rewriting plaintext payload bytes.
+  version without rewriting plaintext payload bytes. Use
+  `pnpm hosted:encryption-rewrap --dry-run` first to count the exact matching
+  rows without invoking rewrap or changing envelope metadata.
+- `OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY`: independent base64 32-byte key
+  for owner-private remote replica payloads when their provider mode is
+  `local_test_key`. `pnpm env:setup` and packaged local startup generate this
+  separately from `API_DATA_ENCRYPTION_KEY` on first setup and retain it across
+  later runs.
+- `OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER`: owner-private replica
+  provider mode. It supports `local_test_key`, `managed_kms`, `byok`, and
+  `cmek`, matching the implemented Team/general provider modes. Owner-private
+  operations never fall back to `API_ENVELOPE_ENCRYPTION_PROVIDER`; when this
+  family is absent, those operations fail closed while the alpha API may still
+  start.
+- `OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID`,
+  `OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION`,
+  `OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL`, and
+  `OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN`: isolated KMS key reference,
+  wrap/unwrap endpoint, and bearer credential used for owner-private replicas
+  in `managed_kms`, `byok`, or `cmek` mode. These values are required together
+  for a KMS-backed owner-private provider and are never inherited from
+  `MANAGED_KMS_*`.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
-- `API_CORS_ORIGINS`: comma-separated allowed browser origins, such as the Explorer.
+- `API_CORS_ORIGINS`: comma-separated exact browser origins, including scheme,
+  host, and port, such as the Explorer. Cookie-authenticated Shared Memory,
+  retention, high-risk activation, Team, Workspace, and invite writes require
+  an explicitly allowed `Origin` or `Referer`. When both headers are present,
+  both must be valid, allowed, and identify the same origin. When Fetch Metadata
+  is present, these high-risk writes require `Sec-Fetch-Site: same-origin`;
+  malformed, `same-site`, `cross-site`, and `none` evidence is rejected. Scoped
+  device credentials and API Tokens do not require browser-origin evidence.
 - `EXPLORER_WEB_HOST`: host used by the Explorer preview process supervised by
   `koed-server`. Defaults to `127.0.0.1` for local runs; server/container
   wrappers may set `0.0.0.0` and publish the port through the wrapper boundary.
@@ -328,13 +412,24 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local Explorer and MCP Server bursts in a Koed deployment without changing the stricter auth rate limit.
 - `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
-- `API_RATE_LIMIT_STORE`: `memory` by default; set `redis` to share API rate-limit counters across API replicas.
+- `API_RATE_LIMIT_STORE`: `memory` by default for direct/local runs; set `redis`
+  to share API rate-limit counters across API replicas. The server/private-VPS
+  Compose wrapper defaults this to `redis`.
 - `API_RATE_LIMIT_REDIS_URL`: optional Redis URL for API rate-limit counters; falls back to `REDIS_URL`.
 - `API_CACHE_STORE`: `memory` by default; set `redis` to enable short-lived graph response caching.
 - `API_CACHE_REDIS_URL`: optional Redis URL for API cache entries; falls back to `REDIS_URL`.
 - `API_GRAPH_CACHE_TTL_SECONDS`: graph overview/thread cache TTL when Redis caching is enabled.
 - `API_GRAPH_UPDATE_DEBOUNCE_MS`: debounce window for coalescing graph stream update events.
 - `API_MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS`: shorter debounce window for captured event stream updates that drive the open history thread.
+- `API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS`: maximum concurrent collaboration realtime clients for one API process. The default is 1000.
+- `API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL`: maximum concurrent collaboration realtime clients for one authenticated principal on one API process. The default is 6.
+- `API_COLLABORATION_REALTIME_CURSOR_SECRET`: signs and encrypts Personal and
+  Team durable realtime cursors. It remains required when Team collaboration is
+  disabled because Personal realtime remains available.
+- `API_COLLABORATION_LOCAL_BROKER_SECRET`: authenticates the local Personal and
+  Team collaboration broker. It remains required for non-external runtimes when
+  Team collaboration is disabled because Personal broker commands and
+  subscriptions remain available.
 - `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Only `codex` is supported.
 - `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.4-mini`.
 - `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `medium`.
@@ -359,7 +454,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `KOED_CAPACITY_SESSION_COOKIE`: optional browser session Cookie header consumed by `pnpm hosted:capacity -- run` for private operations-status and Team Workspace recall load checks.
 - `KOED_CAPACITY_DEVICE_CREDENTIAL`: optional scoped `Koed-Device` credential consumed by `pnpm hosted:capacity -- run` for Team Workspace device-route and local-edge proxy load checks.
 - `KOED_CAPACITY_TEAM_WORKSPACE_ID`: optional Team Workspace id consumed by `pnpm hosted:capacity -- run` for Team Workspace recall and local-edge proxy scenarios.
-- `KOED_CAPACITY_UPSTREAM_BACKEND_ID`: optional local-edge upstream backend id consumed by `pnpm hosted:capacity -- run --scenario local-edge-team-proxy`.
+- `KOED_CAPACITY_UPSTREAM_BACKEND_ID`: optional local-edge upstream backend id consumed by `pnpm hosted:capacity -- run --scenario local-edge-team-recall`.
 - `KOED_LAUNCH_BASE_URL`: optional running API target consumed by `pnpm team-launch:validate --with-staged-remote`.
 - `KOED_LAUNCH_SESSION_COOKIE`: optional browser session Cookie header consumed by staged launch validation for Team Workspace routes.
 - `KOED_LAUNCH_DEVICE_CREDENTIAL`: optional scoped `Koed-Device` credential consumed by staged launch validation for Team Workspace routes.
@@ -368,7 +463,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `KOED_LAUNCH_TEAM_NODE_ID`: optional Memory node id consumed by staged launch validation; defaults to a synthetic fixture node.
 - `KOED_LAUNCH_LOCAL_EDGE_BASE_URL`: optional local-edge API target consumed by staged launch validation for proxy probes.
 - `KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID`: optional registered upstream backend id consumed by staged launch validation for proxy probes.
-- `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted or Koed-managed cloud backends that use WorkOS/AuthKit for browser-session identity. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
+- `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted backends that use WorkOS/AuthKit for browser-session identity; it is required for verified Team invite acceptance on Koed-managed cloud. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
 - `WORKOS_CLIENT_ID`: WorkOS/AuthKit client id used to build `/auth/workos/login` authorization redirects.
 - `WORKOS_API_KEY`: WorkOS server API key used only by `koed-server`/API when exchanging an AuthKit callback code. It must not be exposed to Explorer, MCP Server, Capture Hook, upstream registries, logs, or diagnostics.
 - `WORKOS_REDIRECT_URI`: absolute callback URL registered with WorkOS, normally ending in `/auth/workos/callback`.
@@ -411,6 +506,7 @@ policy, or full URLs containing customer content.
 
 - `EXPLORER_NODE_ENV`: runtime environment for the Explorer service.
 - `EXPLORER_API_BASE_URL`: browser-visible API base URL used when building the Explorer.
+- `EXPLORER_PUBLIC_URL`: absolute browser-visible Explorer base URL used for device-enrollment and sensitive-action approval links. Set this to the public Explorer origin or reverse-proxy path for remote deployments.
 - `EXPLORER_WEB_HOST_PORT`: host port used by the local Explorer preview process supervised by `koed-server`.
 - `REDIS_HOST_PORT`: host port mapped to the Redis dependency container when using the Docker Compose starter. Default `16379`.
 - `REDIS_URL`: explicit Redis/BullMQ URL consumed by `koed-server`, API, and Worker in external dependency mode when `WORK_QUEUE_BACKEND=bullmq`. For the Docker Compose starter, use `redis://localhost:${REDIS_HOST_PORT}`.
@@ -423,6 +519,14 @@ policy, or full URLs containing customer content.
   Authenticated durable heartbeats refresh inactive ready relationships;
   overdue replicas become stale and are excluded from Recall until a later
   successful package or valid heartbeat.
+- `RETENTION_PURGE_INTERVAL_MS`: Worker interval for claiming and completing
+  durable retention purge jobs. Default `1000`; values below `250` are clamped.
+- `COLLABORATION_REPLAY_PRUNE_INTERVAL_MS`: Worker interval for pruning expired
+  collaboration replay events after advancing a durable scope-bound low-water
+  mark. Default `60000`; values below `1000` are clamped.
+- `COLLABORATION_REPLAY_PRUNE_BATCH_LIMIT`: maximum expired collaboration
+  replay events removed in one transaction. Default `1000`; values above
+  `10000` are clamped.
 - `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container when using the Docker Compose starter. Default `3800`.
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `KOED_MODELS_DIR`: optional shared model directory for bundled-local model install and Docker Compose model mounts. Defaults to `KOED_HOME/models`.
@@ -668,5 +772,8 @@ Paid Koed-managed cloud must use a KMS-backed envelope provider. Projection
 hydrates raw conversation-item companions inside the trusted repository boundary
 before deriving semantic rows. Authorized graph, embedding, retrieval, LCM, and
 Memory Question paths hydrate encrypted companions after access checks.
+Owner-private remote replicas use the separate
+`OWNER_PRIVATE_REPLICA_*` envelope provider family. Team/general encryption
+keys are not used as a fallback for owner-private replica reads or writes.
 
 Operators should treat the Postgres database and backups as sensitive memory data. Keep Postgres on a private network, restrict database credentials to Koed services and trusted administrators, use encrypted disks or managed-database storage encryption, encrypt backups, and rotate secrets if a backup or database role is exposed.

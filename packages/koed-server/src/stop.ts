@@ -290,10 +290,21 @@ export const stopKoedServer = ({
         stoppedPids.push(runtime.pid);
         stoppedServices.push("supervisor");
       } else {
-        errors.push({
-          target: `supervisor (${runtime.pid})`,
-          error: "Timed out waiting for the supervisor to exit naturally"
+        const stopped = stopPid("supervisor", runtime.pid, {
+          kill,
+          checkPid,
+          waitForExitMs,
+          pollIntervalMs,
+          sleepSync
         });
+        stoppedPids.push(...stopped.stoppedPids);
+        missingPids.push(...stopped.missingPids);
+        errors.push(...stopped.errors);
+        if (stopped.missingPids.length > 0) {
+          missingServices.push("supervisor");
+        } else if (stopped.stoppedPids.length > 0) {
+          stoppedServices.push("supervisor");
+        }
       }
     }
   }

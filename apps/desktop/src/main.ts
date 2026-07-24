@@ -1,8 +1,10 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   ipcMain,
   nativeImage,
+  nativeTheme,
   net,
   protocol,
   shell
@@ -12,6 +14,10 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import {
+  desktopRendererOrigin,
+  personalMemoryEventChannel
+} from "./ipc/protocol.js";
 import {
   createKoedEnvironment,
   createKoedServerManager
@@ -25,6 +31,14 @@ import {
   resolveAppProtocolRequest
 } from "./window/app-protocol.js";
 import { resolveDevServerUrl } from "./window/dev-server-url.js";
+import { createExternalUrlOpener } from "./window/external-url-opener.js";
+import { desktopThemeChromeColor } from "./window/theme-colors.js";
+import {
+  desktopThemePreferencePath,
+  readDesktopThemePreference,
+  writeDesktopThemePreference,
+  type DesktopThemePreference
+} from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
@@ -36,12 +50,23 @@ const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
 });
 const appName = "Koed";
 const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
-  desktopManagedLocal: app.isPackaged,
+  desktopManagedLocal: true,
+  packagedDesktop: app.isPackaged,
   packagedResourcesPath: process.resourcesPath
 });
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
+const devServerUrl = resolveDevServerUrl({
+  appIsPackaged: app.isPackaged,
+  devServerUrl: process.env.VITE_DEV_SERVER_URL
+});
+const allowedRendererOrigins = new Set([
+  `${KOED_APP_SCHEME}://app`,
+  ...(devServerUrl ? [desktopRendererOrigin(devServerUrl)] : [])
+]);
 
 app.setName(appName);
+
+let themePreference: DesktopThemePreference = "system";
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -49,6 +74,29 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true }
   }
 ]);
+
+const openExternal = createExternalUrlOpener({
+  environment: process.env,
+  existsSync,
+  fallback: (url) => shell.openExternal(url),
+  platform: process.platform,
+  runProcess: (command, args, options) =>
+    new Promise<void>((resolvePromise, rejectPromise) => {
+      execFile(
+        command,
+        args,
+        {
+          cwd: options.cwd,
+          timeout: options.timeout,
+          windowsHide: true
+        },
+        (error) => {
+          if (error) rejectPromise(error);
+          else resolvePromise();
+        }
+      );
+    })
+});
 
 const koedServer = createKoedServerManager({
   repoRoot,
@@ -66,7 +114,7 @@ const koedServer = createKoedServerManager({
   existsSync,
   execFile,
   spawn,
-  openExternal: (url) => shell.openExternal(url),
+  openExternal,
   openPath: (path) => shell.openPath(path)
 });
 
@@ -107,30 +155,76 @@ const createWindow = async () => {
   const window = new BrowserWindow(
     createMainWindowOptions(
       appDir,
-      existsSync(desktopIconPath) ? desktopIconPath : undefined
+      existsSync(desktopIconPath) ? desktopIconPath : undefined,
+      desktopThemeChromeColor(nativeTheme.shouldUseDarkColors)
     )
   );
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://")) {
+      void openExternal(url);
+    }
+    return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    try {
+      const origin = desktopRendererOrigin(url);
+      if (!allowedRendererOrigins.has(origin)) event.preventDefault();
+    } catch {
+      event.preventDefault();
+    }
+  });
   window.once("ready-to-show", () => window.show());
 
-  const devServerUrl = resolveDevServerUrl({
-    appIsPackaged: app.isPackaged,
-    devServerUrl: process.env.VITE_DEV_SERVER_URL
-  });
   if (devServerUrl) {
     await window.loadURL(devServerUrl);
   } else {
     await window.loadURL(`${KOED_APP_SCHEME}://app/`);
   }
+  const personalMemoryController = new AbortController();
+  window.once("closed", () => personalMemoryController.abort());
+  void koedServer
+    .subscribePersonalMemory((change) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send(personalMemoryEventChannel, change);
+      }
+    }, personalMemoryController.signal)
+    .catch(() => undefined);
 };
 
 const bootstrap = async () => {
   await app.whenReady();
+  const themePreferenceFile = desktopThemePreferencePath(
+    app.getPath("userData")
+  );
+  themePreference = readDesktopThemePreference(themePreferenceFile);
+  nativeTheme.themeSource = themePreference;
   const desktopIcon = getDesktopIcon();
   if (desktopIcon && process.platform === "darwin") {
     app.dock?.setIcon(desktopIcon);
   }
   registerAppProtocol();
-  registerDesktopCommandHandlers(ipcMain, koedServer.handlers);
+  registerDesktopCommandHandlers(ipcMain, koedServer.handlers, {
+    allowedRendererOrigins,
+    personalMemory: koedServer.personalMemory,
+    writeClipboard: (value) => clipboard.writeText(value),
+    getThemePreference: () => themePreference,
+    setThemePreference: (preference) => {
+      themePreference = preference;
+      nativeTheme.themeSource = preference;
+      writeDesktopThemePreference(themePreferenceFile, preference);
+      const backgroundColor = desktopThemeChromeColor(
+        nativeTheme.shouldUseDarkColors
+      );
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.setBackgroundColor(backgroundColor);
+      }
+      return {
+        preference,
+        resolvedDark: nativeTheme.shouldUseDarkColors
+      };
+    }
+  });
+  await koedServer.resume();
   await createWindow();
 };
 

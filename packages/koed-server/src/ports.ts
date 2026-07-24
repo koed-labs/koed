@@ -9,21 +9,33 @@ export interface KoedLocalPorts {
   explorer: string;
   postgres: string;
   embedding: string;
+  llamaEmbedding: string;
+  llamaReranker: string;
 }
 
 const DEFAULT_PORTS: KoedLocalPorts = {
   api: "43300",
   explorer: "45174",
   postgres: "45432",
-  embedding: "43800"
+  embedding: "43800",
+  llamaEmbedding: "18080",
+  llamaReranker: "19080"
 };
 
 const ENV_KEYS = {
-  api: "API_HOST_PORT",
-  explorer: "EXPLORER_WEB_HOST_PORT",
-  postgres: "POSTGRES_HOST_PORT",
-  embedding: "EMBEDDING_SERVICE_HOST_PORT"
-} as const;
+  api: ["API_HOST_PORT"],
+  explorer: ["EXPLORER_WEB_HOST_PORT"],
+  postgres: ["POSTGRES_HOST_PORT"],
+  embedding: ["EMBEDDING_SERVICE_HOST_PORT"],
+  llamaEmbedding: [
+    "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT",
+    "LLAMA_EMBEDDING_SERVER_PORT"
+  ],
+  llamaReranker: [
+    "EMBEDDING_LLAMA_RERANKER_SERVER_PORT",
+    "LLAMA_RERANKER_SERVER_PORT"
+  ]
+} as const satisfies Record<keyof KoedLocalPorts, readonly string[]>;
 
 const trim = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
@@ -76,6 +88,12 @@ export const readPersistedLocalPorts = (
         : {}),
       ...(validPort(parsed.embedding)
         ? { embedding: validPort(parsed.embedding)! }
+        : {}),
+      ...(validPort(parsed.llamaEmbedding)
+        ? { llamaEmbedding: validPort(parsed.llamaEmbedding)! }
+        : {}),
+      ...(validPort(parsed.llamaReranker)
+        ? { llamaReranker: validPort(parsed.llamaReranker)! }
         : {})
     };
   } catch {
@@ -113,6 +131,14 @@ export const applyPersistedLocalPorts = (
       : {}),
     ...(persisted.embedding && !trim(environment.EMBEDDING_SERVICE_HOST_PORT)
       ? { EMBEDDING_SERVICE_HOST_PORT: persisted.embedding }
+      : {}),
+    ...(persisted.llamaEmbedding &&
+    !ENV_KEYS.llamaEmbedding.some((key) => trim(environment[key]))
+      ? { EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: persisted.llamaEmbedding }
+      : {}),
+    ...(persisted.llamaReranker &&
+    !ENV_KEYS.llamaReranker.some((key) => trim(environment[key]))
+      ? { EMBEDDING_LLAMA_RERANKER_SERVER_PORT: persisted.llamaReranker }
       : {})
   };
 };
@@ -127,8 +153,9 @@ export const allocateAndPersistLocalPorts = async (
   const allocated: KoedLocalPorts = { ...DEFAULT_PORTS, ...persisted };
 
   for (const key of Object.keys(ENV_KEYS) as Array<keyof KoedLocalPorts>) {
-    const envKey = ENV_KEYS[key];
-    const fromEnv = validPort(environment[envKey]);
+    const fromEnv = ENV_KEYS[key]
+      .map((envKey) => validPort(environment[envKey]))
+      .find((port) => port !== undefined);
     if (fromEnv) {
       allocated[key] = fromEnv;
       continue;
@@ -147,6 +174,12 @@ export const allocateAndPersistLocalPorts = async (
       environment.EXPLORER_WEB_HOST_PORT ?? allocated.explorer,
     POSTGRES_HOST_PORT: environment.POSTGRES_HOST_PORT ?? allocated.postgres,
     EMBEDDING_SERVICE_HOST_PORT:
-      environment.EMBEDDING_SERVICE_HOST_PORT ?? allocated.embedding
+      environment.EMBEDDING_SERVICE_HOST_PORT ?? allocated.embedding,
+    ...(!ENV_KEYS.llamaEmbedding.some((key) => trim(environment[key]))
+      ? { EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: allocated.llamaEmbedding }
+      : {}),
+    ...(!ENV_KEYS.llamaReranker.some((key) => trim(environment[key]))
+      ? { EMBEDDING_LLAMA_RERANKER_SERVER_PORT: allocated.llamaReranker }
+      : {})
   };
 };

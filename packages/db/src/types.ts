@@ -6,11 +6,17 @@ import type {
 import type { KoedWorkClass } from "@koed/shared";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
+import type {
+  CollaborationRealtimeMaterializationRepository,
+  CollaborationRepository
+} from "./collaboration-repository.js";
 import type { CrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
 import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.js";
+import type { HighRiskActionRepository } from "./high-risk-action-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
+import type { SharedMemoryRepository } from "./shared-memory-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 
 export type Visibility = "personal";
@@ -93,6 +99,13 @@ export interface UserRecord {
   passwordHash: string | null;
 }
 
+export interface UserSessionContext {
+  sessionId: string;
+  createdAt: Date;
+  expiresAt: Date;
+  user: UserRecord;
+}
+
 export type ExternalAuthProvider = "workos_authkit";
 
 export type ExternalAuthLinkStatus = "linked" | "disabled";
@@ -140,6 +153,25 @@ export type TeamMembershipStatus = "invited" | "enabled" | "disabled";
 
 export type TeamWorkspaceAccessLevel = "disabled" | "read" | "write";
 
+export type TeamLifecycle =
+  | "active"
+  | "suspended"
+  | "deletion_requested"
+  | "purge_pending"
+  | "purged";
+
+export type TeamWorkspaceLifecycle =
+  | "active"
+  | "archived"
+  | "purge_pending"
+  | "purged";
+
+export type TeamInviteLifecycle =
+  | "pending"
+  | "accepted"
+  | "revoked"
+  | "expired";
+
 export type TeamEntitlementStatus =
   | "active"
   | "grace"
@@ -154,6 +186,7 @@ export type TeamBillingSeatSyncStatus =
 
 export interface TeamEntitlementGateRecord {
   teamId: string;
+  version: number;
   status: TeamEntitlementStatus;
   allowsTeamAccess: boolean;
   deniedOperationFamilies: string[];
@@ -164,16 +197,23 @@ export interface TeamEntitlementGateRecord {
 export interface TeamRecord {
   id: string;
   name: string;
+  version: number;
+  lifecycle: TeamLifecycle;
   entitlementStatus: TeamEntitlementStatus;
   entitlementReason: string | null;
   entitlementUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
-  archivedAt: string | null;
+  suspendedAt: string | null;
+  deletionRequestedAt: string | null;
+  tombstonedAt: string | null;
+  retainUntil: string | null;
+  purgeCompletedAt: string | null;
 }
 
 export interface TeamBillingSeatStateRecord {
   teamId: string;
+  version: number;
   seatLimit: number | null;
   billableSeatCount: number;
   pendingBillingSeatCount: number;
@@ -266,19 +306,46 @@ export interface TeamMembershipRecord {
   userId: string;
   role: TeamRole;
   status: TeamMembershipStatus;
+  version: number;
   createdAt: string;
   updatedAt: string;
   acceptedAt: string | null;
   disabledAt: string | null;
 }
 
+export interface TeamRosterMemberRecord {
+  userId: string;
+  displayName: string | null;
+  avatarReference: string | null;
+  status: "enabled";
+  presence: "unknown";
+}
+
+export interface TeamManagementMemberRecord extends TeamMembershipRecord {
+  email: string;
+  displayName: string | null;
+  workspaceAccess: {
+    teamWorkspaceId: string;
+    userId: string;
+    access: TeamWorkspaceAccessLevel;
+    version: number;
+  }[];
+}
+
 export interface TeamWorkspaceRecord {
   id: string;
   teamId: string;
   name: string;
+  description: string | null;
+  version: number;
+  lifecycle: TeamWorkspaceLifecycle;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  retentionPolicyId: string | null;
+  retentionPolicyVersion: number | null;
+  retainUntil: string | null;
+  purgeCompletedAt: string | null;
 }
 
 export interface TeamWorkspaceAccessRecord {
@@ -288,6 +355,8 @@ export interface TeamWorkspaceAccessRecord {
   role: TeamRole | null;
   membershipStatus: TeamMembershipStatus | null;
   access: TeamWorkspaceAccessLevel;
+  canShareOwnedMemory: boolean;
+  version: number | null;
   teamEntitlementStatus: TeamEntitlementStatus;
   teamEntitlementAllowsAccess: boolean;
   canManageTeam: boolean;
@@ -296,30 +365,26 @@ export interface TeamWorkspaceAccessRecord {
   canCreateShare: boolean;
 }
 
-export interface TeamSessionShareGrantRecord {
-  id: string;
-  ownerUserId: string | null;
-  sessionId: string | null;
+export interface TeamWorkspaceContextRecord {
   teamId: string;
+  teamName: string;
+  teamRole: TeamRole;
   teamWorkspaceId: string;
-  grantedByUserId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  revokedAt: string | null;
-  revokedByUserId: string | null;
-  revocationReason: string | null;
-  personalDeletedAt: string | null;
-  personalDeletedByUserId: string | null;
-  personalDeletionReason: string | null;
-  retainedByTeamAt: string | null;
-  retentionReason: string;
+  teamWorkspaceName: string;
+  access: Exclude<TeamWorkspaceAccessLevel, "disabled">;
 }
 
 export interface TeamInviteRecord {
   id: string;
   teamId: string;
+  defaultTeamWorkspaceId: string;
+  defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
   email: string;
+  normalizedEmail: string;
+  backendOriginHash: string;
   role: TeamRole;
+  version: number;
+  lifecycle: TeamInviteLifecycle;
   createdByUserId: string | null;
   acceptedByUserId: string | null;
   createdAt: string;
@@ -1419,12 +1484,16 @@ export interface MemorySourceRepository
   extends
     MemoryEngineRepository,
     CapturedSessionRepository,
+    CollaborationRepository,
+    CollaborationRealtimeMaterializationRepository,
     ConversationItemRepository,
     CrossIdentitySyncRepository,
     EncryptedPayloadRepository,
+    HighRiskActionRepository,
     LocalEmbeddingStatusRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,
+    SharedMemoryRepository,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;
@@ -1526,11 +1595,30 @@ export interface MemorySourceRepository
     providerEnvironment?: string;
     providerUserId: string;
   }): Promise<ExternalAuthIdentityRecord | null>;
-  createTeam(actor: ActorContext, input: { name: string }): Promise<TeamRecord>;
+  getVerifiedExternalAuthIdentityForUser(
+    userId: string
+  ): Promise<ExternalAuthIdentityRecord | null>;
+  createTeam(
+    actor: ActorContext,
+    input: { name: string; idempotencyKey?: string }
+  ): Promise<TeamRecord>;
+  getTeamDefaultWorkspace(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamWorkspaceRecord | null>;
+  listTeams(actor: ActorContext): Promise<TeamRecord[]>;
   getTeamMembership(
     actor: ActorContext,
     teamId: string
   ): Promise<TeamMembershipRecord | null>;
+  listTeamRoster(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamRosterMemberRecord[] | null>;
+  listTeamManagementMembers(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamManagementMemberRecord[] | null>;
   getTeamEntitlementGate(
     actor: ActorContext,
     teamId: string
@@ -1539,6 +1627,7 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: {
       teamId: string;
+      expectedVersion: number;
       status: TeamEntitlementStatus;
       reason?: string | null;
     }
@@ -1551,6 +1640,7 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: {
       teamId: string;
+      expectedVersion: number;
       seatLimit: number | null;
     }
   ): Promise<TeamBillingSeatStateRecord | null>;
@@ -1562,25 +1652,31 @@ export interface MemorySourceRepository
     actor: ActorContext,
     teamId: string
   ): Promise<TeamSupportOverviewRecord | null>;
-  upsertTeamMember(
-    actor: ActorContext,
-    input: {
-      teamId: string;
-      userId: string;
-      role: TeamRole;
-      status?: TeamMembershipStatus;
-    }
-  ): Promise<TeamMembershipRecord | null>;
   createTeamWorkspace(
     actor: ActorContext,
-    input: { teamId: string; name: string }
+    input: { teamId: string; name: string; description?: string | null }
   ): Promise<TeamWorkspaceRecord | null>;
+  listTeamWorkspaces(
+    actor: ActorContext,
+    input: { teamId: string; includeArchived?: boolean; limit?: number }
+  ): Promise<TeamWorkspaceRecord[] | null>;
+  getTeamWorkspaceContext(
+    actor: ActorContext,
+    teamWorkspaceId: string
+  ): Promise<{
+    team: TeamRecord;
+    teamWorkspace: TeamWorkspaceRecord;
+    access: TeamWorkspaceAccessRecord;
+  } | null>;
   createTeamInvite(
     actor: ActorContext,
     input: {
       teamId: string;
+      defaultTeamWorkspaceId: string;
+      defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
       email: string;
       role: TeamRole;
+      backendOriginHash: string;
       tokenHash: string;
       expiresAt: Date;
     }
@@ -1590,14 +1686,42 @@ export interface MemorySourceRepository
   ): Promise<TeamInviteRecord | null>;
   acceptTeamInvite(input: {
     tokenHash: string;
-    userId?: string;
-    email?: string;
-    displayName?: string;
-    passwordHash?: string;
+    userId: string;
+    expectedVersion: number;
+    expectedBackendOriginHash: string;
   }): Promise<AcceptedTeamInviteRecord | null>;
+  listTeamInvites(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      includeRevoked?: boolean;
+      limit?: number;
+      cursor?: { createdAt: string; id: string };
+    }
+  ): Promise<{
+    invites: TeamInviteRecord[];
+    nextCursor: { createdAt: string; id: string } | null;
+  } | null>;
+  revokeTeamInvite(
+    actor: ActorContext,
+    input: { teamId: string; inviteId: string; expectedVersion: number }
+  ): Promise<TeamInviteRecord | null>;
+  updateTeamMemberRole(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      userId: string;
+      role: TeamRole;
+      expectedVersion: number;
+    }
+  ): Promise<TeamMembershipRecord | null>;
+  leaveTeam(
+    actor: ActorContext,
+    input: { teamId: string; expectedVersion: number }
+  ): Promise<TeamMembershipRecord | null>;
   disableTeamMember(
     actor: ActorContext,
-    input: { teamId: string; userId: string }
+    input: { teamId: string; userId: string; expectedVersion: number }
   ): Promise<TeamMembershipRecord | null>;
   setTeamWorkspaceAccess(
     actor: ActorContext,
@@ -1605,28 +1729,24 @@ export interface MemorySourceRepository
       teamWorkspaceId: string;
       userId: string;
       access: TeamWorkspaceAccessLevel;
+      expectedVersion: number | null;
     }
   ): Promise<TeamWorkspaceAccessRecord | null>;
+  archiveTeamWorkspace(
+    actor: ActorContext,
+    input: { teamWorkspaceId: string; expectedVersion: number }
+  ): Promise<TeamWorkspaceRecord | null>;
+  restoreTeamWorkspace(
+    actor: ActorContext,
+    input: { teamWorkspaceId: string; expectedVersion: number }
+  ): Promise<TeamWorkspaceRecord | null>;
   getTeamWorkspaceAccess(
     actor: ActorContext,
     teamWorkspaceId: string
   ): Promise<TeamWorkspaceAccessRecord | null>;
-  createTeamSessionShareGrant(
-    actor: ActorContext,
-    input: { teamWorkspaceId: string; sessionId: string }
-  ): Promise<TeamSessionShareGrantRecord | null>;
-  revokeTeamSessionShareGrant(
-    actor: ActorContext,
-    input: {
-      teamWorkspaceId: string;
-      shareGrantId: string;
-      reason?: string | null;
-    }
-  ): Promise<TeamSessionShareGrantRecord | null>;
-  listTeamSessionShareGrants(
-    actor: ActorContext,
-    input: { teamWorkspaceId: string; includeRevoked?: boolean; limit?: number }
-  ): Promise<TeamSessionShareGrantRecord[] | null>;
+  listTeamWorkspaceContexts(
+    actor: ActorContext
+  ): Promise<TeamWorkspaceContextRecord[]>;
   listTeamAuditEvents(
     actor: ActorContext,
     input: ListTeamAuditEventsInput
@@ -1636,6 +1756,7 @@ export interface MemorySourceRepository
     sessionHash: string,
     expiresAt: Date
   ): Promise<void>;
+  getSessionContext(sessionHash: string): Promise<UserSessionContext | null>;
   getSessionUser(sessionHash: string): Promise<UserRecord | null>;
   revokeSession(sessionHash: string): Promise<void>;
   createApiToken(input: {
@@ -1881,7 +2002,6 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
-      teamWorkspaceId?: string;
       threadId?: string;
       nodeIds?: string[];
       includeInvalidated?: boolean;
@@ -1891,7 +2011,7 @@ export interface MemorySourceRepository
   getLcmGraphNode(
     actor: ActorContext,
     nodeId: string,
-    input?: { includeInvalidated?: boolean; teamWorkspaceId?: string }
+    input?: { includeInvalidated?: boolean }
   ): Promise<LcmGraphNodeDetail | null>;
   updateLcmGraphNode(
     actor: ActorContext,
@@ -1906,7 +2026,6 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
-      teamWorkspaceId?: string;
       threadId?: string;
       cursorTimestamp?: string;
       cursorSourceSequence?: number;
@@ -1923,7 +2042,6 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
-      teamWorkspaceId?: string;
       threadId?: string;
       includeInvalidated?: boolean;
       limit?: number;
@@ -1936,7 +2054,6 @@ export interface MemorySourceRepository
     input?: {
       includeInvalidated?: boolean;
       includeRaw?: boolean;
-      teamWorkspaceId?: string;
     }
   ): Promise<LcmGraphEvent | null>;
   updateLcmGraphEvent(

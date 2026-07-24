@@ -1,12 +1,13 @@
 # Team SaaS Synthetic Memory Fixture
 
 This fixture is the shared synthetic data set for Team SaaS backend data, API
-authorization, graph/timeline, evidence, lexical recall, Agent, and later
-Electron validation.
+authorization, dedicated Shared Memory grant/list/timeline/detail
+representations, Agent, and later Electron validation.
 
-It creates a deterministic near-real Koed Team with four users, three
-Workspaces, private memories, shared memories, revoked shares, a removed
-Workspace member, and Team-retained knowledge after personal deletion.
+It creates a deterministic near-real Koed Team with seven users, three
+Workspaces, every collaboration thread kind, production-shaped encrypted
+Shared Memory representations, private memories, revoked shares, disabled and
+removed access, and Team-retained knowledge after personal deletion.
 
 The goal is to let humans and Agents test against the same known world instead
 of inventing one-off examples for each PR.
@@ -45,60 +46,96 @@ Runs the launch validation report against the already-seeded fixture.
 pnpm team-fixture:reset
 ```
 
-Removes only rows belonging to `team-saas-fixture-v1`, returning the fixture
-state to square 1. It does not truncate the full database.
+Removes only child rows and test sessions belonging to
+`team-saas-fixture-v1`. The deterministic fixture User and Team shells remain
+so reset cannot cascade-delete unrelated rows later owned by a fixture User or
+associated with the fixture Team. Seed upserts those shells before rebuilding
+the fixture. Reset does not truncate the database or use User/Team ownership as
+a fixture marker.
 
 All commands require `DATABASE_URL`. `pnpm team-fixture:seed` loads the root
 `.env` before running migrations, so a normal local clone can use the same
 environment file as the other operator scripts.
 
-## API Session Cookies
+The fixture commands fail closed unless `NODE_ENV=test` or the process is a
+local development process with the `developer` (or omitted) deployment
+profile. They reject production, Private VPS, Team Self-Hosted, and
+Koed-managed cloud profiles.
 
-When `API_TOKEN_PEPPER` is configured, seeding creates active synthetic web
-sessions for API-level checks. Use only locally generated session cookies from
-the disposable fixture database being tested.
+## Local API Test Credentials
+
+When `API_TOKEN_PEPPER` is configured, seeding creates deterministic sessions
+with fixed row IDs and expiry. The corresponding fixture session secrets are
+reusable local-only test bearer credentials: anyone with a fixture secret and
+the matching test pepper can authenticate as that synthetic User until reset
+or expiry. The fixture device credentials use the same production
+`API_TOKEN_PEPPER` hashing path and can exercise scoped device authorization
+when the pepper is configured. Use both credential types only with an isolated
+local fixture database.
 
 Do not publish or copy fixed fixture cookie values into documentation, issue
-comments, shared chat, or committed config. Do not seed this fixture into
-shared, staging, or production environments with a normal shared
-`API_TOKEN_PEPPER`, because any deterministic fixture sessions would be valid
-for the seeded synthetic users until the fixture is reset or the sessions
-expire.
+comments, shared chat, or committed config. The command profile guard rejects
+shared deployment profiles; do not bypass it or seed the fixture into shared,
+staging, or production environments with a normal shared `API_TOKEN_PEPPER`.
 
 ## Team
 
-| Person | Fixture email           | Role   | Main memory domain                                 |
-| ------ | ----------------------- | ------ | -------------------------------------------------- |
-| Alice  | `alice.fixture@koed.ai` | Owner  | Dataflows, DB architecture, product and governance |
-| Bob    | `bob.fixture@koed.ai`   | Member | Frontend, Electron UX, setup flows, DevOps         |
-| Carol  | `carol.fixture@koed.ai` | Admin  | Architecture, backend, APIs, service contracts     |
-| David  | `david.fixture@koed.ai` | Member | Agentic workflows, AI behavior, MCP/tooling        |
+| Person | Fixture email           | Team state         | Purpose                                               |
+| ------ | ----------------------- | ------------------ | ----------------------------------------------------- |
+| Alice  | `alice.fixture@koed.ai` | Enabled owner      | Team owner, personal collaboration, and fixture actor |
+| Bob    | `bob.fixture@koed.ai`   | Enabled member     | Active member with disabled access to one Workspace   |
+| Carol  | `carol.fixture@koed.ai` | Enabled admin      | Admin and owner of retained Team knowledge            |
+| David  | `david.fixture@koed.ai` | Enabled member     | Active member and owner of a revoked Share Grant      |
+| Dana   | `dana.fixture@koed.ai`  | Disabled member    | Must not receive Team collaboration                   |
+| Erin   | `erin.fixture@koed.ai`  | Enabled member     | Read-only Workspace member                            |
+| Frank  | `frank.fixture@koed.ai` | Removed/non-member | User row remains, but no Team membership remains      |
 
 ## Workspaces
 
 | Workspace                   | Project path                                | Access model                                                                               |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Electron Team App           | `/fixture/koed/electron-team-app`           | Alice, Bob, and David can write. Carol can read.                                           |
+| Electron Team App           | `/fixture/koed/electron-team-app`           | Alice, Bob, and David can write. Bob may share his owned Memory. Carol and Erin can read.  |
 | Cloud Memory Platform       | `/fixture/koed/cloud-memory-platform`       | Alice, Carol, and David can write. Bob has been removed and has disabled Workspace access. |
-| Managed Knowledge Ingestion | `/fixture/koed/managed-knowledge-ingestion` | Alice, Carol, and David can write. Bob can read.                                           |
+| Managed Knowledge Ingestion | `/fixture/koed/managed-knowledge-ingestion` | Alice, Carol, and David can write. Bob and Erin can read.                                  |
 
 ## Memory Truth Sheet
 
-| Memory                          | Owner | Workspace                   | State                           | Expected Team behavior                                                                                      |
-| ------------------------------- | ----- | --------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Workspace Memory Timeline UX    | Bob   | Electron Team App           | Active share                    | Visible to authorized Electron Workspace members.                                                           |
-| Agent Collaboration Rooms       | David | Electron Team App           | Active share                    | Visible to authorized Electron Workspace members.                                                           |
-| Revoked Electron Experiment     | David | Electron Team App           | Revoked share                   | Hidden from Team recall; remains David's personal memory.                                                   |
-| Private DevOps Scratchpad       | Bob   | Electron Team App           | Private                         | Hidden from Team recall.                                                                                    |
-| Flat User-Owned Memory Model    | Alice | Cloud Memory Platform       | Active share                    | Visible to authorized Cloud Workspace members.                                                              |
-| Cloud API Superset Contract     | Carol | Cloud Memory Platform       | Active share                    | Visible to authorized Cloud Workspace members.                                                              |
-| Retained Billing Grace Decision | Carol | Cloud Memory Platform       | Personal deleted, Team retained | Visible to authorized Cloud Workspace members even though Carol's personal source is soft-deleted.          |
-| Removed Member Deployment Note  | Bob   | Cloud Memory Platform       | Active share                    | Visible to authorized Cloud Workspace members, but not to Bob after his Cloud Workspace access is disabled. |
-| Private Pricing Scratchpad      | Alice | Cloud Memory Platform       | Private                         | Hidden from Team recall.                                                                                    |
-| Provider Fallback Ingestion     | David | Managed Knowledge Ingestion | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
-| Checksum Dedupe Inventory       | Carol | Managed Knowledge Ingestion | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
-| Memory Inbox Product Boundary   | Alice | Managed Knowledge Ingestion | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
-| Private Agent Prompt Scratchpad | David | Managed Knowledge Ingestion | Private                         | Hidden from Team recall.                                                                                    |
+| Memory                          | Owner | Workspace                   | Representation | State                           | Expected Team behavior                                                                                      |
+| ------------------------------- | ----- | --------------------------- | -------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Workspace Memory Timeline UX    | Bob   | Electron Team App           | Memory Events  | Active share                    | Visible to authorized Electron Workspace members.                                                           |
+| Agent Collaboration Rooms       | David | Electron Team App           | LCM Leaves     | Active share                    | Visible to authorized Electron Workspace members.                                                           |
+| Revoked Electron Experiment     | David | Electron Team App           | Memory Events  | Revoked share                   | Hidden from Team reads; remains David's personal memory.                                                    |
+| Private DevOps Scratchpad       | Bob   | Electron Team App           | Memory Events  | Private                         | Hidden from Team reads.                                                                                     |
+| Flat User-Owned Memory Model    | Alice | Cloud Memory Platform       | LCM Rollups    | Active share                    | Visible to authorized Cloud Workspace members.                                                              |
+| Cloud API Superset Contract     | Carol | Cloud Memory Platform       | Memory Events  | Active share                    | Visible to authorized Cloud Workspace members.                                                              |
+| Retained Billing Grace Decision | Carol | Cloud Memory Platform       | LCM Leaves     | Personal deleted, Team retained | Visible to authorized Cloud Workspace members even though Carol's personal source is soft-deleted.          |
+| Removed Member Deployment Note  | Bob   | Cloud Memory Platform       | LCM Rollups    | Active share                    | Visible to authorized Cloud Workspace members, but not to Bob after his Cloud Workspace access is disabled. |
+| Private Pricing Scratchpad      | Alice | Cloud Memory Platform       | Memory Events  | Private                         | Hidden from Team reads.                                                                                     |
+| Provider Fallback Ingestion     | David | Managed Knowledge Ingestion | Memory Events  | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
+| Checksum Dedupe Inventory       | Carol | Managed Knowledge Ingestion | LCM Leaves     | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
+| Memory Inbox Product Boundary   | Alice | Managed Knowledge Ingestion | LCM Rollups    | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
+| Private Agent Prompt Scratchpad | David | Managed Knowledge Ingestion | Memory Events  | Private                         | Hidden from Team reads.                                                                                     |
+
+## Collaboration Truth Sheet
+
+All six collaboration threads and their messages have deterministic physical
+IDs derived from fixture idempotency keys. Thread names, topics, message bodies,
+metadata, and full provenance values are stored through the production
+encryption path. The collaboration tables retain only required markers,
+authorization/routing IDs, an opaque provenance ID, and outbox routing fields.
+
+| Thread             | Scope                  | Kind                        | Participants/access                                      | Expected history                                          |
+| ------------------ | ---------------------- | --------------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| Alice notes        | Personal               | `notes_to_self`             | Alice only                                               | One self message                                          |
+| Release notes      | Personal               | `personal_channel`          | Alice only                                               | One private channel message                               |
+| Product            | Electron Workspace     | `workspace_channel`         | Workspace readers can read; writers can post             | Two messages                                              |
+| Alice/Bob          | Team                   | `dm`                        | Alice and Bob                                            | Two messages                                              |
+| Launch review      | Team                   | `group_dm`                  | Alice, Bob, and Carol                                    | One message                                               |
+| Timeline companion | Electron Shared Memory | `shared_session_discussion` | Authorized Workspace members with the active Share Grant | Two messages; Alice has read the first and has one unread |
+
+Dana and Frank must receive no Team threads. Erin can read the Electron
+Workspace channel but cannot write to it. Personal threads must never appear in
+Team thread lists.
 
 ## Expected Checks
 
@@ -111,32 +148,63 @@ Use these as the first API/data-level assertions before adding UI checks.
 | Bob   | Cloud Memory Platform       | Nothing                                                                                                                    | All Cloud Workspace memories, because his Workspace access is disabled |
 | Bob   | Managed Knowledge Ingestion | Provider Fallback Ingestion; Checksum Dedupe Inventory; Memory Inbox Product Boundary                                      | Private Agent Prompt Scratchpad                                        |
 
+The active Shared Memory rows collectively exercise `memory_events`,
+`lcm_leaves`, and `lcm_rollups`. Validation lists authorized Workspace Share
+Grants and decrypts each representation through the dedicated production
+repository. Timeline metadata and detail content come from the representation,
+not canonical owner-private `messages`, `memory_events`, or `memory_nodes`.
+The revoked representation must not list or decrypt for an otherwise authorized
+Team reader. Bob's explicit `can_share_owned_memory` permission supports the
+protected Personal-to-Team preview, consent, and share flow without treating
+ordinary Workspace write access as sharing authority.
+
 ## Agent Testing Playbook
 
 1. Run `pnpm team-fixture:seed`.
 2. Read this document before writing tests or prompts.
-3. Verify data/API behavior first: authorization, lexical recall, graph,
-   expansion, and evidence must match the truth sheet.
-4. Treat any mismatch as either a fixture bug or product bug. Do not silently
+3. Verify data/API behavior first: authorization, collaboration history, and
+   Shared Memory grant/list/timeline/detail representation reads must match the
+   truth sheet.
+4. Verify generic Team search, answer/Evidence Bundle, graph, evidence, and
+   expansion surfaces fail closed. They are unavailable in V1 and are not
+   alternate views over canonical owner-private rows.
+5. Treat any mismatch as either a fixture bug or product bug. Do not silently
    alter the fixture assumptions.
-5. When the Electron app is ready, reuse this same fixture for UI-level checks.
-6. If a failure blocks launch validation, create or link a Linear ticket before
+6. When the Electron app is ready, reuse this same fixture for UI-level checks.
+7. If a failure blocks launch validation, create or link a Linear ticket before
    release.
 
 ## Design Notes
 
 - The reset mechanism is fixture-scoped. It deletes deterministic fixture rows
-  by IDs, emails, and source hashes instead of truncating the whole database.
+  by IDs and source/idempotency markers instead of treating all rows owned by a
+  fixture User or associated with the fixture Team as fixture data. The focused
+  live test proves an out-of-marker Memory Event owned by Alice survives while
+  an in-marker stale row is removed.
+- Reseeding compares a normalized snapshot across every seeded table family,
+  decrypted Shared Memory, collaboration state, encryption companions, and
+  outbox rows. Only generated timestamps, outbox cursors, generated container
+  IDs, and randomized envelope bytes are normalized.
 - The data intentionally includes edge cases, not only happy paths.
-- The fixture seeds production-shaped `messages`, `memory_events`,
-  `memory_nodes`, `memory_node_sources`, and LCM-style `source_items_json` so
-  graph/timeline and evidence checks exercise the normal data shapes.
-- The fixture does not precompute embeddings. Semantic `/v1/memory/search` and
-  answer flows require the normal embedding service or backfill path before
-  semantic hits are expected. Until then, use lexical/data-level checks for
-  deterministic recall validation.
+- The fixture preserves production-shaped canonical Personal Memory rows for
+  personal-boundary tests, but Team validation never treats those rows as a
+  Shared Memory read model. A hostile canonical secret canary regression proves
+  canonical payload, message, and summary changes cannot enter an already
+  materialized Team representation.
+- The fixture does not precompute embeddings. Generic Team semantic search and
+  answer are unavailable in V1 regardless of embedding state.
 - Bob's Cloud Workspace removal tests that user-owned contributions can remain
   useful to the Team while the removed member loses access.
 - Carol's retained billing memory tests that personal deletion does not destroy
   Team-retained knowledge for authorized Workspace members.
-- Revoked and private memories exist to prove Team recall does not overreach.
+- Revoked and Personal Memory cases prove Shared Memory representation reads do
+  not overreach.
+- Shared source artifacts and previews use an owner-private fixture envelope;
+  Team representation chunks and collaboration fields use a separate Team
+  fixture envelope. Both use the production repository shape with synthetic,
+  non-production local-test key material. Validation requires exact encrypted
+  payload coverage for collaboration names/topics/bodies/metadata/provenance,
+  Shared Memory artifacts/previews/chunks, and checks that collaboration
+  outbox/storage surfaces contain no sensitive fixture plaintext. The
+  deterministic web-session values are reusable local-only test bearers, not
+  production secrets.

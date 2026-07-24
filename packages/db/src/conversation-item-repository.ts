@@ -161,7 +161,7 @@ const SAFE_CONVERSATION_METADATA_KEYS = new Set([
   "sourceChunkCount"
 ]);
 
-const safeConversationMetadata = (
+export const safeConversationMetadataForEncryptedStorage = (
   metadata: Record<string, unknown>,
   markerKey: string,
   encryptedColumns: string[]
@@ -1294,7 +1294,7 @@ const persistConversationItemObservation = async (input: {
       ? ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_TEXT
       : (input.item.sourcePath ?? null);
   const metadata = input.suppressPlaintextRaw
-    ? safeConversationMetadata(
+    ? safeConversationMetadataForEncryptedStorage(
         input.item.metadata ?? {},
         "encryptedConversationItemObservationColumns",
         [
@@ -1689,7 +1689,7 @@ export const createConversationItemRepository = (
         assertManagedTranscriptTerminal(item, verifiedSession);
         item = withAuthoritativeSessionMetadata(item, verifiedSession);
         const metadataForStorage = suppressPlaintextRaw
-          ? safeConversationMetadata(
+          ? safeConversationMetadataForEncryptedStorage(
               item.metadata ?? {},
               "encryptedConversationItemColumns",
               [

@@ -676,26 +676,35 @@ export class MemoryApiClient {
     return this.request("GET", "/v1/memory/graph/overview");
   }
 
-  async upstreamOperation(
-    input: {
-      upstreamBackendId: string;
-      operationFamily: "team_workspace_read";
-      method: "GET" | "POST";
-      path: string;
-      body?: unknown;
-    },
+  async teamMemorySearch(
+    upstreamBackendId: string,
+    input: Record<string, unknown>,
     authorization: string
   ): Promise<Record<string, unknown>> {
     return this.request(
       "POST",
-      "/v1/local-edge/upstream-operations",
+      "/v1/local-edge/team-memory/search",
       {
-        upstream_backend_id: input.upstreamBackendId,
-        operation_family: input.operationFamily,
-        requested_mode: "live_upstream_proxy",
-        method: input.method,
-        path: input.path,
-        body: input.body
+        upstream_backend_id: upstreamBackendId,
+        input
+      },
+      { authorization }
+    );
+  }
+
+  async teamMemoryExpand(
+    upstreamBackendId: string,
+    nodeId: string,
+    input: Record<string, unknown>,
+    authorization: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/team-memory/expand",
+      {
+        upstream_backend_id: upstreamBackendId,
+        node_id: nodeId,
+        input
       },
       { authorization }
     );

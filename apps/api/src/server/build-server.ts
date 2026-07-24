@@ -5,16 +5,20 @@ import { Redis } from "ioredis";
 import { z } from "zod";
 import { type Visibility } from "@koed/core";
 import {
+  createCollaborationRepository,
   createDbPool,
   createMemorySourceRepository,
+  createRetentionLifecycleRepository,
+  databaseErrorCode,
   runDbMigrations,
-  type MemorySourceRepository
+  type CollaborationRepository,
+  type MemorySourceRepository,
+  type RetentionLifecycleRepository
 } from "@koed/db";
 import {
   createAuthHelpers,
   createHashSecret,
-  registerAuthRoutes,
-  sessionCookieName
+  registerAuthRoutes
 } from "../auth/index.js";
 import { registerAnalyticsRoutes } from "../analytics/index.js";
 import {
@@ -33,6 +37,17 @@ import {
   type RateLimitStore
 } from "../infra/index.js";
 import { registerLocalEdgeRoutes } from "../local-edge/routes.js";
+import { readLocalEdgeUpstreamRegistry } from "../local-edge/upstream-routing.js";
+import {
+  createCollaborationActionGrantControl,
+  type CollaborationActionGrantControl
+} from "../local-edge/collaboration-action-grant-control.js";
+import { createPostgresCollaborationSharedMemoryAuthorityStore } from "../local-edge/collaboration-shared-memory-authority-store.js";
+import {
+  createCollaborationSharedMemoryControl,
+  type CollaborationSharedMemoryControl
+} from "../local-edge/collaboration-shared-memory-control.js";
+import { createCollaborationRealtimeBroker } from "../local-edge/collaboration-realtime-broker.js";
 import {
   canReceiveGraphStreamPayload,
   createGraphStreamService,
@@ -52,6 +67,7 @@ import {
 } from "../memory/index.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   inspectDeviceIdentityAtKoedHome,
   reconcileDeviceIdentityDeployment,
   embeddingDispatchKey,
@@ -60,11 +76,25 @@ import {
   type EnvelopeEncryptionProvider,
   lcmCompactQueueName,
   memoryEmbedQueueName,
+  requestKoedLocalWork,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
+import {
+  createSecureUpstreamFetch,
+  registeredPrivateNetworkPolicy
+} from "@koed/shared/secure-upstream-fetch";
 import { registerTeamRoutes } from "../team/index.js";
 import { registerCrossIdentitySyncRoutes } from "../cross-identity-sync/index.js";
+import {
+  createCollaborationAdmissionController,
+  createCollaborationRealtimeService,
+  registerCollaborationRoutes
+} from "../collaboration/index.js";
+import { registerHighRiskRoutes } from "../high-risk/index.js";
+import { registerSharedMemoryRoutes } from "../shared-memory/index.js";
+import { registerRetentionRoutes } from "../retention/index.js";
 import { resolveApiServerConfig } from "./config.js";
+import { registerBrowserWriteCsrfProtection } from "./browser-write-csrf.js";
 import {
   apiLogSchemaVersion,
   apiServiceName,
@@ -78,6 +108,7 @@ import {
 } from "./logging.js";
 import { registerOperationalRoutes } from "./operational-routes.js";
 import type { ApiRouteContext } from "./context.js";
+import { registerTeamCollaborationFeatureGate } from "./team-collaboration-feature.js";
 
 export {
   canReceiveGraphStreamPayload,
@@ -85,8 +116,10 @@ export {
   shouldIgnoreGraphStreamPayload
 };
 
-interface BuildServerOptions {
+export interface BuildServerOptions {
   repository?: MemorySourceRepository;
+  collaborationRepository?: CollaborationRepository;
+  retentionRepository?: RetentionLifecycleRepository;
   runMemoryJobsInlineForTests?: boolean;
   rateLimitStore?: RateLimitStore;
   cacheProvider?: CacheProvider;
@@ -97,27 +130,12 @@ interface BuildServerOptions {
   inspectDeploymentIdentity?: () => DeviceIdentityInspection;
   workosClient?: WorkosAuthKitClient;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  collaborationSharedMemoryControl?: CollaborationSharedMemoryControl;
+  collaborationActionGrantControl?: CollaborationActionGrantControl;
 }
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
-
-const originFromReferer = (referer: string | undefined): string | null => {
-  if (!referer) {
-    return null;
-  }
-  try {
-    return new URL(referer).origin;
-  } catch {
-    return null;
-  }
-};
-
-const sessionEstablishingWritePaths = new Set([
-  "/auth/setup",
-  "/auth/register",
-  "/auth/login",
-  "/v1/team-invites/accept"
-]);
 
 const requestPathname = (request: FastifyRequest): string => {
   try {
@@ -204,18 +222,80 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
 
   const pool =
-    options.repository || !config.databaseUrl ? null : createDbPool();
+    options.repository || !config.databaseUrl
+      ? null
+      : createDbPool({
+          onPoolError: (error) => {
+            app.log.warn(
+              {
+                event: {
+                  name: "database.pool_connection_interrupted",
+                  category: "database"
+                },
+                component: "database",
+                database: { error_code: databaseErrorCode(error) }
+              },
+              "database pool connection interrupted"
+            );
+          }
+        });
   if (pool) {
     await runDbMigrations(pool);
   }
   const envelopeEncryptionProvider: EnvelopeEncryptionProvider | undefined =
     options.envelopeEncryptionProvider ??
     createEnvelopeEncryptionProviderFromEnvironment();
+  const ownerPrivateReplicaEnvelopeEncryptionProvider:
+    | EnvelopeEncryptionProvider
+    | undefined =
+    options.ownerPrivateReplicaEnvelopeEncryptionProvider ??
+    createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment();
+  if (
+    envelopeEncryptionProvider &&
+    ownerPrivateReplicaEnvelopeEncryptionProvider &&
+    envelopeEncryptionProvider.keyId ===
+      ownerPrivateReplicaEnvelopeEncryptionProvider.keyId
+  ) {
+    throw new Error(
+      "Owner-private replica envelope encryption must use a distinct key from the Team/general provider"
+    );
+  }
   const repository =
     options.repository ??
     (pool
       ? createMemorySourceRepository(pool, {
-          envelopeEncryptionProvider
+          envelopeEncryptionProvider,
+          ownerPrivateReplicaEnvelopeEncryptionProvider
+        })
+      : null);
+  const collaborationRepository =
+    options.collaborationRepository ??
+    (pool && envelopeEncryptionProvider
+      ? createCollaborationRepository(pool, { envelopeEncryptionProvider })
+      : null);
+  const retentionRepository =
+    options.retentionRepository ??
+    (pool
+      ? createRetentionLifecycleRepository(pool, {
+          authorizeHoldActor: async (context) => {
+            if (context.target.scope === "owner_private_replica") {
+              return context.authority === "personal_memory.legal_hold.manage";
+            }
+            const result = await pool.query(
+              `select 1
+                 from team_memberships tm
+                 join teams t on t.id = tm.team_id
+                where tm.team_id = $1
+                  and tm.user_id = $2
+                  and tm.role in ('owner', 'admin')
+                  and tm.status = 'enabled'
+                  and tm.disabled_at is null
+                  and t.lifecycle in ('active', 'deletion_requested', 'purge_pending')
+                limit 1`,
+              [context.target.teamId, context.actorUserId]
+            );
+            return result.rowCount === 1;
+          }
         })
       : null);
   if (repository && !options.repository) {
@@ -268,9 +348,19 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     (cacheRedis ? new RedisCacheProvider(cacheRedis) : new NoopCacheProvider());
   let graphStreamService: { registerRoutes(): void; close(): void } | null =
     null;
+  let collaborationRealtimeService: {
+    registerRoutes(): void;
+    close(): void;
+  } | null = null;
+  let collaborationRealtimeBroker: {
+    registerRoutes(): void;
+    close(): Promise<void>;
+  } | null = null;
   const hashSecret = createHashSecret(config.apiTokenPepper);
   app.addHook("onClose", async () => {
     graphStreamService?.close();
+    collaborationRealtimeService?.close();
+    await collaborationRealtimeBroker?.close();
     await Promise.all([
       embeddingQueue?.close(),
       compactionQueue?.close(),
@@ -299,30 +389,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
 
   await app.register(cookie);
-  app.addHook("preHandler", (request, _reply, done) => {
-    if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
-      done();
-      return;
-    }
-    const hasSessionCookie = Boolean(request.cookies[sessionCookieName]);
-    const createsSessionCookie = sessionEstablishingWritePaths.has(
-      requestPathname(request)
-    );
-    if (!hasSessionCookie && !createsSessionCookie) {
-      done();
-      return;
-    }
-    const requestOrigin =
-      request.headers.origin ?? originFromReferer(request.headers.referer);
-    if (requestOrigin && !corsOrigins.has(normalizeOrigin(requestOrigin))) {
-      done(
-        Object.assign(new Error("Invalid request origin"), {
-          statusCode: 403
-        })
-      );
-      return;
-    }
-    done();
+  registerBrowserWriteCsrfProtection(app, corsOrigins);
+  registerTeamCollaborationFeatureGate(app, {
+    enabled: config.teamCollaborationEnabled,
+    realtimeCursorSecret: config.collaborationRealtime.cursorSecret
   });
   const requireRepository = (): MemorySourceRepository => {
     if (!repository) {
@@ -332,6 +402,24 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     }
 
     return repository;
+  };
+  const requireCollaborationRepository = (): CollaborationRepository => {
+    if (!collaborationRepository) {
+      throw Object.assign(new Error("Database is not configured"), {
+        statusCode: 503
+      });
+    }
+
+    return collaborationRepository;
+  };
+  const requireRetentionRepository = (): RetentionLifecycleRepository => {
+    if (!retentionRepository) {
+      throw Object.assign(new Error("Database is not configured"), {
+        statusCode: 503
+      });
+    }
+
+    return retentionRepository;
   };
   const authHelpers = createAuthHelpers(requireRepository, {
     hashSecret,
@@ -352,6 +440,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         (await authHelpers.resolveApiTokenUser(request))?.id ??
         (await authHelpers.resolveDeviceCredentialContext(request))?.user.id
     }
+  );
+  const collaborationAdmission = createCollaborationAdmissionController(
+    rateLimitStore,
+    hashSecret
   );
   const embeddingModelConfig = resolveSupportedEmbeddingModelConfig(
     config.embeddingModel
@@ -396,11 +488,99 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     }
   };
 
+  const localEdgeUpstreamBackendsPath =
+    options.upstreamBackendsPath ?? config.upstreamBackendsPath;
+  const localEdgeFetch =
+    options.fetch ??
+    createSecureUpstreamFetch({
+      allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() =>
+        readLocalEdgeUpstreamRegistry(
+          localEdgeUpstreamBackendsPath
+        ).backends.map((backend) => ({
+          baseUrl: backend.baseUrl,
+          profile: backend.profile
+        }))
+      )
+    });
+  const localEdgeResolveUpstreamAuthorization =
+    options.resolveUpstreamAuthorization ??
+    createDefaultResolveUpstreamAuthorization(config.koedHome);
+  const sharedMemoryAuthorityRepository =
+    pool && envelopeEncryptionProvider
+      ? createPostgresCollaborationSharedMemoryAuthorityStore(pool, {
+          envelopeEncryptionProvider
+        })
+      : null;
+  const collaborationSharedMemoryControl =
+    options.collaborationSharedMemoryControl ??
+    (sharedMemoryAuthorityRepository
+      ? createCollaborationSharedMemoryControl({
+          koedHome: config.koedHome,
+          upstreamBackendsPath: localEdgeUpstreamBackendsPath,
+          fetch: localEdgeFetch,
+          resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
+          authorityStore: sharedMemoryAuthorityRepository,
+          prepareLocalLcmRepresentation: async (input) => {
+            if (!repository) return "pending";
+            let exhausted = false;
+            for (let attempt = 0; attempt < 1_000; attempt += 1) {
+              const compaction = await repository.createLcmNodes(
+                { userId: input.localOwnerUserId },
+                {
+                  visibility: "personal",
+                  sessionId: input.localSessionId,
+                  force: true,
+                  requestedRepresentation: input.representation
+                }
+              );
+              if (
+                compaction.leafNodeIds.length === 0 &&
+                compaction.rollupNodeId === null
+              ) {
+                exhausted = true;
+                break;
+              }
+            }
+            if (!exhausted) {
+              throw new Error(
+                "Share-bound LCM compaction exceeded its bounded work limit"
+              );
+            }
+            const state = await repository.getSharedMemoryLcmSyncState({
+              relationshipId: input.syncRelationshipId,
+              ownerUserId: input.localOwnerUserId,
+              sessionId: input.localSessionId,
+              representation: input.representation
+            });
+            if (state === "pending") {
+              await requestKoedLocalWork(config.koedHome, "lcm-summary");
+            }
+            return state;
+          },
+          ensureEnrollmentBinding: (input) =>
+            sharedMemoryAuthorityRepository.bindEnrollment({
+              identity: input,
+              remoteDeviceId: input.remoteDeviceId
+            })
+        })
+      : undefined);
+  const collaborationActionGrantControl =
+    options.collaborationActionGrantControl ??
+    createCollaborationActionGrantControl({
+      koedHome: config.koedHome,
+      fetch: localEdgeFetch
+    });
+
   const routeContext = {
     config,
     requireRepository,
     auth: authHelpers,
     rateLimit: rateLimitHandlers,
+    collaboration: {
+      admission: collaborationAdmission,
+      actionGrantControl: collaborationActionGrantControl,
+      sharedMemoryControl: collaborationSharedMemoryControl
+    },
     jobs: {
       enqueueEmbedding
     },
@@ -428,8 +608,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           }))
     },
     localEdge: {
-      upstreamBackendsPath:
-        options.upstreamBackendsPath ?? config.upstreamBackendsPath,
+      upstreamBackendsPath: localEdgeUpstreamBackendsPath,
       remoteOperationsAllowed:
         options.remoteOperationsAllowed ??
         (config.test
@@ -439,10 +618,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
                 koedHome: config.koedHome,
                 environment: process.env
               }).remoteOperationsAllowed),
-      fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
-      resolveUpstreamAuthorization:
-        options.resolveUpstreamAuthorization ??
-        createDefaultResolveUpstreamAuthorization(config.koedHome)
+      fetch: localEdgeFetch,
+      resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization
     },
     workos: {
       client:
@@ -459,6 +636,77 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     graphUpdateDebounceMs: config.graph.updateDebounceMs,
     memoryEventGraphUpdateDebounceMs: config.graph.memoryEventUpdateDebounceMs
   });
+  if (
+    repository &&
+    collaborationRepository &&
+    pool &&
+    config.collaborationRealtime.cursorSecret
+  ) {
+    const identity = routeContext.deploymentIdentity.inspect();
+    if (identity.health !== "healthy" || !identity.deploymentId) {
+      throw new Error(
+        "A verified local deployment identity is required for collaboration realtime"
+      );
+    }
+    const deployment = await repository.ensureLocalSyncDeployment({
+      profile: config.deploymentProfile,
+      protocolDeploymentId: identity.deploymentId
+    });
+    collaborationRealtimeService = await createCollaborationRealtimeService({
+      app,
+      auth: authHelpers,
+      repository: collaborationRepository,
+      materializationRepository: repository,
+      sharedMemoryRepository: repository,
+      pool,
+      corsOrigins,
+      backendIdentity: deployment.protocolDeploymentId,
+      cursorSecret: config.collaborationRealtime.cursorSecret,
+      maxClients: config.collaborationRealtime.streamMaxClients,
+      maxClientsPerPrincipal:
+        config.collaborationRealtime.streamMaxClientsPerPrincipal
+    });
+  }
+  if (
+    pool &&
+    config.runtimeMode !== "external" &&
+    config.collaborationRealtime.localBrokerSecret
+  ) {
+    collaborationRealtimeBroker = createCollaborationRealtimeBroker({
+      app,
+      pool,
+      koedHome: config.koedHome,
+      upstreamBackendsPath: routeContext.localEdge.upstreamBackendsPath,
+      brokerSecret: config.collaborationRealtime.localBrokerSecret,
+      corsOrigins,
+      resolveUpstreamAuthorization:
+        routeContext.localEdge.resolveUpstreamAuthorization,
+      requireCollaborationRepository,
+      requireCollaborationMaterializationRepository: requireRepository,
+      resolveActiveLocalUser: (userId) => requireRepository().getUser(userId),
+      quarantineCrossIdentitySyncForBackend: async (
+        ownerUserId,
+        upstreamBackendId
+      ) => {
+        await requireRepository().quarantineCrossIdentitySyncForUpstreamBackend(
+          { userId: ownerUserId },
+          upstreamBackendId
+        );
+      },
+      revokeSharedMemoryAuthorityForBackend: async (
+        ownerUserId,
+        upstreamBackendId
+      ) => {
+        if (!sharedMemoryAuthorityRepository) return;
+        await sharedMemoryAuthorityRepository.revokeBackendEnrollments({
+          localOwnerUserId: ownerUserId,
+          backendId: upstreamBackendId,
+          reason: "upstream_backend_disconnected"
+        });
+      },
+      fetch: routeContext.localEdge.fetch
+    });
+  }
 
   app.setErrorHandler((error, request, reply) => {
     const statusCodeCandidate =
@@ -531,6 +779,44 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerAnalyticsRoutes(app, routeContext);
   registerApiTokenRoutes(app, routeContext);
   registerTeamRoutes(app, routeContext);
+  registerCollaborationRoutes(app, {
+    requireCollaborationRepository,
+    authenticateSession: authHelpers.authenticateSession,
+    authenticateSessionOrDeviceCredential:
+      authHelpers.authenticateSessionOrDeviceCredential,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite,
+    admission: routeContext.collaboration.admission
+  });
+  registerHighRiskRoutes(app, {
+    requireRepository,
+    authenticateSessionContext: authHelpers.authenticateSessionContext,
+    authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,
+    rateLimit: {
+      browser: rateLimitHandlers.auth,
+      deviceRead: rateLimitHandlers.memoryRead,
+      deviceWrite: rateLimitHandlers.memoryWrite
+    },
+    explorerPublicUrl: config.explorerPublicUrl
+  });
+  registerSharedMemoryRoutes(app, {
+    requireSharedMemoryRepository: requireRepository,
+    requireHighRiskRepository: requireRepository,
+    authenticateSession: authHelpers.authenticateSession,
+    authenticateSessionContext: authHelpers.authenticateSessionContext,
+    authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,
+    authenticateSessionOrDeviceCredential:
+      authHelpers.authenticateSessionOrDeviceCredential,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  registerRetentionRoutes(app, {
+    requireRetentionRepository,
+    requireHighRiskRepository: requireRepository,
+    authenticateSessionContext: authHelpers.authenticateSessionContext,
+    authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
   registerLocalEdgeRoutes(app, routeContext);
   registerCrossIdentitySyncRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
@@ -543,6 +829,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerLcmRoutes(app, routeContext);
   registerGraphRoutes(app, routeContext);
   graphStreamService.registerRoutes();
+  collaborationRealtimeService?.registerRoutes();
+  collaborationRealtimeBroker?.registerRoutes();
 
   return app;
 };

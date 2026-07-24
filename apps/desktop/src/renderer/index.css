@@ -1,0 +1,6 @@
+@import "tailwindcss";
+@import "@koed/ui/tailwind.css";
+@import "@koed/ui/tokens.css";
+@import "@koed/ui/base.css";
+@source "../../../../packages/ui/src";
+@source "../";

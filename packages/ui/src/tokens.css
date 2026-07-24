@@ -1,0 +1,177 @@
+:root {
+  color-scheme: light;
+  --radius: 0.5rem;
+  /* Keep these chrome values synchronized with theme.ts. */
+  --background: #fbfbfa;
+  --app-chrome-background: #fbfbfa;
+  --foreground: #242522;
+  --card: #ffffff;
+  --card-foreground: #242522;
+  --popover: #ffffff;
+  --popover-foreground: #242522;
+  --primary: oklch(0.5 0.12 155);
+  --primary-foreground: #ffffff;
+  --memory: oklch(0.51 0.17 285);
+  --memory-foreground: #ffffff;
+  --secondary: #f1f2ef;
+  --secondary-foreground: #30312e;
+  --muted: #f1f2ef;
+  --muted-foreground: #666962;
+  --accent: #e9ece6;
+  --accent-foreground: #242522;
+  --destructive: #c43b3b;
+  --destructive-foreground: #ffffff;
+  --border: #dedfda;
+  --input: #d4d6d0;
+  --ring: oklch(0.5 0.12 155);
+  --info: #47708e;
+  --info-foreground: #ffffff;
+  --success: #3f825e;
+  --success-foreground: #ffffff;
+  --warning: #ad792b;
+  --warning-foreground: #171008;
+  --presence-available: var(--success);
+  --presence-away: var(--warning);
+  --sidebar: #f4f5f2;
+  --sidebar-foreground: #30312e;
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: #e7e9e4;
+  --sidebar-accent-foreground: #242522;
+  --sidebar-border: #d9dbd5;
+  --sidebar-ring: var(--ring);
+  --team-swatch-1: #326b50;
+  --team-swatch-2: #6d5f9a;
+  --team-swatch-3: #8a5b3f;
+  --team-swatch-4: #3f697d;
+  --team-swatch-5: #81516b;
+  --team-swatch-6: #646b35;
+  --team-swatch-7: #735c39;
+  --team-swatch-8: #536273;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #181817;
+  --app-chrome-background: #181817;
+  --foreground: #efefec;
+  --card: #1e1f1d;
+  --card-foreground: #efefec;
+  --popover: #222320;
+  --popover-foreground: #efefec;
+  --primary: oklch(0.69 0.13 155);
+  --primary-foreground: #102117;
+  --memory: oklch(0.72 0.15 285);
+  --memory-foreground: #1d1626;
+  --secondary: #272825;
+  --secondary-foreground: #e3e4df;
+  --muted: #272825;
+  --muted-foreground: #a7aaa2;
+  --accent: #30322e;
+  --accent-foreground: #f2f2ef;
+  --destructive: #df6868;
+  --destructive-foreground: #190707;
+  --border: #393b36;
+  --input: #444640;
+  --ring: oklch(0.69 0.13 155);
+  --info: #72a5c8;
+  --info-foreground: #0d1b24;
+  --success: #70b58c;
+  --success-foreground: #0b1c12;
+  --warning: #d5a658;
+  --warning-foreground: #221606;
+  --presence-available: var(--success);
+  --presence-away: var(--warning);
+  --sidebar: #1d1e1c;
+  --sidebar-foreground: #dedfda;
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: #2b2d29;
+  --sidebar-accent-foreground: #f2f2ef;
+  --sidebar-border: #353732;
+  --sidebar-ring: var(--ring);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    color-scheme: dark;
+    --background: #181817;
+    --app-chrome-background: #181817;
+    --foreground: #efefec;
+    --card: #1e1f1d;
+    --card-foreground: #efefec;
+    --popover: #222320;
+    --popover-foreground: #efefec;
+    --primary: oklch(0.69 0.13 155);
+    --primary-foreground: #102117;
+    --memory: oklch(0.72 0.15 285);
+    --memory-foreground: #1d1626;
+    --secondary: #272825;
+    --secondary-foreground: #e3e4df;
+    --muted: #272825;
+    --muted-foreground: #a7aaa2;
+    --accent: #30322e;
+    --accent-foreground: #f2f2ef;
+    --destructive: #df6868;
+    --destructive-foreground: #190707;
+    --border: #393b36;
+    --input: #444640;
+    --ring: oklch(0.69 0.13 155);
+    --info: #72a5c8;
+    --info-foreground: #0d1b24;
+    --success: #70b58c;
+    --success-foreground: #0b1c12;
+    --warning: #d5a658;
+    --warning-foreground: #221606;
+    --presence-available: var(--success);
+    --presence-away: var(--warning);
+    --sidebar: #1d1e1c;
+    --sidebar-foreground: #dedfda;
+    --sidebar-primary: var(--primary);
+    --sidebar-primary-foreground: var(--primary-foreground);
+    --sidebar-accent: #2b2d29;
+    --sidebar-accent-foreground: #f2f2ef;
+    --sidebar-border: #353732;
+    --sidebar-ring: var(--ring);
+  }
+}
+
+@media (forced-colors: active) {
+  :root,
+  .dark {
+    --background: Canvas;
+    --app-chrome-background: Canvas;
+    --foreground: CanvasText;
+    --card: Canvas;
+    --card-foreground: CanvasText;
+    --popover: Canvas;
+    --popover-foreground: CanvasText;
+    --primary: Highlight;
+    --primary-foreground: HighlightText;
+    --memory: Highlight;
+    --memory-foreground: HighlightText;
+    --secondary: Canvas;
+    --secondary-foreground: CanvasText;
+    --muted: Canvas;
+    --muted-foreground: CanvasText;
+    --accent: Highlight;
+    --accent-foreground: HighlightText;
+    --destructive: Mark;
+    --destructive-foreground: MarkText;
+    --border: CanvasText;
+    --input: CanvasText;
+    --ring: Highlight;
+    --info: LinkText;
+    --info-foreground: LinkText;
+    --success: CanvasText;
+    --success-foreground: CanvasText;
+    --warning: CanvasText;
+    --warning-foreground: CanvasText;
+    --sidebar: Canvas;
+    --sidebar-foreground: CanvasText;
+    --sidebar-accent: Highlight;
+    --sidebar-accent-foreground: HighlightText;
+    --sidebar-border: CanvasText;
+    --sidebar-ring: Highlight;
+  }
+}

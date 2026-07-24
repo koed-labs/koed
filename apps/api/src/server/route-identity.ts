@@ -7,10 +7,10 @@ export type RouteIdentity =
   | "api_token"
   | "session_or_api_token"
   | "session_or_device_credential"
-  | "conditional_team_session_or_device"
   | "api_token_or_device_credential"
   | "internal_service_token"
   | "device_credential"
+  | "local_edge_client_credential"
   | "upstream_credential";
 
 export type RouteIdentityStatus = "implemented" | "not_implemented";
@@ -50,14 +50,21 @@ export interface RouteIdentityContract {
     | "capture"
     | "personal_memory"
     | "team_memory"
+    | "collaboration"
+    | "shared_memory"
+    | "high_risk"
+    | "retention"
     | "local_synthesis"
     | "future_remote";
   description: string;
   deploymentModes: readonly RouteDeploymentMode[];
   teamAuthority:
     | "none"
+    | "request_time_team_membership"
     | "request_time_team_workspace"
     | "request_time_team_admin"
+    | "request_time_shared_memory_owner"
+    | "request_time_action_grant"
     | "future_request_time";
 }
 
@@ -435,26 +442,23 @@ export const routeIdentityContracts = [
   route(
     "POST",
     "/v1/memory/search",
-    "conditional_team_session_or_device",
+    "api_token",
     "personal_memory",
-    "Personal recall search uses API Token; Team Workspace recall requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "Search Personal Memory for the authenticated API Token owner."
   ),
   route(
     "POST",
     "/v1/memory/answer",
-    "conditional_team_session_or_device",
+    "session_or_api_token",
     "personal_memory",
-    "Personal recall evidence; Team Workspace recall requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "Retrieve Personal Memory evidence."
   ),
   route(
     "GET",
     "/v1/memory/nodes/{nodeId}/expand",
-    "conditional_team_session_or_device",
+    "api_token",
     "personal_memory",
-    "Personal node expansion uses API Token; Team Workspace expansion requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "Expand a Personal Memory node for the authenticated API Token owner."
   ),
   route(
     "GET",
@@ -487,42 +491,37 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/memory/graph/nodes",
-    "conditional_team_session_or_device",
+    "session_or_api_token",
     "personal_memory",
-    "Personal graph nodes; Team Workspace graph requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "List Personal Memory graph nodes."
   ),
   route(
     "GET",
     "/v1/memory/graph/nodes/{nodeId}",
-    "conditional_team_session_or_device",
+    "session_or_api_token",
     "personal_memory",
-    "Personal graph node detail; Team Workspace graph requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "Read Personal Memory graph node detail."
   ),
   route(
     "GET",
     "/v1/memory/graph/events",
-    "conditional_team_session_or_device",
+    "session_or_api_token",
     "personal_memory",
-    "Personal graph events; Team Workspace graph requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "List Personal Memory graph events."
   ),
   route(
     "GET",
     "/v1/memory/graph/threads",
-    "conditional_team_session_or_device",
+    "session_or_api_token",
     "personal_memory",
-    "Personal graph threads; Team Workspace graph requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "List Personal Memory graph threads."
   ),
   route(
     "GET",
     "/v1/memory/graph/events/{eventId}",
-    "conditional_team_session_or_device",
+    "session_or_api_token",
     "personal_memory",
-    "Personal graph event detail; Team Workspace graph requires session or scoped device credential.",
-    "request_time_team_workspace"
+    "Read Personal Memory graph event detail."
   ),
   route(
     "PATCH",
@@ -634,8 +633,7 @@ export const routeIdentityContracts = [
     "/v1/memory/graph/stream",
     "session_or_api_token",
     "personal_memory",
-    "Graph/event stream for Explorer and local integrations.",
-    "request_time_team_workspace"
+    "Personal Memory graph/event stream for Explorer and local integrations."
   ),
   route(
     "OPTIONS",
@@ -731,9 +729,210 @@ export const routeIdentityContracts = [
   ),
 
   route(
+    "GET",
+    "/v1/collaboration/teams/{teamId}/participants",
+    "session_or_device_credential",
+    "collaboration",
+    "List enabled Team collaboration participants.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/teams/{teamId}/threads",
+    "session_or_device_credential",
+    "collaboration",
+    "List authorized Team collaboration threads.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
+    "session_or_device_credential",
+    "collaboration",
+    "List authorized Team Workspace channels.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
+    "session_or_device_credential",
+    "collaboration",
+    "Create a Team Workspace channel.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/teams/{teamId}/direct-messages",
+    "session_or_device_credential",
+    "collaboration",
+    "List authorized Team direct-message threads.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/direct-messages",
+    "session_or_device_credential",
+    "collaboration",
+    "Create or return a Team direct-message thread.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/group-direct-messages",
+    "session_or_device_credential",
+    "collaboration",
+    "Create a Team group direct-message thread.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/shared-sessions/{sharedLogicalMemoryId}/discussion",
+    "session_or_device_credential",
+    "collaboration",
+    "Create or return a Shared Memory discussion thread.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}",
+    "session_or_device_credential",
+    "collaboration",
+    "Read an authorized Team collaboration thread.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/name",
+    "session_or_device_credential",
+    "collaboration",
+    "Rename an authorized Team collaboration thread.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/topic",
+    "session_or_device_credential",
+    "collaboration",
+    "Update an authorized Team collaboration thread topic.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/archive",
+    "session_or_device_credential",
+    "collaboration",
+    "Archive an authorized Team collaboration thread.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/restore",
+    "session_or_device_credential",
+    "collaboration",
+    "Restore an authorized Team collaboration thread.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
+    "session_or_device_credential",
+    "collaboration",
+    "List authorized Team collaboration messages.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
+    "session_or_device_credential",
+    "collaboration",
+    "Post an authorized Team collaboration message.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/read-state",
+    "session_or_device_credential",
+    "collaboration",
+    "Advance the authenticated User's Team collaboration read state.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/realtime/snapshot",
+    "session_or_device_credential",
+    "collaboration",
+    "Read an authorized Team collaboration realtime snapshot.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/collaboration/realtime/ack",
+    "session_or_device_credential",
+    "collaboration",
+    "Acknowledge authorized Team collaboration realtime delivery.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/realtime/stream",
+    "session_or_device_credential",
+    "collaboration",
+    "Subscribe to authorized Team collaboration realtime updates.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+
+  route(
+    "GET",
+    "/v1/teams",
+    "session_or_device_credential",
+    "team_memory",
+    "List Teams visible to the authenticated User.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/teams",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Create Team.",
     "request_time_team_admin",
@@ -743,9 +942,39 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/teams/{teamId}/membership",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Read Team membership.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/teams/{teamId}/members",
+    "session_or_device_credential",
+    "team_memory",
+    "List the Team roster.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/teams/{teamId}/members/manage",
+    "session_or_device_credential",
+    "team_memory",
+    "List Team member administration details.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/teams/{teamId}/members/{userId}/role",
+    "session_or_device_credential",
+    "team_memory",
+    "Update a Team member role.",
     "request_time_team_admin",
     "implemented",
     teamDeploymentModes
@@ -753,7 +982,7 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/teams/{teamId}/audit-events",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Read Team audit events.",
     "request_time_team_admin",
@@ -763,7 +992,7 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/teams/{teamId}/entitlement",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Read coarse Team entitlement and access-suspension gate state.",
     "request_time_team_admin",
@@ -773,7 +1002,7 @@ export const routeIdentityContracts = [
   route(
     "PUT",
     "/v1/teams/{teamId}/entitlement",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Update coarse Team entitlement and access-suspension gate state.",
     "request_time_team_admin",
@@ -783,7 +1012,7 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/teams/{teamId}/billing-seats",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Read Team billing seat state.",
     "request_time_team_admin",
@@ -793,7 +1022,7 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/teams/{teamId}/support/overview",
-    "session",
+    "session_or_device_credential",
     "operations",
     "Read redacted Team support and operations overview.",
     "request_time_team_admin",
@@ -803,7 +1032,7 @@ export const routeIdentityContracts = [
   route(
     "PUT",
     "/v1/teams/{teamId}/billing-seats/policy",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Update Team billing seat policy.",
     "request_time_team_admin",
@@ -812,18 +1041,8 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
-    "/v1/teams/{teamId}/members",
-    "session",
-    "team_memory",
-    "Upsert Team membership.",
-    "request_time_team_admin",
-    "implemented",
-    teamDeploymentModes
-  ),
-  route(
-    "POST",
     "/v1/teams/{teamId}/invites",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Create Team invite.",
     "request_time_team_admin",
@@ -833,17 +1052,27 @@ export const routeIdentityContracts = [
   route(
     "POST",
     "/v1/team-invites/accept",
-    "optional_session",
+    "session_or_device_credential",
     "team_memory",
-    "Accept Team invite and optionally create browser session.",
-    "none",
+    "Accept a Team invite for the authenticated User.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/team-context",
+    "session_or_device_credential",
+    "team_memory",
+    "List the authenticated User's readable Team Workspace contexts.",
+    "request_time_team_workspace",
     "implemented",
     teamDeploymentModes
   ),
   route(
     "POST",
     "/v1/teams/{teamId}/members/{userId}/disable",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Disable Team member.",
     "request_time_team_admin",
@@ -852,8 +1081,58 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
-    "/v1/team-workspaces",
+    "/v1/teams/{teamId}/leave",
     "session",
+    "team_memory",
+    "Leave a Team using a fresh browser session.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/teams/{teamId}/invites",
+    "session_or_device_credential",
+    "team_memory",
+    "List Team invites.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v1/teams/{teamId}/invites/{inviteId}",
+    "session_or_device_credential",
+    "team_memory",
+    "Revoke a Team invite.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/teams/{teamId}/workspaces",
+    "session_or_device_credential",
+    "team_memory",
+    "List Team Workspaces.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/workspaces",
+    "session_or_device_credential",
+    "team_memory",
+    "Create a Team Workspace.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/team-workspaces",
+    "session_or_device_credential",
     "team_memory",
     "Create Team Workspace.",
     "request_time_team_admin",
@@ -862,8 +1141,18 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/team-workspaces/{teamWorkspaceId}/context",
+    "session_or_device_credential",
+    "team_memory",
+    "Read Team Workspace context.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/team-workspaces/{teamWorkspaceId}/access",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Read Team Workspace access.",
     "request_time_team_workspace",
@@ -871,9 +1160,29 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "POST",
+    "/v1/team-workspaces/{teamWorkspaceId}/archive",
+    "session_or_device_credential",
+    "team_memory",
+    "Archive a Team Workspace.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/team-workspaces/{teamWorkspaceId}/restore",
+    "session_or_device_credential",
+    "team_memory",
+    "Restore a Team Workspace.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "PUT",
     "/v1/team-workspaces/{teamWorkspaceId}/access",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Set Team Workspace access.",
     "request_time_team_workspace",
@@ -881,26 +1190,255 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
-    "GET",
-    "/v1/team-workspaces/{teamWorkspaceId}/session-share-grants",
+    "PUT",
+    "/v1/shared-memory/source-owner-policies/{logicalMemoryId}",
+    "session_or_device_credential",
+    "shared_memory",
+    "Set the source owner's Shared Memory policy.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/teams/{teamId}/policy",
     "session",
-    "team_memory",
-    "List Captured Session Share Grants for a Team Workspace.",
+    "shared_memory",
+    "Set Team Shared Memory policy.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/policy",
+    "session",
+    "shared_memory",
+    "Set Team Workspace Shared Memory policy.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/previews",
+    "session_or_device_credential",
+    "shared_memory",
+    "Create an authoritative Shared Memory source preview.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/consents",
+    "session_or_device_credential",
+    "shared_memory",
+    "Create source-owner consent for Team Workspace sharing.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/share-grants",
+    "session_or_device_credential",
+    "shared_memory",
+    "Create a Shared Memory Share Grant.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/share-grants/{shareGrantId}/representation",
+    "session_or_device_credential",
+    "shared_memory",
+    "Select a Share Grant representation.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/share-grants/{shareGrantId}/representations/{representation}",
+    "session_or_device_credential",
+    "shared_memory",
+    "Materialize a Share Grant representation.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/share-grants/{shareGrantId}/revoke",
+    "session_or_device_credential",
+    "shared_memory",
+    "Revoke a Shared Memory Share Grant.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/logical-memories/{logicalMemoryId}/share-grants",
+    "session_or_device_credential",
+    "shared_memory",
+    "List the source owner's current Share Grant states for a logical memory.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants",
+    "session_or_device_credential",
+    "shared_memory",
+    "List authorized Team Workspace Share Grants.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read an authorized Team Workspace Share Grant.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items",
+    "session_or_device_credential",
+    "shared_memory",
+    "List authorized Shared Memory representation items.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items/{sourceId}",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read an authorized Shared Memory representation item.",
     "request_time_team_workspace",
     "implemented",
     teamDeploymentModes
   ),
   route(
     "POST",
-    "/v1/team-workspaces/{teamWorkspaceId}/session-share-grants",
-    "session",
-    "team_memory",
-    "Share an owned Captured Session into a Team Workspace.",
-    "request_time_team_workspace",
+    "/v1/high-risk/action-grants",
+    "device_credential",
+    "high_risk",
+    "Create a device-bound one-time action grant request.",
+    "request_time_action_grant",
     "implemented",
     teamDeploymentModes
   ),
-
+  route(
+    "GET",
+    "/v1/high-risk/action-grants/{clientRequestId}",
+    "device_credential",
+    "high_risk",
+    "Read a device-bound action grant request.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v1/high-risk/action-grants/{clientRequestId}",
+    "device_credential",
+    "high_risk",
+    "Cancel a device-bound action grant request.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/high-risk/browser-activations/{selector}",
+    "session",
+    "high_risk",
+    "Read a browser-authenticated high-risk activation.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/high-risk/browser-activations/{selector}/decision",
+    "session",
+    "high_risk",
+    "Approve or deny a high-risk activation using a fresh browser session.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/retention/teams/{teamId}/deletion-request",
+    "session_or_device_credential",
+    "retention",
+    "Request root Team deletion.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/retention/owner-private-replicas/{ownerPrivateReplicaId}/purge-request",
+    "session_or_device_credential",
+    "retention",
+    "Request hard purge of an owner-private source replica.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/retention/users/me/erasure-request",
+    "session",
+    "retention",
+    "Request User erasure and identity tombstoning.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/retention/legal-holds",
+    "session_or_device_credential",
+    "retention",
+    "Place a legal hold.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/retention/legal-holds/{holdId}/release-request",
+    "session_or_device_credential",
+    "retention",
+    "Request legal hold release.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/retention/legal-holds/{holdId}/release-confirmation",
+    "session_or_device_credential",
+    "retention",
+    "Confirm legal hold release.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
   route(
     "POST",
     "/v1/cross-identity-sync/relationships",
@@ -986,17 +1524,6 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
-    "DELETE",
-    "/v1/team-workspaces/{teamWorkspaceId}/session-share-grants/{shareGrantId}",
-    "session",
-    "team_memory",
-    "Revoke a Captured Session Share Grant from a Team Workspace.",
-    "request_time_team_workspace",
-    "implemented",
-    teamDeploymentModes
-  ),
-
-  route(
     "POST",
     "/v1/local-edge/device-enrollments/challenges",
     "public",
@@ -1048,6 +1575,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "DELETE",
+    "/v1/local-edge/device-credentials/current",
+    "device_credential",
+    "future_remote",
+    "Revoke the currently authenticated local edge device credential.",
+    "future_request_time",
+    "implemented",
+    remoteEnrollmentDeploymentModes
+  ),
+  route(
+    "DELETE",
     "/v1/local-edge/device-credentials/{credentialId}",
     "session",
     "future_remote",
@@ -1078,12 +1615,92 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
-    "/v1/local-edge/upstream-operations",
-    "api_token_or_device_credential",
-    "future_remote",
-    "Relay an allowed upstream operation through local edge after route-policy, capability, and upstream credential checks.",
+    "/v1/local-edge/collaboration/command",
+    "local_edge_client_credential",
+    "collaboration",
+    "Execute a locally authenticated Personal or Team collaboration command.",
     "future_request_time",
     "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/collaboration/realtime/subscriptions",
+    "local_edge_client_credential",
+    "collaboration",
+    "Create a locally authenticated collaboration realtime subscription.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/ack",
+    "local_edge_client_credential",
+    "collaboration",
+    "Acknowledge a local-edge collaboration realtime delivery.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/stream",
+    "local_edge_client_credential",
+    "collaboration",
+    "Subscribe to local-edge collaboration realtime delivery.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v1/local-edge/collaboration/realtime/backends/{backendId}/subscriptions",
+    "local_edge_client_credential",
+    "collaboration",
+    "Revoke all local collaboration realtime subscriptions for a disconnected upstream backend.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}",
+    "local_edge_client_credential",
+    "collaboration",
+    "End a local-edge collaboration realtime subscription.",
+    "future_request_time",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/team-memory/search",
+    "local_edge_client_credential",
+    "future_remote",
+    "Search an enrolled Team Workspace through the typed local-edge Team Memory boundary.",
+    "future_request_time",
+    "not_implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/team-memory/answer",
+    "local_edge_client_credential",
+    "future_remote",
+    "Retrieve Team Workspace evidence through the typed local-edge Team Memory boundary.",
+    "future_request_time",
+    "not_implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/team-memory/expand",
+    "local_edge_client_credential",
+    "future_remote",
+    "Expand one Team Workspace Memory node through the typed local-edge Team Memory boundary.",
+    "future_request_time",
+    "not_implemented",
     localEdgeDeploymentModes
   ),
   route(

@@ -107,6 +107,7 @@ function applyTheme(theme: Theme, suppressTransitions = false) {
   }
   const isDark = theme === "dark" || (theme === "system" && getSystemDark());
   document.documentElement.classList.toggle("dark", isDark);
+  document.documentElement.classList.toggle("light", !isDark);
   syncBrowserChromeTheme();
   if (suppressTransitions) {
     // Force a reflow so the no-transitions class takes effect before removal

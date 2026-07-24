@@ -11,6 +11,9 @@ import type { RateLimitHandler, RateLimitName } from "../infra/rate-limit.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
 import type { ApiServerConfig } from "./config.js";
 import type { WorkosAuthKitClient } from "../auth/workos.js";
+import type { CollaborationAdmissionController } from "../collaboration/admission.js";
+import type { CollaborationActionGrantControl } from "../local-edge/collaboration-action-grant-control.js";
+import type { CollaborationSharedMemoryControl } from "../local-edge/collaboration-shared-memory-control.js";
 
 export type CapturePolicy = Awaited<
   ReturnType<MemorySourceRepository["getEffectiveCapturePolicy"]>
@@ -21,6 +24,11 @@ export interface ApiRouteContext {
   requireRepository(): MemorySourceRepository;
   auth: AuthHelpers;
   rateLimit: Record<RateLimitName, RateLimitHandler>;
+  collaboration: {
+    admission: CollaborationAdmissionController;
+    actionGrantControl?: CollaborationActionGrantControl;
+    sharedMemoryControl?: CollaborationSharedMemoryControl;
+  };
   jobs: {
     enqueueEmbedding(
       sourceType: EmbeddingSourceType,

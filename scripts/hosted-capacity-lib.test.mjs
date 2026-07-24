@@ -91,7 +91,7 @@ test("scenario validation requires the right credentials", () => {
   assert.throws(
     () =>
       buildScenarioOperations({
-        scenario: "local-edge-team-proxy",
+        scenario: "local-edge-team-recall",
         deviceCredential: "device-key:secret",
         teamWorkspaceId: "30000000-0000-4000-8000-000000000001",
         upstreamBackendId: ""
@@ -113,7 +113,7 @@ test("Team scenarios build session, device, and local-edge operations", () => {
     teamWorkspaceId
   });
   const localEdgeOperations = buildScenarioOperations({
-    scenario: "local-edge-team-proxy",
+    scenario: "local-edge-team-recall",
     deviceCredential: "Koed-Device device-key:secret",
     teamWorkspaceId,
     upstreamBackendId: "team-vps"
@@ -128,7 +128,7 @@ test("Team scenarios build session, device, and local-edge operations", () => {
   );
   assert.equal(
     localEdgeOperations[0].path,
-    "/v1/local-edge/upstream-operations"
+    "/v1/local-edge/team-memory/answer"
   );
   assert.equal(localEdgeOperations[0].body(1).upstream_backend_id, "team-vps");
 });

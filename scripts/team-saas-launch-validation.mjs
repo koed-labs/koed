@@ -12,6 +12,7 @@ import {
   runStagedRemoteValidation,
   validateLaunchReadiness
 } from "./team-saas-launch-validation-lib.mjs";
+import { createFixtureRuntime } from "./team-saas-fixture-lib.mjs";
 import { loadRootEnv } from "./api-token-bootstrap-lib.mjs";
 
 const requireFromDbPackage = createRequire(resolve("packages/db/package.json"));
@@ -27,6 +28,7 @@ target using a browser session cookie and scoped device credential.
 
 Options:
   --base-url <url>                 Running API target for staged remote probes.
+  --browser-origin <url>           Browser/Explorer origin for session CSRF evidence.
   --session-cookie <cookie>        Browser Cookie header for Team routes.
   --device-credential <credential> Koed-Device credential value or full header.
   --api-token <token>              Optional API Token used to prove Team rejection.
@@ -39,6 +41,7 @@ Environment:
   DATABASE_URL must point at the Koed database to validate.
   API_TOKEN_PEPPER must be configured so fixture API sessions are seeded and validated.
   KOED_LAUNCH_BASE_URL, KOED_LAUNCH_SESSION_COOKIE,
+  KOED_LAUNCH_BROWSER_ORIGIN,
   KOED_LAUNCH_DEVICE_CREDENTIAL, KOED_LAUNCH_API_TOKEN,
   KOED_LAUNCH_TEAM_WORKSPACE_ID, KOED_LAUNCH_TEAM_NODE_ID,
   KOED_LAUNCH_LOCAL_EDGE_BASE_URL, and KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID
@@ -60,6 +63,7 @@ if (args.includes("--help") || args.includes("-h")) {
 
 const stagedRemoteOptionFlags = new Set([
   "--base-url",
+  "--browser-origin",
   "--session-cookie",
   "--device-credential",
   "--api-token",
@@ -82,6 +86,8 @@ for (let index = 0; index < args.length; index += 1) {
     }
     if (arg === "--base-url") {
       stagedRemoteOptions.baseUrl = value;
+    } else if (arg === "--browser-origin") {
+      stagedRemoteOptions.browserOrigin = value;
     } else if (arg === "--session-cookie") {
       stagedRemoteOptions.sessionCookie = value;
     } else if (arg === "--device-credential") {
@@ -119,15 +125,18 @@ try {
 }
 
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 let automatedTestDatabase = null;
 
 try {
   await client.connect();
+  const fixtureRuntime = await createFixtureRuntime(pool);
   const stagedRemote = withStagedRemote
     ? await runStagedRemoteValidation(stagedRemoteOptions)
     : null;
   const summary = await validateLaunchReadiness(client, {
     automatedTestStatus: withAutomatedTests ? "passed" : "not_run",
+    fixtureRuntime,
     stagedRemote
   });
   if (withAutomatedTests) {
@@ -142,6 +151,7 @@ try {
       environmentOverrides: {
         API_TOKEN_PEPPER: randomBytes(32).toString("base64url"),
         DATABASE_URL: automatedTestDatabase.databaseUrl,
+        KOED_TEAM_COLLABORATION_ENABLED: "true",
         NODE_ENV: "test",
         SESSION_SECRET: randomBytes(32).toString("base64url")
       },
@@ -163,4 +173,5 @@ try {
     process.exitCode = 1;
   });
   await client.end().catch(() => {});
+  await pool.end().catch(() => {});
 }

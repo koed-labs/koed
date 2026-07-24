@@ -116,6 +116,197 @@ export const teamWorkspaceAccess = pgEnum("team_workspace_access", [
   "read",
   "write"
 ]);
+export const collaborationScope = pgEnum("collaboration_scope", [
+  "personal",
+  "team"
+]);
+export const collaborationThreadKind = pgEnum("collaboration_thread_kind", [
+  "notes_to_self",
+  "personal_channel",
+  "workspace_channel",
+  "dm",
+  "group_dm",
+  "shared_session_discussion"
+]);
+export const collaborationSenderKind = pgEnum("collaboration_sender_kind", [
+  "user",
+  "system",
+  "imported"
+]);
+export const collaborationLifecycle = pgEnum("collaboration_lifecycle", [
+  "active",
+  "archived",
+  "tombstoned",
+  "purge_pending",
+  "purged"
+]);
+export const collaborationEventFamily = pgEnum("collaboration_event_family", [
+  "team_lifecycle",
+  "team_membership_access",
+  "workspace_lifecycle_access",
+  "thread_lifecycle",
+  "message_created",
+  "read_state_updated",
+  "share_grant_lifecycle",
+  "representation_changed",
+  "memory_event_available",
+  "lcm_leaf_available",
+  "lcm_rollup_available",
+  "shared_session_discussion_activity",
+  "personal_memory_changed",
+  "access_revoked"
+]);
+export const collaborationStreamState = pgEnum("collaboration_stream_state", [
+  "active",
+  "requires_snapshot",
+  "revoked",
+  "expired"
+]);
+export const teamLifecycle = pgEnum("team_lifecycle", [
+  "active",
+  "suspended",
+  "deletion_requested",
+  "purge_pending",
+  "purged"
+]);
+export const workspaceLifecycle = pgEnum("workspace_lifecycle", [
+  "active",
+  "archived",
+  "purge_pending",
+  "purged"
+]);
+export const inviteLifecycle = pgEnum("invite_lifecycle", [
+  "pending",
+  "accepted",
+  "revoked",
+  "expired"
+]);
+export const sharedMemoryRepresentation = pgEnum(
+  "shared_memory_representation",
+  ["memory_events", "lcm_leaves", "lcm_rollups"]
+);
+export const sharedMemoryConsentMode = pgEnum("shared_memory_consent_mode", [
+  "snapshot",
+  "continuous"
+]);
+export const sharedMemoryConsentState = pgEnum("shared_memory_consent_state", [
+  "pending",
+  "active",
+  "paused",
+  "revoked",
+  "expired"
+]);
+export const memoryRepresentationPolicyScope = pgEnum(
+  "memory_representation_policy_scope",
+  ["source_owner", "team", "workspace"]
+);
+export const memoryRepresentationState = pgEnum("memory_representation_state", [
+  "pending",
+  "available",
+  "stale",
+  "invalidated",
+  "purge_pending",
+  "purged"
+]);
+export const memoryReplicaLifecycle = pgEnum("memory_replica_lifecycle", [
+  "active",
+  "stale",
+  "revoked",
+  "tombstoned",
+  "purge_pending",
+  "purged"
+]);
+export const shareGrantLifecycle = pgEnum("share_grant_lifecycle", [
+  "active",
+  "unavailable",
+  "revoked",
+  "tombstoned",
+  "purge_pending",
+  "purged"
+]);
+export const retentionPolicyScope = pgEnum("retention_policy_scope", [
+  "team",
+  "workspace",
+  "share_grant",
+  "thread",
+  "owner_private_replica"
+]);
+export const retentionTrigger = pgEnum("retention_trigger", [
+  "share_revoked",
+  "team_deletion",
+  "workspace_policy",
+  "user_erasure",
+  "source_purge",
+  "policy_migration"
+]);
+export const retentionPolicyShorteningState = pgEnum(
+  "retention_policy_shortening_state",
+  ["pending", "confirmed", "invalidated"]
+);
+export const legalHoldScope = pgEnum("legal_hold_scope", [
+  "team",
+  "workspace",
+  "thread",
+  "grant_representation",
+  "team_message_range",
+  "owner_private_replica"
+]);
+export const purgeTargetKind = pgEnum("purge_target_kind", [
+  "team",
+  "workspace",
+  "thread",
+  "message",
+  "share_grant",
+  "grant_representation",
+  "owner_private_replica"
+]);
+export const purgeJobState = pgEnum("purge_job_state", [
+  "pending",
+  "canceled",
+  "blocked",
+  "running",
+  "retry_wait",
+  "failed",
+  "verified"
+]);
+export const legalHoldState = pgEnum("legal_hold_state", [
+  "active",
+  "release_pending",
+  "released"
+]);
+export const purgeAttemptState = pgEnum("purge_attempt_state", [
+  "running",
+  "retryable_failure",
+  "terminal_failure",
+  "completed"
+]);
+export const purgeArtifactKind = pgEnum("purge_artifact_kind", [
+  "database_row",
+  "encrypted_payload",
+  "wrapped_key",
+  "search_index",
+  "vector",
+  "outbox_replay",
+  "backup_copy"
+]);
+export const purgeEvidenceState = pgEnum("purge_evidence_state", [
+  "pending",
+  "cleaned",
+  "scheduled_expiry",
+  "verified",
+  "not_applicable",
+  "failed"
+]);
+export const highRiskConfirmationState = pgEnum(
+  "high_risk_confirmation_state",
+  ["pending", "approved", "denied", "expired", "revoked"]
+);
+export const highRiskActionGrantState = pgEnum("high_risk_action_grant_state", [
+  "active",
+  "consumed",
+  "expired",
+  "revoked"
+]);
 export const teamEntitlementStatus = pgEnum("team_entitlement_status", [
   "active",
   "grace",
@@ -199,6 +390,7 @@ export const users = pgTable("users", {
   id: id(),
   email: text("email").notNull().unique(),
   displayName: text("display_name"),
+  avatarReference: text("avatar_reference"),
   passwordHash: text("password_hash"),
   createdAt: now(),
   updatedAt: updatedNow(),
@@ -251,6 +443,13 @@ export const teams = pgTable(
   {
     id: id(),
     name: text("name").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "restrict"
+    }),
+    creationIdempotencyKeyHash: text("creation_idempotency_key_hash"),
+    creationRequestHash: text("creation_request_hash"),
+    version: integer("version").notNull().default(1),
+    lifecycle: teamLifecycle("lifecycle").notNull().default("active"),
     entitlementStatus: teamEntitlementStatus("entitlement_status")
       .notNull()
       .default("active"),
@@ -260,12 +459,70 @@ export const teams = pgTable(
     }),
     createdAt: now(),
     updatedAt: updatedNow(),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    deletionRequestedAt: timestamp("deletion_requested_at", {
+      withTimezone: true
+    }),
+    tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true })
   },
   (table) => [
+    unique("teams_id_lifecycle_unique").on(table.id, table.lifecycle),
+    uniqueIndex("teams_creator_idempotency_unique")
+      .on(table.createdByUserId, table.creationIdempotencyKeyHash)
+      .where(sql`${table.creationIdempotencyKeyHash} is not null`),
     index("teams_active_idx")
       .on(table.createdAt.desc())
-      .where(sql`${table.archivedAt} is null`)
+      .where(sql`${table.lifecycle} = 'active'`),
+    index("teams_lifecycle_idx").on(table.lifecycle, table.updatedAt.desc()),
+    check("teams_version_check", sql`${table.version} > 0`),
+    check(
+      "teams_creation_idempotency_shape_check",
+      sql`(
+        ${table.createdByUserId} is null
+        and ${table.creationIdempotencyKeyHash} is null
+        and ${table.creationRequestHash} is null
+      ) or (
+        ${table.createdByUserId} is not null
+        and length(${table.creationIdempotencyKeyHash}) = 64
+        and length(${table.creationRequestHash}) = 64
+      )`
+    ),
+    check(
+      "teams_name_check",
+      sql`length(trim(${table.name})) > 0
+        and char_length(${table.name}) <= 80
+        and ${table.name} = normalize(${table.name}, NFC)`
+    ),
+    check("teams_no_archive_check", sql`${table.archivedAt} is null`),
+    check(
+      "teams_lifecycle_shape_check",
+      sql`(
+        ${table.lifecycle} = 'active'
+        and ${table.suspendedAt} is null
+        and ${table.deletionRequestedAt} is null
+        and ${table.tombstonedAt} is null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.lifecycle} = 'suspended'
+        and ${table.suspendedAt} is not null
+        and ${table.deletionRequestedAt} is null
+        and ${table.tombstonedAt} is null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.lifecycle} in ('deletion_requested', 'purge_pending')
+        and ${table.deletionRequestedAt} is not null
+        and ${table.tombstonedAt} is not null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.lifecycle} = 'purged'
+        and ${table.deletionRequestedAt} is not null
+        and ${table.tombstonedAt} is not null
+        and ${table.purgeCompletedAt} is not null
+      )`
+    )
   ]
 );
 
@@ -320,6 +577,7 @@ export const teamMemberships = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: teamRole("role").notNull(),
     status: teamMembershipStatus("status").notNull().default("enabled"),
+    version: integer("version").notNull().default(1),
     createdAt: now(),
     updatedAt: updatedNow(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
@@ -329,7 +587,8 @@ export const teamMemberships = pgTable(
   (table) => [
     unique("team_memberships_team_user_unique").on(table.teamId, table.userId),
     index("team_memberships_user_idx").on(table.userId, table.status),
-    index("team_memberships_team_idx").on(table.teamId, table.role)
+    index("team_memberships_team_idx").on(table.teamId, table.role),
+    check("team_memberships_version_check", sql`${table.version} > 0`)
   ]
 );
 
@@ -339,6 +598,7 @@ export const teamBillingSeatStates = pgTable(
     teamId: uuid("team_id")
       .primaryKey()
       .references(() => teams.id, { onDelete: "cascade" }),
+    version: integer("version").notNull().default(1),
     seatLimit: integer("seat_limit"),
     billableSeatCount: integer("billable_seat_count").notNull().default(0),
     pendingBillingSeatCount: integer("pending_billing_seat_count")
@@ -366,7 +626,8 @@ export const teamBillingSeatStates = pgTable(
       sql`${table.billableSeatCount} >= 0
         and ${table.pendingBillingSeatCount} >= 0
         and (${table.seatLimit} is null or ${table.seatLimit} >= 0)`
-    )
+    ),
+    check("team_billing_seat_states_version_check", sql`${table.version} > 0`)
   ]
 );
 
@@ -378,15 +639,62 @@ export const teamWorkspaces = pgTable(
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    descriptionMarker: text("description_marker"),
+    version: integer("version").notNull().default(1),
+    lifecycle: workspaceLifecycle("lifecycle").notNull().default("active"),
     createdAt: now(),
     updatedAt: updatedNow(),
-    archivedAt: timestamp("archived_at", { withTimezone: true })
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    retentionPolicyId: uuid("retention_policy_id"),
+    retentionPolicyVersion: integer("retention_policy_version"),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
   },
   (table) => [
     unique("team_workspaces_id_team_unique").on(table.id, table.teamId),
     index("team_workspaces_team_idx")
       .on(table.teamId, table.createdAt.desc())
-      .where(sql`${table.archivedAt} is null`)
+      .where(sql`${table.lifecycle} = 'active'`),
+    index("team_workspaces_lifecycle_idx").on(
+      table.teamId,
+      table.lifecycle,
+      table.updatedAt.desc()
+    ),
+    check("team_workspaces_version_check", sql`${table.version} > 0`),
+    check(
+      "team_workspaces_name_check",
+      sql`length(trim(${table.name})) > 0
+        and char_length(${table.name}) <= 80
+        and ${table.name} = normalize(${table.name}, NFC)`
+    ),
+    check(
+      "team_workspaces_description_marker_check",
+      sql`${table.descriptionMarker} is null
+        or ${table.descriptionMarker} = '[koed encrypted team workspace description]'`
+    ),
+    check(
+      "team_workspaces_retention_policy_check",
+      sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
+        or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
+    ),
+    check(
+      "team_workspaces_lifecycle_shape_check",
+      sql`(
+        ${table.lifecycle} = 'active'
+        and ${table.archivedAt} is null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.lifecycle} = 'archived'
+        and ${table.archivedAt} is not null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.lifecycle} = 'purge_pending'
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.lifecycle} = 'purged'
+        and ${table.purgeCompletedAt} is not null
+      )`
+    )
   ]
 );
 
@@ -401,6 +709,10 @@ export const teamWorkspaceAccessGrants = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     access: teamWorkspaceAccess("access").notNull().default("disabled"),
+    canShareOwnedMemory: boolean("can_share_owned_memory")
+      .notNull()
+      .default(false),
+    version: integer("version").notNull().default(1),
     grantedByUserId: uuid("granted_by_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
@@ -424,6 +736,14 @@ export const teamWorkspaceAccessGrants = pgTable(
     index("team_workspace_access_grants_user_idx").on(
       table.userId,
       table.access
+    ),
+    check(
+      "team_workspace_access_grants_version_check",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "team_workspace_access_grants_share_owned_check",
+      sql`not ${table.canShareOwnedMemory} or ${table.access} = 'write'`
     )
   ]
 );
@@ -435,8 +755,16 @@ export const teamInvites = pgTable(
     teamId: uuid("team_id")
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
+    defaultTeamWorkspaceId: uuid("default_team_workspace_id"),
+    defaultWorkspaceAccess: teamWorkspaceAccess("default_workspace_access")
+      .notNull()
+      .default("write"),
     email: text("email").notNull(),
+    normalizedEmail: text("normalized_email"),
+    backendOriginHash: text("backend_origin_hash"),
     role: teamRole("role").notNull(),
+    version: integer("version").notNull().default(1),
+    lifecycle: inviteLifecycle("lifecycle").notNull().default("pending"),
     tokenHash: text("token_hash").notNull().unique(),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null"
@@ -450,13 +778,54 @@ export const teamInvites = pgTable(
     revokedAt: timestamp("revoked_at", { withTimezone: true })
   },
   (table) => [
+    foreignKey({
+      columns: [table.defaultTeamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "team_invites_default_workspace_team_fk"
+    }).onDelete("restrict"),
     index("team_invites_team_email_idx").on(table.teamId, table.email),
+    index("team_invites_team_lifecycle_idx").on(
+      table.teamId,
+      table.lifecycle,
+      table.expiresAt
+    ),
     index("team_invites_active_token_idx")
       .on(table.tokenHash)
       .where(sql`${table.acceptedAt} is null and ${table.revokedAt} is null`),
     check(
       "team_invites_token_hash_length_check",
       sql`length(${table.tokenHash}) >= 32`
+    ),
+    check("team_invites_version_check", sql`${table.version} > 0`),
+    check(
+      "team_invites_binding_check",
+      sql`${table.defaultTeamWorkspaceId} is not null
+        and ${table.normalizedEmail} is not null
+        and length(trim(${table.normalizedEmail})) > 0
+        and ${table.normalizedEmail} = lower(trim(${table.email}))
+        and ${table.backendOriginHash} is not null
+        and length(${table.backendOriginHash}) = 64
+        and ${table.defaultWorkspaceAccess} in ('read', 'write')`
+    ),
+    check(
+      "team_invites_lifecycle_shape_check",
+      sql`(
+        ${table.lifecycle} = 'pending'
+        and ${table.acceptedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.lifecycle} = 'accepted'
+        and ${table.acceptedAt} is not null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.lifecycle} = 'revoked'
+        and ${table.acceptedAt} is null
+        and ${table.revokedAt} is not null
+      ) or (
+        ${table.lifecycle} = 'expired'
+        and ${table.acceptedAt} is null
+        and ${table.revokedAt} is null
+      )`
     )
   ]
 );
@@ -863,6 +1232,9 @@ export const memoryNodes = pgTable(
   {
     id: id(),
     ownerUserId: uuid("owner_user_id").references(() => users.id),
+    sessionId: uuid("session_id").references(() => sessions.id, {
+      onDelete: "cascade"
+    }),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
@@ -933,6 +1305,11 @@ export const memoryNodes = pgTable(
     index("memory_nodes_lcm_scope_depth_idx")
       .on(table.visibility, table.ownerUserId, table.depth, table.createdAt)
       .where(sql`${table.invalidatedAt} is null`),
+    index("memory_nodes_session_kind_idx")
+      .on(table.ownerUserId, table.sessionId, table.kind, table.createdAt)
+      .where(
+        sql`${table.sessionId} is not null and ${table.invalidatedAt} is null`
+      ),
     index("memory_nodes_personal_pinned_idx")
       .on(table.ownerUserId, table.pinnedAt.desc())
       .where(
@@ -1456,10 +1833,11 @@ export const encryptedFieldPayloads = pgTable(
   {
     id: id(),
     ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
+      onDelete: "set null"
     }),
+    ownerPrincipalId: uuid("owner_principal_id"),
     teamId: uuid("team_id").references(() => teams.id, {
-      onDelete: "cascade"
+      onDelete: "restrict"
     }),
     teamWorkspaceId: uuid("team_workspace_id"),
     visibility: visibilityScope("visibility").notNull().default("personal"),
@@ -1530,23 +1908,33 @@ export const encryptedFieldPayloads = pgTable(
         ${table.encryptionScope} = 'personal'
         and ${table.visibility} = 'personal'
         and ${table.ownerUserId} is not null
+        and ${table.ownerPrincipalId} is null
         and ${table.teamId} is null
         and ${table.teamWorkspaceId} is null
       ) or (
         ${table.encryptionScope} = 'team'
         and ${table.visibility} = 'personal'
         and ${table.teamId} is not null
+        and ${table.ownerPrincipalId} is null
+      ) or (
+        ${table.encryptionScope} = 'owner_private_replica'
+        and ${table.visibility} = 'personal'
+        and ${table.ownerPrincipalId} is not null
+        and ${table.teamId} is null
+        and ${table.teamWorkspaceId} is null
       )`
     ),
     check(
       "encrypted_field_payloads_encryption_scope_check",
-      sql`${table.encryptionScope} in ('personal', 'team')`
+      sql`${table.encryptionScope} in ('personal', 'team', 'owner_private_replica')`
     ),
     check(
       "encrypted_field_payloads_source_table_check",
       sql`${table.sourceTable} in (
         'conversation_items',
         'conversation_item_observations',
+        'collaboration_messages',
+        'collaboration_threads',
         'curated_memory_assertions',
         'curated_memory_proposals',
         'curated_memory_sources',
@@ -1555,7 +1943,12 @@ export const encryptedFieldPayloads = pgTable(
         'memory_events',
         'memory_nodes',
         'memory_questions',
+        'memory_replica_revisions',
         'messages',
+        'shared_source_artifacts',
+        'shared_source_previews',
+        'team_workspaces',
+        'team_memory_representations',
         'tool_events'
       )`
     ),
@@ -1617,11 +2010,17 @@ export const encryptedFieldBackfillRuns = pgTable(
       sql`${table.sourceTable} in (
         'conversation_items',
         'conversation_item_observations',
+        'collaboration_messages',
+        'collaboration_threads',
         'memory_embeddings',
         'memory_events',
         'memory_nodes',
         'memory_questions',
+        'memory_replica_revisions',
         'messages',
+        'shared_source_artifacts',
+        'shared_source_previews',
+        'team_memory_representations',
         'tool_events'
       )`
     ),
@@ -1790,6 +2189,13 @@ export const deviceEnrollmentChallenges = pgTable(
     check(
       "device_enrollment_challenges_challenge_hash_length_check",
       sql`length(${table.challengeHash}) >= 32`
+    ),
+    check(
+      "device_enrollment_challenges_operation_families_check",
+      sql`array_position(${table.requestedOperationFamilies}, null) is null
+        and cardinality(${table.requestedOperationFamilies}) > 0
+        and array_to_string(${table.requestedOperationFamilies}, ',')
+          ~ '^[A-Za-z0-9_.:-]+(,[A-Za-z0-9_.:-]+)*$'`
     )
   ]
 );
@@ -1846,6 +2252,11 @@ export const deviceCredentials = pgTable(
     uniqueIndex("device_credentials_active_device_unique")
       .on(table.ownerUserId, table.upstreamBackendId, table.deviceInstanceId)
       .where(sql`${table.revokedAt} is null`),
+    unique("device_credentials_id_owner_backend_unique").on(
+      table.id,
+      table.ownerUserId,
+      table.upstreamBackendId
+    ),
     check(
       "device_credentials_credential_version_check",
       sql`${table.credentialVersion} > 0`
@@ -1869,6 +2280,253 @@ export const deviceCredentials = pgTable(
         and ${table.publicKeyJwk} is not null
         and ${table.verifierHash} is null
       )`
+    ),
+    check(
+      "device_credentials_operation_families_check",
+      sql`array_position(${table.operationFamilies}, null) is null
+        and cardinality(${table.operationFamilies}) > 0
+        and array_to_string(${table.operationFamilies}, ',')
+          ~ '^[A-Za-z0-9_.:-]+(,[A-Za-z0-9_.:-]+)*$'`
+    )
+  ]
+);
+
+export const highRiskBrowserConfirmations = pgTable(
+  "high_risk_browser_confirmations",
+  {
+    id: id(),
+    selector: uuid("selector").notNull().unique(),
+    clientRequestId: uuid("client_request_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    decisionUserSessionId: uuid("decision_user_session_id").references(
+      () => userSessions.id,
+      { onDelete: "restrict" }
+    ),
+    deviceCredentialId: uuid("device_credential_id").notNull(),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    operationFamily: text("operation_family").notNull(),
+    action: text("action").notNull(),
+    targetId: uuid("target_id"),
+    scopeHash: text("scope_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    secretCommitment: text("secret_commitment").notNull().unique(),
+    state: highRiskConfirmationState("state").notNull().default("pending"),
+    createdAt: now(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    decisionFreshlyAuthenticatedAt: timestamp(
+      "decision_freshly_authenticated_at",
+      {
+        withTimezone: true
+      }
+    ),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReasonCode: text("revocation_reason_code")
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.deviceCredentialId,
+        table.ownerUserId,
+        table.upstreamBackendId
+      ],
+      foreignColumns: [
+        deviceCredentials.id,
+        deviceCredentials.ownerUserId,
+        deviceCredentials.upstreamBackendId
+      ],
+      name: "high_risk_confirmations_device_binding_fk"
+    }).onDelete("restrict"),
+    unique("high_risk_confirmations_device_request_unique").on(
+      table.deviceCredentialId,
+      table.clientRequestId
+    ),
+    index("high_risk_confirmations_active_idx")
+      .on(table.ownerUserId, table.expiresAt)
+      .where(sql`${table.state} in ('pending', 'approved')`),
+    check(
+      "high_risk_confirmations_operation_check",
+      sql`${table.operationFamily} ~ '^[A-Za-z0-9_.:-]+$'
+        and ${table.action} ~ '^[A-Za-z0-9_.:-]+$'`
+    ),
+    check(
+      "high_risk_confirmations_hash_check",
+      sql`length(${table.scopeHash}) = 64
+        and length(${table.requestHash}) = 64
+        and ${table.secretCommitment} ~ '^v1:[0-9A-Fa-f]{64}$'`
+    ),
+    check(
+      "high_risk_confirmations_time_check",
+      sql`${table.expiresAt} > ${table.createdAt}
+        and (${table.decidedAt} is null or ${table.decisionFreshlyAuthenticatedAt} <= ${table.decidedAt})`
+    ),
+    check(
+      "high_risk_confirmations_lifecycle_check",
+      sql`(
+        ${table.state} = 'pending'
+        and ${table.decisionUserSessionId} is null
+        and ${table.decisionFreshlyAuthenticatedAt} is null
+        and ${table.decidedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'approved'
+        and ${table.decisionUserSessionId} is not null
+        and ${table.decisionFreshlyAuthenticatedAt} is not null
+        and ${table.decidedAt} is not null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'denied'
+        and ${table.decisionUserSessionId} is not null
+        and ${table.decisionFreshlyAuthenticatedAt} is not null
+        and ${table.decidedAt} is not null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'expired'
+        and ${table.decisionUserSessionId} is null
+        and ${table.decisionFreshlyAuthenticatedAt} is null
+        and ${table.decidedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'revoked'
+        and ${table.revokedAt} is not null
+      )`
+    )
+  ]
+);
+
+export const highRiskDeviceActionGrants = pgTable(
+  "high_risk_device_action_grants",
+  {
+    id: id(),
+    confirmationId: uuid("confirmation_id")
+      .notNull()
+      .references(() => highRiskBrowserConfirmations.id, {
+        onDelete: "restrict"
+      }),
+    deviceCredentialId: uuid("device_credential_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    operationFamily: text("operation_family").notNull(),
+    action: text("action").notNull(),
+    targetId: uuid("target_id"),
+    scopeHash: text("scope_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    secretCommitment: text("secret_commitment").notNull().unique(),
+    state: highRiskActionGrantState("state").notNull().default("active"),
+    maxUses: integer("max_uses").notNull().default(1),
+    useCount: integer("use_count").notNull().default(0),
+    createdAt: now(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReasonCode: text("revocation_reason_code")
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.deviceCredentialId,
+        table.ownerUserId,
+        table.upstreamBackendId
+      ],
+      foreignColumns: [
+        deviceCredentials.id,
+        deviceCredentials.ownerUserId,
+        deviceCredentials.upstreamBackendId
+      ],
+      name: "high_risk_action_grants_device_binding_fk"
+    }).onDelete("restrict"),
+    unique("high_risk_action_grants_confirmation_unique").on(
+      table.confirmationId
+    ),
+    index("high_risk_action_grants_active_idx")
+      .on(table.deviceCredentialId, table.expiresAt)
+      .where(sql`${table.state} = 'active'`),
+    check(
+      "high_risk_action_grants_operation_check",
+      sql`${table.operationFamily} ~ '^[A-Za-z0-9_.:-]+$'
+        and ${table.action} ~ '^[A-Za-z0-9_.:-]+$'`
+    ),
+    check(
+      "high_risk_action_grants_hash_check",
+      sql`length(${table.scopeHash}) = 64
+        and length(${table.requestHash}) = 64
+        and ${table.secretCommitment} ~ '^v1:[0-9A-Fa-f]{64}$'`
+    ),
+    check(
+      "high_risk_action_grants_use_check",
+      sql`${table.maxUses} = 1
+        and ${table.useCount} between 0 and ${table.maxUses}
+        and ${table.expiresAt} > ${table.createdAt}`
+    ),
+    check(
+      "high_risk_action_grants_lifecycle_check",
+      sql`(
+        ${table.state} = 'active'
+        and ${table.useCount} = 0
+        and ${table.consumedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'consumed'
+        and ${table.useCount} = 1
+        and ${table.consumedAt} is not null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'expired'
+        and ${table.useCount} = 0
+        and ${table.consumedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'revoked'
+        and ${table.useCount} = 0
+        and ${table.consumedAt} is null
+        and ${table.revokedAt} is not null
+      )`
+    )
+  ]
+);
+
+export const highRiskActionGrantExecutionReceipts = pgTable(
+  "high_risk_action_grant_execution_receipts",
+  {
+    id: id(),
+    actionGrantId: uuid("action_grant_id")
+      .notNull()
+      .references(() => highRiskDeviceActionGrants.id, {
+        onDelete: "restrict"
+      }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    statusCode: integer("status_code").notNull(),
+    receiptBody: jsonb("receipt_body").$type<unknown>().notNull(),
+    receiptHash: text("receipt_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("high_risk_action_grant_execution_receipts_action_grant_unique").on(
+      table.actionGrantId
+    ),
+    index("high_risk_action_grant_execution_receipts_owner_idx").on(
+      table.ownerUserId,
+      table.createdAt
+    ),
+    check(
+      "high_risk_action_grant_execution_receipts_status_code_check",
+      sql`${table.statusCode} between 100 and 599`
+    ),
+    check(
+      "high_risk_action_grant_execution_receipts_hash_check",
+      sql`length(${table.receiptHash}) = 64`
     )
   ]
 );
@@ -2423,20 +3081,698 @@ export const conversationItemObservations = pgTable(
   ]
 );
 
+export const sourceOwnerRepresentationPolicies = pgTable(
+  "source_owner_representation_policies",
+  {
+    id: id(),
+    policyId: uuid("policy_id").notNull().defaultRandom(),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references((): AnyPgColumn => logicalMemories.id, {
+        onDelete: "restrict"
+      }),
+    sourceOwnerPrincipalId: uuid("source_owner_principal_id").notNull(),
+    version: integer("version").notNull(),
+    allowedRepresentations: sharedMemoryRepresentation(
+      "allowed_representations"
+    )
+      .array()
+      .notNull(),
+    policyHash: text("policy_hash").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    unique("source_owner_representation_policies_version_unique").on(
+      table.policyId,
+      table.version
+    ),
+    unique("source_owner_representation_policies_scope_unique").on(
+      table.policyId,
+      table.version,
+      table.logicalMemoryId,
+      table.sourceOwnerPrincipalId
+    ),
+    uniqueIndex("source_owner_representation_policies_active_unique")
+      .on(table.logicalMemoryId, table.sourceOwnerPrincipalId)
+      .where(sql`${table.supersededAt} is null`),
+    index("source_owner_representation_policies_history_idx").on(
+      table.logicalMemoryId,
+      table.sourceOwnerPrincipalId,
+      table.version.desc()
+    ),
+    check(
+      "source_owner_representation_policies_version_check",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "source_owner_representation_policies_allowed_set_check",
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+        and array_position(${table.allowedRepresentations}, null) is null
+        and cardinality(${table.allowedRepresentations}) =
+          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+    ),
+    check(
+      "source_owner_representation_policies_hash_check",
+      sql`length(${table.policyHash}) = 64`
+    ),
+    check(
+      "source_owner_representation_policies_lifecycle_check",
+      sql`${table.supersededAt} is null or ${table.supersededAt} > ${table.effectiveAt}`
+    )
+  ]
+);
+
+export const teamRepresentationPolicies = pgTable(
+  "team_representation_policies",
+  {
+    id: id(),
+    policyId: uuid("policy_id").notNull().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    version: integer("version").notNull(),
+    allowedRepresentations: sharedMemoryRepresentation(
+      "allowed_representations"
+    )
+      .array()
+      .notNull(),
+    policyHash: text("policy_hash").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    unique("team_representation_policies_version_unique").on(
+      table.policyId,
+      table.version
+    ),
+    unique("team_representation_policies_scope_unique").on(
+      table.policyId,
+      table.version,
+      table.teamId
+    ),
+    uniqueIndex("team_representation_policies_active_unique")
+      .on(table.teamId)
+      .where(sql`${table.supersededAt} is null`),
+    index("team_representation_policies_history_idx").on(
+      table.teamId,
+      table.version.desc()
+    ),
+    check(
+      "team_representation_policies_version_check",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "team_representation_policies_allowed_set_check",
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+        and array_position(${table.allowedRepresentations}, null) is null
+        and cardinality(${table.allowedRepresentations}) =
+          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+    ),
+    check(
+      "team_representation_policies_hash_check",
+      sql`length(${table.policyHash}) = 64`
+    ),
+    check(
+      "team_representation_policies_lifecycle_check",
+      sql`${table.supersededAt} is null or ${table.supersededAt} > ${table.effectiveAt}`
+    )
+  ]
+);
+
+export const workspaceRepresentationPolicies = pgTable(
+  "workspace_representation_policies",
+  {
+    id: id(),
+    policyId: uuid("policy_id").notNull().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    version: integer("version").notNull(),
+    allowedRepresentations: sharedMemoryRepresentation(
+      "allowed_representations"
+    )
+      .array()
+      .notNull(),
+    policyHash: text("policy_hash").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "workspace_representation_policies_workspace_team_fk"
+    }).onDelete("restrict"),
+    unique("workspace_representation_policies_version_unique").on(
+      table.policyId,
+      table.version
+    ),
+    unique("workspace_representation_policies_scope_unique").on(
+      table.policyId,
+      table.version,
+      table.teamId,
+      table.teamWorkspaceId
+    ),
+    uniqueIndex("workspace_representation_policies_active_unique")
+      .on(table.teamWorkspaceId)
+      .where(sql`${table.supersededAt} is null`),
+    index("workspace_representation_policies_history_idx").on(
+      table.teamWorkspaceId,
+      table.version.desc()
+    ),
+    check(
+      "workspace_representation_policies_version_check",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "workspace_representation_policies_allowed_set_check",
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+        and array_position(${table.allowedRepresentations}, null) is null
+        and cardinality(${table.allowedRepresentations}) =
+          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+    ),
+    check(
+      "workspace_representation_policies_hash_check",
+      sql`length(${table.policyHash}) = 64`
+    ),
+    check(
+      "workspace_representation_policies_lifecycle_check",
+      sql`${table.supersededAt} is null or ${table.supersededAt} > ${table.effectiveAt}`
+    )
+  ]
+);
+
+export const sharedSourceArtifacts = pgTable(
+  "shared_source_artifacts",
+  {
+    id: id(),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references((): AnyPgColumn => logicalMemories.id, {
+        onDelete: "restrict"
+      }),
+    remoteReplicaId: uuid("remote_replica_id")
+      .notNull()
+      .references((): AnyPgColumn => memoryReplicas.id, {
+        onDelete: "restrict"
+      }),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "restrict"
+      }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    ownerPrincipalId: uuid("owner_principal_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    artifactSchemaVersion: integer("artifact_schema_version")
+      .notNull()
+      .default(1),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceCursor: bigint("source_cursor", { mode: "number" }).notNull(),
+    packageSequence: bigint("package_sequence", { mode: "number" }).notNull(),
+    sourceHash: text("source_hash").notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    artifactHash: text("artifact_hash").notNull(),
+    redactedContentHash: text("redacted_content_hash").notNull(),
+    sourceOwnerPolicyId: uuid("source_owner_policy_id").notNull(),
+    sourceOwnerPolicyVersion: integer("source_owner_policy_version").notNull(),
+    teamPolicyId: uuid("team_policy_id").notNull(),
+    teamPolicyVersion: integer("team_policy_version").notNull(),
+    workspacePolicyId: uuid("workspace_policy_id").notNull(),
+    workspacePolicyVersion: integer("workspace_policy_version").notNull(),
+    representationPolicyRevision: integer(
+      "representation_policy_revision"
+    ).notNull(),
+    representationPolicyHash: text("representation_policy_hash").notNull(),
+    contentPolicyVersion: integer("content_policy_version").notNull(),
+    contentPolicyHash: text("content_policy_hash").notNull(),
+    classifierVersion: integer("classifier_version").notNull(),
+    classifierHash: text("classifier_hash").notNull(),
+    sourceDeploymentIdentityId: uuid("source_deployment_identity_id")
+      .notNull()
+      .references(() => deploymentIdentities.id, {
+        onDelete: "restrict"
+      }),
+    remoteUserIdentityId: uuid("remote_user_identity_id")
+      .notNull()
+      .references(() => syncExternalUserIdentities.id, {
+        onDelete: "restrict"
+      }),
+    deviceCredentialId: uuid("device_credential_id")
+      .notNull()
+      .references(() => deviceCredentials.id, { onDelete: "restrict" }),
+    deviceProvenanceHash: text("device_provenance_hash").notNull(),
+    createdAt: now(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "shared_source_artifacts_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.sourceOwnerPolicyId,
+        table.sourceOwnerPolicyVersion,
+        table.logicalMemoryId,
+        table.ownerPrincipalId
+      ],
+      foreignColumns: [
+        sourceOwnerRepresentationPolicies.policyId,
+        sourceOwnerRepresentationPolicies.version,
+        sourceOwnerRepresentationPolicies.logicalMemoryId,
+        sourceOwnerRepresentationPolicies.sourceOwnerPrincipalId
+      ],
+      name: "shared_source_artifacts_owner_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamPolicyId, table.teamPolicyVersion, table.teamId],
+      foreignColumns: [
+        teamRepresentationPolicies.policyId,
+        teamRepresentationPolicies.version,
+        teamRepresentationPolicies.teamId
+      ],
+      name: "shared_source_artifacts_team_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.workspacePolicyId,
+        table.workspacePolicyVersion,
+        table.teamId,
+        table.teamWorkspaceId
+      ],
+      foreignColumns: [
+        workspaceRepresentationPolicies.policyId,
+        workspaceRepresentationPolicies.version,
+        workspaceRepresentationPolicies.teamId,
+        workspaceRepresentationPolicies.teamWorkspaceId
+      ],
+      name: "shared_source_artifacts_workspace_policy_fk"
+    }).onDelete("restrict"),
+    unique("shared_source_artifacts_hash_unique").on(table.artifactHash),
+    unique("shared_source_artifacts_scope_unique").on(
+      table.id,
+      table.logicalMemoryId,
+      table.remoteReplicaId,
+      table.teamId,
+      table.teamWorkspaceId
+    ),
+    uniqueIndex("shared_source_artifacts_current_unique").on(
+      table.logicalMemoryId,
+      table.remoteReplicaId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.representation,
+      table.sourceRevision,
+      table.artifactHash
+    ),
+    index("shared_source_artifacts_owner_idx").on(
+      table.ownerPrincipalId,
+      table.representation,
+      table.createdAt.desc()
+    ),
+    check(
+      "shared_source_artifacts_version_check",
+      sql`${table.artifactSchemaVersion} = 1
+        and ${table.sourceRevision} >= 0
+        and ${table.sourceCursor} >= 0
+        and ${table.packageSequence} >= 0
+        and ${table.sourceOwnerPolicyVersion} > 0
+        and ${table.teamPolicyVersion} > 0
+        and ${table.workspacePolicyVersion} > 0
+        and ${table.representationPolicyRevision} > 0
+        and ${table.contentPolicyVersion} > 0
+        and ${table.classifierVersion} > 0`
+    ),
+    check(
+      "shared_source_artifacts_hash_check",
+      sql`length(${table.sourceHash}) = 64
+        and length(${table.manifestHash}) = 64
+        and length(${table.artifactHash}) = 64
+        and length(${table.redactedContentHash}) = 64
+        and length(${table.representationPolicyHash}) = 64
+        and length(${table.contentPolicyHash}) = 64
+        and length(${table.classifierHash}) = 64
+        and length(${table.deviceProvenanceHash}) = 64`
+    ),
+    check(
+      "shared_source_artifacts_revision_binding_check",
+      sql`${table.sourceRevision} = ${table.sourceCursor}`
+    )
+  ]
+);
+
+export const sharedSourcePreviews = pgTable(
+  "shared_source_previews",
+  {
+    id: id(),
+    sourceArtifactId: uuid("source_artifact_id")
+      .notNull()
+      .references(() => sharedSourceArtifacts.id, { onDelete: "restrict" }),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references((): AnyPgColumn => logicalMemories.id, {
+        onDelete: "restrict"
+      }),
+    remoteReplicaId: uuid("remote_replica_id")
+      .notNull()
+      .references((): AnyPgColumn => memoryReplicas.id, {
+        onDelete: "restrict"
+      }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    ownerPrincipalId: uuid("owner_principal_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    previewSchemaVersion: integer("preview_schema_version")
+      .notNull()
+      .default(1),
+    previewRevision: integer("preview_revision").notNull().default(1),
+    previewHash: text("preview_hash").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceHash: text("source_hash").notNull(),
+    redactedContentHash: text("redacted_content_hash").notNull(),
+    createdAt: now(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "shared_source_previews_workspace_team_fk"
+    }).onDelete("restrict"),
+    unique("shared_source_previews_hash_unique").on(table.previewHash),
+    unique("shared_source_previews_scope_unique").on(
+      table.id,
+      table.sourceArtifactId,
+      table.logicalMemoryId,
+      table.remoteReplicaId,
+      table.teamId,
+      table.teamWorkspaceId
+    ),
+    uniqueIndex("shared_source_previews_artifact_unique").on(
+      table.sourceArtifactId,
+      table.previewHash
+    ),
+    index("shared_source_previews_owner_idx").on(
+      table.ownerPrincipalId,
+      table.representation,
+      table.createdAt.desc()
+    ),
+    check(
+      "shared_source_previews_version_check",
+      sql`${table.previewSchemaVersion} = 1
+        and ${table.previewRevision} > 0
+        and ${table.sourceRevision} >= 0`
+    ),
+    check(
+      "shared_source_previews_hash_check",
+      sql`length(${table.previewHash}) = 64
+        and length(${table.sourceHash}) = 64
+        and length(${table.redactedContentHash}) = 64`
+    )
+  ]
+);
+
+export const sourceOwnerRepresentationConsents = pgTable(
+  "source_owner_representation_consents",
+  {
+    id: id(),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references((): AnyPgColumn => logicalMemories.id, {
+        onDelete: "restrict"
+      }),
+    remoteReplicaId: uuid("remote_replica_id")
+      .notNull()
+      .references((): AnyPgColumn => memoryReplicas.id, {
+        onDelete: "restrict"
+      }),
+    sourceOwnerPrincipalId: uuid("source_owner_principal_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    sourceOwnerPolicyId: uuid("source_owner_policy_id").notNull(),
+    sourceOwnerPolicyVersion: integer("source_owner_policy_version").notNull(),
+    teamPolicyId: uuid("team_policy_id").notNull(),
+    teamPolicyVersion: integer("team_policy_version").notNull(),
+    workspacePolicyId: uuid("workspace_policy_id").notNull(),
+    workspacePolicyVersion: integer("workspace_policy_version").notNull(),
+    mode: sharedMemoryConsentMode("mode").notNull(),
+    state: sharedMemoryConsentState("state").notNull().default("pending"),
+    consentVersion: integer("consent_version").notNull().default(1),
+    allowedRepresentations: sharedMemoryRepresentation(
+      "allowed_representations"
+    )
+      .array()
+      .notNull(),
+    selectedRepresentation: sharedMemoryRepresentation(
+      "selected_representation"
+    ).notNull(),
+    previewId: uuid("preview_id")
+      .notNull()
+      .references(() => sharedSourcePreviews.id, {
+        onDelete: "restrict"
+      }),
+    previewRevision: integer("preview_revision").notNull(),
+    previewHash: text("preview_hash").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    maximumAuthorizedSourceRevision: bigint(
+      "maximum_authorized_source_revision",
+      {
+        mode: "number"
+      }
+    ),
+    sourceHash: text("source_hash").notNull(),
+    representationPolicyRevision: integer(
+      "representation_policy_revision"
+    ).notNull(),
+    representationPolicyHash: text("representation_policy_hash").notNull(),
+    contentPolicyVersion: integer("content_policy_version").notNull(),
+    contentPolicyHash: text("content_policy_hash").notNull(),
+    classifierVersion: integer("classifier_version").notNull(),
+    classifierHash: text("classifier_hash").notNull(),
+    redactedContentHash: text("redacted_content_hash").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    stateReasonCode: text("state_reason_code")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "source_owner_consents_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.sourceOwnerPolicyId,
+        table.sourceOwnerPolicyVersion,
+        table.logicalMemoryId,
+        table.sourceOwnerPrincipalId
+      ],
+      foreignColumns: [
+        sourceOwnerRepresentationPolicies.policyId,
+        sourceOwnerRepresentationPolicies.version,
+        sourceOwnerRepresentationPolicies.logicalMemoryId,
+        sourceOwnerRepresentationPolicies.sourceOwnerPrincipalId
+      ],
+      name: "source_owner_consents_owner_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamPolicyId, table.teamPolicyVersion, table.teamId],
+      foreignColumns: [
+        teamRepresentationPolicies.policyId,
+        teamRepresentationPolicies.version,
+        teamRepresentationPolicies.teamId
+      ],
+      name: "source_owner_consents_team_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.workspacePolicyId,
+        table.workspacePolicyVersion,
+        table.teamId,
+        table.teamWorkspaceId
+      ],
+      foreignColumns: [
+        workspaceRepresentationPolicies.policyId,
+        workspaceRepresentationPolicies.version,
+        workspaceRepresentationPolicies.teamId,
+        workspaceRepresentationPolicies.teamWorkspaceId
+      ],
+      name: "source_owner_consents_workspace_policy_fk"
+    }).onDelete("restrict"),
+    unique("source_owner_consents_grant_binding_unique").on(
+      table.id,
+      table.logicalMemoryId,
+      table.remoteReplicaId,
+      table.sourceOwnerPrincipalId,
+      table.teamId,
+      table.teamWorkspaceId
+    ),
+    unique("source_owner_consents_representation_binding_unique").on(
+      table.id,
+      table.logicalMemoryId,
+      table.teamId,
+      table.teamWorkspaceId
+    ),
+    index("source_owner_consents_owner_state_idx").on(
+      table.sourceOwnerPrincipalId,
+      table.state,
+      table.updatedAt.desc()
+    ),
+    check(
+      "source_owner_consents_version_check",
+      sql`${table.consentVersion} > 0`
+    ),
+    check(
+      "source_owner_consents_revision_check",
+      sql`${table.previewRevision} > 0
+        and ${table.sourceRevision} >= 0
+        and ${table.representationPolicyRevision} > 0
+        and ${table.contentPolicyVersion} > 0
+        and ${table.classifierVersion} > 0
+        and ${table.sourceOwnerPolicyVersion} > 0
+        and ${table.teamPolicyVersion} > 0
+        and ${table.workspacePolicyVersion} > 0`
+    ),
+    check(
+      "source_owner_consents_hash_check",
+      sql`length(${table.previewHash}) = 64
+        and length(${table.sourceHash}) = 64
+        and length(${table.representationPolicyHash}) = 64
+        and length(${table.contentPolicyHash}) = 64
+        and length(${table.classifierHash}) = 64
+        and length(${table.redactedContentHash}) = 64`
+    ),
+    check(
+      "source_owner_consents_allowed_set_check",
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+        and array_position(${table.allowedRepresentations}, null) is null
+        and ${table.selectedRepresentation} = any(${table.allowedRepresentations})
+        and cardinality(${table.allowedRepresentations}) =
+          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+    ),
+    check(
+      "source_owner_consents_mode_check",
+      sql`(${table.mode} = 'snapshot' and ${table.maximumAuthorizedSourceRevision} = ${table.sourceRevision})
+        or (${table.mode} = 'continuous' and ${table.maximumAuthorizedSourceRevision} is null)`
+    ),
+    check(
+      "source_owner_consents_lifecycle_check",
+      sql`(
+        ${table.state} = 'pending'
+        and ${table.activatedAt} is null
+        and ${table.pausedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'active'
+        and ${table.activatedAt} is not null
+        and ${table.pausedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'paused'
+        and ${table.activatedAt} is not null
+        and ${table.pausedAt} is not null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.state} = 'revoked'
+        and ${table.activatedAt} is not null
+        and ${table.revokedAt} is not null
+      ) or (
+        ${table.state} = 'expired'
+        and ${table.revokedAt} is null
+        and ${table.expiresAt} is not null
+      )`
+    )
+  ]
+);
+
 export const teamSessionShareGrants = pgTable(
   "team_session_share_grants",
   {
     id: id(),
+    logicalGrantId: uuid("logical_grant_id").notNull().defaultRandom(),
+    logicalMemoryId: uuid("logical_memory_id").references(
+      (): AnyPgColumn => logicalMemories.id,
+      { onDelete: "restrict" }
+    ),
+    remoteReplicaId: uuid("remote_replica_id").references(
+      (): AnyPgColumn => memoryReplicas.id,
+      { onDelete: "restrict" }
+    ),
     ownerUserId: uuid("owner_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
+    ownerPrincipalId: uuid("owner_principal_id"),
     sessionId: uuid("session_id").references(() => sessions.id, {
       onDelete: "set null"
     }),
     teamId: uuid("team_id")
       .notNull()
-      .references(() => teams.id),
+      .references(() => teams.id, { onDelete: "restrict" }),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    consentId: uuid("consent_id"),
+    sourceOwnerPolicyId: uuid("source_owner_policy_id"),
+    sourceOwnerPolicyVersion: integer("source_owner_policy_version"),
+    teamPolicyId: uuid("team_policy_id"),
+    teamPolicyVersion: integer("team_policy_version"),
+    workspacePolicyId: uuid("workspace_policy_id"),
+    workspacePolicyVersion: integer("workspace_policy_version"),
+    ownerAllowedRepresentations: sharedMemoryRepresentation(
+      "owner_allowed_representations"
+    ).array(),
+    activeRepresentation: sharedMemoryRepresentation("active_representation"),
+    representationPolicyRevision: integer("representation_policy_revision"),
+    contentPolicyVersion: integer("content_policy_version"),
+    classifierVersion: integer("classifier_version"),
+    sourceRevision: bigint("source_revision", { mode: "number" }),
+    grantVersion: integer("grant_version").notNull().default(1),
+    revocationEpoch: bigint("revocation_epoch", { mode: "number" })
+      .notNull()
+      .default(0),
+    lifecycle: shareGrantLifecycle("lifecycle").notNull().default("active"),
+    creatorAuthority: text("creator_authority"),
     grantedByUserId: uuid("granted_by_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
@@ -2460,25 +3796,1925 @@ export const teamSessionShareGrants = pgTable(
     }).defaultNow(),
     retentionReason: text("retention_reason")
       .notNull()
-      .default("active_team_share")
+      .default("active_team_share"),
+    retentionPolicyId: uuid("retention_policy_id"),
+    retentionPolicyVersion: integer("retention_policy_version"),
+    retentionTriggeredAt: timestamp("retention_triggered_at", {
+      withTimezone: true
+    }),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    activeRetentionDecisionId: uuid("active_retention_decision_id").references(
+      (): AnyPgColumn => retentionDecisions.id,
+      { onDelete: "restrict" }
+    ),
+    activePurgeJobId: uuid("active_purge_job_id").references(
+      (): AnyPgColumn => purgeJobs.id,
+      { onDelete: "restrict" }
+    ),
+    tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
   },
   (table) => [
     foreignKey({
       columns: [table.teamWorkspaceId, table.teamId],
       foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
       name: "team_session_share_grants_workspace_team_fk"
-    }),
-    uniqueIndex("team_session_share_grants_active_unique")
-      .on(table.sessionId, table.teamWorkspaceId)
-      .where(
-        sql`${table.sessionId} is not null and ${table.revokedAt} is null`
-      ),
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.consentId,
+        table.logicalMemoryId,
+        table.remoteReplicaId,
+        table.ownerPrincipalId,
+        table.teamId,
+        table.teamWorkspaceId
+      ],
+      foreignColumns: [
+        sourceOwnerRepresentationConsents.id,
+        sourceOwnerRepresentationConsents.logicalMemoryId,
+        sourceOwnerRepresentationConsents.remoteReplicaId,
+        sourceOwnerRepresentationConsents.sourceOwnerPrincipalId,
+        sourceOwnerRepresentationConsents.teamId,
+        sourceOwnerRepresentationConsents.teamWorkspaceId
+      ],
+      name: "team_session_share_grants_consent_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.sourceOwnerPolicyId,
+        table.sourceOwnerPolicyVersion,
+        table.logicalMemoryId,
+        table.ownerPrincipalId
+      ],
+      foreignColumns: [
+        sourceOwnerRepresentationPolicies.policyId,
+        sourceOwnerRepresentationPolicies.version,
+        sourceOwnerRepresentationPolicies.logicalMemoryId,
+        sourceOwnerRepresentationPolicies.sourceOwnerPrincipalId
+      ],
+      name: "team_session_share_grants_owner_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamPolicyId, table.teamPolicyVersion, table.teamId],
+      foreignColumns: [
+        teamRepresentationPolicies.policyId,
+        teamRepresentationPolicies.version,
+        teamRepresentationPolicies.teamId
+      ],
+      name: "team_session_share_grants_team_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.workspacePolicyId,
+        table.workspacePolicyVersion,
+        table.teamId,
+        table.teamWorkspaceId
+      ],
+      foreignColumns: [
+        workspaceRepresentationPolicies.policyId,
+        workspaceRepresentationPolicies.version,
+        workspaceRepresentationPolicies.teamId,
+        workspaceRepresentationPolicies.teamWorkspaceId
+      ],
+      name: "team_session_share_grants_workspace_policy_fk"
+    }).onDelete("restrict"),
+    unique("team_session_share_grants_logical_id_unique").on(
+      table.logicalGrantId
+    ),
+    unique("team_session_share_grants_scope_unique").on(
+      table.id,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.logicalMemoryId
+    ),
+    uniqueIndex("team_session_share_grants_destination_unique")
+      .on(table.logicalMemoryId, table.teamWorkspaceId)
+      .where(sql`${table.logicalMemoryId} is not null`),
     index("team_session_share_grants_workspace_active_idx")
       .on(table.teamWorkspaceId, table.createdAt.desc())
       .where(sql`${table.revokedAt} is null`),
     index("team_session_share_grants_owner_idx").on(
-      table.ownerUserId,
+      table.ownerPrincipalId,
       table.createdAt.desc()
+    ),
+    check(
+      "team_session_share_grants_identity_check",
+      sql`${table.logicalMemoryId} is not null
+        and ${table.remoteReplicaId} is not null
+        and ${table.ownerPrincipalId} is not null
+        and ${table.consentId} is not null
+        and ${table.sourceOwnerPolicyId} is not null
+        and ${table.sourceOwnerPolicyVersion} > 0
+        and ${table.teamPolicyId} is not null
+        and ${table.teamPolicyVersion} > 0
+        and ${table.workspacePolicyId} is not null
+        and ${table.workspacePolicyVersion} > 0
+        and ${table.creatorAuthority} is not null
+        and length(trim(${table.creatorAuthority})) > 0`
+    ),
+    check(
+      "team_session_share_grants_representation_check",
+      sql`${table.ownerAllowedRepresentations} is not null
+        and cardinality(${table.ownerAllowedRepresentations}) > 0
+        and ${table.representationPolicyRevision} > 0
+        and ${table.contentPolicyVersion} > 0
+        and ${table.classifierVersion} > 0
+        and ${table.sourceRevision} >= 0
+        and (
+          (${table.lifecycle} = 'active'
+            and ${table.activeRepresentation} is not null
+            and ${table.activeRepresentation} = any(${table.ownerAllowedRepresentations}))
+          or ${table.lifecycle} <> 'active'
+        )`
+    ),
+    check(
+      "team_session_share_grants_version_check",
+      sql`${table.grantVersion} > 0 and ${table.revocationEpoch} >= 0`
+    ),
+    check(
+      "team_session_share_grants_retention_check",
+      sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
+        or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
+    ),
+    check(
+      "team_session_share_grants_active_retention_check",
+      sql`(
+        ${table.activeRetentionDecisionId} is null
+        and ${table.activePurgeJobId} is null
+      ) or (
+        ${table.activeRetentionDecisionId} is not null
+        and ${table.activePurgeJobId} is not null
+        and ${table.retentionPolicyId} is not null
+        and ${table.retentionPolicyVersion} > 0
+        and ${table.retentionTriggeredAt} is not null
+        and ${table.retainUntil} is not null
+      )`
+    )
+  ]
+);
+
+export const teamMemoryRepresentations = pgTable(
+  "team_memory_representations",
+  {
+    id: id(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    consentId: uuid("consent_id").notNull(),
+    sourcePreviewId: uuid("source_preview_id")
+      .notNull()
+      .references(() => sharedSourcePreviews.id, {
+        onDelete: "restrict"
+      }),
+    sourceArtifactId: uuid("source_artifact_id")
+      .notNull()
+      .references(() => sharedSourceArtifacts.id, {
+        onDelete: "restrict"
+      }),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceRevisionHash: text("source_revision_hash").notNull(),
+    provenanceHash: text("provenance_hash").notNull(),
+    sourceOwnerPolicyId: uuid("source_owner_policy_id").notNull(),
+    sourceOwnerPolicyVersion: integer("source_owner_policy_version").notNull(),
+    teamPolicyId: uuid("team_policy_id").notNull(),
+    teamPolicyVersion: integer("team_policy_version").notNull(),
+    workspacePolicyId: uuid("workspace_policy_id").notNull(),
+    workspacePolicyVersion: integer("workspace_policy_version").notNull(),
+    representationPolicyRevision: integer(
+      "representation_policy_revision"
+    ).notNull(),
+    contentPolicyVersion: integer("content_policy_version").notNull(),
+    classifierVersion: integer("classifier_version").notNull(),
+    recordVersion: integer("record_version").notNull().default(1),
+    state: memoryRepresentationState("state").notNull().default("pending"),
+    chunkCount: integer("chunk_count").notNull().default(0),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    freshnessEvaluatedAt: timestamp("freshness_evaluated_at", {
+      withTimezone: true
+    }),
+    availableAt: timestamp("available_at", { withTimezone: true }),
+    staleAt: timestamp("stale_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReasonCode: text("invalidation_reason_code"),
+    tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamSessionShareGrants.id,
+        teamSessionShareGrants.teamId,
+        teamSessionShareGrants.teamWorkspaceId,
+        teamSessionShareGrants.logicalMemoryId
+      ],
+      name: "team_memory_representations_grant_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.consentId,
+        table.logicalMemoryId,
+        table.teamId,
+        table.teamWorkspaceId
+      ],
+      foreignColumns: [
+        sourceOwnerRepresentationConsents.id,
+        sourceOwnerRepresentationConsents.logicalMemoryId,
+        sourceOwnerRepresentationConsents.teamId,
+        sourceOwnerRepresentationConsents.teamWorkspaceId
+      ],
+      name: "team_memory_representations_consent_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.sourceOwnerPolicyId, table.sourceOwnerPolicyVersion],
+      foreignColumns: [
+        sourceOwnerRepresentationPolicies.policyId,
+        sourceOwnerRepresentationPolicies.version
+      ],
+      name: "team_memory_representations_owner_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamPolicyId, table.teamPolicyVersion, table.teamId],
+      foreignColumns: [
+        teamRepresentationPolicies.policyId,
+        teamRepresentationPolicies.version,
+        teamRepresentationPolicies.teamId
+      ],
+      name: "team_memory_representations_team_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.workspacePolicyId,
+        table.workspacePolicyVersion,
+        table.teamId,
+        table.teamWorkspaceId
+      ],
+      foreignColumns: [
+        workspaceRepresentationPolicies.policyId,
+        workspaceRepresentationPolicies.version,
+        workspaceRepresentationPolicies.teamId,
+        workspaceRepresentationPolicies.teamWorkspaceId
+      ],
+      name: "team_memory_representations_workspace_policy_fk"
+    }).onDelete("restrict"),
+    unique("team_memory_representations_revision_unique").on(
+      table.shareGrantId,
+      table.representation,
+      table.sourceRevision,
+      table.representationPolicyRevision,
+      table.contentPolicyVersion,
+      table.classifierVersion
+    ),
+    unique("team_memory_representations_scope_unique").on(
+      table.id,
+      table.shareGrantId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.logicalMemoryId
+    ),
+    unique("team_memory_representations_exact_scope_unique").on(
+      table.id,
+      table.shareGrantId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.logicalMemoryId,
+      table.representation,
+      table.sourceRevision
+    ),
+    index("team_memory_representations_grant_state_idx").on(
+      table.shareGrantId,
+      table.state,
+      table.sourceRevision.desc()
+    ),
+    check(
+      "team_memory_representations_version_check",
+      sql`${table.recordVersion} > 0
+        and ${table.sourceRevision} >= 0
+        and ${table.sourceOwnerPolicyVersion} > 0
+        and ${table.teamPolicyVersion} > 0
+        and ${table.workspacePolicyVersion} > 0
+        and ${table.representationPolicyRevision} > 0
+        and ${table.contentPolicyVersion} > 0
+        and ${table.classifierVersion} > 0
+        and ${table.chunkCount} >= 0`
+    ),
+    check(
+      "team_memory_representations_hash_check",
+      sql`length(${table.sourceRevisionHash}) = 64
+        and length(${table.provenanceHash}) = 64`
+    ),
+    check(
+      "team_memory_representations_lifecycle_check",
+      sql`(
+        ${table.state} = 'pending'
+        and ${table.availableAt} is null
+        and ${table.staleAt} is null
+        and ${table.invalidatedAt} is null
+        and ${table.tombstonedAt} is null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.state} = 'available'
+        and ${table.availableAt} is not null
+        and ${table.staleAt} is null
+        and ${table.invalidatedAt} is null
+        and ${table.tombstonedAt} is null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.state} = 'stale'
+        and ${table.availableAt} is not null
+        and ${table.staleAt} is not null
+        and ${table.invalidatedAt} is null
+        and ${table.tombstonedAt} is null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.state} = 'invalidated'
+        and ${table.invalidatedAt} is not null
+        and ${table.tombstonedAt} is null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.state} = 'purge_pending'
+        and ${table.tombstonedAt} is not null
+        and ${table.purgeCompletedAt} is null
+      ) or (
+        ${table.state} = 'purged'
+        and ${table.tombstonedAt} is not null
+        and ${table.purgeCompletedAt} is not null
+      )`
+    )
+  ]
+);
+
+export const teamMemoryRepresentationChunks = pgTable(
+  "team_memory_representation_chunks",
+  {
+    id: id(),
+    representationId: uuid("representation_id").notNull(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    chunkIndex: integer("chunk_index").notNull(),
+    envelopeVersion: integer("envelope_version").notNull(),
+    providerMode: text("provider_mode").notNull(),
+    algorithm: text("algorithm").notNull(),
+    keyId: text("key_id").notNull(),
+    keyVersion: integer("key_version").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    ciphertextHash: text("ciphertext_hash").notNull(),
+    nonce: text("nonce").notNull(),
+    tag: text("tag").notNull(),
+    wrappedDek: jsonb("wrapped_dek")
+      .$type<EncryptedPayloadEnvelope["wrappedDek"]>()
+      .notNull(),
+    aad: jsonb("aad").$type<EncryptedPayloadEnvelope["aad"]>().notNull(),
+    envelopeCreatedAt: timestamp("envelope_created_at", {
+      withTimezone: true
+    }).notNull(),
+    envelopeReencryptedAt: timestamp("envelope_reencrypted_at", {
+      withTimezone: true
+    }),
+    createdAt: now(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    purgedAt: timestamp("purged_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.representationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.teamId,
+        teamMemoryRepresentations.teamWorkspaceId,
+        teamMemoryRepresentations.logicalMemoryId
+      ],
+      name: "team_memory_representation_chunks_scope_fk"
+    }).onDelete("restrict"),
+    unique("team_memory_representation_chunks_index_unique").on(
+      table.representationId,
+      table.chunkIndex
+    ),
+    index("team_memory_representation_chunks_grant_idx").on(
+      table.shareGrantId,
+      table.representationId,
+      table.chunkIndex
+    ),
+    check(
+      "team_memory_representation_chunks_version_check",
+      sql`${table.chunkIndex} >= 0
+        and ${table.envelopeVersion} > 0
+        and ${table.keyVersion} >= 0`
+    ),
+    check(
+      "team_memory_representation_chunks_ciphertext_check",
+      sql`length(${table.algorithm}) > 0
+        and length(${table.keyId}) > 0
+        and length(${table.ciphertext}) > 0
+        and length(${table.ciphertextHash}) = 64
+        and length(${table.nonce}) > 0
+        and length(${table.tag}) > 0`
+    )
+  ]
+);
+
+export const collaborationThreads = pgTable(
+  "collaboration_threads",
+  {
+    id: id(),
+    logicalId: uuid("logical_id").notNull().defaultRandom(),
+    scope: collaborationScope("scope").notNull(),
+    kind: collaborationThreadKind("kind").notNull(),
+    personalOwnerUserId: uuid("personal_owner_user_id").references(
+      () => users.id,
+      { onDelete: "restrict" }
+    ),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    sharedLogicalMemoryId: uuid("shared_logical_memory_id").references(
+      (): AnyPgColumn => logicalMemories.id,
+      { onDelete: "restrict" }
+    ),
+    shareGrantId: uuid("share_grant_id").references(
+      () => teamSessionShareGrants.id,
+      { onDelete: "restrict" }
+    ),
+    systemKey: text("system_key"),
+    nameMarker: text("name_marker"),
+    topicMarker: text("topic_marker"),
+    normalizedNameHash: text("normalized_name_hash"),
+    participantKey: text("participant_key"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    version: integer("version").notNull().default(1),
+    nextSequence: bigint("next_sequence", { mode: "number" })
+      .notNull()
+      .default(1),
+    lifecycle: collaborationLifecycle("lifecycle").notNull().default("active"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
+    retentionPolicyId: uuid("retention_policy_id"),
+    retentionPolicyVersion: integer("retention_policy_version"),
+    retentionTriggeredAt: timestamp("retention_triggered_at", {
+      withTimezone: true
+    }),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("collaboration_threads_logical_id_unique").on(table.logicalId),
+    unique("collaboration_threads_id_scope_kind_unique").on(
+      table.id,
+      table.scope,
+      table.kind
+    ),
+    unique("collaboration_threads_id_scope_unique").on(table.id, table.scope),
+    unique("collaboration_threads_id_personal_owner_unique").on(
+      table.id,
+      table.personalOwnerUserId
+    ),
+    unique("collaboration_threads_id_team_unique").on(table.id, table.teamId),
+    unique("collaboration_threads_id_workspace_unique").on(
+      table.id,
+      table.teamWorkspaceId
+    ),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "collaboration_threads_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.sharedLogicalMemoryId
+      ],
+      foreignColumns: [
+        teamSessionShareGrants.id,
+        teamSessionShareGrants.teamId,
+        teamSessionShareGrants.teamWorkspaceId,
+        teamSessionShareGrants.logicalMemoryId
+      ],
+      name: "collaboration_threads_share_scope_fk"
+    }).onDelete("restrict"),
+    uniqueIndex("collaboration_threads_notes_owner_unique")
+      .on(table.personalOwnerUserId)
+      .where(sql`${table.kind} = 'notes_to_self'`),
+    uniqueIndex("collaboration_threads_participant_key_unique")
+      .on(table.teamId, table.participantKey)
+      .where(sql`${table.kind} in ('dm', 'group_dm')`),
+    uniqueIndex("collaboration_threads_personal_channel_active_unique")
+      .on(table.personalOwnerUserId, table.normalizedNameHash)
+      .where(
+        sql`${table.kind} = 'personal_channel' and ${table.lifecycle} = 'active'`
+      ),
+    uniqueIndex("collaboration_threads_workspace_channel_active_unique")
+      .on(table.teamWorkspaceId, table.normalizedNameHash)
+      .where(
+        sql`${table.kind} = 'workspace_channel' and ${table.lifecycle} = 'active'`
+      ),
+    uniqueIndex("collaboration_threads_workspace_system_key_unique")
+      .on(table.teamWorkspaceId, table.systemKey)
+      .where(sql`${table.systemKey} is not null`),
+    uniqueIndex("collaboration_threads_companion_unique")
+      .on(table.teamWorkspaceId, table.sharedLogicalMemoryId)
+      .where(sql`${table.kind} = 'shared_session_discussion'`),
+    index("collaboration_threads_team_activity_idx").on(
+      table.teamId,
+      table.lastActivityAt.desc()
+    ),
+    index("collaboration_threads_personal_activity_idx").on(
+      table.personalOwnerUserId,
+      table.lastActivityAt.desc()
+    ),
+    check(
+      "collaboration_threads_shape_check",
+      sql`(
+        ${table.scope} = 'personal'
+        and ${table.kind} = 'notes_to_self'
+        and ${table.personalOwnerUserId} is not null
+        and ${table.teamId} is null
+        and ${table.teamWorkspaceId} is null
+        and ${table.systemKey} is null
+        and ${table.nameMarker} is null
+        and ${table.topicMarker} is null
+        and ${table.normalizedNameHash} is null
+        and ${table.participantKey} is null
+        and ${table.sharedLogicalMemoryId} is null
+        and ${table.shareGrantId} is null
+      ) or (
+        ${table.scope} = 'personal'
+        and ${table.kind} = 'personal_channel'
+        and ${table.personalOwnerUserId} is not null
+        and ${table.teamId} is null
+        and ${table.teamWorkspaceId} is null
+        and ${table.systemKey} is null
+        and ${table.nameMarker} = '[koed encrypted collaboration name]'
+        and length(${table.normalizedNameHash}) = 64
+        and ${table.participantKey} is null
+        and ${table.sharedLogicalMemoryId} is null
+        and ${table.shareGrantId} is null
+      ) or (
+        ${table.scope} = 'team'
+        and ${table.kind} = 'workspace_channel'
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is not null
+        and (
+          (
+            ${table.systemKey} is null
+            and ${table.nameMarker} = '[koed encrypted collaboration name]'
+            and length(${table.normalizedNameHash}) = 64
+          )
+          or (
+            ${table.systemKey} = 'workspace.general'
+            and (
+              (${table.nameMarker} is null and ${table.normalizedNameHash} is null)
+              or (${table.nameMarker} = '[koed encrypted collaboration name]' and length(${table.normalizedNameHash}) = 64)
+            )
+          )
+        )
+        and ${table.participantKey} is null
+        and ${table.sharedLogicalMemoryId} is null
+        and ${table.shareGrantId} is null
+      ) or (
+        ${table.scope} = 'team'
+        and ${table.kind} in ('dm', 'group_dm')
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is null
+        and ${table.systemKey} is null
+        and ${table.nameMarker} is null
+        and ${table.topicMarker} is null
+        and ${table.normalizedNameHash} is null
+        and length(${table.participantKey}) = 64
+        and ${table.sharedLogicalMemoryId} is null
+        and ${table.shareGrantId} is null
+      ) or (
+        ${table.scope} = 'team'
+        and ${table.kind} = 'shared_session_discussion'
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is not null
+        and ${table.systemKey} is null
+        and ${table.nameMarker} is null
+        and ${table.topicMarker} is null
+        and ${table.normalizedNameHash} is null
+        and ${table.participantKey} is null
+        and ${table.sharedLogicalMemoryId} is not null
+        and ${table.shareGrantId} is not null
+      )`
+    ),
+    check(
+      "collaboration_threads_system_key_check",
+      sql`${table.systemKey} is null or ${table.systemKey} = 'workspace.general'`
+    ),
+    check("collaboration_threads_version_check", sql`${table.version} > 0`),
+    check(
+      "collaboration_threads_sequence_check",
+      sql`${table.nextSequence} > 0`
+    ),
+    check(
+      "collaboration_threads_topic_marker_check",
+      sql`${table.topicMarker} is null or ${table.topicMarker} = '[koed encrypted collaboration topic]'`
+    ),
+    check(
+      "collaboration_threads_lifecycle_check",
+      sql`(${table.lifecycle} = 'active' and ${table.archivedAt} is null and ${table.tombstonedAt} is null and ${table.purgeCompletedAt} is null)
+        or (${table.lifecycle} = 'archived' and ${table.archivedAt} is not null and ${table.tombstonedAt} is null and ${table.purgeCompletedAt} is null)
+        or (${table.lifecycle} in ('tombstoned', 'purge_pending') and ${table.tombstonedAt} is not null and ${table.purgeCompletedAt} is null)
+        or (${table.lifecycle} = 'purged' and ${table.tombstonedAt} is not null and ${table.purgeCompletedAt} is not null)`
+    ),
+    check(
+      "collaboration_threads_retention_check",
+      sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
+        or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
+    )
+  ]
+);
+
+export const collaborationParticipants = pgTable(
+  "collaboration_participants",
+  {
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => collaborationThreads.id, { onDelete: "restrict" }),
+    scope: collaborationScope("scope").notNull(),
+    threadKind: collaborationThreadKind("thread_kind").notNull(),
+    personalOwnerUserId: uuid("personal_owner_user_id"),
+    teamId: uuid("team_id"),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    ordinal: integer("ordinal").notNull(),
+    joinedAt: timestamp("joined_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.threadId, table.userId] }),
+    unique("collaboration_participants_thread_ordinal_unique").on(
+      table.threadId,
+      table.ordinal
+    ),
+    foreignKey({
+      columns: [table.threadId, table.scope, table.threadKind],
+      foreignColumns: [
+        collaborationThreads.id,
+        collaborationThreads.scope,
+        collaborationThreads.kind
+      ],
+      name: "collaboration_participants_thread_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.personalOwnerUserId],
+      foreignColumns: [
+        collaborationThreads.id,
+        collaborationThreads.personalOwnerUserId
+      ],
+      name: "collaboration_participants_personal_owner_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.teamId],
+      foreignColumns: [collaborationThreads.id, collaborationThreads.teamId],
+      name: "collaboration_participants_thread_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamId, table.userId],
+      foreignColumns: [teamMemberships.teamId, teamMemberships.userId],
+      name: "collaboration_participants_membership_fk"
+    }).onDelete("restrict"),
+    index("collaboration_participants_user_idx").on(
+      table.userId,
+      table.joinedAt.desc()
+    ),
+    check(
+      "collaboration_participants_shape_check",
+      sql`(
+        ${table.scope} = 'personal'
+        and ${table.threadKind} = 'notes_to_self'
+        and ${table.personalOwnerUserId} = ${table.userId}
+        and ${table.teamId} is null
+        and ${table.ordinal} = 0
+      ) or (
+        ${table.scope} = 'team'
+        and ${table.threadKind} in ('dm', 'group_dm')
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+        and ${table.ordinal} >= 0
+      )`
+    )
+  ]
+);
+
+export const collaborationMessages = pgTable(
+  "collaboration_messages",
+  {
+    id: id(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => collaborationThreads.id, { onDelete: "restrict" }),
+    threadSequence: bigint("thread_sequence", { mode: "number" }).notNull(),
+    scope: collaborationScope("scope").notNull(),
+    personalOwnerUserId: uuid("personal_owner_user_id"),
+    teamId: uuid("team_id"),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    senderKind: collaborationSenderKind("sender_kind").notNull(),
+    senderPrincipalId: uuid("sender_principal_id"),
+    senderUserId: uuid("sender_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    idempotencyKeyHash: text("idempotency_key_hash"),
+    requestHash: text("request_hash"),
+    bodyMarker: text("body_marker").notNull(),
+    metadataMarker: text("metadata_marker").notNull(),
+    provenanceKind: text("provenance_kind").notNull(),
+    provenanceId: text("provenance_id").notNull(),
+    provenanceMarker: text("provenance_marker").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    editedBodyMarker: text("edited_body_marker"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedBodyMarker: text("deleted_body_marker"),
+    retentionPolicyId: uuid("retention_policy_id"),
+    retentionPolicyVersion: integer("retention_policy_version"),
+    retainUntil: timestamp("retain_until", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.threadId, table.scope],
+      foreignColumns: [collaborationThreads.id, collaborationThreads.scope],
+      name: "collaboration_messages_thread_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.personalOwnerUserId],
+      foreignColumns: [
+        collaborationThreads.id,
+        collaborationThreads.personalOwnerUserId
+      ],
+      name: "collaboration_messages_personal_owner_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.teamId],
+      foreignColumns: [collaborationThreads.id, collaborationThreads.teamId],
+      name: "collaboration_messages_thread_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.teamWorkspaceId],
+      foreignColumns: [
+        collaborationThreads.id,
+        collaborationThreads.teamWorkspaceId
+      ],
+      name: "collaboration_messages_thread_workspace_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "collaboration_messages_workspace_team_fk"
+    }).onDelete("restrict"),
+    unique("collaboration_messages_thread_sequence_unique").on(
+      table.threadId,
+      table.threadSequence
+    ),
+    unique("collaboration_messages_thread_id_sequence_unique").on(
+      table.threadId,
+      table.id,
+      table.threadSequence
+    ),
+    unique("collaboration_messages_thread_id_unique").on(
+      table.threadId,
+      table.id
+    ),
+    uniqueIndex("collaboration_messages_idempotency_unique")
+      .on(table.threadId, table.senderPrincipalId, table.idempotencyKeyHash)
+      .where(sql`${table.idempotencyKeyHash} is not null`),
+    index("collaboration_messages_thread_sequence_idx").on(
+      table.threadId,
+      table.threadSequence.desc()
+    ),
+    check(
+      "collaboration_messages_sequence_check",
+      sql`${table.threadSequence} > 0`
+    ),
+    check(
+      "collaboration_messages_marker_check",
+      sql`${table.bodyMarker} = '[koed encrypted collaboration message]'
+        and ${table.metadataMarker} = '[koed encrypted collaboration metadata]'
+        and ${table.provenanceMarker} = '[koed encrypted collaboration provenance]'`
+    ),
+    check(
+      "collaboration_messages_idempotency_check",
+      sql`(
+        ${table.senderKind} = 'user'
+        and ${table.senderPrincipalId} is not null
+        and length(${table.idempotencyKeyHash}) = 64
+        and length(${table.requestHash}) = 64
+      ) or (
+        ${table.senderKind} in ('system', 'imported')
+        and ${table.idempotencyKeyHash} is null
+        and ${table.requestHash} is null
+      )`
+    ),
+    check(
+      "collaboration_messages_provenance_check",
+      sql`length(trim(${table.provenanceKind})) > 0
+        and length(trim(${table.provenanceId})) > 0`
+    ),
+    check(
+      "collaboration_messages_reserved_lifecycle_check",
+      sql`${table.editedAt} is null
+        and ${table.editedBodyMarker} is null
+        and ${table.deletedAt} is null
+        and ${table.deletedBodyMarker} is null`
+    ),
+    check(
+      "collaboration_messages_retention_check",
+      sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
+        or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
+    )
+  ]
+);
+
+export const collaborationReadStates = pgTable(
+  "collaboration_read_states",
+  {
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => collaborationThreads.id, { onDelete: "restrict" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    lastReadMessageId: uuid("last_read_message_id"),
+    lastReadSequence: bigint("last_read_sequence", { mode: "number" })
+      .notNull()
+      .default(0),
+    version: integer("version").notNull().default(1),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.threadId, table.userId] }),
+    foreignKey({
+      columns: [
+        table.threadId,
+        table.lastReadMessageId,
+        table.lastReadSequence
+      ],
+      foreignColumns: [
+        collaborationMessages.threadId,
+        collaborationMessages.id,
+        collaborationMessages.threadSequence
+      ],
+      name: "collaboration_read_states_same_thread_message_fk"
+    }).onDelete("restrict"),
+    index("collaboration_read_states_user_idx").on(
+      table.userId,
+      table.updatedAt.desc()
+    ),
+    check(
+      "collaboration_read_states_cursor_check",
+      sql`${table.lastReadSequence} >= 0
+        and ${table.version} > 0
+        and ((${table.lastReadMessageId} is null and ${table.lastReadSequence} = 0)
+          or (${table.lastReadMessageId} is not null and ${table.lastReadSequence} > 0))`
+    )
+  ]
+);
+
+export const collaborationOutbox = pgTable(
+  "collaboration_outbox",
+  {
+    id: id(),
+    cursor: bigserial("cursor", { mode: "number" }).notNull(),
+    protocolVersion: integer("protocol_version").notNull(),
+    family: collaborationEventFamily("family").notNull(),
+    scope: collaborationScope("scope").notNull(),
+    personalOwnerUserId: uuid("personal_owner_user_id"),
+    teamId: uuid("team_id"),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    threadId: uuid("thread_id"),
+    messageId: uuid("message_id"),
+    shareGrantId: uuid("share_grant_id"),
+    logicalMemoryId: uuid("logical_memory_id"),
+    resourceType: text("resource_type").notNull(),
+    resourceId: uuid("resource_id").notNull(),
+    actorPrincipalId: uuid("actor_principal_id"),
+    mutationId: uuid("mutation_id").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    replayUntil: timestamp("replay_until", { withTimezone: true }).notNull(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("collaboration_outbox_cursor_unique").on(table.cursor),
+    unique("collaboration_outbox_mutation_family_unique").on(
+      table.mutationId,
+      table.family
+    ),
+    unique("collaboration_outbox_id_cursor_unique").on(table.id, table.cursor),
+    foreignKey({
+      columns: [table.threadId, table.messageId],
+      foreignColumns: [
+        collaborationMessages.threadId,
+        collaborationMessages.id
+      ],
+      name: "collaboration_outbox_thread_message_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "collaboration_outbox_workspace_team_fk"
+    }).onDelete("restrict"),
+    index("collaboration_outbox_replay_idx").on(
+      table.cursor,
+      table.replayUntil
+    ),
+    index("collaboration_outbox_team_idx").on(table.teamId, table.cursor),
+    index("collaboration_outbox_thread_idx").on(table.threadId, table.cursor),
+    check(
+      "collaboration_outbox_scope_check",
+      sql`(
+        ${table.scope} = 'personal'
+        and ${table.personalOwnerUserId} is not null
+        and ${table.teamId} is null
+        and ${table.teamWorkspaceId} is null
+      ) or (
+        ${table.scope} = 'team'
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+      )`
+    ),
+    check(
+      "collaboration_outbox_protocol_check",
+      sql`${table.protocolVersion} > 0
+        and length(trim(${table.resourceType})) > 0
+        and ${table.replayUntil} > ${table.occurredAt}`
+    )
+  ]
+);
+
+export const collaborationReplayWatermarks = pgTable(
+  "collaboration_replay_watermarks",
+  {
+    id: id(),
+    scope: collaborationScope("scope").notNull(),
+    personalOwnerUserId: uuid("personal_owner_user_id").references(
+      () => users.id,
+      { onDelete: "restrict" }
+    ),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    replayLowWaterCursor: bigint("replay_low_water_cursor", {
+      mode: "number"
+    }).notNull(),
+    highWaterCursor: bigint("high_water_cursor", { mode: "number" }).notNull(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("collaboration_replay_watermarks_personal_unique")
+      .on(table.personalOwnerUserId)
+      .where(sql`${table.scope} = 'personal'`),
+    uniqueIndex("collaboration_replay_watermarks_team_unique")
+      .on(table.teamId)
+      .where(sql`${table.scope} = 'team'`),
+    check(
+      "collaboration_replay_watermarks_scope_check",
+      sql`(${table.scope} = 'personal' and ${table.personalOwnerUserId} is not null and ${table.teamId} is null)
+        or (${table.scope} = 'team' and ${table.personalOwnerUserId} is null and ${table.teamId} is not null)`
+    ),
+    check(
+      "collaboration_replay_watermarks_cursor_check",
+      sql`${table.replayLowWaterCursor} > 0
+        and ${table.highWaterCursor} >= ${table.replayLowWaterCursor}`
+    )
+  ]
+);
+
+export const collaborationStreamSubscriptions = pgTable(
+  "collaboration_stream_subscriptions",
+  {
+    id: id(),
+    backendIdentityHash: text("backend_identity_hash").notNull(),
+    principalIdHash: text("principal_id_hash").notNull(),
+    deviceCredentialId: uuid("device_credential_id").references(
+      () => deviceCredentials.id,
+      { onDelete: "restrict" }
+    ),
+    clientInstanceHash: text("client_instance_hash").notNull(),
+    subscriptionKeyHash: text("subscription_key_hash").notNull(),
+    protocolVersion: integer("protocol_version").notNull(),
+    scope: collaborationScope("scope").notNull(),
+    personalOwnerUserId: uuid("personal_owner_user_id").references(
+      () => users.id,
+      { onDelete: "restrict" }
+    ),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    state: collaborationStreamState("state").notNull().default("active"),
+    snapshotHighWaterCursor: bigint("snapshot_high_water_cursor", {
+      mode: "number"
+    }),
+    acknowledgedEventId: uuid("acknowledged_event_id"),
+    acknowledgedCursor: bigint("acknowledged_cursor", { mode: "number" })
+      .notNull()
+      .default(0),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastAcknowledgedAt: timestamp("last_acknowledged_at", {
+      withTimezone: true
+    }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("collaboration_stream_subscriptions_binding_unique").on(
+      table.backendIdentityHash,
+      table.principalIdHash,
+      table.clientInstanceHash,
+      table.subscriptionKeyHash,
+      table.protocolVersion
+    ),
+    foreignKey({
+      columns: [table.acknowledgedEventId, table.acknowledgedCursor],
+      foreignColumns: [collaborationOutbox.id, collaborationOutbox.cursor],
+      name: "collaboration_stream_subscriptions_ack_fk"
+    }).onDelete("restrict"),
+    index("collaboration_stream_subscriptions_principal_idx").on(
+      table.backendIdentityHash,
+      table.principalIdHash,
+      table.state,
+      table.updatedAt.desc()
+    ),
+    index("collaboration_stream_subscriptions_device_idx").on(
+      table.deviceCredentialId,
+      table.state
+    ),
+    check(
+      "collaboration_stream_subscriptions_hash_check",
+      sql`length(${table.backendIdentityHash}) = 64
+        and length(${table.principalIdHash}) = 64
+        and length(${table.clientInstanceHash}) = 64
+        and length(${table.subscriptionKeyHash}) = 64`
+    ),
+    check(
+      "collaboration_stream_subscriptions_scope_check",
+      sql`(${table.scope} = 'personal' and ${table.personalOwnerUserId} is not null and ${table.teamId} is null)
+        or (${table.scope} = 'team' and ${table.personalOwnerUserId} is null and ${table.teamId} is not null)`
+    ),
+    check(
+      "collaboration_stream_subscriptions_cursor_check",
+      sql`${table.protocolVersion} > 0
+        and ${table.acknowledgedCursor} >= 0
+        and (${table.snapshotHighWaterCursor} is null or ${table.snapshotHighWaterCursor} >= ${table.acknowledgedCursor})
+        and ((${table.acknowledgedEventId} is null and ${table.acknowledgedCursor} = 0)
+          or (${table.acknowledgedEventId} is not null and ${table.acknowledgedCursor} > 0))`
+    )
+  ]
+);
+
+export const localEdgeCollaborationSubscriptions = pgTable(
+  "local_edge_collaboration_subscriptions",
+  {
+    id: id(),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    credentialBindingHash: text("credential_binding_hash").notNull(),
+    teamId: uuid("team_id").notNull(),
+    protocolVersion: integer("protocol_version").notNull(),
+    remoteSubscriptionId: uuid("remote_subscription_id").notNull(),
+    remoteCursor: text("remote_cursor").notNull(),
+    lastAcknowledgedEventId: uuid("last_acknowledged_event_id"),
+    state: collaborationStreamState("state").notNull().default("active"),
+    version: integer("version").notNull().default(1),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastConnectedAt: timestamp("last_connected_at", { withTimezone: true }),
+    lastAcknowledgedAt: timestamp("last_acknowledged_at", {
+      withTimezone: true
+    }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("local_edge_collaboration_subscriptions_binding_unique").on(
+      table.upstreamBackendId,
+      table.credentialBindingHash,
+      table.teamId,
+      table.protocolVersion
+    ),
+    index("local_edge_collaboration_subscriptions_active_idx").on(
+      table.upstreamBackendId,
+      table.state,
+      table.updatedAt.desc()
+    ),
+    check(
+      "local_edge_collaboration_subscriptions_values_check",
+      sql`length(trim(${table.upstreamBackendId})) > 0
+        and length(${table.credentialBindingHash}) = 64
+        and ${table.protocolVersion} > 0
+        and length(${table.remoteCursor}) between 16 and 4096
+        and ${table.version} > 0
+        and ${table.expiresAt} > ${table.createdAt}`
+    )
+  ]
+);
+
+export const retentionPolicies = pgTable(
+  "retention_policies",
+  {
+    id: id(),
+    policyId: uuid("policy_id").notNull().defaultRandom(),
+    version: integer("version").notNull(),
+    scope: retentionPolicyScope("scope").notNull(),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    shareGrantId: uuid("share_grant_id"),
+    threadId: uuid("thread_id"),
+    ownerPrivateReplicaId: uuid("owner_private_replica_id").references(
+      (): AnyPgColumn => memoryReplicas.id,
+      { onDelete: "restrict" }
+    ),
+    logicalMemoryId: uuid("logical_memory_id").references(
+      (): AnyPgColumn => logicalMemories.id,
+      { onDelete: "restrict" }
+    ),
+    retentionSeconds: bigint("retention_seconds", { mode: "number" }).notNull(),
+    deletionGraceSeconds: bigint("deletion_grace_seconds", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
+    backupRetentionSeconds: bigint("backup_retention_seconds", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
+    policyHash: text("policy_hash").notNull(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "retention_policies_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamSessionShareGrants.id,
+        teamSessionShareGrants.teamId,
+        teamSessionShareGrants.teamWorkspaceId,
+        teamSessionShareGrants.logicalMemoryId
+      ],
+      name: "retention_policies_grant_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.teamId],
+      foreignColumns: [collaborationThreads.id, collaborationThreads.teamId],
+      name: "retention_policies_thread_team_fk"
+    }).onDelete("restrict"),
+    unique("retention_policies_version_unique").on(
+      table.policyId,
+      table.version
+    ),
+    unique("retention_policies_shortening_identity_unique").on(
+      table.id,
+      table.policyId,
+      table.version,
+      table.teamId,
+      table.policyHash
+    ),
+    uniqueIndex("retention_policies_active_scope_unique")
+      .on(
+        table.scope,
+        sql`coalesce(${table.teamId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`coalesce(${table.teamWorkspaceId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`coalesce(${table.shareGrantId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`coalesce(${table.threadId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`coalesce(${table.ownerPrivateReplicaId}, '00000000-0000-0000-0000-000000000000'::uuid)`
+      )
+      .where(sql`${table.supersededAt} is null`),
+    check(
+      "retention_policies_values_check",
+      sql`${table.version} > 0
+        and ${table.retentionSeconds} >= 0
+        and ${table.deletionGraceSeconds} >= 0
+        and ${table.backupRetentionSeconds} >= 0
+        and length(${table.policyHash}) = 64
+        and (${table.supersededAt} is null or ${table.supersededAt} > ${table.effectiveAt})`
+    ),
+    check(
+      "retention_policies_scope_check",
+      sql`(
+        ${table.scope} = 'team'
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is null
+        and ${table.shareGrantId} is null
+        and ${table.threadId} is null
+        and ${table.ownerPrivateReplicaId} is null
+        and ${table.logicalMemoryId} is null
+      ) or (
+        ${table.scope} = 'workspace'
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is not null
+        and ${table.shareGrantId} is null
+        and ${table.threadId} is null
+        and ${table.ownerPrivateReplicaId} is null
+        and ${table.logicalMemoryId} is null
+      ) or (
+        ${table.scope} = 'share_grant'
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is not null
+        and ${table.shareGrantId} is not null
+        and ${table.threadId} is null
+        and ${table.ownerPrivateReplicaId} is null
+        and ${table.logicalMemoryId} is not null
+      ) or (
+        ${table.scope} = 'thread'
+        and ${table.teamId} is not null
+        and ${table.shareGrantId} is null
+        and ${table.threadId} is not null
+        and ${table.ownerPrivateReplicaId} is null
+        and ${table.logicalMemoryId} is null
+      ) or (
+        ${table.scope} = 'owner_private_replica'
+        and ${table.teamId} is null
+        and ${table.teamWorkspaceId} is null
+        and ${table.shareGrantId} is null
+        and ${table.threadId} is null
+        and ${table.ownerPrivateReplicaId} is not null
+        and ${table.logicalMemoryId} is not null
+      )`
+    )
+  ]
+);
+
+export const legalHolds = pgTable(
+  "legal_holds",
+  {
+    id: id(),
+    scope: legalHoldScope("scope").notNull(),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    threadId: uuid("thread_id"),
+    shareGrantId: uuid("share_grant_id"),
+    representationId: uuid("representation_id"),
+    representation: sharedMemoryRepresentation("representation"),
+    sourceRevision: bigint("source_revision", { mode: "number" }),
+    ownerPrivateReplicaId: uuid("owner_private_replica_id").references(
+      (): AnyPgColumn => memoryReplicas.id,
+      { onDelete: "restrict" }
+    ),
+    logicalMemoryId: uuid("logical_memory_id").references(
+      (): AnyPgColumn => logicalMemories.id,
+      { onDelete: "restrict" }
+    ),
+    messageRangeStart: bigint("message_range_start", { mode: "number" }),
+    messageRangeEnd: bigint("message_range_end", { mode: "number" }),
+    messageTimeStart: timestamp("message_time_start", { withTimezone: true }),
+    messageTimeEnd: timestamp("message_time_end", { withTimezone: true }),
+    authority: text("authority").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    reasonHash: text("reason_hash").notNull(),
+    state: legalHoldState("state").notNull().default("active"),
+    placedByUserId: uuid("placed_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    freshlyAuthenticatedAt: timestamp("freshly_authenticated_at", {
+      withTimezone: true
+    }).notNull(),
+    placedAt: timestamp("placed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    releaseRequestedByUserId: uuid("release_requested_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    releaseRequestedAt: timestamp("release_requested_at", {
+      withTimezone: true
+    }),
+    releaseConfirmedByUserId: uuid("release_confirmed_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    releaseConfirmedAt: timestamp("release_confirmed_at", {
+      withTimezone: true
+    }),
+    singleHolderReleaseException: boolean("single_holder_release_exception")
+      .notNull()
+      .default(false),
+    releasedAt: timestamp("released_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "legal_holds_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.threadId, table.teamId],
+      foreignColumns: [collaborationThreads.id, collaborationThreads.teamId],
+      name: "legal_holds_thread_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.representationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId,
+        table.representation,
+        table.sourceRevision
+      ],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.teamId,
+        teamMemoryRepresentations.teamWorkspaceId,
+        teamMemoryRepresentations.logicalMemoryId,
+        teamMemoryRepresentations.representation,
+        teamMemoryRepresentations.sourceRevision
+      ],
+      name: "legal_holds_representation_scope_fk"
+    }).onDelete("restrict"),
+    index("legal_holds_active_team_idx")
+      .on(table.teamId, table.scope, table.placedAt.desc())
+      .where(sql`${table.state} <> 'released'`),
+    check(
+      "legal_holds_reason_check",
+      sql`length(trim(${table.authority})) > 0
+        and length(trim(${table.reasonCode})) > 0
+        and length(${table.reasonHash}) = 64`
+    ),
+    check(
+      "legal_holds_target_check",
+      sql`(
+        ${table.scope} = 'team' and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is null and ${table.threadId} is null
+        and ${table.shareGrantId} is null and ${table.representationId} is null
+        and ${table.ownerPrivateReplicaId} is null and ${table.logicalMemoryId} is null
+      ) or (
+        ${table.scope} = 'workspace' and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is not null and ${table.threadId} is null
+        and ${table.shareGrantId} is null and ${table.representationId} is null
+        and ${table.ownerPrivateReplicaId} is null and ${table.logicalMemoryId} is null
+      ) or (
+        ${table.scope} = 'thread' and ${table.teamId} is not null
+        and ${table.threadId} is not null and ${table.shareGrantId} is null
+        and ${table.representationId} is null and ${table.ownerPrivateReplicaId} is null
+        and ${table.logicalMemoryId} is null
+      ) or (
+        ${table.scope} = 'grant_representation' and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is not null and ${table.shareGrantId} is not null
+        and ${table.representationId} is not null and ${table.representation} is not null
+        and ${table.sourceRevision} >= 0 and ${table.ownerPrivateReplicaId} is null
+        and ${table.logicalMemoryId} is not null
+      ) or (
+        ${table.scope} = 'team_message_range' and ${table.teamId} is not null
+        and ${table.threadId} is not null and ${table.shareGrantId} is null
+        and ${table.representationId} is null and ${table.ownerPrivateReplicaId} is null
+        and ${table.logicalMemoryId} is null
+        and ((${table.messageRangeStart} > 0 and ${table.messageRangeEnd} >= ${table.messageRangeStart})
+          or (${table.messageTimeStart} is not null and ${table.messageTimeEnd} >= ${table.messageTimeStart}))
+      ) or (
+        ${table.scope} = 'owner_private_replica' and ${table.teamId} is null
+        and ${table.teamWorkspaceId} is null and ${table.threadId} is null
+        and ${table.shareGrantId} is null and ${table.representationId} is null
+        and ${table.ownerPrivateReplicaId} is not null and ${table.logicalMemoryId} is not null
+      )`
+    ),
+    check(
+      "legal_holds_release_lifecycle_check",
+      sql`(
+        ${table.state} = 'active'
+        and ${table.releaseRequestedAt} is null
+        and ${table.releaseConfirmedAt} is null
+        and ${table.releasedAt} is null
+      ) or (
+        ${table.state} = 'release_pending'
+        and ${table.releaseRequestedAt} is not null
+        and ${table.releaseConfirmedAt} is null
+        and ${table.releasedAt} is null
+      ) or (
+        ${table.state} = 'released'
+        and ${table.releaseRequestedAt} is not null
+        and ${table.releaseConfirmedAt} is not null
+        and ${table.releasedAt} is not null
+        and (${table.singleHolderReleaseException}
+          or ${table.releaseConfirmedByUserId} is distinct from ${table.releaseRequestedByUserId})
+      )`
+    )
+  ]
+);
+
+export const retentionDecisions = pgTable(
+  "retention_decisions",
+  {
+    id: id(),
+    decisionVersion: integer("decision_version").notNull().default(1),
+    policyId: uuid("policy_id").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    targetKind: purgeTargetKind("target_kind").notNull(),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    shareGrantId: uuid("share_grant_id"),
+    representationId: uuid("representation_id"),
+    threadId: uuid("thread_id"),
+    messageId: uuid("message_id"),
+    ownerPrivateReplicaId: uuid("owner_private_replica_id").references(
+      (): AnyPgColumn => memoryReplicas.id,
+      { onDelete: "restrict" }
+    ),
+    logicalMemoryId: uuid("logical_memory_id").references(
+      (): AnyPgColumn => logicalMemories.id,
+      { onDelete: "restrict" }
+    ),
+    trigger: retentionTrigger("trigger").notNull(),
+    triggerEpoch: bigint("trigger_epoch", { mode: "number" })
+      .notNull()
+      .default(0),
+    policyEffectiveAt: timestamp("policy_effective_at", {
+      withTimezone: true
+    }).notNull(),
+    triggeredAt: timestamp("triggered_at", { withTimezone: true }).notNull(),
+    retainUntil: timestamp("retain_until", { withTimezone: true }).notNull(),
+    applicableLegalHoldIds: uuid("applicable_legal_hold_ids")
+      .array()
+      .notNull()
+      .default(sql`array[]::uuid[]`),
+    eligible: boolean("eligible").notNull(),
+    eligibilityReasonCode: text("eligibility_reason_code").notNull(),
+    decisionSnapshotHash: text("decision_snapshot_hash").notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.policyId, table.policyVersion],
+      foreignColumns: [retentionPolicies.policyId, retentionPolicies.version],
+      name: "retention_decisions_policy_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "retention_decisions_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.representationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.teamId,
+        teamMemoryRepresentations.teamWorkspaceId,
+        teamMemoryRepresentations.logicalMemoryId
+      ],
+      name: "retention_decisions_representation_scope_fk"
+    }).onDelete("restrict"),
+    index("retention_decisions_target_idx").on(
+      table.targetKind,
+      table.teamId,
+      table.retainUntil
+    ),
+    uniqueIndex("retention_decisions_share_revocation_epoch_unique")
+      .on(table.shareGrantId, table.triggerEpoch)
+      .where(
+        sql`${table.targetKind} = 'share_grant' and ${table.trigger} = 'share_revoked'`
+      ),
+    check(
+      "retention_decisions_values_check",
+      sql`${table.decisionVersion} > 0
+        and ${table.triggerEpoch} >= 0
+        and ${table.policyVersion} > 0
+        and ${table.policyEffectiveAt} <= ${table.triggeredAt}
+        and ${table.retainUntil} >= ${table.triggeredAt}
+        and array_position(${table.applicableLegalHoldIds}, null) is null
+        and length(trim(${table.eligibilityReasonCode})) > 0
+        and length(${table.decisionSnapshotHash}) = 64`
+    )
+  ]
+);
+
+export const retentionPolicyShorteningPreviews = pgTable(
+  "retention_policy_shortening_previews",
+  {
+    id: id(),
+    retentionPolicyRowId: uuid("retention_policy_row_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    policyHash: text("policy_hash").notNull(),
+    state: retentionPolicyShorteningState("state").notNull().default("pending"),
+    affectedScopeCount: integer("affected_scope_count").notNull(),
+    previewHash: text("preview_hash").notNull(),
+    previewedByUserId: uuid("previewed_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    previewedAt: timestamp("previewed_at", { withTimezone: true }).notNull(),
+    graceUntil: timestamp("grace_until", { withTimezone: true }).notNull(),
+    confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id, {
+      onDelete: "restrict"
+    }),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReasonCode: text("invalidation_reason_code"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.retentionPolicyRowId,
+        table.policyId,
+        table.policyVersion,
+        table.teamId,
+        table.policyHash
+      ],
+      foreignColumns: [
+        retentionPolicies.id,
+        retentionPolicies.policyId,
+        retentionPolicies.version,
+        retentionPolicies.teamId,
+        retentionPolicies.policyHash
+      ],
+      name: "retention_policy_shortening_previews_policy_fk"
+    }).onDelete("restrict"),
+    index("retention_policy_shortening_previews_pending_idx").on(
+      table.state,
+      table.graceUntil,
+      table.teamId
+    ),
+    check(
+      "retention_policy_shortening_previews_values_check",
+      sql`${table.policyVersion} > 0
+        and ${table.affectedScopeCount} >= 0
+        and length(${table.policyHash}) = 64
+        and length(${table.previewHash}) = 64
+        and ${table.graceUntil} > ${table.previewedAt}`
+    ),
+    check(
+      "retention_policy_shortening_previews_lifecycle_check",
+      sql`(
+        ${table.state} = 'pending'
+        and ${table.confirmedByUserId} is null
+        and ${table.confirmedAt} is null
+        and ${table.invalidatedAt} is null
+        and ${table.invalidationReasonCode} is null
+      ) or (
+        ${table.state} = 'confirmed'
+        and ${table.confirmedByUserId} is not null
+        and ${table.confirmedAt} >= ${table.graceUntil}
+        and ${table.invalidatedAt} is null
+        and ${table.invalidationReasonCode} is null
+      ) or (
+        ${table.state} = 'invalidated'
+        and ${table.confirmedByUserId} is null
+        and ${table.confirmedAt} is null
+        and ${table.invalidatedAt} is not null
+        and length(trim(${table.invalidationReasonCode})) > 0
+      )`
+    )
+  ]
+);
+
+export const retentionPolicyShorteningAffectedScopes = pgTable(
+  "retention_policy_shortening_affected_scopes",
+  {
+    id: id(),
+    previewId: uuid("preview_id")
+      .notNull()
+      .references(() => retentionPolicyShorteningPreviews.id, {
+        onDelete: "restrict"
+      }),
+    ordinal: integer("ordinal").notNull(),
+    retentionDecisionId: uuid("retention_decision_id")
+      .notNull()
+      .references(() => retentionDecisions.id, { onDelete: "restrict" }),
+    targetKind: purgeTargetKind("target_kind").notNull(),
+    targetId: uuid("target_id").notNull(),
+    previousRetainUntil: timestamp("previous_retain_until", {
+      withTimezone: true
+    }).notNull(),
+    shortenedRetainUntil: timestamp("shortened_retain_until", {
+      withTimezone: true
+    }).notNull(),
+    applicableLegalHoldIds: uuid("applicable_legal_hold_ids")
+      .array()
+      .notNull()
+      .default(sql`array[]::uuid[]`),
+    scopeSnapshotHash: text("scope_snapshot_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("retention_policy_shortening_scopes_ordinal_unique").on(
+      table.previewId,
+      table.ordinal
+    ),
+    unique("retention_policy_shortening_scopes_decision_unique").on(
+      table.previewId,
+      table.retentionDecisionId
+    ),
+    unique("retention_policy_shortening_scopes_identity_unique").on(
+      table.id,
+      table.previewId
+    ),
+    check(
+      "retention_policy_shortening_scopes_values_check",
+      sql`${table.ordinal} >= 0
+        and ${table.shortenedRetainUntil} < ${table.previousRetainUntil}
+        and array_position(${table.applicableLegalHoldIds}, null) is null
+        and length(${table.scopeSnapshotHash}) = 64`
+    )
+  ]
+);
+
+export const retentionPolicyShorteningMigrations = pgTable(
+  "retention_policy_shortening_migrations",
+  {
+    id: id(),
+    previewId: uuid("preview_id")
+      .notNull()
+      .references(() => retentionPolicyShorteningPreviews.id, {
+        onDelete: "restrict"
+      }),
+    affectedScopeId: uuid("affected_scope_id").notNull(),
+    previousRetentionDecisionId: uuid(
+      "previous_retention_decision_id"
+    ).notNull(),
+    migratedRetentionDecisionId: uuid("migrated_retention_decision_id")
+      .notNull()
+      .references(() => retentionDecisions.id, { onDelete: "restrict" }),
+    migratedAt: timestamp("migrated_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.affectedScopeId, table.previewId],
+      foreignColumns: [
+        retentionPolicyShorteningAffectedScopes.id,
+        retentionPolicyShorteningAffectedScopes.previewId
+      ],
+      name: "retention_policy_shortening_migrations_scope_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.previewId, table.previousRetentionDecisionId],
+      foreignColumns: [
+        retentionPolicyShorteningAffectedScopes.previewId,
+        retentionPolicyShorteningAffectedScopes.retentionDecisionId
+      ],
+      name: "retention_policy_shortening_migrations_previous_decision_fk"
+    }).onDelete("restrict"),
+    unique("retention_policy_shortening_migrations_preview_scope_unique").on(
+      table.previewId,
+      table.affectedScopeId
+    ),
+    unique("retention_policy_shortening_migrations_previous_unique").on(
+      table.previousRetentionDecisionId
+    ),
+    unique("retention_policy_shortening_migrations_migrated_unique").on(
+      table.migratedRetentionDecisionId
+    ),
+    check(
+      "retention_policy_shortening_migrations_decision_check",
+      sql`${table.previousRetentionDecisionId} <> ${table.migratedRetentionDecisionId}`
+    )
+  ]
+);
+
+export const purgeJobs = pgTable(
+  "purge_jobs",
+  {
+    id: id(),
+    retentionDecisionId: uuid("retention_decision_id")
+      .notNull()
+      .references(() => retentionDecisions.id, { onDelete: "restrict" }),
+    targetKind: purgeTargetKind("target_kind").notNull(),
+    targetId: uuid("target_id").notNull(),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    shareGrantId: uuid("share_grant_id"),
+    representationId: uuid("representation_id"),
+    logicalMemoryId: uuid("logical_memory_id").references(
+      (): AnyPgColumn => logicalMemories.id,
+      { onDelete: "restrict" }
+    ),
+    state: purgeJobState("state").notNull().default("pending"),
+    targetEpoch: bigint("target_epoch", { mode: "number" })
+      .notNull()
+      .default(0),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    resumeArtifactKind: purgeArtifactKind("resume_artifact_kind"),
+    resumeCursor: text("resume_cursor"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    terminalErrorCode: text("terminal_error_code"),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    cancellationReasonCode: text("cancellation_reason_code"),
+    canceledByUserId: uuid("canceled_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    canceledByMutationId: uuid("canceled_by_mutation_id")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "purge_jobs_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.representationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.teamId,
+        teamMemoryRepresentations.teamWorkspaceId,
+        teamMemoryRepresentations.logicalMemoryId
+      ],
+      name: "purge_jobs_representation_scope_fk"
+    }).onDelete("restrict"),
+    index("purge_jobs_resume_idx").on(table.state, table.nextAttemptAt),
+    check(
+      "purge_jobs_resume_check",
+      sql`${table.attemptCount} >= 0 and ${table.targetEpoch} >= 0
+        and length(trim(${table.idempotencyKey})) > 0
+        and ((${table.resumeArtifactKind} is null and ${table.resumeCursor} is null)
+          or (${table.resumeArtifactKind} is not null and ${table.resumeCursor} is not null))`
+    ),
+    check(
+      "purge_jobs_lifecycle_check",
+      sql`(${table.state} = 'pending' and ${table.startedAt} is null
+          and ${table.verifiedAt} is null and ${table.canceledAt} is null
+          and ${table.attemptCount} = 0
+          and ${table.resumeArtifactKind} is null and ${table.resumeCursor} is null
+          and ${table.cancellationReasonCode} is null
+          and ${table.canceledByUserId} is null
+          and ${table.canceledByMutationId} is null)
+        or (${table.state} = 'canceled' and ${table.startedAt} is null
+          and ${table.verifiedAt} is null and ${table.canceledAt} is not null
+          and ${table.attemptCount} = 0
+          and ${table.resumeArtifactKind} is null and ${table.resumeCursor} is null
+          and ${table.terminalErrorCode} is null
+          and length(trim(${table.cancellationReasonCode})) > 0
+          and ${table.canceledByMutationId} is not null)
+        or (${table.state} in ('blocked', 'running', 'retry_wait', 'failed')
+          and ${table.startedAt} is not null and ${table.verifiedAt} is null
+          and ${table.canceledAt} is null)
+        or (${table.state} = 'verified' and ${table.startedAt} is not null
+          and ${table.verifiedAt} is not null and ${table.canceledAt} is null)`
+    )
+  ]
+);
+
+export const purgeJobAttempts = pgTable(
+  "purge_job_attempts",
+  {
+    id: id(),
+    purgeJobId: uuid("purge_job_id")
+      .notNull()
+      .references(() => purgeJobs.id, { onDelete: "restrict" }),
+    attemptNumber: integer("attempt_number").notNull(),
+    state: purgeAttemptState("state").notNull().default("running"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    resumeArtifactKind: purgeArtifactKind("resume_artifact_kind"),
+    resumeCursor: text("resume_cursor"),
+    errorCode: text("error_code"),
+    errorHash: text("error_hash")
+  },
+  (table) => [
+    unique("purge_job_attempts_number_unique").on(
+      table.purgeJobId,
+      table.attemptNumber
+    ),
+    check("purge_job_attempts_number_check", sql`${table.attemptNumber} > 0`),
+    check(
+      "purge_job_attempts_lifecycle_check",
+      sql`(${table.state} = 'running' and ${table.completedAt} is null)
+        or (${table.state} <> 'running' and ${table.completedAt} is not null)`
+    ),
+    check(
+      "purge_job_attempts_error_check",
+      sql`(${table.errorCode} is null and ${table.errorHash} is null)
+        or (${table.errorCode} is not null and length(${table.errorHash}) = 64)`
+    )
+  ]
+);
+
+export const purgeJobEvidence = pgTable(
+  "purge_job_evidence",
+  {
+    id: id(),
+    purgeJobId: uuid("purge_job_id")
+      .notNull()
+      .references(() => purgeJobs.id, { onDelete: "restrict" }),
+    purgeAttemptId: uuid("purge_attempt_id").references(
+      () => purgeJobAttempts.id,
+      { onDelete: "restrict" }
+    ),
+    artifactKind: purgeArtifactKind("artifact_kind").notNull(),
+    artifactLocatorHash: text("artifact_locator_hash").notNull(),
+    state: purgeEvidenceState("state").notNull().default("pending"),
+    removedRecordCount: bigint("removed_record_count", {
+      mode: "number"
+    }).notNull(),
+    removedByteCount: bigint("removed_byte_count", {
+      mode: "number"
+    }).notNull(),
+    evidenceHash: text("evidence_hash"),
+    backupExpiresAt: timestamp("backup_expires_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("purge_job_evidence_artifact_unique").on(
+      table.purgeJobId,
+      table.artifactKind,
+      table.artifactLocatorHash
+    ),
+    index("purge_job_evidence_state_idx").on(
+      table.purgeJobId,
+      table.state,
+      table.artifactKind
+    ),
+    check(
+      "purge_job_evidence_counts_check",
+      sql`${table.removedRecordCount} >= 0
+        and ${table.removedByteCount} >= 0
+        and length(${table.artifactLocatorHash}) = 64`
+    ),
+    check(
+      "purge_job_evidence_proof_check",
+      sql`(${table.state} in ('pending', 'failed') and ${table.verifiedAt} is null)
+        or (${table.state} in ('cleaned', 'verified', 'not_applicable')
+          and length(${table.evidenceHash}) = 64)
+        or (${table.state} = 'scheduled_expiry'
+          and length(${table.evidenceHash}) = 64
+          and ${table.backupExpiresAt} is not null)`
     )
   ]
 );
@@ -2592,9 +5828,11 @@ export const logicalMemories = pgTable(
   "logical_memories",
   {
     id: id(),
-    ownerUserId: uuid("owner_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    protocolLogicalId: uuid("protocol_logical_id").notNull().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    ownerPrincipalId: uuid("owner_principal_id"),
     originDeploymentIdentityId: uuid("origin_deployment_identity_id")
       .notNull()
       .references(() => deploymentIdentities.id, { onDelete: "restrict" }),
@@ -2604,6 +5842,11 @@ export const logicalMemories = pgTable(
       onDelete: "set null"
     }),
     logicalKey: text("logical_key").notNull(),
+    version: integer("version").notNull().default(1),
+    latestSourceRevision: bigint("latest_source_revision", { mode: "number" })
+      .notNull()
+      .default(0),
+    lifecycle: memoryReplicaLifecycle("lifecycle").notNull().default("active"),
     lineage: jsonb("lineage")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -2615,11 +5858,15 @@ export const logicalMemories = pgTable(
     createdAt: now(),
     updatedAt: updatedNow(),
     invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
-    invalidationReason: text("invalidation_reason")
+    invalidationReason: text("invalidation_reason"),
+    tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
   },
   (table) => [
+    unique("logical_memories_protocol_id_unique").on(table.protocolLogicalId),
     unique("logical_memories_owner_key_unique").on(
-      table.ownerUserId,
+      table.ownerPrincipalId,
       table.logicalKey
     ),
     unique("logical_memories_origin_unique").on(
@@ -2631,7 +5878,7 @@ export const logicalMemories = pgTable(
       .on(table.ownerUserId, table.localSessionId)
       .where(sql`${table.localSessionId} is not null`),
     index("logical_memories_owner_boundary_idx").on(
-      table.ownerUserId,
+      table.ownerPrincipalId,
       table.sourceBoundary,
       table.createdAt.desc()
     ),
@@ -2642,6 +5889,18 @@ export const logicalMemories = pgTable(
     check(
       "logical_memories_logical_key_not_empty_check",
       sql`length(trim(${table.logicalKey})) > 0`
+    ),
+    check(
+      "logical_memories_owner_version_check",
+      sql`${table.ownerPrincipalId} is not null
+        and ${table.version} > 0
+        and ${table.latestSourceRevision} >= 0`
+    ),
+    check(
+      "logical_memories_lifecycle_check",
+      sql`(${table.lifecycle} in ('active', 'stale', 'revoked') and ${table.purgeCompletedAt} is null)
+        or (${table.lifecycle} in ('tombstoned', 'purge_pending') and ${table.tombstonedAt} is not null and ${table.purgeCompletedAt} is null)
+        or (${table.lifecycle} = 'purged' and ${table.tombstonedAt} is not null and ${table.purgeCompletedAt} is not null)`
     )
   ]
 );
@@ -2656,26 +5915,34 @@ export const memoryReplicas = pgTable(
     deploymentIdentityId: uuid("deployment_identity_id")
       .notNull()
       .references(() => deploymentIdentities.id, { onDelete: "cascade" }),
-    ownerUserId: uuid("owner_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    ownerPrincipalId: uuid("owner_principal_id"),
     replicaRole: syncReplicaRole("replica_role").notNull(),
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
     localSessionId: uuid("local_session_id").references(() => sessions.id, {
       onDelete: "set null"
     }),
     externalReplicaId: text("external_replica_id"),
-    freshnessStatus: text("freshness_status").notNull().default("unknown"),
-    policyManifest: jsonb("policy_manifest")
-      .$type<Record<string, unknown>>()
+    version: integer("version").notNull().default(1),
+    latestRevision: bigint("latest_revision", { mode: "number" })
       .notNull()
-      .default(sql`'{}'::jsonb`),
+      .default(0),
+    lifecycle: memoryReplicaLifecycle("lifecycle").notNull().default("active"),
+    encryptionScope: text("encryption_scope").notNull(),
+    freshnessStatus: text("freshness_status").notNull().default("unknown"),
+    representationPolicyRevision: integer("representation_policy_revision"),
+    contentPolicyVersion: integer("content_policy_version"),
     createdAt: now(),
     updatedAt: updatedNow(),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     staleAfter: timestamp("stale_after", { withTimezone: true }),
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
-    disabledReason: text("disabled_reason")
+    disabledReason: text("disabled_reason"),
+    tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
   },
   (table) => [
     unique("memory_replicas_logical_deployment_role_unique").on(
@@ -2688,11 +5955,16 @@ export const memoryReplicas = pgTable(
       table.logicalMemoryId,
       table.ownerUserId
     ),
+    unique("memory_replicas_logical_owner_principal_unique").on(
+      table.id,
+      table.logicalMemoryId,
+      table.ownerPrincipalId
+    ),
     uniqueIndex("memory_replicas_external_replica_unique")
       .on(table.deploymentIdentityId, table.externalReplicaId)
       .where(sql`${table.externalReplicaId} is not null`),
     index("memory_replicas_owner_status_idx").on(
-      table.ownerUserId,
+      table.ownerPrincipalId,
       table.freshnessStatus,
       table.updatedAt.desc()
     ),
@@ -2703,6 +5975,28 @@ export const memoryReplicas = pgTable(
     check(
       "memory_replicas_freshness_status_check",
       sql`${table.freshnessStatus} in ('unknown', 'fresh', 'stale', 'revoked', 'failed')`
+    ),
+    check(
+      "memory_replicas_owner_version_check",
+      sql`${table.ownerPrincipalId} is not null
+        and ${table.version} > 0
+        and ${table.latestRevision} >= 0`
+    ),
+    check(
+      "memory_replicas_encryption_scope_check",
+      sql`(${table.replicaRole} = 'source' and ${table.encryptionScope} = 'personal')
+        or (${table.replicaRole} = 'target' and ${table.encryptionScope} = 'owner_private_replica')`
+    ),
+    check(
+      "memory_replicas_policy_revision_check",
+      sql`(${table.representationPolicyRevision} is null and ${table.contentPolicyVersion} is null)
+        or (${table.representationPolicyRevision} > 0 and ${table.contentPolicyVersion} > 0)`
+    ),
+    check(
+      "memory_replicas_lifecycle_check",
+      sql`(${table.lifecycle} in ('active', 'stale', 'revoked') and ${table.purgeCompletedAt} is null)
+        or (${table.lifecycle} in ('tombstoned', 'purge_pending') and ${table.tombstonedAt} is not null and ${table.purgeCompletedAt} is null)
+        or (${table.lifecycle} = 'purged' and ${table.tombstonedAt} is not null and ${table.purgeCompletedAt} is not null)`
     )
   ]
 );
@@ -2731,6 +6025,8 @@ export const crossIdentitySyncRelationships = pgTable(
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
     syncMode: syncMode("sync_mode").notNull().default("live"),
     state: syncRelationshipState("state").notNull().default("created"),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    stateBeforePause: syncRelationshipState("state_before_pause"),
     idempotencyKey: text("idempotency_key").notNull(),
     creationRequestHash: text("creation_request_hash").notNull(),
     policyManifest: jsonb("policy_manifest")
@@ -2752,6 +6048,8 @@ export const crossIdentitySyncRelationships = pgTable(
     packageSequence: bigint("package_sequence", { mode: "number" })
       .notNull()
       .default(0),
+    sourceSummaryRevisionHash: text("source_summary_revision_hash"),
+    targetSummaryRevisionHash: text("target_summary_revision_hash"),
     staleAfter: timestamp("stale_after", { withTimezone: true }),
     createdAt: now(),
     updatedAt: updatedNow(),
@@ -2809,8 +6107,24 @@ export const crossIdentitySyncRelationships = pgTable(
       sql`${table.sourceCursor} >= 0 and ${table.targetProcessingCursor} >= 0 and ${table.packageSequence} >= 0`
     ),
     check(
+      "cross_identity_sync_relationships_summary_hashes_check",
+      sql`(${table.sourceSummaryRevisionHash} is null or length(${table.sourceSummaryRevisionHash}) = 64)
+        and (${table.targetSummaryRevisionHash} is null or length(${table.targetSummaryRevisionHash}) = 64)`
+    ),
+    check(
       "cross_identity_sync_relationships_credential_side_check",
       sql`(${table.side} = 'source' and ${table.deviceCredentialId} is null) or (${table.side} = 'target' and ${table.deviceCredentialId} is not null)`
+    ),
+    check(
+      "cross_identity_sync_relationships_pause_state_check",
+      sql`(${table.state} = 'paused'
+        and ${table.side} = 'source'
+        and ${table.pausedAt} is not null
+        and ${table.stateBeforePause} in ('created', 'uploading', 'uploaded', 'verified', 'processing', 'partially_available', 'ready', 'stale')
+        and ${table.revokedAt} is null)
+        or (${table.state} <> 'paused'
+          and ${table.pausedAt} is null
+          and ${table.stateBeforePause} is null)`
     ),
     foreignKey({
       columns: [table.localReplicaId, table.logicalMemoryId, table.localUserId],
@@ -3165,6 +6479,45 @@ export const syncEventMappings = pgTable(
     index("sync_event_mappings_cursor_idx").on(
       table.syncRelationshipId,
       table.sourceCursor
+    )
+  ]
+);
+
+export const syncSummaryNodeMappings = pgTable(
+  "sync_summary_node_mappings",
+  {
+    id: id(),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "cascade"
+      }),
+    originNodeId: uuid("origin_node_id").notNull(),
+    revisionHash: text("revision_hash").notNull(),
+    localMemoryNodeId: uuid("local_memory_node_id").references(
+      () => memoryNodes.id,
+      { onDelete: "set null" }
+    ),
+    active: boolean("active").notNull().default(true),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("sync_summary_node_mappings_revision_unique").on(
+      table.syncRelationshipId,
+      table.originNodeId,
+      table.revisionHash
+    ),
+    uniqueIndex("sync_summary_node_mappings_active_origin_unique")
+      .on(table.syncRelationshipId, table.originNodeId)
+      .where(sql`${table.active} = true`),
+    index("sync_summary_node_mappings_local_node_idx").on(
+      table.localMemoryNodeId
+    ),
+    check(
+      "sync_summary_node_mappings_revision_hash_check",
+      sql`length(${table.revisionHash}) = 64`
     )
   ]
 );
@@ -3662,5 +7015,297 @@ export const projectionPolicyState = pgTable(
   (table) => [
     check("projection_policy_state_singleton_check", sql`${table.id} = 1`),
     check("projection_policy_state_revision_check", sql`${table.revision} >= 1`)
+  ]
+);
+
+export const collaborationSharedMemoryEnrollments = pgTable(
+  "collaboration_shared_memory_enrollments",
+  {
+    id: id(),
+    backendId: text("backend_id").notNull(),
+    localOwnerUserId: uuid("local_owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    upstreamUserId: uuid("upstream_user_id").notNull(),
+    remoteDeviceId: uuid("remote_device_id").notNull(),
+    bindingVersion: integer("binding_version").notNull().default(1),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: text("revocation_reason")
+  },
+  (table) => [
+    uniqueIndex("csm_enrollments_active_owner_backend_unique")
+      .on(table.localOwnerUserId, table.backendId)
+      .where(sql`${table.revokedAt} is null`),
+    uniqueIndex("csm_enrollments_active_remote_identity_unique")
+      .on(table.backendId, table.upstreamUserId, table.remoteDeviceId)
+      .where(sql`${table.revokedAt} is null`),
+    unique("csm_enrollments_identity_unique").on(
+      table.id,
+      table.backendId,
+      table.localOwnerUserId,
+      table.upstreamUserId
+    ),
+    check(
+      "csm_enrollments_backend_id_check",
+      sql`${table.backendId} ~ '^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$'`
+    ),
+    check(
+      "csm_enrollments_binding_version_check",
+      sql`${table.bindingVersion} > 0`
+    )
+  ]
+);
+
+export const collaborationSharedMemoryPreviews = pgTable(
+  "collaboration_shared_memory_previews",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "restrict"
+      }),
+    previewId: uuid("preview_id").notNull(),
+    previewHash: text("preview_hash").notNull(),
+    previewRevision: integer("preview_revision").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceHash: text("source_hash").notNull(),
+    redactedContentHash: text("redacted_content_hash").notNull(),
+    itemCount: integer("item_count").notNull(),
+    protectedDtoHash: text("protected_dto_hash").notNull(),
+    protectedDto: jsonb("protected_dto")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("csm_previews_identity_unique").on(
+      table.enrollmentId,
+      table.previewId
+    ),
+    unique("csm_previews_hash_unique").on(
+      table.enrollmentId,
+      table.previewHash
+    ),
+    unique("csm_previews_consent_binding_unique").on(
+      table.enrollmentId,
+      table.previewId,
+      table.previewHash,
+      table.previewRevision,
+      table.logicalMemoryId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.sourceRevision
+    ),
+    index("csm_previews_owner_hash_idx").on(
+      table.enrollmentId,
+      table.previewHash
+    ),
+    check(
+      "csm_previews_revision_count_check",
+      sql`${table.previewRevision} > 0 and ${table.sourceRevision} >= 0 and ${table.itemCount} > 0`
+    ),
+    check(
+      "csm_previews_hashes_check",
+      sql`length(${table.previewHash}) = 64
+        and length(${table.sourceHash}) = 64
+        and length(${table.redactedContentHash}) = 64
+        and length(${table.protectedDtoHash}) = 64`
+    )
+  ]
+);
+
+export const collaborationSharedMemoryConsents = pgTable(
+  "collaboration_shared_memory_consents",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    consentId: uuid("consent_id").notNull(),
+    consentVersion: integer("consent_version").notNull(),
+    previewId: uuid("preview_id").notNull(),
+    previewHash: text("preview_hash").notNull(),
+    previewRevision: integer("preview_revision").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    protectedDtoHash: text("protected_dto_hash").notNull(),
+    protectedDto: jsonb("protected_dto")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("csm_consents_version_unique").on(
+      table.enrollmentId,
+      table.consentId,
+      table.consentVersion
+    ),
+    index("csm_consents_current_idx").on(
+      table.enrollmentId,
+      table.consentId,
+      table.consentVersion.desc()
+    ),
+    index("csm_consents_preview_idx").on(
+      table.enrollmentId,
+      table.previewId,
+      table.previewHash
+    ),
+    foreignKey({
+      columns: [
+        table.enrollmentId,
+        table.previewId,
+        table.previewHash,
+        table.previewRevision,
+        table.logicalMemoryId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.sourceRevision
+      ],
+      foreignColumns: [
+        collaborationSharedMemoryPreviews.enrollmentId,
+        collaborationSharedMemoryPreviews.previewId,
+        collaborationSharedMemoryPreviews.previewHash,
+        collaborationSharedMemoryPreviews.previewRevision,
+        collaborationSharedMemoryPreviews.logicalMemoryId,
+        collaborationSharedMemoryPreviews.teamId,
+        collaborationSharedMemoryPreviews.teamWorkspaceId,
+        collaborationSharedMemoryPreviews.sourceRevision
+      ],
+      name: "csm_consents_preview_binding_fk"
+    }).onDelete("restrict"),
+    check(
+      "csm_consents_version_revision_check",
+      sql`${table.consentVersion} > 0 and ${table.previewRevision} > 0 and ${table.sourceRevision} >= 0`
+    ),
+    check(
+      "csm_consents_hashes_check",
+      sql`length(${table.previewHash}) = 64 and length(${table.protectedDtoHash}) = 64`
+    )
+  ]
+);
+
+export const collaborationSharedMemoryCompanionBindings = pgTable(
+  "collaboration_shared_memory_companion_bindings",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    companionThreadId: uuid("companion_thread_id").notNull(),
+    sharedSessionId: uuid("shared_session_id").notNull(),
+    createdAt: now(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => [
+    uniqueIndex("csm_companion_bindings_active_grant_unique")
+      .on(table.enrollmentId, table.shareGrantId)
+      .where(sql`${table.revokedAt} is null`),
+    uniqueIndex("csm_companion_bindings_active_session_unique")
+      .on(table.enrollmentId, table.sharedSessionId)
+      .where(sql`${table.revokedAt} is null`),
+    uniqueIndex("csm_companion_bindings_active_thread_unique")
+      .on(table.enrollmentId, table.companionThreadId)
+      .where(sql`${table.revokedAt} is null`),
+    unique("csm_companion_bindings_scope_unique").on(
+      table.id,
+      table.enrollmentId,
+      table.shareGrantId,
+      table.logicalMemoryId,
+      table.teamId,
+      table.teamWorkspaceId
+    )
+  ]
+);
+
+export const collaborationSharedMemoryGrants = pgTable(
+  "collaboration_shared_memory_grants",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    companionBindingId: uuid("companion_binding_id").notNull(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    logicalGrantId: uuid("logical_grant_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    consentId: uuid("consent_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    activeRepresentation: sharedMemoryRepresentation("active_representation"),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    grantVersion: integer("grant_version").notNull(),
+    lifecycle: shareGrantLifecycle("lifecycle").notNull(),
+    protectedDtoHash: text("protected_dto_hash").notNull(),
+    protectedDto: jsonb("protected_dto")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("csm_grants_version_unique").on(
+      table.enrollmentId,
+      table.shareGrantId,
+      table.grantVersion
+    ),
+    index("csm_grants_current_idx").on(
+      table.enrollmentId,
+      table.shareGrantId,
+      table.grantVersion.desc()
+    ),
+    index("csm_grants_session_read_idx").on(
+      table.companionBindingId,
+      table.grantVersion.desc()
+    ),
+    foreignKey({
+      columns: [
+        table.companionBindingId,
+        table.enrollmentId,
+        table.shareGrantId,
+        table.logicalMemoryId,
+        table.teamId,
+        table.teamWorkspaceId
+      ],
+      foreignColumns: [
+        collaborationSharedMemoryCompanionBindings.id,
+        collaborationSharedMemoryCompanionBindings.enrollmentId,
+        collaborationSharedMemoryCompanionBindings.shareGrantId,
+        collaborationSharedMemoryCompanionBindings.logicalMemoryId,
+        collaborationSharedMemoryCompanionBindings.teamId,
+        collaborationSharedMemoryCompanionBindings.teamWorkspaceId
+      ],
+      name: "csm_grants_companion_binding_fk"
+    }).onDelete("restrict"),
+    check(
+      "csm_grants_version_revision_check",
+      sql`${table.grantVersion} > 0 and ${table.sourceRevision} >= 0`
+    ),
+    check(
+      "csm_grants_protected_dto_hash_check",
+      sql`length(${table.protectedDtoHash}) = 64`
+    )
   ]
 );

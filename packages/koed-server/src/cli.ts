@@ -16,6 +16,7 @@ import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 import { restartKoedServer } from "./restart.js";
 import { startKoedServer } from "./start.js";
 import { stopKoedServer } from "./stop.js";
+import { runDesktopCollaborationBrokerProcess } from "./desktop-collaboration-broker.js";
 import {
   collectLocalModelStatus,
   installLocalModel,
@@ -56,7 +57,6 @@ import {
   getProjectMetadataForCwd,
   listProjectMetadata
 } from "./project-metadata.js";
-import { shareProjectCapturedSession } from "./team-project-sharing.js";
 import {
   cancelUpstreamEnrollment,
   disconnectUpstreamBackendEnrollment,
@@ -107,7 +107,6 @@ Commands:
   team workspace list --json List local Project to Team Workspace links
   team workspace show --json Show the Team Workspace link for a Project root
   team workspace remove --json Remove the Team Workspace link for a Project root
-  team capture share-latest --json Share latest/selected Captured Session into linked Team Workspace
 
 Runtime providers:
   --provider homebrew       Use Homebrew-backed runtime assets (default)
@@ -163,7 +162,6 @@ export interface KoedServerCliDependencies {
   listProjectMetadata?: typeof listProjectMetadata;
   getProjectMetadataForCwd?: typeof getProjectMetadataForCwd;
   forgetProjectMetadata?: typeof forgetProjectMetadata;
-  shareProjectCapturedSession?: typeof shareProjectCapturedSession;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
@@ -427,8 +425,6 @@ export const runKoedServerCli = async (
     listProjectMetadata: listProjects = listProjectMetadata,
     getProjectMetadataForCwd: getProjectForCwd = getProjectMetadataForCwd,
     forgetProjectMetadata: forgetProject = forgetProjectMetadata,
-    shareProjectCapturedSession:
-      shareProjectSession = shareProjectCapturedSession,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -835,6 +831,11 @@ export const runKoedServerCli = async (
       return result.ok ? 0 : 1;
     }
 
+    if (command === "desktop" && subcommand === "collaboration-broker") {
+      await runDesktopCollaborationBrokerProcess();
+      return 0;
+    }
+
     if (command === "team" && subcommand === "workspace") {
       const teamWorkspaceCommand = args[2];
       const paths = resolvePaths();
@@ -867,30 +868,6 @@ export const runKoedServerCli = async (
           "team workspace command must be link, list, show, or remove."
         );
       }
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (
-      command === "team" &&
-      subcommand === "capture" &&
-      args[2] === "share-latest"
-    ) {
-      const paths = resolvePaths();
-      const repoEnv = loadEnvironment(paths.repoRoot);
-      const result = await shareProjectSession(
-        paths,
-        {
-          projectRoot: flagValue(args, "--project-root") ?? process.cwd(),
-          sessionId: flagValue(args, "--session-id")
-        },
-        process.env,
-        repoEnv
-      );
       if (wantsJson) {
         printJson(stdout, result);
       } else {

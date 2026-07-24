@@ -59,6 +59,15 @@ target authenticates the scoped `sync` device credential and binds deployment,
 User, relationship, replica, consent, policy, cursor, version, size, and digest
 metadata before decrypting. A missing key, wrong version, provider outage,
 tampered envelope, unauthorized target, or unsupported package fails closed.
+After package verification, synchronized `conversation_items` keep raw JSON,
+raw text, transport text, and full metadata in owner-private encrypted field
+companions. Their operational columns contain only encryption markers and the
+bounded metadata required for rendering and lifecycle processing. Subsequent
+sync reads hydrate those companions inside the repository boundary before
+constructing another package, so redaction does not reduce replica fidelity.
+Synchronized target session rows retain only operational replica markers;
+source conversation titles and external session labels are not copied into
+plaintext structural storage.
 
 Personal Device Sync V1 is not implemented by this RSA envelope path. Its
 separate Ed25519/X25519/HKDF-SHA-256/AES-256-GCM, recovery, authority, and
@@ -109,3 +118,39 @@ Koed-managed cloud support/admin access is governed by
 Managed KMS deployment proof and the `local_test_key` to KMS cutover sequence
 should be recorded with the relevant private launch or staging record for each
 target environment.
+
+## Collaboration Security Boundary
+
+Personal and Team collaboration use distinct authority even when Desktop shows
+them in one application. The renderer receives schema-validated DTOs and events
+through allowlisted preload IPC and never receives reusable remote credentials,
+browser cookies, API Tokens, provider secrets, decrypted offline Team caches,
+or a general HTTP proxy. Electron main bridges lifecycle only; local
+`koed-server` owns credential custody, upstream HTTP and realtime connections,
+capability validation, durable cursors, replay, and reconnect.
+
+Personal API Tokens have no Team authority. Every Team command, route,
+snapshot, replay batch, and live event rechecks current Team Membership,
+Workspace Access, Share Grant, lifecycle, entitlement, credential operation
+family, and resource scope before selecting or decrypting content. High-risk
+device-mediated administration requires a freshly browser-confirmed, exact,
+one-use action grant; enrollment does not issue reusable admin authority.
+
+Desktop also treats rendered content as hostile. Markdown has no raw-HTML path,
+safe protocols are allowlisted, remote images are disabled, oversized input is
+rejected, and external links and clipboard writes use narrow trusted adapters.
+Protected Team drafts, outbox items, history, recents, selections, Inspector
+state, labels, and cached content are purged when backend or identity authority
+changes. Unknown realtime revocation state fails closed. The tested renderer
+and recovery behavior is summarized in
+[Koed Desktop](desktop-ui.md#security-boundary).
+
+Team collaboration fields and grant-scoped Shared Memory representations use
+Team envelope encryption. Canonical remote replicas use a separate owner-private
+envelope provider and are never read directly by Team clients. Plaintext must
+not enter outbox records, replay metadata, queues, caches, audit records, logs,
+metrics, diagnostics, or error responses. Authorization, key, encryption, and
+outbox failures fail closed. The route and credential rules are enumerated in
+[Team Collaboration Action And Credential Matrix](team-collaboration-action-credential-matrix.md),
+and the complete service boundary is in
+[Team Collaboration Architecture](team-collaboration.md).

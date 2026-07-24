@@ -3292,6 +3292,10 @@ const triggerDetachedTranscriptCatchup = (
 const hookPayloadIsTurnCompleteSignal = (payload: HookPayload): boolean =>
   /^(Stop|SubagentStop)$/i.test(payload.hook_event_name ?? "");
 
+export const shouldDeferPageEndingAssistantEventForHook = (
+  payload: HookPayload
+): boolean => !hookPayloadIsTurnCompleteSignal(payload);
+
 const shouldTriggerDetachedTranscriptCatchup = (
   configPath: string | undefined,
   payload: HookPayload,
@@ -3538,6 +3542,8 @@ const runCapturePass = async (input: {
   const stateScope = stateScopeKey(config, workspaceId, access.user.id);
   const captureTranscriptPath = captureTranscriptPathForPayload(payload);
   const state = loadState();
+  const deferPageEndingAssistantEvent =
+    shouldDeferPageEndingAssistantEventForHook(payload);
   const transcriptFile: TranscriptFileRead = shouldReadTranscriptForHook(
     payload
   )
@@ -3547,7 +3553,7 @@ const runCapturePass = async (input: {
           state,
           stateScope,
           readThroughOffset: payload.transcript_bytes_at_hook,
-          deferPageEndingAssistantEvent: true
+          deferPageEndingAssistantEvent
         })
       : {
           ...parseTranscriptFileRecords({
@@ -3557,7 +3563,7 @@ const runCapturePass = async (input: {
             maxBytes: hookTranscriptTailBytes(),
             firstContactAfter: transcriptFirstContactAfterForPayload(payload),
             readThroughOffset: payload.transcript_bytes_at_hook,
-            deferPageEndingAssistantEvent: true
+            deferPageEndingAssistantEvent
           }),
           backgroundCatchupNeeded: false,
           backlogBytes: 0

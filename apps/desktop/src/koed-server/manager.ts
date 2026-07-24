@@ -1,21 +1,60 @@
 import type { ChildProcess } from "node:child_process";
 import {
+  collaborationRendererCommandSchema,
+  fetchBoundedJsonObject,
+  isLoopbackHostname,
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  personalDesktopChangeSchema,
+  personalDesktopEventsDataSchema,
+  personalDesktopProjectsDataSchema,
+  personalDesktopRequestSchema,
+  personalDesktopResultSchema,
+  personalDesktopSessionProjectDataSchema,
+  type CollaborationRendererEvent,
+  type PersonalDesktopChange,
+  type PersonalDesktopRequest,
+  type PersonalDesktopResult
+} from "@koed/shared";
+import { installLocalModel, resolveKoedServerPaths } from "@koed/koed-server";
+import {
   existsSync as nodeExistsSync,
-  mkdirSync,
   readFileSync,
-  readdirSync,
-  writeFileSync
+  readdirSync
 } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type {
   ComponentState,
   ComponentStatus,
+  DesktopSetupSnapshot,
+  DesktopSetupStageId,
   KoedServerStatus
 } from "../types.js";
+import type { DesktopCommandName } from "../ipc/protocol.js";
+import { createCollaborationLocalTransport } from "../collaboration/local-transport.js";
+import { safeExternalUrl } from "../window/external-url.js";
 import type { NodeEntrypointInvocation } from "./runtime.js";
+import {
+  createDesktopSetupWorkflow,
+  type DesktopSetupActionResult,
+  type DesktopSetupCheck
+} from "./setup-workflow.js";
 
-export type DesktopCommandHandler = (args?: Record<string, unknown>) => unknown;
+export interface DesktopCommandContext {
+  ownerId: string;
+  signal: AbortSignal;
+  emitCollaborationEvent: (event: CollaborationRendererEvent) => void;
+  emitSetupProgress?: (snapshot: DesktopSetupSnapshot) => void;
+}
+
+export type DesktopCommandHandler = (
+  args?: Record<string, unknown>,
+  context?: DesktopCommandContext
+) => unknown;
+
+export type PersonalMemoryDesktopHandler = (
+  request: PersonalDesktopRequest
+) => Promise<PersonalDesktopResult>;
 
 export interface KoedServerManagerOptions {
   repoRoot: string;
@@ -39,16 +78,26 @@ export interface KoedServerManagerOptions {
     options: {
       cwd: string;
       env: NodeJS.ProcessEnv;
-      stdio: "pipe";
+      stdio: ["ignore", "ignore", "ignore", "ipc"];
       detached: false;
     }
   ) => ChildProcess;
   openExternal: (url: string) => Promise<unknown>;
   openPath?: (path: string) => Promise<string>;
+  collaborationRandom?: () => number;
+  collaborationNow?: () => number;
+  collaborationSleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  personalMemoryFetch?: typeof fetch;
 }
 
 export interface KoedServerManager {
-  handlers: Record<string, DesktopCommandHandler>;
+  handlers: Record<DesktopCommandName, DesktopCommandHandler>;
+  personalMemory: PersonalMemoryDesktopHandler;
+  subscribePersonalMemory: (
+    listener: (change: PersonalDesktopChange) => void,
+    signal: AbortSignal
+  ) => Promise<void>;
+  resume: () => Promise<unknown>;
   stop: () => Promise<unknown>;
 }
 
@@ -100,16 +149,10 @@ const diagnosticComponent = (
 
 const diagnosticStatus = ({
   state,
-  message,
-  repoRoot,
-  cliPath,
-  details
+  message
 }: {
   state: ComponentState;
   message: string;
-  repoRoot: string;
-  cliPath: string;
-  details?: Record<string, unknown>;
 }): DiagnosticStatus => {
   const component = (action?: string): ComponentStatus =>
     diagnosticComponent(state, message, action);
@@ -140,22 +183,14 @@ const diagnosticStatus = ({
       notChecked: 0
     },
     explorer: { ...component("Start Koed"), url: "" },
-    lastVerification: { ...component("Run doctor"), checkedAt: null },
-    details: {
-      repoRoot,
-      cliPath,
-      ...details
-    }
+    lastVerification: { ...component("Run doctor"), checkedAt: null }
   } as DiagnosticStatus;
 };
 
-const missingCliPayload = (repoRoot: string, cliPath: string) =>
+const missingCliPayload = () =>
   diagnosticStatus({
     state: "not_configured",
-    message:
-      "koed-server CLI was not found. Build the checkout with `pnpm --filter @koed/koed-server build`, or launch the packaged app with KOED_REPO_ROOT/KOED_SERVER_CLI pointing at a Koed checkout.",
-    repoRoot,
-    cliPath
+    message: "Koed's local service is unavailable."
   });
 
 const sleep = (ms: number): Promise<void> =>
@@ -163,32 +198,25 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-const appendOutputLines = (buffer: string[], chunk: Buffer | string): void => {
-  const text = chunk.toString();
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
+const waitForAbortOrDelay = (
+  signal: AbortSignal,
+  delayMs: number
+): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
     }
-    buffer.push(trimmed);
-  }
-  while (buffer.length > 400) {
-    buffer.shift();
-  }
-};
-
-const withDesktopStartLog = (
-  value: unknown,
-  outputLines: string[]
-): unknown => {
-  if (typeof value !== "object" || value === null || outputLines.length === 0) {
-    return value;
-  }
-  return {
-    ...value,
-    desktopStartLog: outputLines.slice(-120)
-  };
-};
+    const timer = setTimeout(resolve, delayMs);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
 
 const resolveKoedHome = (environment: NodeJS.ProcessEnv): string =>
   resolve(environment.KOED_HOME?.trim() || `${homedir()}/.koed`);
@@ -212,17 +240,193 @@ const readExplorerCredential = (
     return typeof parsed.apiToken === "string" && parsed.apiToken.trim()
       ? { ok: true, apiToken: parsed.apiToken.trim() }
       : { ok: false, error: "Explorer credential is missing an API Token." };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
+  } catch {
+    return { ok: false, error: "Explorer credential could not be read." };
   }
 };
 
-const parseCreatedApiToken = (output: string): string | null => {
-  const match = /^Token:\s*(\S+)$/m.exec(output);
-  return match?.[1] ?? null;
+type PersonalMemoryErrorCode =
+  | "not_ready"
+  | "not_found"
+  | "request_failed"
+  | "invalid_response";
+
+class PersonalMemoryBoundaryError extends Error {
+  constructor(
+    readonly code: PersonalMemoryErrorCode,
+    readonly retryable: boolean
+  ) {
+    super(code);
+    this.name = "PersonalMemoryBoundaryError";
+  }
+}
+
+const personalMemoryErrorMessage = (code: PersonalMemoryErrorCode): string => {
+  if (code === "not_ready") return "Local Personal Memory is not ready.";
+  if (code === "not_found") return "The Personal Memory item was not found.";
+  if (code === "invalid_response") {
+    return "Local Personal Memory returned an invalid response.";
+  }
+  return "The Local Personal Memory request failed.";
+};
+
+const objectValue = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const localPersonalMemoryOrigin = (value: unknown): string | null => {
+  const root = objectValue(value);
+  const api = objectValue(root?.api);
+  if (api?.state !== "healthy" || typeof api.url !== "string") return null;
+  try {
+    const parsed = new URL(api.url);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      !isLoopbackHostname(parsed.hostname) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash ||
+      (parsed.pathname !== "/" && parsed.pathname !== "")
+    ) {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+};
+
+const personalProjectsData = (payload: Record<string, unknown>) => {
+  const projects = Array.isArray(payload.projects) ? payload.projects : null;
+  if (!projects) {
+    throw new PersonalMemoryBoundaryError("invalid_response", false);
+  }
+  return personalDesktopProjectsDataSchema.parse({
+    projects: projects.map((projectValue) => {
+      const project = objectValue(projectValue) ?? {};
+      const threads = Array.isArray(project.threads) ? project.threads : [];
+      return {
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        eventCount: project.eventCount,
+        threads: threads.map((threadValue) => {
+          const thread = objectValue(threadValue) ?? {};
+          return {
+            id: thread.id,
+            name: thread.name,
+            sessionId: thread.sessionId,
+            sourceAiClient: thread.sourceAiClient,
+            projectId: thread.projectId,
+            projectName: thread.projectName,
+            projectPath: thread.projectPath,
+            projectAssignmentSource: thread.projectAssignmentSource,
+            eventCount: thread.eventCount,
+            invalidatedCount: thread.invalidatedCount,
+            latestAt: thread.latestAt,
+            sample: thread.sample
+          };
+        })
+      };
+    })
+  });
+};
+
+const personalEventsData = (payload: Record<string, unknown>) => {
+  const events = Array.isArray(payload.events) ? payload.events : null;
+  if (!events) {
+    throw new PersonalMemoryBoundaryError("invalid_response", false);
+  }
+  return personalDesktopEventsDataSchema.parse({
+    events: events.map((eventValue) => {
+      const event = objectValue(eventValue) ?? {};
+      const metadata = objectValue(event.metadata);
+      return {
+        id: event.id,
+        actor: event.actor,
+        eventType: event.eventType,
+        timestamp: event.timestamp,
+        sourceEventTime: event.sourceEventTime,
+        sourceSequence: event.sourceSequence,
+        ...(typeof event.content === "string"
+          ? { content: event.content }
+          : {}),
+        contentPreview: event.contentPreview,
+        invalidatedAt: event.invalidatedAt,
+        metadata:
+          typeof metadata?.toolName === "string"
+            ? { toolName: metadata.toolName }
+            : {}
+      };
+    })
+  });
+};
+
+export const personalMemoryChangeFromSseFrame = (
+  frame: string
+): PersonalDesktopChange | null => {
+  const lines = frame.split(/\r?\n/);
+  const eventName =
+    lines
+      .find((line) => line.startsWith("event:"))
+      ?.slice("event:".length)
+      .trim() ?? "message";
+  if (eventName !== "graph_update") return null;
+  const data = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart())
+    .join("\n");
+  if (!data || Buffer.byteLength(data, "utf8") > 256 * 1_024) return null;
+  try {
+    const payload = objectValue(JSON.parse(data));
+    if (!payload) return null;
+    const payloadEventRefs = Array.isArray(payload.eventRefs)
+      ? payload.eventRefs
+      : (payload.table === "memory_events" ||
+            payload.table === "messages" ||
+            payload.table === "tool_events") &&
+          typeof payload.id === "string" &&
+          typeof payload.projectId === "string" &&
+          typeof payload.threadId === "string"
+        ? [
+            {
+              id: payload.id,
+              projectId: payload.projectId,
+              threadId: payload.threadId
+            }
+          ]
+        : [];
+    const seen = new Set<string>();
+    const eventRefs = payloadEventRefs.flatMap((value) => {
+      const ref = objectValue(value);
+      if (
+        typeof ref?.id !== "string" ||
+        typeof ref.projectId !== "string" ||
+        typeof ref.threadId !== "string" ||
+        seen.has(ref.id)
+      ) {
+        return [];
+      }
+      seen.add(ref.id);
+      return [
+        {
+          id: ref.id,
+          projectId: ref.projectId,
+          threadId: ref.threadId
+        }
+      ];
+    });
+    const parsed = personalDesktopChangeSchema.safeParse({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      type: "conversation_events_changed",
+      eventRefs
+    });
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 };
 
 const packagedRuntimeManifestPath = (
@@ -241,32 +445,6 @@ const runtimeInstallProvider = (
   const manifestPath = packagedRuntimeManifestPath(environment);
   if (manifestPath && existsSync(manifestPath)) return "packaged";
   return "homebrew";
-};
-
-const readDesktopPorts = (
-  environment: NodeJS.ProcessEnv
-): Record<string, string> => {
-  const portsPath = resolve(
-    resolveKoedHome(environment),
-    "config",
-    "local-ports.json"
-  );
-  if (!nodeExistsSync(portsPath)) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(portsPath, "utf8")) as Record<
-      string,
-      unknown
-    >;
-    return Object.fromEntries(
-      Object.entries(parsed)
-        .filter(([, value]) => typeof value === "string" && value.trim())
-        .map(([key, value]) => [key, String(value)])
-    );
-  } catch {
-    return {};
-  }
 };
 
 const firstFileWithSuffix = (root: string, suffix: string): string | null => {
@@ -420,13 +598,10 @@ const packageComponent = (
         : undefined;
     return {
       state: "healthy",
-      message,
+      message: "Standalone koed-server package is ready.",
       ...(currentVersion ? { currentVersion } : {}),
       source: "standalone",
-      details: {
-        currentTarget: packageStatus.currentTarget,
-        sourceKind: installPlan.sourceKind
-      }
+      details: { sourceKind: installPlan.sourceKind }
     };
   }
   if (
@@ -455,16 +630,10 @@ const packageComponent = (
   }
   return {
     state: "needs_attention",
-    message,
-    action:
-      typeof packageStatus?.action === "string"
-        ? packageStatus.action
-        : "Run koed-server package status --json for details.",
+    message: "Standalone koed-server package needs attention.",
+    action: "Retry the local service check.",
     source: "unavailable",
-    details: {
-      sourceKind: installPlan.sourceKind,
-      errors: packageStatus?.errors
-    }
+    details: { sourceKind: installPlan.sourceKind }
   };
 };
 
@@ -497,6 +666,47 @@ const resultState = (value: unknown): string | null =>
     ? (value as { state: string }).state
     : null;
 
+const resultMessage = (value: unknown, fallback: string): string => {
+  const result = objectValue(value);
+  return (
+    [result?.error, result?.message, result?.action].find(
+      (part): part is string =>
+        typeof part === "string" && part.trim().length > 0
+    ) ?? fallback
+  );
+};
+
+const componentHealthy = (value: unknown): boolean =>
+  objectValue(value)?.state === "healthy";
+
+export const setupServicesHealthy = (value: unknown): boolean => {
+  const status = objectValue(value);
+  return [
+    status?.api,
+    status?.database,
+    status?.redis,
+    status?.workerQueues,
+    status?.embeddingService,
+    status?.explorer
+  ].every(componentHealthy);
+};
+
+const browserActivationUrlFromResult = (value: unknown): string | null => {
+  const activationUrl = activationUrlFromResult(value);
+  if (!activationUrl) return null;
+  try {
+    const parsed = new URL(activationUrl);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.hostname &&
+      !parsed.username &&
+      !parsed.password
+      ? parsed.toString()
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const pendingEnrollmentBackendIds = (value: unknown): string[] => {
   if (!value || typeof value !== "object") return [];
   const upstreamBackends = (value as { upstreamBackends?: unknown })
@@ -518,23 +728,6 @@ const pendingEnrollmentBackendIds = (value: unknown): string[] => {
       ? [id.trim()]
       : [];
   });
-};
-
-const bundledLocalDatabaseUrl = (environment: NodeJS.ProcessEnv): string => {
-  const ports = readDesktopPorts(environment);
-  const user = environment.POSTGRES_USER ?? "koed";
-  const password =
-    environment.POSTGRES_PASSWORD ??
-    environment.KOED_BUNDLED_POSTGRES_PASSWORD ??
-    "koed-local-postgres";
-  const database = environment.POSTGRES_DB ?? "koed";
-  const host = environment.KOED_POSTGRES_HOST ?? "127.0.0.1";
-  const port =
-    environment.KOED_POSTGRES_PORT ??
-    environment.POSTGRES_HOST_PORT ??
-    ports.postgres ??
-    "15432";
-  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
 };
 
 const validateTeamBackendUrl = (
@@ -580,11 +773,25 @@ const hasHealthyApi = (value: unknown): boolean => {
   );
 };
 
+const hasHealthyDesktopCredential = (value: unknown): boolean => {
+  if (typeof value !== "object" || value === null || !("apiToken" in value)) {
+    return false;
+  }
+  const apiToken = (value as { apiToken?: unknown }).apiToken;
+  return (
+    typeof apiToken === "object" &&
+    apiToken !== null &&
+    "state" in apiToken &&
+    (apiToken as { state?: unknown }).state === "healthy"
+  );
+};
+
 export const createKoedEnvironment = (
   repoRoot: string,
   environment: NodeJS.ProcessEnv,
   options: {
     desktopManagedLocal?: boolean;
+    packagedDesktop?: boolean;
     packagedResourcesPath?: string;
   } = {}
 ): NodeJS.ProcessEnv => {
@@ -593,7 +800,7 @@ export const createKoedEnvironment = (
     : environment.KOED_DEPENDENCY_MODE;
   return {
     ...environment,
-    ...(!options.desktopManagedLocal || environment.KOED_REPO_ROOT?.trim()
+    ...(!options.packagedDesktop || environment.KOED_REPO_ROOT?.trim()
       ? { KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot }
       : {}),
     ...(dependencyMode === "bundled-local" && !environment.KOED_AUTO_PORTS
@@ -603,12 +810,18 @@ export const createKoedEnvironment = (
       ? {
           KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
           KOED_DEPENDENCY_MODE: dependencyMode,
+          KOED_TEAM_COLLABORATION_ENABLED:
+            environment.KOED_TEAM_COLLABORATION_ENABLED ?? "true",
           WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local",
-          KOED_PACKAGED_DESKTOP: environment.KOED_PACKAGED_DESKTOP ?? "1",
-          KOED_PACKAGED_RESOURCES_PATH:
-            environment.KOED_PACKAGED_RESOURCES_PATH ??
-            options.packagedResourcesPath ??
-            repoRoot
+          ...(options.packagedDesktop
+            ? {
+                KOED_PACKAGED_DESKTOP: environment.KOED_PACKAGED_DESKTOP ?? "1",
+                KOED_PACKAGED_RESOURCES_PATH:
+                  environment.KOED_PACKAGED_RESOURCES_PATH ??
+                  options.packagedResourcesPath ??
+                  repoRoot
+              }
+            : {})
         }
       : {})
   };
@@ -621,18 +834,24 @@ export const createKoedServerManager = ({
   createCliInvocation,
   existsSync,
   execFile,
+  spawn,
   openExternal,
-  openPath
+  openPath,
+  personalMemoryFetch = globalThis.fetch
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
-  const startOutputLines: string[] = [];
+  let retainedPersonalApiOrigin: string | null = null;
+  let retainedPersonalApiToken: string | null = null;
+  let personalApiTokenProvisioning: Promise<
+    { ok: true; apiToken: string } | { ok: false; error: string }
+  > | null = null;
   void environment;
 
   const runJson = (args: string[], timeout = 30_000) =>
     new Promise<unknown>((resolvePromise) => {
       if (!existsSync(cliPath)) {
-        resolvePromise(missingCliPayload(repoRoot, cliPath));
+        resolvePromise(missingCliPayload());
         return;
       }
 
@@ -645,34 +864,47 @@ export const createKoedServerManager = ({
           env: invocation.env,
           timeout
         },
-        (error, stdout, stderr) => {
+        (_error, stdout) => {
           try {
             resolvePromise(JSON.parse(stdout));
           } catch {
-            const message =
-              error?.message ??
-              (stderr.trim() || stdout.trim() || "koed-server command failed.");
             resolvePromise(
               args[0] === "status"
                 ? diagnosticStatus({
                     state: "needs_attention",
-                    message,
-                    repoRoot,
-                    cliPath,
-                    details: { stdout: stdout.trim(), stderr: stderr.trim() }
+                    message: "Koed status could not be read."
                   })
                 : {
                     ok: false,
                     state: "needs_attention",
-                    error: message,
-                    stdout: stdout.trim(),
-                    stderr: stderr.trim()
+                    error: "Koed operation failed."
                   }
             );
           }
         }
       );
     });
+
+  const createCollaborationTransport = () =>
+    createCollaborationLocalTransport({
+      openExternal,
+      spawnBroker: (sessionToken) => {
+        const invocation = createCliInvocation([
+          "desktop",
+          "collaboration-broker"
+        ]);
+        return spawn(invocation.command, invocation.args, {
+          cwd: repoRoot,
+          env: {
+            ...invocation.env,
+            KOED_DESKTOP_COLLABORATION_BROKER_SESSION_TOKEN: sessionToken
+          },
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          detached: false
+        }) as never;
+      }
+    });
+  const collaborationTransport = createCollaborationTransport();
 
   const selectedRuntimeInstallProvider = () =>
     runtimeInstallProvider(environment, existsSync);
@@ -805,104 +1037,334 @@ export const createKoedServerManager = ({
     return withPackageComponent(current);
   };
 
-  const pollUntilReady = async () => {
+  const pollUntilReady = async (attemptLimit = 90) => {
     let latest: unknown = null;
-    for (let attempt = 0; attempt < 90; attempt += 1) {
+    for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
       latest = await runJson(["status"], 10_000);
-      if (hasHealthyApi(latest)) {
+      if (hasHealthyApi(latest) && hasHealthyDesktopCredential(latest)) {
+        retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         await provisionExplorerCredential();
-        return withDesktopStartLog(latest, startOutputLines);
+        return latest;
       }
       await sleep(1_000);
     }
-    return withDesktopStartLog(
+    return (
       latest ?? {
         ok: false,
         state: "needs_attention",
         error: "Timed out waiting for koed-server status."
-      },
-      startOutputLines
+      }
     );
   };
 
-  const provisionExplorerCredential = (force = false) =>
-    new Promise<{ ok: true; apiToken: string } | { ok: false; error: string }>(
-      (resolvePromise) => {
-        const current = readExplorerCredential(environment);
-        if (current.ok && !force) {
-          resolvePromise(current);
-          return;
+  const provisionExplorerCredentialOnce = async () =>
+    readExplorerCredential(environment);
+
+  const provisionExplorerCredential = async (force = false) => {
+    if (force) retainedPersonalApiToken = null;
+    if (retainedPersonalApiToken && !force) {
+      return { ok: true as const, apiToken: retainedPersonalApiToken };
+    }
+    if (personalApiTokenProvisioning) {
+      return personalApiTokenProvisioning;
+    }
+    const provisioning = provisionExplorerCredentialOnce().then((result) => {
+      if (result.ok) retainedPersonalApiToken = result.apiToken;
+      return result;
+    });
+    personalApiTokenProvisioning = provisioning;
+    try {
+      return await provisioning;
+    } finally {
+      if (personalApiTokenProvisioning === provisioning) {
+        personalApiTokenProvisioning = null;
+      }
+    }
+  };
+
+  const personalMemoryAccess = async ({
+    refreshOrigin = false,
+    refreshToken = false
+  }: {
+    refreshOrigin?: boolean;
+    refreshToken?: boolean;
+  } = {}) => {
+    if (refreshOrigin) retainedPersonalApiOrigin = null;
+    const current = retainedPersonalApiOrigin
+      ? null
+      : await runJson(["status"], 10_000);
+    const apiOrigin =
+      retainedPersonalApiOrigin ??
+      (current ? localPersonalMemoryOrigin(current) : null);
+    if (!apiOrigin) {
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    }
+    retainedPersonalApiOrigin = apiOrigin;
+    const credential = await provisionExplorerCredential(refreshToken);
+    if (!credential.ok) {
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    }
+    return { apiOrigin, apiToken: credential.apiToken };
+  };
+
+  const authenticatedPersonalMemoryRequest = async (
+    request: (access: { apiOrigin: string; apiToken: string }) => {
+      url: URL;
+      init: RequestInit;
+    },
+    maximumResponseBytes: number
+  ): Promise<Record<string, unknown>> => {
+    const perform = async (options?: {
+      refreshOrigin?: boolean;
+      refreshToken?: boolean;
+    }) => {
+      const access = await personalMemoryAccess(options);
+      const exactRequest = request(access);
+      try {
+        return await fetchBoundedJsonObject(
+          personalMemoryFetch,
+          exactRequest.url,
+          {
+            ...exactRequest.init,
+            redirect: "error",
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${access.apiToken}`,
+              ...exactRequest.init.headers
+            }
+          },
+          { timeoutMs: 30_000, maxBytes: maximumResponseBytes }
+        );
+      } catch {
+        if (!options?.refreshOrigin) {
+          return perform({ ...options, refreshOrigin: true });
         }
-        if (environment.KOED_AUTO_PORTS !== "1") {
-          resolvePromise(current);
-          return;
+        throw new PersonalMemoryBoundaryError("request_failed", true);
+      }
+    };
+
+    let remote = await perform();
+    let response = remote.response;
+    if (response.status === 401) {
+      retainedPersonalApiToken = null;
+      remote = await perform({ refreshOrigin: true, refreshToken: true });
+      response = remote.response;
+    }
+    if (!response.ok) {
+      const status = response.status;
+      await response.body?.cancel().catch(() => undefined);
+      throw new PersonalMemoryBoundaryError(
+        status === 404
+          ? "not_found"
+          : status === 401
+            ? "not_ready"
+            : "request_failed",
+        status === 401 || status === 408 || status === 429 || status >= 500
+      );
+    }
+    return remote.payload;
+  };
+
+  const listPersonalProjects = async () =>
+    personalProjectsData(
+      await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => {
+          const url = new URL("/v1/memory/graph/threads", apiOrigin);
+          url.search = new URLSearchParams({
+            limit: "500",
+            offset: "0",
+            includeInvalidated: "false"
+          }).toString();
+          return { url, init: { method: "GET" } };
+        },
+        16 * 1_024 * 1_024
+      )
+    );
+
+  const loadPersonalEventPage = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.events.load_page" }
+    >["input"]
+  ) =>
+    personalEventsData(
+      await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => {
+          const url = new URL("/v1/memory/graph/events", apiOrigin);
+          url.searchParams.set("projectId", input.projectId);
+          url.searchParams.set("threadId", input.threadId);
+          url.searchParams.set("limit", String(input.limit));
+          url.searchParams.set("includeContent", "true");
+          url.searchParams.set("includeInvalidated", "false");
+          if (input.cursor) {
+            url.searchParams.set("cursorTimestamp", input.cursor.timestamp);
+            url.searchParams.set("cursorId", input.cursor.id);
+            if (input.cursor.sourceSequence !== null) {
+              url.searchParams.set(
+                "cursorSourceSequence",
+                String(input.cursor.sourceSequence)
+              );
+            }
+          }
+          return { url, init: { method: "GET" } };
+        },
+        32 * 1_024 * 1_024
+      )
+    );
+
+  const assignPersonalSessionProject = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.sessions.assign_project" }
+    >["input"]
+  ) => {
+    const target =
+      input.action === "move"
+        ? (await listPersonalProjects()).projects.find(
+            (project) => project.id === input.targetProjectId
+          )
+        : null;
+    if (input.action === "move" && (!target || target.id === "unassigned")) {
+      throw new PersonalMemoryBoundaryError("not_found", false);
+    }
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/graph/sessions/${encodeURIComponent(input.sessionId)}/project`,
+          apiOrigin
+        ),
+        init: {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(
+            input.action === "reset"
+              ? { action: "reset" }
+              : {
+                  action: "move",
+                  project: {
+                    id: target!.id,
+                    name: target!.name,
+                    path: target!.path
+                  }
+                }
+          )
         }
-        if (environment.KOED_PACKAGED_DESKTOP === "1") {
-          resolvePromise({
-            ok: false,
-            error:
-              "Explorer credential is not provisioned. Restart Koed so packaged koed-server can create the Desktop API Token without workspace pnpm scripts."
+      }),
+      1 * 1_024 * 1_024
+    );
+    const session = objectValue(payload.session);
+    if (!session || !("project" in session)) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    const project =
+      session.project === null ? null : objectValue(session.project);
+    if (session.project !== null && !project) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    return personalDesktopSessionProjectDataSchema.parse({
+      projectId: project?.id ?? null
+    });
+  };
+
+  const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
+    const request = personalDesktopRequestSchema.parse(value);
+    try {
+      const data =
+        request.operation === "personal.projects.list"
+          ? await listPersonalProjects()
+          : request.operation === "personal.events.load_page"
+            ? await loadPersonalEventPage(request.input)
+            : await assignPersonalSessionProject(request.input);
+      return personalDesktopResultSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: request.operation,
+        ok: true,
+        data
+      });
+    } catch (cause) {
+      const boundaryError =
+        cause instanceof PersonalMemoryBoundaryError
+          ? cause
+          : new PersonalMemoryBoundaryError("invalid_response", false);
+      return personalDesktopResultSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: request.operation,
+        ok: false,
+        error: {
+          code: boundaryError.code,
+          message: personalMemoryErrorMessage(boundaryError.code),
+          retryable: boundaryError.retryable
+        }
+      });
+    }
+  };
+
+  const subscribePersonalMemory = async (
+    listener: (change: PersonalDesktopChange) => void,
+    signal: AbortSignal
+  ): Promise<void> => {
+    while (!signal.aborted) {
+      try {
+        let access = await personalMemoryAccess();
+        const requestStream = (current: typeof access) =>
+          personalMemoryFetch(
+            new URL("/v1/memory/graph/stream", current.apiOrigin),
+            {
+              method: "GET",
+              redirect: "error",
+              signal,
+              headers: {
+                accept: "text/event-stream",
+                authorization: `Bearer ${current.apiToken}`
+              }
+            }
+          );
+        let response = await requestStream(access);
+        if (response.status === 401) {
+          await response.body?.cancel().catch(() => undefined);
+          retainedPersonalApiToken = null;
+          access = await personalMemoryAccess({
+            refreshOrigin: true,
+            refreshToken: true
           });
-          return;
+          response = await requestStream(access);
+        }
+        if (!response.ok || !response.body) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new PersonalMemoryBoundaryError("request_failed", true);
         }
 
-        execFile(
-          "pnpm",
-          [
-            "api-token:create",
-            "--owner-email",
-            "desktop@koed.local",
-            "--name",
-            "Koed Desktop"
-          ],
-          {
-            cwd: repoRoot,
-            env: {
-              ...environment,
-              DATABASE_URL: bundledLocalDatabaseUrl(environment)
-            },
-            timeout: 120_000
-          },
-          (error, stdout, stderr) => {
-            if (error) {
-              resolvePromise({
-                ok: false,
-                error: stderr.trim() || stdout.trim() || error.message
-              });
-              return;
-            }
-            const token = parseCreatedApiToken(stdout);
-            if (!token) {
-              resolvePromise({
-                ok: false,
-                error: `Could not parse Koed API Token from output: ${stdout.trim()}`
-              });
-              return;
-            }
-            const credentialPath = resolveExplorerCredentialPath(environment);
-            mkdirSync(resolve(credentialPath, ".."), { recursive: true });
-            writeFileSync(
-              credentialPath,
-              `${JSON.stringify(
-                {
-                  apiToken: token,
-                  provisionedAt: new Date().toISOString(),
-                  source: "environment"
-                },
-                null,
-                2
-              )}\n`,
-              { mode: 0o600 }
-            );
-            resolvePromise({ ok: true, apiToken: token });
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          if (Buffer.byteLength(buffer, "utf8") > 1_048_576) {
+            await reader.cancel().catch(() => undefined);
+            throw new PersonalMemoryBoundaryError("invalid_response", true);
           }
-        );
+          let boundary = buffer.indexOf("\n\n");
+          while (boundary >= 0) {
+            const frame = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const change = personalMemoryChangeFromSseFrame(frame);
+            if (change) listener(change);
+            boundary = buffer.indexOf("\n\n");
+          }
+        }
+      } catch {
+        if (signal.aborted) break;
       }
-    );
+      await waitForAbortOrDelay(signal, 1_500);
+    }
+  };
 
   const requestDaemonStart = async () => {
     const current = await runJson(["status"], 10_000);
     if (hasHealthyApi(current)) {
+      retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
       await provisionExplorerCredential();
       return current;
     }
@@ -915,34 +1377,11 @@ export const createKoedServerManager = ({
       };
     }
     if (!existsSync(cliPath)) {
-      return missingCliPayload(repoRoot, cliPath);
+      return missingCliPayload();
     }
 
-    startOutputLines.length = 0;
-    const invocation = createCliInvocation(["start", "--daemon"]);
-    appendOutputLines(
-      startOutputLines,
-      `$ ${invocation.command} ${invocation.args.join(" ")}`
-    );
     const result = await runJson(["start", "--daemon"], 45_000);
-    if (typeof result === "object" && result !== null) {
-      const payload = result as {
-        message?: unknown;
-        error?: unknown;
-        startedPid?: unknown;
-      };
-      const message =
-        typeof payload.message === "string"
-          ? payload.message
-          : typeof payload.error === "string"
-            ? payload.error
-            : "koed-server start --daemon completed.";
-      appendOutputLines(
-        startOutputLines,
-        `${message}${payload.startedPid ? ` pid ${payload.startedPid}` : ""}`
-      );
-    }
-    return withDesktopStartLog(result, startOutputLines);
+    return result;
   };
 
   const start = async () => {
@@ -957,7 +1396,46 @@ export const createKoedServerManager = ({
     return pollUntilReady();
   };
 
-  const connectTeamBackend = async (args?: Record<string, unknown>) => {
+  const resume = async () => {
+    const verificationPath = resolve(
+      resolveKoedHome(environment),
+      "run",
+      "last-verification.json"
+    );
+    if (!existsSync(verificationPath)) {
+      return {
+        ok: true,
+        state: "not_configured",
+        skipped: true,
+        message: "Fresh Desktop setup has not been verified yet."
+      };
+    }
+    try {
+      const result = await requestDaemonStart();
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        (result as { ok?: unknown }).ok === false
+      ) {
+        return result;
+      }
+      return await pollUntilReady(30);
+    } catch (error) {
+      return {
+        ok: false,
+        state: "needs_attention",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Koed local services could not be resumed."
+      };
+    }
+  };
+
+  const connectTeamBackend = async (
+    args?: Record<string, unknown>,
+    options: { openBrowser?: boolean } = { openBrowser: true }
+  ) => {
     const parsedUrl = validateTeamBackendUrl(args?.url);
     if (!parsedUrl.ok) {
       return { ok: false, error: parsedUrl.error };
@@ -1001,6 +1479,10 @@ export const createKoedServerManager = ({
         "--team-workspace-read",
         "enabled",
         "--share-grant-management",
+        "enabled",
+        "--sync",
+        "enabled",
+        "--admin",
         "enabled"
       ],
       45_000
@@ -1015,7 +1497,19 @@ export const createKoedServerManager = ({
     if (!resultOk(enrollResult)) {
       return enrollResult;
     }
-    const activationUrl = activationUrlFromResult(enrollResult);
+    if (resultState(enrollResult) === "exchanged") {
+      return {
+        ok: true,
+        state: "exchanged",
+        backendId,
+        register: registerResult,
+        refresh: refreshResult,
+        policy: policyResult,
+        enrollment: enrollResult,
+        message: "Team Backend enrollment is connected."
+      };
+    }
+    const activationUrl = browserActivationUrlFromResult(enrollResult);
     if (resultState(enrollResult) !== "pending" || !activationUrl) {
       return {
         ok: false,
@@ -1024,10 +1518,12 @@ export const createKoedServerManager = ({
           "Team Backend enrollment did not return a new pending browser approval challenge."
       };
     }
-    try {
-      void openExternal(activationUrl).catch(() => undefined);
-    } catch {
-      // The approval URL remains available when the platform cannot launch it.
+    if (options.openBrowser !== false) {
+      try {
+        void openExternal(activationUrl).catch(() => undefined);
+      } catch {
+        // The approval URL remains available when the platform cannot launch it.
+      }
     }
     return {
       ok: true,
@@ -1043,39 +1539,216 @@ export const createKoedServerManager = ({
     };
   };
 
-  const disconnectTeamBackend = async (args?: Record<string, unknown>) => {
-    const backendId =
-      typeof args?.backendId === "string" && args.backendId.trim()
-        ? args.backendId.trim()
-        : null;
-    if (backendId) {
-      return await runJson(
-        ["upstream", "disconnect", "--id", backendId],
-        45_000
-      );
-    }
-    const statusResult = await runJson(["status"], 10_000);
-    const details =
-      statusResult && typeof statusResult === "object"
-        ? (statusResult as KoedServerStatus).upstreamBackends?.details
-        : undefined;
-    const backends = Array.isArray(
-      (details as { backends?: unknown } | undefined)?.backends
-    )
-      ? ((details as { backends: Array<{ id?: unknown }> }).backends ?? [])
-      : [];
-    const firstBackendId =
-      typeof backends[0]?.id === "string" ? backends[0].id : null;
-    if (!firstBackendId) {
-      return { ok: false, error: "No upstream Team Backend is registered." };
-    }
-    return await runJson(
-      ["upstream", "disconnect", "--id", firstBackendId],
-      45_000
-    );
+  let setupInspection: Promise<
+    Record<DesktopSetupStageId, DesktopSetupCheck>
+  > | null = null;
+  const inspectSetupStages = () => {
+    if (setupInspection) return setupInspection;
+    setupInspection = Promise.all([
+      runPackageStatusJson(),
+      runRuntimeStatusJson(),
+      runModelJson(),
+      statusWithEnrollmentReconciliation()
+    ])
+      .then(
+        ([packageStatus, runtimeStatus, modelStatus, statusValue]): Record<
+          DesktopSetupStageId,
+          DesktopSetupCheck
+        > => {
+          const status = objectValue(statusValue);
+          const packageStatusComponent = packageComponent(
+            objectValue(packageStatus),
+            resolveServerPackageInstallPlan(environment)
+          );
+          const servicesComplete = setupServicesHealthy(status);
+          const integrationComplete = [
+            status?.apiToken,
+            status?.mcpServer,
+            status?.captureHook,
+            status?.codex,
+            status?.lcmSummaryService
+          ].every(componentHealthy);
+          const verificationComplete = componentHealthy(
+            status?.lastVerification
+          );
+          return {
+            package: {
+              complete: packageStatusComponent.state === "healthy",
+              message:
+                packageStatusComponent.state === "healthy"
+                  ? "Koed package is ready."
+                  : (packageStatusComponent.message ??
+                    "Koed package needs attention.")
+            },
+            runtime: {
+              complete:
+                resultOk(runtimeStatus) &&
+                resultState(runtimeStatus) === "installed",
+              message:
+                resultState(runtimeStatus) === "installed"
+                  ? "Local runtime is ready."
+                  : resultMessage(
+                      runtimeStatus,
+                      "Local runtime needs to be installed."
+                    )
+            },
+            model: {
+              complete: resultState(modelStatus) === "installed",
+              message:
+                resultState(modelStatus) === "installed"
+                  ? "Embedding model is verified."
+                  : resultMessage(
+                      modelStatus,
+                      "Embedding model needs to be downloaded."
+                    )
+            },
+            services: {
+              complete: servicesComplete,
+              message: servicesComplete
+                ? "Local services are running."
+                : "Local services need to be started."
+            },
+            integration: {
+              complete: integrationComplete,
+              message: integrationComplete
+                ? "Codex integration is configured."
+                : "Codex, MCP, and Capture Hook need to be configured."
+            },
+            verification: {
+              complete: verificationComplete,
+              message: verificationComplete
+                ? "Setup verification passed."
+                : "Setup needs a final verification."
+            }
+          };
+        }
+      )
+      .finally(() => {
+        setupInspection = null;
+      });
+    return setupInspection;
   };
 
+  const inspectSetupStage = async (
+    stage: DesktopSetupStageId
+  ): Promise<DesktopSetupCheck> => (await inspectSetupStages())[stage];
+
+  const setupActionResult = (
+    value: unknown,
+    fallback: string
+  ): DesktopSetupActionResult => ({
+    ok: resultOk(value),
+    message: resultMessage(value, fallback)
+  });
+
+  const runSetupStage = async (
+    stage: DesktopSetupStageId,
+    onProgress: (progress: {
+      completedBytes: number | null;
+      message: string;
+      totalBytes: number | null;
+    }) => void
+  ): Promise<DesktopSetupActionResult> => {
+    switch (stage) {
+      case "package": {
+        onProgress({
+          completedBytes: null,
+          message: "Preparing the Koed package…",
+          totalBytes: null
+        });
+        return setupActionResult(
+          await runPackageInstallJson({ operatorConsented: true }),
+          "Koed package installation failed."
+        );
+      }
+      case "runtime": {
+        onProgress({
+          completedBytes: null,
+          message: "Installing local runtime dependencies…",
+          totalBytes: null
+        });
+        return setupActionResult(
+          await runRuntimeInstallJson({ operatorConsented: true }),
+          "Local runtime installation failed."
+        );
+      }
+      case "model": {
+        const result = await installLocalModel(
+          resolveKoedServerPaths(environment),
+          "embedding",
+          environment,
+          {
+            fetch: personalMemoryFetch,
+            onProgress: (progress) => {
+              onProgress({
+                completedBytes: progress.completedBytes,
+                message:
+                  progress.phase === "downloading"
+                    ? "Downloading embedding model…"
+                    : progress.phase === "verifying"
+                      ? "Verifying embedding model…"
+                      : "Embedding model verified.",
+                totalBytes: progress.totalBytes
+              });
+            }
+          }
+        );
+        return {
+          ok: result.ok,
+          message: result.message
+        };
+      }
+      case "services": {
+        onProgress({
+          completedBytes: null,
+          message: "Starting local services…",
+          totalBytes: null
+        });
+        const result = await start();
+        return {
+          ok: setupServicesHealthy(result),
+          message: setupServicesHealthy(result)
+            ? "Local services are running."
+            : resultMessage(result, "Local services could not be started.")
+        };
+      }
+      case "integration": {
+        onProgress({
+          completedBytes: null,
+          message: "Configuring Codex, MCP, and Capture Hook…",
+          totalBytes: null
+        });
+        const current = objectValue(await statusWithEnrollmentReconciliation());
+        const command =
+          objectValue(current?.codex)?.state === "not_configured"
+            ? ["setup", "codex"]
+            : ["repair", "codex"];
+        return setupActionResult(
+          await runJson(command, 120_000),
+          "Codex integration could not be configured."
+        );
+      }
+      case "verification": {
+        onProgress({
+          completedBytes: null,
+          message: "Running final verification…",
+          totalBytes: null
+        });
+        return setupActionResult(
+          await runJson(["doctor"], 90_000),
+          "Setup verification failed."
+        );
+      }
+    }
+  };
+
+  const setupWorkflow = createDesktopSetupWorkflow({
+    inspectStage: inspectSetupStage,
+    runStage: runSetupStage
+  });
+
   const stop = async () => {
+    await collaborationTransport.stop();
     const result = await runJson(["stop"], 45_000);
     if (serverProcess && !serverProcess.killed) {
       serverProcess.kill("SIGTERM");
@@ -1085,12 +1758,11 @@ export const createKoedServerManager = ({
   };
 
   return {
+    personalMemory,
+    subscribePersonalMemory,
+    resume,
     handlers: {
-      status: async () =>
-        withDesktopStartLog(
-          await statusWithEnrollmentReconciliation(),
-          startOutputLines
-        ),
+      status: statusWithEnrollmentReconciliation,
       doctor: () => runJson(["doctor"], 45_000),
       stop,
       setup_codex: () => runJson(["setup", "codex"], 120_000),
@@ -1102,16 +1774,21 @@ export const createKoedServerManager = ({
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
       project_list: () => runJson(["project", "list"], 10_000),
-      explorer_credential: (args) =>
-        provisionExplorerCredential(args?.force === true),
-      upstream_connect: connectTeamBackend,
-      upstream_disconnect: disconnectTeamBackend,
+      upstream_connect: (args) => connectTeamBackend(args),
+      collaboration: async (args, context) => {
+        const command = collaborationRendererCommandSchema.parse(args);
+        if (!context) {
+          throw new Error("Collaboration IPC context is required.");
+        }
+        return await collaborationTransport.request(command, context);
+      },
       start,
       start_daemon: requestDaemonStart,
       open_external: async (args) => {
-        const url = typeof args?.url === "string" ? args.url : "";
+        const url =
+          typeof args?.url === "string" ? safeExternalUrl(args.url) : null;
         if (!url) {
-          return { ok: false, error: "url is required." };
+          return { ok: false, error: "A supported external URL is required." };
         }
         await openExternal(url);
         return { ok: true };
@@ -1124,6 +1801,16 @@ export const createKoedServerManager = ({
         }
         await openExternal(`file://${logsDir}`);
         return { ok: true, path: logsDir };
+      },
+      setup_inspect: () => setupWorkflow.inspect(),
+      setup_run: (args, context) => {
+        if (args?.operatorConsented !== true) {
+          throw new Error("Setup requires explicit operator consent.");
+        }
+        if (!context?.emitSetupProgress) {
+          throw new Error("Desktop setup context is required.");
+        }
+        return setupWorkflow.run(context.emitSetupProgress, context.signal);
       }
     },
     stop

@@ -211,7 +211,33 @@ const sleep = (ms: number): Promise<void> =>
 
 const lcmSummaryLockPath = (env: NodeJS.ProcessEnv): string =>
   resolveEnvValue(env, "MEMORY_LCM_SUMMARY_LOCK_PATH") ??
-  path.join(os.homedir(), ".koed", "lcm-summary.lock");
+  path.join(
+    resolveEnvValue(env, "KOED_HOME") ?? path.join(os.homedir(), ".koed"),
+    "lcm-summary.lock"
+  );
+
+const lockOwnerIsAlive = (lockPath: string): boolean | null => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as {
+      pid?: unknown;
+    };
+    if (
+      typeof parsed.pid !== "number" ||
+      !Number.isSafeInteger(parsed.pid) ||
+      parsed.pid <= 0
+    ) {
+      return null;
+    }
+    try {
+      process.kill(parsed.pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : true;
+    }
+  } catch {
+    return null;
+  }
+};
 
 export const lcmSummaryLockState = (
   env: NodeJS.ProcessEnv,
@@ -220,7 +246,9 @@ export const lcmSummaryLockState = (
   const lockPath = lcmSummaryLockPath(env);
   try {
     const stats = fs.statSync(lockPath);
-    const stale = Date.now() - stats.mtimeMs > staleMs;
+    const stale =
+      Date.now() - stats.mtimeMs > staleMs ||
+      lockOwnerIsAlive(lockPath) === false;
     return { locked: !stale, stale };
   } catch {
     return { locked: false, stale: false };
@@ -235,7 +263,10 @@ export const acquireLocalSummaryLock = (
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   try {
     const stats = fs.statSync(lockPath);
-    if (Date.now() - stats.mtimeMs > staleMs) {
+    if (
+      Date.now() - stats.mtimeMs > staleMs ||
+      lockOwnerIsAlive(lockPath) === false
+    ) {
       fs.rmSync(lockPath, { force: true });
     }
   } catch {

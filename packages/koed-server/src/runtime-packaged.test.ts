@@ -61,6 +61,12 @@ const paths = (root: string): KoedServerPaths => ({
     "run",
     "upstream-enrollments.json"
   ),
+  upstreamDisconnectCleanupPath: resolve(
+    root,
+    "home",
+    "run",
+    "upstream-disconnect-cleanup.json"
+  ),
   repoRoot: root
 });
 

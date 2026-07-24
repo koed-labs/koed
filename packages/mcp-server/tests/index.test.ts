@@ -684,27 +684,25 @@ describe("Project Team Workspace mapping", () => {
 });
 
 describe("MemoryApiClient", () => {
-  it("uses a scoped local-edge credential instead of the Personal API Token for upstream operations", async () => {
+  it("uses a scoped local-edge credential instead of the Personal API Token for typed Team Memory search", async () => {
     let authorization = "";
+    let requestUrl = "";
     const apiUrl = await createApi((request, response) => {
       authorization = request.headers.authorization ?? "";
+      requestUrl = request.url ?? "";
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ hits: [] }));
     });
     const client = new MemoryApiClient({ apiUrl, apiToken: "personal-token" });
 
-    await client.upstreamOperation(
-      {
-        upstreamBackendId: "team-vps",
-        operationFamily: "team_workspace_read",
-        method: "POST",
-        path: "/v1/memory/search",
-        body: { query: "team" }
-      },
+    await client.teamMemorySearch(
+      "team-vps",
+      { query: "team", team_workspace_id: randomUUID() },
       "Koed-Device local-key:local-secret"
     );
 
     expect(authorization).toBe("Koed-Device local-key:local-secret");
+    expect(requestUrl).toBe("/v1/local-edge/team-memory/search");
   });
 
   it("loads the public backend capability contract", async () => {

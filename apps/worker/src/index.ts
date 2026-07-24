@@ -1,6 +1,8 @@
 import {
   createDbPool,
   createMemorySourceRepository,
+  createRetentionLifecycleRepository,
+  databaseErrorCode,
   waitForCurrentDbMigrations,
   type MemorySourceRepository
 } from "@koed/db";
@@ -8,6 +10,7 @@ import { createEmbeddingWorkflow } from "./embedding-workflow.js";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   embeddingDispatchKey,
   inspectDeviceIdentityAtKoedHome,
   lcmCompactQueueName,
@@ -31,6 +34,9 @@ import { createRawProjectionService } from "./raw-projection-service.js";
 import { createCrossIdentitySyncService } from "./cross-identity-sync-service.js";
 import { createHistoricalAdmissionHealth } from "./historical-admission-health.js";
 import { createProjectionJobScheduler } from "./projection-job-scheduler.js";
+import { createRetentionPurgeService } from "./retention-purge-service.js";
+import { createCollaborationReplayPruneService } from "./collaboration-replay-prune-service.js";
+import { startWorkerBackgroundServices } from "./background-service-gate.js";
 
 loadWorkerEnv();
 
@@ -42,16 +48,34 @@ const logger = createWorkerLogger({
 });
 
 const pool = workerEnv.databaseUrl
-  ? createDbPool({ connectionString: workerEnv.databaseUrl })
+  ? createDbPool({
+      connectionString: workerEnv.databaseUrl,
+      onPoolError: (error) => {
+        logger.warn(
+          {
+            event: {
+              name: "database.pool_connection_interrupted",
+              category: "database"
+            },
+            component: "database",
+            database: { error_code: databaseErrorCode(error) }
+          },
+          "database pool connection interrupted"
+        );
+      }
+    })
   : null;
 if (pool) {
   await waitForCurrentDbMigrations(pool);
 }
 const envelopeEncryptionProvider =
   createEnvelopeEncryptionProviderFromEnvironment();
+const ownerPrivateReplicaEnvelopeEncryptionProvider =
+  createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment();
 const repository = pool
   ? createMemorySourceRepository(pool, {
-      envelopeEncryptionProvider
+      envelopeEncryptionProvider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider
     })
   : null;
 const requireRepository = (): MemorySourceRepository => {
@@ -188,13 +212,13 @@ const rawProjectionService =
         repository
       })
     : null;
-rawProjectionService?.start();
 
 const crossIdentitySyncService =
-  repository && envelopeEncryptionProvider
+  workerEnv.teamCollaborationEnabled && repository && envelopeEncryptionProvider
     ? createCrossIdentitySyncService({
         repository,
-        rootEncryptionProvider: envelopeEncryptionProvider,
+        // Recipient private keys are deployment control-plane data, not owner-private Memory.
+        recipientKeyEncryptionProvider: envelopeEncryptionProvider,
         embeddingWorkflow,
         koedHome: workerEnv.koedHome,
         isSourceIdentityHealthy: () =>
@@ -207,7 +231,32 @@ const crossIdentitySyncService =
         logger
       })
     : null;
-crossIdentitySyncService?.start();
+
+const retentionPurgeService = pool
+  ? createRetentionPurgeService({
+      repository: createRetentionLifecycleRepository(pool, {
+        authorizeHoldActor: () => Promise.resolve(false)
+      }),
+      intervalMs: workerEnv.retentionPurgeIntervalMs,
+      logger
+    })
+  : null;
+
+const collaborationReplayPruneService =
+  workerEnv.teamCollaborationEnabled && repository
+    ? createCollaborationReplayPruneService({
+        repository,
+        intervalMs: workerEnv.collaborationReplayPruneIntervalMs,
+        batchLimit: workerEnv.collaborationReplayPruneBatchLimit,
+        logger
+      })
+    : null;
+const activeBackgroundServices = startWorkerBackgroundServices({
+  teamCollaborationEnabled: workerEnv.teamCollaborationEnabled,
+  personal: [rawProjectionService],
+  maintenance: [retentionPurgeService],
+  team: [crossIdentitySyncService, collaborationReplayPruneService]
+});
 
 const shutdown = async () => {
   logger.info(
@@ -219,8 +268,7 @@ const shutdown = async () => {
     },
     "worker shutting down"
   );
-  await rawProjectionService?.stop();
-  crossIdentitySyncService?.stop();
+  await activeBackgroundServices.stop();
   await Promise.all([
     queueRuntime.close(),
     memoryEmbedQueue.close(),

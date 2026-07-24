@@ -213,6 +213,32 @@ export interface DeviceEnrollmentChallenge {
   deniedAt: string | null;
 }
 
+export type HighRiskBrowserActivationState =
+  | "pending"
+  | "approved"
+  | "consumed"
+  | "denied"
+  | "revoked"
+  | "expired"
+  | "canceled";
+
+export interface HighRiskBrowserActivation {
+  status: {
+    version: 1;
+    actionGrant: { id: string };
+    selector: string;
+    state: HighRiskBrowserActivationState;
+    activationPath: string | null;
+    expiresAt: string;
+  };
+  confirmation: {
+    action: string;
+    operationFamily: "admin" | "share_grant_management";
+    teamId: string | null;
+    targetId: string | null;
+  };
+}
+
 export interface MemoryEvidenceItem {
   nodeId?: string;
   sourceId?: string;

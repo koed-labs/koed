@@ -14,6 +14,7 @@ import {
 } from "./capabilities.js";
 import type { RateLimitName, RateLimitPolicy } from "../infra/rate-limit.js";
 import { parseCsv } from "./utils.js";
+import { resolveTeamCollaborationEnabled } from "./team-collaboration-feature.js";
 
 export interface ApiServerConfig {
   nodeEnv: string;
@@ -29,12 +30,14 @@ export interface ApiServerConfig {
   dependencyMode: RuntimeDependencyMode;
   apiPort?: string;
   koedHome: string;
+  explorerPublicUrl?: string;
   upstreamBackendsPath: string;
   dataEncryptionKeyConfigured: boolean;
   apiTokenPepperConfigured: boolean;
   apiTokenPepper: string;
   cookieSecure: boolean;
   publicRegistrationEnabled: boolean;
+  teamCollaborationEnabled: boolean;
   corsOrigins: Set<string>;
   rateLimit: {
     store: string;
@@ -49,6 +52,12 @@ export interface ApiServerConfig {
   graph: {
     updateDebounceMs: number;
     memoryEventUpdateDebounceMs: number;
+  };
+  collaborationRealtime: {
+    cursorSecret?: string;
+    localBrokerSecret?: string;
+    streamMaxClients: number;
+    streamMaxClientsPerPrincipal: number;
   };
   crossIdentitySyncStaleAfterSeconds: number;
   embeddingModel?: string;
@@ -89,6 +98,32 @@ const positiveIntEnv = (
 };
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
+
+const optionalPublicHttpUrl = (
+  value: string | undefined,
+  name: string
+): string | undefined => {
+  const configured = optionalEnv(value);
+  if (!configured) return undefined;
+  let url: URL;
+  try {
+    url = new URL(configured);
+  } catch {
+    throw new Error(`${name} must be an absolute HTTP or HTTPS URL`);
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(
+      `${name} must be an absolute HTTP or HTTPS URL without credentials, query, or fragment`
+    );
+  }
+  return url.toString().replace(/\/$/, "");
+};
 
 const resolveRuntimeMode = (
   value: string | undefined
@@ -169,6 +204,10 @@ export const resolveApiServerConfig = (
     dependencyMode,
     apiPort: optionalEnv(environment.API_PORT),
     koedHome,
+    explorerPublicUrl: optionalPublicHttpUrl(
+      environment.EXPLORER_PUBLIC_URL,
+      "EXPLORER_PUBLIC_URL"
+    ),
     upstreamBackendsPath: resolve(koedHome, "config", "upstream-backends.json"),
     dataEncryptionKeyConfigured: Boolean(
       resolveApiDataEncryptionKeyFromEnv(environment)
@@ -180,6 +219,7 @@ export const resolveApiServerConfig = (
     cookieSecure: environment.COOKIE_SECURE === "false" ? false : true,
     publicRegistrationEnabled:
       environment.KOED_ALLOW_PUBLIC_REGISTRATION === "true",
+    teamCollaborationEnabled: resolveTeamCollaborationEnabled(environment),
     corsOrigins: resolveCorsOrigins(environment, nodeEnv),
     rateLimit: {
       store: optionalEnv(environment.RATE_LIMIT_STORE) ?? "memory",
@@ -258,6 +298,24 @@ export const resolveApiServerConfig = (
         environment,
         "MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS",
         Math.min(graphUpdateDebounceMs, 100)
+      )
+    },
+    collaborationRealtime: {
+      localBrokerSecret: optionalEnv(
+        environment.COLLABORATION_LOCAL_BROKER_SECRET
+      ),
+      cursorSecret: optionalEnv(
+        environment.COLLABORATION_REALTIME_CURSOR_SECRET
+      ),
+      streamMaxClients: positiveIntEnv(
+        environment,
+        "COLLABORATION_REALTIME_STREAM_MAX_CLIENTS",
+        1_000
+      ),
+      streamMaxClientsPerPrincipal: positiveIntEnv(
+        environment,
+        "COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL",
+        6
       )
     },
     crossIdentitySyncStaleAfterSeconds: positiveIntEnv(

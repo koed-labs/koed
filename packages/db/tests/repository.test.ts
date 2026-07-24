@@ -15,10 +15,16 @@ import {
   vi
 } from "vitest";
 import type pg from "pg";
-import { createMemoryEngine, estimateTokens } from "@koed/core";
+import {
+  createMemoryEngine,
+  estimateTokens,
+  type MemoryEngineRepository,
+  type SearchMemoryInput
+} from "@koed/core";
 import {
   createLocalWorkQueueRepository,
   createEncryptedPayloadRepository,
+  createCapturedSessionRepository,
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations,
@@ -33,9 +39,11 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
+  crossIdentitySyncPackageRequestHash,
   decryptEnvelopeToUtf8,
   rawConversationTransportChunkGroupId,
   type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncUploadPackageManifest,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type ManagedKmsKeyring
@@ -66,6 +74,59 @@ const originalPlaintextLexicalSearchEnabled =
   process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
 
 const describeDb = runDbTests ? describe : describe.skip;
+
+type HasTeamWorkspaceId<T> = "teamWorkspaceId" extends keyof NonNullable<T>
+  ? true
+  : false;
+
+it("omits Team Workspace scope from generic Personal Memory interfaces", () => {
+  const genericInputs: [
+    HasTeamWorkspaceId<SearchMemoryInput>,
+    HasTeamWorkspaceId<
+      Parameters<MemoryEngineRepository["expandMemoryNode"]>[2]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["listLcmGraphNodes"]>[1]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["getLcmGraphNode"]>[2]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["listLcmGraphEvents"]>[1]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["listLcmGraphThreads"]>[1]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["getLcmGraphEvent"]>[2]
+    >
+  ] = [false, false, false, false, false, false, false];
+
+  expect(genericInputs).toEqual([
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ]);
+});
+
+const testSyncPackageUploadManifest = (input?: {
+  packageDigest?: string;
+  summaryRevisionHash?: string | null;
+  recordCount?: number;
+}): CapturedSessionSyncUploadPackageManifest => ({
+  objectClass: "sync_package",
+  format: CAPTURED_SESSION_SYNC_FORMAT,
+  formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+  packageDigest: input?.packageDigest ?? "0".repeat(64),
+  summaryRevisionHash: input?.summaryRevisionHash ?? null,
+  recipientKeyId: "test-recipient-key",
+  recipientKeyVersion: 1,
+  recordCount: input?.recordCount ?? 0
+});
 
 const codexCanonicalConversationItemKey = (input: {
   externalThreadId: string;
@@ -251,6 +312,614 @@ describeDb("memory repository visibility", () => {
       };
     }
   });
+
+  const inviteExistingTeamMember = async (input: {
+    repository?: MemorySourceRepository;
+    actorUserId: string;
+    teamId: string;
+    user: { id: string };
+    role?: "owner" | "admin" | "member";
+    defaultWorkspaceAccess?: "read" | "write";
+  }) => {
+    const repository = input.repository ?? repo;
+    const workspaces = await repository.listTeamWorkspaces(
+      { userId: input.actorUserId },
+      { teamId: input.teamId, includeArchived: true, limit: 200 }
+    );
+    const defaultWorkspace = workspaces
+      ?.slice()
+      .sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id)
+      )[0];
+    if (!defaultWorkspace) {
+      throw new Error("Team default Workspace is unavailable to invite actor");
+    }
+    const userRows = await pool.query<{ email: string }>(
+      "select email from users where id = $1",
+      [input.user.id]
+    );
+    const email = userRows.rows[0]?.email;
+    if (!email) {
+      throw new Error("Existing invite User is unavailable");
+    }
+
+    const tokenHash = `team-invite-${randomUUID()}-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`backend-origin:${randomUUID()}`)
+      .digest("hex");
+    const invite = await repository.createTeamInvite(
+      { userId: input.actorUserId },
+      {
+        teamId: input.teamId,
+        defaultTeamWorkspaceId: defaultWorkspace.id,
+        defaultWorkspaceAccess: input.defaultWorkspaceAccess ?? "read",
+        email,
+        role: input.role ?? "member",
+        backendOriginHash,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    if (!invite) {
+      throw new Error("Team invite creation was denied");
+    }
+
+    const accepted = await repository.acceptTeamInvite({
+      tokenHash,
+      userId: input.user.id,
+      expectedVersion: invite.version,
+      expectedBackendOriginHash: backendOriginHash
+    });
+    if (!accepted) {
+      throw new Error("Existing User could not accept Team invite");
+    }
+    return accepted;
+  };
+
+  const insertValidSharedMemoryGrant = async (input: {
+    ownerUserId: string;
+    sessionId: string;
+    teamId: string;
+    teamWorkspaceId: string;
+    revoked?: boolean;
+    revocationReason?: string;
+  }): Promise<{
+    id: string;
+    logicalMemoryId: string;
+    replicaId: string;
+    consentId: string;
+  }> => {
+    const client = await pool.connect();
+    const hash = () => randomBytes(32).toString("hex");
+    try {
+      await client.query("begin");
+      const session = await client.query<{ owner_user_id: string }>(
+        `select owner_user_id
+           from sessions
+          where id = $1 and owner_user_id = $2 and visibility = 'personal'
+          for update`,
+        [input.sessionId, input.ownerUserId]
+      );
+      if (!session.rows[0]) {
+        throw new Error("Shared Memory fixture session is unavailable");
+      }
+
+      let logicalMemory = (
+        await client.query<{
+          id: string;
+          owner_principal_id: string;
+          origin_deployment_identity_id: string;
+          source_revision: string;
+        }>(
+          `select id, owner_principal_id, origin_deployment_identity_id,
+                  greatest(latest_source_revision, 0)::text as source_revision
+             from logical_memories
+            where owner_user_id = $1 and local_session_id = $2
+            for update`,
+          [input.ownerUserId, input.sessionId]
+        )
+      ).rows[0];
+      if (!logicalMemory) {
+        const sourceDeployment = await client.query<{ id: string }>(
+          `insert into deployment_identities (
+             protocol_deployment_id, locality, profile, display_name
+           ) values ($1, 'remote', 'team_self_hosted', $2)
+           returning id`,
+          [randomUUID(), `Repository test source ${randomUUID()}`]
+        );
+        logicalMemory = (
+          await client.query<{
+            id: string;
+            owner_principal_id: string;
+            origin_deployment_identity_id: string;
+            source_revision: string;
+          }>(
+            `insert into logical_memories (
+               owner_user_id, owner_principal_id,
+               origin_deployment_identity_id, source_boundary,
+               origin_source_id, local_session_id, logical_key,
+               latest_source_revision
+             ) values (
+               $1, $1, $2, 'captured_session', $3::uuid::text, $3::uuid, $4, 1
+             )
+             returning id, owner_principal_id, origin_deployment_identity_id,
+                       latest_source_revision::text as source_revision`,
+            [
+              input.ownerUserId,
+              sourceDeployment.rows[0]!.id,
+              input.sessionId,
+              `repository-test-session:${input.sessionId}`
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let replica = (
+        await client.query<{ id: string }>(
+          `select id
+             from memory_replicas
+            where logical_memory_id = $1
+              and owner_principal_id = $2
+              and replica_role = 'target'
+              and lifecycle = 'active'
+              and encryption_scope = 'owner_private_replica'
+              and disabled_at is null
+            order by case when freshness_status = 'fresh' then 0 else 1 end, id
+            limit 1
+            for update`,
+          [logicalMemory.id, logicalMemory.owner_principal_id]
+        )
+      ).rows[0];
+      if (!replica) {
+        const targetDeployment = await client.query<{ id: string }>(
+          `insert into deployment_identities (
+             protocol_deployment_id, locality, profile, display_name
+           ) values ($1, 'remote', 'team_self_hosted', $2)
+           returning id`,
+          [randomUUID(), `Repository test target ${randomUUID()}`]
+        );
+        replica = (
+          await client.query<{ id: string }>(
+            `insert into memory_replicas (
+               logical_memory_id, deployment_identity_id, owner_user_id,
+               owner_principal_id, replica_role, source_boundary,
+               local_session_id, latest_revision, lifecycle, encryption_scope,
+               freshness_status, representation_policy_revision,
+               content_policy_version
+             ) values (
+               $1, $2, $3, $4, 'target', 'captured_session', $5, $6,
+               'active', 'owner_private_replica', 'fresh', 1, 1
+             ) returning id`,
+            [
+              logicalMemory.id,
+              targetDeployment.rows[0]!.id,
+              input.ownerUserId,
+              logicalMemory.owner_principal_id,
+              input.sessionId,
+              logicalMemory.source_revision
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let ownerPolicy = (
+        await client.query<{ policy_id: string; version: number }>(
+          `select policy_id, version
+             from source_owner_representation_policies
+            where logical_memory_id = $1
+              and source_owner_principal_id = $2
+              and superseded_at is null
+            for update`,
+          [logicalMemory.id, logicalMemory.owner_principal_id]
+        )
+      ).rows[0];
+      if (!ownerPolicy) {
+        ownerPolicy = (
+          await client.query<{ policy_id: string; version: number }>(
+            `insert into source_owner_representation_policies (
+               policy_id, logical_memory_id, source_owner_principal_id,
+               version, allowed_representations, policy_hash,
+               created_by_user_id, effective_at
+             ) values (
+               $1, $2, $3, 1,
+               array['memory_events']::shared_memory_representation[],
+               $4, $5, now()
+             ) returning policy_id, version`,
+            [
+              randomUUID(),
+              logicalMemory.id,
+              logicalMemory.owner_principal_id,
+              hash(),
+              input.ownerUserId
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let teamPolicy = (
+        await client.query<{ policy_id: string; version: number }>(
+          `select policy_id, version
+             from team_representation_policies
+            where team_id = $1 and superseded_at is null
+            for update`,
+          [input.teamId]
+        )
+      ).rows[0];
+      if (!teamPolicy) {
+        teamPolicy = (
+          await client.query<{ policy_id: string; version: number }>(
+            `insert into team_representation_policies (
+               policy_id, team_id, version, allowed_representations,
+               policy_hash, created_by_user_id, effective_at
+             ) values (
+               $1, $2, 1,
+               array['memory_events']::shared_memory_representation[],
+               $3, $4, now()
+             ) returning policy_id, version`,
+            [randomUUID(), input.teamId, hash(), input.ownerUserId]
+          )
+        ).rows[0]!;
+      }
+
+      let workspacePolicy = (
+        await client.query<{ policy_id: string; version: number }>(
+          `select policy_id, version
+             from workspace_representation_policies
+            where team_id = $1 and team_workspace_id = $2
+              and superseded_at is null
+            for update`,
+          [input.teamId, input.teamWorkspaceId]
+        )
+      ).rows[0];
+      if (!workspacePolicy) {
+        workspacePolicy = (
+          await client.query<{ policy_id: string; version: number }>(
+            `insert into workspace_representation_policies (
+               policy_id, team_id, team_workspace_id, version,
+               allowed_representations, policy_hash, created_by_user_id,
+               effective_at
+             ) values (
+               $1, $2, $3, 1,
+               array['memory_events']::shared_memory_representation[],
+               $4, $5, now()
+             ) returning policy_id, version`,
+            [
+              randomUUID(),
+              input.teamId,
+              input.teamWorkspaceId,
+              hash(),
+              input.ownerUserId
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let provenance = (
+        await client.query<{
+          sync_relationship_id: string;
+          source_deployment_identity_id: string;
+          remote_user_identity_id: string;
+          device_credential_id: string;
+        }>(
+          `select id as sync_relationship_id,
+                  remote_deployment_identity_id as source_deployment_identity_id,
+                  remote_user_identity_id, device_credential_id
+             from cross_identity_sync_relationships
+            where logical_memory_id = $1
+              and local_replica_id = $2
+              and local_user_id = $3
+              and side = 'target'
+              and revoked_at is null
+            limit 1
+            for update`,
+          [logicalMemory.id, replica.id, input.ownerUserId]
+        )
+      ).rows[0];
+      if (!provenance) {
+        const remoteIdentity = await client.query<{ id: string }>(
+          `insert into sync_external_user_identities (
+             deployment_identity_id, external_subject_id
+           ) values ($1, $2)
+           returning id`,
+          [
+            logicalMemory.origin_deployment_identity_id,
+            `repository-test-subject-${randomUUID()}`
+          ]
+        );
+        let deviceCredential = (
+          await client.query<{ id: string }>(
+            `select id
+               from device_credentials
+              where owner_user_id = $1
+                and revoked_at is null
+                and (expires_at is null or expires_at > now())
+                and 'sync' = any(operation_families)
+              order by created_at
+              limit 1
+              for update`,
+            [input.ownerUserId]
+          )
+        ).rows[0];
+        if (!deviceCredential) {
+          deviceCredential = (
+            await client.query<{ id: string }>(
+              `insert into device_credentials (
+                 owner_user_id, credential_key_id, upstream_backend_id,
+                 device_instance_id, verifier_kind, verifier_hash,
+                 operation_families
+               ) values (
+                 $1, $2, $3, $4, 'secret_hash', $5, array['sync']::text[]
+               ) returning id`,
+              [
+                input.ownerUserId,
+                `repository-test-${randomUUID()}`,
+                `repository-test-backend-${randomUUID()}`,
+                `repository-test-device-${randomUUID()}`,
+                hash()
+              ]
+            )
+          ).rows[0]!;
+        }
+        provenance = (
+          await client.query<{
+            sync_relationship_id: string;
+            source_deployment_identity_id: string;
+            remote_user_identity_id: string;
+            device_credential_id: string;
+          }>(
+            `insert into cross_identity_sync_relationships (
+               logical_memory_id, side, local_replica_id, local_user_id,
+               device_credential_id, remote_deployment_identity_id,
+               remote_user_identity_id, remote_replica_id, source_boundary,
+               sync_mode, state, idempotency_key, creation_request_hash,
+               source_cursor, target_processing_cursor, package_sequence,
+               last_synced_at
+             ) values (
+               $1, 'target', $2, $3, $4, $5, $6, $7, 'captured_session',
+               'live', 'ready', $8, $9, $10, $10, 0, now()
+             ) returning id as sync_relationship_id,
+                         remote_deployment_identity_id as source_deployment_identity_id,
+                         remote_user_identity_id, device_credential_id`,
+            [
+              logicalMemory.id,
+              replica.id,
+              input.ownerUserId,
+              deviceCredential.id,
+              logicalMemory.origin_deployment_identity_id,
+              remoteIdentity.rows[0]!.id,
+              randomUUID(),
+              `repository-test-sync-${randomUUID()}`,
+              hash(),
+              logicalMemory.source_revision
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      const sourceHash = hash();
+      const redactedContentHash = hash();
+      const representationPolicyHash = hash();
+      const contentPolicyHash = hash();
+      const classifierHash = hash();
+      const sourceArtifactId = randomUUID();
+      await client.query(
+        `insert into shared_source_artifacts (
+           id, logical_memory_id, remote_replica_id, sync_relationship_id,
+           owner_user_id, owner_principal_id, team_id, team_workspace_id,
+           representation, source_revision, source_cursor, package_sequence,
+           source_hash, manifest_hash, artifact_hash, redacted_content_hash,
+           source_owner_policy_id, source_owner_policy_version,
+           team_policy_id, team_policy_version, workspace_policy_id,
+           workspace_policy_version, representation_policy_revision,
+           representation_policy_hash, content_policy_version,
+           content_policy_hash, classifier_version, classifier_hash,
+           source_deployment_identity_id, remote_user_identity_id,
+           device_credential_id, device_provenance_hash
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events',
+           $9, $9, 0, $10, $11, $12, $13, $14, $15, $16, $17,
+           $18, $19, 1, $20, 1, $21, 1, $22, $23, $24, $25, $26
+         )`,
+        [
+          sourceArtifactId,
+          logicalMemory.id,
+          replica.id,
+          provenance.sync_relationship_id,
+          input.ownerUserId,
+          logicalMemory.owner_principal_id,
+          input.teamId,
+          input.teamWorkspaceId,
+          logicalMemory.source_revision,
+          sourceHash,
+          hash(),
+          hash(),
+          redactedContentHash,
+          ownerPolicy.policy_id,
+          ownerPolicy.version,
+          teamPolicy.policy_id,
+          teamPolicy.version,
+          workspacePolicy.policy_id,
+          workspacePolicy.version,
+          representationPolicyHash,
+          contentPolicyHash,
+          classifierHash,
+          provenance.source_deployment_identity_id,
+          provenance.remote_user_identity_id,
+          provenance.device_credential_id,
+          hash()
+        ]
+      );
+      const previewId = randomUUID();
+      const previewHash = hash();
+      await client.query(
+        `insert into shared_source_previews (
+           id, source_artifact_id, logical_memory_id, remote_replica_id,
+           owner_user_id, owner_principal_id, team_id, team_workspace_id,
+           representation, preview_revision, preview_hash, source_revision,
+           source_hash, redacted_content_hash
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events', 1,
+           $9, $10, $11, $12
+         )`,
+        [
+          previewId,
+          sourceArtifactId,
+          logicalMemory.id,
+          replica.id,
+          input.ownerUserId,
+          logicalMemory.owner_principal_id,
+          input.teamId,
+          input.teamWorkspaceId,
+          previewHash,
+          logicalMemory.source_revision,
+          sourceHash,
+          redactedContentHash
+        ]
+      );
+
+      const consentId = randomUUID();
+      await client.query(
+        `insert into source_owner_representation_consents (
+           id, logical_memory_id, remote_replica_id,
+           source_owner_principal_id, team_id, team_workspace_id,
+           source_owner_policy_id, source_owner_policy_version,
+           team_policy_id, team_policy_version, workspace_policy_id,
+           workspace_policy_version, mode, state, consent_version,
+           allowed_representations, selected_representation, preview_id,
+           preview_revision, preview_hash, source_revision,
+           maximum_authorized_source_revision,
+           source_hash, representation_policy_revision,
+           representation_policy_hash, content_policy_version,
+           content_policy_hash, classifier_version, classifier_hash,
+           redacted_content_hash, activated_at
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+           'continuous', 'active', 1,
+           array['memory_events']::shared_memory_representation[],
+           'memory_events', $13, 1, $14, $15, null, $16, 1, $17, 1,
+           $18, 1, $19, $20, now()
+         )`,
+        [
+          consentId,
+          logicalMemory.id,
+          replica.id,
+          logicalMemory.owner_principal_id,
+          input.teamId,
+          input.teamWorkspaceId,
+          ownerPolicy.policy_id,
+          ownerPolicy.version,
+          teamPolicy.policy_id,
+          teamPolicy.version,
+          workspacePolicy.policy_id,
+          workspacePolicy.version,
+          previewId,
+          previewHash,
+          logicalMemory.source_revision,
+          sourceHash,
+          representationPolicyHash,
+          contentPolicyHash,
+          classifierHash,
+          redactedContentHash
+        ]
+      );
+
+      const grant = await client.query<{ id: string }>(
+        `insert into team_session_share_grants (
+           logical_grant_id, logical_memory_id, remote_replica_id,
+           owner_user_id, owner_principal_id, session_id, team_id,
+           team_workspace_id, consent_id, source_owner_policy_id,
+           source_owner_policy_version, team_policy_id, team_policy_version,
+           workspace_policy_id, workspace_policy_version,
+           owner_allowed_representations, active_representation,
+           representation_policy_revision, content_policy_version,
+           classifier_version, source_revision, grant_version, lifecycle,
+           creator_authority, granted_by_user_id, revoked_at,
+           revoked_by_user_id, revocation_reason
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+           $14, $15,
+           array['memory_events']::shared_memory_representation[],
+           'memory_events', 1, 1, 1, $16, 1, $17,
+           'repository_test_fixture', $4,
+           case when $18::boolean then now() else null end,
+           case when $18::boolean then $4::uuid else null end,
+           case when $18::boolean then $19::text else null end
+         ) returning id`,
+        [
+          randomUUID(),
+          logicalMemory.id,
+          replica.id,
+          input.ownerUserId,
+          logicalMemory.owner_principal_id,
+          input.sessionId,
+          input.teamId,
+          input.teamWorkspaceId,
+          consentId,
+          ownerPolicy.policy_id,
+          ownerPolicy.version,
+          teamPolicy.policy_id,
+          teamPolicy.version,
+          workspacePolicy.policy_id,
+          workspacePolicy.version,
+          logicalMemory.source_revision,
+          input.revoked ? "revoked" : "active",
+          input.revoked ?? false,
+          input.revocationReason ?? "repository_test_revoked"
+        ]
+      );
+      await client.query("commit");
+      return {
+        id: grant.rows[0]!.id,
+        logicalMemoryId: logicalMemory.id,
+        replicaId: replica.id,
+        consentId
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+
+  const installRejectingTrigger = async (input: {
+    table:
+      | "team_workspace_access_grants"
+      | "team_invites"
+      | "collaboration_outbox";
+    operation: "insert" | "update";
+    predicate: string;
+  }) => {
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `repository_test_reject_${suffix}`;
+    const triggerName = `repository_test_reject_${suffix}`;
+    await pool.query(`
+      create function ${functionName}() returns trigger
+      language plpgsql
+      as $$
+      begin
+        if ${input.predicate} then
+          raise exception 'repository test failure injection';
+        end if;
+        return new;
+      end
+      $$
+    `);
+    await pool.query(`
+      create trigger ${triggerName}
+      before ${input.operation} on ${input.table}
+      for each row execute function ${functionName}()
+    `);
+
+    return async () => {
+      await pool.query(
+        `drop trigger if exists ${triggerName} on ${input.table}`
+      );
+      await pool.query(`drop function if exists ${functionName}()`);
+    };
+  };
 
   beforeAll(async () => {
     process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "5";
@@ -1155,6 +1824,36 @@ describeDb("memory repository visibility", () => {
       keyVersion: 1
     });
 
+    const dryRunRewrap = vi.fn(rotatedProvider.rewrap!.bind(rotatedProvider));
+    const dryRun = await encryptedRepo.rewrapEncryptedFieldBatch(
+      { ...rotatedProvider, rewrap: dryRunRewrap },
+      {
+        ownerUserId: owner.id,
+        sourceTable: "memory_events",
+        sourceColumn: "payload",
+        batchSize: 10,
+        dryRun: true
+      }
+    );
+    expect(dryRun).toMatchObject({
+      processedRows: 1,
+      rewrappedRows: 0,
+      wouldRewrapRows: 1,
+      failedRows: 0,
+      done: true
+    });
+    expect(dryRunRewrap).not.toHaveBeenCalled();
+    const afterDryRun = await encryptedRepo.getAuthorizedEncryptedField(
+      { userId: owner.id },
+      {
+        sourceTable: "memory_events",
+        sourceId,
+        sourceColumn: "payload"
+      }
+    );
+    expect(afterDryRun?.envelope.keyVersion).toBe(1);
+    expect(afterDryRun?.envelope.reencryptedAt).toBeNull();
+
     const rewrap = await encryptedRepo.rewrapEncryptedFieldBatch(
       rotatedProvider,
       {
@@ -1167,6 +1866,7 @@ describeDb("memory repository visibility", () => {
     expect(rewrap).toMatchObject({
       processedRows: 1,
       rewrappedRows: 1,
+      wouldRewrapRows: 0,
       failedRows: 0,
       done: true
     });
@@ -2551,6 +3251,109 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("does not reproject canonical owner-private replica conversation items", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 65).toString("base64")
+      );
+      const ownerPrivateProvider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 66).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider,
+        ownerPrivateReplicaEnvelopeEncryptionProvider: ownerPrivateProvider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `owner-private-projection-${randomUUID()}@example.com`
+      });
+      const workspaceId = randomUUID();
+      await pool.query(
+        `insert into workspaces (id,owner_user_id,visibility,name)
+         values ($1,$2,'personal','Owner-private projection boundary')`,
+        [workspaceId, owner.id]
+      );
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          workspaceId,
+          externalSessionId: `owner-private-projection-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const externalTurnId = "owner-private-turn";
+      const stableItemId = `turn:${externalTurnId}:user`;
+      const [item] = await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
+              externalSessionId: session.externalSessionId!,
+              externalThreadId: session.externalSessionId!,
+              externalTurnId,
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              sourceSequence: 1,
+              eventTime: "2026-07-19T12:00:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "user_message",
+                  message: "Canonical replica source must not be reprojected."
+                }
+              },
+              rawText: "Canonical replica source must not be reprojected.",
+              sourceHash: `owner-private-source-${randomUUID()}`,
+              idempotencyKey: `owner-private-source-${randomUUID()}`,
+              canonicalItemKey: codexCanonicalConversationItemKey({
+                externalThreadId: session.externalSessionId!,
+                externalTurnId,
+                stableItemId,
+                component: "message"
+              }),
+              canonicalStableItemId: stableItemId,
+              observationKind: "reconciliation",
+              observationComponent: "message",
+              projectionStatus: "pending",
+              metadata: { actor: "user" }
+            }
+          ]
+        }
+      );
+      await pool.query(
+        `update encrypted_field_payloads
+            set encryption_scope='owner_private_replica',
+                owner_principal_id=$2
+          where source_table='conversation_items'
+            and source_id=$1
+            and invalidated_at is null`,
+        [item!.id, randomUUID()]
+      );
+
+      const projection = await encryptedRepo.projectPendingConversationItems(
+        { userId: owner.id },
+        { conversationItemIds: [item!.id] }
+      );
+      expect(projection.rawItemsScanned).toBe(0);
+      const stored = await pool.query<{
+        projection_status: string;
+        projection_error: string | null;
+      }>(
+        `select projection_status,projection_error
+           from conversation_items
+          where id=$1`,
+        [item!.id]
+      );
+      expect(stored.rows).toEqual([
+        { projection_status: "pending", projection_error: null }
+      ]);
+    });
+  });
+
   it("keeps encrypted raw_json companions aligned with canonical duplicate winners", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
@@ -3320,6 +4123,32 @@ describeDb("memory repository visibility", () => {
     expect(authenticated?.credential.lastUsedAt).not.toBeNull();
     expect(authenticated?.credential.lastValidatedAt).not.toBeNull();
 
+    const credentialSubscriptionId = randomUUID();
+    await pool.query(
+      `insert into collaboration_stream_subscriptions (
+         id,
+         backend_identity_hash,
+         principal_id_hash,
+         device_credential_id,
+         client_instance_hash,
+         subscription_key_hash,
+         protocol_version,
+         scope,
+         personal_owner_user_id,
+         state,
+         expires_at
+       ) values ($1,$2,$3,$4,$5,$6,1,'personal',$7,'active',now()+interval '5 minutes')`,
+      [
+        credentialSubscriptionId,
+        "1".repeat(64),
+        "2".repeat(64),
+        replacementCredential!.id,
+        "3".repeat(64),
+        "4".repeat(64),
+        user.id
+      ]
+    );
+
     expect(
       await repo.revokeDeviceCredential(
         { userId: user.id },
@@ -3334,6 +4163,14 @@ describeDb("memory repository visibility", () => {
         "rotated"
       )
     ).toBe(false);
+    await expect(
+      pool.query(
+        "select state,revoked_at is not null as revoked from collaboration_stream_subscriptions where id=$1",
+        [credentialSubscriptionId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "revoked", revoked: true }]
+    });
     expect(
       await repo.getDeviceCredentialUser({
         credentialKeyId: replacementCredential!.credentialKeyId,
@@ -3465,21 +4302,46 @@ describeDb("memory repository visibility", () => {
       status: "enabled"
     });
 
+    const defaultWorkspace = (
+      await repo.listTeamWorkspaces(
+        { userId: owner.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((candidate) => candidate.name === "General");
+    expect(defaultWorkspace).toBeDefined();
     await expect(
-      repo.upsertTeamMember(
+      repo.createTeamInvite(
         { userId: outsider.id },
-        { teamId: team.id, userId: member.id, role: "member" }
+        {
+          teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
+          email: `unauthorized-member-${randomUUID()}@example.com`,
+          role: "member",
+          backendOriginHash: createHash("sha256")
+            .update(`unauthorized-origin:${randomUUID()}`)
+            .digest("hex"),
+          tokenHash: `unauthorized-${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 60_000)
+        }
       )
     ).resolves.toBeNull();
 
-    const adminMembership = await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: admin.id, role: "admin" }
-    );
-    const memberMembership = await repo.upsertTeamMember(
-      { userId: admin.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    const adminMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin"
+      })
+    ).membership;
+    const memberMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: admin.id,
+        teamId: team.id,
+        user: member
+      })
+    ).membership;
     expect(adminMembership).toMatchObject({ role: "admin", status: "enabled" });
     expect(memberMembership).toMatchObject({
       role: "member",
@@ -3489,19 +4351,23 @@ describeDb("memory repository visibility", () => {
     const memberAcceptedAt = memberMembership!.acceptedAt;
 
     await expect(
-      repo.upsertTeamMember(
+      repo.updateTeamMemberRole(
         { userId: admin.id },
-        { teamId: team.id, userId: member.id, role: "owner" }
+        {
+          teamId: team.id,
+          userId: member.id,
+          role: "owner",
+          expectedVersion: memberMembership.version
+        }
       )
     ).resolves.toBeNull();
     await expect(
-      repo.upsertTeamMember(
+      repo.disableTeamMember(
         { userId: admin.id },
         {
           teamId: team.id,
           userId: owner.id,
-          role: "member",
-          status: "disabled"
+          expectedVersion: ownerMembership!.version
         }
       )
     ).resolves.toBeNull();
@@ -3512,13 +4378,13 @@ describeDb("memory repository visibility", () => {
       status: "enabled"
     });
     await expect(
-      repo.upsertTeamMember(
+      repo.updateTeamMemberRole(
         { userId: owner.id },
         {
           teamId: team.id,
           userId: owner.id,
           role: "member",
-          status: "disabled"
+          expectedVersion: ownerMembership!.version
         }
       )
     ).resolves.toBeNull();
@@ -3590,7 +4456,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
     expect(readAccess).toMatchObject({
@@ -3602,6 +4469,31 @@ describeDb("memory repository visibility", () => {
       canManageWorkspace: false
     });
     await expect(
+      repo.listTeamWorkspaceContexts({ userId: member.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        {
+          teamId: team.id,
+          teamName: "Launch Team",
+          teamRole: "member",
+          teamWorkspaceId: defaultWorkspace!.id,
+          teamWorkspaceName: "General",
+          access: "read"
+        },
+        {
+          teamId: team.id,
+          teamName: "Launch Team",
+          teamRole: "member",
+          teamWorkspaceId: workspace!.id,
+          teamWorkspaceName: "Memory OS",
+          access: "read"
+        }
+      ])
+    );
+    await expect(
+      repo.listTeamWorkspaceContexts({ userId: outsider.id })
+    ).resolves.toEqual([]);
+    await expect(
       repo.getTeamEntitlementGate({ userId: owner.id }, team.id)
     ).resolves.toMatchObject({
       teamId: team.id,
@@ -3609,9 +4501,18 @@ describeDb("memory repository visibility", () => {
       allowsTeamAccess: true,
       deniedOperationFamilies: []
     });
+    const initialGate = await repo.getTeamEntitlementGate(
+      { userId: owner.id },
+      team.id
+    );
     const graceGate = await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "grace", reason: "payment_retry" }
+      {
+        teamId: team.id,
+        expectedVersion: initialGate!.version,
+        status: "grace",
+        reason: "payment_retry"
+      }
     );
     expect(graceGate).toMatchObject({
       status: "grace",
@@ -3628,7 +4529,12 @@ describeDb("memory repository visibility", () => {
     });
     const suspendedGate = await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "suspended", reason: "billing_suspended" }
+      {
+        teamId: team.id,
+        expectedVersion: graceGate!.version,
+        status: "suspended",
+        reason: "billing_suspended"
+      }
     );
     expect(suspendedGate).not.toBeNull();
     expect(suspendedGate).toMatchObject({
@@ -3661,7 +4567,12 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBeNull();
     const revokedGate = await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "revoked", reason: "license_revoked" }
+      {
+        teamId: team.id,
+        expectedVersion: suspendedGate!.version,
+        status: "revoked",
+        reason: "license_revoked"
+      }
     );
     expect(revokedGate).toMatchObject({
       status: "revoked",
@@ -3672,8 +4583,13 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
           email: `revoked-invite-${randomUUID()}@example.com`,
           role: "member",
+          backendOriginHash: createHash("sha256")
+            .update(`revoked-origin:${randomUUID()}`)
+            .digest("hex"),
           tokenHash: `token-${randomUUID()}`,
           expiresAt: new Date(Date.now() + 60_000)
         }
@@ -3681,7 +4597,12 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBeNull();
     await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "active", reason: "billing_restored" }
+      {
+        teamId: team.id,
+        expectedVersion: revokedGate!.version,
+        status: "active",
+        reason: "billing_restored"
+      }
     );
     await pool.query(
       `
@@ -3699,6 +4620,18 @@ describeDb("memory repository visibility", () => {
       canCreateShare: false,
       canManageWorkspace: false
     });
+    await expect(
+      repo.listTeamWorkspaceContexts({ userId: member.id })
+    ).resolves.toEqual([
+      {
+        teamId: team.id,
+        teamName: "Launch Team",
+        teamRole: "member",
+        teamWorkspaceId: defaultWorkspace!.id,
+        teamWorkspaceName: "General",
+        access: "read"
+      }
+    ]);
     await pool.query(
       `
         update team_workspace_access_grants
@@ -3714,7 +4647,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: outsider.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       )
     ).resolves.toBeNull();
@@ -3724,7 +4658,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: admin.id,
-        access: "disabled"
+        access: "disabled",
+        expectedVersion: null
       }
     );
     expect(disabledAdminAccess).toMatchObject({
@@ -3739,7 +4674,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: outsider.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       )
     ).resolves.toBeNull();
@@ -3749,7 +4685,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: admin.id,
-        access: "write"
+        access: "write",
+        expectedVersion: disabledAdminAccess!.version
       }
     );
     expect(writeAccess).toMatchObject({
@@ -3764,7 +4701,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "write"
+        access: "write",
+        expectedVersion: readAccess!.version
       }
     );
     expect(memberWriteAccess).toMatchObject({
@@ -3774,10 +4712,14 @@ describeDb("memory repository visibility", () => {
       canManageWorkspace: false
     });
 
-    await pool.query(
-      "update team_workspaces set archived_at = now() where id = $1",
-      [workspace!.id]
+    const archivedWorkspace = await repo.archiveTeamWorkspace(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        expectedVersion: workspace!.version
+      }
     );
+    expect(archivedWorkspace).toMatchObject({ lifecycle: "archived" });
     await expect(
       repo.getTeamWorkspaceAccess({ userId: owner.id }, workspace!.id)
     ).resolves.toMatchObject({
@@ -3787,35 +4729,14 @@ describeDb("memory repository visibility", () => {
       canRecall: false,
       canCreateShare: false
     });
-    await pool.query(
-      "update team_workspaces set archived_at = null where id = $1",
-      [workspace!.id]
+    const restoredWorkspace = await repo.restoreTeamWorkspace(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        expectedVersion: archivedWorkspace!.version
+      }
     );
-    await pool.query("update teams set archived_at = now() where id = $1", [
-      team.id
-    ]);
-    await expect(
-      repo.getTeamWorkspaceAccess({ userId: owner.id }, workspace!.id)
-    ).resolves.toMatchObject({
-      access: "disabled",
-      canManageTeam: false,
-      canManageWorkspace: false,
-      canRecall: false,
-      canCreateShare: false
-    });
-    await expect(
-      repo.setTeamWorkspaceAccess(
-        { userId: owner.id },
-        {
-          teamWorkspaceId: workspace!.id,
-          userId: member.id,
-          access: "read"
-        }
-      )
-    ).resolves.toBeNull();
-    await pool.query("update teams set archived_at = null where id = $1", [
-      team.id
-    ]);
+    expect(restoredWorkspace).toMatchObject({ lifecycle: "active" });
 
     await expect(
       repo.setTeamWorkspaceAccess(
@@ -3823,7 +4744,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: outsider.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       )
     ).resolves.toBeNull();
@@ -3831,13 +4753,12 @@ describeDb("memory repository visibility", () => {
       repo.getTeamWorkspaceAccess({ userId: outsider.id }, workspace!.id)
     ).resolves.toBeNull();
 
-    const disabledMember = await repo.upsertTeamMember(
+    const disabledMember = await repo.disableTeamMember(
       { userId: owner.id },
       {
         teamId: team.id,
         userId: member.id,
-        role: "member",
-        status: "disabled"
+        expectedVersion: memberMembership.version
       }
     );
     expect(disabledMember).toMatchObject({
@@ -3851,20 +4772,6 @@ describeDb("memory repository visibility", () => {
       access: "disabled",
       canRecall: false,
       canCreateShare: false
-    });
-    const reenabledMember = await repo.upsertTeamMember(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        userId: member.id,
-        role: "member",
-        status: "enabled"
-      }
-    );
-    expect(reenabledMember).toMatchObject({
-      status: "enabled",
-      acceptedAt: memberAcceptedAt,
-      disabledAt: null
     });
     await expect(
       repo.listTeamAuditEvents(
@@ -3884,14 +4791,20 @@ describeDb("memory repository visibility", () => {
       displayName: "Seat Admin"
     });
     const invitedEmail = `seat-invitee-${randomUUID()}@example.com`;
+    const invitee = await repo.createUser({
+      email: invitedEmail,
+      displayName: "Seat Invitee"
+    });
     const team = await repo.createTeam(
       { userId: owner.id },
       { name: "Seat Team" }
     );
 
-    await expect(
-      repo.getTeamBillingSeatState({ userId: owner.id }, team.id)
-    ).resolves.toMatchObject({
+    const initialBilling = await repo.getTeamBillingSeatState(
+      { userId: owner.id },
+      team.id
+    );
+    expect(initialBilling).toMatchObject({
       teamId: team.id,
       seatLimit: null,
       billableSeatCount: 1,
@@ -3899,22 +4812,39 @@ describeDb("memory repository visibility", () => {
       syncStatus: "synced"
     });
 
-    const adminMembership = await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: admin.id, role: "admin" }
-    );
+    const adminMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin"
+      })
+    ).membership;
     expect(adminMembership).toMatchObject({ status: "enabled" });
+
+    const billingAfterAdmin = await repo.getTeamBillingSeatState(
+      { userId: owner.id },
+      team.id
+    );
 
     await expect(
       repo.setTeamBillingSeatPolicy(
         { userId: admin.id },
-        { teamId: team.id, seatLimit: 1 }
+        {
+          teamId: team.id,
+          expectedVersion: billingAfterAdmin!.version,
+          seatLimit: 1
+        }
       )
     ).resolves.toBeNull();
 
     const overLimit = await repo.setTeamBillingSeatPolicy(
       { userId: owner.id },
-      { teamId: team.id, seatLimit: 1 }
+      {
+        teamId: team.id,
+        expectedVersion: billingAfterAdmin!.version,
+        seatLimit: 1
+      }
     );
     expect(overLimit).toMatchObject({
       seatLimit: 1,
@@ -3932,28 +4862,44 @@ describeDb("memory repository visibility", () => {
     });
 
     const inviteTokenHash = `seat-token-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`seat-origin:${randomUUID()}`)
+      .digest("hex");
+    const defaultWorkspace = (
+      await repo.listTeamWorkspaces(
+        { userId: owner.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((candidate) => candidate.name === "General");
     const invite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: invitedEmail,
         role: "member",
+        backendOriginHash,
         tokenHash: inviteTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
     );
     expect(invite).not.toBeNull();
     const accepted = await repo.acceptTeamInvite({
-      tokenHash: `missing-${randomUUID()}`
+      tokenHash: `missing-${randomUUID()}`,
+      userId: invitee.id,
+      expectedVersion: invite!.version,
+      expectedBackendOriginHash: backendOriginHash
     });
     expect(accepted).toBeNull();
     const acceptedInvite = await repo.acceptTeamInvite({
       tokenHash: inviteTokenHash,
-      email: invitedEmail,
-      displayName: "Seat Invitee"
+      userId: invitee.id,
+      expectedVersion: invite!.version,
+      expectedBackendOriginHash: backendOriginHash
     });
     expect(acceptedInvite).toMatchObject({
-      createdUser: true,
+      createdUser: false,
       membership: { status: "enabled", role: "member" }
     });
     await expect(
@@ -3968,13 +4914,21 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.disableTeamMember(
         { userId: owner.id },
-        { teamId: team.id, userId: acceptedInvite!.user.id }
+        {
+          teamId: team.id,
+          userId: acceptedInvite!.user.id,
+          expectedVersion: acceptedInvite!.membership.version
+        }
       )
     ).resolves.toMatchObject({ status: "disabled" });
     await expect(
       repo.disableTeamMember(
         { userId: owner.id },
-        { teamId: team.id, userId: admin.id }
+        {
+          teamId: team.id,
+          userId: admin.id,
+          expectedVersion: adminMembership.version
+        }
       )
     ).resolves.toMatchObject({ status: "disabled" });
     await expect(
@@ -4017,10 +4971,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Support Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Support Workspace" }
@@ -4030,7 +4985,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
     const session = await repo.createCapturedSession(
@@ -4042,18 +4998,14 @@ describeDb("memory repository visibility", () => {
         captureMethod: "hook"
       }
     );
-    const grant = await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, sessionId: session.id }
-    );
-    await repo.revokeTeamSessionShareGrant(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        shareGrantId: grant!.id,
-        reason: "support_overview_test"
-      }
-    );
+    const grant = await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: session.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id,
+      revoked: true,
+      revocationReason: "support_overview_test"
+    });
     const challengeHash = `support-challenge-${randomUUID()}`;
     const verifierHash = `support-verifier-${randomUUID()}`;
     const credentialKeyId = `support-device-key-${randomUUID()}`;
@@ -4115,9 +5067,9 @@ describeDb("memory repository visibility", () => {
       },
       counts: {
         memberships: { enabled: 2, invited: 0, disabled: 0 },
-        workspaces: { active: 1, archived: 0 },
-        workspaceAccess: { read: 1, write: 1, disabled: 0 },
-        invites: { pending: 0, accepted: 0, revoked: 0, expired: 0 },
+        workspaces: { active: 2, archived: 0 },
+        workspaceAccess: { read: 2, write: 2, disabled: 0 },
+        invites: { pending: 0, accepted: 1, revoked: 0, expired: 0 },
         sessionShareGrants: {
           active: 0,
           revoked: 1,
@@ -4136,7 +5088,7 @@ describeDb("memory repository visibility", () => {
             lastSeenAt: null
           },
           deviceCredentials: {
-            active: 1,
+            active: 2,
             revoked: 0,
             expired: 0
           }
@@ -4150,7 +5102,7 @@ describeDb("memory repository visibility", () => {
     const overviewJson = JSON.stringify(overview);
     expect(overviewJson).not.toContain("support_overview_test");
     expect(overviewJson).not.toContain(session.id);
-    expect(overviewJson).not.toContain(grant!.id);
+    expect(overviewJson).not.toContain(grant.id);
     expect(overviewJson).not.toContain(credential!.credentialKeyId);
     expect(overviewJson).not.toContain(verifierHash);
     expect(overviewJson).not.toContain("Support overview desktop");
@@ -4174,190 +5126,145 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("creates, lists, and revokes Captured Session Share Grants through repository policy", async () => {
-    const owner = await repo.createUser({
-      email: `share-owner-${randomUUID()}@example.com`,
-      displayName: "Share Owner"
-    });
-    const member = await repo.createUser({
-      email: `share-member-${randomUUID()}@example.com`,
-      displayName: "Share Member"
-    });
-    const outsider = await repo.createUser({
-      email: `share-outsider-${randomUUID()}@example.com`,
-      displayName: "Share Outsider"
-    });
-    const team = await repo.createTeam(
-      { userId: owner.id },
-      { name: "Share Team" }
-    );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
-    const workspace = await repo.createTeamWorkspace(
-      { userId: owner.id },
-      { teamId: team.id, name: "Share Workspace" }
-    );
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "read"
-      }
-    );
-    const ownerSession = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        workspaceId: "share-project",
-        externalSessionId: `share-session-${randomUUID()}`,
-        sourceRuntime: "codex",
-        captureMethod: "hook"
-      }
-    );
-    const memberSession = await repo.createCapturedSession(
-      { userId: member.id },
-      {
-        workspaceId: "member-share-project",
-        externalSessionId: `member-share-session-${randomUUID()}`,
-        sourceRuntime: "codex",
-        captureMethod: "hook"
-      }
-    );
-
-    await expect(
-      repo.createTeamSessionShareGrant(
-        { userId: member.id },
-        { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
+  it("quarantines only the disconnected backend's source sync work", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
       )
-    ).resolves.toBeNull();
-    await expect(
-      repo.createTeamSessionShareGrant(
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-disconnect-${randomUUID()}@example.com`
+    });
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
+    const createSource = async (backendId: string) => {
+      const session = await encryptedRepo.createCapturedSession(
         { userId: owner.id },
-        { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
-      )
-    ).resolves.toBeNull();
-    await expect(
-      repo.listTeamSessionShareGrants(
-        { userId: outsider.id },
-        { teamWorkspaceId: workspace!.id }
-      )
-    ).resolves.toBeNull();
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "write"
-      }
-    );
-    const memberOwnedGrant = await repo.createTeamSessionShareGrant(
-      { userId: member.id },
-      { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
-    );
-    expect(memberOwnedGrant).toMatchObject({
-      ownerUserId: member.id,
-      sessionId: memberSession.id,
-      revokedAt: null
-    });
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "read"
-      }
-    );
-    const revokedBySourceOwner = await repo.revokeTeamSessionShareGrant(
-      { userId: member.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        shareGrantId: memberOwnedGrant!.id,
-        reason: "source_owner_exit"
-      }
-    );
-    expect(revokedBySourceOwner).toMatchObject({
-      id: memberOwnedGrant!.id,
-      revokedByUserId: member.id,
-      revocationReason: "source_owner_exit"
-    });
-
-    const created = await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, sessionId: ownerSession.id }
-    );
-    expect(created).toMatchObject({
-      ownerUserId: owner.id,
-      sessionId: ownerSession.id,
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      grantedByUserId: owner.id,
-      revokedAt: null,
-      retentionReason: "active_team_share"
-    });
-    expect(typeof created?.retainedByTeamAt).toBe("string");
-
-    const duplicate = await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, sessionId: ownerSession.id }
-    );
-    expect(duplicate?.id).toBe(created?.id);
-
-    await expect(
-      repo.listTeamSessionShareGrants(
-        { userId: member.id },
-        { teamWorkspaceId: workspace!.id }
-      )
-    ).resolves.toEqual([expect.objectContaining({ id: created!.id })]);
-
-    await expect(
-      repo.revokeTeamSessionShareGrant(
-        { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
-          shareGrantId: created!.id,
-          reason: "readers_cannot_revoke"
+          workspaceId: `sync-${backendId}`,
+          externalSessionId: `sync-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
         }
-      )
-    ).resolves.toBeNull();
-
-    const revoked = await repo.revokeTeamSessionShareGrant(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        shareGrantId: created!.id,
-        reason: "owner_revoked"
-      }
-    );
-    expect(revoked).toMatchObject({
-      id: created!.id,
-      revokedByUserId: owner.id,
-      revocationReason: "owner_revoked"
-    });
+      );
+      const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
+        protocolDeploymentId: randomUUID(),
+        profile: "team_self_hosted",
+        baseUrl: `https://${backendId}.example.test`,
+        upstreamBackendId: backendId
+      });
+      const remoteUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+        deploymentIdentityId: remoteDeployment.id,
+        externalSubjectId: `remote-${backendId}`
+      });
+      await encryptedRepo.linkExternalSyncUser(
+        { userId: owner.id },
+        {
+          externalUserIdentityId: remoteUser.id,
+          proofKind: "device_enrollment",
+          proofReference: `credential-${backendId}-${randomUUID()}`
+        }
+      );
+      const relationshipId = randomUUID();
+      await encryptedRepo.createSourceSyncRelationship(
+        { userId: owner.id },
+        {
+          relationshipId,
+          logicalMemoryId: randomUUID(),
+          localReplicaId: randomUUID(),
+          sessionId: session.id,
+          localDeploymentIdentityId: localDeployment.id,
+          remoteDeploymentIdentityId: remoteDeployment.id,
+          remoteUserIdentityId: remoteUser.id,
+          remoteReplicaId: randomUUID(),
+          idempotencyKey: `sync-${backendId}`,
+          creationRequestHash: crossIdentitySyncDigest({ backendId }),
+          policyManifest: { sourceBoundary: "captured_session" },
+          consentManifest: { consented: true }
+        }
+      );
+      await encryptedRepo.activateSourceSyncRelationship({
+        relationshipId,
+        localUserId: owner.id
+      });
+      const uploadId = randomUUID();
+      await pool.query(
+        "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,1,0,1,2,2,1,$7)",
+        [
+          uploadId,
+          relationshipId,
+          randomUUID(),
+          "b".repeat(64),
+          JSON.stringify(
+            testSyncPackageUploadManifest({ packageDigest: "c".repeat(64) })
+          ),
+          "d".repeat(64),
+          `upload-${backendId}`
+        ]
+      );
+      return { relationshipId, uploadId };
+    };
+    const disconnected = await createSource("team-disconnected");
+    const retained = await createSource("team-retained");
 
     await expect(
-      repo.listTeamSessionShareGrants(
+      encryptedRepo.quarantineCrossIdentitySyncForUpstreamBackend(
         { userId: owner.id },
-        { teamWorkspaceId: workspace!.id }
+        "team-disconnected"
       )
-    ).resolves.toEqual([]);
-    const revokedGrants = await repo.listTeamSessionShareGrants(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, includeRevoked: true }
-    );
-    expect(revokedGrants).toHaveLength(2);
-    const ownerRevokedGrant = revokedGrants?.find(
-      (grant) => grant.id === created!.id
-    );
-    expect(ownerRevokedGrant).toMatchObject({ id: created!.id });
-    expect(typeof ownerRevokedGrant?.revokedAt).toBe("string");
-
-    const auditEvents = await repo.listTeamAuditEvents(
-      { userId: owner.id },
-      { teamId: team.id, action: "team.session_share.created", limit: 10 }
-    );
-    expect(auditEvents).toHaveLength(2);
+    ).resolves.toEqual({
+      relationshipCount: 1,
+      outboxEntryCount: 1,
+      uploadSessionCount: 1
+    });
+    await expect(
+      pool.query(
+        "select state,state_before_pause,paused_at is not null as paused from cross_identity_sync_relationships where id=$1",
+        [disconnected.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "paused", state_before_pause: "created", paused: true }]
+    });
+    await expect(
+      pool.query(
+        "select state from sync_outbox_entries where sync_relationship_id=$1",
+        [disconnected.relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ state: "cancelled" }] });
+    await expect(
+      pool.query(
+        "select state,last_error_message from sync_package_upload_sessions where id=$1",
+        [disconnected.uploadId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "failed",
+          last_error_message: "UpstreamBackendDisconnected"
+        }
+      ]
+    });
+    await expect(
+      pool.query(
+        "select state,state_before_pause from cross_identity_sync_relationships where id=$1",
+        [retained.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "created", state_before_pause: null }]
+    });
+    await expect(
+      pool.query(
+        "select state from sync_outbox_entries where sync_relationship_id=$1",
+        [retained.relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ state: "pending" }] });
+    await expect(
+      pool.query("select state from sync_package_upload_sessions where id=$1", [
+        retained.uploadId
+      ])
+    ).resolves.toMatchObject({ rows: [{ state: "uploading" }] });
   });
 
   it("coalesces incremental Captured Session changes behind one source outbox signal", async () => {
@@ -4516,14 +5423,29 @@ describeDb("memory repository visibility", () => {
         localUserId: owner.id
       })
     ).resolves.toMatchObject({ state: "created" });
+    const capturedSessions = createCapturedSessionRepository(pool);
+    await expect(
+      capturedSessions.listCapturedSessionSummaries({ userId: owner.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          logicalMemoryId: ids.logicalMemoryId,
+          hasSynchronizedRevision: false,
+          syncState: "processing"
+        })
+      ])
+    );
     const incompleteUploadId = randomUUID();
     await pool.query(
-      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,'{}',$5,1,0,1,2,2,1,'interrupted-source-package')",
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,1,0,1,2,2,1,'interrupted-source-package')",
       [
         incompleteUploadId,
         ids.relationshipId,
         randomUUID(),
         "b".repeat(64),
+        JSON.stringify(
+          testSyncPackageUploadManifest({ packageDigest: "c".repeat(64) })
+        ),
         "c".repeat(64)
       ]
     );
@@ -4618,6 +5540,10 @@ describeDb("memory repository visibility", () => {
       }
     })();
     expect(delta?.changes).toHaveLength(2);
+    expect(delta?.changes.map((change) => change.event?.content)).toEqual([
+      "Existing canonical memory",
+      "Incremental canonical memory"
+    ]);
     expect(delta?.changes.map((change) => change.cursor)).toEqual(
       [...(delta?.changes ?? [])]
         .map((change) => change.cursor)
@@ -4705,6 +5631,24 @@ describeDb("memory repository visibility", () => {
       rows: [{ state: "pending", last_error_message: null }]
     });
     await pool.query(
+      "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class='RemoteSyncRequestRejectedError' where id=$1",
+      [ids.relationshipId]
+    );
+    await expect(
+      encryptedRepo.retryCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({ state: "created" });
+    await expect(
+      pool.query(
+        "select state,attempt_count,last_error_message from sync_outbox_entries where sync_relationship_id=$1",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "pending", attempt_count: 0, last_error_message: null }]
+    });
+    await pool.query(
       "update sync_outbox_entries set state='failed',attempt_count=max_attempts,last_error_message='RemoteSyncUnavailableError' where sync_relationship_id=$1",
       [ids.relationshipId]
     );
@@ -4730,14 +5674,54 @@ describeDb("memory repository visibility", () => {
       "update sync_outbox_entries set state='processing',attempt_count=1 where sync_relationship_id=$1",
       [ids.relationshipId]
     );
-    await encryptedRepo.acknowledgeSourceSyncPackage({
+    const acknowledgedPackageId = randomUUID();
+    await encryptedRepo.markSourceSyncProcessing({
       relationshipId: ids.relationshipId,
-      packageId: randomUUID(),
+      packageId: acknowledgedPackageId
+    });
+    const acknowledgement = {
+      relationshipId: ids.relationshipId,
+      packageId: acknowledgedPackageId,
       sourceCursor: delta!.changes[0]!.cursor,
       targetProcessingCursor: delta!.changes[1]!.cursor,
       packageSequence: 1,
+      summaryRevisionHash: null,
       staleAfterSeconds: 3_600
+    };
+    await encryptedRepo.acknowledgeSourceSyncPackage(acknowledgement);
+    await encryptedRepo.acknowledgeSourceSyncPackage(acknowledgement);
+    const personalMemoryEvents = await pool.query<{
+      family: string;
+      scope: string;
+      personal_owner_user_id: string;
+      logical_memory_id: string;
+      resource_type: string;
+      resource_id: string;
+      row_json: string;
+    }>(
+      `select family::text, scope::text, personal_owner_user_id,
+              logical_memory_id, resource_type, resource_id,
+              to_jsonb(collaboration_outbox)::text as row_json
+         from collaboration_outbox
+        where family = 'personal_memory_changed'
+          and resource_id = $1`,
+      [session.id]
+    );
+    expect(personalMemoryEvents.rows).toHaveLength(1);
+    expect(personalMemoryEvents.rows[0]).toMatchObject({
+      family: "personal_memory_changed",
+      scope: "personal",
+      personal_owner_user_id: owner.id,
+      logical_memory_id: ids.logicalMemoryId,
+      resource_type: "personal_memory_entry",
+      resource_id: session.id
     });
+    expect(personalMemoryEvents.rows[0]!.row_json).not.toContain(
+      "Existing canonical memory"
+    );
+    expect(personalMemoryEvents.rows[0]!.row_json).not.toContain(
+      "Incremental canonical memory"
+    );
     await expect(
       pool.query(
         "select source_cursor,target_processing_cursor from cross_identity_sync_relationships where id=$1",
@@ -4759,6 +5743,36 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       rows: [{ state: "pending", attempt_count: 0 }]
     });
+    await expect(
+      capturedSessions.listCapturedSessionSummaries({ userId: owner.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          logicalMemoryId: ids.logicalMemoryId,
+          hasSynchronizedRevision: true,
+          syncState: "ready"
+        })
+      ])
+    );
+    await pool.query(
+      "update cross_identity_sync_relationships set state='processing' where id=$1",
+      [ids.relationshipId]
+    );
+    await expect(
+      capturedSessions.listCapturedSessionSummaries({ userId: owner.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          logicalMemoryId: ids.logicalMemoryId,
+          hasSynchronizedRevision: true,
+          syncState: "processing"
+        })
+      ])
+    );
+    await pool.query(
+      "update cross_identity_sync_relationships set state='ready' where id=$1",
+      [ids.relationshipId]
+    );
     await expect(
       encryptedRepo.readCapturedSessionSyncDelta({
         relationshipId: ids.relationshipId
@@ -4816,12 +5830,205 @@ describeDb("memory repository visibility", () => {
         [ids.relationshipId]
       )
     ).resolves.toMatchObject({ rows: [{ state: "ready", fresh: true }] });
+
+    const nonOwner = await encryptedRepo.createUser({
+      email: `sync-non-owner-${randomUUID()}@example.com`
+    });
     await expect(
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: nonOwner.id },
+        ids.relationshipId
+      )
+    ).resolves.toBeNull();
+
+    await pool.query(
+      "update sync_outbox_entries set state='pending',available_at=now(),claim_token=null,lease_expires_at=null where sync_relationship_id=$1 and idempotency_key='changes'",
+      [ids.relationshipId]
+    );
+    const claimBeforePause = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(claimBeforePause).toMatchObject({ id: outboxEntry.id });
+    const concurrentPauses = await Promise.all([
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ]);
+    expect(concurrentPauses).toEqual([
+      expect.objectContaining({
+        state: "paused",
+        stateBeforePause: "ready"
+      }),
+      expect.objectContaining({
+        state: "paused",
+        stateBeforePause: "ready"
+      })
+    ]);
+    expect(concurrentPauses[0]?.pausedAt).toBe(concurrentPauses[1]?.pausedAt);
+    await expect(
+      encryptedRepo.completeSyncQueueEntry({
+        queue: "outbox",
+        id: claimBeforePause!.id,
+        claimToken: claimBeforePause!.claimToken!
+      })
+    ).resolves.toBe(false);
+    await expect(
+      encryptedRepo.claimSyncQueueEntry({ queue: "outbox", leaseMs: 30_000 })
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.readCapturedSessionSyncDelta({
+        relationshipId: ids.relationshipId
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query(
+        "select state,claim_token,lease_expires_at,processed_at from sync_outbox_entries where id=$1",
+        [outboxEntry.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "pending",
+          claim_token: null,
+          lease_expires_at: null,
+          processed_at: null
+        }
+      ]
+    });
+
+    await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "user",
+        rawEventType: "user_turn",
+        visibility: "personal",
+        content: "Durable work created while sync is paused",
+        workspaceId: "sync-project",
+        sessionId: session.id,
+        idempotencyKey: `event-${randomUUID()}`
+      }
+    );
+    const concurrentResumes = await Promise.all([
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ]);
+    expect(concurrentResumes).toEqual([
+      expect.objectContaining({
+        state: "ready",
+        pausedAt: null,
+        stateBeforePause: null
+      }),
+      expect.objectContaining({
+        state: "ready",
+        pausedAt: null,
+        stateBeforePause: null
+      })
+    ]);
+    const inFlightClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(inFlightClaim).toMatchObject({ id: outboxEntry.id });
+    const inFlightPackageId = randomUUID();
+    const pauseAcknowledgeRace = await Promise.allSettled([
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
+      encryptedRepo.acknowledgeSourceSyncPackage({
+        relationshipId: ids.relationshipId,
+        packageId: inFlightPackageId,
+        sourceCursor: delta!.changes[1]!.cursor,
+        targetProcessingCursor: delta!.changes[1]!.cursor,
+        packageSequence: 2,
+        summaryRevisionHash: null,
+        staleAfterSeconds: 3_600
+      })
+    ]);
+    const pauseResult = pauseAcknowledgeRace[0];
+    expect(pauseResult.status).toBe("fulfilled");
+    if (pauseResult.status === "fulfilled") {
+      expect(pauseResult.value?.state).toBe("paused");
+    }
+    expect(["fulfilled", "rejected"]).toContain(pauseAcknowledgeRace[1].status);
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({ state: "paused" });
+    await expect(
+      encryptedRepo.completeSyncQueueEntry({
+        queue: "outbox",
+        id: inFlightClaim!.id,
+        claimToken: inFlightClaim!.claimToken!
+      })
+    ).resolves.toBe(false);
+
+    await expect(
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({ state: "ready" });
+    const resumedClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(resumedClaim).toMatchObject({ id: outboxEntry.id });
+    await expect(
+      encryptedRepo.deferSyncQueueEntry({
+        queue: "outbox",
+        id: resumedClaim!.id,
+        claimToken: resumedClaim!.claimToken!,
+        delayMs: 250
+      })
+    ).resolves.toBe(true);
+
+    await encryptedRepo.pauseCrossIdentitySyncRelationship(
+      { userId: owner.id },
+      ids.relationshipId
+    );
+    const resumeRevocationRace = await Promise.all([
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
       encryptedRepo.revokeCrossIdentitySyncRelationship(
         { userId: owner.id },
         { syncRelationshipId: ids.relationshipId }
       )
-    ).resolves.toMatchObject({ state: "revoked" });
+    ]);
+    expect(resumeRevocationRace[1]).toMatchObject({ state: "revoked" });
+    await expect(
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({
+      state: "revoked",
+      pausedAt: null,
+      stateBeforePause: null
+    });
     await expect(
       encryptedRepo.acknowledgeSourceSyncPackage({
         relationshipId: ids.relationshipId,
@@ -4829,6 +6036,7 @@ describeDb("memory repository visibility", () => {
         sourceCursor: delta!.changes[1]!.cursor,
         targetProcessingCursor: delta!.changes[1]!.cursor,
         packageSequence: 2,
+        summaryRevisionHash: null,
         staleAfterSeconds: 3_600
       })
     ).rejects.toThrow("can no longer acknowledge");
@@ -4939,11 +6147,280 @@ describeDb("memory repository visibility", () => {
     );
   });
 
-  it("applies target packages once and keeps the synchronized session read-only until ready", async () => {
+  it("prepares and acknowledges exact-session LCM representations through source sync", async () => {
     const encryptedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
         randomBytes(32).toString("base64")
       )
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-lcm-source-${randomUUID()}@example.com`
+    });
+    const session = await encryptedRepo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "sync-lcm-project",
+        externalSessionId: `sync-lcm-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const unrelatedSession = await encryptedRepo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "sync-lcm-project",
+        externalSessionId: `sync-lcm-unrelated-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const sourceEvent = await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "agent",
+        rawEventType: "agent_turn",
+        visibility: "personal",
+        content: "Exact-session Shared Memory LCM source",
+        workspaceId: "sync-lcm-project",
+        sessionId: session.id,
+        idempotencyKey: `sync-lcm-event-${randomUUID()}`
+      }
+    );
+    await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "agent",
+        rawEventType: "agent_turn",
+        visibility: "personal",
+        content: "Unrelated session must not enter the Shared Memory summary",
+        workspaceId: "sync-lcm-project",
+        sessionId: unrelatedSession.id,
+        idempotencyKey: `sync-lcm-unrelated-event-${randomUUID()}`
+      }
+    );
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
+    const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
+      protocolDeploymentId: randomUUID(),
+      profile: "team_self_hosted",
+      baseUrl: "https://team.example.com",
+      upstreamBackendId: "team"
+    });
+    const remoteUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+      deploymentIdentityId: remoteDeployment.id,
+      externalSubjectId: `remote-lcm-user-${randomUUID()}`
+    });
+    await encryptedRepo.linkExternalSyncUser(
+      { userId: owner.id },
+      {
+        externalUserIdentityId: remoteUser.id,
+        proofKind: "device_enrollment",
+        proofReference: `lcm-backend-${randomUUID()}`
+      }
+    );
+    const relationshipId = randomUUID();
+    await encryptedRepo.createSourceSyncRelationship(
+      { userId: owner.id },
+      {
+        relationshipId,
+        logicalMemoryId: randomUUID(),
+        localReplicaId: randomUUID(),
+        remoteReplicaId: randomUUID(),
+        sessionId: session.id,
+        localDeploymentIdentityId: localDeployment.id,
+        remoteDeploymentIdentityId: remoteDeployment.id,
+        remoteUserIdentityId: remoteUser.id,
+        idempotencyKey: `sync-lcm-source-${randomUUID()}`,
+        creationRequestHash: randomBytes(32).toString("hex"),
+        policyManifest: { sourceBoundary: "captured_session" },
+        consentManifest: { consented: true }
+      }
+    );
+    await encryptedRepo.activateSourceSyncRelationship({
+      relationshipId,
+      localUserId: owner.id
+    });
+
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBe("pending");
+    const compacted = await encryptedRepo.createLcmNodes(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        sessionId: session.id,
+        force: true,
+        requestedRepresentation: "lcm_leaves"
+      }
+    );
+    expect(compacted).toMatchObject({
+      leafNodeIds: [expect.any(String)],
+      rollupNodeId: null
+    });
+    const leafNodeId = compacted.leafNodeIds[0]!;
+    await expect(
+      pool.query(
+        `select memory_event_id from memory_node_sources
+         where memory_node_id=$1 order by source_order`,
+        [leafNodeId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ memory_event_id: sourceEvent.id }]
+    });
+    await encryptedRepo.updateLcmNodeSummary({
+      nodeId: leafNodeId,
+      summaryText: "The source established exact-session LCM sharing.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-semantic-summary-v1",
+      summaryTokenEstimate: 8,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Exact-session LCM sharing",
+        summary_text: "The source established exact-session LCM sharing."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBe("pending");
+    const leafDelta = await encryptedRepo.readCapturedSessionSyncDelta({
+      relationshipId
+    });
+    expect(leafDelta?.summaryNodes).toHaveLength(1);
+    const leafSummaryNode = leafDelta?.summaryNodes[0];
+    expect(leafSummaryNode?.originNodeId).toBe(leafNodeId);
+    expect(leafSummaryNode?.kind).toBe("leaf");
+    expect(Array.isArray(leafSummaryNode?.sourceOriginEventIds)).toBe(true);
+    expect(leafSummaryNode?.childOriginNodeIds).toEqual([]);
+    await encryptedRepo.acknowledgeSourceSyncPackage({
+      relationshipId,
+      packageId: randomUUID(),
+      sourceCursor: leafDelta!.toCursor,
+      targetProcessingCursor: leafDelta!.toCursor,
+      packageSequence: 1,
+      summaryRevisionHash: leafDelta!.summaryRevisionHash,
+      staleAfterSeconds: 3_600
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBe("ready");
+
+    const rolledUp = await encryptedRepo.createLcmNodes(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        sessionId: session.id,
+        force: true,
+        requestedRepresentation: "lcm_rollups"
+      }
+    );
+    expect(rolledUp.rollupNodeId).toEqual(expect.any(String));
+    await encryptedRepo.updateLcmNodeSummary({
+      nodeId: rolledUp.rollupNodeId!,
+      summaryText: "The exact-session leaf is available as a rollup.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-semantic-summary-v1",
+      summaryTokenEstimate: 9,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Exact-session rollup",
+        summary_text: "The exact-session leaf is available as a rollup."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    const rollupDelta = await encryptedRepo.readCapturedSessionSyncDelta({
+      relationshipId
+    });
+    expect(rollupDelta?.summaryNodes.map((node) => node.kind)).toEqual([
+      "leaf",
+      "rollup"
+    ]);
+    await encryptedRepo.acknowledgeSourceSyncPackage({
+      relationshipId,
+      packageId: randomUUID(),
+      sourceCursor: rollupDelta!.toCursor,
+      targetProcessingCursor: rollupDelta!.toCursor,
+      packageSequence: 2,
+      summaryRevisionHash: rollupDelta!.summaryRevisionHash,
+      staleAfterSeconds: 3_600
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_rollups"
+      })
+    ).resolves.toBe("ready");
+
+    await pool.query(
+      `update memory_nodes
+          set invalidated_at=now(),
+              invalidation_reason='test_policy_invalidation',
+              updated_at=now()
+        where owner_user_id=$1 and session_id=$2 and invalidated_at is null`,
+      [owner.id, session.id]
+    );
+    const emptySummaryDelta = await encryptedRepo.readCapturedSessionSyncDelta({
+      relationshipId
+    });
+    expect(emptySummaryDelta).toMatchObject({
+      changes: [],
+      summaryNodes: [],
+      summarySnapshotIncluded: true,
+      summaryRevisionHash: crossIdentitySyncDigest([])
+    });
+    await encryptedRepo.acknowledgeSourceSyncPackage({
+      relationshipId,
+      packageId: randomUUID(),
+      sourceCursor: emptySummaryDelta!.toCursor,
+      targetProcessingCursor: emptySummaryDelta!.toCursor,
+      packageSequence: 3,
+      summaryRevisionHash: emptySummaryDelta!.summaryRevisionHash,
+      staleAfterSeconds: 3_600
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_rollups"
+      })
+    ).resolves.toBe("pending");
+  });
+
+  it("applies target packages once and keeps the synchronized session read-only until ready", async () => {
+    const deploymentEncryptionProvider =
+      createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      );
+    const ownerPrivateReplicaEncryptionProvider =
+      createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      );
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: deploymentEncryptionProvider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        ownerPrivateReplicaEncryptionProvider
     });
     const completedRecordsBefore = (
       await encryptedRepo.getCrossIdentitySyncOperationalStatus()
@@ -4998,35 +6475,110 @@ describeDb("memory repository visibility", () => {
     const sourceReplicaId = randomUUID();
     const targetReplicaId = randomUUID();
     const originSessionId = randomUUID();
+    const targetRelationshipInput = {
+      relationshipId,
+      logicalMemoryId,
+      originSessionId,
+      localDeploymentIdentityId: localDeployment.id,
+      remoteDeploymentIdentityId: sourceDeployment.id,
+      remoteUserIdentityId: sourceUser.id,
+      remoteReplicaId: sourceReplicaId,
+      localReplicaId: targetReplicaId,
+      idempotencyKey: "sync-target-idempotency",
+      creationRequestHash: "b".repeat(64),
+      policyManifest: { sourceBoundary: "captured_session" as const },
+      consentManifest: { consented: true },
+      session: {
+        originSessionId,
+        externalSessionId: "plaintext-source-session-label",
+        sourceRuntime: "codex",
+        captureMethod: "hook",
+        capturedAt: "2026-07-12T00:00:00.000Z",
+        title: "plaintext-synchronized-session-title",
+        sourceAdapterVersion: "1"
+      }
+    };
     const created = await encryptedRepo.createTargetSyncRelationship(
       {
         userId: owner.id,
         deviceCredentialId: syncCredential!.id
       },
+      targetRelationshipInput
+    );
+    expect(created?.relationship.side).toBe("target");
+    const targetSessionStorage = await pool.query<{
+      external_session_id: string | null;
+      metadata: Record<string, unknown>;
+    }>("select external_session_id,metadata from sessions where id=$1", [
+      created!.localReplica.localSessionId
+    ]);
+    expect(targetSessionStorage.rows).toEqual([
       {
-        relationshipId,
-        logicalMemoryId,
-        originSessionId,
-        localDeploymentIdentityId: localDeployment.id,
-        remoteDeploymentIdentityId: sourceDeployment.id,
-        remoteUserIdentityId: sourceUser.id,
-        remoteReplicaId: sourceReplicaId,
-        localReplicaId: targetReplicaId,
-        idempotencyKey: "sync-target-idempotency",
-        creationRequestHash: "b".repeat(64),
-        policyManifest: { sourceBoundary: "captured_session" },
-        consentManifest: { consented: true },
-        session: {
-          originSessionId,
-          externalSessionId: "source-thread",
-          sourceRuntime: "codex",
-          captureMethod: "hook",
-          capturedAt: "2026-07-12T00:00:00.000Z",
-          title: "Synchronized session",
-          sourceAdapterVersion: "1"
+        external_session_id: null,
+        metadata: {
+          syncReplica: true,
+          contentEncrypted: true
         }
       }
+    ]);
+    await pool.query(
+      `update sessions
+          set external_session_id='stale-plaintext-source-label',
+              metadata='{"syncReplica":true,"threadName":"stale-plaintext-title"}'::jsonb
+        where id=$1`,
+      [created!.localReplica.localSessionId]
     );
+    await encryptedRepo.createTargetSyncRelationship(
+      {
+        userId: owner.id,
+        deviceCredentialId: syncCredential!.id
+      },
+      targetRelationshipInput
+    );
+    const scrubbedTargetSessionStorage = await pool.query<{
+      external_session_id: string | null;
+      metadata: Record<string, unknown>;
+    }>("select external_session_id,metadata from sessions where id=$1", [
+      created!.localReplica.localSessionId
+    ]);
+    expect(scrubbedTargetSessionStorage.rows).toEqual(
+      targetSessionStorage.rows
+    );
+    const ownerPrivateRetentionPolicy = await pool.query<{
+      retention_seconds: string;
+      deletion_grace_seconds: string;
+      backup_retention_seconds: string;
+      created_by_user_id: string;
+    }>(
+      `select retention_seconds, deletion_grace_seconds,
+              backup_retention_seconds, created_by_user_id
+         from retention_policies
+        where scope='owner_private_replica'
+          and owner_private_replica_id=$1
+          and logical_memory_id=$2
+          and superseded_at is null`,
+      [targetReplicaId, logicalMemoryId]
+    );
+    expect(ownerPrivateRetentionPolicy.rows).toEqual([
+      {
+        retention_seconds: "0",
+        deletion_grace_seconds: "0",
+        backup_retention_seconds: "0",
+        created_by_user_id: owner.id
+      }
+    ]);
+    await expect(
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        relationshipId
+      )
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        relationshipId
+      )
+    ).resolves.toBeNull();
     const unprovenRotationHash = randomBytes(32).toString("hex");
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: unprovenRotationHash,
@@ -5157,7 +6709,9 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: randomUUID(),
           idempotencyKey: "wrong-device-credential",
           requestHash: "1".repeat(64),
-          packageManifest: {},
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "2".repeat(64)
+          }),
           packageChecksum: "2".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5218,7 +6772,9 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: randomUUID(),
           idempotencyKey: "wrong-relationship-side",
           requestHash: "1".repeat(64),
-          packageManifest: {},
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "2".repeat(64)
+          }),
           packageChecksum: "2".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5265,24 +6821,91 @@ describeDb("memory repository visibility", () => {
 
     const packageId = randomUUID();
     const originEventId = randomUUID();
+    const originItemId = randomUUID();
+    const contributorBase = {
+      originItemId,
+      actor: "user",
+      kind: "user_message",
+      content: "Synchronized canonical source item",
+      toolName: null,
+      toolCallId: null,
+      sourceEventTime: "2026-07-12T00:00:01.000Z",
+      sourceSequence: 1,
+      sourceKind: "codex",
+      sourceAdapterVersion: "1",
+      sourceTransport: "sync",
+      sourceRecordType: "event_msg",
+      sourceEventType: "user_message",
+      rawJson: { content: "Synchronized canonical source item" },
+      rawText: "Synchronized canonical source item",
+      metadata: { actor: "user" },
+      logicalSourceId: originItemId,
+      transportChunkIndex: 0,
+      transportChunkCount: 1,
+      transportChunkText: null,
+      transportChunkEncoding: null,
+      projectionStatus: "projected" as const,
+      projectionVersion: "semantic-projection-v1",
+      projectionPolicyRevision: 1,
+      memoryExcludedAt: null,
+      memoryExclusionReason: null
+    };
+    const contributor = {
+      ...contributorBase,
+      revisionHash: crossIdentitySyncDigest(contributorBase)
+    };
     const event = {
       originEventId,
       revisionHash: "",
       eventType: "captured",
       actor: "user",
       content: "Synchronized canonical memory",
-      metadata: { includeInLcm: true },
+      metadata: {
+        includeInLcm: true,
+        semanticItemManifest: [{ sourceIds: [originItemId] }]
+      },
+      includeInEmbedding: true,
+      includeInLcm: true,
+      projectionPolicyKey: "repository-sync-test",
+      projectionPolicyRevision: 1,
       tokenCount: 4,
       sealReason: "user_turn",
       capturedAt: "2026-07-12T00:00:01.000Z",
       sourceEventTime: "2026-07-12T00:00:01.000Z",
       sourceSequence: 1,
-      contributors: []
+      contributors: [contributor]
     };
     event.revisionHash = crossIdentitySyncDigest({
       ...event,
       revisionHash: undefined
     });
+    const summaryNodeBase = {
+      originNodeId: randomUUID(),
+      kind: "leaf" as const,
+      depth: 0,
+      lcmAlgorithmVersion: "depth0-source-items-v1",
+      summaryText: "A concise synchronized semantic summary.",
+      summaryModel: "gpt-5.4-mini",
+      summaryPromptVersion: "lcm-semantic-summary-v1",
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Synchronized summary",
+        summary_text: "A concise synchronized semantic summary."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1",
+      sourceOriginEventIds: [originEventId],
+      childOriginNodeIds: [],
+      sourceHash: "f".repeat(64),
+      sourceEventCount: 1,
+      sourceTokenEstimate: 12,
+      summaryTokenEstimate: 7,
+      createdAt: "2026-07-12T00:00:01.000Z",
+      updatedAt: "2026-07-12T00:00:03.000Z"
+    };
+    const summaryNode = {
+      ...summaryNodeBase,
+      revisionHash: crossIdentitySyncDigest(summaryNodeBase)
+    };
     const syncPackage: CapturedSessionSyncPackageV1 = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
@@ -5304,6 +6927,7 @@ describeDb("memory repository visibility", () => {
       policyDigest: crossIdentitySyncDigest({
         sourceBoundary: "captured_session"
       }),
+      summaryRevisionHash: crossIdentitySyncDigest([summaryNode]),
       session: {
         originSessionId,
         externalSessionId: "source-thread",
@@ -5321,17 +6945,31 @@ describeDb("memory repository visibility", () => {
           revisionHash: event.revisionHash,
           event
         }
-      ]
+      ],
+      summaryNodes: [summaryNode]
     };
     const uploadId = randomUUID();
     await pool.query(
-      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,$4,'{\"recordCount\":1}',$5,1,0,1,1,1,'target-apply')",
-      [uploadId, relationshipId, packageId, "d".repeat(64), "e".repeat(64)]
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,$4,$5::jsonb,$6,1,0,1,1,1,'target-apply')",
+      [
+        uploadId,
+        relationshipId,
+        packageId,
+        "d".repeat(64),
+        JSON.stringify(
+          testSyncPackageUploadManifest({
+            packageDigest: "e".repeat(64),
+            recordCount: 2,
+            summaryRevisionHash: syncPackage.summaryRevisionHash
+          })
+        ),
+        "e".repeat(64)
+      ]
     );
     expect(
       (await encryptedRepo.getCrossIdentitySyncOperationalStatus())
         .targetLagRecords - targetLagBefore
-    ).toBe(1);
+    ).toBe(2);
     await expect(
       encryptedRepo.getSyncPackageUploadSession(
         { userId: owner.id },
@@ -5352,43 +6990,89 @@ describeDb("memory repository visibility", () => {
       package: syncPackage
     });
     expect(applied.eventIds).toHaveLength(1);
+    expect(applied.summaryNodeIds).toHaveLength(1);
+    const importedContributor = await pool.query<{ id: string }>(
+      `select ci.id
+         from memory_event_sources mes
+         join conversation_items ci on ci.id=mes.conversation_item_id
+        where mes.memory_event_id=$1`,
+      [applied.eventIds[0]]
+    );
+    expect(importedContributor.rows).toHaveLength(1);
+    expect(importedContributor.rows[0]!.id).not.toBe(originItemId);
+    const importedEncryptionKeys = await pool.query<{
+      encryption_scope: string;
+      key_id: string;
+    }>(
+      `select distinct encryption_scope,key_id
+         from encrypted_field_payloads
+        where invalidated_at is null
+          and (
+            (source_table='memory_events' and source_id=$1)
+            or (source_table='memory_nodes' and source_id=$2)
+          )`,
+      [applied.eventIds[0], applied.summaryNodeIds[0]]
+    );
+    expect(importedEncryptionKeys.rows).toEqual([
+      {
+        encryption_scope: "owner_private_replica",
+        key_id: ownerPrivateReplicaEncryptionProvider.keyId
+      }
+    ]);
+    expect(ownerPrivateReplicaEncryptionProvider.keyId).not.toBe(
+      deploymentEncryptionProvider.keyId
+    );
+    const processingSources =
+      await encryptedRepo.listSourcesNeedingEmbeddings(10_000);
+    expect(
+      processingSources.some(
+        (source) =>
+          source.sourceId === applied.eventIds[0] ||
+          source.sourceId === applied.summaryNodeIds[0]
+      )
+    ).toBe(false);
     await expect(
       encryptedRepo.getEmbeddableSource("memory_event", applied.eventIds[0]!)
     ).resolves.toMatchObject({ text: "Synchronized canonical memory" });
-    const previousThreshold = process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
-    process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "1";
-    try {
-      const compacted = await encryptedRepo.createLcmNodes(
+    await expect(
+      encryptedRepo.getEmbeddableSource(
+        "memory_node",
+        applied.summaryNodeIds[0]!
+      )
+    ).resolves.toMatchObject({
+      text: "A concise synchronized semantic summary."
+    });
+    await expect(
+      encryptedRepo.expandMemoryNode(
+        applied.summaryNodeIds[0]!,
         { userId: owner.id },
-        { visibility: "personal" }
-      );
-      await expect(
-        encryptedRepo.listDerivedMemoryNodeIdsForSyncRelationship({
-          relationshipId,
-          ownerUserId: owner.id
+        { searchDomain: "global" }
+      )
+    ).resolves.toMatchObject({
+      sources: [
+        expect.objectContaining({
+          id: applied.eventIds[0],
+          content: "Synchronized canonical memory"
         })
-      ).resolves.toContain(compacted.leafNodeIds[0]);
-      await expect(
-        encryptedRepo.expandMemoryNode(
-          compacted.leafNodeIds[0]!,
-          { userId: owner.id },
-          { searchDomain: "global" }
-        )
-      ).resolves.toMatchObject({
-        sources: [
-          expect.objectContaining({
-            id: applied.eventIds[0],
-            content: "Synchronized canonical memory"
-          })
-        ]
-      });
-    } finally {
-      if (previousThreshold === undefined) {
-        delete process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
-      } else {
-        process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = previousThreshold;
-      }
-    }
+      ]
+    });
+    await expect(
+      encryptedRepo.createLcmNodes(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          sessionId: targetSessionId,
+          force: true,
+          requestedRepresentation: "lcm_rollups"
+        }
+      )
+    ).resolves.toEqual({ leafNodeIds: [], rollupNodeId: null });
+    await expect(
+      encryptedRepo.listLcmNodesNeedingSummaries(
+        { userId: owner.id },
+        { limit: 50 }
+      )
+    ).resolves.toEqual([]);
     expect(
       await pool.query("select sync_session_recall_ready($1) as ready", [
         targetSessionId
@@ -5401,10 +7085,12 @@ describeDb("memory repository visibility", () => {
     const member = await encryptedRepo.createUser({
       email: `sync-target-member-${randomUUID()}@example.com`
     });
-    await encryptedRepo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      repository: encryptedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await encryptedRepo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Synchronized readiness workspace" }
@@ -5414,16 +7100,10 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
-    await expect(
-      encryptedRepo.createTeamSessionShareGrant(
-        { userId: owner.id },
-        { teamWorkspaceId: workspace!.id, sessionId: targetSessionId }
-      )
-    ).resolves.toBeNull();
-
     const replay = await encryptedRepo.applyCapturedSessionSyncPackage({
       relationshipId,
       uploadSessionId: uploadId,
@@ -5431,7 +7111,9 @@ describeDb("memory repository visibility", () => {
     });
     expect(replay).toEqual({
       eventIds: applied.eventIds,
-      invalidatedEventIds: []
+      invalidatedEventIds: [],
+      summaryNodeIds: applied.summaryNodeIds,
+      invalidatedSummaryNodeIds: []
     });
     await encryptedRepo.markTargetSyncReady({
       relationshipId,
@@ -5439,6 +7121,101 @@ describeDb("memory repository visibility", () => {
       packageId,
       staleAfterSeconds: 3_600
     });
+    await pool.query(
+      `insert into sync_inbox_entries
+         (sync_relationship_id,upload_session_id,idempotency_key,request_hash,payload_manifest)
+       values ($1,$2,'superseded-package-race',$3,'{}'::jsonb)`,
+      [relationshipId, uploadId, "9".repeat(64)]
+    );
+    const supersededInboxClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "inbox",
+      leaseMs: 30_000
+    });
+    expect(supersededInboxClaim?.idempotencyKey).toBe(
+      "superseded-package-race"
+    );
+    await pool.query(
+      `update cross_identity_sync_relationships
+          set state='ready',package_sequence=2,target_processing_cursor=2
+        where id=$1`,
+      [relationshipId]
+    );
+    await expect(
+      encryptedRepo.failSyncQueueEntry({
+        queue: "inbox",
+        id: supersededInboxClaim!.id,
+        claimToken: supersededInboxClaim!.claimToken!,
+        errorClass: "SyncStateConflictError",
+        retryAfterMs: 250,
+        terminal: true
+      })
+    ).resolves.toBe(true);
+    await expect(
+      pool.query(
+        `select entry.state,entry.last_error_message,
+                relationship.state as relationship_state,
+                relationship.last_error_class
+           from sync_inbox_entries entry
+           join cross_identity_sync_relationships relationship
+             on relationship.id=entry.sync_relationship_id
+          where entry.id=$1`,
+        [supersededInboxClaim!.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "completed",
+          last_error_message: null,
+          relationship_state: "ready",
+          last_error_class: null
+        }
+      ]
+    });
+    await pool.query(
+      `insert into sync_inbox_entries
+         (sync_relationship_id,upload_session_id,idempotency_key,request_hash,payload_manifest)
+       values ($1,$2,'superseded-package-pending',$3,'{}'::jsonb)`,
+      [relationshipId, uploadId, "8".repeat(64)]
+    );
+    await expect(
+      encryptedRepo.claimSyncQueueEntry({
+        queue: "inbox",
+        leaseMs: 30_000
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query(
+        `select state,last_error_message
+           from sync_inbox_entries
+          where sync_relationship_id=$1
+            and idempotency_key='superseded-package-pending'`,
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "completed", last_error_message: null }]
+    });
+    await pool.query(
+      `update cross_identity_sync_relationships
+          set package_sequence=1,target_processing_cursor=1
+        where id=$1`,
+      [relationshipId]
+    );
+    await expect(
+      encryptedRepo.listSourcesNeedingEmbeddings(10_000)
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: "memory_event",
+          sourceId: applied.eventIds[0],
+          text: "Synchronized canonical memory"
+        }),
+        expect.objectContaining({
+          sourceType: "memory_node",
+          sourceId: applied.summaryNodeIds[0],
+          text: "A concise synchronized semantic summary."
+        })
+      ])
+    );
     await expect(
       encryptedRepo.acceptTargetSyncHeartbeat(
         { userId: owner.id, deviceCredentialId: rotatedCredential!.id },
@@ -5535,23 +7312,48 @@ describeDb("memory repository visibility", () => {
         targetSessionId
       ])
     ).toMatchObject({ rows: [{ ready: true }] });
-    await expect(
-      encryptedRepo.createTeamSessionShareGrant(
-        { userId: owner.id },
-        { teamWorkspaceId: workspace!.id, sessionId: targetSessionId }
-      )
-    ).resolves.toMatchObject({ sessionId: targetSessionId });
+    const synchronizedGrant = await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: targetSessionId,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id
+    });
+    await pool.query(
+      `insert into team_memory_representations (
+         share_grant_id,consent_id,source_preview_id,source_artifact_id,
+         team_id,team_workspace_id,logical_memory_id,representation,
+         source_revision,source_revision_hash,provenance_hash,
+         source_owner_policy_id,source_owner_policy_version,
+         team_policy_id,team_policy_version,workspace_policy_id,
+         workspace_policy_version,representation_policy_revision,
+         content_policy_version,classifier_version,state,available_at
+       )
+       select g.id,g.consent_id,consent.preview_id,preview.source_artifact_id,
+              g.team_id,g.team_workspace_id,g.logical_memory_id,
+              g.active_representation,g.source_revision,
+              preview.source_hash,$2,g.source_owner_policy_id,
+              g.source_owner_policy_version,g.team_policy_id,
+              g.team_policy_version,g.workspace_policy_id,
+              g.workspace_policy_version,g.representation_policy_revision,
+              g.content_policy_version,g.classifier_version,
+              'available',now()
+         from team_session_share_grants g
+         join source_owner_representation_consents consent
+           on consent.id=g.consent_id
+         join shared_source_previews preview on preview.id=consent.preview_id
+        where g.id=$1`,
+      [synchronizedGrant.id, randomBytes(32).toString("hex")]
+    );
     await expect(
       encryptedRepo.getLcmGraphEvent(
         { userId: member.id },
         applied.eventIds[0]!,
-        { teamWorkspaceId: workspace!.id, includeRaw: true }
+        {
+          ...{ teamWorkspaceId: workspace!.id },
+          includeRaw: true
+        }
       )
-    ).resolves.toMatchObject({
-      id: applied.eventIds[0],
-      contentPreview: "Synchronized canonical memory",
-      rawContent: "Synchronized canonical memory"
-    });
+    ).resolves.toBeNull();
     await expect(
       encryptedRepo.getLcmGraphEvent(
         { userId: member.id },
@@ -5602,7 +7404,11 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: packageId,
           idempotencyKey: "target-apply",
           requestHash: "d".repeat(64),
-          packageManifest: { recordCount: 1 },
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "e".repeat(64),
+            recordCount: 2,
+            summaryRevisionHash: syncPackage.summaryRevisionHash
+          }),
           packageChecksum: "e".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5729,7 +7535,11 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: packageId,
           idempotencyKey: "target-apply",
           requestHash: "d".repeat(64),
-          packageManifest: { recordCount: 1 },
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "e".repeat(64),
+            recordCount: 2,
+            summaryRevisionHash: syncPackage.summaryRevisionHash
+          }),
           packageChecksum: "e".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5749,7 +7559,197 @@ describeDb("memory repository visibility", () => {
     expect(
       (await encryptedRepo.getCrossIdentitySyncOperationalStatus())
         .completedRecordsLastHour - completedRecordsBefore
-    ).toBe(1);
+    ).toBe(2);
+    const replacementSummaryBase = {
+      ...summaryNodeBase,
+      summaryText: "A revised synchronized semantic summary.",
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Revised synchronized summary",
+        summary_text: "A revised synchronized semantic summary."
+      },
+      updatedAt: "2026-07-12T00:02:00.000Z"
+    };
+    const replacementSummaryNode = {
+      ...replacementSummaryBase,
+      revisionHash: crossIdentitySyncDigest(replacementSummaryBase)
+    };
+    const replacementContributorBase = {
+      ...contributorBase,
+      content: "Revised synchronized canonical source item",
+      rawJson: { content: "Revised synchronized canonical source item" },
+      rawText: "Revised synchronized canonical source item"
+    };
+    const replacementContributor = {
+      ...replacementContributorBase,
+      revisionHash: crossIdentitySyncDigest(replacementContributorBase)
+    };
+    const replacementEventBase = {
+      ...event,
+      revisionHash: undefined,
+      content: "Revised synchronized canonical memory",
+      contributors: [replacementContributor]
+    };
+    const replacementEvent = {
+      ...replacementEventBase,
+      revisionHash: crossIdentitySyncDigest(replacementEventBase)
+    };
+    const replacementSummaryPackage: CapturedSessionSyncPackageV1 = {
+      ...syncPackage,
+      packageId: randomUUID(),
+      packageSequence: 2,
+      fromCursor: 1,
+      toCursor: 2,
+      createdAt: "2026-07-12T00:02:01.000Z",
+      changes: [
+        {
+          cursor: 2,
+          operation: "upsert",
+          originEventId,
+          revisionHash: replacementEvent.revisionHash,
+          event: replacementEvent
+        }
+      ],
+      summaryNodes: [replacementSummaryNode],
+      summaryRevisionHash: crossIdentitySyncDigest([replacementSummaryNode])
+    };
+    const replacementSummaryUploadId = randomUUID();
+    await pool.query(
+      `insert into sync_package_upload_sessions (
+         id,sync_relationship_id,protocol_package_id,request_hash,
+         package_manifest,package_checksum,source_sequence,from_cursor,
+         to_cursor,total_bytes,expected_chunk_count,idempotency_key
+       ) values ($1,$2,$3,$4,$5::jsonb,$6,2,1,2,1,1,$7)`,
+      [
+        replacementSummaryUploadId,
+        relationshipId,
+        replacementSummaryPackage.packageId,
+        crossIdentitySyncPackageRequestHash(replacementSummaryPackage),
+        JSON.stringify(
+          testSyncPackageUploadManifest({
+            packageDigest: crossIdentitySyncDigest(replacementSummaryPackage),
+            recordCount: 2,
+            summaryRevisionHash: replacementSummaryPackage.summaryRevisionHash
+          })
+        ),
+        crossIdentitySyncDigest(replacementSummaryPackage),
+        `target-summary-replacement-${randomUUID()}`
+      ]
+    );
+    const replacementSummaryApplied =
+      await encryptedRepo.applyCapturedSessionSyncPackage({
+        relationshipId,
+        uploadSessionId: replacementSummaryUploadId,
+        package: replacementSummaryPackage
+      });
+    expect(replacementSummaryApplied).toMatchObject({
+      eventIds: [expect.any(String)],
+      invalidatedEventIds: applied.eventIds,
+      summaryNodeIds: [expect.any(String)],
+      invalidatedSummaryNodeIds: applied.summaryNodeIds
+    });
+    expect(replacementSummaryApplied.summaryNodeIds[0]).not.toBe(
+      applied.summaryNodeIds[0]
+    );
+    const replacementContributorRow = await pool.query<{
+      id: string;
+      source_hash: string;
+    }>(
+      `select ci.id,ci.source_hash
+         from memory_event_sources mes
+         join conversation_items ci on ci.id=mes.conversation_item_id
+        where mes.memory_event_id=$1`,
+      [replacementSummaryApplied.eventIds[0]]
+    );
+    expect(replacementContributorRow.rows).toEqual([
+      {
+        id: importedContributor.rows[0]!.id,
+        source_hash: replacementContributor.revisionHash
+      }
+    ]);
+    await expect(
+      encryptedRepo.getEmbeddableSource(
+        "memory_node",
+        replacementSummaryApplied.summaryNodeIds[0]!
+      )
+    ).resolves.toMatchObject({
+      text: "A revised synchronized semantic summary."
+    });
+    await expect(
+      pool.query(
+        `select invalidation_reason
+           from memory_nodes
+          where id=$1`,
+        [applied.summaryNodeIds[0]]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ invalidation_reason: "source_event_deleted" }]
+    });
+
+    const emptySummaryHash = crossIdentitySyncDigest([]);
+    const emptySummaryPackage: CapturedSessionSyncPackageV1 = {
+      ...syncPackage,
+      packageId: randomUUID(),
+      packageSequence: 3,
+      fromCursor: 2,
+      toCursor: 2,
+      createdAt: "2026-07-12T00:03:01.000Z",
+      changes: [],
+      summaryNodes: [],
+      summaryRevisionHash: emptySummaryHash
+    };
+    const emptySummaryUploadId = randomUUID();
+    await pool.query(
+      `insert into sync_package_upload_sessions (
+         id,sync_relationship_id,protocol_package_id,request_hash,
+         package_manifest,package_checksum,source_sequence,from_cursor,
+         to_cursor,total_bytes,expected_chunk_count,idempotency_key
+       ) values ($1,$2,$3,$4,$5::jsonb,$6,3,2,2,1,1,$7)`,
+      [
+        emptySummaryUploadId,
+        relationshipId,
+        emptySummaryPackage.packageId,
+        crossIdentitySyncPackageRequestHash(emptySummaryPackage),
+        JSON.stringify(
+          testSyncPackageUploadManifest({
+            packageDigest: crossIdentitySyncDigest(emptySummaryPackage),
+            summaryRevisionHash: emptySummaryHash
+          })
+        ),
+        crossIdentitySyncDigest(emptySummaryPackage),
+        `target-summary-removal-${randomUUID()}`
+      ]
+    );
+    const emptySummaryApplied =
+      await encryptedRepo.applyCapturedSessionSyncPackage({
+        relationshipId,
+        uploadSessionId: emptySummaryUploadId,
+        package: emptySummaryPackage
+      });
+    expect(emptySummaryApplied).toEqual({
+      eventIds: [],
+      invalidatedEventIds: [],
+      summaryNodeIds: [],
+      invalidatedSummaryNodeIds: replacementSummaryApplied.summaryNodeIds
+    });
+    await expect(
+      pool.query(
+        `select count(*)::int as count
+           from sync_summary_node_mappings
+          where sync_relationship_id=$1 and active=true`,
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await expect(
+      pool.query(
+        `select target_summary_revision_hash
+           from cross_identity_sync_relationships
+          where id=$1`,
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ target_summary_revision_hash: emptySummaryHash }]
+    });
     const replacementChallengeHash = randomBytes(32).toString("hex");
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: replacementChallengeHash,
@@ -5780,12 +7780,15 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({ id: relationshipId });
     const interruptedUploadId = randomUUID();
     await pool.query(
-      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,'{}',$5,2,1,2,1,1,'revocation-interrupt')",
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,4,1,2,1,1,'revocation-interrupt')",
       [
         interruptedUploadId,
         relationshipId,
         randomUUID(),
         "6".repeat(64),
+        JSON.stringify(
+          testSyncPackageUploadManifest({ packageDigest: "7".repeat(64) })
+        ),
         "7".repeat(64)
       ]
     );
@@ -5818,6 +7821,37 @@ describeDb("memory repository visibility", () => {
       rows: [{ state: "cancelled", claim_token: null, lease_expires_at: null }]
     });
     await expect(
+      pool.query(
+        `select state
+           from team_memory_representations
+          where share_grant_id=$1`,
+        [synchronizedGrant.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ state: "stale" }] });
+    await expect(
+      pool.query(
+        `select family,scope,team_id,team_workspace_id,share_grant_id,
+                logical_memory_id,resource_type,resource_id
+           from collaboration_outbox
+          where family='representation_changed'
+            and share_grant_id=$1`,
+        [synchronizedGrant.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          family: "representation_changed",
+          scope: "team",
+          team_id: team.id,
+          team_workspace_id: workspace!.id,
+          share_grant_id: synchronizedGrant.id,
+          logical_memory_id: synchronizedGrant.logicalMemoryId,
+          resource_type: "team_session_share_grant",
+          resource_id: synchronizedGrant.id
+        }
+      ]
+    });
+    await expect(
       encryptedRepo.revokeDeviceCredential(
         { userId: owner.id },
         replacementCredential!.id,
@@ -5836,13 +7870,15 @@ describeDb("memory repository visibility", () => {
       ])
     ).toMatchObject({ rows: [{ ready: true }] });
     await expect(
-      encryptedRepo.listTeamSessionShareGrants(
-        { userId: owner.id },
-        { teamWorkspaceId: workspace!.id }
+      pool.query(
+        `select session_id, revoked_at
+           from team_session_share_grants
+          where id = $1`,
+        [synchronizedGrant.id]
       )
-    ).resolves.toEqual([
-      expect.objectContaining({ sessionId: targetSessionId, revokedAt: null })
-    ]);
+    ).resolves.toMatchObject({
+      rows: [{ session_id: targetSessionId, revoked_at: null }]
+    });
   });
 
   it("retains Team session share grants through personal deletion and member exit", async () => {
@@ -5858,10 +7894,13 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Retention Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    const retainedMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: member
+      })
+    ).membership;
     const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Retained Workspace" }
@@ -5871,7 +7910,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
     const session = await repo.createCapturedSession(
@@ -5914,21 +7954,13 @@ describeDb("memory repository visibility", () => {
       [retainedNode.id, event.id]
     );
 
-    const grant = await pool.query<{ id: string }>(
-      `
-        insert into team_session_share_grants (
-          owner_user_id,
-          session_id,
-          team_id,
-          team_workspace_id,
-          granted_by_user_id
-        )
-        values ($1, $2, $3, $4, $5)
-        returning id
-      `,
-      [owner.id, session.id, team.id, workspace!.id, owner.id]
-    );
-    const grantId = grant.rows[0]!.id;
+    const grant = await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: session.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id
+    });
+    const grantId = grant.id;
 
     await pool.query(
       `
@@ -5974,65 +8006,42 @@ describeDb("memory repository visibility", () => {
       `,
       [owner.id, grantId]
     );
+    const legacyTeamScope = { teamWorkspaceId: workspace!.id };
     const retainedGraphEvents = await repo.listLcmGraphEvents(
       { userId: member.id },
       {
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         includeContent: true
       }
     );
-    expect(retainedGraphEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: event.id,
-          content: "The billing grace period decision stays with the workspace."
-        })
-      ])
-    );
+    expect(retainedGraphEvents).toEqual([]);
     const retainedThreads = await repo.listLcmGraphThreads(
       { userId: member.id },
-      { teamWorkspaceId: workspace!.id }
+      { ...legacyTeamScope, limit: 20 }
     );
-    expect(retainedThreads.flatMap((project) => project.threads)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ sessionId: session.id })
-      ])
-    );
+    expect(retainedThreads).toEqual([]);
     await expect(
       repo.getLcmGraphNode({ userId: member.id }, retainedNode.id, {
-        teamWorkspaceId: workspace!.id
+        ...legacyTeamScope,
+        includeInvalidated: false
       })
-    ).resolves.toMatchObject({
-      id: retainedNode.id,
-      sources: [expect.objectContaining({ id: event.id })]
-    });
+    ).resolves.toBeNull();
     await expect(
       repo.expandMemoryNode(
         retainedNode.id,
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id
+          ...legacyTeamScope,
+          searchDomain: "global"
         }
       )
-    ).resolves.toMatchObject({
-      nodeId: retainedNode.id,
-      sources: [expect.objectContaining({ id: event.id })]
-    });
-    await repo.upsertTeamMember(
+    ).rejects.toThrow("Memory node not found or not visible");
+    await repo.disableTeamMember(
       { userId: owner.id },
       {
         teamId: team.id,
         userId: member.id,
-        role: "member",
-        status: "disabled"
-      }
-    );
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "disabled"
+        expectedVersion: retainedMembership.version
       }
     );
     await pool.query(
@@ -6107,15 +8116,24 @@ describeDb("memory repository visibility", () => {
     ).rejects.toThrow();
   });
 
-  it("uses strict Team Workspace boundaries instead of requester personal rows", async () => {
+  it("keeps legacy Team Workspace properties from granting generic Personal Memory access", async () => {
     const owner = await repo.createUser({
       email: `team-boundary-owner-${randomUUID()}@example.com`,
       displayName: "Team Boundary Owner"
+    });
+    const member = await repo.createUser({
+      email: `team-boundary-member-${randomUUID()}@example.com`,
+      displayName: "Team Boundary Member"
     });
     const team = await repo.createTeam(
       { userId: owner.id },
       { name: "Boundary Team" }
     );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const electronWorkspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Electron Boundary" }
@@ -6123,6 +8141,15 @@ describeDb("memory repository visibility", () => {
     const cloudWorkspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Cloud Boundary" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: electronWorkspace!.id,
+        userId: member.id,
+        access: "read",
+        expectedVersion: null
+      }
     );
 
     const createNodeFromSession = async (input: {
@@ -6173,38 +8200,14 @@ describeDb("memory repository visibility", () => {
         [node.id, event.id]
       );
       if (input.grantWorkspaceId) {
-        await pool.query(
-          `
-            insert into team_session_share_grants (
-              owner_user_id,
-              session_id,
-              team_id,
-              team_workspace_id,
-              granted_by_user_id,
-              revoked_at,
-              revoked_by_user_id,
-              revocation_reason
-            )
-            values (
-              $1,
-              $2,
-              $3,
-              $4,
-              $5,
-              case when $6::boolean then now() else null end,
-              case when $6::boolean then $5::uuid else null end,
-              case when $6::boolean then 'boundary_regression_revoked' else null end
-            )
-          `,
-          [
-            owner.id,
-            session.id,
-            team.id,
-            input.grantWorkspaceId,
-            owner.id,
-            input.revoked ?? false
-          ]
-        );
+        await insertValidSharedMemoryGrant({
+          ownerUserId: owner.id,
+          sessionId: session.id,
+          teamId: team.id,
+          teamWorkspaceId: input.grantWorkspaceId,
+          revoked: input.revoked,
+          revocationReason: "boundary_regression_revoked"
+        });
       }
       return { session, event, node };
     };
@@ -6297,97 +8300,66 @@ describeDb("memory repository visibility", () => {
       ]
     );
 
-    const electronActor = { userId: owner.id };
+    const electronActor = { userId: member.id };
+    const legacyTeamScope = { teamWorkspaceId: electronWorkspace!.id };
     const graphNodes = await repo.listLcmGraphNodes(electronActor, {
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       query: "BoundaryUnique",
       limit: 20
     });
-    expect(graphNodes.map((node) => node.id)).toContain(sharedElectron.node.id);
-    expect(graphNodes.map((node) => node.id)).not.toEqual(
-      expect.arrayContaining([
-        privateCloud.node.id,
-        cloudOnly.node.id,
-        revokedElectron.node.id
-      ])
-    );
+    expect(graphNodes).toEqual([]);
 
     const graphEvents = await repo.listLcmGraphEvents(electronActor, {
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       includeContent: true,
       query: "BoundaryUnique",
       limit: 20
     });
-    expect(graphEvents.map((event) => event.id)).toContain(
-      sharedElectron.event.id
-    );
-    expect(graphEvents.map((event) => event.id)).not.toEqual(
-      expect.arrayContaining([
-        privateCloud.event.id,
-        cloudOnly.event.id,
-        revokedElectron.event.id
-      ])
-    );
+    expect(graphEvents).toEqual([]);
 
     const graphThreads = await repo.listLcmGraphThreads(electronActor, {
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       query: "BoundaryUnique",
       limit: 20
     });
-    expect(graphThreads.flatMap((project) => project.threads)).toEqual([
-      expect.objectContaining({ sessionId: sharedElectron.session.id })
-    ]);
+    expect(graphThreads).toEqual([]);
 
     const lexical = await repo.searchMemoryNodes(electronActor, {
       query: "BoundaryUnique",
       scope: "personal",
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       retrievalStage: "lexical_search",
       limit: 20
     });
-    expect(lexical.results.map((result) => result.nodeId)).toContain(
-      sharedElectron.node.id
-    );
-    expect(lexical.results.map((result) => result.nodeId)).not.toEqual(
-      expect.arrayContaining([
-        privateCloud.node.id,
-        cloudOnly.node.id,
-        revokedElectron.node.id,
-        hiddenMixedRollup.id
-      ])
-    );
-    const sharedLeafResult = lexical.results.find(
-      (result) => result.nodeId === sharedElectron.node.id
-    );
-    expect(sharedLeafResult?.parentNodeIds).toContain(visibleRollup.id);
-    expect(sharedLeafResult?.parentNodeIds).not.toContain(hiddenMixedRollup.id);
+    expect(lexical.results).toEqual([]);
 
     await expect(
       repo.expandMemoryNode(privateCloud.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
     ).rejects.toThrow("Memory node not found or not visible");
     await expect(
       repo.expandMemoryNode(cloudOnly.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
     ).rejects.toThrow("Memory node not found or not visible");
     await expect(
       repo.expandMemoryNode(revokedElectron.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
     ).rejects.toThrow("Memory node not found or not visible");
     await expect(
       repo.expandMemoryNode(sharedElectron.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
-    ).resolves.toMatchObject({
-      nodeId: sharedElectron.node.id,
-      sources: [expect.objectContaining({ id: sharedElectron.event.id })]
-    });
+    ).rejects.toThrow("Memory node not found or not visible");
   });
 
-  it("resolves Team Workspace authorization and lifecycle gates before encrypted companion decrypt", async () => {
+  it("does not decrypt owner-private companions through legacy generic Team scope", async () => {
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 13).toString("base64")
     );
@@ -6415,14 +8387,12 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Encrypted Boundary Team" }
     );
-    await encryptedRepo.upsertTeamMember(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        userId: member.id,
-        role: "member"
-      }
-    );
+    await inviteExistingTeamMember({
+      repository: encryptedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await encryptedRepo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Encrypted Boundary Workspace" }
@@ -6432,7 +8402,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
 
@@ -6483,38 +8454,14 @@ describeDb("memory repository visibility", () => {
         [node.id, event.id]
       );
       if (input.shared) {
-        await pool.query(
-          `
-            insert into team_session_share_grants (
-              owner_user_id,
-              session_id,
-              team_id,
-              team_workspace_id,
-              granted_by_user_id,
-              revoked_at,
-              revoked_by_user_id,
-              revocation_reason
-            )
-            values (
-              $1,
-              $2,
-              $3,
-              $4,
-              $5,
-              case when $6::boolean then now() else null end,
-              case when $6::boolean then $5::uuid else null end,
-              case when $6::boolean then 'encrypted_boundary_revoked' else null end
-            )
-          `,
-          [
-            owner.id,
-            session.id,
-            team.id,
-            workspace!.id,
-            owner.id,
-            input.revoked ?? false
-          ]
-        );
+        await insertValidSharedMemoryGrant({
+          ownerUserId: owner.id,
+          sessionId: session.id,
+          teamId: team.id,
+          teamWorkspaceId: workspace!.id,
+          revoked: input.revoked,
+          revocationReason: "encrypted_boundary_revoked"
+        });
       }
       return { session, event, node };
     };
@@ -6526,17 +8473,18 @@ describeDb("memory repository visibility", () => {
     const privateOnly = await createEncryptedNode({
       label: "PrivateEncryptedBoundaryUnique"
     });
-    const revoked = await createEncryptedNode({
+    await createEncryptedNode({
       label: "RevokedEncryptedBoundaryUnique",
       shared: true,
       revoked: true
     });
+    const legacyTeamScope = { teamWorkspaceId: workspace!.id };
     expect(decrypt).not.toHaveBeenCalled();
 
     const graphEvents = await encryptedRepo.listLcmGraphEvents(
       { userId: member.id },
       {
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         includeContent: true,
         query: "EncryptedBoundaryUnique",
         limit: 20
@@ -6545,7 +8493,7 @@ describeDb("memory repository visibility", () => {
     const graphNodes = await encryptedRepo.listLcmGraphNodes(
       { userId: member.id },
       {
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         query: "EncryptedBoundaryUnique",
         limit: 20
       }
@@ -6555,38 +8503,15 @@ describeDb("memory repository visibility", () => {
       {
         query: "EncryptedBoundaryUnique",
         scope: "personal",
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         retrievalStage: "lexical_search",
         limit: 20
       }
     );
 
-    expect(graphEvents.map((event) => event.id)).toEqual([shared.event.id]);
-    expect(graphNodes.map((node) => node.id)).toEqual([shared.node.id]);
-    expect(
-      lexical.results
-        .filter((result) => result.sourceType === "memory_node")
-        .map((result) => result.sourceId)
-    ).toEqual([shared.node.id]);
-    expect(
-      lexical.results
-        .filter((result) => result.sourceType === "memory_event")
-        .map((result) => result.sourceId)
-    ).toEqual([shared.event.id]);
-    expect(lexical.results.map((result) => result.sourceId)).not.toEqual(
-      expect.arrayContaining([
-        privateOnly.node.id,
-        privateOnly.event.id,
-        revoked.node.id,
-        revoked.event.id
-      ])
-    );
-    expect(JSON.stringify(graphEvents)).not.toContain(
-      "PrivateEncryptedBoundaryUnique"
-    );
-    expect(JSON.stringify(graphNodes)).not.toContain(
-      "RevokedEncryptedBoundaryUnique"
-    );
+    expect(graphEvents).toEqual([]);
+    expect(graphNodes).toEqual([]);
+    expect(lexical.results).toEqual([]);
     expect(decrypt).not.toHaveBeenCalled();
 
     await expect(
@@ -6613,15 +8538,24 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBeNull();
     expect(decrypt).not.toHaveBeenCalled();
 
+    const encryptedBoundaryGate = await encryptedRepo.getTeamEntitlementGate(
+      { userId: owner.id },
+      team.id
+    );
     await encryptedRepo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "suspended", reason: "test_suspension" }
+      {
+        teamId: team.id,
+        expectedVersion: encryptedBoundaryGate!.version,
+        status: "suspended",
+        reason: "test_suspension"
+      }
     );
     await expect(
       encryptedRepo.listLcmGraphEvents(
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           query: "SharedEncryptedBoundaryUnique"
         }
@@ -6683,7 +8617,218 @@ describeDb("memory repository visibility", () => {
     expect(auditText).not.toContain("RevokedEncryptedBoundaryUnique");
   });
 
-  it("validates encrypted Team fixture boundaries before decrypt, queue, and audit exposure", async () => {
+  it("keeps every collaboration chat class outside Projection and Memory workflows", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 57).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `collaboration-boundary-owner-${randomUUID()}@example.com`
+    });
+    const member = await protectedRepo.createUser({
+      email: `collaboration-boundary-member-${randomUUID()}@example.com`
+    });
+    const secondMember = await protectedRepo.createUser({
+      email: `collaboration-boundary-second-member-${randomUUID()}@example.com`
+    });
+    const team = await protectedRepo.createTeam(
+      { userId: owner.id },
+      { name: "Collaboration Boundary Team" }
+    );
+    await inviteExistingTeamMember({
+      repository: protectedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member,
+      defaultWorkspaceAccess: "write"
+    });
+    await inviteExistingTeamMember({
+      repository: protectedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: secondMember,
+      defaultWorkspaceAccess: "write"
+    });
+    const workspace = await protectedRepo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Collaboration Boundary Workspace" }
+    );
+    await protectedRepo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "write",
+        expectedVersion: null
+      }
+    );
+
+    const memorySurfaceCounts = async () =>
+      (
+        await pool.query<Record<string, string>>(`
+          select
+            (select count(*) from conversation_items)::text as conversation_items,
+            (select count(*) from conversation_item_observations)::text as conversation_item_observations,
+            (select count(*) from messages)::text as messages,
+            (select count(*) from tool_events)::text as tool_events,
+            (select count(*) from memory_events)::text as memory_events,
+            (select count(*) from memory_event_sources)::text as memory_event_sources,
+            (select count(*) from memory_nodes)::text as memory_nodes,
+            (select count(*) from memory_node_sources)::text as memory_node_sources,
+            (select count(*) from memory_node_children)::text as memory_node_children,
+            (select count(*) from memory_embeddings)::text as memory_embeddings,
+            (select count(*) from semantic_memory_rebuild_jobs)::text as semantic_memory_rebuild_jobs,
+            (select count(*) from memory_questions)::text as memory_questions,
+            (select count(*) from workflow_token_usage)::text as workflow_token_usage,
+            (select count(*) from workflow_token_usage_source_references)::text as workflow_token_usage_source_references,
+            (select count(*) from local_work_queue)::text as local_work_queue
+        `)
+      ).rows[0]!;
+
+    const before = await memorySurfaceCounts();
+    const threads = [];
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "notes_to_self",
+          idempotencyKey: `notes-${randomUUID()}`
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "personal_channel",
+          idempotencyKey: `personal-channel-${randomUUID()}`,
+          name: "Personal planning",
+          topic: "A private scratchpad topic"
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "workspace_channel",
+          idempotencyKey: `workspace-channel-${randomUUID()}`,
+          teamId: team.id,
+          teamWorkspaceId: workspace!.id,
+          name: "Team planning",
+          topic: "A Team collaboration topic"
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "dm",
+          idempotencyKey: `dm-${randomUUID()}`,
+          teamId: team.id,
+          participantUserIds: [member.id]
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "group_dm",
+          idempotencyKey: `group-dm-${randomUUID()}`,
+          teamId: team.id,
+          participantUserIds: [member.id, secondMember.id]
+        }
+      )
+    );
+    expect(threads.every(Boolean)).toBe(true);
+    for (const [index, thread] of threads.entries()) {
+      await protectedRepo.sendMessage(
+        { userId: owner.id },
+        {
+          threadId: thread!.id,
+          idempotencyKey: `message-${index}-${randomUUID()}`,
+          bodyText: `Collaboration-only payload ${index}`,
+          metadata: { collaborationOnly: true },
+          provenance: { kind: "collaboration_test", id: `case-${index}` }
+        }
+      );
+    }
+    const personalSnapshot = await protectedRepo.getAuthorizedSnapshot(
+      { userId: owner.id },
+      { scope: "personal" }
+    );
+    if (!personalSnapshot) {
+      throw new Error("Expected an authorized Personal collaboration snapshot");
+    }
+    const personalThreadsValue = personalSnapshot.threads as unknown;
+    if (!Array.isArray(personalThreadsValue)) {
+      throw new TypeError(
+        "Personal collaboration snapshot threads must be an array"
+      );
+    }
+    const personalThreads: unknown[] = personalThreadsValue;
+    const personalNotesThreadId = threads[0]?.id as unknown;
+    const personalChannelThreadId = threads[1]?.id as unknown;
+    if (
+      typeof personalNotesThreadId !== "string" ||
+      typeof personalChannelThreadId !== "string"
+    ) {
+      throw new TypeError("Created collaboration threads must have string IDs");
+    }
+    const personalNotesThread = personalThreads.find(
+      (thread): thread is Record<string, unknown> =>
+        typeof thread === "object" &&
+        thread !== null &&
+        "id" in thread &&
+        thread.id === personalNotesThreadId
+    );
+    expect(personalNotesThread?.["kind"]).toBe("notes_to_self");
+    expect(personalNotesThread?.["latestSequence"]).toBe(1);
+    const personalChannelThread = personalThreads.find(
+      (thread): thread is Record<string, unknown> =>
+        typeof thread === "object" &&
+        thread !== null &&
+        "id" in thread &&
+        thread.id === personalChannelThreadId
+    );
+    expect(personalChannelThread?.["kind"]).toBe("personal_channel");
+    expect(personalChannelThread?.["name"]).toBe("Personal planning");
+    expect(personalChannelThread?.["topic"]).toBe("A private scratchpad topic");
+    expect(personalChannelThread?.["latestSequence"]).toBe(1);
+    const teamSnapshot = await protectedRepo.getAuthorizedSnapshot(
+      { userId: owner.id },
+      { scope: "team", teamId: team.id }
+    );
+    if (!teamSnapshot) {
+      throw new Error("Expected an authorized Team collaboration snapshot");
+    }
+    for (const thread of threads.slice(2)) {
+      expect(
+        teamSnapshot.threads.some(
+          (candidate) =>
+            candidate.id === thread!.id && candidate.latestSequence === 1
+        )
+      ).toBe(true);
+    }
+
+    expect(await memorySurfaceCounts()).toEqual(before);
+    const collaborationCounts = await pool.query<{
+      messages: string;
+      events: string;
+    }>(`
+        select
+          (select count(*) from collaboration_messages)::text as messages,
+          (select count(*) from collaboration_outbox)::text as events
+      `);
+    expect(collaborationCounts.rows).toHaveLength(1);
+    expect(collaborationCounts.rows[0]?.messages).toBe("5");
+    expect(collaborationCounts.rows[0]?.events).toMatch(/^[1-9][0-9]*$/);
+  });
+
+  it("keeps encrypted Team fixture grants outside generic Personal Memory reads", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 36).toString("base64")
@@ -6717,14 +8862,18 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         { name: "Encrypted Fixture Team" }
       );
-      await encryptedRepo.upsertTeamMember(
-        { userId: owner.id },
-        { teamId: team.id, userId: member.id, role: "member" }
-      );
-      await encryptedRepo.upsertTeamMember(
-        { userId: owner.id },
-        { teamId: team.id, userId: removedMember.id, role: "member" }
-      );
+      await inviteExistingTeamMember({
+        repository: encryptedRepo,
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: member
+      });
+      await inviteExistingTeamMember({
+        repository: encryptedRepo,
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: removedMember
+      });
       const workspace = await encryptedRepo.createTeamWorkspace(
         { userId: owner.id },
         { teamId: team.id, name: "Encrypted Fixture Workspace" }
@@ -6734,7 +8883,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: member.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       );
       await encryptedRepo.setTeamWorkspaceAccess(
@@ -6742,7 +8892,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: removedMember.id,
-          access: "disabled"
+          access: "disabled",
+          expectedVersion: null
         }
       );
 
@@ -6815,20 +8966,14 @@ describeDb("memory repository visibility", () => {
           )
         });
         if (input.shared) {
-          const grant = await encryptedRepo.createTeamSessionShareGrant(
-            { userId: owner.id },
-            { teamWorkspaceId: workspace!.id, sessionId: session.id }
-          );
-          if (input.revoked) {
-            await encryptedRepo.revokeTeamSessionShareGrant(
-              { userId: owner.id },
-              {
-                teamWorkspaceId: workspace!.id,
-                shareGrantId: grant!.id,
-                reason: `${input.label} revoked fixture sentinel`
-              }
-            );
-          }
+          await insertValidSharedMemoryGrant({
+            ownerUserId: owner.id,
+            sessionId: session.id,
+            teamId: team.id,
+            teamWorkspaceId: workspace!.id,
+            revoked: input.revoked,
+            revocationReason: `${input.label} revoked fixture sentinel`
+          });
         }
         return { session, event, node };
       };
@@ -6845,6 +8990,7 @@ describeDb("memory repository visibility", () => {
         shared: true,
         revoked: true
       });
+      const legacyTeamScope = { teamWorkspaceId: workspace!.id };
 
       await queueRepo.enqueue({
         queueName: "memory-embed",
@@ -6901,7 +9047,7 @@ describeDb("memory repository visibility", () => {
       const outsiderEvents = await encryptedRepo.listLcmGraphEvents(
         { userId: outsider.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           limit: 20
         }
@@ -6909,7 +9055,7 @@ describeDb("memory repository visibility", () => {
       const removedMemberNodes = await encryptedRepo.listLcmGraphNodes(
         { userId: removedMember.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           limit: 20
         }
       );
@@ -6920,43 +9066,33 @@ describeDb("memory repository visibility", () => {
       const memberEvents = await encryptedRepo.listLcmGraphEvents(
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           limit: 20
         }
       );
-      expect(memberEvents).toEqual([
-        expect.objectContaining({
-          id: shared.event.id,
-          content:
-            "SharedEncryptedFixtureUnique fixture memory payload sentinel."
-        })
-      ]);
-      expect(JSON.stringify(memberEvents)).not.toContain(
-        "PrivateEncryptedFixtureUnique"
-      );
-      expect(JSON.stringify(memberEvents)).not.toContain(
-        "RevokedEncryptedFixtureUnique"
-      );
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("cwd");
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("projectPath");
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("localProjectId");
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("projectId");
-      expect(JSON.stringify(memberEvents)).not.toContain(
-        "/Users/owner/private-checkout"
-      );
-      expect(decrypt).toHaveBeenCalledTimes(1);
+      expect(memberEvents).toEqual([]);
+      expect(decrypt).not.toHaveBeenCalled();
 
       decrypt.mockClear();
+      const fixtureGate = await encryptedRepo.getTeamEntitlementGate(
+        { userId: owner.id },
+        team.id
+      );
       await encryptedRepo.setTeamEntitlementState(
         { userId: owner.id },
-        { teamId: team.id, status: "suspended", reason: "fixture_suspended" }
+        {
+          teamId: team.id,
+          expectedVersion: fixtureGate!.version,
+          status: "suspended",
+          reason: "fixture_suspended"
+        }
       );
       await expect(
         encryptedRepo.listLcmGraphEvents(
           { userId: member.id },
           {
-            teamWorkspaceId: workspace!.id,
+            ...legacyTeamScope,
             includeContent: true,
             limit: 20
           }
@@ -6966,7 +9102,7 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("decrypts paid managed-cloud redacted Memory Event payloads only after Team authorization", async () => {
+  it("does not decrypt managed-cloud owner-private events through generic Team scope", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 14).toString("base64")
@@ -6992,10 +9128,12 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         { name: "Redacted Team Boundary" }
       );
-      await encryptedRepo.upsertTeamMember(
-        { userId: owner.id },
-        { teamId: team.id, userId: member.id, role: "member" }
-      );
+      await inviteExistingTeamMember({
+        repository: encryptedRepo,
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: member
+      });
       const workspace = await encryptedRepo.createTeamWorkspace(
         { userId: owner.id },
         { teamId: team.id, name: "Redacted Boundary Workspace" }
@@ -7005,7 +9143,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: member.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       );
 
@@ -7038,38 +9177,14 @@ describeDb("memory repository visibility", () => {
           }
         );
         if (input.shared) {
-          await pool.query(
-            `
-              insert into team_session_share_grants (
-                owner_user_id,
-                session_id,
-                team_id,
-                team_workspace_id,
-                granted_by_user_id,
-                revoked_at,
-                revoked_by_user_id,
-                revocation_reason
-              )
-              values (
-                $1,
-                $2,
-                $3,
-                $4,
-                $5,
-                case when $6::boolean then now() else null end,
-                case when $6::boolean then $5::uuid else null end,
-                case when $6::boolean then 'redacted_boundary_revoked' else null end
-              )
-            `,
-            [
-              owner.id,
-              session.id,
-              team.id,
-              workspace!.id,
-              owner.id,
-              input.revoked ?? false
-            ]
-          );
+          await insertValidSharedMemoryGrant({
+            ownerUserId: owner.id,
+            sessionId: session.id,
+            teamId: team.id,
+            teamWorkspaceId: workspace!.id,
+            revoked: input.revoked,
+            revocationReason: "redacted_boundary_revoked"
+          });
         }
         return event;
       };
@@ -7086,6 +9201,7 @@ describeDb("memory repository visibility", () => {
         shared: true,
         revoked: true
       });
+      const legacyTeamScope = { teamWorkspaceId: workspace!.id };
 
       const storedPayloads = await pool.query<{ payloads: string }>(
         `
@@ -7103,36 +9219,33 @@ describeDb("memory repository visibility", () => {
       const graphEvents = await encryptedRepo.listLcmGraphEvents(
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           limit: 20
         }
       );
-      expect(graphEvents).toEqual([
-        expect.objectContaining({
-          id: shared.id,
-          content:
-            "SharedRedactedBoundaryUnique paid cloud redacted payload sentinel."
-        })
-      ]);
-      expect(JSON.stringify(graphEvents)).not.toContain(
-        "PrivateRedactedBoundaryUnique"
-      );
-      expect(JSON.stringify(graphEvents)).not.toContain(
-        "RevokedRedactedBoundaryUnique"
-      );
-      expect(decrypt).toHaveBeenCalledTimes(1);
+      expect(graphEvents).toEqual([]);
+      expect(decrypt).not.toHaveBeenCalled();
 
       decrypt.mockClear();
+      const redactedGate = await encryptedRepo.getTeamEntitlementGate(
+        { userId: owner.id },
+        team.id
+      );
       await encryptedRepo.setTeamEntitlementState(
         { userId: owner.id },
-        { teamId: team.id, status: "suspended", reason: "test_suspension" }
+        {
+          teamId: team.id,
+          expectedVersion: redactedGate!.version,
+          status: "suspended",
+          reason: "test_suspension"
+        }
       );
       await expect(
         encryptedRepo.listLcmGraphEvents(
           { userId: member.id },
           {
-            teamWorkspaceId: workspace!.id,
+            ...legacyTeamScope,
             includeContent: true,
             limit: 20
           }
@@ -7142,7 +9255,7 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("filters Team-expanded supporting context to shared Workspace sessions", async () => {
+  it("keeps supporting context owner-private despite a legacy Team scope property", async () => {
     const owner = await repo.createUser({
       email: `supporting-context-owner-${randomUUID()}@example.com`
     });
@@ -7153,10 +9266,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Supporting Context Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Supporting Context Workspace" }
@@ -7166,7 +9280,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
 
@@ -7280,25 +9395,19 @@ describeDb("memory repository visibility", () => {
       `,
       [node.id, sharedEvent.id]
     );
-    await pool.query(
-      `
-        insert into team_session_share_grants (
-          owner_user_id,
-          session_id,
-          team_id,
-          team_workspace_id,
-          granted_by_user_id
-        )
-        values ($1, $2, $3, $4, $5)
-      `,
-      [owner.id, sharedSession.id, team.id, workspace!.id, owner.id]
-    );
+    await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: sharedSession.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id
+    });
+    const legacyTeamScope = { teamWorkspaceId: workspace!.id };
 
     const supportingTextFor = async (userId: string) => {
       const expanded = await repo.expandMemoryNode(
         node.id,
         { userId },
-        { teamWorkspaceId: workspace!.id }
+        { ...legacyTeamScope, searchDomain: "global" }
       );
       return expanded.sourceItems
         .flatMap((item) => item.supportingContext ?? [])
@@ -7306,19 +9415,15 @@ describeDb("memory repository visibility", () => {
         .join("\n");
     };
 
-    const memberSupportingText = await supportingTextFor(member.id);
-    expect(memberSupportingText).toContain(
-      "Shared IDE context visible to the Team Workspace."
-    );
-    expect(memberSupportingText).not.toContain(
-      "Private IDE context must not leak to the Team Workspace."
+    await expect(supportingTextFor(member.id)).rejects.toThrow(
+      "Memory node not found or not visible"
     );
 
     const ownerSupportingText = await supportingTextFor(owner.id);
     expect(ownerSupportingText).toContain(
       "Shared IDE context visible to the Team Workspace."
     );
-    expect(ownerSupportingText).not.toContain(
+    expect(ownerSupportingText).toContain(
       "Private IDE context must not leak to the Team Workspace."
     );
   });
@@ -7341,52 +9446,90 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Invite Team" }
     );
-    const workspace = await repo.createTeamWorkspace(
-      { userId: owner.id },
-      { teamId: team.id, name: "Launch Workspace" }
-    );
+    const defaultWorkspace = (
+      await repo.listTeamWorkspaces(
+        { userId: owner.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((candidate) => candidate.name === "General");
+    expect(defaultWorkspace).toBeDefined();
 
     const existingTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`invite-origin:${randomUUID()}`)
+      .digest("hex");
     const existingInvite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: existingUserEmail.toUpperCase(),
         role: "member",
+        backendOriginHash,
         tokenHash: existingTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
     );
     expect(existingInvite).toMatchObject({
       teamId: team.id,
+      defaultTeamWorkspaceId: defaultWorkspace!.id,
+      defaultWorkspaceAccess: "read",
       email: existingUserEmail,
+      normalizedEmail: existingUserEmail,
+      backendOriginHash,
       role: "member",
+      version: 1,
+      lifecycle: "pending",
       acceptedAt: null,
       revokedAt: null
     });
     await expect(
       repo.getTeamMembership({ userId: existingUser.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "member",
-      status: "invited"
-    });
+    ).resolves.toBeNull();
 
     await expect(
       repo.createTeamInvite(
         { userId: outsider.id },
         {
           teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
           email: `blocked-${randomUUID()}@example.com`,
           role: "member",
+          backendOriginHash,
           tokenHash: `blocked-${randomUUID()}-${randomUUID()}`,
           expiresAt: new Date(Date.now() + 60_000)
         }
       )
     ).resolves.toBeNull();
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: existingTokenHash,
+        userId: outsider.id,
+        expectedVersion: existingInvite!.version,
+        expectedBackendOriginHash: backendOriginHash
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: existingTokenHash,
+        userId: existingUser.id,
+        expectedVersion: existingInvite!.version,
+        expectedBackendOriginHash: createHash("sha256")
+          .update("wrong-backend-origin")
+          .digest("hex")
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamMembership({ userId: existingUser.id }, team.id)
+    ).resolves.toBeNull();
 
     const acceptedExisting = await repo.acceptTeamInvite({
       tokenHash: existingTokenHash,
-      userId: existingUser.id
+      userId: existingUser.id,
+      expectedVersion: existingInvite!.version,
+      expectedBackendOriginHash: backendOriginHash
     });
     expect(acceptedExisting).toMatchObject({
       createdUser: false,
@@ -7398,162 +9541,287 @@ describeDb("memory repository visibility", () => {
         teamId: team.id,
         userId: existingUser.id,
         role: "member",
-        status: "enabled"
+        status: "enabled",
+        version: 1
+      },
+      invite: {
+        lifecycle: "accepted",
+        version: 2
       }
     });
-    expect(acceptedExisting?.invite.acceptedAt).toEqual(expect.any(String));
     await expect(
       repo.acceptTeamInvite({
         tokenHash: existingTokenHash,
-        userId: existingUser.id
+        userId: existingUser.id,
+        expectedVersion: existingInvite!.version,
+        expectedBackendOriginHash: backendOriginHash
       })
     ).resolves.toBeNull();
 
-    await repo.createTeamInvite(
+    const promoted = await repo.updateTeamMemberRole(
       { userId: owner.id },
       {
         teamId: team.id,
-        email: existingUserEmail,
-        role: "member",
-        tokenHash: `reinvite-${randomUUID()}-${randomUUID()}`,
-        expiresAt: new Date(Date.now() + 60_000)
+        userId: existingUser.id,
+        role: "admin",
+        expectedVersion: acceptedExisting!.membership.version
       }
     );
-    await expect(
-      repo.getTeamMembership({ userId: existingUser.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "member",
-      status: "enabled"
-    });
+    expect(promoted).toMatchObject({ role: "admin", version: 2 });
 
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: existingUser.id, role: "admin" }
-    );
-    const lowerRoleInviteHash = `lower-role-${randomUUID()}-${randomUUID()}`;
-    await repo.createTeamInvite(
+    const lowerRoleTokenHash = `lower-role-${randomUUID()}-${randomUUID()}`;
+    const lowerRoleOriginHash = createHash("sha256")
+      .update(`lower-role-origin:${randomUUID()}`)
+      .digest("hex");
+    const lowerRoleInvite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: existingUserEmail,
         role: "member",
-        tokenHash: lowerRoleInviteHash,
+        backendOriginHash: lowerRoleOriginHash,
+        tokenHash: lowerRoleTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
+    );
+    const firstInvitePage = await repo.listTeamInvites(
+      { userId: owner.id },
+      { teamId: team.id, includeRevoked: false, limit: 1 }
+    );
+    expect(firstInvitePage?.invites).toHaveLength(1);
+    expect(firstInvitePage?.nextCursor).not.toBeNull();
+    const secondInvitePage = await repo.listTeamInvites(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        includeRevoked: false,
+        limit: 1,
+        cursor: firstInvitePage!.nextCursor!
+      }
+    );
+    expect(secondInvitePage?.invites).toHaveLength(1);
+    expect(secondInvitePage?.invites[0]?.id).not.toBe(
+      firstInvitePage?.invites[0]?.id
     );
     await expect(
       repo.acceptTeamInvite({
-        tokenHash: lowerRoleInviteHash,
-        userId: existingUser.id
+        tokenHash: lowerRoleTokenHash,
+        userId: existingUser.id,
+        expectedVersion: lowerRoleInvite!.version,
+        expectedBackendOriginHash: lowerRoleOriginHash
       })
     ).resolves.toMatchObject({
       membership: {
         teamId: team.id,
         userId: existingUser.id,
         role: "admin",
-        status: "enabled"
+        status: "enabled",
+        version: 3
       }
     });
 
-    const invitedOwnerEmail = `invited-owner-${randomUUID()}@example.com`;
-    const invitedOwner = await repo.createUser({
-      email: invitedOwnerEmail,
-      displayName: "Invited Owner"
+    const ownerCandidate = await repo.createUser({
+      email: `owner-candidate-${randomUUID()}@example.com`
     });
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        userId: invitedOwner.id,
-        role: "owner",
-        status: "invited"
-      }
-    );
     await expect(
       repo.createTeamInvite(
         { userId: existingUser.id },
         {
           teamId: team.id,
-          email: invitedOwnerEmail,
-          role: "member",
-          tokenHash: `owner-downgrade-${randomUUID()}-${randomUUID()}`,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "write",
+          email: (
+            await pool.query<{ email: string }>(
+              "select email from users where id = $1",
+              [ownerCandidate.id]
+            )
+          ).rows[0]!.email,
+          role: "owner",
+          backendOriginHash: createHash("sha256")
+            .update(`owner-origin:${randomUUID()}`)
+            .digest("hex"),
+          tokenHash: `owner-invite-${randomUUID()}`,
           expiresAt: new Date(Date.now() + 60_000)
         }
       )
     ).resolves.toBeNull();
-    await expect(
-      repo.getTeamMembership({ userId: invitedOwner.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "owner",
-      status: "invited"
-    });
 
-    await repo.setTeamWorkspaceAccess(
+    const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: existingUser.id,
-        access: "write"
-      }
+      { teamId: team.id, name: "Launch Workspace" }
     );
     await expect(
-      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
-    ).resolves.toMatchObject({
-      access: "write",
-      canRecall: true,
-      canCreateShare: true
-    });
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: existingUser.id,
-        access: "disabled"
-      }
+      repo.listTeamWorkspaces(
+        { userId: existingUser.id },
+        { teamId: team.id, limit: 20 }
+      )
+    ).resolves.not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
     );
-    await expect(
-      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
-    ).resolves.toMatchObject({
-      access: "disabled",
-      canRecall: false,
-      canCreateShare: false
-    });
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: existingUser.id,
-        access: "read"
-      }
+
+    const listener = await pool.connect();
+    let notificationTimer: ReturnType<typeof setTimeout> | undefined;
+    const onNotification = vi.fn();
+    try {
+      await listener.query("listen koed_collaboration_realtime");
+      const notification = new Promise<Record<string, unknown>>(
+        (resolve, reject) => {
+          notificationTimer = setTimeout(
+            () => reject(new Error("Realtime notification was not received")),
+            5_000
+          );
+          onNotification.mockImplementation(
+            (message: { channel: string; payload?: string }) => {
+              if (
+                message.channel !== "koed_collaboration_realtime" ||
+                !message.payload
+              ) {
+                return;
+              }
+              clearTimeout(notificationTimer);
+              resolve(JSON.parse(message.payload) as Record<string, unknown>);
+            }
+          );
+          listener.on("notification", onNotification);
+        }
+      );
+      const writeAccess = await repo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: existingUser.id,
+          access: "write",
+          expectedVersion: null
+        }
+      );
+      expect(writeAccess).toMatchObject({ access: "write", version: 1 });
+      await expect(notification).resolves.toMatchObject({
+        scope: "team",
+        personalOwnerUserId: null,
+        teamId: team.id,
+        family: "workspace_lifecycle_access"
+      });
+      const disabledAccess = await repo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: existingUser.id,
+          access: "disabled",
+          expectedVersion: writeAccess!.version
+        }
+      );
+      expect(disabledAccess).toMatchObject({
+        access: "disabled",
+        version: 2
+      });
+      const readAccess = await repo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: existingUser.id,
+          access: "read",
+          expectedVersion: disabledAccess!.version
+        }
+      );
+      expect(readAccess).toMatchObject({ access: "read", version: 3 });
+    } finally {
+      if (notificationTimer) clearTimeout(notificationTimer);
+      listener.removeListener("notification", onNotification);
+      await listener.query("unlisten koed_collaboration_realtime");
+      listener.release();
+    }
+    const workspaceAccessEvents = await pool.query<{ family: string }>(
+      `
+        select family
+        from collaboration_outbox
+        where team_id = $1
+          and team_workspace_id = $2
+          and resource_type = 'team_workspace_access'
+        order by cursor desc
+        limit 3
+      `,
+      [team.id, workspace!.id]
     );
-    await expect(
-      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
-    ).resolves.toMatchObject({
+    expect(workspaceAccessEvents.rows).toEqual([
+      { family: "workspace_lifecycle_access" },
+      { family: "workspace_lifecycle_access" },
+      { family: "workspace_lifecycle_access" }
+    ]);
+    const managementMembers = await repo.listTeamManagementMembers(
+      { userId: owner.id },
+      team.id
+    );
+    const managedMember = managementMembers?.find(
+      (member) => member.userId === existingUser.id
+    );
+    expect(managedMember?.workspaceAccess).toHaveLength(2);
+    expect(
+      managedMember?.workspaceAccess.find(
+        (access) => access.teamWorkspaceId === defaultWorkspace!.id
+      )
+    ).toMatchObject({
+      userId: existingUser.id,
       access: "read",
-      canRecall: true,
-      canCreateShare: false
+      version: 2
     });
+    expect(
+      managedMember?.workspaceAccess.find(
+        (access) => access.teamWorkspaceId === workspace!.id
+      )
+    ).toMatchObject({
+      userId: existingUser.id,
+      access: "read",
+      version: 3
+    });
+    await expect(
+      repo.listTeamManagementMembers({ userId: outsider.id }, team.id)
+    ).resolves.toBeNull();
 
-    const staleInviteHash = `stale-${randomUUID()}-${randomUUID()}`;
-    await repo.createTeamInvite(
+    const staleTokenHash = `stale-${randomUUID()}-${randomUUID()}`;
+    const staleOriginHash = createHash("sha256")
+      .update(`stale-origin:${randomUUID()}`)
+      .digest("hex");
+    const staleInvite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: existingUserEmail,
         role: "member",
-        tokenHash: staleInviteHash,
+        backendOriginHash: staleOriginHash,
+        tokenHash: staleTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
     );
+    const currentMembership = await repo.getTeamMembership(
+      { userId: existingUser.id },
+      team.id
+    );
     const disabled = await repo.disableTeamMember(
       { userId: owner.id },
-      { teamId: team.id, userId: existingUser.id }
+      {
+        teamId: team.id,
+        userId: existingUser.id,
+        expectedVersion: currentMembership!.version
+      }
     );
     expect(disabled).toMatchObject({
       teamId: team.id,
       userId: existingUser.id,
+      role: "admin",
       status: "disabled"
     });
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: staleTokenHash,
+        userId: existingUser.id,
+        expectedVersion: staleInvite!.version,
+        expectedBackendOriginHash: staleOriginHash
+      })
+    ).resolves.toBeNull();
     await expect(
       repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
     ).resolves.toMatchObject({
@@ -7562,205 +9830,39 @@ describeDb("memory repository visibility", () => {
       canRecall: false,
       canCreateShare: false
     });
-    await expect(
-      repo.acceptTeamInvite({
-        tokenHash: staleInviteHash,
-        userId: existingUser.id
-      })
-    ).resolves.toBeNull();
-    await expect(
-      repo.getTeamMembership({ userId: existingUser.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "admin",
-      status: "disabled"
-    });
-
-    const newUserEmail = `new-member-${randomUUID()}@example.com`;
-    const newUserTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
-    const newUserInvite = await repo.createTeamInvite(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        email: newUserEmail,
-        role: "admin",
-        tokenHash: newUserTokenHash,
-        expiresAt: new Date(Date.now() + 60_000)
-      }
-    );
-    expect(newUserInvite).toMatchObject({
-      email: newUserEmail,
-      role: "admin"
-    });
-
-    const acceptedNewUser = await repo.acceptTeamInvite({
-      tokenHash: newUserTokenHash,
-      email: newUserEmail,
-      displayName: "New Team Admin",
-      passwordHash: "hashed-password"
-    });
-    expect(acceptedNewUser).toMatchObject({
-      createdUser: true,
-      user: {
-        email: newUserEmail,
-        displayName: "New Team Admin",
-        passwordHash: "hashed-password"
-      },
-      membership: {
-        teamId: team.id,
-        role: "admin",
-        status: "enabled"
-      }
-    });
-
-    const concurrentEmail = `concurrent-member-${randomUUID()}@example.com`;
-    const concurrentHashA = `concurrent-a-${randomUUID()}-${randomUUID()}`;
-    const concurrentHashB = `concurrent-b-${randomUUID()}-${randomUUID()}`;
-    await repo.createTeamInvite(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        email: concurrentEmail,
-        role: "member",
-        tokenHash: concurrentHashA,
-        expiresAt: new Date(Date.now() + 60_000)
-      }
-    );
-    await repo.createTeamInvite(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        email: concurrentEmail,
-        role: "member",
-        tokenHash: concurrentHashB,
-        expiresAt: new Date(Date.now() + 60_000)
-      }
-    );
-    const concurrentAccepted = await Promise.all([
-      repo.acceptTeamInvite({
-        tokenHash: concurrentHashA,
-        email: concurrentEmail,
-        displayName: "Concurrent Member"
-      }),
-      repo.acceptTeamInvite({
-        tokenHash: concurrentHashB,
-        email: concurrentEmail,
-        displayName: "Concurrent Member"
-      })
-    ]);
-    expect(concurrentAccepted).toHaveLength(2);
-    expect(concurrentAccepted[0]?.user.id).toBe(concurrentAccepted[1]?.user.id);
-    expect(
-      concurrentAccepted.filter((accepted) => accepted?.createdUser).length
-    ).toBe(1);
-
-    await expect(
-      repo.disableTeamMember(
-        { userId: acceptedNewUser!.user.id },
-        { teamId: team.id, userId: owner.id }
-      )
-    ).resolves.toBeNull();
 
     const auditRows = await pool.query<{
       action: string;
       metadata: Record<string, unknown>;
-      audit_sequence: string;
     }>(
       `
-        select action, metadata, audit_sequence
+        select action, metadata
         from audit_events
-        where action like 'team.%'
+        where metadata ->> 'teamId' = $1
         order by created_at asc, audit_sequence asc
-      `
+      `,
+      [team.id]
     );
     expect(auditRows.rows.map((row) => row.action)).toEqual(
       expect.arrayContaining([
         "team.invite.created",
         "team.invite.accepted",
         "team.member.enabled",
+        "team.member.role_changed",
         "team.member.disabled",
         "team.workspace.created",
         "team.workspace_access.created",
         "team.workspace_access.removed"
       ])
     );
-    expect(
-      auditRows.rows.find(
-        (row) => row.action === "team.workspace_access.created"
-      )?.metadata
-    ).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id,
-      access: "write",
-      previousAccess: "disabled"
-    });
-    expect(
-      auditRows.rows.find(
-        (row) => row.action === "team.workspace_access.removed"
-      )?.metadata
-    ).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id,
-      access: "disabled",
-      previousAccess: "write"
-    });
-    const accessEvents = auditRows.rows.filter(
-      (row) =>
-        row.metadata.teamWorkspaceId === workspace!.id &&
-        row.metadata.userId === existingUser.id
-    );
-    expect(accessEvents.map((row) => row.action)).toEqual([
-      "team.workspace_access.created",
-      "team.workspace_access.removed",
-      "team.workspace_access.created"
-    ]);
-    expect(accessEvents.at(-1)?.metadata).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id,
-      access: "read",
-      previousAccess: "disabled"
-    });
-    const acceptedAuditIndex = auditRows.rows.findIndex(
-      (row) =>
-        row.action === "team.invite.accepted" &&
-        row.metadata.userId === acceptedNewUser!.user.id
-    );
-    const enabledAuditIndex = auditRows.rows.findIndex(
-      (row) =>
-        row.action === "team.member.enabled" &&
-        row.metadata.userId === acceptedNewUser!.user.id
-    );
-    expect(acceptedAuditIndex).toBeGreaterThanOrEqual(0);
-    expect(enabledAuditIndex).toBeGreaterThan(acceptedAuditIndex);
     for (const row of auditRows.rows) {
-      expect(JSON.stringify(row.metadata)).not.toContain(existingTokenHash);
-      expect(JSON.stringify(row.metadata)).not.toContain(newUserTokenHash);
-      expect(JSON.stringify(row.metadata)).not.toContain("hashed-password");
-      expect(JSON.stringify(row.metadata)).not.toContain("raw memory");
-      expect(JSON.stringify(row.metadata)).not.toContain("Launch Workspace");
+      const metadata = JSON.stringify(row.metadata);
+      expect(metadata).not.toContain(existingTokenHash);
+      expect(metadata).not.toContain(lowerRoleTokenHash);
+      expect(metadata).not.toContain(staleTokenHash);
+      expect(metadata).not.toContain(existingUserEmail);
+      expect(metadata).not.toContain("Launch Workspace");
     }
-    const teamAuditEvents = await repo.listTeamAuditEvents(
-      { userId: owner.id },
-      { teamId: team.id }
-    );
-    const removedAccessAudit = teamAuditEvents?.find(
-      (event) => event.action === "team.workspace_access.removed"
-    );
-    expect(
-      teamAuditEvents?.find((event) => event.action === "team.member.enabled")
-    ).toMatchObject({
-      action: "team.member.enabled"
-    });
-    expect(removedAccessAudit).toMatchObject({
-      action: "team.workspace_access.removed"
-    });
-    expect(removedAccessAudit?.metadata).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id
-    });
     await expect(
       repo.listTeamAuditEvents(
         { userId: owner.id },
@@ -7772,6 +9874,575 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.listTeamAuditEvents({ userId: existingUser.id }, { teamId: team.id })
     ).resolves.toBeNull();
+  });
+  it("rolls back invite acceptance when access or final consumption fails", async () => {
+    for (const failurePhase of ["access", "consume"] as const) {
+      const owner = await repo.createUser({
+        email: `rollback-owner-${failurePhase}-${randomUUID()}@example.com`
+      });
+      const member = await repo.createUser({
+        email: `rollback-member-${failurePhase}-${randomUUID()}@example.com`
+      });
+      const team = await repo.createTeam(
+        { userId: owner.id },
+        { name: `Rollback ${failurePhase} Team` }
+      );
+      const defaultWorkspace = (
+        await repo.listTeamWorkspaces(
+          { userId: owner.id },
+          { teamId: team.id, limit: 10 }
+        )
+      )?.find((candidate) => candidate.name === "General");
+      const email = (
+        await pool.query<{ email: string }>(
+          "select email from users where id = $1",
+          [member.id]
+        )
+      ).rows[0]!.email;
+      const tokenHash = `rollback-${failurePhase}-${randomUUID()}`;
+      const backendOriginHash = createHash("sha256")
+        .update(`rollback-origin-${failurePhase}:${randomUUID()}`)
+        .digest("hex");
+      const invite = await repo.createTeamInvite(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
+          email,
+          role: "member",
+          backendOriginHash,
+          tokenHash,
+          expiresAt: new Date(Date.now() + 60_000)
+        }
+      );
+      const outboxBefore = await pool.query<{ count: string }>(
+        "select count(*)::text as count from collaboration_outbox where team_id = $1",
+        [team.id]
+      );
+      const billingBefore = await repo.getTeamBillingSeatState(
+        { userId: owner.id },
+        team.id
+      );
+      const removeTrigger = await installRejectingTrigger(
+        failurePhase === "access"
+          ? {
+              table: "team_workspace_access_grants",
+              operation: "insert",
+              predicate: `new.user_id = '${member.id}'::uuid and new.team_workspace_id = '${defaultWorkspace!.id}'::uuid`
+            }
+          : {
+              table: "team_invites",
+              operation: "update",
+              predicate: `new.id = '${invite!.id}'::uuid and new.lifecycle = 'accepted'`
+            }
+      );
+      try {
+        await expect(
+          repo.acceptTeamInvite({
+            tokenHash,
+            userId: member.id,
+            expectedVersion: invite!.version,
+            expectedBackendOriginHash: backendOriginHash
+          })
+        ).rejects.toThrow();
+      } finally {
+        await removeTrigger();
+      }
+
+      await expect(
+        repo.getPendingTeamInviteByTokenHash(tokenHash)
+      ).resolves.toMatchObject({
+        id: invite!.id,
+        lifecycle: "pending",
+        version: invite!.version,
+        acceptedByUserId: null
+      });
+      await expect(
+        repo.getTeamMembership({ userId: member.id }, team.id)
+      ).resolves.toBeNull();
+      const partialRows = await pool.query<{
+        memberships: string;
+        access_grants: string;
+        accepted_audits: string;
+      }>(
+        `select
+           (select count(*) from team_memberships where team_id = $1 and user_id = $2)::text as memberships,
+           (select count(*) from team_workspace_access_grants where team_id = $1 and user_id = $2)::text as access_grants,
+           (select count(*) from audit_events where action = 'team.invite.accepted' and target_id = $3)::text as accepted_audits`,
+        [team.id, member.id, invite!.id]
+      );
+      expect(partialRows.rows[0]).toEqual({
+        memberships: "0",
+        access_grants: "0",
+        accepted_audits: "0"
+      });
+      await expect(
+        pool.query<{ count: string }>(
+          "select count(*)::text as count from collaboration_outbox where team_id = $1",
+          [team.id]
+        )
+      ).resolves.toMatchObject({ rows: outboxBefore.rows });
+      await expect(
+        repo.getTeamBillingSeatState({ userId: owner.id }, team.id)
+      ).resolves.toEqual(billingBefore);
+    }
+  });
+
+  it("accepts a Team invite only once under concurrency", async () => {
+    const owner = await repo.createUser({
+      email: `concurrent-invite-owner-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `concurrent-invite-member-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Concurrent Invite Team" }
+    );
+    const defaultWorkspace = (await repo.listTeamWorkspaces(
+      { userId: owner.id },
+      { teamId: team.id, limit: 10 }
+    ))![0]!;
+    const email = (
+      await pool.query<{ email: string }>(
+        "select email from users where id = $1",
+        [member.id]
+      )
+    ).rows[0]!.email;
+    const tokenHash = `concurrent-invite-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`concurrent-invite-origin:${randomUUID()}`)
+      .digest("hex");
+    const invite = await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace.id,
+        defaultWorkspaceAccess: "read",
+        email,
+        role: "member",
+        backendOriginHash,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+
+    const attempts = await Promise.all([
+      repo.acceptTeamInvite({
+        tokenHash,
+        userId: member.id,
+        expectedVersion: invite!.version,
+        expectedBackendOriginHash: backendOriginHash
+      }),
+      repo.acceptTeamInvite({
+        tokenHash,
+        userId: member.id,
+        expectedVersion: invite!.version,
+        expectedBackendOriginHash: backendOriginHash
+      })
+    ]);
+    expect(attempts.filter((attempt) => attempt !== null)).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt === null)).toHaveLength(1);
+    const rows = await pool.query<{
+      memberships: string;
+      access_grants: string;
+      accepted_invites: string;
+    }>(
+      `select
+         (select count(*) from team_memberships where team_id = $1 and user_id = $2)::text as memberships,
+         (select count(*) from team_workspace_access_grants where team_id = $1 and user_id = $2)::text as access_grants,
+         (select count(*) from team_invites where id = $3 and lifecycle = 'accepted')::text as accepted_invites`,
+      [team.id, member.id, invite!.id]
+    );
+    expect(rows.rows[0]).toEqual({
+      memberships: "1",
+      access_grants: "1",
+      accepted_invites: "1"
+    });
+  });
+
+  it("lists only Workspaces with an explicit active grant, including for admins", async () => {
+    const owner = await repo.createUser({
+      email: `workspace-list-owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `workspace-list-admin-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Workspace Listing Team" }
+    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: admin,
+      role: "admin"
+    });
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Explicit Grant Workspace" }
+    );
+
+    const beforeGrant = await repo.listTeamWorkspaces(
+      { userId: admin.id },
+      { teamId: team.id, limit: 20 }
+    );
+    expect(beforeGrant).toEqual([expect.objectContaining({ name: "General" })]);
+    expect(beforeGrant).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
+    );
+
+    const grant = await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "read",
+        expectedVersion: null
+      }
+    );
+    await expect(
+      repo.listTeamWorkspaces(
+        { userId: admin.id },
+        { teamId: team.id, limit: 20 }
+      )
+    ).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
+    );
+
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "disabled",
+        expectedVersion: grant!.version
+      }
+    );
+    await expect(
+      repo.listTeamWorkspaces(
+        { userId: admin.id },
+        { teamId: team.id, limit: 20 }
+      )
+    ).resolves.not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
+    );
+  });
+
+  it("serializes billing and entitlement compare-and-swap races", async () => {
+    const entitlementOwner = await repo.createUser({
+      email: `entitlement-race-owner-${randomUUID()}@example.com`
+    });
+    const entitlementTeam = await repo.createTeam(
+      { userId: entitlementOwner.id },
+      { name: "Entitlement CAS Team" }
+    );
+    const entitlement = await repo.getTeamEntitlementGate(
+      { userId: entitlementOwner.id },
+      entitlementTeam.id
+    );
+    const entitlementRace = await Promise.allSettled([
+      repo.setTeamEntitlementState(
+        { userId: entitlementOwner.id },
+        {
+          teamId: entitlementTeam.id,
+          expectedVersion: entitlement!.version,
+          status: "grace",
+          reason: "cas_grace"
+        }
+      ),
+      repo.setTeamEntitlementState(
+        { userId: entitlementOwner.id },
+        {
+          teamId: entitlementTeam.id,
+          expectedVersion: entitlement!.version,
+          status: "suspended",
+          reason: "cas_suspended"
+        }
+      )
+    ]);
+    expect(
+      entitlementRace.filter((result) => result.status === "fulfilled")
+    ).toHaveLength(1);
+    expect(
+      entitlementRace.filter((result) => result.status === "rejected")
+    ).toHaveLength(1);
+    await expect(
+      repo.getTeamEntitlementGate(
+        { userId: entitlementOwner.id },
+        entitlementTeam.id
+      )
+    ).resolves.toMatchObject({ version: entitlement!.version + 1 });
+
+    const billingOwner = await repo.createUser({
+      email: `billing-race-owner-${randomUUID()}@example.com`
+    });
+    const billingTeam = await repo.createTeam(
+      { userId: billingOwner.id },
+      { name: "Billing CAS Team" }
+    );
+    const billing = await repo.getTeamBillingSeatState(
+      { userId: billingOwner.id },
+      billingTeam.id
+    );
+    const billingRace = await Promise.allSettled([
+      repo.setTeamBillingSeatPolicy(
+        { userId: billingOwner.id },
+        {
+          teamId: billingTeam.id,
+          expectedVersion: billing!.version,
+          seatLimit: 1
+        }
+      ),
+      repo.setTeamBillingSeatPolicy(
+        { userId: billingOwner.id },
+        {
+          teamId: billingTeam.id,
+          expectedVersion: billing!.version,
+          seatLimit: 2
+        }
+      )
+    ]);
+    expect(
+      billingRace.filter((result) => result.status === "fulfilled")
+    ).toHaveLength(1);
+    expect(
+      billingRace.filter((result) => result.status === "rejected")
+    ).toHaveLength(1);
+    await expect(
+      repo.getTeamBillingSeatState({ userId: billingOwner.id }, billingTeam.id)
+    ).resolves.toMatchObject({ version: billing!.version + 1 });
+  });
+
+  it("revalidates current Team roles before management mutations", async () => {
+    const owner = await repo.createUser({
+      email: `role-revalidation-owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `role-revalidation-admin-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `role-revalidation-member-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Role Revalidation Team" }
+    );
+    const adminMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin",
+        defaultWorkspaceAccess: "write"
+      })
+    ).membership;
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Role Revalidation Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "write",
+        expectedVersion: null
+      }
+    );
+    await inviteExistingTeamMember({
+      actorUserId: admin.id,
+      teamId: team.id,
+      user: member
+    });
+    const cachedAccess = await repo.getTeamWorkspaceAccess(
+      { userId: admin.id },
+      workspace!.id
+    );
+    expect(cachedAccess).toMatchObject({
+      role: "admin",
+      canManageWorkspace: true
+    });
+
+    await repo.updateTeamMemberRole(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        userId: admin.id,
+        role: "member",
+        expectedVersion: adminMembership.version
+      }
+    );
+    await expect(
+      repo.setTeamWorkspaceAccess(
+        { userId: admin.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: member.id,
+          access: "write",
+          expectedVersion: null
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: admin.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      role: "member",
+      canManageWorkspace: false
+    });
+  });
+
+  it("returns a bounded Team roster without management or credential fields", async () => {
+    const ownerEmail = `roster-owner-${randomUUID()}@example.com`;
+    const memberEmail = `roster-member-${randomUUID()}@example.com`;
+    const owner = await repo.createUser({
+      email: ownerEmail,
+      displayName: "Roster Owner",
+      passwordHash: "owner-password-hash"
+    });
+    const member = await repo.createUser({
+      email: memberEmail,
+      displayName: "Roster Member",
+      passwordHash: "member-password-hash"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Bounded Roster Team" }
+    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member,
+      role: "admin"
+    });
+    await pool.query("update users set avatar_reference = $1 where id = $2", [
+      "avatar://member-safe-reference",
+      member.id
+    ]);
+
+    const roster = await repo.listTeamRoster({ userId: member.id }, team.id);
+    expect(roster).toEqual(
+      expect.arrayContaining([
+        {
+          userId: owner.id,
+          displayName: "Roster Owner",
+          avatarReference: null,
+          status: "enabled",
+          presence: "unknown"
+        },
+        {
+          userId: member.id,
+          displayName: "Roster Member",
+          avatarReference: "avatar://member-safe-reference",
+          status: "enabled",
+          presence: "unknown"
+        }
+      ])
+    );
+    expect(roster).toHaveLength(2);
+    const rosterJson = JSON.stringify(roster);
+    expect(rosterJson).not.toContain(ownerEmail);
+    expect(rosterJson).not.toContain(memberEmail);
+    expect(rosterJson).not.toContain("password-hash");
+    expect(rosterJson).not.toContain('"role"');
+    expect(rosterJson).not.toContain('"version"');
+    expect(rosterJson).not.toContain('"acceptedAt"');
+  });
+
+  it("rolls back Team mutations when collaboration outbox insertion fails", async () => {
+    const owner = await repo.createUser({
+      email: `outbox-owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `outbox-admin-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Outbox Atomicity Team" }
+    );
+    const membership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin"
+      })
+    ).membership;
+    const countsBefore = await pool.query<{
+      outbox: string;
+      audits: string;
+    }>(
+      `select
+         (select count(*) from collaboration_outbox where team_id = $1)::text as outbox,
+         (select count(*) from audit_events where action = 'team.member.role_changed' and metadata ->> 'teamId' = $1::text)::text as audits`,
+      [team.id]
+    );
+    const removeTrigger = await installRejectingTrigger({
+      table: "collaboration_outbox",
+      operation: "insert",
+      predicate: `new.resource_type = 'team_membership' and new.resource_id = '${membership.id}'`
+    });
+    try {
+      await expect(
+        repo.updateTeamMemberRole(
+          { userId: owner.id },
+          {
+            teamId: team.id,
+            userId: admin.id,
+            role: "member",
+            expectedVersion: membership.version
+          }
+        )
+      ).rejects.toThrow();
+    } finally {
+      await removeTrigger();
+    }
+
+    await expect(
+      repo.getTeamMembership({ userId: admin.id }, team.id)
+    ).resolves.toMatchObject({ role: "admin", version: membership.version });
+    await expect(
+      pool.query<{
+        outbox: string;
+        audits: string;
+      }>(
+        `select
+           (select count(*) from collaboration_outbox where team_id = $1)::text as outbox,
+           (select count(*) from audit_events where action = 'team.member.role_changed' and metadata ->> 'teamId' = $1::text)::text as audits`,
+        [team.id]
+      )
+    ).resolves.toMatchObject({ rows: countsBefore.rows });
+
+    await expect(
+      repo.updateTeamMemberRole(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          userId: admin.id,
+          role: "member",
+          expectedVersion: membership.version
+        }
+      )
+    ).resolves.toMatchObject({
+      role: "member",
+      version: membership.version + 1
+    });
+    const countsAfter = await pool.query<{
+      outbox: string;
+      audits: string;
+    }>(
+      `select
+         (select count(*) from collaboration_outbox where team_id = $1)::text as outbox,
+         (select count(*) from audit_events where action = 'team.member.role_changed' and metadata ->> 'teamId' = $1::text)::text as audits`,
+      [team.id]
+    );
+    expect(Number(countsAfter.rows[0]!.outbox)).toBe(
+      Number(countsBefore.rows[0]!.outbox) + 1
+    );
+    expect(Number(countsAfter.rows[0]!.audits)).toBe(
+      Number(countsBefore.rows[0]!.audits) + 1
+    );
   });
 
   it("rolls back API token lifecycle changes when audit insertion fails", async () => {
@@ -8128,10 +10799,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Analytics Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
 
     await repo.recordAuditEvent({
       actorUserId: owner.id,
@@ -21234,10 +23906,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Project Assignment Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const teamWorkspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Project Assignment Workspace" }
@@ -21247,7 +23920,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: teamWorkspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
 
@@ -21288,10 +23962,12 @@ describeDb("memory repository visibility", () => {
         }
       }
     );
-    await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: teamWorkspace!.id, sessionId: captured.id }
-    );
+    await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: captured.id,
+      teamId: team.id,
+      teamWorkspaceId: teamWorkspace!.id
+    });
 
     const moved = await repo.moveCapturedSessionToProject(
       { userId: owner.id },
@@ -21328,7 +24004,7 @@ describeDb("memory repository visibility", () => {
     );
     const teamProjects = await repo.listLcmGraphThreads(
       { userId: member.id },
-      { teamWorkspaceId: teamWorkspace!.id, limit: 20 }
+      { ...{ teamWorkspaceId: teamWorkspace!.id }, limit: 20 }
     );
     const engine = createMemoryEngine(repo);
     const movedRecall = await engine.searchMemory({
@@ -21405,19 +24081,7 @@ describeDb("memory repository visibility", () => {
       expect.objectContaining({ sourceId: event.id })
     ]);
     expect(oldProjectRecall.results).toHaveLength(0);
-    expect(teamProjects).toEqual([
-      expect.objectContaining({
-        id: teamWorkspace!.id,
-        name: "Team Workspace",
-        path: null,
-        threads: [
-          expect.objectContaining({
-            projectAssignmentSource: null,
-            capturedProjectProvenance: {}
-          })
-        ]
-      })
-    ]);
+    expect(teamProjects).toEqual([]);
     expect(reset).toMatchObject({
       automaticProject: { id: "project-c" },
       projectOverride: null,

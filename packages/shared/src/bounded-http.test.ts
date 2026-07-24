@@ -96,4 +96,15 @@ describe("bounded HTTP helpers", () => {
     expect(result.response.status).toBe(502);
     expect(result.payload).toEqual({});
   });
+
+  it("can read a bounded JSON error envelope under the same deadline", async () => {
+    const result = await fetchBoundedJsonObject(
+      async () => Response.json({ code: "conflict" }, { status: 409 }),
+      new URL("https://example.com"),
+      {},
+      { timeoutMs: 100, maxBytes: 1_000, readErrorBody: true }
+    );
+    expect(result.response.status).toBe(409);
+    expect(result.payload).toEqual({ code: "conflict" });
+  });
 });

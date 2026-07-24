@@ -13,14 +13,23 @@ const generatedValues = new Map([
     "postgres://koed:generated-postgres-password@localhost:15432/koed"
   ],
   ["API_DATA_ENCRYPTION_KEY", "generated-data-key"],
+  [
+    "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
+    "generated-owner-private-data-key"
+  ],
   ["API_TOKEN_PEPPER", "generated-token-pepper"],
+  ["API_COLLABORATION_LOCAL_BROKER_SECRET", "generated-broker-secret"],
+  ["API_COLLABORATION_REALTIME_CURSOR_SECRET", "generated-cursor-secret"],
   ["EMBEDDING_SERVICE_TOKEN", "generated-embedding-token"]
 ]);
 
 test("retains compatibility-sensitive values from an existing env", () => {
   const example = [
     "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+    "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
     "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
+    "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
+    "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
     "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
     "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
     "DATABASE_URL=replace_with_generated_database_url",
@@ -28,7 +37,10 @@ test("retains compatibility-sensitive values from an existing env", () => {
   ].join("\n");
   const existing = [
     "API_DATA_ENCRYPTION_KEY=old-data-key",
+    "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=old-owner-private-data-key",
     "API_TOKEN_PEPPER=old-token-pepper",
+    "API_COLLABORATION_LOCAL_BROKER_SECRET=old-broker-secret",
+    "API_COLLABORATION_REALTIME_CURSOR_SECRET=old-cursor-secret",
     "EMBEDDING_SERVICE_TOKEN=old-embedding-token",
     "POSTGRES_PASSWORD=old-postgres-password",
     "DATABASE_URL=postgres://koed:old-postgres-password@localhost:15432/koed",
@@ -40,7 +52,19 @@ test("retains compatibility-sensitive values from an existing env", () => {
   );
 
   assert.equal(rendered.get("API_DATA_ENCRYPTION_KEY"), "old-data-key");
+  assert.equal(
+    rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
+    "old-owner-private-data-key"
+  );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "old-token-pepper");
+  assert.equal(
+    rendered.get("API_COLLABORATION_LOCAL_BROKER_SECRET"),
+    "old-broker-secret"
+  );
+  assert.equal(
+    rendered.get("API_COLLABORATION_REALTIME_CURSOR_SECRET"),
+    "old-cursor-secret"
+  );
   assert.equal(rendered.get("EMBEDDING_SERVICE_TOKEN"), "old-embedding-token");
   assert.equal(rendered.get("POSTGRES_PASSWORD"), "old-postgres-password");
   assert.equal(
@@ -59,7 +83,10 @@ test("generates missing generated secrets while preserving non-generated values"
     renderSetupEnv({
       example: [
         "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
+        "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
+        "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
         "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
         "DATABASE_URL=replace_with_generated_database_url",
@@ -71,7 +98,23 @@ test("generates missing generated secrets while preserving non-generated values"
   );
 
   assert.equal(rendered.get("API_DATA_ENCRYPTION_KEY"), "generated-data-key");
+  assert.equal(
+    rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
+    "generated-owner-private-data-key"
+  );
+  assert.notEqual(
+    rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
+    rendered.get("API_DATA_ENCRYPTION_KEY")
+  );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "generated-token-pepper");
+  assert.equal(
+    rendered.get("API_COLLABORATION_LOCAL_BROKER_SECRET"),
+    "generated-broker-secret"
+  );
+  assert.equal(
+    rendered.get("API_COLLABORATION_REALTIME_CURSOR_SECRET"),
+    "generated-cursor-secret"
+  );
   assert.equal(
     rendered.get("EMBEDDING_SERVICE_TOKEN"),
     "generated-embedding-token"
@@ -92,14 +135,20 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
     renderSetupEnv({
       example: [
         "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
+        "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
+        "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
         "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
         "DATABASE_URL=replace_with_generated_database_url"
       ].join("\n"),
       existing: [
         "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "API_TOKEN_PEPPER=",
+        "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
+        "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
         "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
         "DATABASE_URL=replace_with_generated_database_url"
@@ -109,7 +158,19 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
   );
 
   assert.equal(rendered.get("API_DATA_ENCRYPTION_KEY"), "generated-data-key");
+  assert.equal(
+    rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
+    "generated-owner-private-data-key"
+  );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "generated-token-pepper");
+  assert.equal(
+    rendered.get("API_COLLABORATION_LOCAL_BROKER_SECRET"),
+    "generated-broker-secret"
+  );
+  assert.equal(
+    rendered.get("API_COLLABORATION_REALTIME_CURSOR_SECRET"),
+    "generated-cursor-secret"
+  );
   assert.equal(
     rendered.get("EMBEDDING_SERVICE_TOKEN"),
     "generated-embedding-token"

@@ -1,0 +1,924 @@
+import type {
+  CollaborationDurableSend,
+  CollaborationSelection,
+  CollaborationSnapshot,
+  CollaborationThreadReference
+} from "@koed/shared/collaboration";
+import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import { Button } from "@koed/ui";
+import { AlertTriangle, LoaderCircle, X } from "lucide-react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from "react";
+
+import {
+  createCollaborationRendererClient,
+  type CollaborationRendererClient
+} from "../collaboration/renderer-client.js";
+import type {
+  PersonalMemoryInspectorEvent,
+  PersonalMemoryRoute
+} from "./views/personal/index.js";
+import { ActionGrantStatus } from "./collaboration/ActionGrantStatus.js";
+import { useCollaborationController } from "./collaboration/useCollaborationController.js";
+import {
+  createNavigationState,
+  currentNavigationEntry,
+  navigationReducer,
+  type DesktopRoute,
+  type NavigationEntry
+} from "./navigation.js";
+import { CommandPalette } from "./CommandPalette.js";
+import {
+  commandEntriesForSnapshot,
+  type DesktopCommand
+} from "./command-palette.js";
+import { DesktopStatusStore } from "./services/desktop-commands.js";
+import { PersonalMemoryStore } from "./state/personal-memory.js";
+import { ThemeStore } from "./state/theme.js";
+import { useDesktopStatus } from "./state/use-status.js";
+import {
+  AppShell,
+  EmptyRoute,
+  ScopeLine,
+  type TeamRailItem
+} from "./shell/AppShell.js";
+import {
+  PersonalContextNavigation,
+  TeamContextNavigation
+} from "./shell/ContextNavigation.js";
+import { InboxView } from "./views/inbox/index.js";
+import {
+  compactHealthSummary,
+  SetupChecklist,
+  setupIsReady
+} from "./views/onboarding/index.js";
+import { PreferencesView } from "./views/preferences/index.js";
+import "./app.css";
+
+const CollaborationRoutes = lazy(async () => {
+  const module = await import("./collaboration/CollaborationRoutes.js");
+  return { default: module.CollaborationRoutes };
+});
+
+const CollaborationModalLayer = lazy(async () => {
+  const module = await import("./collaboration/CollaborationRoutes.js");
+  return { default: module.CollaborationModalLayer };
+});
+
+const PersonalMemoryWorkspace = lazy(async () => {
+  const module = await import("./views/personal/index.js");
+  return { default: module.PersonalMemoryWorkspace };
+});
+
+const ONBOARDING_KEY = "koed.desktop.onboarding.v1.complete";
+
+const fallbackCollaborationClient = (): CollaborationRendererClient =>
+  createCollaborationRendererClient({
+    command: async () => {
+      throw new Error("Koed Desktop collaboration bridge is unavailable.");
+    },
+    subscribe: () => () => undefined
+  });
+
+const defaultClient = createCollaborationRendererClient(
+  window.koedDesktop?.collaboration ?? {
+    command: async () => {
+      throw new Error("Koed Desktop collaboration bridge is unavailable.");
+    },
+    subscribe: () => () => undefined
+  }
+);
+const statusStore = new DesktopStatusStore();
+const themeStore = new ThemeStore();
+const initialEntry = (onboardingComplete: boolean): NavigationEntry => ({
+  authority: { backendId: null, principalId: "local-personal" },
+  route: onboardingComplete
+    ? { kind: "personal-memory-projects" }
+    : { kind: "onboarding" }
+});
+
+const selectionRoute = (selection: CollaborationSelection): DesktopRoute => {
+  switch (selection.kind) {
+    case "personal_memory":
+      return { kind: "personal-memory-projects" };
+    case "notes_to_self":
+      return { kind: "personal-chat", threadId: "notes-to-self" };
+    case "personal_channel":
+      return { kind: "personal-chat", threadId: selection.threadId };
+    case "team_people":
+      return { kind: "team-people", teamId: selection.teamId };
+    case "team_direct_message":
+      return {
+        kind: "team-direct-message",
+        teamId: selection.teamId,
+        threadId: selection.threadId
+      };
+    case "workspace_channel":
+      return {
+        kind: "workspace-channel",
+        teamId: selection.teamId,
+        workspaceId: selection.workspaceId,
+        threadId: selection.threadId
+      };
+    case "workspace_shared_memory":
+      return {
+        kind: "workspace-shared-memory",
+        teamId: selection.teamId,
+        workspaceId: selection.workspaceId
+      };
+    case "shared_session":
+      return {
+        kind: "shared-session",
+        teamId: selection.teamId,
+        workspaceId: selection.workspaceId,
+        sharedSessionId: selection.sharedSessionId
+      };
+  }
+};
+
+const selectionEntry = (
+  snapshot: CollaborationSnapshot,
+  selection: CollaborationSelection = snapshot.selection
+): NavigationEntry => {
+  return {
+    route: selectionRoute(selection),
+    authority: {
+      backendId: "teamId" in selection ? snapshot.connection.backendId : null,
+      principalId:
+        "teamId" in selection
+          ? (snapshot.navigation.teamPrincipal?.id ?? "unavailable")
+          : snapshot.navigation.personalOwner.id,
+      ...("teamId" in selection ? { teamId: selection.teamId } : {}),
+      ...("workspaceId" in selection
+        ? { workspaceId: selection.workspaceId }
+        : {}),
+      ...("threadId" in selection ? { threadId: selection.threadId } : {}),
+      ...("sharedSessionId" in selection
+        ? { sharedSessionId: selection.sharedSessionId }
+        : {})
+    }
+  };
+};
+
+const routeTeamId = (route: DesktopRoute): string | null =>
+  "teamId" in route ? route.teamId : null;
+
+const entryAuthorized = (
+  entry: NavigationEntry,
+  snapshot: CollaborationSnapshot
+): boolean => {
+  if (entry.route.kind === "inbox" || entry.route.kind === "onboarding") {
+    return true;
+  }
+  const teamId = entry.authority.teamId ?? routeTeamId(entry.route);
+  if (!teamId) {
+    return (
+      entry.authority.principalId === "local-personal" ||
+      entry.authority.principalId === snapshot.navigation.personalOwner.id
+    );
+  }
+  if (
+    entry.authority.backendId !== snapshot.connection.backendId ||
+    entry.authority.principalId !== snapshot.navigation.teamPrincipal?.id
+  ) {
+    return false;
+  }
+  const team = snapshot.navigation.teams.find(
+    ({ id, lifecycle }) => id === teamId && lifecycle === "active"
+  );
+  if (!team) return false;
+  const workspaceId =
+    entry.authority.workspaceId ??
+    ("workspaceId" in entry.route ? entry.route.workspaceId : undefined);
+  if (
+    workspaceId &&
+    !team.workspaces.some(
+      ({ id, lifecycle }) => id === workspaceId && lifecycle === "active"
+    )
+  ) {
+    return false;
+  }
+  const threadId =
+    entry.authority.threadId ??
+    ("threadId" in entry.route ? entry.route.threadId : undefined);
+  if (!threadId) return true;
+  return (
+    team.directMessages.some(({ id, lifecycle }) => {
+      return id === threadId && lifecycle === "active";
+    }) ||
+    team.workspaces.some(({ channels }) =>
+      channels.some(
+        ({ id, lifecycle }) => id === threadId && lifecycle === "active"
+      )
+    ) ||
+    (snapshot.view.kind === "shared_session" &&
+      snapshot.view.companion.thread.id === threadId)
+  );
+};
+
+const personalMemoryRoute = (route: DesktopRoute): PersonalMemoryRoute => {
+  if (route.kind === "personal-memory-project") {
+    return { kind: "project", projectId: route.projectId };
+  }
+  if (route.kind === "personal-memory-session") {
+    return {
+      kind: "session",
+      projectId: route.projectId,
+      sessionId: route.sessionId
+    };
+  }
+  return { kind: "projects" };
+};
+
+const threadReference = (
+  send: CollaborationDurableSend
+): CollaborationThreadReference =>
+  send.authority.scope === "personal"
+    ? {
+        scope: "personal",
+        threadId: send.authority.threadId
+      }
+    : {
+        scope: "team",
+        teamId: send.authority.teamId,
+        threadId: send.authority.threadId
+      };
+
+const readTheme = () => themeStore.current();
+
+export type AppProps = {
+  collaborationClient?: CollaborationRendererClient;
+  initialCollaborationSelection?: CollaborationSelection;
+  onboardingComplete?: boolean;
+  personalMemoryApi?: PersonalDesktopApi | null;
+  statusReadyOverride?: boolean;
+  statusStoreOverride?: DesktopStatusStore;
+};
+
+export function App({
+  collaborationClient: client = defaultClient,
+  initialCollaborationSelection,
+  onboardingComplete = window.localStorage.getItem(ONBOARDING_KEY) === "1",
+  personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
+  statusReadyOverride,
+  statusStoreOverride
+}: AppProps = {}) {
+  const activeStatusStore = statusStoreOverride ?? statusStore;
+  const [navigation, dispatch] = useReducer(
+    navigationReducer,
+    undefined,
+    () => {
+      const initialSnapshot = client.current();
+      return createNavigationState(
+        initialCollaborationSelection && initialSnapshot
+          ? selectionEntry(initialSnapshot, initialCollaborationSelection)
+          : initialEntry(onboardingComplete)
+      );
+    }
+  );
+  const [inspector, setInspector] =
+    useState<PersonalMemoryInspectorEvent | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const initialSelectionApplied = useRef(
+    !initialCollaborationSelection || Boolean(client.current())
+  );
+  const personalMemoryStore = useMemo(
+    () =>
+      personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
+    [personalMemoryApi]
+  );
+  const desktopStatus = useDesktopStatus(activeStatusStore);
+  const localSetupReady =
+    statusReadyOverride ??
+    (desktopStatus.status ? setupIsReady(desktopStatus.status) : undefined);
+  const theme = useSyncExternalStore(
+    themeStore.subscribe,
+    readTheme,
+    readTheme
+  );
+  const collaboration = useCollaborationController(
+    client,
+    localSetupReady ?? false
+  );
+  const route = currentNavigationEntry(navigation).route;
+  const snapshot = collaboration.snapshot;
+  const activeTeamId = routeTeamId(route);
+  const commands = useMemo(
+    () => commandEntriesForSnapshot(snapshot, activeTeamId),
+    [activeTeamId, snapshot]
+  );
+
+  useEffect(() => {
+    void themeStore.load();
+    if (statusReadyOverride === undefined) {
+      void activeStatusStore.refresh();
+    }
+  }, [activeStatusStore, statusReadyOverride]);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    if (initialCollaborationSelection && !initialSelectionApplied.current) {
+      initialSelectionApplied.current = true;
+      dispatch({
+        type: "replace",
+        entry: selectionEntry(snapshot, initialCollaborationSelection)
+      });
+    }
+    dispatch({
+      type: "reconcile-authority",
+      isAuthorized: (entry) => entryAuthorized(entry, snapshot),
+      fallback: {
+        authority: {
+          backendId: null,
+          principalId: snapshot.navigation.personalOwner.id
+        },
+        route: { kind: "personal-memory-projects" }
+      }
+    });
+    if (inspector && !personalMemoryStore) {
+      setInspector(null);
+      setInspectorOpen(false);
+    }
+  }, [
+    inspector,
+    snapshot?.connection.backendId,
+    snapshot?.navigation.personalOwner.id,
+    snapshot?.navigation.teamPrincipal?.id,
+    snapshot?.selection,
+    snapshot?.snapshotRevision
+  ]);
+
+  const navigate = (entry: NavigationEntry) => {
+    setInspectorOpen(false);
+    setInspector(null);
+    dispatch({ type: "push", entry });
+  };
+
+  const choose = (selection: CollaborationSelection) => {
+    if (snapshot) {
+      navigate(selectionEntry(snapshot, selection));
+    }
+    collaboration.choose(selection);
+  };
+
+  const invokeCommand = (command: DesktopCommand) => {
+    if (command.destination.kind === "selection") {
+      choose(command.destination.selection);
+      return;
+    }
+    navigate({
+      authority: currentNavigationEntry(navigation).authority,
+      route: command.destination.route
+    });
+  };
+
+  const openPreferences = (
+    section:
+      | "general"
+      | "capture"
+      | "team-connection"
+      | "about"
+      | "advanced" = "general"
+  ) =>
+    navigate({
+      authority: currentNavigationEntry(navigation).authority,
+      route: { kind: "preferences", section }
+    });
+
+  if (route.kind === "onboarding") {
+    return (
+      <SetupChecklist
+        onComplete={() => {
+          window.localStorage.setItem(ONBOARDING_KEY, "1");
+          navigate({
+            authority: {
+              backendId: null,
+              principalId:
+                snapshot?.navigation.personalOwner.id ?? "local-personal"
+            },
+            route: { kind: "personal-memory-projects" }
+          });
+        }}
+        statusStore={activeStatusStore}
+      />
+    );
+  }
+
+  if (localSetupReady !== true) {
+    return (
+      <SetupChecklist
+        onComplete={() => undefined}
+        showTrustGuide={false}
+        statusStore={activeStatusStore}
+      />
+    );
+  }
+
+  const activeScope =
+    route.kind === "inbox"
+      ? ("inbox" as const)
+      : activeTeamId
+        ? ({ teamId: activeTeamId } as const)
+        : ("personal" as const);
+  const team = activeTeamId
+    ? (snapshot?.navigation.teams.find(({ id }) => id === activeTeamId) ?? null)
+    : null;
+  const teamRail: TeamRailItem[] =
+    snapshot?.navigation.teams
+      .filter(({ lifecycle }) => lifecycle !== "purged")
+      .map((item) => ({
+        connectionState:
+          snapshot.connection.state === "live"
+            ? "healthy"
+            : snapshot.connection.state === "disconnected" ||
+                snapshot.connection.state === "access_revoked"
+              ? "offline"
+              : "degraded",
+        id: item.id,
+        name: item.name,
+        unreadCount: item.unreadCount
+      })) ?? [];
+
+  const contextNavigation =
+    team && snapshot ? (
+      <TeamContextNavigation
+        directMessages={team.directMessages.map((thread) => ({
+          id: thread.id,
+          label:
+            thread.name ??
+            thread.participants
+              .filter(({ id }) => id !== snapshot.navigation.teamPrincipal?.id)
+              .map(({ displayName }) => displayName)
+              .join(", ") ??
+            "Direct message",
+          selected:
+            route.kind === "team-direct-message" &&
+            route.threadId === thread.id,
+          unreadCount: thread.unreadCount
+        }))}
+        onCreateChannel={() => {
+          const workspace = team.workspaces.find(
+            ({ lifecycle, access }) =>
+              lifecycle === "active" && access === "write"
+          );
+          if (workspace) {
+            collaboration.setModal({
+              kind: "workspace_channel",
+              teamId: team.id,
+              workspaceId: workspace.id
+            });
+          }
+        }}
+        onOpenPeople={() => choose({ kind: "team_people", teamId: team.id })}
+        onOpenSharedMemory={(workspaceId) =>
+          choose({
+            kind: "workspace_shared_memory",
+            teamId: team.id,
+            workspaceId
+          })
+        }
+        onSelectChannel={(workspaceId, threadId) =>
+          choose({
+            kind: "workspace_channel",
+            teamId: team.id,
+            workspaceId,
+            threadId
+          })
+        }
+        onSelectDirectMessage={(threadId) =>
+          choose({
+            kind: "team_direct_message",
+            teamId: team.id,
+            threadId
+          })
+        }
+        onStartDirectMessage={() =>
+          collaboration.setModal({
+            kind: "direct_message",
+            teamId: team.id,
+            group: false
+          })
+        }
+        peopleSelected={route.kind === "team-people"}
+        role={team.role}
+        teamName={team.name}
+        workspaces={team.workspaces
+          .filter(({ lifecycle }) => lifecycle !== "purged")
+          .map((workspace) => ({
+            channels: workspace.channels.map((thread) => ({
+              archived: thread.lifecycle === "archived",
+              id: thread.id,
+              label: thread.name ?? "Channel",
+              selected:
+                route.kind === "workspace-channel" &&
+                route.threadId === thread.id,
+              unreadCount: thread.unreadCount
+            })),
+            id: workspace.id,
+            label: workspace.name,
+            selected:
+              "workspaceId" in route && route.workspaceId === workspace.id,
+            sharedMemorySelected:
+              (route.kind === "workspace-shared-memory" ||
+                route.kind === "shared-session") &&
+              route.workspaceId === workspace.id,
+            sharedMemoryUnreadCount: workspace.sharedMemory.reduce(
+              (count, memory) => count + memory.unreadCompanionCount,
+              0
+            )
+          }))}
+      />
+    ) : (
+      <PersonalContextNavigation
+        channels={
+          snapshot?.navigation.personal.channels.map((thread) => ({
+            archived: thread.lifecycle === "archived",
+            id: thread.id,
+            label: thread.name ?? "Channel",
+            selected:
+              route.kind === "personal-chat" && route.threadId === thread.id,
+            unreadCount: thread.unreadCount
+          })) ?? []
+        }
+        notesSelected={
+          route.kind === "personal-chat" &&
+          snapshot?.selection.kind === "notes_to_self"
+        }
+        onCreateChannel={() =>
+          collaboration.setModal({ kind: "personal_channel" })
+        }
+        onOpenNotes={() => choose({ kind: "notes_to_self" })}
+        onOpenProjects={() =>
+          navigate({
+            authority: {
+              backendId: null,
+              principalId:
+                snapshot?.navigation.personalOwner.id ?? "local-personal"
+            },
+            route: { kind: "personal-memory-projects" }
+          })
+        }
+        onSelectChannel={(threadId) =>
+          choose({ kind: "personal_channel", threadId })
+        }
+        projectsSelected={route.kind.startsWith("personal-memory")}
+      />
+    );
+
+  const scopeLine =
+    activeScope === "inbox"
+      ? "Inbox · Authorized activity"
+      : typeof activeScope === "object" && team
+        ? `Team · ${team.name}${"workspaceId" in route ? " · Workspace" : ""}`
+        : "Personal · Private to you";
+
+  let content;
+  if (route.kind === "inbox") {
+    content = (
+      <InboxView
+        activeApprovals={collaboration.actionGrants
+          .filter(
+            ({ state }) =>
+              state === "awaiting_approval" ||
+              state === "approved" ||
+              state === "executing"
+          )
+          .map((grant) => ({
+            expiresAt: grant.expiresAt,
+            id: grant.id,
+            scope: "Protected operation",
+            title: grant.operation
+          }))}
+        error={collaboration.error}
+        loading={collaboration.loadState === "loading"}
+        onOpenPreferences={openPreferences}
+        onOpenSelection={choose}
+        onCopyOutbox={async (send) => {
+          if (send.body) {
+            await collaboration.markdownAdapters.writeClipboard(send.body);
+          }
+        }}
+        onRefresh={async () => {
+          await client.load();
+        }}
+        onRetryOutbox={async (send) => {
+          if (!send.body) return;
+          await client.retryMessage({
+            body: send.body,
+            clientMessageId: send.clientMessageId,
+            thread: threadReference(send)
+          });
+        }}
+        snapshot={snapshot}
+      />
+    );
+  } else if (route.kind.startsWith("personal-memory")) {
+    content =
+      personalMemoryStore && personalMemoryApi ? (
+        <Suspense
+          fallback={
+            <EmptyRoute
+              description="Loading protected Personal Memory."
+              icon={<LoaderCircle aria-hidden="true" />}
+              title="Opening Personal Memory"
+            />
+          }
+        >
+          <PersonalMemoryWorkspace
+            assignSessionProject={personalMemoryApi.assignSessionProject}
+            onInspectEvent={(event) => {
+              setInspector(event);
+              setInspectorOpen(true);
+            }}
+            onNavigate={(next) => {
+              const nextRoute: DesktopRoute =
+                next.kind === "projects"
+                  ? { kind: "personal-memory-projects" }
+                  : next.kind === "project"
+                    ? {
+                        kind: "personal-memory-project",
+                        projectId: next.projectId
+                      }
+                    : {
+                        kind: "personal-memory-session",
+                        projectId: next.projectId,
+                        sessionId: next.sessionId
+                      };
+              navigate({
+                authority: {
+                  backendId: null,
+                  principalId:
+                    snapshot?.navigation.personalOwner.id ?? "local-personal"
+                },
+                route: nextRoute
+              });
+            }}
+            onShareToWorkspace={({ source }) => {
+              collaboration.setModal({
+                kind: "share_personal_memory",
+                sessionId: source.sessionId
+              });
+            }}
+            route={personalMemoryRoute(route)}
+            sharingRecords={
+              snapshot?.navigation.personal.memory.map((entry) => ({
+                entryId: entry.id,
+                logicalMemoryId: entry.logicalMemoryId,
+                sessionId: entry.id,
+                syncState: entry.syncState
+              })) ?? []
+            }
+            store={personalMemoryStore}
+            workspaceCandidates={
+              snapshot?.navigation.teams.flatMap((candidateTeam) =>
+                candidateTeam.workspaces.map((workspace) => ({
+                  access: workspace.access,
+                  authorized: candidateTeam.lifecycle === "active",
+                  lifecycle:
+                    workspace.lifecycle === "purged"
+                      ? "removed"
+                      : workspace.lifecycle,
+                  name: workspace.name,
+                  teamId: candidateTeam.id,
+                  teamLifecycle:
+                    candidateTeam.lifecycle === "active"
+                      ? "active"
+                      : candidateTeam.lifecycle === "suspended"
+                        ? "suspended"
+                        : "removed",
+                  teamName: candidateTeam.name,
+                  workspaceId: workspace.id
+                }))
+              ) ?? []
+            }
+          />
+        </Suspense>
+      ) : (
+        <EmptyRoute
+          description="The protected Personal Memory bridge is unavailable in this window."
+          title="Personal Memory unavailable"
+        />
+      );
+  } else if (route.kind === "preferences") {
+    content = (
+      <PreferencesView
+        collaborationClient={client}
+        collaborationSnapshot={snapshot}
+        initialSection={route.section}
+        onSectionChange={(section) =>
+          dispatch({
+            type: "replace",
+            entry: {
+              authority: currentNavigationEntry(navigation).authority,
+              route: { kind: "preferences", section }
+            }
+          })
+        }
+        onThemeChange={(preference) => void themeStore.set(preference)}
+        statusStore={activeStatusStore}
+        theme={theme.preference}
+        version="0.4.4"
+      />
+    );
+  } else if (snapshot) {
+    content = (
+      <Suspense
+        fallback={
+          <EmptyRoute
+            description="Loading the authorized route."
+            icon={<LoaderCircle aria-hidden="true" />}
+            title="Opening view"
+          />
+        }
+      >
+        <CollaborationRoutes
+          client={client}
+          drafts={collaboration.drafts}
+          markdownAdapters={collaboration.markdownAdapters}
+          onModalChange={collaboration.setModal}
+          onRequestSelection={choose}
+          selectionFailure={collaboration.selectionFailure}
+          snapshot={snapshot}
+        />
+      </Suspense>
+    );
+  } else {
+    content = (
+      <EmptyRoute
+        action={
+          collaboration.loadState === "failed" ? (
+            <Button onClick={collaboration.retry}>Retry</Button>
+          ) : null
+        }
+        description={
+          collaboration.error ?? "Loading the authorized collaboration state."
+        }
+        icon={
+          collaboration.loadState === "failed" ? (
+            <AlertTriangle aria-hidden="true" />
+          ) : (
+            <LoaderCircle aria-hidden="true" />
+          )
+        }
+        title={
+          collaboration.loadState === "failed"
+            ? "Collaboration unavailable"
+            : "Loading collaboration"
+        }
+      />
+    );
+  }
+
+  return (
+    <>
+      <AppShell
+        activeScope={activeScope}
+        canGoBack={navigation.index > 0}
+        canGoForward={navigation.index < navigation.entries.length - 1}
+        contextNavigation={contextNavigation}
+        health={(() => {
+          const summary = compactHealthSummary(desktopStatus.status);
+          return {
+            label: summary.label,
+            state:
+              summary.state === "healthy"
+                ? "healthy"
+                : summary.state === "fault"
+                  ? "needs_attention"
+                  : "starting"
+          } as const;
+        })()}
+        identityLabel={
+          snapshot?.navigation.teamPrincipal?.displayName ??
+          snapshot?.navigation.personalOwner.displayName ??
+          "Local User"
+        }
+        inspector={
+          inspector ? (
+            <dl className="desktop-event-inspector">
+              <div>
+                <dt>Type</dt>
+                <dd>{inspector.event.eventType.replaceAll("_", " ")}</dd>
+              </div>
+              <div>
+                <dt>Captured</dt>
+                <dd>{new Date(inspector.event.timestamp).toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Captured Session</dt>
+                <dd>{inspector.thread.name ?? "Untitled session"}</dd>
+              </div>
+              <div>
+                <dt>Project</dt>
+                <dd>{inspector.project.name}</dd>
+              </div>
+            </dl>
+          ) : undefined
+        }
+        inspectorLabel="Memory Event"
+        inspectorOpen={inspectorOpen}
+        onActivateInbox={() =>
+          navigate({
+            authority: currentNavigationEntry(navigation).authority,
+            route: { kind: "inbox" }
+          })
+        }
+        onActivatePersonal={() =>
+          navigate({
+            authority: {
+              backendId: null,
+              principalId:
+                snapshot?.navigation.personalOwner.id ?? "local-personal"
+            },
+            route: { kind: "personal-memory-projects" }
+          })
+        }
+        onActivateTeam={(teamId) => choose({ kind: "team_people", teamId })}
+        onAddTeam={() => {
+          collaboration.setModal({ kind: "create_or_join" });
+          choose({ kind: "notes_to_self" });
+        }}
+        onCloseInspector={() => setInspectorOpen(false)}
+        onGoBack={() => {
+          setInspector(null);
+          setInspectorOpen(false);
+          dispatch({ type: "back" });
+        }}
+        onGoForward={() => {
+          setInspector(null);
+          setInspectorOpen(false);
+          dispatch({ type: "forward" });
+        }}
+        onOpenCommandPalette={() => setCommandOpen(true)}
+        onOpenHealth={() => openPreferences("advanced")}
+        onOpenPreferences={() => openPreferences()}
+        onToggleInspector={() =>
+          setInspectorOpen((current) => Boolean(inspector) && !current)
+        }
+        scopeLine={<ScopeLine>{scopeLine}</ScopeLine>}
+        teams={teamRail}
+        routeFocusKey={JSON.stringify(route)}
+      >
+        {collaboration.announcement ? (
+          <div className="desktop-global-notice" role="status">
+            <span>{collaboration.announcement}</span>
+            <button
+              aria-label="Dismiss notice"
+              onClick={collaboration.clearAnnouncement}
+              type="button"
+            >
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
+        <ActionGrantStatus
+          actionGrants={collaboration.actionGrants}
+          client={client}
+        />
+        {content}
+      </AppShell>
+
+      <CommandPalette
+        commands={commands}
+        onInvoke={invokeCommand}
+        onOpenChange={setCommandOpen}
+        open={commandOpen}
+      />
+
+      {snapshot ? (
+        <Suspense fallback={null}>
+          <CollaborationModalLayer
+            client={client}
+            modal={collaboration.modal}
+            onModalChange={collaboration.setModal}
+            snapshot={snapshot}
+          />
+        </Suspense>
+      ) : null}
+
+      <div
+        aria-atomic="true"
+        aria-live="polite"
+        className="desktop-live-region"
+      >
+        {collaboration.liveAnnouncement ? (
+          <span key={collaboration.liveAnnouncement.id}>
+            {collaboration.liveAnnouncement.text}
+          </span>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+export const createFallbackCollaborationClientForTests =
+  fallbackCollaborationClient;

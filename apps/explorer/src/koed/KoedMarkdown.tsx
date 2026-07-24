@@ -4,8 +4,7 @@ import type { Components } from "react-markdown";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { Button } from "../components/ui/button";
-import { cn } from "../lib/cn";
+import { Button, cn } from "@koed/ui";
 
 interface KoedMarkdownProps {
   className?: string;

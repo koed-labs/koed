@@ -187,24 +187,34 @@ describe("stopKoedServer", () => {
     ).toBeTruthy();
   });
 
-  it("does not signal a supervisor that fails to exit naturally", () => {
+  it("escalates a supervisor that fails to exit naturally", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime({ processes: {} }));
     writeSupervisorLock(koedHome, 100);
     const signals: Array<[number, NodeJS.Signals]> = [];
+    let running = true;
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
-      kill: (pid, signal) => signals.push([pid, signal]),
-      checkPid: (pid) => pid === 100,
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        if (signal === "SIGKILL") running = false;
+      },
+      checkPid: (pid) => pid === 100 && running,
       waitForExitMs: 1,
       pollIntervalMs: 1,
       sleepSync: () => undefined
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.errors?.[0]?.error).toContain("exit naturally");
-    expect(signals).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(signals).toEqual([
+      [100, "SIGTERM"],
+      [100, "SIGKILL"]
+    ]);
+    expect(result.stoppedServices).toContain("supervisor");
+    expect(() =>
+      readFileSync(resolve(koedHome, "run", "koed-server.json"))
+    ).toThrow();
   });
 
   it("does not remove runtime state replaced while stop is in progress", () => {

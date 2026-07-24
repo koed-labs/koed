@@ -6,6 +6,7 @@ import { resolveWorkerEnv } from "./env-config.js";
 describe("resolveWorkerEnv", () => {
   it("uses development defaults", () => {
     expect(resolveWorkerEnv({})).toEqual({
+      teamCollaborationEnabled: false,
       queueBackend: "bullmq",
       redisUrl: "redis://localhost:6379",
       databaseConfigured: false,
@@ -21,6 +22,9 @@ describe("resolveWorkerEnv", () => {
       rawProjectionActorLimit: 10,
       crossIdentitySyncIntervalMs: 1000,
       crossIdentitySyncStaleAfterSeconds: 86400,
+      retentionPurgeIntervalMs: 1000,
+      collaborationReplayPruneIntervalMs: 60000,
+      collaborationReplayPruneBatchLimit: 1000,
       koedHome: resolve(homedir(), ".koed"),
       historicalImport: {
         maxRows: 100,
@@ -61,12 +65,16 @@ describe("resolveWorkerEnv", () => {
         MEMORY_HISTORICAL_IMPORT_INTERACTIVE_BACKLOG_MAX: "2",
         MEMORY_HISTORICAL_IMPORT_API_READY_URL: "http://api.test/ready",
         MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS: "500",
+        RETENTION_PURGE_INTERVAL_MS: "1500",
+        COLLABORATION_REPLAY_PRUNE_INTERVAL_MS: "45000",
+        COLLABORATION_REPLAY_PRUNE_BATCH_LIMIT: "250",
         WORKER_LOG_LEVEL: "debug",
         WORKER_LOG_DESTINATION: "both",
         WORKER_LOG_FILE: "/tmp/koed-worker.log",
         EMBEDDING_MODEL: "qwen3-0.6b"
       })
     ).toMatchObject({
+      teamCollaborationEnabled: false,
       queueBackend: "bullmq",
       redisUrl: "redis://local:6379",
       databaseUrl: "postgres://local",
@@ -93,6 +101,9 @@ describe("resolveWorkerEnv", () => {
       },
       historicalImportApiReadyUrl: "http://api.test/ready",
       historicalImportApiReadyTimeoutMs: 500,
+      retentionPurgeIntervalMs: 1500,
+      collaborationReplayPruneIntervalMs: 45000,
+      collaborationReplayPruneBatchLimit: 250,
       logLevel: "debug",
       logDestination: {
         destination: "both",
@@ -159,6 +170,22 @@ describe("resolveWorkerEnv", () => {
     ).toBe("local");
   });
 
+  it("uses the strict shared Team collaboration setting", () => {
+    expect(
+      resolveWorkerEnv({ KOED_TEAM_COLLABORATION_ENABLED: "true" })
+        .teamCollaborationEnabled
+    ).toBe(true);
+    expect(
+      resolveWorkerEnv({ KOED_TEAM_COLLABORATION_ENABLED: "false" })
+        .teamCollaborationEnabled
+    ).toBe(false);
+    expect(() =>
+      resolveWorkerEnv({ KOED_TEAM_COLLABORATION_ENABLED: "TRUE" })
+    ).toThrow(
+      'KOED_TEAM_COLLABORATION_ENABLED must be exactly "true" or "false"'
+    );
+  });
+
   it("requires production BullMQ service configuration", () => {
     expect(() => resolveWorkerEnv({ NODE_ENV: "production" })).toThrow(
       "DATABASE_URL, REDIS_URL, EMBEDDING_SERVICE_URL, EMBEDDING_SERVICE_TOKEN, EMBEDDING_MODEL"
@@ -222,7 +249,13 @@ describe("resolveWorkerEnv", () => {
         MANAGED_KMS_KEY_ID: "byok:customer-key",
         MANAGED_KMS_KEY_VERSION: "1",
         MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example",
-        MANAGED_KMS_AUTH_TOKEN: "secret-token"
+        MANAGED_KMS_AUTH_TOKEN: "secret-token",
+        OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER: "byok",
+        OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID: "byok:owner-private-key",
+        OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION: "1",
+        OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL:
+          "https://kms.koed.example",
+        OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN: "owner-secret-token"
       })
     ).not.toThrow();
   });

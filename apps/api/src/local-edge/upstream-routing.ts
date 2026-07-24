@@ -6,7 +6,10 @@ import type { CapturePolicy } from "../server/context.js";
 export type LocalEdgeOperationFamily =
   | "personal_memory_read"
   | "team_workspace_read"
+  | "team_chat_read"
+  | "team_chat_write"
   | "share_grant_management"
+  | "action_grant"
   | "capture_writes"
   | "sync"
   | "admin";
@@ -42,12 +45,27 @@ export interface LocalEdgeRouteDecision {
 export interface LocalEdgeUpstreamBackend {
   id: string;
   baseUrl: string;
+  profile?:
+    | "developer"
+    | "local_personal"
+    | "private_vps"
+    | "team_self_hosted"
+    | "koed_managed_cloud"
+    | null;
   routePolicy: Partial<Record<RoutePolicyKey, "enabled" | "disabled">>;
   credential?: { status?: string };
   capabilities?: {
     state?: "validated" | "stale" | "failed" | "not_checked";
     expiresAt?: string | null;
+    schemaVersion?: number | null;
     payload?: {
+      capabilitySchemaVersion?: number;
+      protocols?: {
+        collaborationRealtime?: {
+          version?: number;
+          transport?: string;
+        };
+      };
       capabilities?: Record<
         string,
         { availability?: "available" | "partial" | "unavailable" }
@@ -57,12 +75,13 @@ export interface LocalEdgeUpstreamBackend {
 }
 
 export interface LocalEdgeUpstreamRegistry {
+  schemaVersion: 2;
+  activeBackendId: string | null;
   backends: LocalEdgeUpstreamBackend[];
 }
 
 interface RegistryCacheEntry {
   mtimeMs: number;
-  refreshAfterMs: number;
   registry: LocalEdgeUpstreamRegistry;
 }
 
@@ -80,7 +99,10 @@ const operationRoutePolicyKey: Record<
 > = {
   personal_memory_read: "personalMemoryRead",
   team_workspace_read: "teamWorkspaceRead",
+  team_chat_read: "teamWorkspaceRead",
+  team_chat_write: "teamWorkspaceRead",
   share_grant_management: "shareGrantManagement",
+  action_grant: "admin",
   capture_writes: "captureWrites",
   sync: "sync",
   admin: "admin"
@@ -89,14 +111,16 @@ const operationRoutePolicyKey: Record<
 const defaultRouteMode: Record<LocalEdgeOperationFamily, LocalEdgeRouteMode> = {
   personal_memory_read: "local_only",
   team_workspace_read: "live_upstream_proxy",
+  team_chat_read: "live_upstream_proxy",
+  team_chat_write: "live_upstream_proxy",
   share_grant_management: "live_upstream_proxy",
+  action_grant: "live_upstream_proxy",
   capture_writes: "queued_sync_handoff",
   sync: "queued_sync_handoff",
   admin: "live_upstream_proxy"
 };
 
 const registryCache = new Map<string, RegistryCacheEntry>();
-const registryRefreshIntervalMs = 1000;
 
 export const readLocalEdgeUpstreamRegistry = (
   path: string,
@@ -109,36 +133,47 @@ export const readLocalEdgeUpstreamRegistry = (
   const resolvedExistsSync = deps.existsSync ?? existsSync;
   const resolvedReadFileSync = deps.readFileSync ?? readFileSync;
   const resolvedStatSync = deps.statSync ?? statSync;
-  const now = Date.now();
   const cached = registryCache.get(path);
-  if (cached && cached.refreshAfterMs > now) {
-    return cached.registry;
-  }
   if (!resolvedExistsSync(path)) {
-    const registry = { backends: [] };
+    const registry: LocalEdgeUpstreamRegistry = {
+      schemaVersion: 2,
+      activeBackendId: null,
+      backends: []
+    };
     registryCache.set(path, {
       mtimeMs: -1,
-      refreshAfterMs: now + registryRefreshIntervalMs,
       registry
     });
     return registry;
   }
   const mtimeMs = resolvedStatSync(path).mtimeMs;
   if (cached?.mtimeMs === mtimeMs) {
-    cached.refreshAfterMs = now + registryRefreshIntervalMs;
     return cached.registry;
   }
   const parsed = JSON.parse(
     resolvedReadFileSync(path, "utf8") as string
   ) as Partial<LocalEdgeUpstreamRegistry>;
-  const registry = {
-    backends: Array.isArray(parsed.backends)
-      ? parsed.backends.filter(isUpstreamBackend)
-      : []
+  if (parsed.schemaVersion !== 2) {
+    throw new Error("Upstream backend registry schema is unsupported.");
+  }
+  const backends = Array.isArray(parsed.backends)
+    ? parsed.backends.filter(isUpstreamBackend)
+    : [];
+  const activeBackendId =
+    typeof parsed.activeBackendId === "string" ? parsed.activeBackendId : null;
+  if (
+    activeBackendId &&
+    !backends.some((backend) => backend.id === activeBackendId)
+  ) {
+    throw new Error("Active upstream backend is not registered.");
+  }
+  const registry: LocalEdgeUpstreamRegistry = {
+    schemaVersion: 2,
+    activeBackendId,
+    backends
   };
   registryCache.set(path, {
     mtimeMs,
-    refreshAfterMs: now + registryRefreshIntervalMs,
     registry
   });
   return registry;
@@ -150,12 +185,34 @@ export const upstreamBackendById = (
 ): LocalEdgeUpstreamBackend | null =>
   registry.backends.find((backend) => backend.id === upstreamBackendId) ?? null;
 
+export const activeUpstreamBackend = (
+  registry: LocalEdgeUpstreamRegistry
+): LocalEdgeUpstreamBackend | null =>
+  registry.activeBackendId
+    ? upstreamBackendById(registry, registry.activeBackendId)
+    : null;
+
 export const upstreamAdvertisesCapability = (
   backend: LocalEdgeUpstreamBackend,
   capability: string
 ): boolean =>
   backend.capabilities?.payload?.capabilities?.[capability]?.availability ===
   "available";
+
+export const upstreamSupportsCollaborationRealtime = (
+  backend: LocalEdgeUpstreamBackend
+): boolean => {
+  const availability =
+    backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
+      ?.availability;
+  return (
+    backend.capabilities?.schemaVersion === 6 &&
+    backend.capabilities.payload?.capabilitySchemaVersion === 6 &&
+    (availability === "available" || availability === "partial") &&
+    backend.capabilities.payload?.protocols?.collaborationRealtime?.version ===
+      1
+  );
+};
 
 export const resolveLocalEdgeRouteDecision = (input: {
   operationFamily: LocalEdgeOperationFamily;
@@ -366,10 +423,7 @@ export const assertUpstreamOperationPathAllowed = (
     );
   };
 
-  if (
-    operationFamily === "personal_memory_read" ||
-    operationFamily === "team_workspace_read"
-  ) {
+  if (operationFamily === "personal_memory_read") {
     if (method !== "GET" && method !== "POST") {
       deny();
     }
@@ -387,14 +441,13 @@ export const assertUpstreamOperationPathAllowed = (
     deny();
   }
 
-  if (operationFamily === "share_grant_management") {
-    if (method !== "GET" && method !== "POST" && method !== "DELETE") {
-      deny();
-    }
+  if (operationFamily === "team_workspace_read") {
     if (
-      /^\/v1\/team-workspaces\/[^/]+\/session-share-grants(?:\/[^/]+)?$/.test(
-        pathname
-      )
+      (method === "GET" && pathname === "/v1/team-context") ||
+      (method === "POST" &&
+        pathname === "/v1/collaboration/realtime/snapshot") ||
+      (method === "GET" && pathname === "/v1/collaboration/realtime/stream") ||
+      (method === "POST" && pathname === "/v1/collaboration/realtime/ack")
     ) {
       return;
     }
@@ -413,6 +466,21 @@ export const assertUpstreamOperationPathAllowed = (
       pathname === "/v1/memory/token-usage" ||
       pathname === "/v1/memory/token-usage/rollups" ||
       pathname === "/v1/memory/conversation-items/project"
+    ) {
+      return;
+    }
+    deny();
+  }
+
+  if (operationFamily === "action_grant") {
+    if (
+      pathname === "/v1/high-risk/action-grants" ||
+      /^\/v1\/high-risk\/action-grants\/[^/]+$/.test(pathname) ||
+      pathname === "/v1/teams" ||
+      pathname === "/v1/team-invites/accept" ||
+      pathname.startsWith("/v1/teams/") ||
+      pathname.startsWith("/v1/team-workspaces/") ||
+      pathname.startsWith("/v1/retention/")
     ) {
       return;
     }
@@ -488,8 +556,7 @@ const credentialState = (input: {
   if (credential.upstreamBackendId !== input.upstreamBackendId) {
     return "wrong_upstream";
   }
-  return credential.operationFamilies.includes(input.operationFamily) ||
-    credential.operationFamilies.includes("*")
+  return credential.operationFamilies.includes(input.operationFamily)
     ? "configured"
     : "operation_not_allowed";
 };

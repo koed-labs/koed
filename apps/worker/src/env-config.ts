@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import {
   requireEnv,
+  resolveTeamCollaborationEnabled,
   resolveKoedQueueBackend,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
@@ -20,6 +21,7 @@ import {
 } from "./logging.js";
 
 export interface WorkerEnvConfig {
+  teamCollaborationEnabled: boolean;
   queueBackend: KoedQueueBackend;
   redisUrl: string;
   databaseUrl?: string;
@@ -37,6 +39,9 @@ export interface WorkerEnvConfig {
   rawProjectionActorLimit: number;
   crossIdentitySyncIntervalMs: number;
   crossIdentitySyncStaleAfterSeconds: number;
+  retentionPurgeIntervalMs: number;
+  collaborationReplayPruneIntervalMs: number;
+  collaborationReplayPruneBatchLimit: number;
   koedHome: string;
   historicalImport: HistoricalImportBatchConfig;
   historicalImportApiReadyUrl?: string;
@@ -136,6 +141,7 @@ export const resolveWorkerEnv = (
   }
 
   return {
+    teamCollaborationEnabled: resolveTeamCollaborationEnabled(environment),
     queueBackend,
     redisUrl: environment.REDIS_URL ?? "redis://localhost:6379",
     ...(databaseUrl ? { databaseUrl } : {}),
@@ -189,6 +195,21 @@ export const resolveWorkerEnv = (
       environment,
       "CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS",
       86_400
+    ),
+    retentionPurgeIntervalMs: positiveIntEnv(
+      environment,
+      "RETENTION_PURGE_INTERVAL_MS",
+      1_000
+    ),
+    collaborationReplayPruneIntervalMs: positiveIntEnv(
+      environment,
+      "COLLABORATION_REPLAY_PRUNE_INTERVAL_MS",
+      60_000
+    ),
+    collaborationReplayPruneBatchLimit: positiveIntEnv(
+      environment,
+      "COLLABORATION_REPLAY_PRUNE_BATCH_LIMIT",
+      1_000
     ),
     koedHome: resolve(environment.KOED_HOME ?? resolve(homedir(), ".koed")),
     historicalImport: {

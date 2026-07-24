@@ -177,8 +177,9 @@ describe("status and doctor JSON contracts", () => {
     writeFileSync(
       resolve(root, "config", "upstream-backends.json"),
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         updatedAt: "2026-01-01T00:00:00.000Z",
+        activeBackendId: "team-vps",
         backends: [
           {
             id: "team-vps",
@@ -293,6 +294,42 @@ describe("status and doctor JSON contracts", () => {
       "Postgres-backed local queue does not require Redis."
     );
     expect(status.workerQueues.state).toBe("starting");
+  });
+
+  it("does not trust a foreign API before the Desktop-managed runtime starts", async () => {
+    const root = tempDir();
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      response(true, 200, {
+        checks: [
+          { service: "postgres", status: "ok" },
+          { service: "work-queue", status: "ok" },
+          { service: "embedding-service", status: "ok" }
+        ]
+      })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        KOED_AUTO_PORTS: "1",
+        KOED_DEPENDENCY_MODE: "bundled-local"
+      },
+      {
+        fetch: fetcher,
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.api).toMatchObject({
+      state: "starting",
+      message: "Waiting for Koed Desktop to start its managed API."
+    });
+    expect(
+      fetcher.mock.calls.some(([url]) => String(url).endsWith("/ready"))
+    ).toBe(false);
   });
 
   it("uses native Postgres status before API readiness", async () => {

@@ -288,6 +288,30 @@ export const statusFromApiReady = async (
   };
 };
 
+const statusWaitingForManagedRuntime = (
+  staleRuntime: boolean
+): Awaited<ReturnType<typeof statusFromApiReady>> => {
+  const api = staleRuntime
+    ? needsAttention(
+        "Koed Desktop's managed supervisor is not running.",
+        "Restart Koed Desktop or run koed-server start."
+      )
+    : starting("Waiting for Koed Desktop to start its managed API.");
+  return {
+    api,
+    database: starting(
+      "Waiting for the managed API to confirm database state."
+    ),
+    redis: starting("Waiting for the managed API to confirm Redis state."),
+    workerQueues: starting(
+      "Waiting for the managed API to confirm work queue state."
+    ),
+    embeddingService: starting(
+      "Waiting for the managed API to confirm Embedding Service state."
+    )
+  };
+};
+
 const koedServerConfigEnvironment = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>
@@ -842,9 +866,15 @@ export const collectKoedServerStatus = async (
     runtimeProcessRunning && runtime?.explorerUrl
       ? runtime.explorerUrl
       : resolveExplorerUrl(runtimeEnvironment, repoEnv);
-  const apiReady = await statusFromApiReady(apiUrl, deps.fetch, {
-    dependencyMode: serverConfig.dependencyMode
-  });
+  // Automatic ports identify a Desktop-owned local control plane. Without a
+  // live runtime for this KOED_HOME, a healthy service on the default port may
+  // be an unrelated Koed backend and must not satisfy local readiness.
+  const apiReady =
+    runtimeEnvironment.KOED_AUTO_PORTS === "1" && !runtimeProcessRunning
+      ? statusWaitingForManagedRuntime(Boolean(runtime))
+      : await statusFromApiReady(apiUrl, deps.fetch, {
+          dependencyMode: serverConfig.dependencyMode
+        });
   const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
