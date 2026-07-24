@@ -6,7 +6,7 @@ judging.
 
 The benchmark builds production LCM prompts from hand-authored pending LCM node
 fixtures, runs the configured Codex app-server model, parses the
-`lcm-structured-summary-v1` JSON, and scores the result locally. When
+`lcm-semantic-summary-v1` JSON, and scores the result locally. When
 `--semantic-judge` is set, it also runs an advisory Codex app-server evaluation
 pass over valid structured summaries. It does not call the Koed API, submit
 summaries, mutate Memory Nodes, or write database state.
@@ -41,14 +41,12 @@ sh benchmarks/lcm-summary-generation/run.sh --case secret-like-value-redaction
 The v1 benchmark uses deterministic scoring for its pass/fail gate. Hard gates
 cover:
 
-- schema validity for `lcm-structured-summary-v1`
+- schema validity for `lcm-semantic-summary-v1`
 - required claim coverage
 - forbidden claim absence, including secret-like literal leakage
-- required structured fields
 
 Weighted quality signals lower the score but do not fail a run by themselves:
 
-- expected field placement, unless a fixture marks the field placement critical
 - compression limit for `summary_text`
 - non-critical noisy-output checks
 
@@ -58,7 +56,7 @@ configured threshold.
 
 Optional semantic judging can be enabled with `--semantic-judge`. It runs a
 second Codex app-server evaluation pass over each valid structured summary and
-adds advisory quality ratings for faithfulness, durable coverage, field use,
+adds advisory quality ratings for faithfulness, durable coverage, semantic focus,
 conflict handling, compression, provenance, and safety. Semantic judge results
 are written to the report but do not affect `passed` or the process exit code in
 this v1 benchmark.

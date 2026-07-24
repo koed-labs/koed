@@ -6,6 +6,7 @@ import {
   projectIsActive,
   projectLatestAt,
   relativeTime,
+  sessionPreview,
   sessionSelectionId,
   type DesktopProject,
   type DesktopThreadGroup,
@@ -286,7 +287,7 @@ const SessionRow = ({
           <span>Raw Conversation</span>
           {sourceAiClient ? <span>{sourceAiClient}</span> : null}
         </span>
-        <small>{session.sample || "Captured Conversation"}</small>
+        <small>{sessionPreview(session)}</small>
       </span>
       <span className="dense-session-meta">
         <strong>{countLabel(session.eventCount, "Memory Event")}</strong>

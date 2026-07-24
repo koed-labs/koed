@@ -13,6 +13,10 @@ import {
   rawConversationTransportChunkGroupId
 } from "@koed/shared";
 import {
+  adaptCodexTranscriptV1,
+  type CodexTranscriptObservation
+} from "./codex-transcript-adapter.js";
+import {
   MemoryApiError,
   MemoryApiClient,
   type McpServerConfig,
@@ -23,6 +27,7 @@ import {
   type RawConversationItemRequest
 } from "./conversation-source-types.js";
 import { codexCanonicalConversationItemKey } from "./codex-conversation-source-adapter.js";
+import { signalCodexTranscriptWatcher } from "./codex-transcript-watcher-signal.js";
 
 export interface HookPayload {
   session_id?: string;
@@ -1466,7 +1471,8 @@ const parseTranscriptRecordsText = (text: string): unknown[] => {
 const parseTranscriptLineRecords = (
   lines: string[],
   absoluteStartOffset: number,
-  lineIndexOffset = 0
+  lineIndexOffset = 0,
+  strictJsonLines = false
 ): unknown[] => {
   const records: unknown[] = [];
   let relativeOffset = 0;
@@ -1498,6 +1504,11 @@ const parseTranscriptLineRecords = (
         );
       }
     } catch {
+      if (strictJsonLines) {
+        throw new Error(
+          `Codex transcript contains malformed complete JSONL record at line ${absoluteLineIndex + 1}`
+        );
+      }
       continue;
     }
   }
@@ -1720,6 +1731,8 @@ export const parseTranscriptFileRecords = (input: {
   firstContactAfter?: string;
   readThroughOffset?: number;
   deferPageEndingAssistantEvent?: boolean;
+  strictJsonLines?: boolean;
+  strictMaxBytes?: boolean;
 }): {
   records: unknown[];
   indexOffset: number;
@@ -1802,6 +1815,9 @@ export const parseTranscriptFileRecords = (input: {
       break;
     }
     const attemptedBytes = end - start;
+    if (input.strictMaxBytes) {
+      throw new Error("transcript_batch_record_exceeds_max_bytes");
+    }
     if (attemptedBytes >= maxTranscriptRecordBytes()) {
       throw new Error(
         `Codex transcript record exceeds MEMORY_TRANSCRIPT_MAX_RECORD_BYTES (${maxTranscriptRecordBytes()})`
@@ -1812,7 +1828,12 @@ export const parseTranscriptFileRecords = (input: {
       start + Math.min(maxTranscriptRecordBytes(), attemptedBytes * 2)
     );
   }
-  const parsedRecords = parseTranscriptLineRecords(lines, start, indexOffset);
+  const parsedRecords = parseTranscriptLineRecords(
+    lines,
+    start,
+    indexOffset,
+    input.strictJsonLines
+  );
   const firstContactAfterMs =
     !hasUsableCheckpoint && input.firstContactAfter
       ? Date.parse(input.firstContactAfter)
@@ -2085,12 +2106,10 @@ const transcriptRecordCompletesTurn = (record: unknown): boolean => {
 
 const semanticTurnIdForUserPrompt = (input: {
   externalSessionId?: string;
-  transcriptPath?: string;
   sourceSequence: number;
 }): string =>
   `transcript-user-turn:${hash({
     externalSessionId: input.externalSessionId,
-    transcriptPath: input.transcriptPath,
     sourceSequence: input.sourceSequence
   })}`;
 
@@ -2514,35 +2533,6 @@ const rawText = (record: unknown): string | undefined => {
   );
 };
 
-const sourceObservationIdentityForRawRecord = (input: {
-  externalSessionId?: string;
-  transcriptPath?: string;
-  sourceLineNumber: number;
-  transcriptByteOffset?: number;
-  record: unknown;
-  itemDiscriminator?: string;
-}): string =>
-  hash({
-    adapter: "codex-transcript-v1",
-    externalSessionId: input.externalSessionId,
-    transcriptPath: input.transcriptPath,
-    sourcePosition:
-      input.transcriptByteOffset ?? `line:${input.sourceLineNumber}`,
-    itemDiscriminator: input.itemDiscriminator,
-    sourceRecordType: rawRecordType(input.record),
-    sourceEventType: rawEventType(input.record)
-  });
-
-const sourceContentHashForRawRecord = (input: {
-  record: unknown;
-  itemDiscriminator?: string;
-}): string =>
-  hash({
-    adapter: "codex-transcript-v1",
-    itemDiscriminator: input.itemDiscriminator,
-    record: input.record
-  });
-
 const buildRawHookConversationItem = (input: {
   sessionId?: string;
   effectiveContext: EffectiveCaptureContext;
@@ -2642,6 +2632,20 @@ export const selectRawConversationItemsForHook = (input: {
   return [...transcriptItems, ...controlHookItems];
 };
 
+export interface CodexTranscriptRecordsInput {
+  records: unknown[];
+  indexOffset?: number;
+  sessionId?: string;
+  sourceSessionId?: string;
+  sourceTransport: "hook" | "transcript" | "historical_import";
+  localSourcePath?: string;
+  sourceFingerprint?: string;
+  hookEventName?: string;
+  threadKind: "conversation" | "subagent";
+  parentThreadId?: string;
+  preferStableResponseItems?: boolean;
+}
+
 export const buildRawTranscriptConversationItems = (input: {
   records: unknown[];
   indexOffset?: number;
@@ -2649,7 +2653,8 @@ export const buildRawTranscriptConversationItems = (input: {
   effectiveContext: EffectiveCaptureContext;
   transcriptPath?: string;
   payload: HookPayload;
-  sourceTransport?: "hook" | "transcript";
+  sourceTransport?: "hook" | "transcript" | "historical_import";
+  sourceFingerprint?: string;
   preferStableResponseItems?: boolean;
 }): RawConversationItemRequest[] => {
   const preferProviderResponseItems =
@@ -2672,6 +2677,47 @@ export const buildRawTranscriptConversationItems = (input: {
       ? { transcriptSessionId: input.effectiveContext.externalSessionId }
       : {})
   };
+
+  const observations: CodexTranscriptObservation[] = input.records.map(
+    (record, index) => {
+      const sourceLineNumber =
+        transcriptRecordLineIndex(record) ?? index + (input.indexOffset ?? 0);
+      return {
+        record,
+        sourceLineNumber,
+        transcriptByteOffset: transcriptRecordPosition(record),
+        explicitTurnId:
+          transcriptAssignedTurnId(record) ?? transcriptTurnId(record),
+        startsTurn: transcriptRecordStartsTurn(record),
+        completesTurn: transcriptRecordCompletesTurn(record),
+        externalItemId: rawExternalItemId(record),
+        sourceRecordType: rawRecordType(record),
+        sourceEventType: rawEventType(record),
+        eventTime: effectiveRawEventTime(record),
+        eventTimeAccuracy: rawEventTimeAccuracy(record),
+        fallbackRawText: rawText(record),
+        parsedItems: extractTranscriptItems(record, sourceLineNumber, {
+          preferEventMessages,
+          preferStableResponseItems: preferProviderResponseItems,
+          context
+        })
+      };
+    }
+  );
+  const adaptedItems = adaptCodexTranscriptV1({
+    observations,
+    sessionId: input.sessionId,
+    sourceSessionId: input.effectiveContext.externalSessionId,
+    sourceTransport: input.sourceTransport ?? "hook",
+    localSourcePath: input.transcriptPath,
+    sourceFingerprint: input.sourceFingerprint,
+    hookEventName: input.payload.hook_event_name,
+    threadKind: input.effectiveContext.isSubagent ? "subagent" : "conversation",
+    parentThreadId: input.effectiveContext.parentThreadId
+  });
+  if (!preferProviderResponseItems) {
+    return adaptedItems;
+  }
 
   const items: RawConversationItemRequest[] = [];
   let activeTranscriptTurnId: string | undefined;
@@ -2707,12 +2753,9 @@ export const buildRawTranscriptConversationItems = (input: {
               sourceOffset: 0
             }
           ];
-    const needsItemDiscriminator = rawItems.length > 1;
-
     if (hasLogicalUserPrompt && !explicitTurnId && !activeTranscriptTurnId) {
       activeSemanticTurnId = semanticTurnIdForUserPrompt({
         externalSessionId: input.effectiveContext.externalSessionId,
-        transcriptPath: input.transcriptPath,
         sourceSequence: sourceSequenceBase
       });
     }
@@ -2726,21 +2769,14 @@ export const buildRawTranscriptConversationItems = (input: {
       const sourceSequence = safeSourceSequence(
         sourceSequenceBase + parsedItem.sourceOffset
       );
-      const itemDiscriminator = needsItemDiscriminator
-        ? parsedItem.itemDiscriminator
-        : undefined;
-      const sourceHash = sourceContentHashForRawRecord({
-        record,
-        itemDiscriminator
-      });
-      const sourceIdempotencyKey = sourceObservationIdentityForRawRecord({
-        externalSessionId: input.effectiveContext.externalSessionId,
-        transcriptPath: input.transcriptPath,
-        sourceLineNumber,
-        transcriptByteOffset,
-        record,
-        itemDiscriminator
-      });
+      const adaptedItem = adaptedItems.find(
+        (candidate) => candidate.sourceSequence === sourceSequence
+      );
+      if (!adaptedItem) {
+        throw new Error("Shared transcript adapter omitted a response item");
+      }
+      const sourceHash = adaptedItem.sourceHash;
+      const sourceIdempotencyKey = adaptedItem.idempotencyKey;
       const transcriptType = asString(parsedItem.item?.metadata.transcriptType);
       const managedTurnComplete =
         input.preferStableResponseItems &&
@@ -2835,7 +2871,10 @@ export const buildRawTranscriptConversationItems = (input: {
         externalItemId: rawExternalItemId(record),
         sourceRecordType: rawRecordType(record),
         sourceEventType: rawEventType(record),
-        sourcePath: input.transcriptPath,
+        sourcePath:
+          input.sourceTransport === "historical_import"
+            ? undefined
+            : input.transcriptPath,
         sourceLineNumber,
         sourceSequence,
         eventTime: effectiveRawEventTime(record),
@@ -2843,6 +2882,7 @@ export const buildRawTranscriptConversationItems = (input: {
         rawText: parsedItem.item?.content ?? rawText(record),
         sourceHash,
         idempotencyKey: sourceIdempotencyKey,
+        legacyIdempotencyKeys: adaptedItem.legacyIdempotencyKeys,
         ...(unlinkedObservation ? { observationOnly: true } : {}),
         ...(canonicalItemKey ? { canonicalItemKey } : {}),
         ...(canonicalItemKey && stableItemId
@@ -2892,7 +2932,15 @@ export const buildRawTranscriptConversationItems = (input: {
           threadKind: input.effectiveContext.isSubagent
             ? "subagent"
             : "conversation",
-          parentThreadId: input.effectiveContext.parentThreadId
+          parentThreadId: input.effectiveContext.parentThreadId,
+          ...(input.sourceTransport === "historical_import"
+            ? { observedViaHistoricalImport: true }
+            : (input.sourceTransport ?? "hook") === "hook"
+              ? { observedViaHook: true }
+              : { observedViaTranscript: true }),
+          ...(input.sourceFingerprint
+            ? { sourceFingerprint: input.sourceFingerprint }
+            : {})
         }
       });
     }
@@ -2909,6 +2957,25 @@ export const buildRawTranscriptConversationItems = (input: {
 
   return items;
 };
+
+export const buildCodexTranscriptConversationItems = (
+  input: CodexTranscriptRecordsInput
+): RawConversationItemRequest[] =>
+  buildRawTranscriptConversationItems({
+    records: input.records,
+    indexOffset: input.indexOffset,
+    sessionId: input.sessionId,
+    effectiveContext: {
+      externalSessionId: input.sourceSessionId,
+      parentThreadId: input.parentThreadId,
+      isSubagent: input.threadKind === "subagent"
+    },
+    transcriptPath: input.localSourcePath,
+    payload: { hook_event_name: input.hookEventName },
+    sourceTransport: input.sourceTransport,
+    sourceFingerprint: input.sourceFingerprint,
+    preferStableResponseItems: input.preferStableResponseItems
+  });
 
 export const selectCaptureItems = (
   transcriptItems: CaptureItem[],
@@ -3723,6 +3790,7 @@ export const runForegroundCapturePass = (input: {
   payload: HookPayload;
   runPass?: typeof runCapturePass;
   triggerCatchup?: typeof triggerDetachedTranscriptCatchup;
+  signalWatcher?: typeof signalCodexTranscriptWatcher;
   environment?: NodeJS.ProcessEnv;
 }): Promise<Awaited<ReturnType<typeof runCapturePass>>> => {
   if (managedConversationCaptureGuardActive(input.environment)) {
@@ -3744,6 +3812,10 @@ export const runForegroundCapturePass = (input: {
       transcriptCheckpointAdvanced: false
     });
   }
+  const signalWatcher =
+    input.signalWatcher ??
+    (input.runPass ? undefined : signalCodexTranscriptWatcher);
+  signalWatcher?.(input.environment);
   if (!hookTriggersTranscriptCatchup()) {
     return (input.runPass ?? runCapturePass)({
       configPath,

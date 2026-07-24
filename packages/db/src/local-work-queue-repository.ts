@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
+import { defaultKoedQueuePriority } from "@koed/shared";
 
 export type LocalWorkQueueStatus =
   | "pending"
@@ -12,6 +13,7 @@ export interface EnqueueLocalWorkQueueJobInput {
   jobName: string;
   data: unknown;
   jobKey?: string;
+  priority?: number;
   maxAttempts?: number;
   backoffMs?: number;
   delayMs?: number;
@@ -24,6 +26,7 @@ export interface LocalWorkQueueJobRecord<TData = unknown> {
   data: TData;
   attemptCount: number;
   maxAttempts: number;
+  priority: number;
   lockToken: string;
 }
 
@@ -70,6 +73,7 @@ const mapJobRow = <TData>(row: {
   data: TData;
   attempt_count: number;
   max_attempts: number;
+  priority: number;
   lock_token: string;
 }): LocalWorkQueueJobRecord<TData> => ({
   id: Number(row.id),
@@ -78,6 +82,7 @@ const mapJobRow = <TData>(row: {
   data: row.data,
   attemptCount: row.attempt_count,
   maxAttempts: row.max_attempts,
+  priority: row.priority,
   lockToken: row.lock_token
 });
 
@@ -86,6 +91,10 @@ export const createLocalWorkQueueRepository = (
 ): LocalWorkQueueRepository => ({
   async enqueue(input) {
     const maxAttempts = toPositiveInteger(input.maxAttempts, 1);
+    const priority = toNonNegativeInteger(
+      input.priority,
+      defaultKoedQueuePriority
+    );
     const backoffMs = input.backoffMs ?? null;
     const delayMs = toNonNegativeInteger(input.delayMs, 0);
     const result = await pool.query<{ id: string }>(
@@ -95,11 +104,12 @@ export const createLocalWorkQueueRepository = (
           job_name,
           job_key,
           data,
+          priority,
           max_attempts,
           backoff_ms,
           available_at
         )
-        values ($1, $2, $3, $4::jsonb, $5, $6, now() + ($7::text::interval))
+        values ($1, $2, $3, $4::jsonb, $5, $6, $7, now() + ($8::text::interval))
         on conflict (queue_name, job_key)
           where job_key is not null
           do update set
@@ -118,6 +128,10 @@ export const createLocalWorkQueueRepository = (
             attempt_count = case
               when local_work_queue.status in ('failed', 'completed') then 0
               else local_work_queue.attempt_count
+            end,
+            priority = case
+              when local_work_queue.status in ('failed', 'completed') then excluded.priority
+              else local_work_queue.priority
             end,
             max_attempts = case
               when local_work_queue.status in ('failed', 'completed') then excluded.max_attempts
@@ -166,6 +180,7 @@ export const createLocalWorkQueueRepository = (
         input.jobName,
         input.jobKey ?? null,
         JSON.stringify(input.data ?? {}),
+        priority,
         maxAttempts,
         backoffMs,
         `${delayMs} milliseconds`
@@ -184,6 +199,7 @@ export const createLocalWorkQueueRepository = (
       data: TData;
       attempt_count: number;
       max_attempts: number;
+      priority: number;
       lock_token: string;
     }>(
       `
@@ -217,7 +233,7 @@ export const createLocalWorkQueueRepository = (
           where queue_name = $1
             and status = 'pending'
             and available_at <= now()
-          order by available_at asc, id asc
+          order by priority asc, available_at asc, id asc
           for update skip locked
           limit 1
         )
@@ -236,6 +252,7 @@ export const createLocalWorkQueueRepository = (
                   q.data,
                   q.attempt_count,
                   q.max_attempts,
+                  q.priority,
                   q.lock_token
       `,
       [input.queueName, lockToken, `${leaseMs} milliseconds`]

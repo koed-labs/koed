@@ -17,6 +17,8 @@ need them.
 > [!IMPORTANT]
 > Codex is currently the only supported AI Client integration for capture and
 > recall.
+> Claude Code can attach through an experimental recall-only setup; see
+> [Claude Code integration](docs/claude-code-integration.md).
 
 ### Requirements
 
@@ -74,6 +76,8 @@ The README keeps to one basic local path. For other options, see:
   modes, model overrides, logging, and production settings.
 - [Codex integration](docs/codex-integration.md) for manual Codex setup and
   recovery.
+- [Claude Code integration](docs/claude-code-integration.md) for the
+  experimental recall-only Claude Code setup.
 - [Curated Memory](docs/curated-memory.md) for source-linked durable facts and
   recall behavior.
 - [Security](docs/security.md), [Backup and restore](docs/backup-restore.md),
@@ -149,6 +153,7 @@ services, and managed add-ons.
 - [Hosted backups](docs/hosted-backups.md)
 - [Upgrades](docs/upgrades.md)
 - [Codex integration](docs/codex-integration.md)
+- [Claude Code integration](docs/claude-code-integration.md)
 - [Curated Memory](docs/curated-memory.md)
 - [License](docs/license.md)
 - [Commercial feature boundary](docs/commercial-feature-boundary.md)

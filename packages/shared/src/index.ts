@@ -61,6 +61,7 @@ export {
   hostProofReferenceFor,
   inspectDeviceIdentity,
   inspectDeviceIdentityAtKoedHome,
+  reconcileDeviceIdentityDeployment,
   parseDeviceIdentityState,
   serializeHostProof
 } from "./device-identity.js";
@@ -138,8 +139,6 @@ export {
   signPdsTwoStageFinal,
   validatePdsGroupStatement,
   validatePdsKeyBundle,
-  validatePdsEpochAck,
-  validatePdsKeyBundleAck,
   validatePdsKeyBundleMetadata,
   verifyPdsEnrollmentProof
 } from "./personal-device-sync.js";
@@ -251,6 +250,45 @@ export type WorkerQueueName = (typeof workerQueueNames)[number];
 
 export type KoedQueueBackend = "bullmq" | "local";
 
+export const historicalImportSourceTransport = "historical_import";
+
+export const koedWorkClasses = [
+  "interactive_recall_question",
+  "live_capture_projection",
+  "normal_embedding_lcm",
+  "historical_import_backfill"
+] as const;
+
+export type KoedWorkClass = (typeof koedWorkClasses)[number];
+
+const workClassPriorities: Record<KoedWorkClass, number> = {
+  interactive_recall_question: 1,
+  live_capture_projection: 5,
+  normal_embedding_lcm: 10,
+  historical_import_backfill: 20
+};
+
+export const workClassPriority = (workClass: KoedWorkClass): number =>
+  workClassPriorities[workClass];
+
+export const defaultKoedQueuePriority =
+  workClassPriorities.normal_embedding_lcm;
+
+export const resolveKoedWorkClass = (
+  value: unknown,
+  fallback: KoedWorkClass = "normal_embedding_lcm"
+): KoedWorkClass =>
+  typeof value === "string" && koedWorkClasses.includes(value as KoedWorkClass)
+    ? (value as KoedWorkClass)
+    : fallback;
+
+export const projectionWorkClassForSourceTransport = (
+  sourceTransport: string
+): KoedWorkClass =>
+  sourceTransport === historicalImportSourceTransport
+    ? "historical_import_backfill"
+    : "live_capture_projection";
+
 const koedQueueBackends = new Set<KoedQueueBackend>(["bullmq", "local"]);
 
 export const resolveKoedQueueBackend = (
@@ -268,6 +306,8 @@ export interface KoedJobHandle {
 }
 
 export interface KoedJobEnqueueOptions {
+  /** Lower values run first in both BullMQ and local queue backends. */
+  priority?: number;
   jobId?: string;
   attempts?: number;
   backoff?: {

@@ -212,6 +212,7 @@ export interface CrossIdentitySyncRepository {
     actor: ActorContext,
     sessionId: string
   ): Promise<CapturedSessionSyncPackageV1["session"] | null>;
+  getLocalSyncDeployment(): Promise<DeploymentIdentityRecord | null>;
   ensureLocalSyncDeployment(input: {
     profile: DeploymentProfile;
     protocolDeploymentId: string;
@@ -857,6 +858,12 @@ export const createCrossIdentitySyncRepository = (
             : null,
         sourceAdapterVersion: optionalString(session.source_adapter_version)
       };
+    },
+    async getLocalSyncDeployment() {
+      const result = await pool.query<Row>(
+        "select * from deployment_identities where locality='local' limit 1"
+      );
+      return result.rows[0] ? mapDeployment(result.rows[0]) : null;
     },
     async ensureLocalSyncDeployment(input) {
       const protocolDeploymentId = nonEmpty(

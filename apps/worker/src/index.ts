@@ -29,6 +29,8 @@ import {
 import { createWorkerLogger } from "./logging.js";
 import { createRawProjectionService } from "./raw-projection-service.js";
 import { createCrossIdentitySyncService } from "./cross-identity-sync-service.js";
+import { createHistoricalAdmissionHealth } from "./historical-admission-health.js";
+import { createProjectionJobScheduler } from "./projection-job-scheduler.js";
 
 loadWorkerEnv();
 
@@ -71,31 +73,23 @@ const embeddingWorkflow = createEmbeddingWorkflow({
   repository: requireRepository
 });
 
+const queueProducerOptions = {
+  backend: workerEnv.queueBackend,
+  redisUrl: workerEnv.redisUrl,
+  pool
+};
+
 const memoryEmbedQueue = createWorkerQueueProducer<EmbeddingQueueJobData>(
   memoryEmbedQueueName,
-  {
-    backend: workerEnv.queueBackend,
-    redisUrl: workerEnv.redisUrl,
-    pool
-  }
+  queueProducerOptions
 );
-
 const lcmCompactQueue = createWorkerQueueProducer<CompactionQueueJobData>(
   lcmCompactQueueName,
-  {
-    backend: workerEnv.queueBackend,
-    redisUrl: workerEnv.redisUrl,
-    pool
-  }
+  queueProducerOptions
 );
-
 const lcmEmbedQueue = createWorkerQueueProducer<EmbeddingQueueJobData>(
   lcmEmbedQueueName,
-  {
-    backend: workerEnv.queueBackend,
-    redisUrl: workerEnv.redisUrl,
-    pool
-  }
+  queueProducerOptions
 );
 
 const workerEmbeddingDispatchKey = embeddingDispatchKey(
@@ -110,7 +104,7 @@ const handleJob = createWorkerJobWorkflow({
   repository: requireRepository
 });
 
-const queueRuntime = createWorkerQueueRuntime({
+const queueRuntime = await createWorkerQueueRuntime({
   backend: workerEnv.queueBackend,
   redisUrl: workerEnv.redisUrl,
   pool,
@@ -132,30 +126,68 @@ logger.info(
   "worker listening on queues"
 );
 
-const rawProjectionService = repository
-  ? createRawProjectionService({
-      actorLimit: workerEnv.rawProjectionActorLimit,
-      batchLimit: workerEnv.rawProjectionBatchLimit,
-      embeddingDispatchKey: workerEmbeddingDispatchKey,
-      enqueueLcmCompaction: (requesterContext, visibility, dispatchKey) =>
-        enqueueLcmCompaction(
-          lcmCompactQueue,
-          requesterContext,
-          visibility,
-          dispatchKey
-        ),
-      enqueueSourceEmbedding: (sourceType, sourceId, dispatchKey) =>
-        enqueueSourceEmbedding(
-          sourceType === "memory_node" ? lcmEmbedQueue : memoryEmbedQueue,
-          sourceType,
-          sourceId,
-          dispatchKey
-        ),
-      intervalMs: workerEnv.rawProjectionIntervalMs,
-      logger,
-      repository
+const projectionJobScheduler = repository
+  ? createProjectionJobScheduler({
+      embeddingQueue: memoryEmbedQueue,
+      compactionQueue: lcmCompactQueue,
+      repository,
+      logger
     })
   : null;
+const rawProjectionService =
+  repository && projectionJobScheduler
+    ? createRawProjectionService({
+        actorLimit: workerEnv.rawProjectionActorLimit,
+        batchLimit: workerEnv.rawProjectionBatchLimit,
+        embeddingDispatchKey: workerEmbeddingDispatchKey,
+        enqueueLcmCompaction: (
+          requesterContext,
+          visibility,
+          dispatchKey,
+          workClass,
+          jobId,
+          sessionId,
+          finalize
+        ) =>
+          enqueueLcmCompaction(
+            lcmCompactQueue,
+            requesterContext,
+            visibility,
+            dispatchKey,
+            workClass,
+            jobId,
+            sessionId,
+            finalize
+          ),
+        enqueueProjectedMemoryEventProcessing: projectionJobScheduler.enqueue,
+        enqueueSourceEmbedding: (
+          sourceType,
+          sourceId,
+          dispatchKey,
+          workClass,
+          jobId
+        ) =>
+          enqueueSourceEmbedding(
+            sourceType === "memory_node" ? lcmEmbedQueue : memoryEmbedQueue,
+            sourceType,
+            sourceId,
+            dispatchKey,
+            workClass,
+            jobId
+          ),
+        getHistoricalAdmissionHealth: createHistoricalAdmissionHealth({
+          apiReadyUrl: workerEnv.historicalImportApiReadyUrl,
+          apiReadyTimeoutMs: workerEnv.historicalImportApiReadyTimeoutMs,
+          embeddingQueue: memoryEmbedQueue,
+          repository
+        }),
+        recoverProjectedMemoryEventProcessing: projectionJobScheduler.recover,
+        historicalImport: workerEnv.historicalImport,
+        intervalMs: workerEnv.rawProjectionIntervalMs,
+        logger,
+        repository
+      })
+    : null;
 rawProjectionService?.start();
 
 const crossIdentitySyncService =
@@ -187,7 +219,7 @@ const shutdown = async () => {
     },
     "worker shutting down"
   );
-  rawProjectionService?.stop();
+  await rawProjectionService?.stop();
   crossIdentitySyncService?.stop();
   await Promise.all([
     queueRuntime.close(),

@@ -11,6 +11,15 @@ export {
   destroyManagedCodexHome,
   runCodexAppServerJsonTask
 } from "./codex-app-server-runner.js";
+export {
+  adaptCodexTranscriptV1,
+  codexTranscriptAdapterVersion,
+  codexTranscriptItemKey,
+  codexTranscriptRecordHash,
+  type CodexTranscriptAdapterInput,
+  type CodexTranscriptObservation,
+  type CodexTranscriptRawItem
+} from "./codex-transcript-adapter.js";
 export type {
   CodexAppServerJsonTaskConfig,
   CodexAppServerRunResult
@@ -367,6 +376,50 @@ export class MemoryApiClient {
     input: Record<string, unknown>
   ): Promise<{ session?: { id: string }; skipped?: boolean }> {
     return this.request("POST", "/v1/sessions", input);
+  }
+
+  async createHistoricalImportRun(): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/historical-imports", {});
+  }
+
+  async lookupHistoricalImportSource(input: {
+    aiClient: "codex";
+    sourceKind: "codex";
+    sourceSessionId: string;
+  }): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams(input);
+    return this.request(
+      "GET",
+      `/v1/historical-import-sources/lookup?${params.toString()}`
+    );
+  }
+
+  async createHistoricalImportSource(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/historical-import-sources", input);
+  }
+
+  async observeHistoricalImportSource(
+    sourceId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "PATCH",
+      `/v1/historical-import-sources/${encodeURIComponent(sourceId)}/observation`,
+      input
+    );
+  }
+
+  async advanceLiveTranscriptCursor(
+    sourceId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/historical-import-sources/${encodeURIComponent(sourceId)}/live-cursor`,
+      input
+    );
   }
 
   async effectiveCapturePolicy(input: {

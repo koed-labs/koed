@@ -97,6 +97,7 @@ export default tseslint.config(
       "apps/worker/**/*.ts",
       "packages/**/*.ts",
       "packages/*/scripts/**/*.{js,mjs,cjs}",
+      "apps/desktop/scripts/{after-pack,verify-macos-package}.mjs",
       "scripts/**/*.{js,mjs,cjs}"
     ],
     languageOptions: {

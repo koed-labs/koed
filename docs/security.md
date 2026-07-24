@@ -60,13 +60,18 @@ User, relationship, replica, consent, policy, cursor, version, size, and digest
 metadata before decrypting. A missing key, wrong version, provider outage,
 tampered envelope, unauthorized target, or unsupported package fails closed.
 
-PDS control plane is not implemented by RSA envelope path. It uses separate
-Ed25519 signed governance records and stores encrypted X25519 recipient-envelope
-metadata only. Authority secret signer is deployment-secret material; Authority
-never stores PDS plaintext, group secrets, device/recovery private keys, or
-recovery kit material. Browser session binds requester identity but cannot
-replace active-device/recovery authorization. Existing directed-sync RSA code
-must not be represented as PDS compliance. Relay/package processing remains
+The PDS control plane is not implemented by this RSA envelope path. It uses the
+separate Ed25519/X25519/HKDF-SHA-256/AES-256-GCM governance and key-envelope
+boundary fixed by
+[Personal Device Sync Protocol V1](personal-device-sync-protocol.md). The
+Authority signer is deployment-secret material; Authority stores signed public
+governance records and encrypted recipient envelopes, never PDS plaintext,
+group secrets, device/recovery private keys, or recovery-kit material. Browser
+session authentication binds the requesting local subject but cannot replace
+active-device or recovery authorization. PDS keys and plaintext must never enter
+Operator, support, browser, email-recovery, ordinary configuration, Authority,
+or Relay boundaries. Existing canonical JSON and directed-sync RSA code must
+not be represented as PDS compliance. Relay and package processing remain
 unimplemented.
 
 Use deployment controls for data-at-rest protection: private database networking, least-privilege database credentials, encrypted volumes or managed-database storage encryption, encrypted backups, and restricted administrator access. Treat database exports and backups as sensitive memory material.

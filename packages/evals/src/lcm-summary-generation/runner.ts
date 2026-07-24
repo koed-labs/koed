@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
+import { parseStructuredLcmSummary } from "@koed/core";
 import {
   buildLcmSummaryPrompt,
-  parseStructuredLcmSummary,
   resolveLcmSummaryWorkerConfig,
   runCodexAppServerLcmSummary,
   type CodexLcmSummaryRunner,

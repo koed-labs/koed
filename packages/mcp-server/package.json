@@ -15,6 +15,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./codex-transcript-parser": {
+      "types": "./dist/codex-transcript-parser.d.ts",
+      "import": "./dist/codex-transcript-parser.js"
     }
   },
   "files": [

@@ -2,6 +2,9 @@
 
 Codex is currently the only supported AI Client for Koed.
 
+For an experimental recall-only Claude Code setup, see
+[Claude Code integration](claude-code-integration.md).
+
 ## Recommended Setup
 
 Start the local control plane supervisor in one terminal:
@@ -85,9 +88,13 @@ summary synthesis. Users do not need to run a separate app-server or answer
 bridge command. `MEMORY_CODEX_APP_SERVER_BINARY` can override the `codex`
 binary path when needed; the default is correct for normal Codex installs.
 
-## Capture Hook
+## Transcript Watcher and Capture Hook
 
-The TypeScript Capture Hook is the supported automatic capture path for Codex. It uses the same `MEMORY_API_URL` and `MEMORY_API_TOKEN` values as the MCP Server.
+The Transcript Watcher owns automatic-capture correctness for externally managed Codex Conversations. `koed-server` supervises the `@koed/mcp-server` command `watch-codex-transcripts` after its startup readiness check when a local API Token is available; the watcher keeps retrying through bounded rescans if the API is still recovering. It stops the watcher before the API. Developer and local-personal runtime modes enable it by default; external runtime mode requires `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` explicitly.
+
+By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when `CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default with a platform path-delimited list of explicit transcript roots. It combines filesystem notification hints with bounded 15-second rescans, so unsupported or missed notifications do not create permanent gaps.
+
+The TypeScript Supported Capture Hook remains the low-latency signal and high-confidence completion-evidence path. It uses the same `MEMORY_API_URL` and `MEMORY_API_TOKEN` values as the MCP Server and Transcript Watcher. A Hook invocation writes a content-free local wake hint; missing, duplicate, delayed, or reordered Hook signals cannot gap or duplicate capture. Transcript JSONL, not Hook payload content, remains the source of truth.
 
 If you install the package binary, use:
 
@@ -150,9 +157,10 @@ signal. `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES` bounds synchronous
 history scanning; remaining exact pages are handled by detached catch-up.
 
 There is no Desktop or Explorer entry point for this experiment. It does not
-attach to external Codex processes and does not change the supported automatic
-capture setup above. Existing Codex CLI and native-app conversations continue
-to use Capture Hook signals plus JSONL catch-up.
+attach to external Codex processes and does not replace the supported Transcript
+Watcher. Existing Codex CLI and native-app conversations are captured from
+transcript growth; Capture Hook signals provide low-latency wakeups and
+completion evidence.
 
 Codex hook configuration should include `Stop` as well as prompt/tool hooks. If
 Codex asks you to review or trust changed hooks after editing `config.toml`,
@@ -177,7 +185,7 @@ with a fresh session marker, and searches Koed for the captured marker. After
 that, start a fresh Codex session and ask it to check memory access through the
 `koed-selfhost` MCP server.
 
-The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. Full automatic Conversation capture depends on the Capture Hook and is not performed by MCP alone. Recall-only or MCP-only integrations are experimental because they do not provide supported automatic capture.
+The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. The separately supervised Transcript Watcher performs automatic Conversation capture; running the MCP tool server alone does not. Recall-only or MCP-only integrations are experimental because they do not provide supported automatic capture.
 
 `memory_answer` is the normal recall tool exposed by default. It is described
 to Codex as recall for prior conversations, remembered preferences,
@@ -199,6 +207,8 @@ Setup checks should use `pnpm codex:bootstrap` or `pnpm codex:doctor`;
 optional MCP diagnostic tools such as `memory_access_check`, `memory_search`,
 and `memory_expand` require explicit development/operator environment flags and
 are not part of the normal agent-facing surface.
+
+The watcher reads only complete JSONL records. Its first bounded full discovery cycle is the activation baseline: every candidate file observed before activation is durably marked baseline even when parsing it fails, so a malformed file cannot block later live capture or be replayed as live after recovery. Baseline files register at their immutable complete-record frontier; files first observed after activation start with a zero frontier and are live from their first complete record. Restart resumes post-frontier growth from an independent durable live cursor and compares bounded SHA-256 first/last prefix sentinels plus offset; it never derives from or updates the historical checkpoint. Sentinel-covered prefix mutation, malformed complete records, and truncation fail visibly without advancing it; mutations outside sentinel windows are intentionally not detected by this bounded check. Partial trailing records hold the cursor. Capture Policy and Capture Pause are checked before session creation and every batch. Output converges through `codex-transcript-v1`, canonical raw ingestion, and Projection as Personal Memory only; the watcher grants no Team authority and performs no backend synthesis.
 
 Captured-session titles and LCM summaries are processed by the MCP-local
 background service through Codex app-server mode. If that local service is

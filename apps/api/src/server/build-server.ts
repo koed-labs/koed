@@ -1,3 +1,4 @@
+import { createPublicKey } from "node:crypto";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import Fastify, { type FastifyRequest } from "fastify";
@@ -42,6 +43,7 @@ import {
   registerCaptureRoutes,
   registerCuratedMemoryRoutes,
   registerGraphRoutes,
+  registerHistoricalImportRoutes,
   registerLocalAgentSettingsRoutes,
   registerLcmRoutes,
   registerQuestionRoutes,
@@ -52,6 +54,7 @@ import {
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
   inspectDeviceIdentityAtKoedHome,
+  reconcileDeviceIdentityDeployment,
   embeddingDispatchKey,
   readUpstreamCredentialAuthorization,
   type DeviceIdentityInspection,
@@ -158,13 +161,18 @@ const resolvePdsAuthoritySigner = (
   if (!authority.keyId || !authority.publicKey || !authority.secretSeed)
     return null;
   try {
+    const privateKey = pdsEd25519PrivateKey(
+      authority.secretSeed,
+      authority.publicKey
+    );
+    const derived = createPublicKey(privateKey).export({
+      format: "jwk"
+    }) as JsonWebKey;
+    if (derived.x !== authority.publicKey) return null;
     return {
       keyId: authority.keyId,
       publicKey: authority.publicKey,
-      privateKey: pdsEd25519PrivateKey(
-        authority.secretSeed,
-        authority.publicKey
-      )
+      privateKey
     };
   } catch {
     return null;
@@ -246,6 +254,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           envelopeEncryptionProvider
         })
       : null);
+  if (repository && !options.repository) {
+    const legacyDeployment = await repository.getLocalSyncDeployment();
+    reconcileDeviceIdentityDeployment({
+      koedHome: config.koedHome,
+      protocolDeploymentId: legacyDeployment?.protocolDeploymentId ?? null,
+      environment: process.env
+    });
+  }
   const createQueue = <TJobData>(name: string) =>
     createMemoryJobQueue<TJobData>(name, {
       backend: config.queueBackend,
@@ -561,6 +577,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
   registerCuratedMemoryRoutes(app, routeContext);
+  registerHistoricalImportRoutes(app, routeContext);
   registerRawConversationRoutes(app, routeContext);
   registerRecallRoutes(app, routeContext);
   registerLocalAgentSettingsRoutes(app, routeContext);

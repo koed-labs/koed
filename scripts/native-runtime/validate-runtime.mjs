@@ -3,6 +3,11 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import {
+  collectPlatformBinaries,
+  listRuntimeFiles,
+  macLoaderIssues
+} from "./loader-validation-lib.mjs";
 
 const parseArgs = (argv) => {
   const options = { runtimeRoot: "", json: false, platform: process.platform };
@@ -88,63 +93,29 @@ const validateExecutables = (runtimeRoot) =>
     ];
   });
 
-const pgConfigValue = (runtimeRoot, flag) => {
-  const pgConfig = resolve(runtimeRoot, "postgres", "bin", "pg_config");
-  if (!existsSync(pgConfig)) return undefined;
-  const result = run(pgConfig, [flag]);
-  if (result.status !== 0 || result.error) return undefined;
-  return result.stdout.trim();
-};
-
-const collectLoaderFiles = (runtimeRoot, platform) => {
-  const files = [
-    resolve(runtimeRoot, "postgres", "bin", "initdb"),
-    resolve(runtimeRoot, "postgres", "bin", "pg_ctl"),
-    resolve(runtimeRoot, "postgres", "bin", "psql"),
-    resolve(runtimeRoot, "postgres", "bin", "pg_config"),
-    resolve(runtimeRoot, "llama.cpp", "llama-server")
-  ];
-  const pkglibdir = pgConfigValue(runtimeRoot, "--pkglibdir");
-  if (pkglibdir) {
-    files.push(
-      resolve(pkglibdir, platform === "darwin" ? "vector.dylib" : "vector.so")
-    );
-  } else {
-    files.push(
-      resolve(
-        runtimeRoot,
-        "postgres",
-        "lib",
-        platform === "darwin" ? "vector.dylib" : "vector.so"
-      ),
-      resolve(
-        runtimeRoot,
-        "postgres",
-        "lib",
-        "postgresql",
-        platform === "darwin" ? "vector.dylib" : "vector.so"
-      )
-    );
-  }
-  return files.filter(existsSync);
-};
-
-const validateMacLoaders = (runtimeRoot) =>
-  collectLoaderFiles(runtimeRoot, "darwin").map((file) => {
+const validateMacLoaders = (runtimeRoot) => {
+  const runtimeFiles = listRuntimeFiles(runtimeRoot);
+  return collectPlatformBinaries({
+    runtimeRoot,
+    platform: "darwin"
+  }).map((file) => {
     const result = run("otool", ["-L", file]);
     const output = `${result.stdout}\n${result.stderr}`;
-    const forbidden = [
-      /\/opt\/homebrew\//,
-      /\/usr\/local\/Cellar\//,
-      /not found/i
-    ].filter((pattern) => pattern.test(output));
+    const issues = macLoaderIssues({
+      file,
+      output,
+      runtimeFiles,
+      runtimeRoot
+    });
     return {
       file,
       command: result.command,
-      ok: result.status === 0 && forbidden.length === 0,
+      ok: result.status === 0 && issues.length === 0,
+      issues,
       output: output.trim()
     };
   });
+};
 
 const validateLinuxLoaders = (runtimeRoot) => {
   const lddVersion = run("ldd", ["--version"]);
@@ -166,7 +137,10 @@ const validateLinuxLoaders = (runtimeRoot) => {
   ) {
     throw new Error("Linux native runtime artifacts require glibc 2.35+.");
   }
-  return collectLoaderFiles(runtimeRoot, "linux").map((file) => {
+  return collectPlatformBinaries({
+    runtimeRoot,
+    platform: "linux"
+  }).map((file) => {
     const result = run("ldd", [file]);
     const output = `${result.stdout}\n${result.stderr}`;
     return {
@@ -180,7 +154,10 @@ const validateLinuxLoaders = (runtimeRoot) => {
 
 const validatePostgresExtensions = (runtimeRoot) => {
   const tempRoot = mkdtempSync(
-    resolve(tmpdir(), "koed-postgres-extensions-validate-")
+    resolve(
+      process.platform === "darwin" ? "/tmp" : tmpdir(),
+      "koed-postgres-extensions-validate-"
+    )
   );
   const dataDir = resolve(tempRoot, "data");
   const socketDir = resolve(tempRoot, "socket");
@@ -327,7 +304,9 @@ const runValidation = (options) => {
       .map((entry) => `${entry.file} loader failed: ${entry.output}`),
     ...(postgresExtensions.ok
       ? []
-      : [`Postgres extension validation failed: ${postgresExtensions.error}`]),
+      : [
+          `Postgres extension validation failed: ${postgresExtensions.error}${postgresExtensions.log ? `\n${postgresExtensions.log}` : ""}`
+        ]),
     ...(packagedProvider.skipped || packagedProvider.ok
       ? []
       : ["packaged provider validation failed"])

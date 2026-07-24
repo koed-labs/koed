@@ -33,6 +33,17 @@ local secure credential storage.
 Disconnect revokes local credential material and disables Team routing. API
 Tokens remain Personal Memory credentials; they do not authorize Team Workspace
 recall.
+
+Captured Session previews prefer human-readable Conversation text and suppress
+tool-call payloads as the primary summary. In the raw Conversation, User and AI
+Client messages remain individually visible while consecutive tool calls are
+collapsed into an expandable Agent activity group; expanding it preserves every
+raw Memory Event and its captured content.
+
+Settings describes local readiness through the User outcomes of Capture,
+Recall, and Memory processing. Degraded outcomes offer a relevant recovery
+action in context, while service-level status and broad diagnostic actions stay
+under Advanced diagnostics.
 Separate Git worktrees keep distinct local records while sharing a device-local
 Git common-directory signal. Current and historical network remote aliases are
 stored only as future matching evidence; Desktop does not yet combine Personal

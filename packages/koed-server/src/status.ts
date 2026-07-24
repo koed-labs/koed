@@ -303,7 +303,10 @@ const koedServerConfigEnvironment = (
     environment.KOED_EXTERNAL_REDIS_URL ?? repoEnv.KOED_EXTERNAL_REDIS_URL,
   KOED_EXTERNAL_EMBEDDING_SERVICE_URL:
     environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL ??
-    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL
+    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL,
+  MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED:
+    environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED ??
+    repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
 });
 
 const inspectApiToken = (
@@ -614,6 +617,44 @@ const inspectExplorer = async (
   }
 };
 
+const inspectCodexTranscriptWatcher = (
+  enabled: boolean,
+  runtime: KoedServerRuntimeState | null,
+  runtimeProcessRunning: boolean,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerComponentStatus => {
+  const watcherPid = runtime?.processes?.codexTranscriptWatcher;
+  const details = { enabled, watcherPid: watcherPid ?? null };
+  if (!enabled) {
+    return notConfigured(
+      "Codex Transcript Watcher is disabled.",
+      undefined,
+      details
+    );
+  }
+  if (!runtimeProcessRunning) {
+    return starting(
+      "Koed server supervisor is not currently running.",
+      details
+    );
+  }
+  if (!watcherPid) {
+    return needsAttention(
+      "Codex Transcript Watcher process is not recorded in koed-server runtime state.",
+      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      details
+    );
+  }
+  if (!deps.checkPid(watcherPid)) {
+    return needsAttention(
+      "Codex Transcript Watcher process is not running.",
+      "Run koed-server restart --json or inspect Koed logs.",
+      details
+    );
+  }
+  return healthy("Codex Transcript Watcher process is running.", details);
+};
+
 const inspectLastVerification = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
@@ -775,7 +816,14 @@ export const collectKoedServerStatus = async (
       ? {
           ...environment,
           KOED_RUNTIME_MODE: runtime.runtimeMode,
-          KOED_DEPENDENCY_MODE: runtime.dependencyMode
+          KOED_DEPENDENCY_MODE: runtime.dependencyMode,
+          ...(runtime.codexTranscriptWatcherEnabled === undefined
+            ? {}
+            : {
+                MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: String(
+                  runtime.codexTranscriptWatcherEnabled
+                )
+              })
         }
       : environment;
   const serverConfig = resolveKoedServerConfig(
@@ -816,6 +864,12 @@ export const collectKoedServerStatus = async (
     apiUrl,
     integrationToken?.token,
     runtimeEnvironment,
+    deps
+  );
+  const codexTranscriptWatcher = inspectCodexTranscriptWatcher(
+    serverConfig.codexTranscriptWatcherEnabled,
+    runtime,
+    runtimeProcessRunning,
     deps
   );
   const mcpServer = inspectMcp(
@@ -929,6 +983,7 @@ export const collectKoedServerStatus = async (
     apiToken,
     mcpServer,
     captureHook,
+    codexTranscriptWatcher,
     codex,
     lcmSummaryService,
     deviceIdentity,
@@ -967,6 +1022,11 @@ export const collectKoedServerDoctor = async (
     ["apiToken", "Local credential/API Token", status.apiToken],
     ["mcpServer", "MCP Server", status.mcpServer],
     ["captureHook", "Supported Capture Hook", status.captureHook],
+    [
+      "codexTranscriptWatcher",
+      "Codex Transcript Watcher",
+      status.codexTranscriptWatcher
+    ],
     ["codex", "Codex configuration", status.codex],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
     ["deviceIdentity", "Device identity", status.deviceIdentity],
@@ -981,7 +1041,8 @@ export const collectKoedServerDoctor = async (
     (check) =>
       check.id !== "lastVerification" &&
       check.id !== "upstreamBackends" &&
-      check.id !== "deviceIdentity"
+      check.id !== "deviceIdentity" &&
+      check.id !== "codexTranscriptWatcher"
   );
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"

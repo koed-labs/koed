@@ -31,10 +31,6 @@ export interface PersonalDeviceGroupRecord {
   recoveryKemKeyId: string;
   recoveryKemPublicKey: string;
   currentEpoch: string;
-  pendingEpoch: string | null;
-  pendingStatementSequence: string | null;
-  pendingStatementHash: string | null;
-  pendingBundleHash: string | null;
   headSequence: string;
   headHash: string;
   state: PersonalDeviceGroupState;
@@ -110,11 +106,6 @@ const selectGroup = async (
     recoveryKemKeyId: row.recovery_kem_key_id as string,
     recoveryKemPublicKey: row.recovery_kem_public_key as string,
     currentEpoch: row.current_epoch as string,
-    pendingEpoch: (row.pending_epoch as string | null) ?? null,
-    pendingStatementSequence:
-      (row.pending_statement_sequence as string | null) ?? null,
-    pendingStatementHash: (row.pending_statement_hash as string | null) ?? null,
-    pendingBundleHash: (row.pending_bundle_hash as string | null) ?? null,
     headSequence: row.head_sequence as string,
     headHash: row.head_hash as string,
     state: row.state as PersonalDeviceGroupState,
@@ -359,14 +350,17 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     statementHash: string;
     statement: string;
     authorizationKeyId: string;
-    browserSubjectId: string;
-    browserDeploymentId: string;
+    addedDeviceSubject?: {
+      subjectId: string;
+      deploymentId: string;
+    };
     keyBundle?: {
       hash: string;
       canonical: string;
       epoch: string;
       transitionKind: string;
       recipients: string[];
+      recoveryRecipientId: string;
     };
     addedDevice?: Omit<
       PersonalDeviceMemberRecord,
@@ -388,10 +382,6 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
       if (group.state !== "active") {
         await client.query("rollback");
         return { outcome: "equivocation", group, statement: null };
-      }
-      if (group.pendingEpoch !== null) {
-        await client.query("rollback");
-        return { outcome: "conflict", group, statement: null };
       }
       if (
         group.headHash !== input.expectedHeadHash ||
@@ -432,7 +422,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
             (deviceId) => !input.revokeDeviceIds?.includes(deviceId)
           );
         }
-        expectedRecipients.push(group.recoveryKemKeyId);
+        expectedRecipients.push(input.keyBundle.recoveryRecipientId);
         expectedRecipients = [...new Set(expectedRecipients)].sort();
         if (
           JSON.stringify(expectedRecipients) !==
@@ -472,30 +462,41 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
           );
       }
       if (input.addedDevice) {
-        const added = await client.query(
-          `insert into personal_device_group_members (group_id,user_subject_id,device_id,signing_key_id,signing_public_key,kem_key_id,kem_public_key,operation_families,status,admitted_sequence)
-          select $1,id,$2,$3,$4,$5,$6,$7,'active',$8 from personal_device_group_user_subjects
-          where group_id=$1 and user_id=$9 and subject_id=$10 and deployment_id=$11
-            and revoked_at is null`,
+        if (!input.addedDeviceSubject)
+          throw Object.assign(
+            new Error("PDS browser subject binding is unavailable"),
+            { statusCode: 403 }
+          );
+        const subject = await client.query(
+          `insert into personal_device_group_user_subjects
+            (group_id,user_id,subject_id,deployment_id)
+          values ($1,$2,$3,$4)
+          on conflict (group_id,user_id,deployment_id) do update
+            set subject_id=excluded.subject_id,revoked_at=null
+          returning id`,
           [
             group.id,
+            input.userId,
+            input.addedDeviceSubject.subjectId,
+            input.addedDeviceSubject.deploymentId
+          ]
+        );
+        await client.query(
+          `insert into personal_device_group_members
+            (group_id,user_subject_id,device_id,signing_key_id,signing_public_key,kem_key_id,kem_public_key,operation_families,status,admitted_sequence)
+          values ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9)`,
+          [
+            group.id,
+            queryRow<{ id: string }>(subject.rows[0]).id,
             input.addedDevice.deviceId,
             input.addedDevice.signingKeyId,
             input.addedDevice.signingPublicKey,
             input.addedDevice.kemKeyId,
             input.addedDevice.kemPublicKey,
             input.addedDevice.operationFamilies,
-            input.sequence,
-            input.userId,
-            input.browserSubjectId,
-            input.browserDeploymentId
+            input.sequence
           ]
         );
-        if (!added.rowCount)
-          throw Object.assign(
-            new Error("PDS browser subject binding is unavailable"),
-            { statusCode: 403 }
-          );
       }
       if (input.revokeDeviceIds?.length) {
         const revoked = await client.query(
@@ -512,23 +513,16 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
           [group.id, input.revokeDeviceIds]
         );
       }
-      const membershipTransition = input.nextEpoch !== null;
       const update = await client.query(
         `update personal_device_groups set head_sequence=$1,head_hash=$2,
-          current_epoch=case when $3 then current_epoch else coalesce($4,current_epoch) end,
-          pending_epoch=case when $3 then $4 else null end,
-          pending_statement_sequence=case when $3 then $1 else null end,
-          pending_statement_hash=case when $3 then $2 else null end,
-          pending_bundle_hash=case when $3 then $7 else null end,
-          updated_at=now() where id=$5 and head_hash=$6 and pending_epoch is null returning id`,
+          current_epoch=coalesce($3,current_epoch),updated_at=now()
+        where id=$4 and head_hash=$5 returning id`,
         [
           input.sequence,
           input.statementHash,
-          membershipTransition,
           input.nextEpoch,
           group.id,
-          input.expectedHeadHash,
-          input.keyBundle?.hash ?? null
+          input.expectedHeadHash
         ]
       );
       if (!update.rowCount) {
@@ -567,74 +561,6 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
         outcome: "accepted",
         group: (await selectGroup(client, input.userId, input.groupId))!,
         statement: input.statement
-      };
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-  },
-
-  async acknowledgePersonalDeviceEpoch(input: {
-    userId: string;
-    groupId: string;
-    deviceId: string;
-    epoch: string;
-    canonicalAck: string;
-    acknowledgedAt: Date;
-  }): Promise<{ group: PersonalDeviceGroupRecord; activated: boolean } | null> {
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
-        input.groupId
-      ]);
-      const group = await selectGroup(client, input.userId, input.groupId);
-      if (!group || group.pendingEpoch !== input.epoch) {
-        await client.query("rollback");
-        return null;
-      }
-      const member = await client.query(
-        "select id from personal_device_group_members where group_id=$1 and device_id=$2 and status='active'",
-        [group.id, input.deviceId]
-      );
-      if (!member.rowCount)
-        throw Object.assign(new Error("PDS member is not active"), {
-          statusCode: 409
-        });
-      await client.query(
-        `insert into personal_device_epoch_acks (group_id,member_id,epoch,canonical_ack,acknowledged_at)
-        values ($1,$2,$3,$4,$5) on conflict (group_id,member_id,epoch) do nothing`,
-        [
-          group.id,
-          queryRow<{ id: string }>(member.rows[0]).id,
-          input.epoch,
-          input.canonicalAck,
-          input.acknowledgedAt
-        ]
-      );
-      const pending = await client.query(
-        `select count(*) filter (where m.status='active')::int as active_count,
-          count(a.id) filter (where m.status='active')::int as ack_count
-        from personal_device_group_members m left join personal_device_epoch_acks a
-          on a.member_id=m.id and a.group_id=m.group_id and a.epoch=$2 where m.group_id=$1`,
-        [group.id, input.epoch]
-      );
-      const counts = queryRow<{ active_count: number; ack_count: number }>(
-        pending.rows[0]
-      );
-      const activated =
-        counts.active_count > 0 && counts.active_count === counts.ack_count;
-      if (activated)
-        await client.query(
-          `update personal_device_groups set current_epoch=pending_epoch,pending_epoch=null,pending_statement_sequence=null,pending_statement_hash=null,pending_bundle_hash=null,updated_at=now() where id=$1`,
-          [group.id]
-        );
-      await client.query("commit");
-      return {
-        group: (await selectGroup(client, input.userId, input.groupId))!,
-        activated
       };
     } catch (error) {
       await client.query("rollback");
@@ -743,8 +669,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
       const group = await selectGroup(client, input.userId, input.groupId);
       if (
         !group ||
-        (group.currentEpoch !== input.epoch &&
-          group.pendingEpoch !== input.epoch) ||
+        group.currentEpoch !== input.epoch ||
         !group.members.some((member) => member.status === "active")
       )
         return null;
@@ -769,7 +694,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     const client = await pool.connect();
     try {
       const group = await selectGroup(client, input.userId, input.groupId);
-      if (!group || group.pendingEpoch !== null) return null;
+      if (!group) return null;
       const result = await client.query(
         `select c.canonical_certificate from personal_device_membership_certificates c
         join personal_device_group_members m on m.id=c.member_id

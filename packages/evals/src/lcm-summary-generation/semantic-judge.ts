@@ -1,11 +1,11 @@
 import { performance } from "node:perf_hooks";
+import type { StructuredLcmSummary } from "@koed/core";
 import {
   loadPrompt,
   renderPrompt,
   runCodexAppServerJsonTask,
   type CodexAppServerRunResult,
-  type LcmSummaryNode,
-  type StructuredLcmSummary
+  type LcmSummaryNode
 } from "@koed/mcp-server";
 import { z } from "zod";
 import { runWithAttempts } from "./attempts.js";
@@ -21,7 +21,7 @@ import {
 import type { LcmSummaryBenchmarkReport } from "./runner.js";
 
 export const LCM_SUMMARY_SEMANTIC_JUDGE_SCHEMA_VERSION =
-  "lcm-summary-semantic-judge-v1";
+  "lcm-summary-semantic-judge-v2";
 
 export const DEFAULT_SEMANTIC_JUDGE_THRESHOLD = 0.85;
 
@@ -59,7 +59,7 @@ const semanticJudgeSchema = z
       .object({
         faithfulness: judgeDimensionSchema,
         durableCoverage: judgeDimensionSchema,
-        fieldFitness: judgeDimensionSchema,
+        semanticFocus: judgeDimensionSchema,
         conflictHandling: judgeDimensionSchema,
         compressionQuality: judgeDimensionSchema,
         provenanceUse: judgeDimensionSchema,
@@ -173,7 +173,7 @@ export const buildLcmSummarySemanticJudgePrompt = (input: {
       dimensions: {
         faithfulness: 0.95,
         durableCoverage: 0.9,
-        fieldFitness: 0.9,
+        semanticFocus: 0.9,
         conflictHandling: 0.9,
         compressionQuality: 0.9,
         provenanceUse: 0.9,

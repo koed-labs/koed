@@ -35,6 +35,7 @@ export interface RawConversationItemRequest extends Record<string, unknown> {
   transportChunkEncoding?: string;
   sourceHash: string;
   idempotencyKey: string;
+  legacyIdempotencyKeys?: string[];
   canonicalItemKey?: string;
   canonicalStableItemId?: string;
   canonicalSourcePriority?: number;

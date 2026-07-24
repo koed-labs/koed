@@ -3,7 +3,10 @@ import type { EmbeddableSourceType, MemorySourceRepository } from "@koed/db";
 import {
   embeddingQueueJobId,
   lcmCompactionQueueJobId,
+  resolveKoedWorkClass,
+  workClassPriority,
   type KoedJobQueue,
+  type KoedWorkClass,
   type WorkerQueueName
 } from "@koed/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
@@ -11,11 +14,15 @@ import type { EmbeddingWorkflow } from "./embedding-workflow.js";
 export interface EmbeddingQueueJobData {
   sourceType: EmbeddableSourceType;
   sourceId: string;
+  workClass?: KoedWorkClass;
 }
 
 export interface CompactionQueueJobData {
   userId: string;
   visibility: Visibility;
+  workClass?: KoedWorkClass;
+  sessionId?: string;
+  finalize?: boolean;
 }
 
 export interface WorkerJobWorkflowConfig {
@@ -49,16 +56,14 @@ export const embeddingJobData = (data: unknown): EmbeddingQueueJobData => {
   const record = workerJobData(data);
   const sourceType = stringValue(record.sourceType);
   const sourceId = stringValue(record.sourceId);
+  const workClass = resolveKoedWorkClass(record.workClass);
   if (!isEmbeddableSourceType(sourceType)) {
     throw new Error("Embedding job sourceType is invalid");
   }
   if (!sourceId) {
     throw new Error("Embedding job sourceId is required");
   }
-  return {
-    sourceType,
-    sourceId
-  };
+  return { sourceType, sourceId, workClass };
 };
 
 const visibilityFromJobData = (data: Record<string, unknown>): Visibility => {
@@ -66,16 +71,20 @@ const visibilityFromJobData = (data: Record<string, unknown>): Visibility => {
   return visibility === "personal" ? visibility : "personal";
 };
 
-const durableJobOptions = () => ({
+const workClassFromJobData = (data: Record<string, unknown>): KoedWorkClass =>
+  resolveKoedWorkClass(data.workClass);
+
+const durableJobOptions = (workClass: KoedWorkClass) => ({
+  priority: workClassPriority(workClass),
   attempts: 5,
   backoff: { type: "exponential", delay: 10_000 },
   removeOnComplete: 1000,
   removeOnFail: 5000
 });
 
-const reconciliationJobOptions = () => ({
-  ...durableJobOptions(),
-  // PostgreSQL remains the retry source after queue-level attempts are spent.
+const reconciliationJobOptions = (workClass: KoedWorkClass) => ({
+  ...durableJobOptions(workClass),
+  // PostgreSQL remains retry source after queue-level attempts are spent.
   removeOnFail: true
 });
 
@@ -83,14 +92,16 @@ export const enqueueSourceEmbedding = (
   queue: KoedJobQueue<EmbeddingQueueJobData>,
   sourceType: EmbeddableSourceType,
   sourceId: string,
-  dispatchKey = "current"
+  dispatchKey = "current",
+  workClass: KoedWorkClass = "normal_embedding_lcm",
+  jobId?: string
 ) =>
   queue.add(
     "embed-source",
-    { sourceType, sourceId },
+    { sourceType, sourceId, workClass },
     {
-      ...reconciliationJobOptions(),
-      jobId: embeddingQueueJobId(dispatchKey, sourceType, sourceId)
+      ...reconciliationJobOptions(workClass),
+      jobId: jobId ?? embeddingQueueJobId(dispatchKey, sourceType, sourceId)
     }
   );
 
@@ -98,33 +109,46 @@ export const enqueueLcmCompaction = (
   lcmCompactQueue: KoedJobQueue<CompactionQueueJobData>,
   requesterContext: { userId: string },
   visibility: Visibility,
-  dispatchKey = "projected"
+  dispatchKey = "projected",
+  workClass: KoedWorkClass = "normal_embedding_lcm",
+  jobId?: string,
+  sessionId?: string,
+  finalize = false
 ) =>
   lcmCompactQueue.add(
     "compact-scope",
-    { userId: requesterContext.userId, visibility },
     {
-      ...reconciliationJobOptions(),
-      jobId: lcmCompactionQueueJobId(
-        requesterContext.userId,
-        visibility,
-        dispatchKey
-      )
+      userId: requesterContext.userId,
+      visibility,
+      workClass,
+      ...(sessionId ? { sessionId } : {}),
+      ...(finalize ? { finalize: true } : {})
+    },
+    {
+      ...reconciliationJobOptions(workClass),
+      jobId:
+        jobId ??
+        lcmCompactionQueueJobId(
+          requesterContext.userId,
+          visibility,
+          dispatchKey
+        )
     }
   );
 
 export const enqueueLcmNodeEmbeddings = async (
   lcmEmbedQueue: KoedJobQueue<EmbeddingQueueJobData>,
   nodeIds: string[],
-  dispatchKey: string
+  dispatchKey: string,
+  workClass: KoedWorkClass = "normal_embedding_lcm"
 ) =>
   Promise.all(
     nodeIds.map((nodeId) =>
       lcmEmbedQueue.add(
         "embed-lcm-node",
-        { sourceType: "memory_node", sourceId: nodeId },
+        { sourceType: "memory_node", sourceId: nodeId, workClass },
         {
-          ...reconciliationJobOptions(),
+          ...reconciliationJobOptions(workClass),
           jobId: embeddingQueueJobId(dispatchKey, "memory_node", nodeId)
         }
       )
@@ -136,10 +160,16 @@ export const createWorkerJobWorkflow = (config: WorkerJobWorkflowConfig) => {
     const record = workerJobData(data);
     const userId = stringValue(record.userId);
     const visibility = visibilityFromJobData(record);
+    const workClass = workClassFromJobData(record);
+    const sessionId = stringValue(record.sessionId) || undefined;
+    const finalize = record.finalize === true;
     const compaction = await scheduleCompaction({
       repository: config.repository(),
       requesterContext: { userId },
-      visibility
+      visibility,
+      workClass,
+      ...(sessionId ? { sessionId } : {}),
+      ...(finalize ? { finalize: true } : {})
     });
     const nodeIds = [
       ...compaction.leafNodeIds,
@@ -148,7 +178,8 @@ export const createWorkerJobWorkflow = (config: WorkerJobWorkflowConfig) => {
     const embeddingJobs = await enqueueLcmNodeEmbeddings(
       config.lcmEmbedQueue,
       nodeIds,
-      config.embeddingDispatchKey
+      config.embeddingDispatchKey,
+      workClass
     );
     return {
       compaction,
@@ -166,11 +197,9 @@ export const createWorkerJobWorkflow = (config: WorkerJobWorkflowConfig) => {
     if (queueName === "lcm-compact") {
       return runCompactionJob(data);
     }
-
     if (queueName === "memory-embed" || queueName === "lcm-embed") {
       return runEmbeddingJob(data);
     }
-
     return { ok: true };
   };
 };

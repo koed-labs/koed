@@ -22,6 +22,15 @@ const workerEnv: WorkerEnvConfig = {
   crossIdentitySyncIntervalMs: 1000,
   crossIdentitySyncStaleAfterSeconds: 86400,
   koedHome: "/tmp/koed-test",
+  historicalImport: {
+    maxRows: 100,
+    maxBytes: 1_000_000,
+    maxRuntimeMs: 15_000,
+    maxConcurrency: 1,
+    maxLiveProjectionRows: 0,
+    maxInteractiveQuestionRows: 0
+  },
+  historicalImportApiReadyTimeoutMs: 1_000,
   logLevel: "silent",
   logDestination: { destination: "stderr" },
   nodeEnv: "test",

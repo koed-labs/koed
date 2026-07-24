@@ -8,6 +8,7 @@ import {
   projectLatestAt,
   reconcileSelectedProjectId,
   relativeTime,
+  sessionPreview,
   sessionSelectionId,
   type DesktopProjectGroup,
   type DesktopProjectMetadata
@@ -110,6 +111,27 @@ describe("project memory UI view model", () => {
     expect(projectIdForSession([project], "missing-session")).toBeNull();
   });
 
+  it("keeps tool payloads out of Captured Session previews", () => {
+    expect(
+      sessionPreview({
+        name: "Open a focused PR",
+        sample: "Tool call: exec Status: completed Input: { cmd: 'git push' }"
+      })
+    ).toBe("Open the Conversation to review this Captured Session.");
+    expect(
+      sessionPreview({
+        name: "Open a focused PR",
+        sample: "Tool output: exec\n\nsecret-looking tool payload"
+      })
+    ).toBe("Open the Conversation to review this Captured Session.");
+    expect(
+      sessionPreview({
+        name: "Refine Desktop",
+        sample: "  The Desktop layout now keeps Project context visible.  "
+      })
+    ).toBe("The Desktop layout now keeps Project context visible.");
+  });
+
   it("excludes Unassigned from manual move targets", () => {
     const projects = mergeProjectSources(
       [
@@ -134,9 +156,14 @@ describe("project memory UI view model", () => {
     const active = mergeProjectSources([graphProject()], [metadata()]);
 
     expect(reconcileSelectedProjectId(active, null, true)).toBeNull();
-    expect(reconcileSelectedProjectId(active, "deleted-project", false)).toBe(
-      "graph-koed"
-    );
+    expect(
+      reconcileSelectedProjectId(
+        active,
+        "deleted-project",
+        false,
+        Date.parse("2026-07-10T00:00:00.000Z")
+      )
+    ).toBe("graph-koed");
   });
 
   it("rejects stale Project graph responses", () => {

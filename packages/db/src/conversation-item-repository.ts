@@ -13,6 +13,7 @@ import {
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
   rawConversationTransportChunkGroupId,
   sanitizeForPostgresStorage,
+  projectionWorkClassForSourceTransport,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
 import type {
@@ -37,6 +38,7 @@ export interface ConversationItemRepository {
 
 export interface ConversationItemRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  transactionClient?: pg.PoolClient;
   resolveCapturePolicy?: (
     actor: ActorContext,
     input: { projectId?: string; threadId?: string; sessionId?: string }
@@ -73,6 +75,10 @@ type ConversationItemRow = {
   idempotency_key: string;
   canonical_item_key: string;
   canonical_source_priority: number;
+  observed_at: Date;
+  import_observed_at: Date | null;
+  source_fingerprint: string | null;
+  captured_project: Record<string, unknown>;
   created_at: Date;
 };
 
@@ -80,7 +86,6 @@ type LegacyConversationItemReplayRow = ConversationItemRow & {
   source_path: string | null;
   source_line_number: number | null;
   event_time: Date | null;
-  observed_at: Date;
   raw_json: unknown;
   raw_text: string | null;
   logical_source_id: string | null;
@@ -369,8 +374,15 @@ const sanitizeConversationItemForStorage = (
   const transportChunkEncoding = sanitizeForPostgresStorage(
     item.transportChunkEncoding
   );
+  const sourceFingerprint = sanitizeForPostgresStorage(item.sourceFingerprint);
+  const capturedProject = sanitizeForPostgresStorage(
+    item.capturedProject ?? {}
+  );
   const sourceHash = sanitizeForPostgresStorage(item.sourceHash);
   const idempotencyKey = sanitizeForPostgresStorage(item.idempotencyKey);
+  const legacyIdempotencyKeys = (item.legacyIdempotencyKeys ?? []).map((key) =>
+    sanitizeForPostgresStorage(key)
+  );
   const canonicalItemKey = sanitizeForPostgresStorage(item.canonicalItemKey);
   const canonicalStableItemId = sanitizeForPostgresStorage(
     item.canonicalStableItemId
@@ -400,8 +412,11 @@ const sanitizeConversationItemForStorage = (
     logicalSourceId,
     transportChunkText,
     transportChunkEncoding,
+    sourceFingerprint,
+    capturedProject,
     sourceHash,
     idempotencyKey,
+    ...legacyIdempotencyKeys,
     canonicalItemKey,
     canonicalStableItemId,
     observationKind,
@@ -456,8 +471,13 @@ const sanitizeConversationItemForStorage = (
     logicalSourceId: logicalSourceId.value as string | undefined,
     transportChunkText: transportChunkText.value as string | undefined,
     transportChunkEncoding: transportChunkEncoding.value as string | undefined,
+    sourceFingerprint: sourceFingerprint.value as string | undefined,
+    capturedProject: capturedProject.value as Record<string, unknown>,
     sourceHash: sourceHash.value as string,
     idempotencyKey: idempotencyKey.value as string,
+    legacyIdempotencyKeys: legacyIdempotencyKeys.map(
+      (key) => key.value as string
+    ),
     canonicalItemKey: canonicalItemKey.value as string | undefined,
     canonicalStableItemId: canonicalStableItemId.value as string | undefined,
     observationKind: observationKind.value as
@@ -954,6 +974,10 @@ const mapConversationItem = (
   sourceEventType: row.source_event_type,
   sourceSequence: row.source_sequence,
   idempotencyKey: row.idempotency_key,
+  observedAt: row.observed_at.toISOString(),
+  importObservedAt: row.import_observed_at?.toISOString() ?? null,
+  sourceFingerprint: row.source_fingerprint,
+  capturedProject: row.captured_project,
   createdAt: row.created_at.toISOString()
 });
 
@@ -1599,9 +1623,24 @@ export const createConversationItemRepository = (
       const sourceIdempotencyKey = sanitizedItem.idempotencyKey;
       let item = withCanonicalConversationIdentity({
         ...sanitizedItem,
-        observationKind: observationKindFor(sanitizedItem)
+        observationKind:
+          sanitizedItem.observationKind ?? observationKindFor(sanitizedItem)
       });
-      const canonicalItemKey = canonicalItemKeyFor(item);
+      let canonicalItemKey = canonicalItemKeyFor(item);
+      const legacyCanonicalItemKeys = [
+        ...new Set(item.legacyIdempotencyKeys ?? [])
+      ].filter((key) => key !== canonicalItemKey);
+      if (
+        legacyCanonicalItemKeys.length > 0 &&
+        item.sourceAdapterVersion !== "codex-transcript-v1"
+      ) {
+        throw Object.assign(
+          new Error(
+            "Legacy conversation identity aliases require codex-transcript-v1"
+          ),
+          { statusCode: 400, code: "legacy_identity_alias_invalid" }
+        );
+      }
       const payloadHash = observationPayloadHashFor(item);
       const observationKey = observationKeyFor(item, sourceIdempotencyKey);
       const canonicalSourcePriority = canonicalSourcePriorityFor(item);
@@ -1629,9 +1668,14 @@ export const createConversationItemRepository = (
         suppressPlaintextRaw && hasEncryptableText(item.sourcePath)
           ? ENCRYPTED_CONVERSATION_ITEM_TEXT
           : (item.sourcePath ?? null);
-      const client = await pool.connect();
+      const ownsTransaction = !options.transactionClient;
+      const client = options.transactionClient ?? (await pool.connect());
+      const commit = () =>
+        ownsTransaction ? client.query("commit") : Promise.resolve();
       try {
-        await client.query("begin");
+        if (ownsTransaction) {
+          await client.query("begin");
+        }
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
           [`capture-policy:${ownerUserId}`]
@@ -1664,12 +1708,52 @@ export const createConversationItemRepository = (
           item,
           resolveCapturePolicy: options.resolveCapturePolicy
         });
-        await client.query(
-          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
-          [
-            `conversation-item:${ownerUserId ?? "anonymous"}:${visibility}:${canonicalItemKey}`
-          ]
-        );
+        for (const key of [
+          canonicalItemKey,
+          ...legacyCanonicalItemKeys
+        ].sort()) {
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [
+              `conversation-item:${ownerUserId ?? "anonymous"}:${visibility}:${key}`
+            ]
+          );
+        }
+        if (legacyCanonicalItemKeys.length > 0) {
+          const existingCanonicalRows = await client.query<{
+            canonical_item_key: string;
+          }>(
+            `
+              select canonical_item_key
+              from conversation_items
+              where owner_user_id = $1
+                and visibility = 'personal'
+                and canonical_item_key = any($2::text[])
+                and personal_deleted_at is null
+              order by case when canonical_item_key = $3 then 0 else 1 end
+            `,
+            [
+              ownerUserId,
+              [canonicalItemKey, ...legacyCanonicalItemKeys],
+              canonicalItemKey
+            ]
+          );
+          const existingKeys = [
+            ...new Set(
+              existingCanonicalRows.rows.map((row) => row.canonical_item_key)
+            )
+          ];
+          if (existingKeys.includes(canonicalItemKey)) {
+            // The current identity wins when both current and legacy rows exist.
+          } else if (existingKeys.length === 1) {
+            canonicalItemKey = existingKeys[0]!;
+          } else if (existingKeys.length > 1) {
+            throw Object.assign(
+              new Error("Legacy conversation identity matches multiple items"),
+              { statusCode: 409, code: "legacy_identity_ambiguous" }
+            );
+          }
+        }
 
         const replayRows =
           await client.query<ExistingConversationItemObservationRow>(
@@ -1706,7 +1790,7 @@ export const createConversationItemRepository = (
                 { statusCode: 409, code: "observation_integrity_conflict" }
               );
             }
-            await client.query("commit");
+            await commit();
             continue;
           }
           if (
@@ -1728,8 +1812,9 @@ export const createConversationItemRepository = (
                 external_thread_id, external_turn_id, external_item_id,
                 canonical_stable_item_id, source_record_type,
                 source_event_type, source_sequence, idempotency_key,
-                canonical_item_key,
-                canonical_source_priority, created_at
+                canonical_item_key, canonical_source_priority, observed_at,
+                import_observed_at, source_fingerprint, captured_project,
+                created_at
               from conversation_items
               where id = $1
                 and owner_user_id = $2
@@ -1747,7 +1832,7 @@ export const createConversationItemRepository = (
               { statusCode: 409, code: "observation_parent_missing" }
             );
           }
-          await client.query("commit");
+          await commit();
           records.push(mapConversationItem(replayedRow));
           continue;
         }
@@ -1859,7 +1944,7 @@ export const createConversationItemRepository = (
             envelopeEncryptionProvider: options.envelopeEncryptionProvider,
             payloadHash
           });
-          await client.query("commit");
+          await commit();
           continue;
         }
 
@@ -1890,6 +1975,9 @@ export const createConversationItemRepository = (
           source_sequence,
           event_time,
           observed_at,
+          import_observed_at,
+          source_fingerprint,
+          captured_project,
           raw_json,
           raw_text,
           logical_source_id,
@@ -1902,6 +1990,7 @@ export const createConversationItemRepository = (
           canonical_item_key,
           canonical_source_priority,
           projection_status,
+          projection_work_class,
           projection_version,
           projection_error,
           metadata
@@ -1910,7 +1999,7 @@ export const createConversationItemRepository = (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
           $10, $11, $12, $13, $14, $15, $16, $17, $18,
           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-          $29, $30, $31, $32, $33, $34, $35
+          $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39
         )
         on conflict (owner_user_id, canonical_item_key)
           where visibility = 'personal'
@@ -1928,6 +2017,9 @@ export const createConversationItemRepository = (
             else conversation_items.source_adapter_version
           end,
           source_transport = case
+            when conversation_items.source_transport = 'hook'
+              or excluded.source_transport = 'hook'
+            then 'hook'
             when excluded.canonical_source_priority > conversation_items.canonical_source_priority
             then excluded.source_transport
             else conversation_items.source_transport
@@ -1997,6 +2089,19 @@ export const createConversationItemRepository = (
             conversation_items.observed_at,
             excluded.observed_at
           ),
+          import_observed_at = coalesce(
+            conversation_items.import_observed_at,
+            excluded.import_observed_at
+          ),
+          source_fingerprint = coalesce(
+            conversation_items.source_fingerprint,
+            excluded.source_fingerprint
+          ),
+          captured_project = case
+            when conversation_items.captured_project = '{}'::jsonb
+            then excluded.captured_project
+            else conversation_items.captured_project
+          end,
           raw_json = case
             when excluded.canonical_source_priority > conversation_items.canonical_source_priority
               or (
@@ -2098,6 +2203,12 @@ export const createConversationItemRepository = (
             then excluded.projection_status
             else conversation_items.projection_status
           end,
+          projection_work_class = case
+            when conversation_items.projection_work_class = 'live_capture_projection'
+              or excluded.projection_work_class = 'live_capture_projection'
+            then 'live_capture_projection'
+            else 'historical_import_backfill'
+          end,
           projection_version = case
             when excluded.canonical_source_priority > conversation_items.canonical_source_priority
             then excluded.projection_version
@@ -2156,7 +2267,8 @@ export const createConversationItemRepository = (
           canonical_stable_item_id,
           source_record_type, source_event_type, source_sequence,
           idempotency_key, canonical_item_key, canonical_source_priority,
-          created_at
+          observed_at, import_observed_at, source_fingerprint,
+          captured_project, created_at
       `;
         const upsertParams = [
           ownerUserId,
@@ -2179,6 +2291,9 @@ export const createConversationItemRepository = (
           item.sourceSequence ?? null,
           item.eventTime ?? null,
           item.observedAt ?? new Date().toISOString(),
+          item.importObservedAt ?? null,
+          item.sourceFingerprint ?? null,
+          item.capturedProject ?? {},
           JSON.stringify(rawJsonForStorage),
           rawTextForStorage,
           item.logicalSourceId ?? null,
@@ -2190,7 +2305,13 @@ export const createConversationItemRepository = (
           canonicalItemKey,
           canonicalItemKey,
           canonicalSourcePriority,
-          managedProjectionHold ? "held" : "pending",
+          managedProjectionHold
+            ? "held"
+            : item.sourceTransport === "historical_import" &&
+                item.projectionStatus === "raw_only"
+              ? "raw_only"
+              : "pending",
+          projectionWorkClassForSourceTransport(item.sourceTransport),
           item.projectionVersion ?? null,
           item.projectionError ?? null,
           metadataForStorage
@@ -2267,7 +2388,8 @@ export const createConversationItemRepository = (
                 canonical_stable_item_id,
                 source_record_type, source_event_type, source_sequence,
                 idempotency_key, canonical_item_key,
-                canonical_source_priority, created_at
+                canonical_source_priority, observed_at, import_observed_at,
+                source_fingerprint, captured_project, created_at
               from conversation_items
               where canonical_item_key = $1
                 and visibility = $2::visibility_scope
@@ -2401,13 +2523,17 @@ export const createConversationItemRepository = (
             [legacyParentIdToRetire, ownerUserId]
           );
         }
-        await client.query("commit");
+        await commit();
         records.push(mapConversationItem(row));
       } catch (error) {
-        await client.query("rollback");
+        if (ownsTransaction) {
+          await client.query("rollback");
+        }
         throw error;
       } finally {
-        client.release();
+        if (ownsTransaction) {
+          client.release();
+        }
       }
     }
     return records;

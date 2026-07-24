@@ -55,29 +55,25 @@ export const workerJsonCases: WorkerJsonCase[] = [
       "Pending LCM summaries should be represented explicitly instead of pretending the answer is complete."
   },
   {
-    id: "lcm-leaf-preserves-operational-details",
+    id: "lcm-leaf-preserves-semantic-outcomes",
     worker: "lcm_summary",
     prompt:
       "Summarise a leaf containing a user request, Docker rebuild, file path, command, and unresolved UI regression.",
     expected: {
-      requiredSubstrings: ["Docker", "regression"],
-      requiredArrayKeys: ["user_requests", "commands", "errors"],
-      minNonEmptyStructuredArrays: 3
+      requiredSubstrings: ["Docker", "regression"]
     },
     notes:
-      "LCM leaf summaries should preserve durable operational details in structured arrays as well as summary_text."
+      "LCM leaves should retain the durable request and regression in canonical summary_text without copying command detail."
   },
   {
-    id: "lcm-rollup-preserves-decisions-and-provenance",
+    id: "lcm-rollup-preserves-semantic-decisions",
     worker: "lcm_summary",
     prompt:
       "Roll up child summaries covering a projection decision, affected files, and node provenance.",
     expected: {
-      requiredSubstrings: ["projection"],
-      requiredArrayKeys: ["decisions", "files", "provenance_hints"],
-      minNonEmptyStructuredArrays: 3
+      requiredSubstrings: ["projection"]
     },
     notes:
-      "LCM rollups should keep structured decisions and trace hints instead of flattening everything to prose."
+      "LCM rollups should preserve the parent-relevant projection decision while leaving source detail available for drill-down."
   }
 ];

@@ -21,6 +21,10 @@ _Avoid_: AI key, provider key, password
 A client-side integration point that sends conversation activity to Koed for capture.
 _Avoid_: MCP server, recall tool, backend poller
 
+**Transcript Watcher**:
+A local background service that continuously discovers Codex transcript growth and ingests complete records into Koed.
+_Avoid_: Capture Hook, historical import, backend poller, Team sync
+
 **Capture Pause**:
 A temporary capture-policy override that blocks automatic capture until a specified time.
 _Avoid_: Capture state, disabled policy, deletion
@@ -187,12 +191,12 @@ Workspace.
 _Avoid_: Ownership transfer, copy, export
 
 **Supported AI Client Integration**:
-An AI-client integration that supports both automatic capture through a capture hook and recall through Koed memory tools.
+An AI-client integration that supports automatic capture through the Transcript Watcher, low-latency signals and completion evidence through a Supported Capture Hook, and recall through Koed memory tools.
 _Avoid_: Recall-only integration, MCP-only integration
 
 **Supported Capture Hook**:
-The TypeScript Codex capture hook used as the supported automatic capture integration.
-_Avoid_: Python capture hook, fallback hook, MCP capture endpoint
+The TypeScript Codex capture hook used for low-latency capture signals and high-confidence completion evidence.
+_Avoid_: Python capture hook, correctness owner, fallback hook, MCP capture endpoint
 
 **Synthesis**:
 Producing natural-language answers or summaries from evidence.
@@ -270,17 +274,19 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   without deleting retained **Memory**
 - A **Workspace Archive** hides a **Workspace** from normal active flows without
   deleting retained **Team-shared Memory**
-- In the current build, one **API Token** may be used by the **MCP Server** and **Supported Capture Hook**
+- In the current build, one **API Token** may be used by the **MCP Server**, **Transcript Watcher**, and **Supported Capture Hook**
 - A **Project** may provide local context for zero or more **Conversations**
 - An **AI Client** produces one or more **Conversations**
-- A **Supported AI Client Integration** requires one **Capture Hook**
+- A **Supported AI Client Integration** requires one **Transcript Watcher** for automatic capture correctness
+- A **Supported AI Client Integration** uses one **Supported Capture Hook** for low-latency signals and completion evidence
 - A **Supported AI Client Integration** requires recall through Koed memory tools
 - An **AI Client** may use one **MCP Server** to call Koed memory tools
 - A **Diagnostic Memory Tool** is hidden unless explicitly enabled
-- An **AI Client** requires a **Capture Hook** for automatic conversation capture
-- **Capture Hook** is the only supported automatic capture path in this build
+- The **Transcript Watcher** owns transcript-growth capture correctness
 - The **Supported Capture Hook** is the TypeScript Codex capture hook
-- A **Capture Hook** may create a **Captured Session**
+- A **Supported Capture Hook** may wake the **Transcript Watcher** without providing transcript content
+- Missing, duplicate, delayed, or reordered **Supported Capture Hook** signals do not create capture gaps or duplicate **Memory Events**
+- A **Transcript Watcher** may create a **Captured Session**
 - An **Embedding Service** supports **Recall**
 - **Recall** returns an **Evidence Bundle**
 - **Memory Answer** is the normal entry point for **Recall**
@@ -302,6 +308,8 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A **Knowledge Collection** may be granted to one or more authorized groups
   without duplicating the underlying **Content Objects**
 - **Projection** transforms captured source activity into Koed semantic memory structures such as **Memory Events**
+- The **Transcript Watcher** creates **Personal Memory** only and grants no **Team** or **Workspace Access** authority
+- The **Transcript Watcher** enforces **Capture Policy** and **Capture Pause** before each write batch
 - A **Memory Node** summarizes one or more **Memory Events** or **Memory Nodes**
 - An **LCM Leaf** is a **Memory Node** summarized from one or more **Memory Events**
 - An **LCM Rollup** is a **Memory Node** summarized from one or more **LCM Leaves**

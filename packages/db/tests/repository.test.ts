@@ -272,7 +272,12 @@ describeDb("memory repository visibility", () => {
       profile: "local_personal",
       protocolDeploymentId: verifiedDeploymentId
     });
+    const persisted = await repo.getLocalSyncDeployment();
 
+    expect(persisted).toMatchObject({
+      id: local.id,
+      protocolDeploymentId: verifiedDeploymentId
+    });
     await expect(
       repo.ensureLocalSyncDeployment({
         profile: "local_personal",
@@ -290,6 +295,274 @@ describeDb("memory repository visibility", () => {
       id: local.id,
       protocolDeploymentId: verifiedDeploymentId
     });
+  });
+
+  it("atomically advances PDS membership epochs and preserves deployment-local subjects", async () => {
+    const user = await repo.createUser({
+      email: `pds-${randomUUID()}@example.com`,
+      displayName: "PDS owner"
+    });
+    const groupId = `group-${randomUUID()}`;
+    const recoveryRecipientId = "recovery-recipient";
+    const statement = (
+      kind: "genesis" | "add-device" | "revoke-device" | "recover",
+      sequence: string
+    ) =>
+      JSON.stringify({
+        draft: { protocol: "koed/pds/v1", kind, groupId, sequence, body: {} }
+      });
+    const created = await repo.createPersonalDeviceGroup({
+      userId: user.id,
+      groupId,
+      subjectId: user.id,
+      subjectDeploymentId: "deployment-initial",
+      authorityKeyId: "authority-key",
+      authorityPublicKey: "authority-public",
+      recoverySigningKeyId: "recovery-signing",
+      recoverySigningPublicKey: "recovery-signing-public",
+      recoveryKemKeyId: "recovery-kem",
+      recoveryKemPublicKey: "recovery-kem-public",
+      recoveryKitHash: "recovery-kit-hash",
+      initialEpoch: "1",
+      statementHash: "genesis-hash",
+      statement: statement("genesis", "1"),
+      device: {
+        deviceId: "device-initial",
+        signingKeyId: "device-initial-signing",
+        signingPublicKey: "device-initial-signing-public",
+        kemKeyId: "device-initial-kem",
+        kemPublicKey: "device-initial-kem-public",
+        operationFamilies: ["pds_relay"]
+      }
+    });
+    expect(created).toMatchObject({
+      currentEpoch: "1",
+      headSequence: "1",
+      policy: { enabled: false },
+      members: [{ deviceId: "device-initial", status: "active" }]
+    });
+
+    const added = await repo.commitPersonalDeviceTransition({
+      userId: user.id,
+      groupId,
+      expectedHeadHash: "genesis-hash",
+      sequence: "2",
+      nextEpoch: "2",
+      kind: "add-device",
+      statementHash: "add-hash",
+      statement: statement("add-device", "2"),
+      authorizationKeyId: "device-initial-signing",
+      keyBundle: {
+        hash: "bundle-2",
+        canonical: '{"bundle":"2"}',
+        epoch: "2",
+        transitionKind: "add-device",
+        recipients: [
+          "device-initial",
+          "device-second",
+          recoveryRecipientId
+        ].sort(),
+        recoveryRecipientId
+      },
+      addedDeviceSubject: {
+        subjectId: user.id,
+        deploymentId: "deployment-second"
+      },
+      addedDevice: {
+        deviceId: "device-second",
+        signingKeyId: "device-second-signing",
+        signingPublicKey: "device-second-signing-public",
+        kemKeyId: "device-second-kem",
+        kemPublicKey: "device-second-kem-public",
+        operationFamilies: ["pds_relay"]
+      }
+    });
+    expect(added).toMatchObject({
+      outcome: "accepted",
+      group: {
+        currentEpoch: "2",
+        headSequence: "2",
+        members: [
+          { deviceId: "device-initial", status: "active" },
+          { deviceId: "device-second", status: "active" }
+        ]
+      }
+    });
+    await expect(
+      pool.query(
+        "select deployment_id from personal_device_group_user_subjects order by deployment_id"
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        { deployment_id: "deployment-initial" },
+        { deployment_id: "deployment-second" }
+      ]
+    });
+
+    const stale = await repo.commitPersonalDeviceTransition({
+      userId: user.id,
+      groupId,
+      expectedHeadHash: "genesis-hash",
+      sequence: "2",
+      nextEpoch: "2",
+      kind: "revoke-device",
+      statementHash: "stale-hash",
+      statement: statement("revoke-device", "2"),
+      authorizationKeyId: "device-initial-signing",
+      keyBundle: {
+        hash: "stale-bundle",
+        canonical: '{"bundle":"stale"}',
+        epoch: "2",
+        transitionKind: "revoke-device",
+        recipients: ["device-second", recoveryRecipientId].sort(),
+        recoveryRecipientId
+      },
+      revokeDeviceIds: ["device-initial"]
+    });
+    expect(stale).toMatchObject({ outcome: "conflict" });
+
+    const revoked = await repo.commitPersonalDeviceTransition({
+      userId: user.id,
+      groupId,
+      expectedHeadHash: "add-hash",
+      sequence: "3",
+      nextEpoch: "3",
+      kind: "revoke-device",
+      statementHash: "revoke-hash",
+      statement: statement("revoke-device", "3"),
+      authorizationKeyId: "device-second-signing",
+      keyBundle: {
+        hash: "bundle-3",
+        canonical: '{"bundle":"3"}',
+        epoch: "3",
+        transitionKind: "revoke-device",
+        recipients: ["device-second", recoveryRecipientId].sort(),
+        recoveryRecipientId
+      },
+      revokeDeviceIds: ["device-initial"]
+    });
+    expect(revoked).toMatchObject({
+      outcome: "accepted",
+      group: {
+        currentEpoch: "3",
+        members: [
+          { deviceId: "device-initial", status: "revoked" },
+          { deviceId: "device-second", status: "active" }
+        ]
+      }
+    });
+
+    const recovered = await repo.commitPersonalDeviceTransition({
+      userId: user.id,
+      groupId,
+      expectedHeadHash: "revoke-hash",
+      sequence: "4",
+      nextEpoch: "4",
+      kind: "recover",
+      statementHash: "recover-hash",
+      statement: statement("recover", "4"),
+      authorizationKeyId: "recovery-signing",
+      keyBundle: {
+        hash: "bundle-4",
+        canonical: '{"bundle":"4"}',
+        epoch: "4",
+        transitionKind: "recover",
+        recipients: ["device-replacement", recoveryRecipientId].sort(),
+        recoveryRecipientId
+      },
+      addedDeviceSubject: {
+        subjectId: user.id,
+        deploymentId: "deployment-replacement"
+      },
+      addedDevice: {
+        deviceId: "device-replacement",
+        signingKeyId: "device-replacement-signing",
+        signingPublicKey: "device-replacement-signing-public",
+        kemKeyId: "device-replacement-kem",
+        kemPublicKey: "device-replacement-kem-public",
+        operationFamilies: ["pds_relay"]
+      },
+      revokeDeviceIds: ["device-second"]
+    });
+    expect(recovered).toMatchObject({
+      outcome: "accepted",
+      group: {
+        currentEpoch: "4",
+        members: [
+          { deviceId: "device-initial", status: "revoked" },
+          { deviceId: "device-replacement", status: "active" },
+          { deviceId: "device-second", status: "revoked" }
+        ]
+      }
+    });
+  });
+
+  it("freezes PDS governance without exposing group secrets or Team authority", async () => {
+    const user = await repo.createUser({
+      email: `pds-freeze-${randomUUID()}@example.com`,
+      displayName: "PDS freeze owner"
+    });
+    const groupId = `group-${randomUUID()}`;
+    await repo.createPersonalDeviceGroup({
+      userId: user.id,
+      groupId,
+      subjectId: user.id,
+      subjectDeploymentId: "deployment-freeze",
+      authorityKeyId: "authority-key",
+      authorityPublicKey: "authority-public",
+      recoverySigningKeyId: "recovery-signing",
+      recoverySigningPublicKey: "recovery-signing-public",
+      recoveryKemKeyId: "recovery-kem",
+      recoveryKemPublicKey: "recovery-kem-public",
+      recoveryKitHash: "recovery-kit-hash",
+      initialEpoch: "1",
+      statementHash: "genesis-freeze-hash",
+      statement: JSON.stringify({
+        draft: {
+          protocol: "koed/pds/v1",
+          kind: "genesis",
+          groupId,
+          sequence: "1",
+          body: {}
+        }
+      }),
+      device: {
+        deviceId: "device-freeze",
+        signingKeyId: "device-freeze-signing",
+        signingPublicKey: "device-freeze-signing-public",
+        kemKeyId: "device-freeze-kem",
+        kemPublicKey: "device-freeze-kem-public",
+        operationFamilies: ["pds_relay"]
+      }
+    });
+
+    const frozen = await repo.freezePersonalDeviceGovernance({
+      userId: user.id,
+      groupId,
+      reason: "authority_same_sequence_conflict",
+      actorKeyId: "device-freeze-signing"
+    });
+    expect(frozen).toMatchObject({
+      state: "equivocation_freeze",
+      stateReason: "authority_same_sequence_conflict"
+    });
+    await expect(
+      pool.query(
+        "select transition_kind, actor_key_id, outcome, redacted_metadata from personal_device_group_audit_events left join personal_device_group_statements on false where transition_kind='governance'"
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          transition_kind: "governance",
+          actor_key_id: "device-freeze-signing",
+          outcome: "frozen",
+          redacted_metadata: null
+        }
+      ]
+    });
+    await expect(
+      pool.query("select count(*)::int as count from team_memberships")
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
   });
 
   it("requeues a completed deterministic local job", async () => {
@@ -1632,19 +1905,20 @@ describeDb("memory repository visibility", () => {
         }
       );
       const structured = {
+        schema_version: "lcm-semantic-summary-v1",
         title: "Encrypted managed cloud node",
-        summary_text: "Managed cloud finished summary sentinel 731f3c",
-        facts: ["The LCM worker summary is encrypted at rest."]
+        summary_text:
+          "Managed cloud finished summary sentinel 731f3c. The LCM worker summary is encrypted at rest."
       };
 
       await encryptedRepo.updateLcmNodeSummary({
         nodeId: node.id,
         summaryText: "Managed cloud finished summary sentinel 731f3c",
         summaryModel: "codex:test",
-        summaryPromptVersion: "lcm-codex-summary-json-v2",
+        summaryPromptVersion: "lcm-codex-summary-json-v3",
         summaryTokenEstimate: 23,
         summaryStructuredJson: structured,
-        summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
       });
 
       const stored = await pool.query<{
@@ -10210,6 +10484,153 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("keeps live and historical LCM compaction and derived embeddings class-isolated", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lcm-work-class-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = randomUUID();
+    await pool.query(
+      `insert into workspaces (id, owner_user_id, visibility, name)
+       values ($1, $2, 'personal', 'LCM Work Class Project')`,
+      [workspaceId, alice.id]
+    );
+
+    const eventIdsByClass = new Map<string, string[]>();
+    for (const workClass of [
+      "live_capture_projection",
+      "historical_import_backfill"
+    ] as const) {
+      const eventIds: string[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        const event = await captureUserEvent(engine, alice.id, {
+          workspaceId,
+          content: `${workClass} source ${index}`
+        });
+        eventIds.push(event.id);
+        await pool.query(
+          `insert into conversation_projection_processing_outbox (
+             event_id, owner_user_id, visibility, work_class,
+             include_in_embedding, include_in_lcm, source_event_time,
+             dispatched_at
+           ) values ($1, $2, 'personal', $3, true, true, $4, now())`,
+          [event.id, alice.id, workClass, `2026-01-01T00:00:0${index}.000Z`]
+        );
+      }
+      eventIdsByClass.set(workClass, eventIds);
+    }
+
+    const scopes = await repo.listPendingLcmDispatchScopes({
+      ownerUserId: alice.id
+    });
+    expect(scopes.map((scope) => scope.workClass)).toEqual([
+      "live_capture_projection",
+      "historical_import_backfill"
+    ]);
+
+    const live = await repo.createLcmNodes(
+      { userId: alice.id },
+      { visibility: "personal", workClass: "live_capture_projection" }
+    );
+    expect(live.leafNodeIds).toHaveLength(1);
+    const liveSources = await pool.query<{ memory_event_id: string }>(
+      `select memory_event_id from memory_node_sources
+       where memory_node_id = $1 order by source_order`,
+      [live.leafNodeIds[0]]
+    );
+    expect(liveSources.rows.map((row) => row.memory_event_id)).toEqual(
+      eventIdsByClass.get("live_capture_projection")
+    );
+
+    const historical = await repo.createLcmNodes(
+      { userId: alice.id },
+      { visibility: "personal", workClass: "historical_import_backfill" }
+    );
+    expect(historical.leafNodeIds).toHaveLength(1);
+    const historicalSources = await pool.query<{ memory_event_id: string }>(
+      `select memory_event_id from memory_node_sources
+       where memory_node_id = $1 order by source_order`,
+      [historical.leafNodeIds[0]]
+    );
+    expect(historicalSources.rows.map((row) => row.memory_event_id)).toEqual(
+      eventIdsByClass.get("historical_import_backfill")
+    );
+
+    const nodeLineage = await pool.query<{
+      id: string;
+      work_class: string;
+    }>(
+      `select id, work_class from memory_nodes
+       where id = any($1::uuid[]) order by work_class`,
+      [[live.leafNodeIds[0], historical.leafNodeIds[0]]]
+    );
+    expect(nodeLineage.rows).toEqual([
+      {
+        id: historical.leafNodeIds[0],
+        work_class: "historical_import_backfill"
+      },
+      { id: live.leafNodeIds[0], work_class: "live_capture_projection" }
+    ]);
+    const pendingNodeEmbeddings = (
+      await repo.listSourcesNeedingEmbeddings(100)
+    ).filter((source) =>
+      nodeLineage.rows.some((node) => node.id === source.sourceId)
+    );
+    const pendingEventEmbeddings = (
+      await repo.listSourcesNeedingEmbeddings(100)
+    ).filter((source) =>
+      [...eventIdsByClass.values()].flat().includes(source.sourceId)
+    );
+    expect(
+      pendingEventEmbeddings.map((source) => ({
+        id: source.sourceId,
+        workClass: source.workClass,
+        reconciliationJobId: source.reconciliationJobId
+      }))
+    ).toEqual(
+      expect.arrayContaining(
+        [...eventIdsByClass.entries()].flatMap(([workClass, eventIds]) =>
+          eventIds.map((eventId) => ({
+            id: eventId,
+            workClass,
+            reconciliationJobId: `projection-embed-${eventId}`
+          }))
+        )
+      )
+    );
+    expect(
+      pendingEventEmbeddings
+        .filter((source) => source.workClass === "historical_import_backfill")
+        .map((source) => source.sourceId)
+    ).toEqual(
+      [...eventIdsByClass.get("historical_import_backfill")!].reverse()
+    );
+    expect(
+      pendingNodeEmbeddings.map((source) => ({
+        id: source.sourceId,
+        workClass: source.workClass
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          id: live.leafNodeIds[0],
+          workClass: "live_capture_projection"
+        },
+        {
+          id: historical.leafNodeIds[0],
+          workClass: "historical_import_backfill"
+        }
+      ])
+    );
+
+    await expect(
+      repo.createLcmNodes(
+        { userId: alice.id },
+        { visibility: "personal", workClass: "live_capture_projection" }
+      )
+    ).resolves.toMatchObject({ leafNodeIds: [] });
+  });
+
   it("keeps LCM graph hydration working with encrypted Memory Event and Node fields present", async () => {
     const encryptedRepo = createEncryptedPayloadRepository(pool);
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
@@ -12336,6 +12757,8 @@ describeDb("memory repository visibility", () => {
             projectionStatus: "pending",
             metadata: {
               projectName: "Live Prompt Dedupe Project",
+              transcriptByteOffset: 6,
+              transcriptItemDiscriminator: "primary:codex_transcript_user",
               transcriptType: "user_message"
             }
           }
@@ -12704,6 +13127,8 @@ describeDb("memory repository visibility", () => {
             projectionStatus: "pending",
             metadata: {
               projectName: "Live Agent Dedupe Project",
+              transcriptByteOffset: 11,
+              transcriptItemDiscriminator: "primary:codex_transcript_agent",
               transcriptType: "agent_message"
             }
           },
@@ -13397,6 +13822,18 @@ describeDb("memory repository visibility", () => {
     if (!replacementEventId) {
       throw new Error("Expected replacement semantic Memory Event");
     }
+    const rebuildOutbox = await pool.query<{
+      work_class: string;
+      dispatched_at: Date | null;
+    }>(
+      `select work_class, dispatched_at
+       from conversation_projection_processing_outbox
+       where event_id = $1`,
+      [replacementEventId]
+    );
+    expect(rebuildOutbox.rows).toEqual([
+      { work_class: "normal_embedding_lcm", dispatched_at: null }
+    ]);
     const rebuiltEvents = await pool.query<{
       id: string;
       content: string;
@@ -15723,7 +16160,7 @@ describeDb("memory repository visibility", () => {
     try {
       await repo.createLcmNodes(
         { userId: owner.id },
-        { visibility: "personal" }
+        { visibility: "personal", workClass: "live_capture_projection" }
       );
     } finally {
       if (previousLeafEventThreshold === undefined) {
@@ -16017,11 +16454,22 @@ describeDb("memory repository visibility", () => {
         process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
       process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "1";
       try {
-        const compacted = await repo.createLcmNodes(
-          { userId: owner.id },
-          { visibility: "personal" }
+        const compacted = await Promise.all(
+          ["live_capture_projection", "normal_embedding_lcm"].map((workClass) =>
+            repo.createLcmNodes(
+              { userId: owner.id },
+              {
+                visibility: "personal",
+                workClass: workClass as
+                  | "live_capture_projection"
+                  | "normal_embedding_lcm"
+              }
+            )
+          )
         );
-        expect(compacted.leafNodeIds).toHaveLength(2);
+        expect(compacted.flatMap((result) => result.leafNodeIds)).toHaveLength(
+          2
+        );
         const secondReset = await repo.resetConversationProjection(
           { userId: owner.id },
           { sessionId: session.id }
@@ -16033,11 +16481,22 @@ describeDb("memory repository visibility", () => {
             limit: 10
           }
         );
-        const compactedAgain = await repo.createLcmNodes(
-          { userId: owner.id },
-          { visibility: "personal" }
+        const compactedAgain = await Promise.all(
+          ["live_capture_projection", "normal_embedding_lcm"].map((workClass) =>
+            repo.createLcmNodes(
+              { userId: owner.id },
+              {
+                visibility: "personal",
+                workClass: workClass as
+                  | "live_capture_projection"
+                  | "normal_embedding_lcm"
+              }
+            )
+          )
         );
-        expect(compactedAgain.leafNodeIds).toHaveLength(1);
+        expect(
+          compactedAgain.flatMap((result) => result.leafNodeIds)
+        ).toHaveLength(1);
         const activeNodes = await pool.query<{ count: number }>(
           `
             select count(*)::int as count
@@ -16787,6 +17246,17 @@ describeDb("memory repository visibility", () => {
       }
     );
     expect(pausedGlobal.id).toBe(global.id);
+    await repo.upsertCapturePolicy(
+      { userId: alice.id },
+      {
+        targetType: "project",
+        projectId: "repo-a",
+        projectName: "Repo A",
+        captureState: "enabled",
+        visibility: "personal",
+        pauseUntil: new Date(Date.now() - 60_000)
+      }
+    );
 
     expect(
       await repo.getEffectiveCapturePolicy(
@@ -16820,6 +17290,7 @@ describeDb("memory repository visibility", () => {
     const auditEvents = await repo.listAuditEvents({ userId: alice.id });
     expect(auditEvents.map((event) => event.action).sort()).toEqual([
       "capture_policy.deleted",
+      "capture_policy.upserted",
       "capture_policy.upserted",
       "capture_policy.upserted",
       "capture_policy.upserted",
@@ -18039,7 +18510,7 @@ describeDb("memory repository visibility", () => {
       const embeddable = await repo.listSourcesNeedingEmbeddings(20);
       const compacted = await repo.createLcmNodes(
         { userId: alice.id },
-        { visibility: "personal" }
+        { visibility: "personal", workClass: "live_capture_projection" }
       );
       const expandedLeaves = await Promise.all(
         compacted.leafNodeIds.map((nodeId) =>
@@ -19718,6 +20189,637 @@ describeDb("memory repository visibility", () => {
     }
   }, 15_000);
 
+  it("counts every physical transport chunk against historical row and byte caps", async () => {
+    const alice = await repo.createUser({
+      email: `alice-historical-chunk-caps-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `historical-chunk-caps-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `historical-chunk-caps-${randomUUID()}`
+      }
+    );
+    const logicalSourceId = `historical-chunks-${randomUUID()}`;
+    const text = "Historical chunk accounting sentinel.";
+    const envelope = JSON.stringify({
+      rawJson: {
+        method: "item/completed",
+        params: { item: { type: "userMessage", text } }
+      },
+      rawText: text
+    });
+    const midpoint = Math.floor(envelope.length / 2);
+    const chunks = [envelope.slice(0, midpoint), envelope.slice(midpoint)];
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          ...chunks.map((chunk, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "chunked-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: index,
+            rawJson: {
+              transportChunk: true,
+              sourceItemHash: logicalSourceId,
+              chunkIndex: index,
+              chunkCount: chunks.length
+            },
+            logicalSourceId,
+            transportChunkIndex: index,
+            transportChunkCount: chunks.length,
+            transportChunkText: chunk,
+            transportChunkEncoding: "conversation-item-json-v1",
+            sourceHash: `${logicalSourceId}-${index}`,
+            idempotencyKey: `${logicalSourceId}-${index}`,
+            metadata: { transcriptType: "user_message" }
+          })),
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "later-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 2,
+            rawJson: {
+              method: "item/completed",
+              params: { item: { type: "userMessage", text: "Later item" } }
+            },
+            rawText: "Later item",
+            sourceHash: `later-${randomUUID()}`,
+            idempotencyKey: `later-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+    await pool.query(
+      "update conversation_items set projection_work_class = 'historical_import_backfill'"
+    );
+    const physicalBytes = await pool.query<{ bytes: string }>(
+      `select sum(octet_length(raw_json::text) + octet_length(coalesce(raw_text, '')) + octet_length(coalesce(transport_chunk_text, '')))::text as bytes
+       from conversation_items where logical_source_id = $1`,
+      [logicalSourceId]
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      {
+        workClass: "historical_import_backfill",
+        limit: 2
+      }
+    );
+    const statuses = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(projection.rawItemsProjected).toBe(2);
+    expect(statuses.rows.map((row) => row.projection_status)).toEqual([
+      "projected",
+      "projected",
+      "pending"
+    ]);
+
+    await pool.query(
+      `update conversation_items
+       set projection_status = 'pending', projection_version = null,
+         projected_at = null`
+    );
+    const byteCappedProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      {
+        workClass: "historical_import_backfill",
+        limit: 100,
+        maxBytes: Number(physicalBytes.rows[0]?.bytes)
+      }
+    );
+    const byteCappedStatuses = await pool.query<{
+      projection_status: string;
+    }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(byteCappedProjection.rawItemsProjected).toBe(2);
+    expect(byteCappedStatuses.rows.map((row) => row.projection_status)).toEqual(
+      ["projected", "projected", "pending"]
+    );
+  });
+
+  it("enforces hard byte caps without changing row-bounded unit admission", async () => {
+    const alice = await repo.createUser({
+      email: `alice-oversized-first-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `oversized-first-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `oversized-first-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: ["oversized-first-content", "later-content"].map(
+          (text, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: `turn-${index}`,
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: index,
+            rawJson: {
+              method: "item/completed",
+              params: { item: { type: "userMessage", text } }
+            },
+            rawText: text,
+            sourceHash: `oversized-${index}-${randomUUID()}`,
+            idempotencyKey: `oversized-${index}-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          })
+        )
+      }
+    );
+    await pool.query(
+      "update conversation_items set projection_work_class = 'historical_import_backfill'"
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { workClass: "historical_import_backfill", limit: 1 }
+    );
+    const rowCappedStatuses = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(projection.rawItemsProjected).toBe(1);
+    expect(rowCappedStatuses.rows.map((row) => row.projection_status)).toEqual([
+      "projected",
+      "pending"
+    ]);
+
+    await pool.query(
+      `update conversation_items
+       set projection_status = 'pending', projection_version = null,
+         projected_at = null`
+    );
+    const byteCappedProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      {
+        workClass: "historical_import_backfill",
+        limit: 100,
+        maxBytes: 1
+      }
+    );
+    const byteCappedStatuses = await pool.query<{
+      projection_status: string;
+    }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(byteCappedProjection.rawItemsProjected).toBe(0);
+    expect(byteCappedStatuses.rows.map((row) => row.projection_status)).toEqual(
+      ["pending", "pending"]
+    );
+  });
+
+  it("checks runtime only before later atomic admission units", async () => {
+    const alice = await repo.createUser({
+      email: `alice-runtime-units-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `runtime-units-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `runtime-units-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: ["first runtime unit", "second runtime unit"].map(
+          (text, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: `runtime-turn-${index}`,
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: index,
+            rawJson: {
+              method: "item/completed",
+              params: { item: { type: "userMessage", text } }
+            },
+            rawText: text,
+            sourceHash: `runtime-${index}-${randomUUID()}`,
+            idempotencyKey: `runtime-${index}-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          })
+        )
+      }
+    );
+    const now = vi
+      .spyOn(Date, "now")
+      .mockReturnValueOnce(100)
+      .mockReturnValue(102);
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10, maxRuntimeMs: 1 }
+    );
+    now.mockRestore();
+    const statuses = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(projection.rawItemsProjected).toBe(1);
+    expect(statuses.rows.map((row) => row.projection_status)).toEqual([
+      "projected",
+      "pending"
+    ]);
+  });
+
+  it("keeps a Stop scope pending when its atomic unit exceeds hard caps", async () => {
+    const alice = await repo.createUser({
+      email: `alice-stop-atomic-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `stop-atomic-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `stop-atomic-${randomUUID()}`
+      }
+    );
+    const item = (turn: string, sequence: number, stop = false) => ({
+      sessionId: session.id,
+      sourceKind: "codex",
+      sourceAdapterVersion: stop ? "codex-hook-v1" : "codex-app-server-v1",
+      sourceTransport: stop ? "hook" : "app_server",
+      externalThreadId: session.externalSessionId ?? undefined,
+      externalTurnId: turn,
+      sourceRecordType: stop ? "hook_payload" : "app_server_notification",
+      sourceEventType: stop ? "Stop" : "item/completed",
+      sourceSequence: sequence,
+      rawJson: stop
+        ? { hook_event_name: "Stop", turn_id: turn }
+        : {
+            method: "item/completed",
+            params: { item: { type: "agentMessage", text: `Agent ${turn}` } }
+          },
+      rawText: stop ? undefined : `Agent ${turn}`,
+      sourceHash: `atomic-${sequence}-${randomUUID()}`,
+      idempotencyKey: `atomic-${sequence}-${randomUUID()}`,
+      metadata: stop
+        ? { hookEventName: "Stop" }
+        : { transcriptType: "agent_message" }
+    });
+    await repo.createConversationItems(
+      { userId: alice.id },
+      { items: [item("turn-1", 0), item("turn-2", 1), item("turn-2", 2, true)] }
+    );
+    await pool.query(
+      "update conversation_items set projection_work_class = 'historical_import_backfill'"
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      {
+        workClass: "historical_import_backfill",
+        limit: 1,
+        maxBytes: 1,
+        maxRuntimeMs: 1
+      }
+    );
+    const statuses = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(projection.rawItemsProjected).toBe(0);
+    expect(projection.memoryEventsCreated).toBe(0);
+    expect(statuses.rows.map((row) => row.projection_status)).toEqual([
+      "pending",
+      "pending",
+      "pending"
+    ]);
+  });
+
+  it("keeps successive completed turns in separate bounded units", async () => {
+    const alice = await repo.createUser({
+      email: `alice-bounded-stop-segments-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `bounded-stop-segments-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `bounded-stop-segments-${randomUUID()}`
+      }
+    );
+    const items = [0, 1].flatMap((turnIndex) => [
+      {
+        sessionId: session.id,
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-app-server-v1",
+        sourceTransport: "historical_import",
+        externalThreadId: session.externalSessionId ?? undefined,
+        externalTurnId: `bounded-turn-${turnIndex}`,
+        sourceRecordType: "app_server_notification",
+        sourceEventType: "item/completed",
+        sourceSequence: turnIndex * 2,
+        rawJson: {
+          method: "item/completed",
+          params: {
+            item: { type: "agentMessage", text: `Agent turn ${turnIndex}` }
+          }
+        },
+        rawText: `Agent turn ${turnIndex}`,
+        sourceHash: `bounded-agent-${turnIndex}-${randomUUID()}`,
+        idempotencyKey: `bounded-agent-${turnIndex}-${randomUUID()}`,
+        metadata: { transcriptType: "agent_message" }
+      },
+      {
+        sessionId: session.id,
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-hook-v1",
+        sourceTransport: "historical_import",
+        externalThreadId: session.externalSessionId ?? undefined,
+        externalTurnId: `bounded-turn-${turnIndex}`,
+        sourceRecordType: "hook_payload",
+        sourceEventType: "Stop",
+        sourceSequence: turnIndex * 2 + 1,
+        rawJson: { hook_event_name: "Stop" },
+        sourceHash: `bounded-stop-${turnIndex}-${randomUUID()}`,
+        idempotencyKey: `bounded-stop-${turnIndex}-${randomUUID()}`,
+        metadata: { hookEventName: "Stop" }
+      }
+    ]);
+    await repo.createConversationItems({ userId: alice.id }, { items });
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { workClass: "historical_import_backfill", limit: 2 }
+    );
+    const statuses = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(projection.rawItemsProjected).toBe(2);
+    expect(statuses.rows.map((row) => row.projection_status)).toEqual([
+      "projected",
+      "projected",
+      "pending",
+      "pending"
+    ]);
+  });
+
+  it("persists Projection processing until queue dispatch is acknowledged", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-outbox-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-outbox-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-outbox-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "historical_import",
+            externalTurnId: "outbox-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            rawJson: {
+              method: "item/completed",
+              params: { item: { type: "userMessage", text: "Durable outbox" } }
+            },
+            rawText: "Durable outbox",
+            sourceHash: `outbox-${randomUUID()}`,
+            idempotencyKey: `outbox-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { workClass: "historical_import_backfill", limit: 10 }
+    );
+    const pending = await repo.listPendingConversationProjectionProcessing(10);
+
+    expect(pending).toEqual([
+      {
+        eventId: projection.memoryEventIds[0],
+        userId: alice.id,
+        visibility: "personal",
+        workClass: "historical_import_backfill",
+        includeInEmbedding: true,
+        includeInLcm: true,
+        sourceEventTime: null
+      }
+    ]);
+    await expect(
+      repo.markConversationProjectionProcessingDispatched(
+        projection.memoryEventIds
+      )
+    ).resolves.toBe(1);
+    await expect(
+      repo.listPendingConversationProjectionProcessing(10)
+    ).resolves.toEqual([]);
+  });
+
+  it("serializes historical Projection batches with a database lease", async () => {
+    const first = await repo.tryAcquireHistoricalProjectionLease();
+    expect(first).not.toBeNull();
+    try {
+      await expect(
+        repo.tryAcquireHistoricalProjectionLease()
+      ).resolves.toBeNull();
+    } finally {
+      await first?.release();
+    }
+
+    const resumed = await repo.tryAcquireHistoricalProjectionLease();
+    expect(resumed).not.toBeNull();
+    await resumed?.release();
+    await resumed?.release();
+  });
+
+  it("promotes cross-transport duplicates to live Projection without later demotion", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-class-merge-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-class-merge-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-class-merge-${randomUUID()}`
+      }
+    );
+    const shared = {
+      sessionId: session.id,
+      sourceKind: "codex",
+      externalThreadId: session.externalSessionId ?? undefined,
+      externalTurnId: "projection-class-turn",
+      sourceSequence: 256,
+      rawText: "Same record observed by import and live capture.",
+      sourceHash: `projection-class-source-${randomUUID()}`,
+      idempotencyKey: `projection-class-item-${randomUUID()}`,
+      metadata: {
+        transcriptByteOffset: 128,
+        transcriptItemDiscriminator: "primary:codex_transcript_user",
+        transcriptType: "user_message"
+      }
+    };
+    const historicalItem = () => ({
+      ...shared,
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceTransport: "historical_import",
+      sourceRecordType: "event_msg",
+      sourceEventType: "user_message",
+      rawJson: {
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Same record observed by import and live capture."
+        }
+      }
+    });
+    const [created] = await repo.createConversationItems(
+      { userId: alice.id },
+      { items: [historicalItem()] }
+    );
+    const projectionClass = async () =>
+      (
+        await pool.query<{ projection_work_class: string }>(
+          "select projection_work_class from conversation_items where id = $1",
+          [created!.id]
+        )
+      ).rows[0]?.projection_work_class;
+
+    await expect(projectionClass()).resolves.toBe("historical_import_backfill");
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            ...shared,
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "user_message",
+                message: "Same record observed by import and live capture."
+              }
+            }
+          }
+        ]
+      }
+    );
+    await expect(projectionClass()).resolves.toBe("live_capture_projection");
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      { items: [historicalItem()] }
+    );
+    await expect(projectionClass()).resolves.toBe("live_capture_projection");
+  });
+
+  it("does not expand an explicit non-Stop Projection request through a later Stop", async () => {
+    const alice = await repo.createUser({
+      email: `alice-explicit-projection-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `explicit-projection-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `explicit-projection-${randomUUID()}`
+      }
+    );
+    const items = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "ordinary-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: { item: { type: "userMessage", text: "Only this row" } }
+            },
+            rawText: "Only this row",
+            sourceHash: `explicit-row-${randomUUID()}`,
+            idempotencyKey: `explicit-row-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "later-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 1,
+            rawJson: { hook_event_name: "Stop" },
+            sourceHash: `explicit-stop-${randomUUID()}`,
+            idempotencyKey: `explicit-stop-${randomUUID()}`,
+            metadata: { hookEventName: "Stop" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { conversationItemIds: [items[0]!.id], limit: 10 }
+    );
+    const statuses = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items order by source_sequence"
+    );
+
+    expect(projection.rawItemsScanned).toBe(1);
+    expect(projection.rawItemsProjected).toBe(1);
+    expect(statuses.rows.map((row) => row.projection_status)).toEqual([
+      "projected",
+      "pending"
+    ]);
+  });
+
   it("reconstructs oversized transport chunks before semantic projection", async () => {
     const alice = await repo.createUser({
       email: `alice-transport-chunks-${randomUUID()}@example.com`
@@ -20722,6 +21824,61 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("excludes personally deleted rows and uses user id to break actor ties", async () => {
+    const users = await Promise.all([
+      repo.createUser({ email: `actor-a-${randomUUID()}@example.com` }),
+      repo.createUser({ email: `actor-b-${randomUUID()}@example.com` }),
+      repo.createUser({ email: `actor-deleted-${randomUUID()}@example.com` })
+    ]);
+    for (const [index, user] of users.entries()) {
+      const session = await repo.createCapturedSession(
+        { userId: user.id },
+        {
+          externalSessionId: `actor-session-${index}-${randomUUID()}`,
+          sourceRuntime: "codex",
+          idempotencyKey: `actor-session-${index}-${randomUUID()}`
+        }
+      );
+      await repo.createConversationItems(
+        { userId: user.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-v1",
+              sourceTransport: "app_server",
+              externalTurnId: `actor-turn-${index}`,
+              sourceRecordType: "app_server_notification",
+              sourceEventType: "item/completed",
+              rawJson: { text: `actor ${index}` },
+              sourceHash: `actor-${index}-${randomUUID()}`,
+              idempotencyKey: `actor-${index}-${randomUUID()}`
+            }
+          ]
+        }
+      );
+    }
+    await pool.query(
+      `update conversation_items
+       set observed_at = '2026-01-01T00:00:00Z'
+       where owner_user_id = any($1::uuid[])`,
+      [users.map((user) => user.id)]
+    );
+    await pool.query(
+      "update conversation_items set personal_deleted_at = now() where owner_user_id = $1",
+      [users[2]!.id]
+    );
+
+    const actors = await repo.listConversationProjectionActors({ limit: 10 });
+    const expected = users
+      .slice(0, 2)
+      .map((user) => user.id)
+      .sort();
+
+    expect(actors.map((actor) => actor.userId)).toEqual(expected);
+  });
+
   it("uses capture-hook subagent actors for generated title eligibility", async () => {
     const alice = await repo.createUser({
       email: `alice-subagent-title-${randomUUID()}@example.com`
@@ -20923,19 +22080,19 @@ describeDb("memory repository visibility", () => {
       }
     );
     const structured = {
-      summary_text: "Structured summary text",
-      facts: ["The worker returned strict JSON."],
-      unresolved_questions: []
+      schema_version: "lcm-semantic-summary-v1",
+      title: "Structured summary",
+      summary_text: "Structured summary text. The worker returned strict JSON."
     };
 
     await repo.updateLcmNodeSummary({
       nodeId: node.id,
       summaryText: "Structured summary text",
       summaryModel: "codex:test",
-      summaryPromptVersion: "lcm-codex-summary-json-v2",
+      summaryPromptVersion: "lcm-codex-summary-json-v3",
       summaryTokenEstimate: 17,
       summaryStructuredJson: structured,
-      summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
     });
 
     const fetched = await repo.getLcmNodeForSummarization(node.id);
@@ -20948,13 +22105,125 @@ describeDb("memory repository visibility", () => {
     expect(fetched?.summaryText).toBe("Structured summary text");
     expect(fetched?.summaryStructuredJson).toEqual(structured);
     expect(fetched?.summaryStructuredSchemaVersion).toBe(
-      "lcm-structured-summary-v1"
+      "lcm-semantic-summary-v1"
     );
     expect(visible?.summaryStructuredJson).toEqual(structured);
     expect(graphNode?.summaryStructuredJson).toEqual(structured);
     expect(graphNode?.summaryStructuredSchemaVersion).toBe(
-      "lcm-structured-summary-v1"
+      "lcm-semantic-summary-v1"
     );
+  });
+
+  it("hydrates rollup children as compact complete summary payloads", async () => {
+    const alice = await repo.createUser({
+      email: `alice-rollup-summary-payload-${randomUUID()}@example.com`
+    });
+    const child = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending child placeholder"
+      }
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: child.id,
+      summaryText:
+        "Use scoped device credentials; determine the revocation TTL.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v3",
+      summaryTokenEstimate: 11,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Device credential policy",
+        summary_text:
+          "Use scoped device credentials; determine the revocation TTL."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    const legacyChild = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Legacy summary text."
+      }
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: legacyChild.id,
+      summaryText: "Legacy summary text.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v2",
+      summaryTokenEstimate: 9,
+      summaryStructuredJson: {
+        schema_version: "lcm-structured-summary-v1",
+        title: "Legacy child",
+        summary_text: "Legacy summary text.",
+        decisions: ["Preserve this legacy decision."],
+        unresolved_questions: ["Keep this legacy question open."],
+        unrecognized_field: ["Do not forward arbitrary payload fields."]
+      },
+      summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+    });
+    const rollup = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending rollup placeholder"
+      }
+    );
+    await pool.query(
+      `
+        update memory_nodes
+        set kind = 'rollup',
+            depth = 1,
+            source_items_json = $2::jsonb
+        where id = $1
+      `,
+      [
+        rollup.id,
+        JSON.stringify([
+          {
+            kind: "lcm_child",
+            nodeId: child.id,
+            text: "stale placeholder"
+          },
+          {
+            kind: "lcm_child",
+            nodeId: legacyChild.id,
+            text: "stale legacy placeholder"
+          }
+        ])
+      ]
+    );
+    await pool.query(
+      `
+        insert into memory_node_children (
+          parent_memory_node_id,
+          child_memory_node_id,
+          child_order
+        )
+        values ($1, $2, 0), ($1, $3, 1)
+      `,
+      [rollup.id, child.id, legacyChild.id]
+    );
+
+    const candidate = await repo.getLcmNodeForSummarization(rollup.id);
+    const childPayload = JSON.parse(
+      candidate?.sourceItems[0]?.text ?? "{}"
+    ) as unknown;
+
+    expect(childPayload).toEqual({
+      schema_version: "lcm-semantic-summary-v1",
+      title: "Device credential policy",
+      summary_text:
+        "Use scoped device credentials; determine the revocation TTL."
+    });
+    expect(
+      JSON.parse(candidate?.sourceItems[1]?.text ?? "{}") as unknown
+    ).toEqual({
+      schema_version: "lcm-semantic-summary-v1",
+      title: "Child memory summary",
+      summary_text: "Legacy summary text."
+    });
   });
 
   it("prefers idempotency key matches over source hash matches", async () => {

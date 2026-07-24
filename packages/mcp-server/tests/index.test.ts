@@ -40,6 +40,7 @@ import {
 } from "../src/lcm-summary-worker.js";
 import {
   resolveProjectTeamWorkspaceLink,
+  resolveProjectTeamWorkspaceRoute,
   teamWorkspaceAutoResolutionEnabled
 } from "../src/project-team-workspace-links.js";
 
@@ -190,17 +191,7 @@ const lcmSummaryJson = (summary_text: string) =>
   JSON.stringify({
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
     title: "Captured Memory Summary",
-    summary_text,
-    user_requests: [],
-    decisions: [],
-    facts: [summary_text],
-    files: [],
-    commands: [],
-    model_names: [],
-    tool_outcomes: [],
-    errors: [],
-    unresolved_questions: [],
-    provenance_hints: []
+    summary_text
   });
 
 const createApi = async (handler: http.RequestListener): Promise<string> => {
@@ -404,6 +395,87 @@ describe("Project Team Workspace mapping", () => {
     expect(fs.readFileSync(configPath, "utf8")).not.toMatch(
       /token|secret|password|cookie|credential/i
     );
+  });
+
+  it("uses an exact Project link for an explicit Team Workspace request", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-mcp-ptw-"));
+    const configPath = path.join(directory, "project-team-workspaces.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        links: [
+          {
+            projectRoot: "/repo/koed",
+            teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+            backendId: "team-vps"
+          }
+        ]
+      })
+    );
+    const env = {
+      KOED_PROJECT_TEAM_WORKSPACE_LINKS_PATH: configPath
+    } as NodeJS.ProcessEnv;
+
+    expect(
+      resolveProjectTeamWorkspaceRoute({
+        projectRoot: "/repo/koed",
+        requestedTeamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+        env
+      })
+    ).toEqual({
+      teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+      backendId: "team-vps"
+    });
+    expect(
+      resolveProjectTeamWorkspaceRoute({
+        projectRoot: "/repo/koed",
+        requestedTeamWorkspaceId: "22222222-2222-4222-8222-222222222222",
+        env
+      })
+    ).toEqual({
+      teamWorkspaceId: "22222222-2222-4222-8222-222222222222",
+      backendId: undefined
+    });
+  });
+
+  it("keeps implicit Project Team Workspace resolution opt-in", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-mcp-ptw-"));
+    const configPath = path.join(directory, "project-team-workspaces.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        links: [
+          {
+            projectRoot: "/repo/koed",
+            teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+            backendId: "team-vps"
+          }
+        ]
+      })
+    );
+
+    expect(
+      resolveProjectTeamWorkspaceRoute({
+        projectRoot: "/repo/koed",
+        env: {
+          KOED_PROJECT_TEAM_WORKSPACE_LINKS_PATH: configPath
+        } as NodeJS.ProcessEnv
+      })
+    ).toEqual({ teamWorkspaceId: undefined, backendId: undefined });
+    expect(
+      resolveProjectTeamWorkspaceRoute({
+        projectRoot: "/repo/koed",
+        env: {
+          KOED_PROJECT_TEAM_WORKSPACE_LINKS_PATH: configPath,
+          KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED: "true"
+        } as NodeJS.ProcessEnv
+      })
+    ).toEqual({
+      teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+      backendId: "team-vps"
+    });
   });
 
   it("resolves Team Workspace mapping by device-local Project identity", () => {

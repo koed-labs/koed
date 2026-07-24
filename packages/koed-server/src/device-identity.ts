@@ -43,6 +43,12 @@ export interface DeviceIdentityDependencies {
 
 const defaultProof = (): string => randomBytes(32).toString("base64url");
 
+const testProofDirectory = (paths: KoedServerPaths): string => {
+  const proofRoot = resolve(`${paths.koedHome}-proof-root`);
+  mkdirSync(proofRoot, { recursive: true, mode: 0o700 });
+  return resolve(proofRoot, "proof");
+};
+
 const dependencies = (
   paths: KoedServerPaths,
   deps: DeviceIdentityDependencies
@@ -58,7 +64,7 @@ const dependencies = (
           environment.NODE_ENV === "test"
             ? {
                 ...environment,
-                KOED_DEVICE_PROOF_DIR: resolve(`${paths.koedHome}-proof`)
+                KOED_DEVICE_PROOF_DIR: testProofDirectory(paths)
               }
             : environment
       }),
@@ -164,6 +170,7 @@ const newIdentityState = (
         fingerprint: deviceProofFingerprint(proof)
       },
       remoteOperations,
+      deploymentIdentityAdoptionPending: true,
       ...(pendingRemoteRevocation ? { pendingRemoteRevocation: true } : {}),
       createdAt: timestamp,
       updatedAt: timestamp
@@ -275,6 +282,7 @@ export const rotateDeviceIdentity = async (
       previous.deploymentId ?? undefined,
       true
     );
+    delete next.state.deploymentIdentityAdoptionPending;
     try {
       writeBootstrapTombstone(paths, resolved.now());
       resolved.proofStore.write(

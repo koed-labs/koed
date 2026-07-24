@@ -154,7 +154,7 @@ describe("upstream backend registry", () => {
         response(true, 200, {
           product: "koed",
           apiVersion: "v1",
-          capabilitySchemaVersion: 3,
+          capabilitySchemaVersion: 4,
           releaseVersion: "0.2.0",
           deployment: { profile: "team_self_hosted" }
         })
@@ -185,7 +185,7 @@ describe("upstream backend registry", () => {
       routePolicy: { teamWorkspaceRead: "enabled" },
       capabilities: {
         state: "validated",
-        schemaVersion: 3,
+        schemaVersion: 4,
         profile: "team_self_hosted"
       }
     });
@@ -209,7 +209,7 @@ describe("upstream backend registry", () => {
         response(true, 200, {
           product: "koed",
           apiVersion: "v1",
-          capabilitySchemaVersion: 3,
+          capabilitySchemaVersion: 4,
           releaseVersion: "0.2.0",
           deployment: { profile: "team_self_hosted" }
         })
@@ -318,7 +318,7 @@ describe("upstream backend registry", () => {
         return response(true, 200, {
           product: "koed",
           apiVersion: "v1",
-          capabilitySchemaVersion: 3,
+          capabilitySchemaVersion: 4,
           releaseVersion: "0.2.0",
           audience: "public",
           deployment: {
@@ -357,7 +357,7 @@ describe("upstream backend registry", () => {
         state: "validated",
         checkedAt: "2026-01-01T00:00:00.000Z",
         expiresAt: "2026-01-01T00:15:00.000Z",
-        schemaVersion: 3,
+        schemaVersion: 4,
         profile: "koed_managed_cloud",
         releaseVersion: "0.2.0"
       }
@@ -370,32 +370,39 @@ describe("upstream backend registry", () => {
     expect(raw).toContain("[redacted]");
   });
 
-  it("continues to accept the previous capability schema during rollout", async () => {
-    const paths = tempPaths();
-    registerUpstreamBackend(paths, {
-      id: "v2-cloud",
-      url: "https://v2.example.test",
-      profile: "koed-managed-cloud"
-    });
+  it.each([2, 3])(
+    "continues to accept capability schema %i during rollout",
+    async (schemaVersion) => {
+      const paths = tempPaths();
+      registerUpstreamBackend(paths, {
+        id: `v${schemaVersion}-cloud`,
+        url: `https://v${schemaVersion}.example.test`,
+        profile: "koed-managed-cloud"
+      });
 
-    const result = await refreshUpstreamBackendCapabilities(paths, "v2-cloud", {
-      now: () => new Date("2026-01-01T00:00:00.000Z"),
-      fetch: async () =>
-        response(true, 200, {
-          product: "koed",
-          apiVersion: "v1",
-          capabilitySchemaVersion: 2,
-          deployment: { profile: "koed_managed_cloud" }
-        })
-    });
+      const result = await refreshUpstreamBackendCapabilities(
+        paths,
+        `v${schemaVersion}-cloud`,
+        {
+          now: () => new Date("2026-01-01T00:00:00.000Z"),
+          fetch: async () =>
+            response(true, 200, {
+              product: "koed",
+              apiVersion: "v1",
+              capabilitySchemaVersion: schemaVersion,
+              deployment: { profile: "koed_managed_cloud" }
+            })
+        }
+      );
 
-    expect(result.ok).toBe(true);
-    expect(result.backend?.capabilities).toMatchObject({
-      state: "validated",
-      schemaVersion: 2,
-      profile: "koed_managed_cloud"
-    });
-  });
+      expect(result.ok).toBe(true);
+      expect(result.backend?.capabilities).toMatchObject({
+        state: "validated",
+        schemaVersion,
+        profile: "koed_managed_cloud"
+      });
+    }
+  );
 
   it("records failed refreshes without deleting the backend", async () => {
     const paths = tempPaths();

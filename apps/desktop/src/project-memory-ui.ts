@@ -91,7 +91,8 @@ export const projectIsActive = (
 export const reconcileSelectedProjectId = (
   projects: DesktopProject[],
   selectedProjectId: string | null,
-  preserveEmptySelection: boolean
+  preserveEmptySelection: boolean,
+  now = Date.now()
 ): string | null => {
   if (
     !projects.length ||
@@ -102,7 +103,7 @@ export const reconcileSelectedProjectId = (
   if (projects.some((project) => project.id === selectedProjectId)) {
     return selectedProjectId;
   }
-  return projects.find((project) => projectIsActive(project))?.id ?? null;
+  return projects.find((project) => projectIsActive(project, now))?.id ?? null;
 };
 
 export const sortProjects = (projects: DesktopProject[]): DesktopProject[] =>
@@ -179,6 +180,27 @@ export const relativeTime = (
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
+};
+
+const technicalSessionPreviewPatterns = [
+  /^tool\s*(call|output)\s*:/i,
+  /^status\s*:\s*(completed|failed|running)/i,
+  /^input\s*:/i,
+  /^\{\s*["']?(cmd|command|path|query)["']?\s*:/i,
+  /^<tool/i
+];
+
+export const sessionPreview = (
+  session: Pick<DesktopThreadGroup, "name" | "sample">
+): string => {
+  const sample = session.sample.trim().replace(/\s+/g, " ");
+  if (
+    !sample ||
+    technicalSessionPreviewPatterns.some((pattern) => pattern.test(sample))
+  ) {
+    return "Open the Conversation to review this Captured Session.";
+  }
+  return sample;
 };
 
 export { sessionSelectionId } from "@koed/memory-ui";

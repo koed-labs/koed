@@ -193,20 +193,28 @@ or use a differently wrapped statement as log head.
 
 - `genesis`: `authorityKeyId`, `authorityPublicKey`, `recoverySigningKeyId`,
   `recoverySigningPublicKey`, `recoveryKemKeyId`, `recoveryKemPublicKey`,
-  `recoveryKitHash`, **`recoveryKitVerified: true`**, `initialEpoch`, and
-  `initialKeyCommitment`;
+  `recoveryKitHash`, **`recoveryKitVerified: true`**, `initialDeviceId`,
+  `initialDeviceSigningKeyId`, `initialDeviceSigningPublicKey`,
+  `initialDeviceKemKeyId`, `initialDeviceKemPublicKey`, `operationFamilies`,
+  `initialEpoch`, and `initialKeyCommitment`. Genesis authorization is verified
+  with that embedded initial-device signing public key (and its `signerKeyId`); recovery-root
+  verification and the Authority countersignature rules still apply. No
+  unrecorded or out-of-band device key material may satisfy genesis verification;
 - `add-device`: new `deviceId`, signing/KEM key IDs and public keys,
   `operationFamilies`, `previousEpoch`, `nextEpoch`, `keyBundleHash`;
 - `revoke-device`: `deviceId`, `reasonCode`, `revokedAt`, `previousEpoch`,
   `nextEpoch`, `keyBundleHash`;
-- `recover`: replacement device signing/KEM IDs and public keys,
-  `recoveryKitHash`, `previousEpoch`, `nextEpoch`, `keyBundleHash`;
+- `recover`: replacement `deviceId`, device signing/KEM IDs and public keys,
+  `recoveryKitHash`, `previousEpoch`, `nextEpoch`, and `keyBundleHash`. Recovery
+  replaces and revokes every pre-transition active device; use `add-device`
+  when any existing active device should remain;
 - `tombstone`: `tombstoneHash` and `deletionFloorToken` from signed tombstone;
 - `resolve-conflict`: `sourceFingerprint`, `selectedClosureHash`, and
   `resolution` (`select` or `distinct`).
 
-Every key ID is opaque ASCII; public keys are raw 32-byte base64url;
-`sequence`, epochs, and times/counts are canonical decimal strings.
+Every key ID is opaque ASCII; public keys are raw 32-byte base64url. Genesis
+uses `initialEpoch: "1"`; `sequence`, epochs, and times/counts are canonical
+decimal strings.
 `operationFamilies` contains only `pds_relay`. `sequence` increments by one;
 `previousHash` is mandatory CAS input. Authority atomically accepts only
 current hash and next sequence, verifies draft authorization, persists valid
@@ -217,8 +225,12 @@ retry against changed state.
 Every `add-device`, `revoke-device`, and `recover` atomically advances from
 `previousEpoch` to `nextEpoch = previousEpoch + 1`. Its `keyBundleHash` must
 identify a valid finalized Key Bundle with recipient envelopes for **every
-post-transition active device and recovery recipient**. Authority commits bundle
-and statement in one transaction. No transition is active, no membership
+post-transition active device and recovery recipient**. Authority may countersign an authorized Key Bundle draft before the group
+statement exists so the author can compute the finalized `keyBundleHash`; this
+preparation step changes no group, membership, epoch, or policy state and does
+not persist the bundle as active. The author then signs the transition statement
+which binds that exact finalized hash. Authority revalidates and commits the
+finalized bundle and statement in one transaction. No transition is active, no membership
 certificate for `nextEpoch` is issued, and all package exchange is frozen until
 that transaction commits and every required envelope validates. A missing,
 invalid, duplicate, unordered, wrong-epoch, or incomplete bundle freezes
@@ -232,10 +244,13 @@ material. It has exactly `protocol`, `groupId`, `deviceId`, `deviceSigningKeyId`
 `deviceSigningPublicKey`, `deviceKemKeyId`, `deviceKemPublicKey`, `epoch`,
 `operationFamilies`, `statementSequence`, `statementHash`, `issuedAt`,
 `expiresAt`, and `authoritySignature` (`keyId`, `signature`).
-`authoritySignature` is omitted from membership-certificate bytes. Maximum
-lifetime is 7 days. Receiver permits 5 minutes `issuedAt` skew, requires
-`now < expiresAt`, and rejects stated lifetime over 7 days. Cached expiry
-blocks relay send/receive; local capture/Recall continue.
+`authoritySignature` is omitted from membership-certificate bytes. A certificate
+must reference the exact group statement which establishes its device keys and
+its epoch (genesis for epoch 1, or the matching committed transition thereafter).
+Its lifetime is strictly positive and no more than 7 days: `issuedAt <
+expiresAt`. Receiver permits 5 minutes `issuedAt` skew, requires `now <
+expiresAt`, and rejects zero, negative, or over-7-day stated lifetime. Cached
+expiry blocks relay send/receive; local capture/Recall continue.
 
 A membership/log fork, same sequence with different bytes, invalid prior hash,
 mismatched Authority countersignature, concurrent Authority lease, duplicate
@@ -278,7 +293,11 @@ X25519 envelopes. It is never Authority plaintext. It is exactly:
 ```
 
 `recipientSnapshot` is unique, ASCII sorted, and equals post-transition active
-devices plus exactly one recovery recipient. `recipientSnapshotHash` is SHA-256
+devices plus exactly one recovery recipient. Active-device recipient IDs equal
+their group-log `deviceId`. The recovery envelope is identified by
+`recipientKind: "recovery"` and the genesis recovery KEM key ID; its opaque
+`recipientId` need not equal that key ID but must be unique in the snapshot.
+`recipientSnapshotHash` is SHA-256
 of its JCS array. `keyBundleHash` is SHA-256 of full finalized Key Bundle.
 Commitments are SHA-256 of exact 32-byte key values. `epoch` is `nextEpoch`;
 `keyType` is exactly `group-secret-set`; `version` is exactly `1`.
@@ -288,15 +307,38 @@ Each envelope is exactly `recipientId`, `recipientKind` (`device` or
 `tag`, and `envelopeContext`. Its plaintext is JCS object with exactly
 `epochSecret`, `sourceFingerprintKey`, `tombstoneFloorKey`, and
 `projectAliasKey`; all are 32-byte base64url. `envelopeContext` is exactly
-`koed/pds/v1/key-bundle-envelope`; envelope AEAD AAD is JCS of `protocol`,
-`version`, `groupId`, `epoch`, `recipientId`, `recipientKind`,
-`recipientKemKeyId`, `keyType`, and `recipientSnapshotHash`. Envelopes sort by
-`recipientId`; each recipient appears once. Recipient verifies all key lengths,
-commitments, epoch, snapshot, KEM key ID, signatures, and AEAD before marking
-transition usable. Bundle records and envelopes are retained through recovery
-and replay validation; duplicate same hash is idempotent, same transition/epoch
-with different bytes quarantines. Revocation removes future delivery but cannot
-erase already received plaintext.
+`koed/pds/v1/key-bundle-envelope`.
+
+For each envelope, generate a fresh X25519 ephemeral key pair and compute
+`sharedSecret = X25519(ephemeralPrivate, recipientKemPublic)`. Reject an output
+that is not exactly 32 bytes or is all zero bytes. Do not cofactor-adjust,
+retry, or substitute a key. The Key Bundle construction is distinct from the
+package recipient-envelope construction:
+
+```text
+salt = SHA256(UTF8("koed/pds/v1/key-bundle/salt\\0") || UTF8(groupId))
+info = UTF8("koed/pds/v1/key-bundle/key\\0") || uint64be(epoch) ||
+       UTF8(recipientId) || 0x00 || UTF8(recipientKind) || 0x00 ||
+       UTF8(recipientKemKeyId) || 0x00 || UTF8(keyType) || 0x00 ||
+       UTF8(recipientSnapshotHash)
+wrappingKey = HKDF-SHA-256(sharedSecret, salt, info, 32)
+```
+
+`uint64be(epoch)` is the eight-byte unsigned big-endian encoding of the parsed
+canonical decimal epoch. Encrypt the UTF-8 JCS plaintext with AES-256-GCM using
+that exact 32-byte `wrappingKey`, a 12-byte nonce, and a 16-byte tag. Its AAD is
+UTF-8 JCS of exactly `protocol`, `version`, `groupId`, `epoch`, `recipientId`,
+`recipientKind`, `recipientKemKeyId`, `keyType`, and `recipientSnapshotHash`.
+Derivation never includes ciphertext, tag, or a hash containing either.
+
+Envelopes sort by `recipientId`; each recipient appears once. Validate recipient
+identity, kind, membership snapshot, epoch, and KEM key ID before deriving;
+then validate ephemeral/nonce/tag lengths, all-zero shared-secret rejection,
+AEAD, canonical plaintext shape and lengths, commitments, and both signatures
+before marking transition usable. Bundle records and envelopes are retained
+through recovery and replay validation; duplicate same hash is idempotent, same
+transition/epoch with different bytes quarantines. Revocation removes future
+delivery but cannot erase already received plaintext.
 
 ## 5. Closed Captured Session source package
 

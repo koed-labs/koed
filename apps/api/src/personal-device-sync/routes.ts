@@ -4,14 +4,13 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   canonicalizePdsJson,
   parseCanonicalPdsJson,
-  pdsPublicKeyCommitment,
   pdsFinalizedStatementHash,
   signPdsGroupFinal,
   signPdsRecord,
   signPdsTwoStageFinal,
   validatePdsGroupStatement,
   validatePdsKeyBundle,
-  validatePdsKeyBundleAck,
+  validatePdsKeyBundleMetadata,
   verifyPdsEnrollmentProof,
   type PdsGroupStatement
 } from "@koed/shared";
@@ -21,8 +20,8 @@ import {
   pdsCertificateParamsSchema,
   pdsChallengeSchema,
   pdsGenesisSchema,
-  pdsEpochAckSchema,
   pdsGroupParamsSchema,
+  pdsKeyBundleFinalizeSchema,
   pdsKeyBundleParamsSchema,
   pdsPolicySchema,
   pdsRemoteAccountLinkSchema,
@@ -56,14 +55,37 @@ const pdsAuthority = (context: ApiRouteContext): PdsAuthoritySigner =>
   context.personalDeviceSync.authoritySigner ?? unavailable();
 const pdsError = (message: string, statusCode = 400): Error =>
   Object.assign(new Error(message), { statusCode });
-const browserDeploymentId = (context: ApiRouteContext): string => {
-  const deploymentId = context.deploymentIdentity.inspect().deploymentId;
-  if (!deploymentId)
-    throw pdsError("PDS browser deployment identity is unavailable", 503);
-  return deploymentId;
+const pdsInput = <T>(operation: () => T): T => {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof Error && "statusCode" in error) throw error;
+    throw pdsError(
+      error instanceof Error ? error.message : "PDS record is invalid"
+    );
+  }
 };
+const parsedPdsJson = (input: string): unknown =>
+  pdsInput(() => parseCanonicalPdsJson(input));
 const parsedStatement = (input: string): PdsGroupStatement =>
-  parseCanonicalPdsJson(input) as PdsGroupStatement;
+  parsedPdsJson(input) as PdsGroupStatement;
+const validatedGroupStatement = (
+  value: unknown,
+  options: Parameters<typeof validatePdsGroupStatement>[1]
+): PdsGroupStatement =>
+  pdsInput(() => validatePdsGroupStatement(value, options));
+const validatedKeyBundleMetadata = (
+  value: unknown
+): ReturnType<typeof validatePdsKeyBundleMetadata> =>
+  pdsInput(() => validatePdsKeyBundleMetadata(value));
+const validatedKeyBundle = (
+  value: unknown,
+  options: Parameters<typeof validatePdsKeyBundle>[1]
+): ReturnType<typeof validatePdsKeyBundle> =>
+  pdsInput(() => validatePdsKeyBundle(value, options));
+const verifiedEnrollmentProof = (
+  input: Parameters<typeof verifyPdsEnrollmentProof>[0]
+): void => pdsInput(() => verifyPdsEnrollmentProof(input));
 const body = (statement: PdsGroupStatement): Record<string, unknown> =>
   statement.draft.body as Record<string, unknown>;
 const draft = (statement: PdsGroupStatement): Record<string, unknown> =>
@@ -78,9 +100,6 @@ const publicGroup = (group: PersonalDeviceGroupRecord) => ({
   authority_key_id: group.authorityKeyId,
   authority_public_key: group.authorityPublicKey,
   current_epoch: group.currentEpoch,
-  pending_epoch: group.pendingEpoch,
-  pending_statement_sequence: group.pendingStatementSequence,
-  pending_bundle_hash: group.pendingBundleHash,
   head: { sequence: group.headSequence, hash: group.headHash },
   state: group.state,
   ...(group.stateReason ? { state_reason: group.stateReason } : {}),
@@ -103,22 +122,31 @@ const publicGroup = (group: PersonalDeviceGroupRecord) => ({
   }
 });
 
-const authorizationPublicKey = (
+const authorizationPublicKeyFor = (
   group: PersonalDeviceGroupRecord,
-  statement: PdsGroupStatement
+  keyId: string,
+  includeRevoked = false
 ): string => {
-  const keyId = string(
-    statement.authorization?.signerKeyId,
-    "authorization signer"
-  );
   if (keyId === group.recoverySigningKeyId)
     return group.recoverySigningPublicKey;
   const member = group.members.find(
-    (item) => item.signingKeyId === keyId && item.status === "active"
+    (item) =>
+      item.signingKeyId === keyId &&
+      (includeRevoked || item.status === "active")
   );
   if (!member) throw pdsError("PDS authorization signer is not active", 403);
   return member.signingPublicKey;
 };
+
+const authorizationPublicKey = (
+  group: PersonalDeviceGroupRecord,
+  statement: PdsGroupStatement
+): string =>
+  authorizationPublicKeyFor(
+    group,
+    string(statement.authorization?.signerKeyId, "authorization signer"),
+    statement.authority !== undefined
+  );
 
 const counterSignStatement = (
   statement: PdsGroupStatement,
@@ -251,12 +279,12 @@ const issueMembershipCertificates = async (
 const expectedBundleRecipients = (
   group: PersonalDeviceGroupRecord,
   kind: "add-device" | "revoke-device" | "recover",
-  statementBody: Record<string, unknown>
+  statementBody: Record<string, unknown>,
+  recoveryRecipientId: string
 ): Array<{
   recipientId: string;
   recipientKind: "device" | "recovery";
   recipientKemKeyId: string;
-  recipientKemPublicKeyCommitment: string;
 }> => {
   let members: Array<{
     deviceId: string;
@@ -267,7 +295,9 @@ const expectedBundleRecipients = (
     members = [...members, deviceFromBody(kind, statementBody)];
   const revokedDeviceIds =
     kind === "recover"
-      ? (statementBody.revokedDeviceIds as string[])
+      ? group.members
+          .filter((member) => member.status === "active")
+          .map((member) => member.deviceId)
       : kind === "revoke-device"
         ? [string(statementBody.deviceId, "deviceId")]
         : [];
@@ -275,24 +305,17 @@ const expectedBundleRecipients = (
     recipientId: string;
     recipientKind: "device" | "recovery";
     recipientKemKeyId: string;
-    recipientKemPublicKeyCommitment: string;
   }> = members
     .filter((member) => !revokedDeviceIds.includes(member.deviceId))
     .map((member) => ({
       recipientId: member.deviceId,
       recipientKind: "device" as const,
-      recipientKemKeyId: member.kemKeyId,
-      recipientKemPublicKeyCommitment: pdsPublicKeyCommitment(
-        member.kemPublicKey
-      )
+      recipientKemKeyId: member.kemKeyId
     }));
   recipients.push({
-    recipientId: group.recoveryKemKeyId,
+    recipientId: recoveryRecipientId,
     recipientKind: "recovery",
-    recipientKemKeyId: group.recoveryKemKeyId,
-    recipientKemPublicKeyCommitment: pdsPublicKeyCommitment(
-      group.recoveryKemPublicKey
-    )
+    recipientKemKeyId: group.recoveryKemKeyId
   });
   return recipients.sort((left, right) =>
     left.recipientId.localeCompare(right.recipientId)
@@ -325,6 +348,8 @@ const assertUniqueKeyRoles = (
     device.signingPublicKey,
     device.kemPublicKey
   ];
+  if (group.members.some((member) => member.deviceId === device.deviceId))
+    throw pdsError("PDS device identity is already present", 409);
   if (
     new Set(ids).size !== ids.length ||
     new Set(publicKeys).size !== publicKeys.length
@@ -363,7 +388,7 @@ export const registerPersonalDeviceSyncRoutes = (
           userId: user.id,
           groupId: input.group_id,
           browserSubjectId: user.id,
-          browserDeploymentId: browserDeploymentId(context),
+          browserDeploymentId: input.device_deployment_id,
           challenge,
           expiresAt: new Date(Date.now() + 10 * 60 * 1_000)
         })
@@ -395,19 +420,30 @@ export const registerPersonalDeviceSyncRoutes = (
           "PDS genesis authority does not match configured authority",
           503
         );
+      const firstDevice = {
+        deviceId: string(statementBody.initialDeviceId, "initialDeviceId"),
+        signingKeyId: string(
+          statementBody.initialDeviceSigningKeyId,
+          "initialDeviceSigningKeyId"
+        ),
+        signingPublicKey: string(
+          statementBody.initialDeviceSigningPublicKey,
+          "initialDeviceSigningPublicKey"
+        ),
+        kemKeyId: string(
+          statementBody.initialDeviceKemKeyId,
+          "initialDeviceKemKeyId"
+        ),
+        kemPublicKey: string(
+          statementBody.initialDeviceKemPublicKey,
+          "initialDeviceKemPublicKey"
+        )
+      };
       if (
-        input.first_device.device_id !== input.proof.device_id ||
-        input.first_device.signing_key_id !==
-          statement.authorization.signerKeyId
+        firstDevice.deviceId !== input.proof.device_id ||
+        firstDevice.signingKeyId !== statement.authorization.signerKeyId
       )
         throw pdsError("PDS first device authorization does not match proof");
-      const firstDevice = {
-        deviceId: input.first_device.device_id,
-        signingKeyId: input.first_device.signing_key_id,
-        signingPublicKey: input.first_device.signing_public_key,
-        kemKeyId: input.first_device.kem_key_id,
-        kemPublicKey: input.first_device.kem_public_key
-      };
       if (
         new Set([
           signer.keyId,
@@ -428,17 +464,17 @@ export const registerPersonalDeviceSyncRoutes = (
         ]).size !== 5
       )
         throw pdsError("PDS key material is reused across roles");
-      verifyPdsEnrollmentProof(
+      verifiedEnrollmentProof(
         enrollmentProof(
           input.proof,
           string(statementDraft.groupId, "groupId"),
           firstDevice,
           user.id,
-          browserDeploymentId(context)
+          input.proof.device_deployment_id
         )
       );
-      validatePdsGroupStatement(statement, {
-        authorizationPublicKey: input.first_device.signing_public_key,
+      validatedGroupStatement(statement, {
+        authorizationPublicKey: firstDevice.signingPublicKey,
         expectedGroupId: string(statementDraft.groupId, "groupId"),
         expectedPreviousHash: null,
         expectedSequence: "1"
@@ -447,14 +483,14 @@ export const registerPersonalDeviceSyncRoutes = (
         userId: user.id,
         challengeId: input.proof.challenge_id,
         browserSubjectId: user.id,
-        browserDeploymentId: browserDeploymentId(context),
+        browserDeploymentId: input.proof.device_deployment_id,
         challenge: input.proof.challenge
       });
       if (!consumed)
         throw pdsError("PDS enrollment challenge is invalid or expired", 409);
       const finalized = counterSignStatement(statement, signer);
-      validatePdsGroupStatement(finalized, {
-        authorizationPublicKey: input.first_device.signing_public_key,
+      validatedGroupStatement(finalized, {
+        authorizationPublicKey: firstDevice.signingPublicKey,
         authorityPublicKey: signer.publicKey,
         expectedGroupId: string(statementDraft.groupId, "groupId"),
         expectedPreviousHash: null,
@@ -464,7 +500,7 @@ export const registerPersonalDeviceSyncRoutes = (
         userId: user.id,
         groupId: string(statementDraft.groupId, "groupId"),
         subjectId: user.id,
-        subjectDeploymentId: browserDeploymentId(context),
+        subjectDeploymentId: input.proof.device_deployment_id,
         authorityKeyId: signer.keyId,
         authorityPublicKey: signer.publicKey,
         recoverySigningKeyId: string(
@@ -499,6 +535,79 @@ export const registerPersonalDeviceSyncRoutes = (
   );
 
   app.post(
+    "/v1/personal-device-sync/groups/:groupId/key-bundles/finalize",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const signer = pdsAuthority(context);
+      const user = await sessionUser(request);
+      const { groupId } = pdsGroupParamsSchema.parse(request.params);
+      const input = pdsKeyBundleFinalizeSchema.parse(request.body);
+      const group = await repo().getPersonalDeviceGroup(user.id, groupId);
+      if (!group) throw pdsError("Personal Device Group not found", 404);
+      if (
+        group.authorityKeyId !== signer.keyId ||
+        group.authorityPublicKey !== signer.publicKey
+      )
+        unavailable();
+      if (group.state !== "active")
+        throw pdsError("PDS governance is frozen", 409);
+      const rawBundle = parsedPdsJson(input.key_bundle) as Record<
+        string,
+        unknown
+      >;
+      if ("authority" in rawBundle)
+        throw pdsError("PDS key bundle is already countersigned", 409);
+      const metadata = validatedKeyBundleMetadata(rawBundle);
+      if (
+        metadata.draft.groupId !== group.groupId ||
+        metadata.draft.epoch !== (BigInt(group.currentEpoch) + 1n).toString()
+      )
+        throw pdsError("PDS key bundle does not bind the next group epoch");
+      const transitionKind = string(
+        metadata.draft.transitionKind,
+        "transitionKind"
+      );
+      const authorization = rawBundle.authorization as Record<string, unknown>;
+      const authorizationKeyId = string(
+        authorization.signerKeyId,
+        "signerKeyId"
+      );
+      if (
+        authorizationKeyId === group.recoverySigningKeyId &&
+        transitionKind !== "recover"
+      )
+        throw pdsError("PDS recovery signer may only recover", 403);
+      const authorKey = authorizationPublicKeyFor(group, authorizationKeyId);
+      validatedKeyBundle(rawBundle, {
+        authorizationPublicKey: authorKey,
+        expectedAuthorizationKeyId: authorizationKeyId
+      });
+      const finalizedBundle = {
+        draft: metadata.draft,
+        authorization,
+        authority: {
+          keyId: signer.keyId,
+          signature: signPdsTwoStageFinal(
+            "key-bundle",
+            { draft: metadata.draft, authorization },
+            signer.privateKey
+          )
+        }
+      };
+      const finalized = validatedKeyBundle(finalizedBundle, {
+        authorizationPublicKey: authorKey,
+        authorityPublicKey: signer.publicKey,
+        expectedAuthorizationKeyId: authorizationKeyId,
+        expectedAuthorityKeyId: signer.keyId
+      });
+      return {
+        key_bundle: finalizedBundle,
+        key_bundle_hash: finalized.hash
+      };
+    }
+  );
+
+  app.post(
     "/v1/personal-device-sync/groups/:groupId/transitions",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
@@ -518,8 +627,6 @@ export const registerPersonalDeviceSyncRoutes = (
         unavailable();
       if (group.state !== "active")
         throw pdsError("PDS governance is frozen", 409);
-      if (group.pendingEpoch !== null)
-        throw pdsError("PDS epoch activation is pending", 409);
       const statement = parsedStatement(input.statement);
       const statementDraft = draft(statement);
       const statementBody = body(statement);
@@ -532,8 +639,14 @@ export const registerPersonalDeviceSyncRoutes = (
         kind !== "recover"
       )
         throw pdsError("PDS recovery signer may only recover", 403);
-      validatePdsGroupStatement(statement, {
+      validatedGroupStatement(statement, {
         authorizationPublicKey: authorKey,
+        ...(statement.authority
+          ? {
+              authorityPublicKey: signer.publicKey,
+              expectedAuthorityKeyId: signer.keyId
+            }
+          : {}),
         expectedAuthorizationKeyId: string(
           statement.authorization.signerKeyId,
           "signerKeyId"
@@ -552,13 +665,37 @@ export const registerPersonalDeviceSyncRoutes = (
         const currentSignedHead = statements.find(
           (entry) => entry.sequence === group.headSequence
         );
+        const sameSequence = statements.find(
+          (entry) => entry.sequence === statementDraft.sequence
+        );
+        if (
+          statement.authority &&
+          sameSequence &&
+          sameSequence.canonicalStatement !== canonicalizePdsJson(statement)
+        ) {
+          const frozen = await repo().freezePersonalDeviceGovernance({
+            userId: user.id,
+            groupId: group.groupId,
+            reason: "authority_same_sequence_conflict",
+            actorKeyId: string(
+              statement.authorization.signerKeyId,
+              "signerKeyId"
+            )
+          });
+          return reply.code(409).send({
+            conflict: true,
+            equivocation_freeze: true,
+            group: publicGroup(frozen ?? group),
+            head_statement: currentSignedHead?.canonicalStatement ?? null
+          });
+        }
         return reply.code(409).send({
           conflict: true,
           group: publicGroup(group),
           head_statement: currentSignedHead?.canonicalStatement ?? null
         });
       }
-      validatePdsGroupStatement(statement, {
+      validatedGroupStatement(statement, {
         authorizationPublicKey: authorKey,
         expectedAuthorizationKeyId: string(
           statement.authorization.signerKeyId,
@@ -575,6 +712,7 @@ export const registerPersonalDeviceSyncRoutes = (
             epoch: string;
             transitionKind: string;
             recipients: string[];
+            recoveryRecipientId: string;
           }
         | undefined;
       if (["add-device", "revoke-device", "recover"].includes(kind as string)) {
@@ -590,23 +728,13 @@ export const registerPersonalDeviceSyncRoutes = (
           if (input.proof.device_id !== newDevice.deviceId)
             throw pdsError("PDS proof device does not match transition");
           assertUniqueKeyRoles(group, newDevice);
-          if (
-            kind === "recover" &&
-            !(statementBody.revokedDeviceIds as string[]).every((deviceId) =>
-              group.members.some(
-                (member) =>
-                  member.deviceId === deviceId && member.status === "active"
-              )
-            )
-          )
-            throw pdsError("PDS recovery revoked device is not active", 409);
-          verifyPdsEnrollmentProof(
+          verifiedEnrollmentProof(
             enrollmentProof(
               input.proof,
               group.groupId,
               newDevice,
               user.id,
-              browserDeploymentId(context)
+              input.proof.device_deployment_id
             )
           );
           const consumed =
@@ -615,7 +743,7 @@ export const registerPersonalDeviceSyncRoutes = (
               groupId: group.groupId,
               challengeId: input.proof.challenge_id,
               browserSubjectId: user.id,
-              browserDeploymentId: browserDeploymentId(context),
+              browserDeploymentId: input.proof.device_deployment_id,
               challenge: input.proof.challenge
             });
           if (!consumed)
@@ -624,21 +752,34 @@ export const registerPersonalDeviceSyncRoutes = (
               409
             );
         }
-        const rawBundle = parseCanonicalPdsJson(input.key_bundle) as Record<
+        const rawBundle = parsedPdsJson(input.key_bundle) as Record<
           string,
           unknown
         >;
+        const unverifiedMetadata = validatedKeyBundleMetadata(rawBundle);
+        const recoveryEnvelopes = (
+          unverifiedMetadata.draft.envelopes as Array<Record<string, unknown>>
+        ).filter(
+          (envelope) =>
+            envelope.recipientKind === "recovery" &&
+            envelope.recipientKemKeyId === group.recoveryKemKeyId
+        );
+        if (recoveryEnvelopes.length !== 1)
+          throw pdsError("PDS key bundle recovery recipient is invalid");
         const recipientBindings = expectedBundleRecipients(
           group,
           kind as "add-device" | "revoke-device" | "recover",
-          statementBody
+          statementBody,
+          string(recoveryEnvelopes[0]?.recipientId, "recoveryRecipientId")
         );
-        const metadata = validatePdsKeyBundle(rawBundle, {
+        const metadata = validatedKeyBundle(rawBundle, {
           authorizationPublicKey: authorKey,
+          authorityPublicKey: signer.publicKey,
           expectedAuthorizationKeyId: string(
             statement.authorization.signerKeyId,
             "signerKeyId"
           ),
+          expectedAuthorityKeyId: signer.keyId,
           expectedRecipients: recipientBindings
         });
         if (
@@ -655,47 +796,25 @@ export const registerPersonalDeviceSyncRoutes = (
           JSON.stringify(recipients)
         )
           throw pdsError("PDS key bundle recipient snapshot is incomplete");
-        const authorization = rawBundle.authorization as Record<
-          string,
-          unknown
-        >;
-        const finalizedBundle = {
-          draft: metadata.draft,
-          authorization,
-          authority: {
-            keyId: signer.keyId,
-            signature: signPdsTwoStageFinal(
-              "key-bundle",
-              { draft: metadata.draft, authorization },
-              signer.privateKey
-            )
-          }
-        };
-        const finalMetadata = validatePdsKeyBundle(finalizedBundle, {
-          authorizationPublicKey: authorKey,
-          authorityPublicKey: signer.publicKey,
-          expectedAuthorizationKeyId: string(
-            statement.authorization.signerKeyId,
-            "signerKeyId"
-          ),
-          expectedAuthorityKeyId: signer.keyId,
-          expectedRecipients: recipientBindings
-        });
         keyBundle = {
-          hash: finalMetadata.hash,
-          canonical: canonicalizePdsJson(finalizedBundle),
-          epoch: string(finalMetadata.draft.epoch, "epoch"),
+          hash: metadata.hash,
+          canonical: canonicalizePdsJson(rawBundle),
+          epoch: string(metadata.draft.epoch, "epoch"),
           transitionKind: string(
-            finalMetadata.draft.transitionKind,
+            metadata.draft.transitionKind,
             "transitionKind"
           ),
-          recipients
+          recipients,
+          recoveryRecipientId: string(
+            recoveryEnvelopes[0]?.recipientId,
+            "recoveryRecipientId"
+          )
         };
         if (keyBundle.hash !== statementBody.keyBundleHash)
           throw pdsError("PDS statement key bundle hash does not match");
       }
       const finalized = counterSignStatement(statement, signer);
-      validatePdsGroupStatement(finalized, {
+      validatedGroupStatement(finalized, {
         authorizationPublicKey: authorKey,
         authorityPublicKey: signer.publicKey,
         expectedGroupId: group.groupId,
@@ -719,8 +838,13 @@ export const registerPersonalDeviceSyncRoutes = (
           statement.authorization.signerKeyId,
           "signerKeyId"
         ),
-        browserSubjectId: user.id,
-        browserDeploymentId: browserDeploymentId(context),
+        addedDeviceSubject:
+          kind === "add-device" || kind === "recover"
+            ? {
+                subjectId: user.id,
+                deploymentId: input.proof!.device_deployment_id
+              }
+            : undefined,
         keyBundle,
         addedDevice:
           kind === "add-device" || kind === "recover"
@@ -730,7 +854,9 @@ export const registerPersonalDeviceSyncRoutes = (
           kind === "revoke-device"
             ? [string(statementBody.deviceId, "deviceId")]
             : kind === "recover"
-              ? (statementBody.revokedDeviceIds as string[])
+              ? group.members
+                  .filter((member) => member.status === "active")
+                  .map((member) => member.deviceId)
               : undefined
       });
       if (!transition) throw pdsError("Personal Device Group not found", 404);
@@ -740,6 +866,12 @@ export const registerPersonalDeviceSyncRoutes = (
           group: publicGroup(transition.group),
           head_statement: transition.statement
         };
+      await issueMembershipCertificates(
+        context,
+        user.id,
+        transition.group,
+        signer
+      );
       return {
         group: publicGroup(transition.group),
         statement: finalized,
@@ -747,63 +879,6 @@ export const registerPersonalDeviceSyncRoutes = (
           ? { key_bundle: parseCanonicalPdsJson(keyBundle.canonical) }
           : {})
       };
-    }
-  );
-
-  app.post(
-    "/v1/personal-device-sync/groups/:groupId/epoch-acks",
-    { preHandler: context.rateLimit.memoryWrite },
-    async (request) => {
-      const signer = pdsAuthority(context);
-      const user = await sessionUser(request);
-      const { groupId } = pdsGroupParamsSchema.parse(request.params);
-      const input = pdsEpochAckSchema.parse(request.body);
-      const group = await repo().getPersonalDeviceGroup(user.id, groupId);
-      if (!group) throw pdsError("Personal Device Group not found", 404);
-      if (
-        !group.pendingEpoch ||
-        !group.pendingStatementSequence ||
-        !group.pendingStatementHash ||
-        !group.pendingBundleHash
-      )
-        throw pdsError("PDS epoch acknowledgement has no pending epoch", 409);
-      const ack = parseCanonicalPdsJson(input.ack) as Record<string, unknown>;
-      const deviceId = string(ack.deviceId, "deviceId");
-      const member = group.members.find(
-        (candidate) =>
-          candidate.deviceId === deviceId && candidate.status === "active"
-      );
-      if (!member)
-        throw pdsError("PDS epoch acknowledgement device is not active", 403);
-      const validatedAck = validatePdsKeyBundleAck(ack, {
-        signingPublicKey: member.signingPublicKey,
-        expectedSignerKeyId: member.signingKeyId,
-        expectedGroupId: group.groupId,
-        expectedDeviceId: member.deviceId,
-        expectedEpoch: group.pendingEpoch,
-        expectedBundleHash: group.pendingBundleHash,
-        expectedRecipientKemKeyId: member.kemKeyId,
-        expectedRecipientKemPublicKeyCommitment: pdsPublicKeyCommitment(
-          member.kemPublicKey
-        )
-      });
-      const result = await repo().acknowledgePersonalDeviceEpoch({
-        userId: user.id,
-        groupId,
-        deviceId,
-        epoch: group.pendingEpoch,
-        canonicalAck: canonicalizePdsJson(ack),
-        acknowledgedAt: validatedAck.acknowledgedAt
-      });
-      if (!result) throw pdsError("PDS epoch acknowledgement is stale", 409);
-      if (result.activated)
-        await issueMembershipCertificates(
-          context,
-          user.id,
-          result.group,
-          signer
-        );
-      return { group: publicGroup(result.group), activated: result.activated };
     }
   );
 
@@ -864,9 +939,6 @@ export const registerPersonalDeviceSyncRoutes = (
       return {
         group_id: group.groupId,
         current_epoch: group.currentEpoch,
-        pending_epoch: group.pendingEpoch,
-        pending_statement_sequence: group.pendingStatementSequence,
-        pending_bundle_hash: group.pendingBundleHash,
         state: group.state
       };
     }

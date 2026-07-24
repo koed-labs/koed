@@ -8,32 +8,26 @@ const base64url = z
   .max(512);
 
 export const pdsChallengeSchema = z
-  .object({ group_id: opaqueId.optional() })
+  .object({
+    group_id: opaqueId.optional(),
+    device_deployment_id: opaqueId
+  })
   .strict();
 export const pdsProofSchema = z
   .object({
     challenge_id: z.uuid(),
     challenge: base64url.length(43),
     device_id: opaqueId,
+    device_deployment_id: opaqueId,
     signature: base64url.length(86),
     expires_at: z.string().datetime({ offset: true, precision: 3 })
   })
   .strict();
 export const pdsGenesisSchema = z
-  .object({
-    statement: canonicalPdsJson,
-    proof: pdsProofSchema,
-    first_device: z
-      .object({
-        device_id: opaqueId,
-        signing_key_id: opaqueId,
-        signing_public_key: base64url.length(43),
-        kem_key_id: opaqueId,
-        kem_public_key: base64url.length(43),
-        operation_families: z.tuple([z.literal("pds_relay")])
-      })
-      .strict()
-  })
+  .object({ statement: canonicalPdsJson, proof: pdsProofSchema })
+  .strict();
+export const pdsKeyBundleFinalizeSchema = z
+  .object({ key_bundle: canonicalPdsJson })
   .strict();
 export const pdsTransitionSchema = z
   .object({
@@ -56,7 +50,6 @@ export const pdsPolicySchema = z
     historical_backfill_enabled: z.literal(false)
   })
   .strict();
-export const pdsEpochAckSchema = z.object({ ack: canonicalPdsJson }).strict();
 export const pdsRemoteAccountLinkSchema = z
   .object({ proof_token: z.string().min(12).max(8_192) })
   .strict();

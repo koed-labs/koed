@@ -421,7 +421,7 @@ const buildCapabilities = (input: {
               "/v1/personal-device-sync/groups/genesis",
               "/v1/personal-device-sync/groups/{groupId}",
               "/v1/personal-device-sync/groups/{groupId}/transitions",
-              "/v1/personal-device-sync/groups/{groupId}/epoch-acks",
+              "/v1/personal-device-sync/groups/{groupId}/key-bundles/finalize",
               "/v1/personal-device-sync/groups/{groupId}/key-bundles/{epoch}",
               "/v1/personal-device-sync/groups/{groupId}/certificates/{deviceId}",
               "/v1/personal-device-sync/groups/{groupId}/status"

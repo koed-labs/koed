@@ -197,8 +197,7 @@ export const signPdsRecord = (
     | "source-manifest"
     | "transport-envelope"
     | "tombstone-ack"
-    | "package-ack"
-    | "key-bundle-ack",
+    | "package-ack",
   unsignedRecord: JsonRecord,
   privateKey: KeyObject
 ): string =>
@@ -247,6 +246,12 @@ const validateBody = (kind: string, bodyValue: unknown): void => {
         "recoveryKemPublicKey",
         "recoveryKitHash",
         "recoveryKitVerified",
+        "initialDeviceId",
+        "initialDeviceSigningKeyId",
+        "initialDeviceSigningPublicKey",
+        "initialDeviceKemKeyId",
+        "initialDeviceKemPublicKey",
+        "operationFamilies",
         "initialEpoch",
         "initialKeyCommitment"
       ],
@@ -255,7 +260,10 @@ const validateBody = (kind: string, bodyValue: unknown): void => {
     for (const field of [
       "authorityKeyId",
       "recoverySigningKeyId",
-      "recoveryKemKeyId"
+      "recoveryKemKeyId",
+      "initialDeviceId",
+      "initialDeviceSigningKeyId",
+      "initialDeviceKemKeyId"
     ])
       key(field);
     for (const field of [
@@ -263,16 +271,26 @@ const validateBody = (kind: string, bodyValue: unknown): void => {
       "recoverySigningPublicKey",
       "recoveryKemPublicKey",
       "recoveryKitHash",
+      "initialDeviceSigningPublicKey",
+      "initialDeviceKemPublicKey",
       "initialKeyCommitment"
     ])
       rawKey(field);
     if (body.recoveryKitVerified !== true)
       throw new TypeError("PDS genesis requires verified recovery kit");
+    if (
+      !Array.isArray(body.operationFamilies) ||
+      body.operationFamilies.length !== 1 ||
+      body.operationFamilies[0] !== "pds_relay"
+    )
+      throw new TypeError("PDS initial device operations are invalid");
     assertDistinct(
       [
         body.authorityKeyId,
         body.recoverySigningKeyId,
-        body.recoveryKemKeyId
+        body.recoveryKemKeyId,
+        body.initialDeviceSigningKeyId,
+        body.initialDeviceKemKeyId
       ] as string[],
       "genesis key IDs"
     );
@@ -280,11 +298,14 @@ const validateBody = (kind: string, bodyValue: unknown): void => {
       [
         body.authorityPublicKey,
         body.recoverySigningPublicKey,
-        body.recoveryKemPublicKey
+        body.recoveryKemPublicKey,
+        body.initialDeviceSigningPublicKey,
+        body.initialDeviceKemPublicKey
       ] as string[],
       "genesis public keys"
     );
-    requireUint64(body.initialEpoch, "initialEpoch");
+    if (requireUint64(body.initialEpoch, "initialEpoch") !== "1")
+      throw new TypeError("PDS genesis initial epoch must be 1");
     return;
   }
   if (kind === "add-device" || kind === "recover") {
@@ -303,7 +324,6 @@ const validateBody = (kind: string, bodyValue: unknown): void => {
           ]
         : [
             "deviceId",
-            "revokedDeviceIds",
             "deviceSigningKeyId",
             "deviceSigningPublicKey",
             "deviceKemKeyId",
@@ -327,18 +347,6 @@ const validateBody = (kind: string, bodyValue: unknown): void => {
         body.operationFamilies[0] !== "pds_relay"
       )
         throw new TypeError("PDS device operations are invalid");
-    } else {
-      if (!Array.isArray(body.revokedDeviceIds))
-        throw new TypeError("PDS recovery revoked devices are invalid");
-      const revokedDeviceIds = body.revokedDeviceIds as unknown[];
-      if (
-        revokedDeviceIds.some((deviceId) => typeof deviceId !== "string") ||
-        new Set(revokedDeviceIds).size !== revokedDeviceIds.length ||
-        revokedDeviceIds.join("\0") !==
-          [...(revokedDeviceIds as string[])].sort().join("\0") ||
-        revokedDeviceIds.includes(body.deviceId)
-      )
-        throw new TypeError("PDS recovery revoked devices are invalid");
     }
     assertDistinct(
       [body.deviceSigningKeyId, body.deviceKemKeyId] as string[],
@@ -444,6 +452,21 @@ export const validatePdsGroupStatement = (
   validateBody(draft.kind, draft.body);
   const authorization = own(statement.authorization);
   const authorizationSignature = signatureWrapper(authorization, "signerKeyId");
+  const genesisBody = draft.kind === "genesis" ? own(draft.body) : undefined;
+  const suppliedAuthorizationPublicKey =
+    typeof options.authorizationPublicKey === "string"
+      ? decodePdsBase64url(options.authorizationPublicKey, 32)
+      : Buffer.from(options.authorizationPublicKey);
+  if (suppliedAuthorizationPublicKey.length !== 32)
+    throw new TypeError("PDS authorization public key is invalid");
+  if (
+    genesisBody &&
+    (authorization.signerKeyId !== genesisBody.initialDeviceSigningKeyId ||
+      !suppliedAuthorizationPublicKey.equals(
+        decodePdsBase64url(genesisBody.initialDeviceSigningPublicKey, 32)
+      ))
+  )
+    throw new TypeError("PDS genesis authorization signer is not established");
   if (
     "expectedAuthorizationKeyId" in options &&
     options.expectedAuthorizationKeyId !== undefined &&
@@ -454,7 +477,11 @@ export const validatePdsGroupStatement = (
     !verify(
       null,
       signingBytes("group-statement", "draft", draft),
-      pdsEd25519PublicKey(options.authorizationPublicKey),
+      pdsEd25519PublicKey(
+        genesisBody
+          ? (genesisBody.initialDeviceSigningPublicKey as string)
+          : options.authorizationPublicKey
+      ),
       decodePdsBase64url(authorizationSignature, 64)
     )
   )
@@ -572,7 +599,6 @@ export const validatePdsKeyBundleMetadata = (
         "recipientId",
         "recipientKind",
         "recipientKemKeyId",
-        "recipientKemPublicKeyCommitment",
         "ephemeralPublicKey",
         "nonce",
         "ciphertext",
@@ -588,7 +614,6 @@ export const validatePdsKeyBundleMetadata = (
     )
       throw new TypeError("PDS recipient kind is invalid");
     requireId(envelope.recipientKemKeyId, "recipientKemKeyId");
-    decodePdsBase64url(envelope.recipientKemPublicKeyCommitment, 32);
     decodePdsBase64url(envelope.ephemeralPublicKey, 32);
     decodePdsBase64url(envelope.nonce, 12);
     decodePdsBase64url(envelope.tag, 16);
@@ -617,7 +642,6 @@ export const validatePdsKeyBundle = (
       recipientId: string;
       recipientKind: "device" | "recovery";
       recipientKemKeyId: string;
-      recipientKemPublicKeyCommitment: string;
     }>;
   }
 ): { hash: string; draft: JsonRecord } => {
@@ -641,6 +665,10 @@ export const validatePdsKeyBundle = (
     )
   )
     throw new TypeError("PDS key bundle authorization signature is invalid");
+  if (options.authorityPublicKey && !("authority" in bundle))
+    throw new TypeError(
+      "PDS key bundle authority countersignature is required"
+    );
   if (options.authorityPublicKey && "authority" in bundle) {
     const authority = own(bundle.authority);
     const authoritySignature = signatureWrapper(authority, "keyId");
@@ -673,9 +701,7 @@ export const validatePdsKeyBundle = (
       return {
         recipientId: envelope.recipientId as string,
         recipientKind: envelope.recipientKind as "device" | "recovery",
-        recipientKemKeyId: envelope.recipientKemKeyId as string,
-        recipientKemPublicKeyCommitment:
-          envelope.recipientKemPublicKeyCommitment as string
+        recipientKemKeyId: envelope.recipientKemKeyId as string
       };
     });
     if (canonicalizePdsJson(actual) !== canonicalizePdsJson(expected))
@@ -728,139 +754,6 @@ export const verifyPdsEnrollmentProof = (input: {
     )
   )
     throw new TypeError("PDS device proof of possession is invalid");
-};
-
-export const validatePdsKeyBundleAck = (
-  value: unknown,
-  options: {
-    signingPublicKey: string | Buffer;
-    expectedSignerKeyId: string;
-    expectedGroupId: string;
-    expectedDeviceId: string;
-    expectedEpoch: string;
-    expectedBundleHash: string;
-    expectedRecipientKemKeyId: string;
-    expectedRecipientKemPublicKeyCommitment: string;
-  }
-): { acknowledgedAt: Date } => {
-  const record = own(value);
-  exact(
-    record,
-    [
-      "protocol",
-      "groupId",
-      "bundleHash",
-      "deviceId",
-      "recipientKemKeyId",
-      "recipientKemPublicKeyCommitment",
-      "epoch",
-      "acknowledgedAt",
-      "signature"
-    ],
-    "key bundle acknowledgement"
-  );
-  if (
-    record.protocol !== PDS_PROTOCOL ||
-    record.groupId !== options.expectedGroupId ||
-    record.deviceId !== options.expectedDeviceId ||
-    record.epoch !== options.expectedEpoch ||
-    record.bundleHash !== options.expectedBundleHash ||
-    record.recipientKemKeyId !== options.expectedRecipientKemKeyId ||
-    record.recipientKemPublicKeyCommitment !==
-      options.expectedRecipientKemPublicKeyCommitment
-  )
-    throw new TypeError(
-      "PDS key bundle acknowledgement does not bind transition"
-    );
-  requireId(record.recipientKemKeyId, "recipientKemKeyId");
-  decodePdsBase64url(record.recipientKemPublicKeyCommitment, 32);
-  requireUint64(record.epoch, "epoch");
-  const acknowledgedAt = new Date(
-    pdsIsoMillis(record.acknowledgedAt, "acknowledgedAt")
-  );
-  if (acknowledgedAt.getTime() > Date.now() + PDS_CERTIFICATE_CLOCK_SKEW_MS)
-    throw new TypeError("PDS key bundle acknowledgement is from future");
-  const signature = signatureWrapper(record.signature, "signerKeyId");
-  if (
-    (record.signature as JsonRecord).signerKeyId !== options.expectedSignerKeyId
-  )
-    throw new TypeError("PDS key bundle acknowledgement signer is invalid");
-  const unsigned = { ...record };
-  delete unsigned.signature;
-  if (
-    !verify(
-      null,
-      Buffer.from(
-        `${PDS_PROTOCOL}/key-bundle-ack\n${canonicalizePdsJson(unsigned)}`,
-        "utf8"
-      ),
-      pdsEd25519PublicKey(options.signingPublicKey),
-      decodePdsBase64url(signature, 64)
-    )
-  )
-    throw new TypeError("PDS key bundle acknowledgement signature is invalid");
-  return { acknowledgedAt };
-};
-
-export const validatePdsEpochAck = (
-  value: unknown,
-  options: {
-    publicKey: string | Buffer;
-    expectedGroupId: string;
-    expectedDeviceId: string;
-    expectedSigningKeyId: string;
-    expectedEpoch: string;
-    expectedStatementSequence: string;
-    expectedStatementHash: string;
-  }
-): void => {
-  const record = own(value);
-  exact(
-    record,
-    [
-      "protocol",
-      "groupId",
-      "deviceId",
-      "deviceSigningKeyId",
-      "epoch",
-      "statementSequence",
-      "statementHash",
-      "issuedAt",
-      "signature"
-    ],
-    "epoch acknowledgement"
-  );
-  if (
-    record.protocol !== PDS_PROTOCOL ||
-    record.groupId !== options.expectedGroupId ||
-    record.deviceId !== options.expectedDeviceId ||
-    record.deviceSigningKeyId !== options.expectedSigningKeyId ||
-    record.epoch !== options.expectedEpoch ||
-    record.statementSequence !== options.expectedStatementSequence ||
-    record.statementHash !== options.expectedStatementHash
-  )
-    throw new TypeError(
-      "PDS epoch acknowledgement does not bind pending epoch"
-    );
-  pdsIsoMillis(record.issuedAt, "issuedAt");
-  requireUint64(record.epoch, "epoch");
-  requireUint64(record.statementSequence, "statementSequence");
-  decodePdsBase64url(record.statementHash, 32);
-  const signature = signatureWrapper(record.signature, "signerKeyId");
-  const unsigned = { ...record };
-  delete unsigned.signature;
-  if (
-    !verify(
-      null,
-      Buffer.from(
-        `${PDS_PROTOCOL}/package-ack\n${canonicalizePdsJson(unsigned)}`,
-        "utf8"
-      ),
-      pdsEd25519PublicKey(options.publicKey),
-      decodePdsBase64url(signature, 64)
-    )
-  )
-    throw new TypeError("PDS epoch acknowledgement signature is invalid");
 };
 
 export const certificateIsPdsValid = (
