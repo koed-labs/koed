@@ -32,11 +32,11 @@ Activation artifact records release commit, migration revision, old/new active e
 
 ### Preserve
 
-- Users, identity mappings, API Token verifier records, device identity and credentials.
+- Users, identity mappings, API Token verifier records, device identity, and credentials only for a classified `preserve_canonical` cutover. A disposable reset discards database verifier rows; Local Operator Scripts then provision a replacement local API Token and update managed local configuration/Explorer credentials. Upstream/device credentials survive only after restored principal-binding and verifier-state revalidation; otherwise revoke local secret material and re-enroll/rotate.
 - Teams, Membership, Workspaces, Workspace Access, Share Grants, Capture Policy/Pause and lifecycle/audit state.
 - Captured Sessions, canonical conversation items and immutable observations, source identities/hashes/order/timestamps, historical import checkpoints and provenance. Alpha payload envelopes pass an explicit validated transform into release V1 with old/new hashes and lineage recorded; labels are never rewritten in place.
 - Directed-sync canonical target events where no raw target source exists, logical Memory/replica identity, consent/policy, package/source lineage, upload/inbox/outbox and cursor high-water state.
-- PDS Local Personal Identity bindings, group/User subjects, members, canonical statement chain/head, Key Bundles, membership certificates, Personal Sync Policy, Remote Account Links, freeze/quarantine state, audit, cryptographic epoch and signed source packages/tombstone floors as implemented. Processing cutover never rewrites PDS cryptographic epochs.
+- PDS Local Personal Identity bindings, group/User subjects, members, canonical statement chain/head, Key Bundles, membership certificates, Personal Sync Policy, Remote Account Links, freeze/quarantine state, audit, cryptographic epoch and signed source packages/tombstone floors, if and when KOE-348 / PR #319 merges. Processing cutover never rewrites PDS cryptographic epochs.
 - Curated Memory accepted source/provenance and other records explicitly classified canonical by owner.
 - Encryption envelopes, provider/key references and wrapped material required to decrypt retained canonical data.
 
@@ -61,11 +61,11 @@ Activation artifact records release commit, migration revision, old/new active e
 5. Reconcile encryption/lifecycle/sync high-water state.
 6. Transactionally activate Projection V1 target; stale old Projection and all downstream generations.
 7. Run Projection rebuild by stable owner/session scope.
-8. Activate/run LCM leaf rebuild only from complete active Projection. Then run rollups bottom-up; incompatible children block parents.
-9. Activate/run embeddings for active Memory Events and completed/allowed placeholder Memory Nodes.
-10. Build retrieval indexes/partitions and activate retrieval/reranking epoch only after exact-compatible coverage gate passes.
+8. From complete active Projection, run Memory Event embedding rebuild independently and in parallel with LCM leaf rebuild. Memory Event semantic Recall readiness depends on Projection plus its exact-compatible embedding coverage, not LCM completion.
+9. Run LCM rollups bottom-up after compatible leaves; incompatible children block parents. Run Memory Node embeddings only from completed/allowed placeholder Memory Nodes and complete LCM dependency closure.
+10. Build retrieval indexes/partitions and activate retrieval/reranking epoch per source family only after its exact-compatible coverage gate passes. A profile may publish Memory Event Recall while LCM-derived Memory Node Recall remains rebuilding, when retrieval policy, authorization closure, and status describe that bounded availability.
 11. Refresh capabilities/upstream caches and resume sync intake into non-recallable processing state.
-12. Validate, atomically publish complete generation, then resume Recall, sync publication, import, capture, and LCM background work in that order.
+12. Validate and atomically publish each complete family generation, then resume applicable Recall, sync publication, import, capture, and LCM background work in that order.
 13. Retain rollback generation/backup through soak window; remove only by explicit audited cleanup.
 
 Capture may resume before all historical rebuild finishes only when new canonical rows target active Projection and Recall can isolate complete compatible generations. Team-shared and synchronized scopes remain unavailable until authorization closure and local processing are complete.
@@ -85,7 +85,7 @@ Capture may resume before all historical rebuild finishes only when new canonica
 
 - Prompt User/Operator with exact database/home and classification. Default to safe abort, not deletion.
 - Create encrypted database backup and separate backup of non-derivable device identity, source packages, Project metadata, credentials, and config. Do not copy API Tokens into logs/status.
-- For disposable alpha: stop Desktop/`koed-server`, remove only selected database data, retain device identity/config/secrets, install and clean-start.
+- For disposable alpha: stop Desktop/`koed-server`, remove only selected database data, retain device identity/config/secrets, then reprovision API Token verifier state and atomically replace managed local token/Explorer credentials. Retained old API Token plaintext is invalid after reset. Retain upstream/device credentials only after restored principal-binding revalidation; otherwise revoke local secret material and require enrollment/rotation.
 - For approved preservation: run canonical export/import, verify source counts/hashes and lifecycle state, then rebuild locally in required order.
 - Desktop shows processing progress and permits local capture when safe; stale Memory is not Recall evidence.
 - Rollback: before new canonical writes, stop and restore old backup/runtime. After new writes, restore plus replay canonical delta; automatic downgrade is forbidden.
@@ -129,12 +129,12 @@ Capture may resume before all historical rebuild finishes only when new canonica
 | Scenario                       | Required assertion                                                                                                                                                                                                                                            |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Clean install                  | Migrations produce one active V1 epoch set; no stale rows/jobs; status and capabilities agree; capture through Recall succeeds.                                                                                                                               |
-| Disposable alpha upgrade       | Explicit confirmation and backup precede reset; selected database resets; device/config secrets outside scope survive; fixtures regenerate.                                                                                                                   |
+| Disposable alpha upgrade       | Explicit confirmation and backup precede reset; selected database resets; device/config secrets outside scope survive; local API Token is reprovisioned and managed configuration/Explorer credentials are replaced; fixtures regenerate.                     |
 | Canonical-preserving upgrade   | Canonical counts, identities, closure hashes, ownership, lifecycle, encryption and sync cursors match pre-cutover; derived IDs may change; Recall becomes available only after complete compatible generation.                                                |
 | Interrupted Projection rebuild | Kill before/after batch/publish; lease expires; retry resumes cursor; no duplicate Memory Events/source links; downstream remains blocked until complete.                                                                                                     |
 | Interrupted LCM rebuild        | Leaf retries are idempotent; completed compatible leaves reused; parent waits for all compatible children; model failure visible; no backend LLM fallback.                                                                                                    |
-| Interrupted embedding rebuild  | Partial chunk set never counts as covered; retry atomically replaces complete set; old incompatible partition excluded.                                                                                                                                       |
-| Mixed Projection epochs        | New LCM/embedding consumes active Projection only; stale row excluded or served solely through retained complete old generation.                                                                                                                              |
+| Interrupted embedding rebuild  | Partial chunk set never counts as covered; retry atomically replaces complete set; old incompatible partition excluded; Memory Event coverage/readiness can complete without waiting for LCM-derived Memory Node coverage.                                    |
+| Mixed Projection epochs        | New LCM/embedding consumes active Projection only; stale row excluded or served solely through retained complete old generation; Memory Event embeddings do not wait for LCM completion.                                                                      |
 | Mixed LCM children             | Parent construction blocks and schedules child rebuild; unsupported schema/text fallback cannot claim compatibility.                                                                                                                                          |
 | Incompatible vectors           | Query never compares/fuses mismatched identity; explicit unavailable/degraded result; exact partition works.                                                                                                                                                  |
 | Retrieval/reranker change      | Retrieval epoch can change without vector rebuild when embedding identity unchanged; old result policy is not silently mixed.                                                                                                                                 |
