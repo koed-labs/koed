@@ -49,7 +49,11 @@ type Fixture = {
   };
   signedRecords: Record<string, SignedRecord> & {
     groupStatement: SignedRecord;
+    genesis: SignedRecord;
+    addDevice: SignedRecord;
+    membershipCertificate: SignedRecord;
     keyBundle: SignedRecord;
+    tombstone: SignedRecord;
   };
   hkdfRfc5869Case1: {
     ikmHex: string;
@@ -113,6 +117,11 @@ type Fixture = {
     expiresAt: string;
     maxLifetimeSeconds: string;
     clockSkewSeconds: string;
+  };
+  keyBundleFixture: {
+    plaintextSecretSet: Record<string, string>;
+    recipientPrivateKemKeys: Record<string, string>;
+    derivation: { saltHex: string };
   };
   stateFixtures: {
     replay: {
@@ -248,6 +257,76 @@ const recipientEnvelopeAad = (
     senderDeviceId: envelope.senderDeviceId
   });
 
+const keyBundleInfo = (
+  envelope: {
+    recipientId: string;
+    recipientKind: string;
+    recipientKemKeyId: string;
+  },
+  epoch: string,
+  keyType: string,
+  recipientSnapshotHash: string
+): Buffer =>
+  Buffer.concat([
+    Buffer.from("koed/pds/v1/key-bundle/key\0", "utf8"),
+    pdsUint64be(epoch),
+    Buffer.from(envelope.recipientId),
+    Buffer.from([0]),
+    Buffer.from(envelope.recipientKind),
+    Buffer.from([0]),
+    Buffer.from(envelope.recipientKemKeyId),
+    Buffer.from([0]),
+    Buffer.from(keyType),
+    Buffer.from([0]),
+    Buffer.from(recipientSnapshotHash)
+  ]);
+
+const keyBundleAad = (
+  bundle: {
+    protocol: string;
+    version: string;
+    groupId: string;
+    epoch: string;
+    keyType: string;
+    recipientSnapshotHash: string;
+  },
+  envelope: {
+    recipientId: string;
+    recipientKind: string;
+    recipientKemKeyId: string;
+  }
+): string =>
+  canonicalizePdsJson({
+    protocol: bundle.protocol,
+    version: bundle.version,
+    groupId: bundle.groupId,
+    epoch: bundle.epoch,
+    recipientId: envelope.recipientId,
+    recipientKind: envelope.recipientKind,
+    recipientKemKeyId: envelope.recipientKemKeyId,
+    keyType: bundle.keyType,
+    recipientSnapshotHash: bundle.recipientSnapshotHash
+  });
+
+type GroupStatementFixture = {
+  draft: {
+    sequence: string;
+    previousHash: string | null;
+    body: Record<string, string>;
+  };
+  authorization: { signerKeyId: string };
+};
+
+type MembershipCertificateFixture = {
+  statementSequence: string;
+  statementHash: string;
+  epoch: string;
+  deviceSigningKeyId: string;
+  deviceSigningPublicKey: string;
+  deviceKemKeyId: string;
+  deviceKemPublicKey: string;
+};
+
 const certificateIsAccepted = (
   now: Date,
   issuedAt: Date,
@@ -257,10 +336,12 @@ const certificateIsAccepted = (
 ): boolean => {
   const skew = Number(parsePdsUint64(clockSkewSeconds));
   const maximumLifetime = Number(parsePdsUint64(maxLifetimeSeconds));
+  const lifetime = expiresAt.getTime() - issuedAt.getTime();
   return (
     issuedAt.getTime() <= now.getTime() + skew * 1_000 &&
+    issuedAt.getTime() < expiresAt.getTime() &&
     now.getTime() < expiresAt.getTime() &&
-    expiresAt.getTime() - issuedAt.getTime() <= maximumLifetime * 1_000
+    lifetime <= maximumLifetime * 1_000
   );
 };
 
@@ -514,6 +595,240 @@ describe("Personal Device Sync V1 fixed fixture", () => {
       ).toHaveLength(32);
       expect(envelope.envelopeContext).toBe("koed/pds/v1/key-bundle-envelope");
     }
+  });
+
+  it("decrypts every Key Bundle envelope and rejects altered binding inputs", () => {
+    const bundle = parseCanonicalPdsJson(
+      fixture.signedRecords.keyBundle.canonicalPayloadUtf8
+    ) as {
+      draft: {
+        protocol: string;
+        version: string;
+        groupId: string;
+        epoch: string;
+        keyType: string;
+        recipientSnapshotHash: string;
+        epochKeyCommitment: string;
+        sourceFingerprintKeyCommitment: string;
+        tombstoneFloorKeyCommitment: string;
+        projectAliasKeyCommitment: string;
+        envelopes: Array<{
+          recipientId: string;
+          recipientKind: string;
+          recipientKemKeyId: string;
+          ephemeralPublicKey: string;
+          nonce: string;
+          ciphertext: string;
+          tag: string;
+        }>;
+      };
+    };
+    const genesis = parseCanonicalPdsJson(
+      fixture.signedRecords.genesis.canonicalPayloadUtf8
+    ) as { draft: { body: Record<string, string> } };
+    const add = parseCanonicalPdsJson(
+      fixture.signedRecords.addDevice.canonicalPayloadUtf8
+    ) as { draft: { body: Record<string, string> } };
+    const kemPublicKeys = {
+      "device-initial": genesis.draft.body.initialDeviceKemPublicKey,
+      "device-second": add.draft.body.deviceKemPublicKey,
+      "recovery-fixture": genesis.draft.body.recoveryKemPublicKey
+    };
+    const commitments: ReadonlyArray<readonly [string, string]> = [
+      ["epochSecret", bundle.draft.epochKeyCommitment],
+      ["sourceFingerprintKey", bundle.draft.sourceFingerprintKeyCommitment],
+      ["tombstoneFloorKey", bundle.draft.tombstoneFloorKeyCommitment],
+      ["projectAliasKey", bundle.draft.projectAliasKeyCommitment]
+    ];
+
+    for (const envelope of bundle.draft.envelopes) {
+      const recipientKemPublicKey =
+        kemPublicKeys[envelope.recipientId as keyof typeof kemPublicKeys];
+      const recipientKemPrivateKey =
+        fixture.keyBundleFixture.recipientPrivateKemKeys[envelope.recipientId];
+      if (
+        typeof recipientKemPublicKey !== "string" ||
+        typeof recipientKemPrivateKey !== "string"
+      ) {
+        throw new TypeError("Key Bundle envelope has an unknown recipient");
+      }
+      const privateKey = createPrivateKey({
+        key: okpJwk(
+          "X25519",
+          Buffer.from(recipientKemPublicKey, "base64url").toString("hex"),
+          recipientKemPrivateKey
+        ),
+        format: "jwk"
+      });
+      const ephemeralPublicKey = createPublicKey({
+        key: okpJwk(
+          "X25519",
+          Buffer.from(envelope.ephemeralPublicKey, "base64url").toString("hex")
+        ),
+        format: "jwk"
+      });
+      const sharedSecret = requireNonZeroSharedSecret(
+        diffieHellman({ privateKey, publicKey: ephemeralPublicKey })
+      );
+      const wrappingKey = Buffer.from(
+        hkdfSync(
+          "sha256",
+          sharedSecret,
+          hex(fixture.keyBundleFixture.derivation.saltHex),
+          keyBundleInfo(
+            envelope,
+            bundle.draft.epoch,
+            bundle.draft.keyType,
+            bundle.draft.recipientSnapshotHash
+          ),
+          32
+        )
+      );
+      const decrypt = (
+        aad: string,
+        ciphertext = envelope.ciphertext,
+        tag = envelope.tag
+      ): Buffer => {
+        const decipher = createDecipheriv(
+          "aes-256-gcm",
+          wrappingKey,
+          Buffer.from(envelope.nonce, "base64url")
+        );
+        decipher.setAAD(Buffer.from(aad));
+        decipher.setAuthTag(Buffer.from(tag, "base64url"));
+        return Buffer.concat([
+          decipher.update(Buffer.from(ciphertext, "base64url")),
+          decipher.final()
+        ]);
+      };
+      const plaintext = parseCanonicalPdsJson(
+        decrypt(keyBundleAad(bundle.draft, envelope)).toString()
+      ) as Record<string, string>;
+      expect(Object.keys(plaintext).sort()).toEqual([
+        "epochSecret",
+        "projectAliasKey",
+        "sourceFingerprintKey",
+        "tombstoneFloorKey"
+      ]);
+      expect(plaintext).toEqual(fixture.keyBundleFixture.plaintextSecretSet);
+      const commitmentsMatch = (
+        candidate: readonly (readonly [string, string])[]
+      ): boolean =>
+        candidate.every(([name, commitment]) => {
+          const secret = plaintext[name];
+          return (
+            typeof secret === "string" &&
+            base64url(sha256(Buffer.from(secret, "base64url"))) === commitment
+          );
+        });
+      for (const [name, commitment] of commitments) {
+        const secret = plaintext[name];
+        if (typeof secret !== "string") throw new TypeError(`missing ${name}`);
+        expect(Buffer.from(secret, "base64url")).toHaveLength(32);
+        expect(base64url(sha256(Buffer.from(secret, "base64url")))).toBe(
+          commitment
+        );
+      }
+      expect(commitmentsMatch(commitments)).toBe(true);
+      expect(
+        commitmentsMatch([
+          ...commitments.slice(0, 3),
+          ["projectAliasKey", "not-the-committed-key"]
+        ])
+      ).toBe(false);
+      expect(() =>
+        decrypt(`${keyBundleAad(bundle.draft, envelope)}!`)
+      ).toThrow();
+      const alteredCiphertext = Buffer.from(envelope.ciphertext, "base64url");
+      const firstCiphertextByte = alteredCiphertext[0];
+      if (firstCiphertextByte === undefined)
+        throw new TypeError("empty ciphertext");
+      alteredCiphertext[0] = firstCiphertextByte ^ 1;
+      const alteredTag = Buffer.from(envelope.tag, "base64url");
+      const firstTagByte = alteredTag[0];
+      if (firstTagByte === undefined) throw new TypeError("empty tag");
+      alteredTag[0] = firstTagByte ^ 1;
+      expect(() =>
+        decrypt(
+          keyBundleAad(bundle.draft, envelope),
+          alteredCiphertext.toString("base64url")
+        )
+      ).toThrow();
+      expect(() =>
+        decrypt(
+          keyBundleAad(bundle.draft, envelope),
+          envelope.ciphertext,
+          alteredTag.toString("base64url")
+        )
+      ).toThrow();
+      expect(() =>
+        decrypt(
+          keyBundleAad(bundle.draft, {
+            ...envelope,
+            recipientId: "other-recipient"
+          })
+        )
+      ).toThrow();
+      expect(() =>
+        decrypt(keyBundleAad({ ...bundle.draft, epoch: "3" }, envelope))
+      ).toThrow();
+    }
+  });
+
+  it("verifies the coherent genesis, add-device, Key Bundle, and certificate chain", () => {
+    const genesis = parseCanonicalPdsJson(
+      fixture.signedRecords.genesis.canonicalPayloadUtf8
+    ) as GroupStatementFixture;
+    const add = parseCanonicalPdsJson(
+      fixture.signedRecords.addDevice.canonicalPayloadUtf8
+    ) as GroupStatementFixture;
+    const bundle = parseCanonicalPdsJson(
+      fixture.signedRecords.keyBundle.canonicalPayloadUtf8
+    ) as { draft: { epoch: string } };
+    const certificate = parseCanonicalPdsJson(
+      fixture.signedRecords.membershipCertificate.canonicalPayloadUtf8
+    ) as MembershipCertificateFixture;
+    const initial = genesis.draft.body;
+
+    expect(genesis.draft.sequence).toBe("1");
+    expect(genesis.draft.previousHash).toBeNull();
+    expect(genesis.authorization.signerKeyId).toBe(
+      initial.initialDeviceSigningKeyId
+    );
+    const genesisAuthorizationPlan = fixture.signedRecords.genesis.plans[0];
+    if (genesisAuthorizationPlan === undefined) {
+      throw new TypeError("Genesis has no authorization verification plan");
+    }
+    expect(
+      Buffer.from(genesisAuthorizationPlan.publicKeyHex, "hex").toString(
+        "base64url"
+      )
+    ).toBe(initial.initialDeviceSigningPublicKey);
+    expect(add.draft.sequence).toBe("2");
+    expect(add.draft.previousHash).toBe(
+      fixture.signedRecords.genesis.recordHash
+    );
+    expect(add.draft.body.previousEpoch).toBe("1");
+    expect(add.draft.body.nextEpoch).toBe("2");
+    expect(add.draft.body.keyBundleHash).toBe(
+      fixture.signedRecords.keyBundle.recordHash
+    );
+    expect(bundle.draft.epoch).toBe(add.draft.body.nextEpoch);
+    expect(certificate.statementSequence).toBe(add.draft.sequence);
+    expect(certificate.statementHash).toBe(
+      fixture.signedRecords.addDevice.recordHash
+    );
+    expect(certificate.epoch).toBe(add.draft.body.nextEpoch);
+    expect(certificate.deviceSigningKeyId).toBe(
+      add.draft.body.deviceSigningKeyId
+    );
+    expect(certificate.deviceSigningPublicKey).toBe(
+      add.draft.body.deviceSigningPublicKey
+    );
+    expect(certificate.deviceKemKeyId).toBe(add.draft.body.deviceKemKeyId);
+    expect(certificate.deviceKemPublicKey).toBe(
+      add.draft.body.deviceKemPublicKey
+    );
   });
 
   it("uses exact two-stage group draft and finalized-statement hash", () => {
@@ -823,6 +1138,24 @@ describe("Personal Device Sync V1 fixed fixture", () => {
       certificateIsAccepted(
         issuedAt,
         issuedAt,
+        issuedAt,
+        certificate.clockSkewSeconds,
+        certificate.maxLifetimeSeconds
+      )
+    ).toBe(false);
+    expect(
+      certificateIsAccepted(
+        issuedAt,
+        issuedAt,
+        new Date(issuedAt.getTime() - 1),
+        certificate.clockSkewSeconds,
+        certificate.maxLifetimeSeconds
+      )
+    ).toBe(false);
+    expect(
+      certificateIsAccepted(
+        issuedAt,
+        issuedAt,
         new Date(issuedAt.getTime() + (maximumLifetime + 1) * 1_000),
         certificate.clockSkewSeconds,
         certificate.maxLifetimeSeconds
@@ -858,6 +1191,24 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     ).toBe(states.equivocation.received.expected);
 
     const ack = states.packageAck;
+    const tombstone = parseCanonicalPdsJson(
+      fixture.signedRecords.tombstone.canonicalPayloadUtf8
+    ) as { draft: { activeDeviceSnapshot: string[] } };
+    expect(ack.intendedRecipientSnapshot).toEqual([
+      "device-initial",
+      "device-second"
+    ]);
+    expect(tombstone.draft.activeDeviceSnapshot).toEqual([
+      "device-initial",
+      "device-second"
+    ]);
+    expect(ack.intendedRecipientSnapshot).not.toContain("recovery-fixture");
+    expect(tombstone.draft.activeDeviceSnapshot).not.toContain(
+      "recovery-fixture"
+    );
+    expect(ack.intendedRecipientSnapshot).toContain(
+      ack.revokedAfterUploadRecipient
+    );
     expect(
       cleanupDisposition(
         ack.intendedRecipientSnapshot,

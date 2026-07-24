@@ -193,8 +193,13 @@ or use a differently wrapped statement as log head.
 
 - `genesis`: `authorityKeyId`, `authorityPublicKey`, `recoverySigningKeyId`,
   `recoverySigningPublicKey`, `recoveryKemKeyId`, `recoveryKemPublicKey`,
-  `recoveryKitHash`, **`recoveryKitVerified: true`**, `initialEpoch`, and
-  `initialKeyCommitment`;
+  `recoveryKitHash`, **`recoveryKitVerified: true`**, `initialDeviceId`,
+  `initialDeviceSigningKeyId`, `initialDeviceSigningPublicKey`,
+  `initialDeviceKemKeyId`, `initialDeviceKemPublicKey`, `operationFamilies`,
+  `initialEpoch`, and `initialKeyCommitment`. Genesis authorization is verified
+  with that embedded initial-device signing public key (and its `signerKeyId`); recovery-root
+  verification and the Authority countersignature rules still apply. No
+  unrecorded or out-of-band device key material may satisfy genesis verification;
 - `add-device`: new `deviceId`, signing/KEM key IDs and public keys,
   `operationFamilies`, `previousEpoch`, `nextEpoch`, `keyBundleHash`;
 - `revoke-device`: `deviceId`, `reasonCode`, `revokedAt`, `previousEpoch`,
@@ -232,10 +237,13 @@ material. It has exactly `protocol`, `groupId`, `deviceId`, `deviceSigningKeyId`
 `deviceSigningPublicKey`, `deviceKemKeyId`, `deviceKemPublicKey`, `epoch`,
 `operationFamilies`, `statementSequence`, `statementHash`, `issuedAt`,
 `expiresAt`, and `authoritySignature` (`keyId`, `signature`).
-`authoritySignature` is omitted from membership-certificate bytes. Maximum
-lifetime is 7 days. Receiver permits 5 minutes `issuedAt` skew, requires
-`now < expiresAt`, and rejects stated lifetime over 7 days. Cached expiry
-blocks relay send/receive; local capture/Recall continue.
+`authoritySignature` is omitted from membership-certificate bytes. A certificate
+must reference the exact group statement which establishes its device keys and
+its epoch (genesis for epoch 1, or the matching committed transition thereafter).
+Its lifetime is strictly positive and no more than 7 days: `issuedAt <
+expiresAt`. Receiver permits 5 minutes `issuedAt` skew, requires `now <
+expiresAt`, and rejects zero, negative, or over-7-day stated lifetime. Cached
+expiry blocks relay send/receive; local capture/Recall continue.
 
 A membership/log fork, same sequence with different bytes, invalid prior hash,
 mismatched Authority countersignature, concurrent Authority lease, duplicate
@@ -288,15 +296,38 @@ Each envelope is exactly `recipientId`, `recipientKind` (`device` or
 `tag`, and `envelopeContext`. Its plaintext is JCS object with exactly
 `epochSecret`, `sourceFingerprintKey`, `tombstoneFloorKey`, and
 `projectAliasKey`; all are 32-byte base64url. `envelopeContext` is exactly
-`koed/pds/v1/key-bundle-envelope`; envelope AEAD AAD is JCS of `protocol`,
-`version`, `groupId`, `epoch`, `recipientId`, `recipientKind`,
-`recipientKemKeyId`, `keyType`, and `recipientSnapshotHash`. Envelopes sort by
-`recipientId`; each recipient appears once. Recipient verifies all key lengths,
-commitments, epoch, snapshot, KEM key ID, signatures, and AEAD before marking
-transition usable. Bundle records and envelopes are retained through recovery
-and replay validation; duplicate same hash is idempotent, same transition/epoch
-with different bytes quarantines. Revocation removes future delivery but cannot
-erase already received plaintext.
+`koed/pds/v1/key-bundle-envelope`.
+
+For each envelope, generate a fresh X25519 ephemeral key pair and compute
+`sharedSecret = X25519(ephemeralPrivate, recipientKemPublic)`. Reject an output
+that is not exactly 32 bytes or is all zero bytes. Do not cofactor-adjust,
+retry, or substitute a key. The Key Bundle construction is distinct from the
+package recipient-envelope construction:
+
+```text
+salt = SHA256(UTF8("koed/pds/v1/key-bundle/salt\\0") || UTF8(groupId))
+info = UTF8("koed/pds/v1/key-bundle/key\\0") || uint64be(epoch) ||
+       UTF8(recipientId) || 0x00 || UTF8(recipientKind) || 0x00 ||
+       UTF8(recipientKemKeyId) || 0x00 || UTF8(keyType) || 0x00 ||
+       UTF8(recipientSnapshotHash)
+wrappingKey = HKDF-SHA-256(sharedSecret, salt, info, 32)
+```
+
+`uint64be(epoch)` is the eight-byte unsigned big-endian encoding of the parsed
+canonical decimal epoch. Encrypt the UTF-8 JCS plaintext with AES-256-GCM using
+that exact 32-byte `wrappingKey`, a 12-byte nonce, and a 16-byte tag. Its AAD is
+UTF-8 JCS of exactly `protocol`, `version`, `groupId`, `epoch`, `recipientId`,
+`recipientKind`, `recipientKemKeyId`, `keyType`, and `recipientSnapshotHash`.
+Derivation never includes ciphertext, tag, or a hash containing either.
+
+Envelopes sort by `recipientId`; each recipient appears once. Validate recipient
+identity, kind, membership snapshot, epoch, and KEM key ID before deriving;
+then validate ephemeral/nonce/tag lengths, all-zero shared-secret rejection,
+AEAD, canonical plaintext shape and lengths, commitments, and both signatures
+before marking transition usable. Bundle records and envelopes are retained
+through recovery and replay validation; duplicate same hash is idempotent, same
+transition/epoch with different bytes quarantines. Revocation removes future
+delivery but cannot erase already received plaintext.
 
 ## 5. Closed Captured Session source package
 
