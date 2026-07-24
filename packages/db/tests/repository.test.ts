@@ -30,6 +30,7 @@ import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
+  canonicalizePdsJson,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
@@ -308,7 +309,7 @@ describeDb("memory repository visibility", () => {
       kind: "genesis" | "add-device" | "revoke-device" | "recover",
       sequence: string
     ) =>
-      JSON.stringify({
+      canonicalizePdsJson({
         draft: { protocol: "koed/pds/v1", kind, groupId, sequence, body: {} }
       });
     const created = await repo.createPersonalDeviceGroup({
