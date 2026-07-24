@@ -1,6 +1,6 @@
 # Pre-launch schema reset and processing epochs
 
-Status: Accepted.
+Status: Proposed.
 
 Related decisions:
 
@@ -16,189 +16,223 @@ Supporting plans:
 
 ## Context
 
-Koed is pre-launch. Current internal and alpha data uses accidental labels such as `conversation-projection-v3` and `lcm-codex-summary-json-v3`, while embedding rows use a model key as their version. These labels record development sequence but do not identify all inputs that affect derived meaning. Preserving them would make alpha history part of the external contract without solving future upgrades. Renaming them cosmetically would also fail: PostgreSQL migrations cannot identify Projection, summary, vector, or ranking compatibility.
+Koed is still pre-launch. Current internal and alpha data uses accidental labels such as `conversation-projection-v3`, `lcm-codex-summary-json-v3`, and model-key-as-version embeddings. Those labels record development sequence, not all meaning-affecting inputs.
 
-Canonical source and lineage already cross local, Team Self-Hosted, managed, backup, Directed Hosted Cross-Identity Sync, and future Personal Device Sync boundaries. Derived records are often rebuilt independently on each backend. Koed therefore needs separate compatibility identities, deterministic staleness, and recoverable rebuild work before freezing first-release names.
+Renaming those labels to clean release `v1` baselines is still the right contract choice for first external release, but naming alone does not solve upgrade safety. Koed also cannot require a maintenance window that blocks Recall while derived Memory is rebuilt. The smallest acceptable system therefore needs:
+
+- clean release-V1 names for external payload and processing labels;
+- canonical-versus-derived separation, with canonical source and lineage preserved;
+- fail-closed compatibility identities rather than global app versions;
+- a bounded zero-downtime generation model that keeps one complete published generation servable while a replacement is built.
+
+The Postgres and LCM spikes show that this smaller model is feasible, but they also show concrete constraints the generalized ADR text did not capture precisely enough:
+
+- current `memory_events_source_hash_unique` and `memory_nodes_source_hash_unique` constraints block parallel derived generations;
+- fresh serving output during transition requires bounded coexistence of old and new processing implementations and assets;
+- LCM summary persistence currently happens before node-embedding enqueue outside one durable transaction, so a failure can leave a completed-but-unembedded node absent from pending-summary discovery.
 
 ## Terminology
 
-- **Database schema revision:** ordered Drizzle migration state describing relational storage shape and constraints. Database package owns it.
-- **Payload schema version:** version of one API, protocol, persisted JSON, log, manifest, or structured-record shape. Format owner owns it.
-- **Processing epoch:** named, immutable specification for one derived transformation family. It references a deterministic compatibility identity; it is not a time period or cryptographic key epoch.
-- **Projection epoch:** Processing epoch for transformation from canonical captured source to semantic rows, Memory Events, and source links.
-- **LCM Summary schema:** payload schema for structured LCM output. It says which fields are valid, not how summary was produced.
-- **LCM processing identity:** compatibility identity covering LCM schema, prompt set, model/settings, source-composition contract, compaction, and chunk/reduce algorithm. It excludes per-output source closure and child dependency manifests. Prompt version remains one input and provenance label.
-- **Embedding epoch:** Processing epoch covering every input that can change document or query vectors or their valid comparison space.
-- **Retrieval/reranking epoch:** Processing epoch covering candidate selection, compatible embedding partitions, scoring/fusion, lexical behavior, reranker identity, thresholds, and evidence ordering.
-- **Compatibility identity:** domain-separated SHA-256 of canonical JSON containing complete, explicitly named meaning-affecting inputs and their content digests. Equal identities are compatible; display names alone never prove compatibility.
-- **Active epoch set:** deployment-owned, revisioned selection of active Projection, LCM, embedding, and retrieval/reranking epoch records plus supported read/transition ranges.
-- **Stale derived data:** derived record whose stored compatibility identity differs from required active identity, whose canonical source-closure hash changed, whose dependency is stale/incompatible, or whose identity cannot be verified.
-- **Rebuild job:** durable, leased, resumable, idempotent reprocessing work targeting canonical scope, source-closure hash, and compatibility identity.
+- **Database schema revision:** ordered Drizzle migration state describing relational shape and constraints.
+- **Payload schema version:** version of one API, protocol, persisted JSON, log, manifest, or structured record shape.
+- **Compatibility identity:** domain-separated SHA-256 of canonical JSON naming every meaning-affecting transformation input and its digest.
+- **Generation set:** one coherent published-or-candidate set of derived Projection, LCM, embedding, and retrieval state associated with a generation-set revision.
+- **Active generation:** the published generation set serving Recall now.
+- **Candidate generation:** the replacement generation set being built and validated.
+- **Previous generation:** the retained prior generation set that may become a rollback candidate only after preflight and catch-up.
+- **Compatibility manifest:** the bounded per-family shape `{ current, servable[] }`, where `current` is the installed target identity and `servable` lists the exact published identities the release can still interpret during transition. Membership in `servable` does not publish an incomplete candidate.
+- **Servable window:** the exact set of complete published generation identities a deployment may read during transition. Default steady state is one active identity per family.
+- **Transition revision:** monotonically increasing generation-set control revision used for compare-and-set activation and rollback.
+- **Derived-write fence:** a database-level transition fence that keeps canonical capture open while preventing incompatible derived publication during activation.
+- **Source cohort:** Projection plus Memory Event embedding coverage through a fenced canonical high-water.
+- **LCM cohort:** LCM Placeholder/Summary state plus Memory Node embedding coverage through the same fenced canonical high-water.
+- **`placeholder_ready`:** optional degraded LCM cohort state where every required leaf has a compatible deterministic LCM Placeholder and any published node embeddings are explicitly placeholder-quality evidence.
+- **`complete_summary_ready`:** normal LCM cohort state where every required leaf and parent has compatible completed LCM Summary coverage and exact Memory Node embeddings.
 
-These terms are architecture mechanics, not new User-facing product concepts, so they remain in architecture documentation rather than `CONTEXT.md`.
+These terms are architecture mechanics, not new User-facing product language, so they remain outside `CONTEXT.md`.
 
 ## Decision
 
 ### Reset first-release names
 
-Koed will reset alpha-era **externally consumed payload and user-memory processing labels** to clean V1 names before first external release. This includes the active canonical conversation JSON envelope (alpha V2 becomes release V1), public capability schema (alpha revision 4 becomes release revision 1), Projection epoch, LCM processing/prompt epoch, embedding epoch, and retrieval/reranking epoch display names. Old alpha V1 bytes do not gain compatibility merely because a clean release contract reuses `v1`; disposable stores are reset and the approved preservation path validates/transforms canonical records. Reset implementation is separate follow-up work; this ADR does not rename fields or records.
+Koed will still reset alpha-era externally consumed payload and user-memory processing labels to clean release-V1 baselines before first external release. This includes the active canonical conversation JSON envelope, public capability schema, Projection display label, LCM processing display label, embedding display label, and retrieval/reranking display label.
 
-Already coherent first-version contracts remain V1 and are not renumbered: HTTP route namespace V1, `lcm-semantic-summary-v1`, Directed Hosted Cross-Identity Sync V1, frozen `koed/pds/v1`, source adapter V1 contracts, encryption envelope versions, package schemas, and log schemas. Internal persisted-file revisions such as Project metadata store V3 retain their independent history when they are not external compatibility claims. After cutover, every payload namespace, including capability schema, advances monotonically from its accepted release baseline. Evaluation-only schema versions retain their own history.
+Already coherent first-version contracts remain V1 and are not renumbered, including HTTP route namespace V1, `lcm-semantic-summary-v1`, Directed Hosted Cross-Identity Sync V1, frozen `koed/pds/v1`, source adapter V1 contracts, encryption envelope versions, package schemas, and log schemas.
 
-Rationale: first external Users should see one intentional V1 baseline, not alpha implementation count. Durable compatibility comes from complete identities and immutable epoch records, so future V2 changes do not repeat this reset.
+Old alpha bytes do not become compatible merely because release naming reuses `v1`. Disposable stores are reset; approved canonical preservation validates and transforms canonical payloads with lineage and old/new hash recording.
 
-### Data cutover scope
+### Use a bounded minimum zero-downtime generation model
 
-- Disposable developer, CI, synthetic fixture, benchmark, local alpha, and launch-staging databases are discarded and recreated from clean migration baseline. Operators receive explicit backup and confirmation steps; tooling never guesses that a database is disposable.
-- No arbitrary alpha database compatibility is promised.
-- A specifically approved internal dataset may use a one-time canonical-preservation path. It preserves Users, ownership, Captured Sessions, canonical conversation items/observations, Capture Policy, source identity/order/hash, Project/Workspace/Share Grant relationships, accepted Curated Memory source/provenance, encryption envelopes, logical-memory/replica lineage, consent/lifecycle/tombstones, sync cursors and durable source packages. Alpha canonical payloads are validated and transformed into accepted release V1 envelopes with old/new hashes and lineage recorded; label-only rewriting is forbidden. It does not preserve compatibility claims for derived rows.
-- Memory Events and source links are canonical for current Directed Hosted Cross-Identity Sync package semantics but derived from raw conversation sources in normal local ingestion. One-time tooling classifies them by provenance: source-package canonical events are retained as target canonical inputs; locally projected events are invalidated and rebuilt from retained raw source.
-- Projection outputs, locally generated Memory Events, Memory Nodes, LCM Placeholders/Summaries, embeddings, vector/index state, graph-derived state, retrieval caches, derived readiness counts, and old rebuild queue work are invalidated and rebuilt.
-- For approved canonical preservation, device identity, credentials, API Token verifier rows, encryption metadata, membership/lifecycle state, Team authorization, and source-owned sync lineage are preserved; processing cutover does not regenerate them.
-- A disposable database reset discards API Token verifier rows. After clean database creation, Local Operator Scripts must provision a new local API Token and atomically update managed local configuration/Explorer credentials; retained alpha plaintext tokens are invalid. Preserve an upstream or device credential only when its principal binding and verifier state are restored and authenticated revalidation succeeds; otherwise revoke local secret material and require enrollment/rotation. Processing tooling never silently rebinds a credential principal.
+Koed will use one bounded active/candidate/previous generation-set model rather than the more generalized independent family-transition system.
 
-### Separate ownership namespaces
+Normative rules:
 
-| Namespace                 | Owner                                          | Change trigger                                                                      | Compatibility effect                                                                                 |
-| ------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Database revision         | `packages/db`                                  | relational shape/constraint change                                                  | migration required; does not imply reprocessing                                                      |
-| Payload schema            | API/protocol/file/log owner                    | serialized shape/validation change                                                  | reader negotiation/migration required; may or may not imply reprocessing                             |
-| Projection epoch          | DB Projection + Worker                         | source interpretation, policy, ordering, grouping, tokenization, source composition | stale Projection family and downstream dependants                                                    |
-| LCM schema                | `@koed/core` + API                             | structured summary shape                                                            | parser/rollup compatibility; separate from prompt/model                                              |
-| LCM processing            | MCP LCM Summary Service + DB compactor         | prompt/model/settings/source composition/compaction/reduction                       | stale summary and dependent rollups/embeddings                                                       |
-| Embedding epoch           | Embedding Service + Worker + DB                | artifact/tokenizer/dimensions/prefix/chunk/pooling/normalization behavior           | vector comparison partition changes                                                                  |
-| Retrieval/reranking epoch | API/MCP retrieval + Embedding Service reranker | candidate/filter/fusion/scoring/reranker/evidence behavior                          | query and result-policy compatibility changes; vectors may remain valid if embedding epoch unchanged |
+- Canonical capture remains open during transition when the source payload contract remains supported.
+- Recall serves only a complete published generation set inside the servable window.
+- Bounded Recall freshness lag during the derived-write fence is explicit and acceptable if Recall remains available and catches up after activation.
+- Every activation and rollback uses a compare-and-set transition revision on one authoritative database control row.
+- The database control row records the active, candidate, and previous generation roles, the servable window, the fenced canonical high-water, and the generation-set revision.
+- Each family compatibility manifest uses `{ current, servable[] }`. Candidate output remains non-servable until its cohort coverage and publication gate passes, even when its identity is `current`.
+- A deployment retains and routes at most two distinct processing/asset versions: old and new. Active, candidate, and previous are lifecycle roles, not permission to introduce a third implementation version; starting a transition that would require one must first retire the older rollback candidate.
+- Generation-aware Memory Event keys, Memory Node keys, source links, embedding partitions, invalidation paths, and read paths are required. Parallel generations are not possible with the current global `source_hash` uniqueness shape.
+- Authorization, Share Grants, Team Membership, Workspace Access, lifecycle state, deletion floors, replica readiness, and sync lineage remain authoritative canonical state and must propagate across every retained generation.
+- Rollback is not an unconditional pointer flip. It requires coverage, lifecycle, asset, and catch-up preflight against the current canonical high-water.
 
-No global application version replaces these namespaces.
+### Separate database, payload, processing, and cryptographic namespaces
+
+Koed keeps separate ownership and upgrade rules for:
+
+- database revisions;
+- payload schemas;
+- processing compatibility identities and generation sets;
+- cryptographic epochs such as PDS `current_epoch`.
+
+No global application version replaces those namespaces. PDS governance state from KOE-348 / PR #319 remains separate, proposed, and must be revalidated against resulting `main` after merge. This PR does not change PR #319's scope.
 
 ### Deterministic compatibility identities
 
-Every epoch record stores `family`, immutable display name, canonical specification JSON, `compatibility_id`, creation/release provenance, and lifecycle state. Canonical JSON uses sorted keys, explicit nulls where meaningful, content digests rather than mutable paths, no environment-dependent ordering, and domain `koed/compatibility/<family>/v1`. `compatibility_id = sha256(domain || 0x00 || canonical-json(specification))`.
+Every immutable family definition stores:
 
-Minimum specifications:
+- family;
+- display name;
+- canonical specification JSON;
+- compatibility identity;
+- creation and release provenance;
+- lifecycle state.
 
-- **Projection:** source payload schema and adapter/parser contracts; canonical normalization and identity rules; Projection policy snapshot digest; ordering, terminal evidence and sealing rules; semantic unit and manifest schema; role/type mapping; content normalization; token counter/model; bundle and hard split limits/overlap; embedding/LCM inclusion selection; implementation algorithm digest.
-- **LCM:** structured output schema; exact digest and declared version of base, leaf, rollup, partial, and reduce prompts after override resolution; AI Client provider; model identity boundary; reasoning effort and meaning-affecting generation settings; tokenizer; prompt budget; compaction thresholds/fanout/tail; placeholder, chunking and reduction algorithm; redaction/source serialization; implementation algorithm digest.
+Canonical JSON uses sorted keys, explicit nulls where meaningful, content digests instead of mutable paths, and family-specific domains such as `koed/compatibility/projection/v1`.
 
-  Per-output lineage is not part of the LCM compatibility identity: each output and job stores its source-closure hash plus ordered source manifest; each rollup also stores an ordered child dependency manifest containing child compatibility IDs and closure hashes. This permits one active LCM identity while preserving deterministic dependency checks.
+Minimum meaning-affecting inputs:
 
-  A provider with immutable revision metadata stores provider, requested model name, resolved immutable revision, and revision source. If a provider exposes only a mutable alias, the canonical specification records that alias with explicit `null` revision and `model_identity_kind: "mutable_alias"`. Same alias is accepted compatibility boundary only; output must not claim exact model reproducibility, status exposes this limitation, and an Operator must activate a new epoch when provider change evidence or resolved metadata changes. Missing both immutable revision and a declared alias aborts processing rather than guessing.
+- **Projection:** source payload contract, adapter/parser contract, policy snapshot digest, ordering and sealing rules, semantic unit rules, token counter/model, source composition, split limits/overlap, and implementation digest.
+- **LCM:** structured output schema; prompt bundle digests after override resolution; provider; model identity or explicit mutable-alias boundary; reasoning settings; tokenizer; prompt budget; placeholder, chunk/reduce, and compaction rules; redaction/source serialization; implementation digest.
+- **Embedding:** exact model artifact digest; tokenizer/config digest; dimensions; output precision; document/query prefixes; source text composition; chunking/overlap; pooling; normalization; runtime behavior that changes vectors; implementation digest.
+- **Retrieval/reranking:** query embedding identity, allowed document partitions, authorization and lifecycle filters, search-domain behavior, metric and score transforms, candidate stages, lexical configuration, fusion/fallback policy, reranker identity, and final evidence ordering.
 
-- **Embedding:** exact model artifact digest; tokenizer artifact/config/special-token digest; dimensions and output precision; document/query role and instruction/prefix bytes; source text composition; semantic chunking/overlap and transport reassembly; pooling; normalization; quantization/runtime settings only where they alter vector values; implementation algorithm digest.
-- **Retrieval/reranking:** required query embedding compatibility identity and allowed document embedding partitions; authorization/lifecycle/source filters; search domain/scope interpretation; vector metric/score transform; candidate stages and limits; lexical tokenizer/config; score thresholds; fusion/dedup/diversification/fallback; exact reranker artifact/tokenizer/prompt/truncation/pooling; final evidence ordering and citation expansion rules.
+LCM source closure and child dependency manifests are not part of the family compatibility identity. They remain per-output lineage and dependency fields so one active LCM identity can cover many outputs without making every summary its own epoch.
 
-Derived rows store family compatibility ID and source-closure hash. Jobs store target ID and closure hash. Completion uses compare-and-set: if active target or source closure changed, result is not published and new work is reconciled.
+If a provider exposes only a mutable alias, the specification stores that alias with explicit null immutable revision and `model_identity_kind: "mutable_alias"`. That alias becomes the accepted compatibility boundary only. Output must not claim exact model reproducibility. Missing both immutable revision metadata and a declared alias aborts processing.
 
-### Active epoch-set source of truth
+### Publish two dependency-ordered cohorts under one generation-set revision
 
-Database `active_epoch_set` state is authoritative for every running deployment profile. Immutable epoch definitions are release-owned seed data; active selection is a transactional database record with monotonically increasing revision and audit provenance. Environment and prompt/model asset resolution produce a candidate specification at startup. API, Worker, MCP Server, and Embedding Service must agree with database active identities before processing or serving affected Recall.
+Koed will publish two explicit activation cohorts inside one generation-set revision:
 
-- Developer and local-personal profiles seed from installed release plus resolved local assets. Operator-approved prompt/model override activates a new immutable epoch, not silent mutation.
-- Private VPS, Team Self-Hosted, and managed profiles activate through migration/release orchestration before workers publish new output.
-- Cached upstream capabilities advertise capability schema, protocol ranges, active epoch-set revision/identities, supported source payload ranges, and whether remote processing can rebuild accepted canonical packages. KOE-348's `memory.personalDeviceSync` governance availability remains distinct from package transport, materialization, derived readiness, and Recall availability.
-- Release version is diagnostic provenance only.
+1. **Source cohort:** Projection + Memory Event embeddings.
+2. **LCM cohort:** LCM Placeholders/Summaries + Memory Node embeddings.
 
-One deployment may retain old immutable epoch definitions and records during bounded transition, but has one active write target per family. A retrieval epoch may explicitly query multiple **compatible** embedding epochs as separate partitions only when its specification defines calibrated fusion. Default V1 supports exact one-partition identity.
+Rules:
 
-### Staleness and rebuild orchestration
+- Source cohort publication must not be accidentally blocked on AI Client throughput.
+- Both cohorts are recorded under the same generation-set control row and transition revision. Each dependency-ordered cohort publication is a compare-and-set update of that revision; there is no independently mutable per-family activation graph.
+- Source cohort readiness requires complete candidate Projection coverage through the fence high-water and exact-compatible Memory Event embedding coverage or explicit policy exclusion.
+- LCM cohort readiness uses one of two explicit states only: `placeholder_ready` or `complete_summary_ready`.
+- `placeholder_ready` is optional degraded evidence, not LCM Summary evidence. Recall must label it degraded/pending if it is exposed at all.
+- `complete_summary_ready` is the normal publishable state.
+- Parent rollups must not be built as complete rollups from placeholder children. Parent rollups require compatible completed children unless a future separately designed degraded hierarchy is accepted.
+- Publishing Source before LCM makes the new Source cohort available while candidate LCM remains unavailable or explicitly degraded; Recall must not combine it with the old LCM cohort in one Evidence Bundle.
+- If launch cannot safely expose source-ready plus LCM-unavailable behavior in query policy and status, external publication may remain monolithic even though the internal implementation still tracks both cohorts separately.
 
-Staleness is computed, not remembered:
+### Repair the current LCM completion-to-embedding durability gap
 
-1. Compare derived compatibility ID and source-closure hash with active required identity and canonical dependencies.
-2. Mark stale family and recursively stale dependants: Projection before LCM/embedding; child LCM before parent rollup; summary text before node embedding; embedding before retrieval readiness.
-3. Upsert deterministic rebuild job key `(family, scope, target_compatibility_id, source_closure_hash)`.
-4. Claim with token and bounded renewable lease. Check pause/cancel and source/target identity before each batch and publish.
-5. Write replacement generation separately. Publish atomically only when complete; retain old generation for rollback until checkpoint and backup policy permit deletion.
-6. Retry transient failures with bounded backoff. Permanent incompatibility enters failed/quarantined state and remains excluded.
+The current production path persists an LCM Summary and then enqueues Memory Node embedding outside the same durable transaction. A failure after persistence but before enqueue can leave a completed node absent from pending-summary discovery and absent from node-embedding coverage.
 
-Jobs expose total/discovered/completed/failed/skipped counts, bytes/items where safe, current phase, cursor/high-water mark, lease/retry, timestamps, redacted error class, and dependency blockage. Operations support pause, resume, retry, cancel-before-publish, and rollback to a complete retained compatible generation. Pause does not make stale data recallable.
+The minimum accepted system therefore requires:
 
-### Mixed-version behavior
+- a durable `summary_ready -> node_embedding_pending` outbox or equivalent transactional record;
+- a reconciliation path that can discover and repair lost handoff after restart or outage;
+- exact activation coverage checks that treat missing candidate node embeddings as not ready, even when summary persistence succeeded.
 
-- Unknown payload/protocol/schema versions fail at intake before Projection. Raw quarantine may retain encrypted bytes and redacted provenance if policy permits.
-- A stale or unknown Projection identity cannot feed new LCM or embedding work.
-- LCM parents require every child to match explicitly accepted LCM schema and processing identity. Mixed or unknown children block parent construction and schedule child rebuild; no text-only fallback asserts compatibility.
-- Vector distance is computed only inside an exact embedding compatibility partition. Incompatible vectors are never compared in one index query, score list, reranker batch, or fused result unless a future retrieval epoch defines validated calibration between named partitions.
-- Query embedding must match selected document partition. Missing compatible partition yields explicit degraded/unavailable result, not lexical/vector substitution unless active retrieval epoch explicitly allows that fallback.
-- Authorization, Team Membership, Workspace Access, Share Grants, lifecycle, entitlement, and replica readiness are enforced before ranking regardless of epoch.
-- During rolling upgrade, canonical ingest may continue only if active source payload version is supported. A deployment serving Recall uses last complete compatible generation or reports processing/unavailable. It never serves partial new generation.
+### Activation and read behavior
 
-### Backup, rollback, interruption, and restore
+Each cohort activation uses one compare-and-set transaction against the shared transition revision that:
 
-Backup captures canonical rows, epoch definitions/active revisions, derived generation metadata, rebuild jobs/cursors, invalidation state, sync lineage/high-water marks, lifecycle/tombstone floors, and encryption metadata. Redis remains non-authoritative.
+- locks the generation-set control row;
+- records the fence high-water;
+- verifies expected transition revision and retained manifests;
+- verifies source and, where applicable, LCM cohort coverage through the fence high-water;
+- publishes the dependency-eligible cohort, updates cohort state and the servable window, and switches generation roles when the accepted publication policy is complete;
+- records the new revision and audit provenance.
 
-Before activation, Operator takes and verifies backup. Old complete derived generation remains rollback candidate until new generation validates. Database schema rollback is supported only where migration tooling declares it safe; otherwise rollback restores pre-cutover backup into clean database. Canonical writes made after activation cannot be discarded by restoring old backup without an explicit replay/reconciliation plan.
+Recall uses only one coherent published cohort selection at a time. It never mixes active and candidate Projection, LCM, or embeddings in one Evidence Bundle, and it never combines a newly published Source cohort with an old LCM cohort. Unknown or incompatible payloads, summaries, vectors, closures, or capability state fail closed.
 
-After restart or restore, services first reconcile database migration and cryptographic lifecycle high-water state, then active epoch set, canonical source closure, and job leases. Expired leases are reclaimed. Completion cursors never regress. Restored derived rows with old or unverifiable identity become stale; valid complete matching rows may be reused. Restored sync replicas remain non-recallable until source/target cursors, deletion floors, freshness, and active local derivations reconcile.
+### Rollback contract
 
-### Sync, sharing, and source lineage
+`previous` is a retained rollback candidate, not a guaranteed rollback target.
+
+Rollback requires:
+
+- retained old prompt bundle, model/settings boundary, tokenizer, and implementation assets;
+- source, lifecycle, and authorization coverage through a new rollback fence;
+- exact Projection, LCM, and embedding catch-up for the retained generation;
+- compare-and-set publication of that now-complete retained generation.
+
+Rollback must not regress canonical source, deletion floors, revocation state, sync cursors, or authorization closure.
+
+### Remote compatibility and sync
 
 - Directed Hosted Cross-Identity Sync and Personal Device Sync remain distinct protocols.
-- Sync packages preserve their own payload/protocol version, origin/source identity, source-closure hash, sequence/cursor, consent, lifecycle, signature/checksum, and encryption/key metadata.
-- PDS governance state proposed by KOE-348 / PR #319—Local Personal Identity bindings, group statements/head, membership certificates, Key Bundles, Personal Sync Policy, Remote Account Links, cryptographic `current_epoch`, freeze/quarantine state, and audit—becomes canonical security/lifecycle control only when that work merges. Cutover and restore preserve it and never rewrite its cryptographic epoch to match a Processing epoch.
-- PDS V1 replicates origin-signed raw closed-Session closure and excludes derived data. Receiving device negotiates exact `koed/pds/v1`, validates lineage, then uses its local active epoch set. Processing identity need not equal sender because derivation is local; source payload support and closure semantics must be compatible.
-- Directed Hosted Cross-Identity Sync V1 retains canonical event package semantics. Target advertises package support and active local processing readiness; target derivations are local and not copied back.
-- Team sharing changes authorization only. Team-visible derived records must have compatible identity and complete source authorization closure. Relabeling personal derived rows is forbidden.
-- Export/import preserves canonical lineage and payload schema. Derived exports, if diagnostic, carry compatibility identity and are never accepted as canonical upgrade shortcuts.
-- API Tokens remain personal-memory credentials. Epoch negotiation grants no Team authority.
+- Capability discovery publishes supported source/payload/protocol ranges and coarse derivation readiness.
+- PDS peers do not need matching local processing identities. They need compatible source/package contracts and local derivation readiness.
+- Team sharing changes authorization, not ownership. Any published generation must enforce authorization and lifecycle closure before ranking or expansion.
 
-KOE-349 consumes this contract only after KOE-348 / PR #319 merges and this inventory is revalidated against resulting `main`: signed PDS source packages carry frozen protocol/payload/closure lineage; receivers fail closed on unsupported source contracts and rebuild derived data under local active epochs. Acceptance of this ADR removes KOE-344's architecture-design block, not implementation or merged-baseline gates, on KOE-349's package-contract merge. KOE-359 and KOE-363 still block end-to-end PDS materialization/launch, while KOE-361 and KOE-357 block making a materialized replica recallable. Package intake must remain quarantined/non-recallable until those gates report ready.
+### Minimal Operator-visible behavior for V1
 
-### Operator-visible behavior
+Launch scope is intentionally narrow. Operator surfaces must provide:
 
-`koed-server status --json`, `doctor --json`, authenticated operations status, and Desktop consume one redacted status contract containing active epoch-set revision, family state, stale/rebuild counts, progress, pause/failure/retry state, last successful checkpoint, rollback availability, and remote compatibility. Readiness distinguishes:
+- read-only current/candidate/previous generation-set state;
+- per-cohort coverage, lag, retry, blocked, and failure state;
+- explicit degraded-versus-complete LCM readiness;
+- rollback preflight status;
+- authenticated retry/resume controls where needed.
 
-- core process/dependency readiness;
-- canonical ingest availability;
-- Recall availability for complete compatible generation;
-- degraded rebuilding state;
-- blocked incompatible state.
-
-Status never includes Memory text, prompts containing Memory, vectors, raw source IDs, package bytes, credentials, or key material. Operator controls are authenticated, audited, idempotent, and scoped by deployment/family/owner where supported.
+This ADR defers rich pause/cancel/Desktop transition controls, arbitrary per-family activation, calibrated multi-epoch fusion, generalized restoration of in-flight optimization, and arbitrary live overrides.
 
 ## Consequences
 
 Benefits:
 
-- Clean intentional V1 external names without preserving accidental alpha sequence.
-- Deterministic stale detection and fail-closed mixed-version operation.
-- Canonical source survives independent local rebuild and sync.
-- Prompt/model/config changes become observable processing changes.
-- Interrupted rebuild, restore, and rolling upgrade have explicit state.
+- clean intentional release-V1 names without preserving accidental alpha sequence;
+- no maintenance-window Recall outage requirement for supported upgrades;
+- explicit bounded freshness lag rather than silent mixed-generation serving;
+- Source-cohort Recall can progress without waiting on AI Client-bound LCM throughput;
+- rollback, authorization, and retained-asset expectations are explicit.
 
 Costs:
 
-- Epoch registry, generation metadata, capability negotiation, rebuild workers, and Operator controls require several implementation seams.
-- Rebuilds consume CPU, AI Client LCM capacity, storage, and time.
-- Some internal alpha data is discarded; approved preservation needs one-time tooling.
-- Exact artifact/tokenizer identity requires stronger build and model manifests.
+- generation-aware schema and query changes are required across Memory Events, Memory Nodes, links, embeddings, invalidation, and reads;
+- old and new processing implementations and assets must coexist through transition and rollback;
+- LCM needs durable outbox/reconciliation work in addition to polling and retry;
+- richer generalized orchestration is deferred rather than solved here.
+
+## Deferred by this ADR
+
+This ADR does not accept the following for V1:
+
+- rich pause/cancel/Desktop transition controls;
+- arbitrary per-family live activation;
+- calibrated multi-epoch fusion across incompatible partitions;
+- generalized restoration of every in-flight transition optimization after restore;
+- arbitrary live prompt/model override activation;
+- degraded placeholder-only parent hierarchies.
 
 ## Alternatives considered
 
-### Preserve alpha labels forever
+### Keep the current versioning model
 
-Rejected. It avoids rename tooling but exposes implementation history and still lacks complete compatibility identity.
+Rejected. It does not detect stale derived Memory deterministically and does not satisfy the no-maintenance-window Recall requirement.
 
-### Rename labels to V1 only
+### Cosmetic rename to V1 without generations
 
-Rejected. Cosmetic names do not detect stale Projection, summaries, vectors, or ranking behavior.
+Rejected. Clean names alone do not prevent incompatible Projection, LCM, embedding, or retrieval state from being reused silently.
 
-### One global application/data version
+### Generalized independent family-transition system now
 
-Rejected. Independent payload, Projection, LCM, embedding, retrieval, cryptographic, and database changes have different compatibility and rollback boundaries.
-
-### Use only PostgreSQL migrations
-
-Rejected. A migration records storage shape, not model artifacts, prompts, tokenizers, policy, source composition, or retrieval semantics.
-
-### Migrate every alpha-derived row in place
-
-Rejected. Meaning cannot be proved from incomplete historical metadata. Rebuilding from canonical source is safer and cheaper pre-launch.
+Deferred. It is broader than needed for the minimum no-outage contract and introduces more control-plane surface than the team has explicitly approved.
 
 ### Always discard all data
 
-Rejected. Disposable alpha stores should be reset, but canonical source lineage, identity, authorization, lifecycle, encryption, and sync high-water records need an explicit preservation path for approved internal validation and future production upgrades.
+Rejected. Disposable alpha stores should reset, but canonical source, lineage, authorization, lifecycle, encryption, and sync state need an explicit preservation path.
 
-### Replicate derived data to avoid rebuild
+### Replicate derived data across backends
 
-Rejected as default. It couples backends to sender processing and risks incompatible vectors/summaries. Explicit source-owned non-deterministic artifacts may be added only through versioned protocol decisions; PDS V1 excludes LCM Summaries.
+Rejected as default. It couples receivers to sender processing identities and conflicts with the local-derivation rule for PDS and Directed Hosted Cross-Identity Sync.

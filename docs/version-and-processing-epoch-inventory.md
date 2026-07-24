@@ -13,6 +13,7 @@ Repository searches covered `schemaVersion`, `schema_version`, `*Version`, `*_ve
 - Drizzle migration revision, payload schema version, and processing epoch are separate namespaces.
 - Canonical source identity, content hash, ordering, lineage, consent, lifecycle, encryption metadata, and sync high-water state survive movement and restore.
 - Projection rows, Memory Nodes, embeddings, indexes, and retrieval caches are local derived data. Sync does not promote them to canonical source.
+- Parallel active/candidate generations require generation-aware keys, relationships, invalidation, and read paths for Memory Events, Memory Nodes, source links, and embeddings. Current global `source_hash` uniqueness is insufficient.
 - Accepted non-deterministic source-owned artifacts, when a protocol explicitly permits them, carry source-closure and compatibility identity. Personal Device Sync V1 currently excludes LCM Summaries.
 - Compatibility uses canonical, domain-separated hashes of complete meaning-affecting inputs, never a global application version or a display label alone.
 - Unknown identity components, unsupported payload versions, incompatible child summaries, and incompatible vectors fail closed. They are not silently coerced, compared, fused, or rolled up.
@@ -61,6 +62,12 @@ Repository searches covered `schemaVersion`, `schema_version`, `*Version`, `*_ve
 | Prompt/frontmatter and worker payload versions: most V1; Memory Answer `memory-answer-v1` and worker prompt V3; LCM prompt V3; LCM judge V2; session title V1 | prompt loader, MCP, evals; source assets, worker payload and persisted provenance | prompt files/overrides and worker write effective version; MCP/evals read                                                                                | Prompt bytes, required placeholders/output schema and worker envelope. Version string alone is not digest. Reset first-release processing prompt labels atomically; retain independent worker payload/eval schema. Store asset digest in compatibility identity. Prompt/worker/eval tests.              |
 | Evaluation/fixture schemas `lcm-summary-semantic-judge-v2`, `curated-memory-semantic-judge-v1`, worker/eval V1, `team-saas-fixture-v1`/`fixture-v1`           | `packages/evals`, Team fixture scripts; benchmark/synthetic payload               | judge prompts/runners and fixture loader write/read                                                                                                      | Scoring and deterministic synthetic truth contract, not runtime Memory compatibility. Retain independently; regenerate only for reviewed contract changes after cutover. Eval, fixture, launch and benchmark tests.                                                                                     |
 
+## Current generation blockers and defects
+
+- **Parallel derived generations are blocked by current uniqueness rules.** The live schema uses global partial unique indexes `memory_events_source_hash_unique` on `memory_events(source_hash)` and `memory_nodes_source_hash_unique` on `memory_nodes(source_hash)`. Equivalent active/candidate rows therefore cannot coexist today. Follow-up work must introduce generation-aware keys and update related Memory Event/Memory Node identifiers, `memory_node_sources`, child relationships, embedding uniqueness/foreign keys, invalidation, export/inspection paths, and Recall queries.
+- **Current LCM completion durability is incomplete.** The API currently persists the LCM Summary and then enqueues Memory Node embedding outside the same durable transaction. A failure between those steps can leave a completed-but-unembedded node absent from pending-summary discovery. The release-V1 design therefore needs a durable summary-ready to node-embedding-pending outbox or equivalent reconciler before exact activation coverage can be trusted.
+- **Old/new processing coexistence is a real runtime requirement.** Prompt bundle/model/settings/tokenizer/algorithm routing is currently resolved as one mutable service configuration at a time. Bounded zero-downtime transition requires retaining and routing the exact old and new processing assets through activation and rollback.
+
 ## Retrieval and model behavior without complete identifiers today
 
 These active meaning-affecting inputs are configuration or code constants, but currently lack durable epoch identity:
@@ -87,8 +94,9 @@ Current embedding health reports model key, repository/file, dimensions, normali
 ## Inventory conclusions
 
 1. Current `conversation-projection-v3`, LCM prompt V3, and model-key-as-embedding-version are alpha implementation labels, not durable compatibility identities.
-2. Current automatic recovery handles pending raw Projection, missing embeddings, queue loss, selected invalidations, and LCM placeholders. It does not deterministically stale every completed derived row after meaning-affecting changes.
-3. Current LCM child fallback can preserve text but not prove semantic compatibility. Future rollups must require child compatibility identity.
-4. Current exact model/dimension checks prevent some vector errors, but not tokenizer, artifact, query-prefix, pooling, normalization, or chunking mismatch.
-5. Capability cache already provides fail-closed freshness and schema handling, but it does not advertise active/supported processing compatibility.
-6. Canonical lineage is strongest in raw ingestion, historical import, sync cursors, PDS signed closure, encryption envelopes, and device identity. Reset work must preserve those boundaries and rebuild local derivations.
+2. Current automatic recovery handles pending raw Projection, missing embeddings, queue loss, selected invalidations, and LCM placeholders. It does not deterministically stale every completed derived row after meaning-affecting changes or repair every lost LCM completion-to-embedding handoff.
+3. Current global `memory_events_source_hash_unique` and `memory_nodes_source_hash_unique` constraints prevent parallel active/candidate generations. Release-V1 transition needs generation-aware keys, relationships, invalidation, and read paths.
+4. Current LCM child fallback can preserve text but not prove semantic compatibility. Future rollups must require compatible completed child identity, and placeholder children must not imply complete parent readiness.
+5. Current exact model/dimension checks prevent some vector errors, but not tokenizer, artifact, query-prefix, pooling, normalization, or chunking mismatch.
+6. Capability cache already provides fail-closed freshness and schema handling, but it does not advertise active/supported processing compatibility or bounded generation readiness.
+7. Canonical lineage is strongest in raw ingestion, historical import, sync cursors, PDS signed closure, encryption envelopes, and device identity. Reset work must preserve those boundaries and rebuild local derivations.
