@@ -229,10 +229,11 @@ post-transition active device and recovery recipient**. Authority may countersig
 statement exists so the author can compute the finalized `keyBundleHash`; this
 preparation step changes no group, membership, epoch, or policy state and does
 not persist the bundle as active. The author then signs the transition statement
-which binds that exact finalized hash. Authority revalidates and commits the
-finalized bundle and statement in one transaction. No transition is active, no membership
-certificate for `nextEpoch` is issued, and all package exchange is frozen until
-that transaction commits and every required envelope validates. A missing,
+which binds that exact finalized hash. Authority revalidates and commits the finalized bundle, statement, and
+enrollment challenge consumption in one transaction. No transition is active,
+no membership certificate for `nextEpoch` is issued, and all package exchange
+is frozen until that transaction commits and every required envelope validates.
+A missing,
 invalid, duplicate, unordered, wrong-epoch, or incomplete bundle freezes
 exchange; it is not a partial-membership state. Revoked recipients are absent
 from post-transition snapshot. Existing members and recovery recipient receive
@@ -249,8 +250,14 @@ must reference the exact group statement which establishes its device keys and
 its epoch (genesis for epoch 1, or the matching committed transition thereafter).
 Its lifetime is strictly positive and no more than 7 days: `issuedAt <
 expiresAt`. Receiver permits 5 minutes `issuedAt` skew, requires `now <
-expiresAt`, and rejects zero, negative, or over-7-day stated lifetime. Cached
-expiry blocks relay send/receive; local capture/Recall continue.
+expiresAt`, and rejects zero, negative, or over-7-day stated lifetime. The
+certificate renewal operation issues a replacement for a current active member;
+clients renew with no more than 24 hours remaining and use the same operation to
+repair a missing certificate after a committed transition. Renewal rechecks the
+exact current group head, epoch, Authority key, member keys, and active status
+under the group transition lock before replacing the member/epoch certificate.
+A stale-head renewal is rejected so the caller retries against the new head.
+Cached expiry blocks relay send/receive; local capture/Recall continue.
 
 A membership/log fork, same sequence with different bytes, invalid prior hash,
 mismatched Authority countersignature, concurrent Authority lease, duplicate

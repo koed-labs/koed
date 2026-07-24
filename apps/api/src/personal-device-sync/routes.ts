@@ -224,55 +224,61 @@ const issueMembershipCertificates = async (
   context: ApiRouteContext,
   userId: string,
   group: PersonalDeviceGroupRecord,
-  signer: PdsAuthoritySigner
+  signer: PdsAuthoritySigner,
+  deviceId?: string
 ): Promise<void> => {
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + 7 * 24 * 60 * 60 * 1_000);
+  const members = group.members.filter(
+    (member) =>
+      member.status === "active" &&
+      (deviceId === undefined || member.deviceId === deviceId)
+  );
+  if (deviceId !== undefined && members.length !== 1)
+    throw pdsError("PDS member is not active", 409);
   await Promise.all(
-    group.members
-      .filter((member) => member.status === "active")
-      .map(async (member) => {
-        const unsigned = {
-          protocol: "koed/pds/v1",
+    members.map(async (member) => {
+      const unsigned = {
+        protocol: "koed/pds/v1",
+        groupId: group.groupId,
+        deviceId: member.deviceId,
+        deviceSigningKeyId: member.signingKeyId,
+        deviceSigningPublicKey: member.signingPublicKey,
+        deviceKemKeyId: member.kemKeyId,
+        deviceKemPublicKey: member.kemPublicKey,
+        epoch: group.currentEpoch,
+        operationFamilies: ["pds_relay"],
+        statementSequence: group.headSequence,
+        statementHash: group.headHash,
+        issuedAt: issuedAt.toISOString(),
+        expiresAt: expiresAt.toISOString()
+      };
+      const certificate = {
+        ...unsigned,
+        authoritySignature: {
+          keyId: signer.keyId,
+          signature: signPdsRecord(
+            "membership-certificate",
+            unsigned,
+            signer.privateKey
+          )
+        }
+      };
+      await context
+        .requireRepository()
+        .storePersonalDeviceMembershipCertificate({
+          userId,
           groupId: group.groupId,
           deviceId: member.deviceId,
-          deviceSigningKeyId: member.signingKeyId,
-          deviceSigningPublicKey: member.signingPublicKey,
-          deviceKemKeyId: member.kemKeyId,
-          deviceKemPublicKey: member.kemPublicKey,
           epoch: group.currentEpoch,
-          operationFamilies: ["pds_relay"],
           statementSequence: group.headSequence,
           statementHash: group.headHash,
-          issuedAt: issuedAt.toISOString(),
-          expiresAt: expiresAt.toISOString()
-        };
-        const certificate = {
-          ...unsigned,
-          authoritySignature: {
-            keyId: signer.keyId,
-            signature: signPdsRecord(
-              "membership-certificate",
-              unsigned,
-              signer.privateKey
-            )
-          }
-        };
-        await context
-          .requireRepository()
-          .storePersonalDeviceMembershipCertificate({
-            userId,
-            groupId: group.groupId,
-            deviceId: member.deviceId,
-            epoch: group.currentEpoch,
-            statementSequence: group.headSequence,
-            statementHash: group.headHash,
-            authorityKeyId: signer.keyId,
-            canonicalCertificate: canonicalizePdsJson(certificate),
-            issuedAt,
-            expiresAt
-          });
-      })
+          authorityKeyId: signer.keyId,
+          canonicalCertificate: canonicalizePdsJson(certificate),
+          issuedAt,
+          expiresAt
+        });
+    })
   );
 };
 
@@ -399,7 +405,7 @@ export const registerPersonalDeviceSyncRoutes = (
   app.post(
     "/v1/personal-device-sync/groups/genesis",
     { preHandler: context.rateLimit.memoryWrite },
-    async (request) => {
+    async (request, reply) => {
       const signer = pdsAuthority(context);
       const user = await sessionUser(request);
       const input = pdsGenesisSchema.parse(request.body);
@@ -479,15 +485,6 @@ export const registerPersonalDeviceSyncRoutes = (
         expectedPreviousHash: null,
         expectedSequence: "1"
       });
-      const consumed = await repo().consumePersonalDeviceEnrollmentChallenge({
-        userId: user.id,
-        challengeId: input.proof.challenge_id,
-        browserSubjectId: user.id,
-        browserDeploymentId: input.proof.device_deployment_id,
-        challenge: input.proof.challenge
-      });
-      if (!consumed)
-        throw pdsError("PDS enrollment challenge is invalid or expired", 409);
       const finalized = counterSignStatement(statement, signer);
       validatedGroupStatement(finalized, {
         authorizationPublicKey: firstDevice.signingPublicKey,
@@ -526,11 +523,30 @@ export const registerPersonalDeviceSyncRoutes = (
         initialEpoch: string(statementBody.initialEpoch, "initialEpoch"),
         statementHash: pdsFinalizedStatementHash(finalized),
         statement: canonicalizePdsJson(finalized),
+        enrollmentChallenge: {
+          challengeId: input.proof.challenge_id,
+          browserSubjectId: user.id,
+          browserDeploymentId: input.proof.device_deployment_id,
+          challenge: input.proof.challenge
+        },
         device: { ...firstDevice, operationFamilies: ["pds_relay"] }
       });
-      if (!created) throw pdsError("PDS group creation conflicted", 409);
-      await issueMembershipCertificates(context, user.id, created, signer);
-      return { group: publicGroup(created), statement: finalized };
+      if (created.outcome === "conflict")
+        return reply.code(409).send({
+          conflict: true,
+          group: publicGroup(created.group),
+          head_statement: created.statement
+        });
+      await issueMembershipCertificates(
+        context,
+        user.id,
+        created.group,
+        signer
+      );
+      return {
+        group: publicGroup(created.group),
+        statement: parsedStatement(created.statement)
+      };
     }
   );
 
@@ -715,6 +731,15 @@ export const registerPersonalDeviceSyncRoutes = (
             recoveryRecipientId: string;
           }
         | undefined;
+      let enrollmentChallenge:
+        | {
+            challengeId: string;
+            groupId: string;
+            browserSubjectId: string;
+            browserDeploymentId: string;
+            challenge: string;
+          }
+        | undefined;
       if (["add-device", "revoke-device", "recover"].includes(kind as string)) {
         if (!input.key_bundle)
           throw pdsError("PDS membership transition requires key bundle");
@@ -737,20 +762,13 @@ export const registerPersonalDeviceSyncRoutes = (
               input.proof.device_deployment_id
             )
           );
-          const consumed =
-            await repo().consumePersonalDeviceEnrollmentChallenge({
-              userId: user.id,
-              groupId: group.groupId,
-              challengeId: input.proof.challenge_id,
-              browserSubjectId: user.id,
-              browserDeploymentId: input.proof.device_deployment_id,
-              challenge: input.proof.challenge
-            });
-          if (!consumed)
-            throw pdsError(
-              "PDS enrollment challenge is invalid or expired",
-              409
-            );
+          enrollmentChallenge = {
+            groupId: group.groupId,
+            challengeId: input.proof.challenge_id,
+            browserSubjectId: user.id,
+            browserDeploymentId: input.proof.device_deployment_id,
+            challenge: input.proof.challenge
+          };
         }
         const rawBundle = parsedPdsJson(input.key_bundle) as Record<
           string,
@@ -838,6 +856,7 @@ export const registerPersonalDeviceSyncRoutes = (
           statement.authorization.signerKeyId,
           "signerKeyId"
         ),
+        enrollmentChallenge,
         addedDeviceSubject:
           kind === "add-device" || kind === "recover"
             ? {
@@ -861,11 +880,11 @@ export const registerPersonalDeviceSyncRoutes = (
       });
       if (!transition) throw pdsError("Personal Device Group not found", 404);
       if (transition.outcome !== "accepted")
-        return {
+        return reply.code(409).send({
           conflict: true,
           group: publicGroup(transition.group),
           head_statement: transition.statement
-        };
+        });
       await issueMembershipCertificates(
         context,
         user.id,
@@ -924,6 +943,37 @@ export const registerPersonalDeviceSyncRoutes = (
       });
       if (!certificate)
         throw pdsError("PDS membership certificate is unavailable", 404);
+      return { certificate: parseCanonicalPdsJson(certificate) };
+    }
+  );
+  app.post(
+    "/v1/personal-device-sync/groups/:groupId/certificates/:deviceId/renew",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const signer = pdsAuthority(context);
+      const user = await sessionUser(request);
+      const input = pdsCertificateParamsSchema.parse(request.params);
+      const group = await repo().getPersonalDeviceGroup(user.id, input.groupId);
+      if (!group) throw pdsError("Personal Device Group not found", 404);
+      if (
+        group.authorityKeyId !== signer.keyId ||
+        group.authorityPublicKey !== signer.publicKey
+      )
+        unavailable();
+      await issueMembershipCertificates(
+        context,
+        user.id,
+        group,
+        signer,
+        input.deviceId
+      );
+      const certificate = await repo().getPersonalDeviceMembershipCertificate({
+        userId: user.id,
+        groupId: input.groupId,
+        deviceId: input.deviceId
+      });
+      if (!certificate)
+        throw pdsError("PDS membership certificate is unavailable", 503);
       return { certificate: parseCanonicalPdsJson(certificate) };
     }
   );

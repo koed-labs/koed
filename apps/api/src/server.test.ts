@@ -1,8 +1,10 @@
 import {
   createHash,
+  createPrivateKey,
   generateKeyPairSync,
   randomBytes,
-  randomUUID
+  randomUUID,
+  sign
 } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +17,7 @@ import type {
   MemorySearchResult
 } from "@koed/core";
 import releaseManifest from "@koed/koed/package.json" with { type: "json" };
+import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-sync-v1.json" with { type: "json" };
 import type {
   ActorContext,
   ActivationAnalyticsFunnelRecord,
@@ -71,6 +74,114 @@ import type { WorkosAuthKitClient } from "./auth/workos.js";
 
 const hashSecretForTest = (secret: string) =>
   createHash("sha256").update(secret).digest("hex");
+
+const pdsFixturePrivateKey = (seedHex: string, publicKey: string) =>
+  createPrivateKey({
+    key: {
+      kty: "OKP",
+      crv: "Ed25519",
+      d: Buffer.from(seedHex, "hex").toString("base64url"),
+      x: publicKey
+    },
+    format: "jwk"
+  });
+
+const pdsFixtureGenesis = JSON.parse(
+  pdsFixture.signedRecords.genesis.canonicalPayloadUtf8
+) as {
+  draft: {
+    body: Record<string, string>;
+    groupId: string;
+  };
+  authorization: Record<string, string>;
+};
+const pdsFixtureAddDevice = JSON.parse(
+  pdsFixture.signedRecords.addDevice.canonicalPayloadUtf8
+) as {
+  draft: { body: Record<string, string> };
+  authorization: Record<string, string>;
+};
+
+const pdsFixtureGroup = () => ({
+  id: randomUUID(),
+  groupId: pdsFixtureGenesis.draft.groupId,
+  authorityKeyId: pdsFixtureGenesis.draft.body.authorityKeyId!,
+  authorityPublicKey: pdsFixtureGenesis.draft.body.authorityPublicKey!,
+  recoverySigningKeyId: pdsFixtureGenesis.draft.body.recoverySigningKeyId!,
+  recoverySigningPublicKey:
+    pdsFixtureGenesis.draft.body.recoverySigningPublicKey!,
+  recoveryKemKeyId: pdsFixtureGenesis.draft.body.recoveryKemKeyId!,
+  recoveryKemPublicKey: pdsFixtureGenesis.draft.body.recoveryKemPublicKey!,
+  currentEpoch: "1",
+  headSequence: "1",
+  headHash: pdsFixture.signedRecords.genesis.recordHash,
+  state: "active" as const,
+  stateReason: null,
+  members: [
+    {
+      deviceId: pdsFixtureGenesis.draft.body.initialDeviceId!,
+      signingKeyId: pdsFixtureGenesis.draft.body.initialDeviceSigningKeyId!,
+      signingPublicKey:
+        pdsFixtureGenesis.draft.body.initialDeviceSigningPublicKey!,
+      kemKeyId: pdsFixtureGenesis.draft.body.initialDeviceKemKeyId!,
+      kemPublicKey: pdsFixtureGenesis.draft.body.initialDeviceKemPublicKey!,
+      operationFamilies: ["pds_relay"],
+      status: "active" as const,
+      admittedSequence: "1",
+      revokedSequence: null,
+      revokedAt: null
+    }
+  ],
+  policy: {
+    enabled: false,
+    futureClosedSessionsOnly: true as const,
+    historicalBackfillEnabled: false as const
+  }
+});
+
+const pdsEnrollmentProofForTest = (input: {
+  challengeId: string;
+  challenge: string;
+  groupId?: string;
+  browserSubjectId: string;
+  browserDeploymentId: string;
+  expiresAt: string;
+  deviceId: string;
+  deviceSigningKeyId: string;
+  deviceSigningPublicKey: string;
+  deviceKemKeyId: string;
+  deviceKemPublicKey: string;
+  signingSeedHex: string;
+}) => {
+  const unsigned = {
+    challengeId: input.challengeId,
+    challenge: input.challenge,
+    groupId: input.groupId ?? null,
+    deviceId: input.deviceId,
+    deviceSigningKeyId: input.deviceSigningKeyId,
+    deviceSigningPublicKey: input.deviceSigningPublicKey,
+    deviceKemKeyId: input.deviceKemKeyId,
+    deviceKemPublicKey: input.deviceKemPublicKey,
+    browserSubjectId: input.browserSubjectId,
+    browserDeploymentId: input.browserDeploymentId,
+    expiresAt: input.expiresAt
+  };
+  return {
+    challenge_id: input.challengeId,
+    challenge: input.challenge,
+    device_id: input.deviceId,
+    device_deployment_id: input.browserDeploymentId,
+    expires_at: input.expiresAt,
+    signature: sign(
+      null,
+      Buffer.from(
+        `koed/pds/v1/enrollment-proof\n${canonicalizePdsJson(unsigned)}`,
+        "utf8"
+      ),
+      pdsFixturePrivateKey(input.signingSeedHex, input.deviceSigningPublicKey)
+    ).toString("base64url")
+  };
+};
 
 const codexCanonicalConversationItemKeyForTest = (input: {
   externalThreadId: string;
@@ -13889,6 +14000,240 @@ describe("account and access flows", () => {
       groupId: undefined
     });
     expect(challenges[0]?.browserSubjectId).toEqual(expect.any(String));
+    await app.close();
+  });
+
+  it("returns the persisted PDS genesis when group creation conflicts", async () => {
+    const authorityPrivateKey = pdsFixturePrivateKey(
+      pdsFixture.nonProductionKeyMaterial.authoritySigningSeedHex,
+      pdsFixtureGenesis.draft.body.authorityPublicKey!
+    );
+    const repository = createFakeRepository();
+    let browserSubjectId = "";
+    Object.assign(repository, {
+      createPersonalDeviceEnrollmentChallenge: async (input: {
+        browserSubjectId: string;
+        challenge: string;
+        expiresAt: Date;
+      }) => {
+        browserSubjectId = input.browserSubjectId;
+        return {
+          id: randomUUID(),
+          challenge: input.challenge,
+          expiresAt: input.expiresAt.toISOString()
+        };
+      },
+      createPersonalDeviceGroup: async () => ({
+        outcome: "conflict",
+        group: pdsFixtureGroup(),
+        statement: pdsFixture.signedRecords.genesis.canonicalPayloadUtf8
+      })
+    });
+    const app = await buildServer({
+      repository,
+      pdsAuthoritySigner: {
+        keyId: pdsFixtureGenesis.draft.body.authorityKeyId!,
+        publicKey: pdsFixtureGenesis.draft.body.authorityPublicKey!,
+        privateKey: authorityPrivateKey
+      }
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: `pds-genesis-conflict-${randomUUID()}@example.com`,
+        password: "password123"
+      }
+    });
+    const headers = { cookie: cookieHeader(registered) };
+    const challengeResponse = await app.inject({
+      method: "POST",
+      url: "/v1/personal-device-sync/challenges",
+      headers,
+      payload: { device_deployment_id: "deployment-initial" }
+    });
+    const challenge = jsonBody<{
+      challenge: { id: string; challenge: string; expiresAt: string };
+    }>(challengeResponse).challenge;
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/personal-device-sync/groups/genesis",
+      headers,
+      payload: {
+        statement: canonicalizePdsJson({
+          draft: pdsFixtureGenesis.draft,
+          authorization: pdsFixtureGenesis.authorization
+        }),
+        proof: pdsEnrollmentProofForTest({
+          challengeId: challenge.id,
+          challenge: challenge.challenge,
+          groupId: pdsFixtureGenesis.draft.groupId,
+          browserSubjectId,
+          browserDeploymentId: "deployment-initial",
+          expiresAt: challenge.expiresAt,
+          deviceId: pdsFixtureGenesis.draft.body.initialDeviceId!,
+          deviceSigningKeyId:
+            pdsFixtureGenesis.draft.body.initialDeviceSigningKeyId!,
+          deviceSigningPublicKey:
+            pdsFixtureGenesis.draft.body.initialDeviceSigningPublicKey!,
+          deviceKemKeyId: pdsFixtureGenesis.draft.body.initialDeviceKemKeyId!,
+          deviceKemPublicKey:
+            pdsFixtureGenesis.draft.body.initialDeviceKemPublicKey!,
+          signingSeedHex:
+            pdsFixture.nonProductionKeyMaterial.initialDeviceSigningSeedHex
+        })
+      }
+    });
+    expect(response.statusCode, response.body).toBe(409);
+    expect(jsonBody<{ head_statement: string }>(response).head_statement).toBe(
+      pdsFixture.signedRecords.genesis.canonicalPayloadUtf8
+    );
+    await app.close();
+  });
+
+  it("returns HTTP 409 when a PDS transition loses the repository CAS", async () => {
+    const authorityPrivateKey = pdsFixturePrivateKey(
+      pdsFixture.nonProductionKeyMaterial.authoritySigningSeedHex,
+      pdsFixtureGenesis.draft.body.authorityPublicKey!
+    );
+    const repository = createFakeRepository();
+    const group = pdsFixtureGroup();
+    let browserSubjectId = "";
+    Object.assign(repository, {
+      createPersonalDeviceEnrollmentChallenge: async (input: {
+        browserSubjectId: string;
+        challenge: string;
+        expiresAt: Date;
+      }) => {
+        browserSubjectId = input.browserSubjectId;
+        return {
+          id: randomUUID(),
+          challenge: input.challenge,
+          expiresAt: input.expiresAt.toISOString()
+        };
+      },
+      getPersonalDeviceGroup: async () => group,
+      commitPersonalDeviceTransition: async () => ({
+        outcome: "conflict",
+        group,
+        statement: pdsFixture.signedRecords.genesis.canonicalPayloadUtf8
+      })
+    });
+    const app = await buildServer({
+      repository,
+      pdsAuthoritySigner: {
+        keyId: group.authorityKeyId,
+        publicKey: group.authorityPublicKey,
+        privateKey: authorityPrivateKey
+      }
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: `pds-cas-conflict-${randomUUID()}@example.com`,
+        password: "password123"
+      }
+    });
+    const headers = { cookie: cookieHeader(registered) };
+    const challengeResponse = await app.inject({
+      method: "POST",
+      url: "/v1/personal-device-sync/challenges",
+      headers,
+      payload: {
+        group_id: group.groupId,
+        device_deployment_id: "deployment-second"
+      }
+    });
+    const challenge = jsonBody<{
+      challenge: { id: string; challenge: string; expiresAt: string };
+    }>(challengeResponse).challenge;
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/personal-device-sync/groups/${group.groupId}/transitions`,
+      headers,
+      payload: {
+        statement: canonicalizePdsJson({
+          draft: pdsFixtureAddDevice.draft,
+          authorization: pdsFixtureAddDevice.authorization
+        }),
+        key_bundle: pdsFixture.signedRecords.keyBundle.canonicalPayloadUtf8,
+        proof: pdsEnrollmentProofForTest({
+          challengeId: challenge.id,
+          challenge: challenge.challenge,
+          groupId: group.groupId,
+          browserSubjectId,
+          browserDeploymentId: "deployment-second",
+          expiresAt: challenge.expiresAt,
+          deviceId: pdsFixtureAddDevice.draft.body.deviceId!,
+          deviceSigningKeyId:
+            pdsFixtureAddDevice.draft.body.deviceSigningKeyId!,
+          deviceSigningPublicKey:
+            pdsFixtureAddDevice.draft.body.deviceSigningPublicKey!,
+          deviceKemKeyId: pdsFixtureAddDevice.draft.body.deviceKemKeyId!,
+          deviceKemPublicKey:
+            pdsFixtureAddDevice.draft.body.deviceKemPublicKey!,
+          signingSeedHex:
+            pdsFixture.nonProductionKeyMaterial.secondDeviceSigningSeedHex
+        })
+      }
+    });
+    expect(response.statusCode, response.body).toBe(409);
+    expect(jsonBody<{ conflict: boolean }>(response).conflict).toBe(true);
+    await app.close();
+  });
+
+  it("renews a missing current PDS membership certificate", async () => {
+    const authority = generateKeyPairSync("ed25519");
+    const authorityPublic = authority.publicKey.export({
+      format: "jwk"
+    }) as JsonWebKey;
+    const group = pdsFixtureGroup();
+    group.authorityKeyId = "renewal-authority";
+    group.authorityPublicKey = authorityPublic.x!;
+    const repository = createFakeRepository();
+    let storedCertificate: string | null = null;
+    Object.assign(repository, {
+      getPersonalDeviceGroup: async () => group,
+      getPersonalDeviceMembershipCertificate: async () => storedCertificate,
+      storePersonalDeviceMembershipCertificate: async (input: {
+        canonicalCertificate: string;
+      }) => {
+        storedCertificate = input.canonicalCertificate;
+      }
+    });
+    const app = await buildServer({
+      repository,
+      pdsAuthoritySigner: {
+        keyId: group.authorityKeyId,
+        publicKey: group.authorityPublicKey,
+        privateKey: authority.privateKey
+      }
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: `pds-certificate-repair-${randomUUID()}@example.com`,
+        password: "password123"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/personal-device-sync/groups/${group.groupId}/certificates/${group.members[0]!.deviceId}/renew`,
+      headers: { cookie: cookieHeader(registered) }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(storedCertificate).not.toBeNull();
+    expect(
+      jsonBody<{ certificate: Record<string, unknown> }>(response).certificate
+    ).toMatchObject({
+      groupId: group.groupId,
+      deviceId: group.members[0]!.deviceId,
+      epoch: group.currentEpoch,
+      statementHash: group.headHash,
+      authoritySignature: { keyId: group.authorityKeyId }
+    });
     await app.close();
   });
 

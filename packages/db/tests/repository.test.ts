@@ -305,6 +305,15 @@ describeDb("memory repository visibility", () => {
     });
     const groupId = `group-${randomUUID()}`;
     const recoveryRecipientId = "recovery-recipient";
+    const genesisChallenge = await repo.createPersonalDeviceEnrollmentChallenge(
+      {
+        userId: user.id,
+        browserSubjectId: user.id,
+        browserDeploymentId: "deployment-initial",
+        challenge: `challenge-${randomUUID()}`,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
     const statement = (
       kind: "genesis" | "add-device" | "revoke-device" | "recover",
       sequence: string
@@ -327,6 +336,12 @@ describeDb("memory repository visibility", () => {
       initialEpoch: "1",
       statementHash: "genesis-hash",
       statement: statement("genesis", "1"),
+      enrollmentChallenge: {
+        challengeId: genesisChallenge.id,
+        browserSubjectId: user.id,
+        browserDeploymentId: "deployment-initial",
+        challenge: genesisChallenge.challenge
+      },
       device: {
         deviceId: "device-initial",
         signingKeyId: "device-initial-signing",
@@ -337,22 +352,86 @@ describeDb("memory repository visibility", () => {
       }
     });
     expect(created).toMatchObject({
-      currentEpoch: "1",
-      headSequence: "1",
-      policy: { enabled: false },
-      members: [{ deviceId: "device-initial", status: "active" }]
+      outcome: "created",
+      group: {
+        currentEpoch: "1",
+        headSequence: "1",
+        policy: { enabled: false },
+        members: [{ deviceId: "device-initial", status: "active" }]
+      }
+    });
+    const certificateIssuedAt = new Date();
+    const certificateExpiresAt = new Date(
+      certificateIssuedAt.getTime() + 7 * 24 * 60 * 60 * 1_000
+    );
+    const genesisCertificate = canonicalizePdsJson({
+      protocol: "koed/pds/v1",
+      groupId,
+      deviceId: "device-initial",
+      deviceSigningKeyId: "device-initial-signing",
+      deviceSigningPublicKey: "device-initial-signing-public",
+      deviceKemKeyId: "device-initial-kem",
+      deviceKemPublicKey: "device-initial-kem-public",
+      epoch: "1",
+      operationFamilies: ["pds_relay"],
+      statementSequence: "1",
+      statementHash: "genesis-hash",
+      issuedAt: certificateIssuedAt.toISOString(),
+      expiresAt: certificateExpiresAt.toISOString(),
+      authoritySignature: {
+        keyId: "authority-key",
+        signature: "test-signature"
+      }
+    });
+    const genesisCertificateInput = {
+      userId: user.id,
+      groupId,
+      deviceId: "device-initial",
+      epoch: "1",
+      statementSequence: "1",
+      statementHash: "genesis-hash",
+      authorityKeyId: "authority-key",
+      canonicalCertificate: genesisCertificate,
+      issuedAt: certificateIssuedAt,
+      expiresAt: certificateExpiresAt
+    };
+    await repo.storePersonalDeviceMembershipCertificate(
+      genesisCertificateInput
+    );
+    await expect(
+      repo.getPersonalDeviceMembershipCertificate({
+        userId: user.id,
+        groupId,
+        deviceId: "device-initial"
+      })
+    ).resolves.toBe(genesisCertificate);
+
+    const addChallenge = await repo.createPersonalDeviceEnrollmentChallenge({
+      userId: user.id,
+      groupId,
+      browserSubjectId: user.id,
+      browserDeploymentId: "deployment-second",
+      challenge: `challenge-${randomUUID()}`,
+      expiresAt: new Date(Date.now() + 60_000)
     });
 
-    const added = await repo.commitPersonalDeviceTransition({
+    const addInput = {
       userId: user.id,
       groupId,
       expectedHeadHash: "genesis-hash",
       sequence: "2",
       nextEpoch: "2",
-      kind: "add-device",
+      kind: "add-device" as const,
       statementHash: "add-hash",
       statement: statement("add-device", "2"),
       authorizationKeyId: "device-initial-signing",
+      enrollmentChallenge: {
+        challengeId: addChallenge.id,
+        groupId,
+        browserSubjectId: user.id,
+        browserDeploymentId: "deployment-second",
+        challenge: addChallenge.challenge
+      },
       keyBundle: {
         hash: "bundle-2",
         canonical: '{"bundle":"2"}',
@@ -377,7 +456,17 @@ describeDb("memory repository visibility", () => {
         kemPublicKey: "device-second-kem-public",
         operationFamilies: ["pds_relay"]
       }
-    });
+    };
+    await expect(
+      repo.commitPersonalDeviceTransition({
+        ...addInput,
+        keyBundle: {
+          ...addInput.keyBundle,
+          recipients: ["device-initial", recoveryRecipientId].sort()
+        }
+      })
+    ).rejects.toThrow("recipient snapshot is incomplete");
+    const added = await repo.commitPersonalDeviceTransition(addInput);
     expect(added).toMatchObject({
       outcome: "accepted",
       group: {
@@ -389,6 +478,9 @@ describeDb("memory repository visibility", () => {
         ]
       }
     });
+    await expect(
+      repo.storePersonalDeviceMembershipCertificate(genesisCertificateInput)
+    ).rejects.toThrow("certificate is stale");
     await expect(
       pool.query(
         "select deployment_id from personal_device_group_user_subjects order by deployment_id"
@@ -463,6 +555,23 @@ describeDb("memory repository visibility", () => {
       statementHash: "recover-hash",
       statement: statement("recover", "4"),
       authorizationKeyId: "recovery-signing",
+      enrollmentChallenge: await (async () => {
+        const challenge = await repo.createPersonalDeviceEnrollmentChallenge({
+          userId: user.id,
+          groupId,
+          browserSubjectId: user.id,
+          browserDeploymentId: "deployment-replacement",
+          challenge: `challenge-${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 60_000)
+        });
+        return {
+          challengeId: challenge.id,
+          groupId,
+          browserSubjectId: user.id,
+          browserDeploymentId: "deployment-replacement",
+          challenge: challenge.challenge
+        };
+      })(),
       keyBundle: {
         hash: "bundle-4",
         canonical: '{"bundle":"4"}',
@@ -498,12 +607,121 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("returns only persisted PDS genesis and preserves conflicting challenges", async () => {
+    const user = await repo.createUser({
+      email: `pds-genesis-conflict-${randomUUID()}@example.com`,
+      displayName: "PDS genesis conflict owner"
+    });
+    const groupId = `group-${randomUUID()}`;
+    const firstChallenge = await repo.createPersonalDeviceEnrollmentChallenge({
+      userId: user.id,
+      browserSubjectId: user.id,
+      browserDeploymentId: "deployment-genesis",
+      challenge: `challenge-${randomUUID()}`,
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const persistedStatement = canonicalizePdsJson({
+      draft: {
+        protocol: "koed/pds/v1",
+        kind: "genesis",
+        groupId,
+        sequence: "1",
+        body: { root: "persisted" }
+      }
+    });
+    const input = {
+      userId: user.id,
+      groupId,
+      subjectId: user.id,
+      subjectDeploymentId: "deployment-genesis",
+      authorityKeyId: "authority-key",
+      authorityPublicKey: "authority-public",
+      recoverySigningKeyId: "recovery-signing",
+      recoverySigningPublicKey: "recovery-signing-public",
+      recoveryKemKeyId: "recovery-kem",
+      recoveryKemPublicKey: "recovery-kem-public",
+      recoveryKitHash: "recovery-kit-hash",
+      initialEpoch: "1",
+      statementHash: "persisted-genesis-hash",
+      statement: persistedStatement,
+      enrollmentChallenge: {
+        challengeId: firstChallenge.id,
+        browserSubjectId: user.id,
+        browserDeploymentId: "deployment-genesis",
+        challenge: firstChallenge.challenge
+      },
+      device: {
+        deviceId: "device-genesis",
+        signingKeyId: "device-genesis-signing",
+        signingPublicKey: "device-genesis-signing-public",
+        kemKeyId: "device-genesis-kem",
+        kemPublicKey: "device-genesis-kem-public",
+        operationFamilies: ["pds_relay"]
+      }
+    };
+
+    await expect(repo.createPersonalDeviceGroup(input)).resolves.toMatchObject({
+      outcome: "created",
+      statement: persistedStatement
+    });
+    await expect(repo.createPersonalDeviceGroup(input)).resolves.toMatchObject({
+      outcome: "idempotent",
+      statement: persistedStatement
+    });
+
+    const conflictingChallenge =
+      await repo.createPersonalDeviceEnrollmentChallenge({
+        userId: user.id,
+        browserSubjectId: user.id,
+        browserDeploymentId: "deployment-conflict",
+        challenge: `challenge-${randomUUID()}`,
+        expiresAt: new Date(Date.now() + 60_000)
+      });
+    await expect(
+      repo.createPersonalDeviceGroup({
+        ...input,
+        statementHash: "unpersisted-genesis-hash",
+        statement: canonicalizePdsJson({
+          draft: {
+            protocol: "koed/pds/v1",
+            kind: "genesis",
+            groupId,
+            sequence: "1",
+            body: { root: "conflicting" }
+          }
+        }),
+        enrollmentChallenge: {
+          challengeId: conflictingChallenge.id,
+          browserSubjectId: user.id,
+          browserDeploymentId: "deployment-conflict",
+          challenge: conflictingChallenge.challenge
+        }
+      })
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      statement: persistedStatement
+    });
+    await expect(
+      pool.query(
+        "select used_at from personal_device_enrollment_challenges where id=$1",
+        [conflictingChallenge.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ used_at: null }] });
+  });
+
   it("freezes PDS governance without exposing group secrets or Team authority", async () => {
     const user = await repo.createUser({
       email: `pds-freeze-${randomUUID()}@example.com`,
       displayName: "PDS freeze owner"
     });
     const groupId = `group-${randomUUID()}`;
+    const challenge = await repo.createPersonalDeviceEnrollmentChallenge({
+      userId: user.id,
+      browserSubjectId: user.id,
+      browserDeploymentId: "deployment-freeze",
+      challenge: `challenge-${randomUUID()}`,
+      expiresAt: new Date(Date.now() + 60_000)
+    });
     await repo.createPersonalDeviceGroup({
       userId: user.id,
       groupId,
@@ -527,6 +745,12 @@ describeDb("memory repository visibility", () => {
           body: {}
         }
       }),
+      enrollmentChallenge: {
+        challengeId: challenge.id,
+        browserSubjectId: user.id,
+        browserDeploymentId: "deployment-freeze",
+        challenge: challenge.challenge
+      },
       device: {
         deviceId: "device-freeze",
         signingKeyId: "device-freeze-signing",

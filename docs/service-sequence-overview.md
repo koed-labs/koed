@@ -988,9 +988,12 @@ group/status/Key Bundle/certificate retrieval, policy, and opaque Remote Account
 Link proof submission. The active device or recovery signer first authorizes a
 Key Bundle draft. Authority countersigns it without persisting membership; the
 client then signs a transition statement that binds the finalized bundle hash.
-Authority verifies and commits the exact bundle and transition atomically,
-activates the next epoch, and issues bounded certificates for active devices.
-Authority outage or equivocation freeze blocks remote governance action only;
+Authority verifies and commits the exact bundle, transition, and enrollment
+challenge consumption atomically, activates the next epoch, and issues bounded
+certificates for active devices. The explicit certificate-renewal operation
+renews certificates with 24 hours or less remaining and repairs missing current
+certificates while holding the same group transition lock. Authority outage or
+equivocation freeze blocks remote governance action only;
 local capture and Recall continue. Relay, package transport, package lifecycle,
 and materialized sync remain later work.
 
