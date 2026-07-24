@@ -170,6 +170,7 @@ const newIdentityState = (
         fingerprint: deviceProofFingerprint(proof)
       },
       remoteOperations,
+      deploymentIdentityAdoptionPending: true,
       ...(pendingRemoteRevocation ? { pendingRemoteRevocation: true } : {}),
       createdAt: timestamp,
       updatedAt: timestamp
@@ -281,6 +282,7 @@ export const rotateDeviceIdentity = async (
       previous.deploymentId ?? undefined,
       true
     );
+    delete next.state.deploymentIdentityAdoptionPending;
     try {
       writeBootstrapTombstone(paths, resolved.now());
       resolved.proofStore.write(

@@ -91,7 +91,8 @@ export const projectIsActive = (
 export const reconcileSelectedProjectId = (
   projects: DesktopProject[],
   selectedProjectId: string | null,
-  preserveEmptySelection: boolean
+  preserveEmptySelection: boolean,
+  now = Date.now()
 ): string | null => {
   if (
     !projects.length ||
@@ -102,7 +103,7 @@ export const reconcileSelectedProjectId = (
   if (projects.some((project) => project.id === selectedProjectId)) {
     return selectedProjectId;
   }
-  return projects.find((project) => projectIsActive(project))?.id ?? null;
+  return projects.find((project) => projectIsActive(project, now))?.id ?? null;
 };
 
 export const sortProjects = (projects: DesktopProject[]): DesktopProject[] =>

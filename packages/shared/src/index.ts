@@ -61,6 +61,7 @@ export {
   hostProofReferenceFor,
   inspectDeviceIdentity,
   inspectDeviceIdentityAtKoedHome,
+  reconcileDeviceIdentityDeployment,
   parseDeviceIdentityState,
   serializeHostProof
 } from "./device-identity.js";

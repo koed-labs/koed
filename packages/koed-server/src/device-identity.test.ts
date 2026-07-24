@@ -18,7 +18,8 @@ import {
   createPlatformHostProofStore,
   deviceIdentityStatePathFor,
   inspectDeviceIdentity,
-  parseDeviceIdentityState
+  parseDeviceIdentityState,
+  reconcileDeviceIdentityDeployment
 } from "@koed/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import { collectKoedServerStatus } from "./status.js";
@@ -105,6 +106,48 @@ describe("clone-safe device identity", () => {
       remoteOperationsAllowed: false,
       platformProtection: "limited"
     });
+  });
+
+  it("adopts legacy local sync deployment identity exactly once", async () => {
+    const { paths, proofDirectory, proofStore } = fixture();
+    await ensureDeviceIdentity(paths, { proofStore });
+    const legacyDeploymentId = "11111111-1111-4111-8111-111111111111";
+
+    const adopted = reconcileDeviceIdentityDeployment({
+      koedHome: paths.koedHome,
+      protocolDeploymentId: legacyDeploymentId,
+      environment: { KOED_DEVICE_PROOF_DIR: proofDirectory }
+    });
+    const state = readState(paths.koedHome);
+    const retained = reconcileDeviceIdentityDeployment({
+      koedHome: paths.koedHome,
+      protocolDeploymentId: "22222222-2222-4222-8222-222222222222",
+      environment: { KOED_DEVICE_PROOF_DIR: proofDirectory }
+    });
+
+    expect(adopted).toMatchObject({
+      health: "healthy",
+      deploymentId: legacyDeploymentId
+    });
+    expect(state).not.toHaveProperty("deploymentIdentityAdoptionPending");
+    expect(retained.deploymentId).toBe(legacyDeploymentId);
+  });
+
+  it("classifies proof storage inside KOED_HOME separately from permissions", async () => {
+    const { paths, proofStore } = fixture();
+    await ensureDeviceIdentity(paths, { proofStore });
+    const inspection = inspectDeviceIdentity({
+      statePath: deviceIdentityStatePathFor(paths.koedHome),
+      proofStore: createPlatformHostProofStore({
+        koedHome: paths.koedHome,
+        environment: {
+          KOED_DEVICE_PROOF_DIR: resolve(paths.koedHome, "host-proof")
+        }
+      })
+    });
+
+    expect(inspection.health).toBe("unsafe_proof_storage");
+    expect(inspection.action).toContain("outside KOED_HOME");
   });
 
   it("reports redacted machine-readable identity status", async () => {
