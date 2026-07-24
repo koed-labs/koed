@@ -73,7 +73,8 @@
     "fmt": "pnpm fmt:prettier",
     "fmt:check": "pnpm fmt:prettier:check",
     "fmt:prettier": "prettier --write .",
-    "fmt:prettier:check": "prettier --check ."
+    "fmt:prettier:check": "prettier --check .",
+    "spike:lcm-generation-investigation": "node spikes/lcm-generation-investigation/run.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
