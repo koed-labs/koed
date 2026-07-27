@@ -63,15 +63,11 @@ Activation evidence records release commit, migration revision, generation-set r
    - candidate LCM leaf placeholders and summaries from candidate Projection output;
    - bottom-up rollups only from compatible completed children;
    - durable `summary_ready -> node_embedding_pending` outbox/reconciler;
-   - candidate Memory Node embeddings only from allowed placeholder or complete-summary node text, depending on cohort readiness target.
+   - candidate Memory Node embeddings only from compatible completed LCM Summary text; placeholders remain internal pending-build state.
 9. Open a database-level derived-write fence, record the canonical high-water, and continue canonical capture.
 10. Catch active and candidate work up to the fence high-water.
-11. Validate Source cohort coverage through the fence high-water. Publish Source cohort by compare-and-set revision only if query policy and status can safely expose LCM unavailable/degraded state without combining new Source evidence with old LCM evidence; otherwise continue to full monolithic publish.
-12. Validate LCM cohort as either:
-
-- `placeholder_ready`, if explicit degraded evidence is approved and every required leaf has compatible deterministic placeholder coverage; or
-- `complete_summary_ready`, the normal publish target.
-
+11. Validate Source cohort coverage through the fence high-water. Publish Source cohort by compare-and-set revision only if query policy and status can safely expose LCM as unavailable and pending without combining new Source evidence with old LCM evidence; otherwise continue to full monolithic publish.
+12. Validate the LCM cohort as `complete_summary_ready`, the sole V1 publish target. Placeholder coverage may report internal build progress but cannot satisfy activation.
 13. Execute the dependency-ordered LCM cohort compare-and-set activation against the same control revision, rechecking coverage predicates, retained manifests, and fence high-water; then complete the active/candidate/previous role swap and collapse the servable window. A monolithic policy performs the Source and LCM publication in one transaction instead.
 14. Process the post-fence canonical suffix in the new active generation until bounded lag returns to zero or accepted steady-state bounds.
 15. Refresh capability caches and resume sync publication only after local derivation readiness and authorization closure are complete.
@@ -87,11 +83,11 @@ Canonical capture remains open throughout supported generation transitions. Deri
 - authorization and lifecycle closure are satisfied for all published rows;
 - candidate rows are isolated from active Recall until activation.
 
-### LCM `placeholder_ready`
+### Internal LCM Placeholder coverage
 
-- every eligible leaf has a compatible deterministic LCM Placeholder with closed source closure through the fence high-water;
-- any published Memory Node embeddings are explicitly placeholder-quality evidence;
-- no row is presented as completed LCM Summary evidence;
+- compatible deterministic LCM Placeholders may track candidate-build progress through the fence high-water;
+- Placeholder text and embeddings are never published, ranked, or returned as Recall evidence;
+- Placeholder coverage cannot satisfy LCM cohort activation;
 - no complete parent rollup is built from placeholder children.
 
 ### LCM `complete_summary_ready`
@@ -99,7 +95,7 @@ Canonical capture remains open throughout supported generation transitions. Deri
 - every required leaf has a schema-valid LCM Summary with the candidate prompt/model/settings/tokenizer/algorithm identity;
 - every parent uses only compatible completed children;
 - exact candidate Memory Node embeddings exist for the node text being published;
-- placeholder embeddings, if any existed earlier, are invalidated or replaced rather than treated as equivalent;
+- any legacy placeholder embeddings are invalidated and excluded; the candidate build does not create them;
 - the summary-to-node-embedding outbox and reconciliation report zero required pending/failed rows unless an explicit exclusion policy exists.
 
 ## Profile runbooks
@@ -160,8 +156,8 @@ Canonical capture remains open throughout supported generation transitions. Deri
 | Interrupted Projection rebuild     | Retry resumes without duplicate Memory Events or source links; downstream coverage remains blocked until complete.                                                           |
 | Interrupted LCM rebuild            | Leaf retries are idempotent; completed compatible leaves are reused; parents wait for compatible completed children; no backend LLM fallback.                                |
 | Lost LCM embedding enqueue         | A failure after summary persistence but before enqueue is recovered by the durable outbox/reconciler; activation still fails closed until node embeddings are covered.       |
-| AI Client outage                   | Source cohort can still progress; LCM cohort remains pending or degraded according to approved policy; status reports the reason.                                            |
-| Placeholder readiness              | Placeholder evidence is explicitly degraded, never labeled as LCM Summary, and never used to claim complete parent rollup coverage.                                          |
+| AI Client outage                   | Source cohort can still progress; LCM cohort remains unavailable and pending; status reports the reason.                                                                     |
+| Placeholder coverage               | Placeholders report internal candidate-build progress only and are never published, embedded, ranked, or returned as Recall evidence.                                        |
 | Complete-summary readiness         | Completed compatible leaf and parent summaries plus exact node embeddings are required before normal LCM publish.                                                            |
 | No mixed-generation Recall         | Recall sees either the complete old generation or the complete new generation, never a mix of Projection, LCM, or embeddings across generations.                             |
 | Lifecycle propagation              | Deletion, revocation, and authorization closure invalidate active and retained generations; rollback does not resurrect revoked Memory.                                      |

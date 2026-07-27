@@ -45,9 +45,9 @@ The Postgres and LCM spikes show that this smaller model is feasible, but they a
 - **Transition revision:** monotonically increasing generation-set control revision used for compare-and-set activation and rollback.
 - **Derived-write fence:** a database-level transition fence that keeps canonical capture open while preventing incompatible derived publication during activation.
 - **Source cohort:** Projection plus Memory Event embedding coverage through a fenced canonical high-water.
-- **LCM cohort:** LCM Placeholder/Summary state plus Memory Node embedding coverage through the same fenced canonical high-water.
-- **`placeholder_ready`:** optional degraded LCM cohort state where every required leaf has a compatible deterministic LCM Placeholder and any published node embeddings are explicitly placeholder-quality evidence.
-- **`complete_summary_ready`:** normal LCM cohort state where every required leaf and parent has compatible completed LCM Summary coverage and exact Memory Node embeddings.
+- **LCM cohort:** completed LCM Summary state plus Memory Node embedding coverage through the same fenced canonical high-water.
+- **LCM Placeholder coverage:** internal candidate-build progress where required leaves have deterministic LCM Placeholders. It is pending state only and is never publishable Recall evidence.
+- **`complete_summary_ready`:** the sole publishable V1 LCM cohort state, where every required leaf and parent has compatible completed LCM Summary coverage and exact Memory Node embeddings.
 
 These terms are architecture mechanics, not new User-facing product language, so they remain outside `CONTEXT.md`.
 
@@ -118,19 +118,18 @@ If a provider exposes only a mutable alias, the specification stores that alias 
 Koed will publish two explicit activation cohorts inside one generation-set revision:
 
 1. **Source cohort:** Projection + Memory Event embeddings.
-2. **LCM cohort:** LCM Placeholders/Summaries + Memory Node embeddings.
+2. **LCM cohort:** completed LCM Summaries + Memory Node embeddings, with LCM Placeholders retained only as internal candidate-build progress.
 
 Rules:
 
 - Source cohort publication must not be accidentally blocked on AI Client throughput.
 - Both cohorts are recorded under the same generation-set control row and transition revision. Each dependency-ordered cohort publication is a compare-and-set update of that revision; there is no independently mutable per-family activation graph.
 - Source cohort readiness requires complete candidate Projection coverage through the fence high-water and exact-compatible Memory Event embedding coverage or explicit policy exclusion.
-- LCM cohort readiness uses one of two explicit states only: `placeholder_ready` or `complete_summary_ready`.
-- `placeholder_ready` is optional degraded evidence, not LCM Summary evidence. Recall must label it degraded/pending if it is exposed at all.
-- `complete_summary_ready` is the normal publishable state.
-- Parent rollups must not be built as complete rollups from placeholder children. Parent rollups require compatible completed children unless a future separately designed degraded hierarchy is accepted.
-- Publishing Source before LCM makes the new Source cohort available while candidate LCM remains unavailable or explicitly degraded; Recall must not combine it with the old LCM cohort in one Evidence Bundle.
-- If launch cannot safely expose source-ready plus LCM-unavailable behavior in query policy and status, external publication may remain monolithic even though the internal implementation still tracks both cohorts separately.
+- `complete_summary_ready` is the sole publishable V1 LCM cohort state.
+- LCM Placeholder coverage remains internal candidate-build progress. Placeholder text and embeddings must not be published, ranked, or returned as Recall evidence.
+- Parent rollups require compatible completed children. They must not be built as complete rollups from placeholder children.
+- Publishing Source before LCM makes the new Source cohort available while candidate LCM remains unavailable and pending; Recall must not combine it with the old LCM cohort in one Evidence Bundle.
+- If launch cannot safely expose source-ready plus LCM-unavailable behavior in query policy and status, external publication remains monolithic even though the internal implementation still tracks both cohorts separately.
 
 ### Repair the current LCM completion-to-embedding durability gap
 
@@ -181,7 +180,7 @@ Launch scope is intentionally narrow. Operator surfaces must provide:
 
 - read-only current/candidate/previous generation-set state;
 - per-cohort coverage, lag, retry, blocked, and failure state;
-- explicit degraded-versus-complete LCM readiness;
+- explicit pending-build progress and complete-summary LCM readiness;
 - rollback preflight status;
 - authenticated retry/resume controls where needed.
 
@@ -213,7 +212,8 @@ This ADR does not accept the following for V1:
 - calibrated multi-epoch fusion across incompatible partitions;
 - generalized restoration of every in-flight transition optimization after restore;
 - arbitrary live prompt/model override activation;
-- degraded placeholder-only parent hierarchies.
+- publication of LCM Placeholder text or embeddings as Recall evidence;
+- placeholder-only parent hierarchies.
 
 ## Alternatives considered
 
