@@ -112,6 +112,7 @@ const pdsFixtureGroup = () => ({
     pdsFixtureGenesis.draft.body.recoverySigningPublicKey!,
   recoveryKemKeyId: pdsFixtureGenesis.draft.body.recoveryKemKeyId!,
   recoveryKemPublicKey: pdsFixtureGenesis.draft.body.recoveryKemPublicKey!,
+  recoveryKitHash: pdsFixtureGenesis.draft.body.recoveryKitHash!,
   currentEpoch: "1",
   headSequence: "1",
   headHash: pdsFixture.signedRecords.genesis.recordHash,
@@ -14148,6 +14149,28 @@ describe("account and access flows", () => {
     const challenge = jsonBody<{
       challenge: { id: string; challenge: string; expiresAt: string };
     }>(challengeResponse).challenge;
+    const staleEpochResponse = await app.inject({
+      method: "POST",
+      url: `/v1/personal-device-sync/groups/${group.groupId}/transitions`,
+      headers,
+      payload: {
+        statement: canonicalizePdsJson({
+          draft: {
+            ...pdsFixtureAddDevice.draft,
+            body: {
+              ...pdsFixtureAddDevice.draft.body,
+              previousEpoch: "0",
+              nextEpoch: "1"
+            }
+          },
+          authorization: pdsFixtureAddDevice.authorization
+        })
+      }
+    });
+    expect(staleEpochResponse.statusCode, staleEpochResponse.body).toBe(409);
+    expect(jsonBody<{ error: string }>(staleEpochResponse).error).toContain(
+      "membership epoch is stale"
+    );
     const response = await app.inject({
       method: "POST",
       url: `/v1/personal-device-sync/groups/${group.groupId}/transitions`,
@@ -14223,7 +14246,15 @@ describe("account and access flows", () => {
       url: `/v1/personal-device-sync/groups/${group.groupId}/certificates/${group.members[0]!.deviceId}/renew`,
       headers: { cookie: cookieHeader(registered) }
     });
+    const openapi = await app.inject({ method: "GET", url: "/openapi.json" });
     expect(response.statusCode).toBe(200);
+    expect(
+      jsonBody<OpenApiResponse>(openapi).paths[
+        "/v1/personal-device-sync/groups/{groupId}/certificates/{deviceId}/renew"
+      ]
+    ).toMatchObject({
+      post: { "x-koed-identity": "session" }
+    });
     expect(storedCertificate).not.toBeNull();
     expect(
       jsonBody<{ certificate: Record<string, unknown> }>(response).certificate

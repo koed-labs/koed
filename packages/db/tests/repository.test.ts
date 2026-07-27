@@ -319,7 +319,22 @@ describeDb("memory repository visibility", () => {
       sequence: string
     ) =>
       canonicalizePdsJson({
-        draft: { protocol: "koed/pds/v1", kind, groupId, sequence, body: {} }
+        draft: {
+          protocol: "koed/pds/v1",
+          kind,
+          groupId,
+          sequence,
+          body:
+            kind === "genesis"
+              ? {}
+              : {
+                  previousEpoch: (BigInt(sequence) - 1n).toString(),
+                  nextEpoch: sequence,
+                  ...(kind === "recover"
+                    ? { recoveryKitHash: "recovery-kit-hash" }
+                    : {})
+                }
+        }
       });
     const created = await repo.createPersonalDeviceGroup({
       userId: user.id,
@@ -420,7 +435,6 @@ describeDb("memory repository visibility", () => {
       groupId,
       expectedHeadHash: "genesis-hash",
       sequence: "2",
-      nextEpoch: "2",
       kind: "add-device" as const,
       statementHash: "add-hash",
       statement: statement("add-device", "2"),
@@ -497,7 +511,6 @@ describeDb("memory repository visibility", () => {
       groupId,
       expectedHeadHash: "genesis-hash",
       sequence: "2",
-      nextEpoch: "2",
       kind: "revoke-device",
       statementHash: "stale-hash",
       statement: statement("revoke-device", "2"),
@@ -514,12 +527,28 @@ describeDb("memory repository visibility", () => {
     });
     expect(stale).toMatchObject({ outcome: "conflict" });
 
+    await expect(
+      repo.commitPersonalDeviceTransition({
+        ...addInput,
+        expectedHeadHash: "add-hash",
+        sequence: "3",
+        statement: canonicalizePdsJson({
+          draft: {
+            protocol: "koed/pds/v1",
+            kind: "add-device",
+            groupId,
+            sequence: "3",
+            body: { previousEpoch: "1", nextEpoch: "2" }
+          }
+        })
+      })
+    ).rejects.toThrow("membership epoch is stale");
+
     const revoked = await repo.commitPersonalDeviceTransition({
       userId: user.id,
       groupId,
       expectedHeadHash: "add-hash",
       sequence: "3",
-      nextEpoch: "3",
       kind: "revoke-device",
       statementHash: "revoke-hash",
       statement: statement("revoke-device", "3"),
@@ -545,13 +574,12 @@ describeDb("memory repository visibility", () => {
       }
     });
 
-    const recovered = await repo.commitPersonalDeviceTransition({
+    const recoveryInput = {
       userId: user.id,
       groupId,
       expectedHeadHash: "revoke-hash",
       sequence: "4",
-      nextEpoch: "4",
-      kind: "recover",
+      kind: "recover" as const,
       statementHash: "recover-hash",
       statement: statement("recover", "4"),
       authorizationKeyId: "recovery-signing",
@@ -593,7 +621,26 @@ describeDb("memory repository visibility", () => {
         operationFamilies: ["pds_relay"]
       },
       revokeDeviceIds: ["device-second"]
-    });
+    };
+    await expect(
+      repo.commitPersonalDeviceTransition({
+        ...recoveryInput,
+        statement: canonicalizePdsJson({
+          draft: {
+            protocol: "koed/pds/v1",
+            kind: "recover",
+            groupId,
+            sequence: "4",
+            body: {
+              previousEpoch: "3",
+              nextEpoch: "4",
+              recoveryKitHash: "different-recovery-kit-hash"
+            }
+          }
+        })
+      })
+    ).rejects.toThrow("recovery kit does not match genesis commitment");
+    const recovered = await repo.commitPersonalDeviceTransition(recoveryInput);
     expect(recovered).toMatchObject({
       outcome: "accepted",
       group: {
@@ -722,7 +769,7 @@ describeDb("memory repository visibility", () => {
       challenge: `challenge-${randomUUID()}`,
       expiresAt: new Date(Date.now() + 60_000)
     });
-    await repo.createPersonalDeviceGroup({
+    const created = await repo.createPersonalDeviceGroup({
       userId: user.id,
       groupId,
       subjectId: user.id,
@@ -760,6 +807,44 @@ describeDb("memory repository visibility", () => {
         operationFamilies: ["pds_relay"]
       }
     });
+    if (created.outcome === "conflict") throw new Error("expected PDS group");
+    await pool.query(
+      `insert into personal_device_group_key_bundles
+        (group_id,bundle_hash,epoch,transition_kind,recipient_snapshot,canonical_bundle)
+      values ($1,'freeze-bundle','1','genesis',$2,$3)`,
+      [created.group.id, ["device-freeze"], '{"bundle":"freeze"}']
+    );
+    const certificateIssuedAt = new Date();
+    const certificateExpiresAt = new Date(
+      certificateIssuedAt.getTime() + 60_000
+    );
+    await repo.storePersonalDeviceMembershipCertificate({
+      userId: user.id,
+      groupId,
+      deviceId: "device-freeze",
+      epoch: "1",
+      statementSequence: "1",
+      statementHash: "genesis-freeze-hash",
+      authorityKeyId: "authority-key",
+      canonicalCertificate: canonicalizePdsJson({
+        protocol: "koed/pds/v1",
+        groupId,
+        deviceId: "device-freeze",
+        deviceSigningKeyId: "device-freeze-signing",
+        deviceSigningPublicKey: "device-freeze-signing-public",
+        deviceKemKeyId: "device-freeze-kem",
+        deviceKemPublicKey: "device-freeze-kem-public",
+        epoch: "1",
+        statementSequence: "1",
+        statementHash: "genesis-freeze-hash",
+        authoritySignature: {
+          keyId: "authority-key",
+          signature: "test-signature"
+        }
+      }),
+      issuedAt: certificateIssuedAt,
+      expiresAt: certificateExpiresAt
+    });
 
     const frozen = await repo.freezePersonalDeviceGovernance({
       userId: user.id,
@@ -771,6 +856,16 @@ describeDb("memory repository visibility", () => {
       state: "equivocation_freeze",
       stateReason: "authority_same_sequence_conflict"
     });
+    await expect(
+      repo.getPersonalDeviceKeyBundle({ userId: user.id, groupId, epoch: "1" })
+    ).resolves.toBeNull();
+    await expect(
+      repo.getPersonalDeviceMembershipCertificate({
+        userId: user.id,
+        groupId,
+        deviceId: "device-freeze"
+      })
+    ).resolves.toBeNull();
     await expect(
       pool.query(
         "select transition_kind, actor_key_id, outcome, redacted_metadata from personal_device_group_audit_events left join personal_device_group_statements on false where transition_kind='governance'"

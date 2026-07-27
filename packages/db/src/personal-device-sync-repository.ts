@@ -30,6 +30,7 @@ export interface PersonalDeviceGroupRecord {
   recoverySigningPublicKey: string;
   recoveryKemKeyId: string;
   recoveryKemPublicKey: string;
+  recoveryKitHash: string;
   currentEpoch: string;
   headSequence: string;
   headHash: string;
@@ -125,6 +126,7 @@ const selectGroup = async (
     recoverySigningPublicKey: row.recovery_signing_public_key as string,
     recoveryKemKeyId: row.recovery_kem_key_id as string,
     recoveryKemPublicKey: row.recovery_kem_public_key as string,
+    recoveryKitHash: row.recovery_kit_hash as string,
     currentEpoch: row.current_epoch as string,
     headSequence: row.head_sequence as string,
     headHash: row.head_hash as string,
@@ -400,7 +402,6 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     groupId: string;
     expectedHeadHash: string;
     sequence: string;
-    nextEpoch: string | null;
     kind:
       | "add-device"
       | "revoke-device"
@@ -462,6 +463,35 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
           statement: existingStatement?.canonical_statement ?? null
         };
       }
+      const parsedStatement = parseCanonicalPdsJson(input.statement) as {
+        draft: Record<string, unknown>;
+      };
+      const statementBody = parsedStatement.draft.body as Record<
+        string,
+        unknown
+      >;
+      const advancesEpoch = ["add-device", "revoke-device", "recover"].includes(
+        input.kind
+      );
+      const nextEpoch = advancesEpoch
+        ? (statementBody.nextEpoch as string)
+        : null;
+      if (
+        advancesEpoch &&
+        (statementBody.previousEpoch !== group.currentEpoch ||
+          nextEpoch !== (BigInt(group.currentEpoch) + 1n).toString())
+      )
+        throw Object.assign(new Error("PDS membership epoch is stale"), {
+          statusCode: 409
+        });
+      if (
+        input.kind === "recover" &&
+        statementBody.recoveryKitHash !== group.recoveryKitHash
+      )
+        throw Object.assign(
+          new Error("PDS recovery kit does not match genesis commitment"),
+          { statusCode: 409 }
+        );
       if (
         ["add-device", "revoke-device", "recover"].includes(input.kind) &&
         !input.keyBundle
@@ -597,7 +627,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
         [
           input.sequence,
           input.statementHash,
-          input.nextEpoch,
+          nextEpoch,
           group.id,
           input.expectedHeadHash
         ]
@@ -606,11 +636,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
         await client.query("rollback");
         return { outcome: "conflict", group, statement: null };
       }
-      const draft = (
-        parseCanonicalPdsJson(input.statement) as {
-          draft: Record<string, unknown>;
-        }
-      ).draft;
+      const draft = parsedStatement.draft;
       await client.query(
         "insert into personal_device_group_statements (group_id,sequence,previous_hash,statement_hash,kind,canonical_statement,redacted_metadata) values ($1,$2,$3,$4,$5,$6,$7)",
         [
@@ -796,6 +822,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
       const group = await selectGroup(client, input.userId, input.groupId);
       if (
         !group ||
+        group.state !== "active" ||
         group.currentEpoch !== input.epoch ||
         !group.members.some((member) => member.status === "active")
       )
@@ -821,7 +848,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     const client = await pool.connect();
     try {
       const group = await selectGroup(client, input.userId, input.groupId);
-      if (!group) return null;
+      if (!group || group.state !== "active") return null;
       const result = await client.query(
         `select c.canonical_certificate from personal_device_membership_certificates c
         join personal_device_group_members m on m.id=c.member_id

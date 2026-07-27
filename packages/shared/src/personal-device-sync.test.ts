@@ -161,6 +161,7 @@ describe("PDS group authority verification", () => {
       certificateIsPdsValid(
         certificate,
         authorityPublicKey,
+        "authority-fixture",
         new Date("2026-07-15T00:01:00.000Z")
       )
     ).toBe(true);
@@ -168,6 +169,7 @@ describe("PDS group authority verification", () => {
       certificateIsPdsValid(
         certificate,
         authorityPublicKey,
+        "authority-fixture",
         new Date("2026-07-15T00:06:00.000Z")
       )
     ).toBe(false);
@@ -178,6 +180,7 @@ describe("PDS group authority verification", () => {
           expiresAt: certificate.issuedAt
         },
         authorityPublicKey,
+        "authority-fixture",
         new Date("2026-07-15T00:00:00.000Z")
       )
     ).toBe(false);
@@ -189,7 +192,22 @@ describe("PDS group authority verification", () => {
           expiresAt: "2026-07-15T00:04:00.000Z"
         },
         authorityPublicKey,
+        "authority-fixture",
         new Date("2026-07-15T00:00:00.000Z")
+      )
+    ).toBe(false);
+    expect(
+      certificateIsPdsValid(
+        {
+          ...certificate,
+          authoritySignature: {
+            ...(certificate.authoritySignature as Record<string, unknown>),
+            keyId: "attacker-key"
+          }
+        },
+        authorityPublicKey,
+        "authority-fixture",
+        new Date("2026-07-15T00:01:00.000Z")
       )
     ).toBe(false);
   });

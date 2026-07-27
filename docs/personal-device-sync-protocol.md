@@ -206,8 +206,9 @@ or use a differently wrapped statement as log head.
   `nextEpoch`, `keyBundleHash`;
 - `recover`: replacement `deviceId`, device signing/KEM IDs and public keys,
   `recoveryKitHash`, `previousEpoch`, `nextEpoch`, and `keyBundleHash`. Recovery
-  replaces and revokes every pre-transition active device; use `add-device`
-  when any existing active device should remain;
+  requires `recoveryKitHash` to equal the genesis commitment, replaces and
+  revokes every pre-transition active device; use `add-device` when any
+  existing active device should remain;
 - `tombstone`: `tombstoneHash` and `deletionFloorToken` from signed tombstone;
 - `resolve-conflict`: `sourceFingerprint`, `selectedClosureHash`, and
   `resolution` (`select` or `distinct`).
@@ -248,6 +249,8 @@ material. It has exactly `protocol`, `groupId`, `deviceId`, `deviceSigningKeyId`
 `authoritySignature` is omitted from membership-certificate bytes. A certificate
 must reference the exact group statement which establishes its device keys and
 its epoch (genesis for epoch 1, or the matching committed transition thereafter).
+The receiver requires `authoritySignature.keyId` to equal the expected Authority
+key ID in addition to verifying the signature with the expected Authority key.
 Its lifetime is strictly positive and no more than 7 days: `issuedAt <
 expiresAt`. Receiver permits 5 minutes `issuedAt` skew, requires `now <
 expiresAt`, and rejects zero, negative, or over-7-day stated lifetime. The

@@ -649,6 +649,25 @@ export const registerPersonalDeviceSyncRoutes = (
       const kind = statementDraft.kind;
       if (!["add-device", "revoke-device", "recover"].includes(kind as string))
         throw pdsError("PDS transition kind is unsupported", 400);
+      const previousEpoch = string(
+        statementBody.previousEpoch,
+        "previousEpoch"
+      );
+      const nextEpoch = string(statementBody.nextEpoch, "nextEpoch");
+      if (
+        previousEpoch !== group.currentEpoch ||
+        nextEpoch !== (BigInt(group.currentEpoch) + 1n).toString()
+      )
+        throw pdsError("PDS membership epoch is stale", 409);
+      const recoveryKitHash =
+        kind === "recover"
+          ? string(statementBody.recoveryKitHash, "recoveryKitHash")
+          : null;
+      if (kind === "recover" && recoveryKitHash !== group.recoveryKitHash)
+        throw pdsError(
+          "PDS recovery kit does not match genesis commitment",
+          409
+        );
       const authorKey = authorizationPublicKey(group, statement);
       if (
         statement.authorization.signerKeyId === group.recoverySigningKeyId &&
@@ -844,11 +863,6 @@ export const registerPersonalDeviceSyncRoutes = (
         groupId: group.groupId,
         expectedHeadHash: group.headHash,
         sequence: string(statementDraft.sequence, "sequence"),
-        nextEpoch: ["add-device", "revoke-device", "recover"].includes(
-          kind as string
-        )
-          ? string(statementBody.nextEpoch, "nextEpoch")
-          : null,
         kind: kind as "add-device" | "revoke-device" | "recover",
         statementHash: pdsFinalizedStatementHash(finalized),
         statement: canonicalizePdsJson(finalized),

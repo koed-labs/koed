@@ -1146,6 +1146,13 @@ export const routeIdentityContracts = [
     "Retrieve active scoped Personal Device Group membership certificate."
   ),
   route(
+    "POST",
+    "/v1/personal-device-sync/groups/{groupId}/certificates/{deviceId}/renew",
+    "session",
+    "personal_memory",
+    "Renew or repair an active scoped Personal Device Group membership certificate."
+  ),
+  route(
     "GET",
     "/v1/personal-device-sync/groups/{groupId}/status",
     "session",
