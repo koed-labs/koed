@@ -212,6 +212,40 @@
   align-items: flex-end;
 }
 
+.semantic-theme-cloud {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.45rem;
+  min-width: 0;
+  padding-top: 0.18rem;
+}
+
+.semantic-theme-cloud > span {
+  color: color-mix(in oklab, var(--memory) 60%, var(--muted-foreground));
+  font-family: "DM Sans", sans-serif;
+  line-height: 1.05;
+  opacity: 0.72;
+}
+
+.semantic-theme-cloud > span[data-weight="3"] {
+  color: color-mix(in oklab, var(--memory) 82%, var(--foreground));
+  font-size: 0.9rem;
+  font-weight: 760;
+  opacity: 1;
+}
+
+.semantic-theme-cloud > span[data-weight="2"] {
+  font-size: 0.75rem;
+  font-weight: 680;
+  opacity: 0.86;
+}
+
+.semantic-theme-cloud > span[data-weight="1"] {
+  font-size: 0.63rem;
+  font-weight: 570;
+}
+
 .personal-session-detail {
   display: flex;
   flex-direction: column;

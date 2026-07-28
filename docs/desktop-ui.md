@@ -29,6 +29,11 @@ Captured Sessions and Shared Memory are stored Memory, not chat:
 
 - A Personal Captured Session renders its ordered User, AI Client, tool, and
   invalidation events.
+- Project and Captured Session listings show a small set of display-only Key
+  themes derived deterministically from generated session titles and
+  human-readable previews. Project themes aggregate Captured Session themes.
+  Project identity, paths, machine-shaped identifiers, code, and tool metadata
+  do not contribute. This display does not run Synthesis or add embedding work.
 - A shared Captured Session renders exactly one authorized representation:
   Memory Events, LCM leaves, or LCM rollups.
 - The companion discussion beside a shared source is Team chat. It does not

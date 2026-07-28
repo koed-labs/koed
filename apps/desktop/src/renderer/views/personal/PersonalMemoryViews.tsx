@@ -35,6 +35,8 @@ import {
   type SessionProjectAssignment,
   type WorkspaceShareCandidate
 } from "./adapters.js";
+import { SemanticThemeWords } from "./SemanticThemeWords.js";
+import { projectThemes, sessionThemes } from "./semantic-themes.js";
 import { usePersonalMemoryDetail } from "./use-personal-memory-detail.js";
 import "./personal-memory.css";
 
@@ -92,6 +94,7 @@ function ProjectRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const themes = projectThemes(project);
   return (
     <button
       aria-current={selected ? "page" : undefined}
@@ -112,6 +115,7 @@ function ProjectRow({
         <small title={project.path ?? undefined}>
           {project.path ?? "Project path unavailable"}
         </small>
+        <SemanticThemeWords themes={themes} />
       </span>
       <time dateTime={projectActivity(project) ?? undefined}>
         {relativeTime(projectActivity(project))}
@@ -254,14 +258,17 @@ function ProjectsPane({
 
 function SessionRow({
   onSelect,
+  project,
   thread
 }: {
   onSelect: () => void;
+  project: PersonalDesktopProject;
   thread: PersonalDesktopProjectThread;
 }) {
   const source = thread.sessionId
     ? sourceAiClientLabel(thread.sourceAiClient)
     : null;
+  const themes = sessionThemes(project, thread);
   return (
     <button
       className="personal-session-row"
@@ -283,6 +290,7 @@ function SessionRow({
           ) : null}
         </span>
         <small>{sessionPreview(thread)}</small>
+        <SemanticThemeWords themes={themes} />
       </span>
       <span className="personal-session-meta">
         <strong>{countLabel(thread.eventCount, "Memory Event")}</strong>
@@ -364,6 +372,7 @@ function ProjectDetail({
               <SessionRow
                 key={sessionSelectionId(thread)}
                 onSelect={() => onSelectSession(sessionSelectionId(thread))}
+                project={project}
                 thread={thread}
               />
             ))}
