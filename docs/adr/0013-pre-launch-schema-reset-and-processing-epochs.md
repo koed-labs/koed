@@ -75,7 +75,8 @@ Normative rules:
 - Each family compatibility manifest uses `{ current, servable[] }`. Candidate output remains non-servable until its cohort coverage and publication gate passes, even when its identity is `current`.
 - A deployment retains and routes at most two distinct processing/asset versions: old and new. Active, candidate, and previous are lifecycle roles, not permission to introduce a third implementation version; starting a transition that would require one must first retire the older rollback candidate.
 - Generation-aware Memory Event keys, Memory Node keys, source links, embedding partitions, invalidation paths, and read paths are required. Parallel generations are not possible with the current global `source_hash` uniqueness shape.
-- Authorization, Share Grants, Team Membership, Workspace Access, lifecycle state, deletion floors, replica readiness, and sync lineage remain authoritative canonical state and must propagate across every retained generation.
+- Authorization, Share Grants, Team Membership, Workspace Access, lifecycle state, deletion floors, replica readiness, sync lineage, and accepted Curated Memory decisions/provenance remain authoritative canonical state and must propagate across every retained generation.
+- Curated Memory evidence pointers to derived Memory Events or Memory Nodes must be rebound to exact candidate-generation replacements through stable source lineage before publication. Missing or ambiguous remapping blocks preservation/activation; it must not suppress an accepted assertion or simulate source deletion.
 - Rollback is not an unconditional pointer flip. It requires coverage, lifecycle, asset, and catch-up preflight against the current canonical high-water.
 
 ### Separate database, payload, processing, and cryptographic namespaces
@@ -105,13 +106,13 @@ Canonical JSON uses sorted keys, explicit nulls where meaningful, content digest
 Minimum meaning-affecting inputs:
 
 - **Projection:** source payload contract, adapter/parser contract, policy snapshot digest, ordering and sealing rules, semantic unit rules, token counter/model, source composition, split limits/overlap, and implementation digest.
-- **LCM:** structured output schema; prompt bundle digests after override resolution; provider; model identity or explicit mutable-alias boundary; reasoning settings; tokenizer; prompt budget; placeholder, chunk/reduce, and compaction rules; redaction/source serialization; implementation digest.
+- **LCM:** structured output schema; prompt bundle digests after override resolution; provider; requested model alias as provenance; resolved immutable model revision or provider-verifiable fingerprint; reasoning settings; tokenizer; prompt budget; placeholder, chunk/reduce, and compaction rules; redaction/source serialization; implementation digest.
 - **Embedding:** exact model artifact digest; tokenizer/config digest; dimensions; output precision; document/query prefixes; source text composition; chunking/overlap; pooling; normalization; runtime behavior that changes vectors; implementation digest.
 - **Retrieval/reranking:** query embedding identity, allowed document partitions, authorization and lifecycle filters, search-domain behavior, metric and score transforms, candidate stages, lexical configuration, fusion/fallback policy, reranker identity, and final evidence ordering.
 
 LCM source closure and child dependency manifests are not part of the family compatibility identity. They remain per-output lineage and dependency fields so one active LCM identity can cover many outputs without making every summary its own epoch.
 
-If a provider exposes only a mutable alias, the specification stores that alias with explicit null immutable revision and `model_identity_kind: "mutable_alias"`. That alias becomes the accepted compatibility boundary only. Output must not claim exact model reproducibility. Missing both immutable revision metadata and a declared alias aborts processing.
+A mutable provider alias is provenance only and cannot be a publishable compatibility boundary. Before candidate LCM processing starts, Koed must resolve and persist an immutable provider revision or provider-verifiable model fingerprint in the compatibility specification. Every job and returned output must match that resolved identity. A changed or unverifiable identity contaminates the candidate: its LCM output is discarded or quarantined, a new compatibility identity is required, and the rebuild restarts. If the provider cannot expose a stable revision or fingerprint, LCM processing remains blocked and the cohort cannot publish; status reports `immutable_model_identity_unavailable`. Koed does not infer identity from alias equality and does not fall back to a backend LLM.
 
 ### Publish two dependency-ordered cohorts under one generation-set revision
 
@@ -163,6 +164,7 @@ Rollback requires:
 - retained old prompt bundle, model/settings boundary, tokenizer, and implementation assets;
 - source, lifecycle, and authorization coverage through a new rollback fence;
 - exact Projection, LCM, and embedding catch-up for the retained generation;
+- complete remapping of accepted Curated Memory evidence onto active-generation derived IDs or retained stable canonical anchors; an unmappable assertion blocks publication rather than being suppressed as deleted;
 - compare-and-set publication of that now-complete retained generation.
 
 Rollback must not regress canonical source, deletion floors, revocation state, sync cursors, or authorization closure.
@@ -171,7 +173,7 @@ Rollback must not regress canonical source, deletion floors, revocation state, s
 
 - Directed Hosted Cross-Identity Sync and Personal Device Sync remain distinct protocols.
 - Capability discovery publishes supported source/payload/protocol ranges and coarse derivation readiness.
-- PDS peers do not need matching local processing identities. They need compatible source/package contracts and local derivation readiness.
+- PDS peers do not need matching local processing identities. They need the exact frozen `koed/pds/v1` source/package contract and local derivation readiness. Processing identities and readiness are never added to the signed V1 source manifest or package bytes; capability discovery carries coarse local readiness out of band.
 - Team sharing changes authorization, not ownership. Any published generation must enforce authorization and lifecycle closure before ranking or expansion.
 
 ### Minimal Operator-visible behavior for V1
