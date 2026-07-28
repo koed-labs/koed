@@ -187,7 +187,8 @@ No field, including timestamp, exists outside `draft`. `draft` contains exactly
 Authorization and countersigning bytes are section 2's `group-statement/draft`
 and `group-statement/final` domains. The finalized record hash is used for
 `previousHash`; implementations must never hash a draft, omit either signature,
-or use a differently wrapped statement as log head.
+or use a differently wrapped statement as log head. Log reads order the decimal
+`sequence` numerically, never lexicographically.
 
 `body` has exactly one shape by `kind`:
 
@@ -302,13 +303,16 @@ X25519 envelopes. It is never Authority plaintext. It is exactly:
 }
 ```
 
-`recipientSnapshot` is unique, ASCII sorted, and equals post-transition active
-devices plus exactly one recovery recipient. Active-device recipient IDs equal
-their group-log `deviceId`. The recovery envelope is identified by
+`recipientSnapshot` is unique, ASCII sorted by ascending code-unit value without
+locale collation, and equals post-transition active devices plus exactly one
+recovery recipient. Active-device recipient IDs equal their group-log `deviceId`. The recovery envelope is identified by
 `recipientKind: "recovery"` and the genesis recovery KEM key ID; its opaque
 `recipientId` need not equal that key ID but must be unique in the snapshot.
 `recipientSnapshotHash` is SHA-256
-of its JCS array. `keyBundleHash` is SHA-256 of full finalized Key Bundle.
+of its JCS array. `keyBundleHash` is SHA-256 of full finalized Key Bundle. While
+group governance remains active, authenticated User retrieval of current bundle
+remains available even when no active device remains; only recovery KEM holder
+can decrypt recovery envelope. Governance freeze still blocks delivery.
 Commitments are SHA-256 of exact 32-byte key values. `epoch` is `nextEpoch`;
 `keyType` is exactly `group-secret-set`; `version` is exactly `1`.
 

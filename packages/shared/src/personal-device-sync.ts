@@ -523,6 +523,9 @@ export const pdsFinalizedStatementHash = (
   );
 };
 
+export const comparePdsIds = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
 export const validatePdsKeyBundleMetadata = (
   value: unknown
 ): { hash: string; draft: JsonRecord } => {
@@ -577,7 +580,7 @@ export const validatePdsKeyBundleMetadata = (
   );
   if (
     new Set(recipients).size !== recipients.length ||
-    recipients.join("\0") !== [...recipients].sort().join("\0")
+    recipients.join("\0") !== [...recipients].sort(comparePdsIds).join("\0")
   )
     throw new TypeError("PDS key bundle recipients must be unique and sorted");
   if (sha256(canonicalizePdsJson(recipients)) !== draft.recipientSnapshotHash)
@@ -694,7 +697,7 @@ export const validatePdsKeyBundle = (
   }
   if (options.expectedRecipients) {
     const expected = [...options.expectedRecipients].sort((left, right) =>
-      left.recipientId.localeCompare(right.recipientId)
+      comparePdsIds(left.recipientId, right.recipientId)
     );
     const actual = (validated.draft.envelopes as unknown[]).map((value) => {
       const envelope = own(value);

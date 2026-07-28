@@ -127,6 +127,7 @@ export {
   PDS_CERTIFICATE_MAX_LIFETIME_MS,
   assertEpochAdvance,
   certificateIsPdsValid,
+  comparePdsIds,
   decodePdsBase64url,
   pdsEd25519PrivateKey,
   pdsEd25519PublicKey,

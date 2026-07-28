@@ -707,10 +707,12 @@ describeDb("memory repository visibility", () => {
       }
     };
 
-    await expect(repo.createPersonalDeviceGroup(input)).resolves.toMatchObject({
+    const created = await repo.createPersonalDeviceGroup(input);
+    expect(created).toMatchObject({
       outcome: "created",
       statement: persistedStatement
     });
+    if (created.outcome === "conflict") throw new Error("expected PDS group");
     await expect(repo.createPersonalDeviceGroup(input)).resolves.toMatchObject({
       outcome: "idempotent",
       statement: persistedStatement
@@ -754,6 +756,34 @@ describeDb("memory repository visibility", () => {
         [conflictingChallenge.id]
       )
     ).resolves.toMatchObject({ rows: [{ used_at: null }] });
+
+    for (let sequence = 2; sequence <= 11; sequence += 1) {
+      await pool.query(
+        `insert into personal_device_group_statements
+          (group_id,sequence,previous_hash,statement_hash,kind,canonical_statement)
+        values ($1,$2,$3,$4,'test',$5)`,
+        [
+          created.group.id,
+          String(sequence),
+          `statement-${sequence - 1}`,
+          `statement-${sequence}`,
+          canonicalizePdsJson({ sequence: String(sequence) })
+        ]
+      );
+    }
+    await expect(
+      repo.listPersonalDeviceGroupStatements(user.id, groupId)
+    ).resolves.toEqual(
+      Array.from({ length: 11 }, (_, index) => ({
+        sequence: String(index + 1),
+        statementHash:
+          index === 0 ? "persisted-genesis-hash" : `statement-${index + 1}`,
+        canonicalStatement:
+          index === 0
+            ? persistedStatement
+            : canonicalizePdsJson({ sequence: String(index + 1) })
+      }))
+    );
   });
 
   it("freezes PDS governance without exposing group secrets or Team authority", async () => {
@@ -845,6 +875,18 @@ describeDb("memory repository visibility", () => {
       issuedAt: certificateIssuedAt,
       expiresAt: certificateExpiresAt
     });
+
+    await pool.query(
+      "update personal_device_group_members set status='revoked',revoked_at=now() where group_id=$1",
+      [created.group.id]
+    );
+    await expect(
+      repo.getPersonalDeviceKeyBundle({ userId: user.id, groupId, epoch: "1" })
+    ).resolves.toBe('{"bundle":"freeze"}');
+    await pool.query(
+      "update personal_device_group_members set status='active',revoked_at=null where group_id=$1",
+      [created.group.id]
+    );
 
     const frozen = await repo.freezePersonalDeviceGovernance({
       userId: user.id,

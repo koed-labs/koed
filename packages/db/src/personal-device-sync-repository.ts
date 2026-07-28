@@ -231,7 +231,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
       const group = await selectGroup(client, userId, groupId);
       if (!group) return [];
       const rows = await client.query(
-        "select sequence, statement_hash, canonical_statement from personal_device_group_statements where group_id = $1 order by sequence",
+        "select sequence, statement_hash, canonical_statement from personal_device_group_statements where group_id = $1 order by sequence::numeric",
         [group.id]
       );
       return rows.rows.map((value) => {
@@ -823,8 +823,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
       if (
         !group ||
         group.state !== "active" ||
-        group.currentEpoch !== input.epoch ||
-        !group.members.some((member) => member.status === "active")
+        group.currentEpoch !== input.epoch
       )
         return null;
       const result = await client.query(

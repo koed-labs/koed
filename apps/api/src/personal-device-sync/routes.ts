@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   canonicalizePdsJson,
+  comparePdsIds,
   parseCanonicalPdsJson,
   pdsFinalizedStatementHash,
   signPdsGroupFinal,
@@ -324,7 +325,7 @@ const expectedBundleRecipients = (
     recipientKemKeyId: group.recoveryKemKeyId
   });
   return recipients.sort((left, right) =>
-    left.recipientId.localeCompare(right.recipientId)
+    comparePdsIds(left.recipientId, right.recipientId)
   );
 };
 

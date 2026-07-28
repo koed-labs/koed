@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   certificateIsPdsValid,
+  comparePdsIds,
   pdsFinalizedStatementHash,
   validatePdsGroupStatement,
   validatePdsKeyBundle
@@ -39,6 +40,15 @@ describe("PDS group authority verification", () => {
   const addDeviceFixture = fixture.signedRecords.addDevice;
   const keyBundleFixture = fixture.signedRecords.keyBundle;
   const certificateFixture = fixture.signedRecords.membershipCertificate;
+
+  it("uses canonical code-unit ordering for opaque recipient IDs", () => {
+    expect(["a", "Z", "z", "A"].sort(comparePdsIds)).toEqual([
+      "A",
+      "Z",
+      "a",
+      "z"
+    ]);
+  });
 
   it("accepts the coherent genesis, add-device, and Key Bundle vectors", () => {
     const genesis = validatePdsGroupStatement(
