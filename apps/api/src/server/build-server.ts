@@ -392,6 +392,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     registerRoutes(): void;
     close(): Promise<void>;
   } | null = null;
+  let localEdgeSecureFetch: ReturnType<
+    typeof createSecureUpstreamFetch
+  > | null = null;
   const relayCleanup = (
     repository as
       | (MemorySourceRepository & {
@@ -419,7 +422,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       embeddingQueue?.close(),
       compactionQueue?.close(),
       rateLimitStore.close?.(),
-      cacheProvider.close?.()
+      cacheProvider.close?.(),
+      localEdgeSecureFetch?.close()
     ]);
     await pool?.end();
   });
@@ -546,18 +550,19 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     options.upstreamBackendsPath ?? config.upstreamBackendsPath;
   const localEdgeUpstreamEnrollmentsPath =
     options.upstreamEnrollmentsPath ?? config.upstreamEnrollmentsPath;
-  const localEdgeFetch =
-    options.fetch ??
-    createSecureUpstreamFetch({
-      allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() =>
-        readLocalEdgeUpstreamRegistry(
-          localEdgeUpstreamBackendsPath
-        ).backends.map((backend) => ({
-          baseUrl: backend.baseUrl,
-          profile: backend.profile
-        }))
-      )
-    });
+  localEdgeSecureFetch = options.fetch
+    ? null
+    : createSecureUpstreamFetch({
+        allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() =>
+          readLocalEdgeUpstreamRegistry(
+            localEdgeUpstreamBackendsPath
+          ).backends.map((backend) => ({
+            baseUrl: backend.baseUrl,
+            profile: backend.profile
+          }))
+        )
+      });
+  const localEdgeFetch = options.fetch ?? localEdgeSecureFetch!;
   const localEdgeResolveUpstreamAuthorization =
     options.resolveUpstreamAuthorization ??
     createDefaultResolveUpstreamAuthorization(config.koedHome);

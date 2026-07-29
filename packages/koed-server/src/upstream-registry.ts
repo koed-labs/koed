@@ -882,14 +882,15 @@ export const refreshUpstreamBackendCapabilities = async (
   }
 
   const attemptedAt = resolvedDeps.now();
-  try {
-    const requestFetch =
-      deps.fetch ??
-      createSecureUpstreamFetch({
+  const ownedRequestFetch = deps.fetch
+    ? null
+    : createSecureUpstreamFetch({
         allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() => [
           { baseUrl: backend.baseUrl, profile: backend.profile }
         ])
       });
+  try {
+    const requestFetch = deps.fetch ?? ownedRequestFetch!;
     const response = await requestFetch(
       new URL("v1/capabilities", `${backend.baseUrl}/`),
       { redirect: "error" }
@@ -985,6 +986,8 @@ export const refreshUpstreamBackendCapabilities = async (
       backend: summarize(failed),
       message: `Failed to validate upstream backend ${backendId}.`
     };
+  } finally {
+    await ownedRequestFetch?.close();
   }
 };
 

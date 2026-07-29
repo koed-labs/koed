@@ -192,7 +192,7 @@ describe("desktop collaboration broker", () => {
       })
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(5);
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("rejects a Personal retry when its remote principal or device binding changed", async () => {
@@ -318,7 +318,7 @@ describe("desktop collaboration broker", () => {
         error: { code: "access_revoked" }
       }
     });
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("persists encrypted sends and retries one immutable message at most five times", async () => {
@@ -998,7 +998,7 @@ describe("desktop collaboration broker", () => {
       checkedAt: "2026-07-18T08:44:00.000Z",
       expiresAt: "2026-07-18T08:59:00.000Z"
     });
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("replays a cached result only for an identical owner request", async () => {
@@ -1240,7 +1240,7 @@ describe("desktop collaboration broker", () => {
     ]);
     expect(JSON.stringify(sent)).not.toContain(secretSentinel);
     expect(JSON.stringify(sent)).not.toContain("expected");
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("broadcasts a live transition after browser enrollment exchanges", async () => {
@@ -1364,7 +1364,7 @@ describe("desktop collaboration broker", () => {
     });
     const result = sent.find((message) => message.type === "command_result");
     expect(result?.type === "command_result" && result.result.ok).toBe(false);
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("revokes and clears the old trust domain before activating a different backend", async () => {
@@ -1500,7 +1500,7 @@ describe("desktop collaboration broker", () => {
     expect(
       sent.find((message) => message.type === "command_result")
     ).toMatchObject({ type: "command_result", result: { ok: true } });
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("purges backend custody after revocation and retries incomplete subscription cleanup", async () => {
@@ -1741,7 +1741,7 @@ describe("desktop collaboration broker", () => {
     await invoke("collaboration.load", "000000000002");
     expect(subscriptionCleanupAttempts).toBe(2);
     expect(listUpstreamDisconnectCleanupRecords(paths)).toEqual([]);
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("drops queued Team writes and Project links from a replaced remote principal before replay", async () => {
@@ -1893,7 +1893,7 @@ describe("desktop collaboration broker", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(listCollaborationPendingSends(koedHome)).toEqual([]);
     expect(listProjectTeamWorkspaceLinks(paths).links).toEqual([]);
-    broker.shutdown();
+    await broker.shutdown();
   });
 
   it("keeps the old backend active when its remote credential cannot be revoked", async () => {
@@ -1953,6 +1953,6 @@ describe("desktop collaboration broker", () => {
         error: { code: "temporarily_unavailable" }
       }
     });
-    broker.shutdown();
+    await broker.shutdown();
   });
 });

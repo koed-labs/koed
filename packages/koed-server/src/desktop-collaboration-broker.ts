@@ -365,8 +365,8 @@ export const createDesktopCollaborationBroker = (
     dependencies.paths ??
     resolveKoedServerPaths(environment as NodeJS.ProcessEnv);
   const fetcher = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
-  const upstreamFetcher = dependencies.fetch
-    ? fetcher
+  const ownedUpstreamFetcher = dependencies.fetch
+    ? null
     : createSecureUpstreamFetch({
         allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() =>
           (listUpstreamBackends(paths).backends ?? []).map((backend) => ({
@@ -375,6 +375,7 @@ export const createDesktopCollaborationBroker = (
           }))
         )
       });
+  const upstreamFetcher = dependencies.fetch ? fetcher : ownedUpstreamFetcher!;
   const enrollmentStatus =
     dependencies.getUpstreamEnrollmentStatus ?? getUpstreamEnrollmentStatus;
   const refreshCapabilities =
@@ -1864,6 +1865,7 @@ export const createDesktopCollaborationBroker = (
         for (const ownerId of [...ownerContexts.keys()]) {
           releaseOwner(ownerId);
         }
+        await ownedUpstreamFetcher?.close();
         sessionSend({
           protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
           contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -1990,7 +1992,7 @@ export const createDesktopCollaborationBroker = (
   return {
     handleMessage,
     releaseOwner,
-    shutdown: () => {
+    shutdown: async () => {
       stopEnrollmentMonitors();
       clearCapabilityRefreshTimers();
       if (disconnectCleanupTimer) clearTimeout(disconnectCleanupTimer);
@@ -1999,6 +2001,7 @@ export const createDesktopCollaborationBroker = (
       for (const ownerId of [...ownerContexts.keys()]) {
         releaseOwner(ownerId);
       }
+      await ownedUpstreamFetcher?.close();
     },
     sendReady
   };
@@ -2039,8 +2042,7 @@ export const runDesktopCollaborationBrokerProcess = (): Promise<void> => {
     void broker.handleMessage(value);
   });
   process.once("disconnect", () => {
-    broker.shutdown();
-    process.exit(0);
+    void broker.shutdown().finally(() => process.exit(0));
   });
   broker.sendReady();
   return Promise.resolve();

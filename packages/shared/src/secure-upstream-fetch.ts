@@ -39,6 +39,10 @@ export interface SecureUpstreamFetchOptions {
   dependencies?: SecureUpstreamFetchDependencies;
 }
 
+export type SecureUpstreamFetch = typeof fetch & {
+  close: () => Promise<void>;
+};
+
 const ipv4Number = (address: string): number | null => {
   const parts = address.split(".");
   if (parts.length !== 4) return null;
@@ -224,12 +228,21 @@ export const registeredPrivateNetworkPolicy =
 
 export const createSecureUpstreamFetch = (
   options: SecureUpstreamFetchOptions = {}
-): typeof fetch => {
+): SecureUpstreamFetch => {
   const lookup = options.dependencies?.lookup ?? defaultLookup;
   const createDispatcher =
     options.dependencies?.createDispatcher ?? defaultDispatcher;
   const request = options.dependencies?.fetch ?? defaultFetch;
-  return (async (input: string | URL | Request, init: RequestInit = {}) => {
+  const dispatchers = new Map<string, Dispatcher>();
+  let closePromise: Promise<void> | null = null;
+
+  const secureFetch = async (
+    input: string | URL | Request,
+    init: RequestInit = {}
+  ) => {
+    if (closePromise) {
+      throw new Error("Secure upstream fetch is closed");
+    }
     const url = targetUrl(input);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error("Upstream request must use HTTP or HTTPS");
@@ -246,15 +259,41 @@ export const createSecureUpstreamFetch = (
       addresses,
       options.allowPrivateNetworkForUrl?.(url) ?? false
     );
-    const dispatcher = createDispatcher({
-      hostname: url.hostname.replace(/^\[|\]$/g, ""),
-      address: selected.address,
-      family: selected.family
-    });
+    if (closePromise) {
+      throw new Error("Secure upstream fetch is closed");
+    }
+    const hostname = url.hostname.replace(/^\[|\]$/g, "");
+    const dispatcherKey = JSON.stringify([
+      hostname.toLowerCase(),
+      selected.address,
+      selected.family
+    ]);
+    let dispatcher = dispatchers.get(dispatcherKey);
+    if (!dispatcher) {
+      dispatcher = createDispatcher({
+        hostname,
+        address: selected.address,
+        family: selected.family
+      });
+      dispatchers.set(dispatcherKey, dispatcher);
+    }
     return request(input, {
       ...init,
       redirect: "error",
       dispatcher
     });
-  }) as typeof fetch;
+  };
+
+  const fetchWithLifecycle = secureFetch as SecureUpstreamFetch;
+  fetchWithLifecycle.close = () => {
+    if (!closePromise) {
+      const ownedDispatchers = [...dispatchers.values()];
+      dispatchers.clear();
+      closePromise = Promise.all(
+        ownedDispatchers.map((dispatcher) => dispatcher.close())
+      ).then(() => undefined);
+    }
+    return closePromise;
+  };
+  return fetchWithLifecycle;
 };

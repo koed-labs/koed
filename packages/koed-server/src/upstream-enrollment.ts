@@ -121,22 +121,6 @@ const depsWithDefaults = (
   randomBytes: deps.randomBytes ?? randomBytes
 });
 
-const secureFetchForBackend = (
-  backend: UpstreamBackendSummary,
-  deps: UpstreamEnrollmentDeps,
-  resolvedDeps: Required<UpstreamEnrollmentDeps>
-): Required<UpstreamEnrollmentDeps> =>
-  deps.fetch
-    ? resolvedDeps
-    : {
-        ...resolvedDeps,
-        fetch: createSecureUpstreamFetch({
-          allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() => [
-            { baseUrl: backend.baseUrl, profile: backend.profile }
-          ])
-        })
-      };
-
 const defaultStore = (now: string): UpstreamEnrollmentStore => ({
   schemaVersion: 1,
   updatedAt: now,
@@ -778,12 +762,37 @@ const materializeState = (
   return record;
 };
 
-export const startUpstreamEnrollment = async (
+const withSecureFetchForBackend = async <T>(
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps,
+  operation: (resolvedDeps: UpstreamEnrollmentDeps) => Promise<T>
+): Promise<T> => {
+  if (deps.fetch) return operation(deps);
+  const backend = backendById(
+    paths,
+    validateBackendId(id),
+    depsWithDefaults(deps)
+  ).backend;
+  if (!backend) return operation(deps);
+  const secureFetch = createSecureUpstreamFetch({
+    allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() => [
+      { baseUrl: backend.baseUrl, profile: backend.profile }
+    ])
+  });
+  try {
+    return await operation({ ...deps, fetch: secureFetch });
+  } finally {
+    await secureFetch.close();
+  }
+};
+
+const startUpstreamEnrollmentWithFetch = async (
   paths: KoedServerPaths,
   id: string,
   deps: UpstreamEnrollmentDeps = {}
 ): Promise<UpstreamEnrollmentResult> => {
-  let resolvedDeps = depsWithDefaults(deps);
+  const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
   const identity = await ensureDeviceIdentity(paths);
   if (!identity.remoteOperationsAllowed) {
@@ -818,7 +827,6 @@ export const startUpstreamEnrollment = async (
       message: `Upstream backend ${backendId} cannot enroll until disconnect cleanup completes.`
     };
   }
-  resolvedDeps = secureFetchForBackend(backend, deps, resolvedDeps);
   if (backend.capabilities.state !== "validated") {
     return {
       ok: false,
@@ -1032,12 +1040,21 @@ export const startUpstreamEnrollment = async (
   });
 };
 
-export const getUpstreamEnrollmentStatus = async (
+export const startUpstreamEnrollment = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> =>
+  withSecureFetchForBackend(paths, id, deps, (resolvedDeps) =>
+    startUpstreamEnrollmentWithFetch(paths, id, resolvedDeps)
+  );
+
+const getUpstreamEnrollmentStatusWithFetch = async (
   paths: KoedServerPaths,
   id: string,
   deps: UpstreamEnrollmentDeps = {}
 ): Promise<UpstreamEnrollmentResult> => {
-  let resolvedDeps = depsWithDefaults(deps);
+  const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
   const identity = await ensureDeviceIdentity(paths);
   if (!identity.remoteOperationsAllowed || !identity.deviceInstanceId) {
@@ -1049,9 +1066,6 @@ export const getUpstreamEnrollmentStatus = async (
   }
   const now = resolvedDeps.now();
   const { backend } = backendById(paths, backendId, resolvedDeps);
-  if (backend) {
-    resolvedDeps = secureFetchForBackend(backend, deps, resolvedDeps);
-  }
   const store = readStore(paths, resolvedDeps);
   const record = latestEnrollment(store, backendId);
   if (!record) {
@@ -1275,6 +1289,15 @@ export const getUpstreamEnrollmentStatus = async (
   });
 };
 
+export const getUpstreamEnrollmentStatus = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> =>
+  withSecureFetchForBackend(paths, id, deps, (resolvedDeps) =>
+    getUpstreamEnrollmentStatusWithFetch(paths, id, resolvedDeps)
+  );
+
 export const cancelUpstreamEnrollment = async (
   paths: KoedServerPaths,
   id: string,
@@ -1434,12 +1457,12 @@ export const invalidateUpstreamEnrollmentReferences = async (
   return { pendingRemoteRevocation };
 };
 
-export const disconnectUpstreamBackendEnrollment = async (
+const disconnectUpstreamBackendEnrollmentWithFetch = async (
   paths: KoedServerPaths,
   id: string,
   deps: UpstreamEnrollmentDeps = {}
 ): Promise<UpstreamEnrollmentResult> => {
-  let resolvedDeps = depsWithDefaults(deps);
+  const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
   return withUpstreamEnrollmentLock(paths, backendId, async () => {
     const now = resolvedDeps.now().toISOString();
@@ -1454,7 +1477,6 @@ export const disconnectUpstreamBackendEnrollment = async (
     beginUpstreamDisconnectCleanup(paths, backendId, {
       now: resolvedDeps.now
     });
-    resolvedDeps = secureFetchForBackend(backend, deps, resolvedDeps);
     if (
       backend.credential.status !== "revoked" &&
       backend.credential.status !== "not_configured"
@@ -1585,3 +1607,12 @@ export const disconnectUpstreamBackendEnrollment = async (
     };
   });
 };
+
+export const disconnectUpstreamBackendEnrollment = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> =>
+  withSecureFetchForBackend(paths, id, deps, (resolvedDeps) =>
+    disconnectUpstreamBackendEnrollmentWithFetch(paths, id, resolvedDeps)
+  );
