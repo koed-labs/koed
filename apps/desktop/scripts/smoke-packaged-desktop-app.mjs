@@ -18,7 +18,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   createOwnedDiagnosticsDir,
-  writeDiagnosticTail
+  readDiagnosticWindow,
+  writeDiagnosticWindow
 } from "./smoke-diagnostics.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 
@@ -278,12 +279,7 @@ const pidIsRunning = (pid) => {
 const readableDiagnostic = (label, path) => {
   if (!existsSync(path)) return `${label}: not created`;
   try {
-    const contents = readFileSync(path, "utf8");
-    const maxCharacters = 64 * 1024;
-    const output =
-      contents.length > maxCharacters
-        ? `[last ${maxCharacters} characters]\n${contents.slice(-maxCharacters)}`
-        : contents;
+    const output = readDiagnosticWindow(path).toString("utf8");
     return `${label} (${path}):\n${output}`;
   } catch (error) {
     return `${label} (${path}): could not read (${error instanceof Error ? error.message : String(error)})`;
@@ -307,7 +303,7 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
         mode: 0o600
       }
     );
-    for (const [source, relativePath, tailOnly] of [
+    for (const [source, relativePath, boundedLog] of [
       [supervisorLog, "logs/supervisor.log", true],
       [postgresLog, "logs/postgres.log", true],
       [runtimeState, "run/koed-server.json", false],
@@ -316,8 +312,8 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
       if (!existsSync(source)) continue;
       const target = resolve(ownedDiagnosticsDir, relativePath);
       mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
-      if (tailOnly) {
-        writeDiagnosticTail(source, target);
+      if (boundedLog) {
+        writeDiagnosticWindow(source, target);
       } else {
         cpSync(source, target);
       }
