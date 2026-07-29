@@ -7,6 +7,15 @@ import { resolve } from "node:path";
 const delay = (ms) =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
+const appendOutputTail = (current, chunk) =>
+  `${current}${String(chunk)}`.slice(-32_768);
+
+const redactLaunchOutput = (value) =>
+  value
+    .replace(/\bBearer\s+\S+/giu, "Bearer [REDACTED]")
+    .replace(/\b(?:cmt|cms)_[A-Za-z0-9_-]+/gu, "[REDACTED_CREDENTIAL]")
+    .replace(/\b(KOED_[A-Z0-9_]*(?:KEY|SECRET|TOKEN))=\S+/gu, "$1=[REDACTED]");
+
 const connect = (url) =>
   new Promise((resolveConnect, reject) => {
     const socket = new WebSocket(url);
@@ -86,6 +95,9 @@ export const smokePackagedRendererFaults = async ({
     );
   const launchEnvironment = { ...env, KOED_HOME: koedHome };
   delete launchEnvironment.ELECTRON_RUN_AS_NODE;
+  let stdoutTail = "";
+  let stderrTail = "";
+  let childExit;
   const child = spawn(
     executable,
     [
@@ -95,13 +107,23 @@ export const smokePackagedRendererFaults = async ({
     ],
     {
       env: launchEnvironment,
-      stdio: "ignore"
+      stdio: ["ignore", "pipe", "pipe"]
     }
   );
+  child.stdout.on("data", (chunk) => {
+    stdoutTail = appendOutputTail(stdoutTail, chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderrTail = appendOutputTail(stderrTail, chunk);
+  });
+  child.on("exit", (code, signal) => {
+    childExit = { code, signal };
+  });
   let cdp;
   try {
     let target;
-    for (let attempt = 0; attempt < 200; attempt += 1) {
+    const startupDeadline = Date.now() + 30_000;
+    while (Date.now() < startupDeadline && !childExit) {
       try {
         const targets = await fetch(
           `http://127.0.0.1:${debuggingPort}/json/list`
@@ -115,8 +137,19 @@ export const smokePackagedRendererFaults = async ({
       }
       await delay(50);
     }
-    if (!target)
-      throw new Error("Packaged renderer CDP target was unavailable.");
+    if (!target) {
+      const exitDetail = childExit
+        ? ` Electron exited with code ${String(childExit.code)} and signal ${String(childExit.signal)}.`
+        : " Electron remained running.";
+      const output = redactLaunchOutput(
+        [stdoutTail, stderrTail].filter(Boolean).join("\n")
+      );
+      throw new Error(
+        `Packaged renderer CDP target was unavailable after 30 seconds.${exitDetail}${
+          output ? `\nPackaged Electron output:\n${output}` : ""
+        }`
+      );
+    }
     cdp = await connect(target.webSocketDebuggerUrl);
     await cdp.call("Runtime.enable");
     const evaluate = async (expression) => {
