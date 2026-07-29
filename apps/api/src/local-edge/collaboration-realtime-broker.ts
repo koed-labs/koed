@@ -518,6 +518,7 @@ export interface CollaborationRealtimeBrokerOptions {
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   now?: () => Date;
   afterRemoteAck?: () => Promise<void>;
+  onRemoteNavigationInvalidated?: (backendId: string) => void;
 }
 
 export interface CollaborationRealtimeBrokerService {
@@ -1873,6 +1874,9 @@ export const createCollaborationRealtimeBroker = (
       if (control!.subscription.id !== connection.row.remoteSubscriptionId) {
         fail("Upstream collaboration control binding is invalid", 502);
       }
+      options.onRemoteNavigationInvalidated?.(
+        connection.binding.upstreamBackendId
+      );
       if (
         control!.reason === "access_revoked" ||
         parsed.event === "access_revoked"
@@ -1942,6 +1946,9 @@ export const createCollaborationRealtimeBroker = (
     ) {
       return;
     }
+    options.onRemoteNavigationInvalidated?.(
+      connection.binding.upstreamBackendId
+    );
     const payload = rendererUpdateEvent({
       contractVersion: protocolVersion,
       type: "update",

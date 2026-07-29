@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import type {
+  CollaborationRepository,
   DeviceCredentialAuthContext,
   HighRiskActionRepository,
   SharedMemoryConsentRecord,
@@ -567,7 +568,7 @@ const buildTestServer = async (fixture: ReturnType<typeof createFixture>) => {
     const credentialKeyId = match[1]!;
     const operationFamilies =
       credentialKeyId === "reader"
-        ? ["team_workspace_read"]
+        ? ["team_workspace_read", "team_chat_read"]
         : ["share_grant_management"];
     const ownerUserId =
       credentialKeyId === "owner-share" ? fixture.ids.alice : fixture.ids.bob;
@@ -630,8 +631,75 @@ const buildTestServer = async (fixture: ReturnType<typeof createFixture>) => {
       return receipt ? { ...receipt, replayed: false } : null;
     }
   } as unknown as Pick<HighRiskActionRepository, "executeActionGrant">;
+  const companionThreadId = randomUUID();
+  const collaborationRepository = {
+    async getAuthorizedSnapshot() {
+      return {
+        scope: "team",
+        personalOwnerUserId: null,
+        teamId: fixture.ids.teamA,
+        highWaterCursor: 1,
+        threads: [
+          {
+            id: companionThreadId,
+            logicalId: randomUUID(),
+            scope: "team",
+            kind: "shared_session_discussion",
+            personalOwnerUserId: null,
+            teamId: fixture.ids.teamA,
+            teamWorkspaceId: fixture.ids.workspaceA,
+            sharedLogicalMemoryId: fixture.ids.logicalMemory,
+            shareGrantId: fixture.ids.grant,
+            systemKey: null,
+            name: "Shared discussion",
+            topic: null,
+            createdByUserId: fixture.ids.alice,
+            version: 1,
+            lifecycle: "active",
+            latestSequence: 1,
+            lastReadMessageId: null,
+            lastReadSequence: 0,
+            unreadCount: 1,
+            participants: [],
+            createdAt: iso,
+            updatedAt: iso,
+            lastActivityAt: iso,
+            archivedAt: null
+          }
+        ]
+      };
+    },
+    async listMessages() {
+      return {
+        messages: [
+          {
+            id: randomUUID(),
+            threadId: companionThreadId,
+            threadSequence: 1,
+            scope: "team",
+            personalOwnerUserId: null,
+            teamId: fixture.ids.teamA,
+            teamWorkspaceId: fixture.ids.workspaceA,
+            senderKind: "user",
+            senderPrincipalId: `user:${fixture.ids.alice}`,
+            senderUserId: fixture.ids.alice,
+            senderDisplayName: "Alice",
+            bodyText: "Review the shared source.",
+            metadata: {},
+            provenance: { kind: "user_authored", id: randomUUID() },
+            createdAt: iso,
+            updatedAt: iso
+          }
+        ],
+        hasMore: false,
+        nextBeforeSequence: null,
+        nextAfterSequence: null
+      };
+    }
+  } as unknown as CollaborationRepository;
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: () => fixture.repository,
+    requireCollaborationRepository: () => collaborationRepository,
     requireHighRiskRepository: () => highRiskRepository,
     authenticateSession: sessionUser,
     authenticateSessionContext: async (request) => ({
@@ -1083,6 +1151,41 @@ describe("Shared Memory HTTP routes", () => {
 
     expect(allowed.statusCode).toBe(200);
     expect(wrongScope.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("returns the initial Shared Memory source and companion discussion under one authorization boundary", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const response = await app.inject({
+      method: "GET",
+      url: `${scopedGrantUrl(fixture)}/initial-view`,
+      headers: { authorization: "Koed-Device reader:secret" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(jsonBody<Record<string, unknown>>(response)).toMatchObject({
+      sharedMemory: {
+        grant: {
+          id: fixture.ids.grant,
+          teamId: fixture.ids.teamA,
+          teamWorkspaceId: fixture.ids.workspaceA
+        },
+        companionScope: {
+          shareGrantId: fixture.ids.grant,
+          logicalMemoryId: fixture.ids.logicalMemory
+        }
+      },
+      companion: {
+        thread: {
+          kind: "shared_session_discussion",
+          shareGrantId: fixture.ids.grant
+        },
+        messages: {
+          messages: [{ bodyText: "Review the shared source." }]
+        }
+      }
+    });
     await app.close();
   });
 

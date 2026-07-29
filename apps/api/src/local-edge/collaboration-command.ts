@@ -16,7 +16,6 @@ import * as shared from "@koed/shared";
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
-  COLLABORATION_HISTORY_PAGE_MAX_ITEMS,
   COLLABORATION_NAME_MAX_CODE_POINTS,
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
   collaborationCommandResultSchema,
@@ -164,6 +163,9 @@ interface CollaborationCommandRouteOptions {
   readLocalEdgeClientCredential?: LocalEdgeCredentialResolver;
   verifyDesktopLocalCredential?: DesktopCredentialVerifier;
   readUpstreamRegistry?: (path: string) => LocalEdgeUpstreamRegistry;
+  subscribeRemoteNavigationInvalidation?: (
+    listener: (backendId: string) => void
+  ) => () => void;
 }
 
 type PersonalCommand = Extract<
@@ -583,6 +585,36 @@ const remoteSharedGrantIndexSchema = z
       .passthrough()
   })
   .passthrough();
+
+const remoteTeamNavigationSchema = z
+  .object({
+    principal: remotePrincipalSchema,
+    teams: z
+      .array(
+        z
+          .object({
+            team: remoteTeamSchema,
+            membership: remoteMembershipSchema,
+            members: z.array(remoteRosterMemberSchema),
+            threads: z.array(z.unknown()).max(5_000),
+            highWaterCursor: z.number().int().safe().min(0),
+            workspaces: z
+              .array(
+                z
+                  .object({
+                    teamWorkspace: remoteWorkspaceSchema,
+                    access: remoteWorkspaceAccessSchema,
+                    shareGrants: z.array(remoteSharedGrantIndexSchema).max(100)
+                  })
+                  .strict()
+              )
+              .max(20)
+          })
+          .strict()
+      )
+      .max(50)
+  })
+  .strict();
 
 const remoteMessagePageSchema = z
   .object({
@@ -2170,60 +2202,28 @@ const loadRemoteTeamNavigation = async (input: {
   teamPrincipal: Record<string, unknown>;
   teams: Record<string, unknown>[];
 }> => {
-  const request = (operation: RemoteRequestOptions) =>
-    requireRemoteJson(input.fetcher, operation);
-  const read = (
-    path: string,
-    operationFamily: "team_workspace_read" | "team_chat_read"
-  ) =>
-    request({
+  const payload = remoteTeamNavigationSchema.parse(
+    await requireRemoteJson(input.fetcher, {
       backend: input.context.backend,
       upstreamAuthorization: input.context.upstreamAuthorization,
-      operationFamily,
+      operationFamily: "team_workspace_read",
       method: "GET",
-      path
+      path: "/v1/teams/navigation"
+    })
+  );
+  if (
+    payload.principal.id !== input.context.principal.id ||
+    !input.context.operationFamilies.has("team_chat_read")
+  ) {
+    throw Object.assign(new Error("Remote Team principal is invalid"), {
+      collaborationSafeError: safeError("permission_denied")
     });
-  const teamsPayload = await read("/v1/teams", "team_workspace_read");
-  const teams = z.array(remoteTeamSchema).parse(teamsPayload.teams);
-  const principal = remotePrincipalPersonFrom(input.context.principal);
+  }
+  const principal = remotePrincipalPersonFrom(payload.principal);
   const navigationTeams: Record<string, unknown>[] = [];
 
-  for (const team of teams.slice(0, 50)) {
-    const [
-      membershipPayload,
-      rosterPayload,
-      workspacesPayload,
-      threadsPayload
-    ] = await Promise.all([
-      read(
-        `/v1/teams/${encodeURIComponent(team.id)}/membership`,
-        "team_workspace_read"
-      ),
-      read(
-        `/v1/teams/${encodeURIComponent(team.id)}/members`,
-        "team_workspace_read"
-      ),
-      read(
-        queryPath(`/v1/teams/${encodeURIComponent(team.id)}/workspaces`, {
-          includeArchived: true,
-          limit: 20
-        }),
-        "team_workspace_read"
-      ),
-      read(
-        queryPath(
-          `/v1/collaboration/teams/${encodeURIComponent(team.id)}/threads`,
-          {
-            includeArchived: true,
-            limit: COLLABORATION_HISTORY_PAGE_MAX_ITEMS
-          }
-        ),
-        "team_chat_read"
-      )
-    ]);
-    const membership = remoteMembershipSchema.parse(
-      membershipPayload.membership
-    );
+  for (const entry of payload.teams) {
+    const { team, membership } = entry;
     if (
       membership.teamId !== team.id ||
       membership.userId !== input.context.principal.id ||
@@ -2233,9 +2233,7 @@ const loadRemoteTeamNavigation = async (input: {
         collaborationSafeError: safeError("permission_denied")
       });
     }
-    const people = z
-      .array(remoteRosterMemberSchema)
-      .parse(rosterPayload.members);
+    const people = entry.members;
     if (
       !people.some((person) => person.userId === input.context.principal.id)
     ) {
@@ -2243,37 +2241,22 @@ const loadRemoteTeamNavigation = async (input: {
         collaborationSafeError: safeError("permission_denied")
       });
     }
-    const threads = z
-      .array(z.unknown())
-      .parse(threadsPayload.threads)
+    const threads = entry.threads
       .map(threadDtoFromRemote)
       .filter((thread): thread is Record<string, unknown> => thread !== null)
       .filter((thread) => thread.teamId === team.id);
     const directMessages = threads.filter(
       (thread) => thread.kind === "dm" || thread.kind === "group_dm"
     );
-    const workspaces = z
-      .array(remoteWorkspaceSchema)
-      .parse(workspacesPayload.teamWorkspaces)
-      .filter((workspace) => workspace.teamId === team.id)
-      .filter((workspace) => workspace.lifecycle === "active")
-      .slice(0, 20);
+    const workspaces = entry.workspaces
+      .filter(({ teamWorkspace }) => teamWorkspace.teamId === team.id)
+      .filter(({ teamWorkspace }) => teamWorkspace.lifecycle === "active");
     const mappedWorkspaces: Record<string, unknown>[] = [];
-    for (const workspace of workspaces) {
-      const [accessPayload, sharedPayload] = await Promise.all([
-        read(
-          `/v1/team-workspaces/${encodeURIComponent(workspace.id)}/access`,
-          "team_workspace_read"
-        ),
-        read(
-          queryPath(
-            `/v1/shared-memory/teams/${encodeURIComponent(team.id)}/workspaces/${encodeURIComponent(workspace.id)}/share-grants`,
-            { limit: 100, offset: 0 }
-          ),
-          "team_workspace_read"
-        )
-      ]);
-      const access = remoteWorkspaceAccessSchema.parse(accessPayload.access);
+    for (const {
+      teamWorkspace: workspace,
+      access,
+      shareGrants
+    } of workspaces) {
       if (
         access.teamId !== team.id ||
         access.teamWorkspaceId !== workspace.id ||
@@ -2293,16 +2276,13 @@ const loadRemoteTeamNavigation = async (input: {
           thread.kind === "shared_session_discussion" &&
           thread.workspaceId === workspace.id
       );
-      const sharedGrants = z
-        .array(remoteSharedGrantIndexSchema)
-        .parse(sharedPayload.shareGrants)
-        .filter(
-          (grant) =>
-            grant.companionScope.teamId === team.id &&
-            grant.companionScope.teamWorkspaceId === workspace.id &&
-            grant.companionScope.logicalMemoryId === grant.logicalMemoryId &&
-            grant.companionScope.shareGrantId === grant.id
-        );
+      const sharedGrants = shareGrants.filter(
+        (grant) =>
+          grant.companionScope.teamId === team.id &&
+          grant.companionScope.teamWorkspaceId === workspace.id &&
+          grant.companionScope.logicalMemoryId === grant.logicalMemoryId &&
+          grant.companionScope.shareGrantId === grant.id
+      );
       const sharedMemory = sharedGrants.flatMap((grant) => {
         const companion = companionThreads.find(
           (thread) => thread.shareGrantId === grant.id
@@ -2521,6 +2501,7 @@ const teamMessagePage = async (input: {
   direction: "older" | "newer";
   cursor: string | null;
   limit: number;
+  prefetchedPage?: unknown;
 }): Promise<CollaborationMessagePage | null> => {
   if (
     input.thread.scope !== "team" ||
@@ -2546,26 +2527,27 @@ const teamMessagePage = async (input: {
     throw new TypeError("Invalid message cursor snapshot");
   }
   const boundarySequence = decoded?.boundarySequence ?? 0;
-  const path = queryPath(
-    `/v1/collaboration/teams/${encodeURIComponent(input.teamId)}/threads/${encodeURIComponent(input.thread.id)}/messages`,
-    input.direction === "older"
-      ? {
-          beforeSequence: decoded ? boundarySequence : snapshotSequence + 1,
-          limit: input.limit
-        }
-      : {
-          afterSequence: boundarySequence,
-          beforeSequence: snapshotSequence + 1,
-          limit: input.limit
-        }
-  );
-  const payload = await requireRemoteJson(input.fetcher, {
-    backend: input.context.backend,
-    upstreamAuthorization: input.context.upstreamAuthorization,
-    operationFamily: "team_chat_read",
-    method: "GET",
-    path
-  });
+  const payload =
+    input.prefetchedPage ??
+    (await requireRemoteJson(input.fetcher, {
+      backend: input.context.backend,
+      upstreamAuthorization: input.context.upstreamAuthorization,
+      operationFamily: "team_chat_read",
+      method: "GET",
+      path: queryPath(
+        `/v1/collaboration/teams/${encodeURIComponent(input.teamId)}/threads/${encodeURIComponent(input.thread.id)}/messages`,
+        input.direction === "older"
+          ? {
+              beforeSequence: decoded ? boundarySequence : snapshotSequence + 1,
+              limit: input.limit
+            }
+          : {
+              afterSequence: boundarySequence,
+              beforeSequence: snapshotSequence + 1,
+              limit: input.limit
+            }
+      )
+    }));
   const page = remoteMessagePageSchema.parse(payload);
   const messages = page.messages
     .map(targetMessageFrom)
@@ -2652,9 +2634,11 @@ const loadTeamSelection = async (input: {
   context: TeamReadContext;
   snapshot: CollaborationSnapshot;
   selection: CollaborationSelection;
-  loadSharedSourcePage: (
-    session: SharedMemorySession
-  ) => Promise<SharedMemorySourcePage | null>;
+  loadSharedInitialView: (session: SharedMemorySession) => Promise<{
+    source: SharedMemorySourcePage;
+    thread: unknown;
+    messages: unknown;
+  } | null>;
 }): Promise<CollaborationView | null> => {
   const selection = input.selection;
   if (!("teamId" in selection)) return null;
@@ -2756,14 +2740,9 @@ const loadTeamSelection = async (input: {
   if (selection.kind === "shared_session") {
     const session = findSharedSessionInSnapshot(input.snapshot, selection);
     if (!session) return null;
-    const threadPayload = await requireRemoteJson(input.fetcher, {
-      backend: input.context.backend,
-      upstreamAuthorization: input.context.upstreamAuthorization,
-      operationFamily: "team_chat_read",
-      method: "GET",
-      path: `/v1/collaboration/teams/${encodeURIComponent(selection.teamId)}/threads/${encodeURIComponent(session.companionThreadId)}`
-    });
-    const thread = threadDtoFromRemote(threadPayload.thread);
+    const initial = await input.loadSharedInitialView(session);
+    if (!initial) return null;
+    const thread = threadDtoFromRemote(initial.thread);
     if (
       !thread ||
       thread.id !== session.companionThreadId ||
@@ -2780,19 +2759,18 @@ const loadTeamSelection = async (input: {
       ...session,
       unreadCompanionCount: thread.unreadCount
     };
-    const [source, messages] = await Promise.all([
-      input.loadSharedSourcePage(selectedSession),
-      teamMessagePage({
-        fetcher: input.fetcher,
-        credential: input.credential,
-        context: input.context,
-        teamId: selection.teamId,
-        thread,
-        direction: "older",
-        cursor: null,
-        limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems
-      })
-    ]);
+    const source = initial.source;
+    const messages = await teamMessagePage({
+      fetcher: input.fetcher,
+      credential: input.credential,
+      context: input.context,
+      teamId: selection.teamId,
+      thread,
+      direction: "older",
+      cursor: null,
+      limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems,
+      prefetchedPage: initial.messages
+    });
     return source && messages
       ? ({
           kind: "shared_session",
@@ -3228,6 +3206,42 @@ export const registerCollaborationCommandRoute = (
   const readRegistry =
     options.readUpstreamRegistry ?? readLocalEdgeUpstreamRegistry;
   const routeOptions = { bodyLimit: COMMAND_BODY_LIMIT_BYTES };
+  const remoteNavigationCache = new Map<
+    string,
+    {
+      storedAt: number;
+      value: {
+        backendId: string;
+        snapshotRevision: string;
+        teamPrincipal: Record<string, unknown>;
+        teams: Record<string, unknown>[];
+      };
+    }
+  >();
+  const remoteNavigationInFlight = new Map<
+    string,
+    Promise<{
+      backendId: string;
+      snapshotRevision: string;
+      teamPrincipal: Record<string, unknown>;
+      teams: Record<string, unknown>[];
+    }>
+  >();
+  const REMOTE_NAVIGATION_CACHE_MAX = 32;
+  const REMOTE_NAVIGATION_CACHE_RETENTION_MS = 15 * 60_000;
+  const removeNavigationInvalidationListener =
+    options.subscribeRemoteNavigationInvalidation?.((backendId) => {
+      for (const [key, entry] of remoteNavigationCache) {
+        if (entry.value.backendId === backendId) {
+          remoteNavigationCache.delete(key);
+        }
+      }
+    });
+  if (removeNavigationInvalidationListener) {
+    app.addHook("onClose", () => {
+      removeNavigationInvalidationListener();
+    });
+  }
 
   const resolvePersonalRemoteContext = async (
     operationFamily:
@@ -3429,6 +3443,55 @@ export const registerCollaborationCommandRoute = (
     return null;
   };
 
+  const loadCachedRemoteTeamNavigation = async (input: {
+    credential: DesktopLocalCredentialAuthorization;
+    context: TeamReadContext;
+    force: boolean;
+  }) => {
+    const key = [
+      input.context.backendId,
+      input.context.principal.id,
+      input.credential.credentialKeyId
+    ].join(":");
+    const now = Date.now();
+    const cached = remoteNavigationCache.get(key);
+    if (
+      !input.force &&
+      cached &&
+      now - cached.storedAt <= REMOTE_NAVIGATION_CACHE_RETENTION_MS
+    ) {
+      remoteNavigationCache.delete(key);
+      remoteNavigationCache.set(key, cached);
+      return cached.value;
+    }
+    const existing = remoteNavigationInFlight.get(key);
+    if (existing) return existing;
+    const pending = loadRemoteTeamNavigation({
+      fetcher: options.fetch,
+      credential: input.credential,
+      context: input.context
+    })
+      .then((navigation) => {
+        const value = {
+          backendId: input.context.backendId,
+          ...navigation
+        };
+        remoteNavigationCache.delete(key);
+        remoteNavigationCache.set(key, { storedAt: Date.now(), value });
+        while (remoteNavigationCache.size > REMOTE_NAVIGATION_CACHE_MAX) {
+          const oldest = remoteNavigationCache.keys().next().value;
+          if (typeof oldest !== "string") break;
+          remoteNavigationCache.delete(oldest);
+        }
+        return value;
+      })
+      .finally(() => {
+        remoteNavigationInFlight.delete(key);
+      });
+    remoteNavigationInFlight.set(key, pending);
+    return pending;
+  };
+
   app.post(
     "/v1/local-edge/collaboration/command",
     routeOptions,
@@ -3505,14 +3568,11 @@ export const registerCollaborationCommandRoute = (
                 registeredBackend.id
               );
               if (context) {
-                remote = {
-                  backendId: context.backendId,
-                  ...(await loadRemoteTeamNavigation({
-                    fetcher: options.fetch,
-                    credential,
-                    context
-                  }))
-                };
+                remote = await loadCachedRemoteTeamNavigation({
+                  credential,
+                  context,
+                  force: false
+                });
                 unavailableBackendId = null;
               }
             } catch (error) {
@@ -3900,14 +3960,11 @@ export const registerCollaborationCommandRoute = (
                 user
               });
               if (!personal) throw new Error("Personal snapshot unavailable");
-              const remote = {
-                backendId: context.backendId,
-                ...(await loadRemoteTeamNavigation({
-                  fetcher: options.fetch,
-                  credential,
-                  context
-                }))
-              };
+              const remote = await loadCachedRemoteTeamNavigation({
+                credential,
+                context,
+                force: true
+              });
               const snapshot = snapshotWithRemoteNavigation(personal, remote);
               if (!snapshot) throw new Error("Team snapshot unavailable");
               return snapshot;
@@ -3986,14 +4043,11 @@ export const registerCollaborationCommandRoute = (
                 safeError("permission_denied")
               );
             }
-            const remote = {
-              backendId: context.backendId,
-              ...(await loadRemoteTeamNavigation({
-                fetcher: options.fetch,
-                credential,
-                context
-              }))
-            };
+            const remote = await loadCachedRemoteTeamNavigation({
+              credential,
+              context,
+              force: false
+            });
             const baseSnapshot = snapshotWithRemoteNavigation(
               personalSnapshot,
               remote
@@ -4007,7 +4061,7 @@ export const registerCollaborationCommandRoute = (
               context,
               snapshot: baseSnapshot,
               selection: input.command.input.selection,
-              loadSharedSourcePage: async (session) => {
+              loadSharedInitialView: async (session) => {
                 const control = options.sharedMemoryControl;
                 if (!control) {
                   throw Object.assign(
@@ -4019,45 +4073,44 @@ export const registerCollaborationCommandRoute = (
                     }
                   );
                 }
-                const sourceCommand = collaborationRendererCommandSchema.parse({
-                  contractVersion: COLLABORATION_CONTRACT_VERSION,
-                  requestId: input.command.requestId,
-                  command: "collaboration.load_shared_source_page",
-                  input: {
-                    sharedSession: {
-                      teamId: session.teamId,
-                      workspaceId: session.workspaceId,
-                      sharedSessionId: session.id
-                    },
-                    direction: "older",
-                    cursor: null,
+                const loaded = await control.loadInitialSharedSession(
+                  {
+                    requestId: input.command.requestId,
+                    teamId: session.teamId,
+                    workspaceId: session.workspaceId,
+                    sharedSessionId: session.id,
+                    representation: session.representation,
                     limit: COLLABORATION_SOURCE_PAGE_MAX_ITEMS
+                  },
+                  {
+                    upstreamBackendId: input.upstream_backend_id,
+                    localOwnerUserId: user.id,
+                    desktopCredentialKeyId: credential.credentialKeyId
                   }
-                });
-                if (
-                  sourceCommand.command !==
-                  "collaboration.load_shared_source_page"
-                ) {
-                  return null;
-                }
-                const result = await control.dispatch(sourceCommand, {
-                  upstreamBackendId: input.upstream_backend_id,
-                  localOwnerUserId: user.id,
-                  desktopCredentialKeyId: credential.credentialKeyId
-                });
-                if (!result) return null;
+                );
+                if (!loaded) return null;
+                const result = loaded.sourceResult;
                 if (!result.ok) {
                   throw Object.assign(
                     new Error("Shared Memory source read was rejected"),
                     { collaborationSafeError: result.error }
                   );
                 }
-                return result.command ===
-                  "collaboration.load_shared_source_page" &&
-                  result.data.page.sharedSessionId === session.id &&
-                  result.data.page.representation === session.representation
-                  ? result.data.page
-                  : null;
+                const companion = loaded.companion;
+                if (
+                  result.command !== "collaboration.load_shared_source_page" ||
+                  result.data.page.sharedSessionId !== session.id ||
+                  result.data.page.representation !== session.representation ||
+                  !companion.thread ||
+                  !companion.messages
+                ) {
+                  return null;
+                }
+                return {
+                  source: result.data.page,
+                  thread: companion.thread,
+                  messages: companion.messages
+                };
               }
             });
             if (!view) {

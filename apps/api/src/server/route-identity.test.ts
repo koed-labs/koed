@@ -477,6 +477,7 @@ describe("route identity contract", () => {
   it("exports the full current Team collaboration and administration route inventory", () => {
     const routeFamilies = {
       collaboration: [
+        "GET /v1/teams/navigation",
         "GET /v1/collaboration/teams/{teamId}/participants",
         "GET /v1/collaboration/teams/{teamId}/threads",
         "GET /v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
@@ -516,6 +517,7 @@ describe("route identity contract", () => {
         "GET /v1/shared-memory/logical-memories/{logicalMemoryId}/share-grants",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}",
+        "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/initial-view",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items/{sourceId}"
       ],

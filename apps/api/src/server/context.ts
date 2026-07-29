@@ -33,6 +33,9 @@ export interface ApiRouteContext {
     admission: CollaborationAdmissionController;
     actionGrantControl?: CollaborationActionGrantControl;
     sharedMemoryControl?: CollaborationSharedMemoryControl;
+    subscribeNavigationInvalidation?: (
+      listener: (backendId: string) => void
+    ) => () => void;
   };
   jobs: {
     enqueueEmbedding(

@@ -121,6 +121,11 @@ Local Personal store       Remote koed-server
 - A remote outage makes Team surfaces unavailable or reconnecting without
   blocking Personal notes, Personal channels, or Personal Memory.
 - Koed does not persist a decrypted offline Team-content cache.
+- Desktop may keep a bounded, memory-only cache of recently authorized Team
+  navigation and Shared Memory views. Current realtime events invalidate
+  affected entries before revalidation, and authority loss, disconnect,
+  backend change, or identity change purges the cache. The cache is never an
+  authorization source and is not written to disk.
 - Disconnect, backend change, remote identity change, or broker revocation
   closes upstream connections, removes or revokes Team credentials, clears
   Team cursors and metadata caches, cancels or quarantines queued Team writes,
@@ -231,6 +236,24 @@ The endpoint- and channel-level rules are defined in the
   exposing inaccessible Workspace metadata.
 - Client-supplied IDs are untrusted and are joined back to the authenticated
   scope before content selection or decryption.
+
+### Read Composition And Prewarming
+
+- The Team backend exposes bounded aggregate read contracts for initial Team
+  navigation and for the first authorized Shared Memory source page with its
+  companion discussion. Aggregation reduces network round trips without
+  weakening the underlying Team, Workspace, Share Grant, representation, or
+  thread predicates.
+- The local edge validates every aggregate relationship before projecting it
+  into the Desktop contract. It may deduplicate concurrent reads and reuse a
+  bounded navigation result, but validated upstream realtime events invalidate
+  that result immediately.
+- Desktop prewarms only a bounded set of the most recently active, ready Shared
+  Memory sessions with bounded concurrency. Selecting a warm session renders
+  the memory-only view immediately, then revalidates it through the normal
+  command path.
+- Realtime remains the freshness mechanism. This flow does not poll, persist
+  decrypted Team content, or treat cached data as current authorization.
 
 ### Device And High-Risk Authority
 

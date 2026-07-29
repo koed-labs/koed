@@ -1,4 +1,5 @@
 import type {
+  CollaborationRepository,
   SharedMemoryAuthorityContext,
   SharedMemoryConsentRecord,
   SharedMemoryGrantRecord,
@@ -111,6 +112,7 @@ const executeRepositoryOperation = async <T>(
 
 export interface SharedMemoryRouteContext {
   requireSharedMemoryRepository(): SharedMemoryRepository;
+  requireCollaborationRepository(): CollaborationRepository;
   requireHighRiskRepository(): Pick<
     HighRiskActionRepository,
     "executeActionGrant"
@@ -1019,6 +1021,81 @@ export const registerSharedMemoryRoutes = (
         query.representation
       );
       return { sharedMemory: readDto(result, items) };
+    }
+  );
+
+  app.get(
+    `${scopedGrantPath}/initial-view`,
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const workspaceActor = await authenticateReader(request, context);
+      const chatActor = await context.authenticateSessionOrDeviceCredential(
+        request,
+        "team_chat_read",
+        {
+          apiTokenError: "API Tokens cannot authorize Shared Memory operations"
+        }
+      );
+      if (workspaceActor.id !== chatActor.id) throw forbidden();
+      const params = scopedShareGrantParamsSchema.parse(request.params);
+      const query = readGrantRepresentationQuerySchema.parse(request.query);
+      const { result, items } = await readScopedGrant(
+        context,
+        workspaceActor,
+        params,
+        query.representation
+      );
+      const repository = context.requireCollaborationRepository();
+      const snapshot = await repository.getAuthorizedSnapshot(
+        { userId: workspaceActor.id },
+        {
+          scope: "team",
+          teamId: params.teamId,
+          includeArchived: false
+        }
+      );
+      const resolvedThread = snapshot?.threads.find(
+        (candidate) =>
+          candidate.teamWorkspaceId === params.teamWorkspaceId &&
+          candidate.kind === "shared_session_discussion" &&
+          candidate.sharedLogicalMemoryId === result.grant.logicalMemoryId &&
+          candidate.shareGrantId === params.shareGrantId
+      );
+      if (
+        !resolvedThread ||
+        resolvedThread.teamId !== result.grant.companionScope.teamId ||
+        resolvedThread.teamWorkspaceId !==
+          result.grant.companionScope.teamWorkspaceId
+      ) {
+        throw forbidden();
+      }
+      const messages = await repository.listMessages(
+        { userId: workspaceActor.id },
+        {
+          threadId: resolvedThread.id,
+          beforeSequence: resolvedThread.latestSequence + 1,
+          limit: 100
+        }
+      );
+      if (
+        !messages ||
+        messages.messages.some(
+          (message) =>
+            message.threadId !== resolvedThread.id ||
+            message.scope !== "team" ||
+            message.teamId !== params.teamId ||
+            message.teamWorkspaceId !== params.teamWorkspaceId
+        )
+      ) {
+        throw forbidden();
+      }
+      return {
+        sharedMemory: readDto(result, items),
+        companion: {
+          thread: resolvedThread,
+          messages
+        }
+      };
     }
   );
 

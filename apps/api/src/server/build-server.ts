@@ -634,6 +634,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       fetch: localEdgeFetch
     });
 
+  const collaborationNavigationInvalidationListeners = new Set<
+    (backendId: string) => void
+  >();
   const routeContext = {
     config,
     requireRepository,
@@ -642,7 +645,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     collaboration: {
       admission: collaborationAdmission,
       actionGrantControl: collaborationActionGrantControl,
-      sharedMemoryControl: collaborationSharedMemoryControl
+      sharedMemoryControl: collaborationSharedMemoryControl,
+      subscribeNavigationInvalidation: (
+        listener: (backendId: string) => void
+      ) => {
+        collaborationNavigationInvalidationListeners.add(listener);
+        return () => {
+          collaborationNavigationInvalidationListeners.delete(listener);
+        };
+      }
     },
     jobs: {
       enqueueEmbedding
@@ -781,7 +792,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           reason: "upstream_backend_disconnected"
         });
       },
-      fetch: routeContext.localEdge.fetch
+      fetch: routeContext.localEdge.fetch,
+      onRemoteNavigationInvalidated: (backendId) => {
+        for (const listener of collaborationNavigationInvalidationListeners) {
+          listener(backendId);
+        }
+      }
     });
   }
 
@@ -887,6 +903,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: requireRepository,
+    requireCollaborationRepository,
     requireHighRiskRepository: requireRepository,
     authenticateSession: authHelpers.authenticateSession,
     authenticateSessionContext: authHelpers.authenticateSessionContext,

@@ -333,6 +333,8 @@ const AUTHORITATIVE_SNAPSHOT_RECOVERY_BASE_DELAY_MS = 250;
 const SHARED_SESSION_RECOVERY_TTL_MS = 5 * 60 * 1_000;
 const SELECTION_VIEW_CACHE_LIMIT = 32;
 const SELECTION_VIEW_CACHE_RETENTION_MS = 15 * 60 * 1_000;
+const SHARED_SESSION_PREWARM_LIMIT = 5;
+const SHARED_SESSION_PREWARM_CONCURRENCY = 2;
 
 interface SelectionViewCacheEntry {
   selection: CollaborationSelection;
@@ -1300,6 +1302,10 @@ export const createCollaborationRendererClient = (
   const subscriptionByScope = new Map<string, string>();
   const subscriptionInFlight = new Map<string, Promise<void>>();
   const selectionViewCache = new Map<string, SelectionViewCacheEntry>();
+  const selectionViewInFlight = new Map<
+    string,
+    Promise<CollaborationSnapshot | null>
+  >();
   let subscriptionGeneration = 0;
   let authorityGeneration = 0;
   let actionGrantAuthorityGeneration = 0;
@@ -1422,6 +1428,29 @@ export const createCollaborationRendererClient = (
       if (
         teamIdForSelection(entry.selection) !== null &&
         (teamId === undefined || teamIdForSelection(entry.selection) === teamId)
+      ) {
+        selectionViewCache.delete(key);
+      }
+    }
+  };
+
+  const clearThreadSelectionViews = (threadId: string) => {
+    for (const [key, entry] of selectionViewCache) {
+      if (
+        (entry.view.kind === "thread" && entry.view.thread.id === threadId) ||
+        (entry.view.kind === "shared_session" &&
+          entry.view.companion.thread.id === threadId)
+      ) {
+        selectionViewCache.delete(key);
+      }
+    }
+  };
+
+  const clearSharedSessionSelectionView = (sharedSessionId: string) => {
+    for (const [key, entry] of selectionViewCache) {
+      if (
+        entry.selection.kind === "shared_session" &&
+        entry.selection.sharedSessionId === sharedSessionId
       ) {
         selectionViewCache.delete(key);
       }
@@ -1594,6 +1623,89 @@ export const createCollaborationRendererClient = (
         input
       })
     );
+
+  const prewarmSharedSessionViews = async (
+    navigation: CollaborationSnapshot["navigation"]
+  ): Promise<void> => {
+    const candidates = navigation.teams
+      .flatMap((team) =>
+        team.workspaces.flatMap((workspace) =>
+          workspace.sharedMemory.map((session) => ({
+            session,
+            selection: {
+              kind: "shared_session" as const,
+              teamId: team.id,
+              workspaceId: workspace.id,
+              sharedSessionId: session.id
+            }
+          }))
+        )
+      )
+      .filter(
+        ({ session, selection }) =>
+          session.sourceState === "ready" &&
+          session.representationState === "current" &&
+          !cachedSelectionView(selection)
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(right.session.latestActivityAt) -
+          Date.parse(left.session.latestActivityAt)
+      )
+      .slice(0, SHARED_SESSION_PREWARM_LIMIT);
+    let index = 0;
+    const worker = async () => {
+      while (index < candidates.length) {
+        const candidate = candidates[index++];
+        if (!candidate) return;
+        const key = selectionIdentity(candidate.selection);
+        const existing = selectionViewInFlight.get(key);
+        if (existing) {
+          await existing;
+          continue;
+        }
+        const pending: Promise<CollaborationSnapshot | null> = command(
+          "collaboration.select",
+          {
+            selection: candidate.selection
+          }
+        )
+          .then((result) => {
+            if (
+              result.ok &&
+              result.command === "collaboration.select" &&
+              result.data.snapshot.selection.kind === "shared_session" &&
+              result.data.snapshot.selection.sharedSessionId ===
+                candidate.session.id &&
+              result.data.snapshot.view.kind === "shared_session" &&
+              result.data.snapshot.view.session.sourceRevision ===
+                candidate.session.sourceRevision
+            ) {
+              rememberSelectionView(result.data.snapshot);
+              return result.data.snapshot;
+            }
+            return null;
+          })
+          .catch(() => null)
+          .finally(() => {
+            selectionViewInFlight.delete(key);
+          });
+        selectionViewInFlight.set(key, pending);
+        await pending;
+      }
+    };
+    await Promise.all(
+      Array.from(
+        {
+          length: Math.min(
+            SHARED_SESSION_PREWARM_CONCURRENCY,
+            candidates.length
+          )
+        },
+        worker
+      )
+    );
+  };
 
   const waitForActionGrant = async (
     intent: CollaborationActionGrantIntent
@@ -1968,6 +2080,7 @@ export const createCollaborationRendererClient = (
       case "managed_conversation_upserted":
         break;
       case "navigation_snapshot":
+        clearTeamSelectionViews();
         next = {
           ...next,
           navigation: update.navigation,
@@ -1976,12 +2089,15 @@ export const createCollaborationRendererClient = (
         };
         break;
       case "thread_upserted":
+        clearThreadSelectionViews(update.thread.id);
         next = applyThreadUpsert(next, update.thread);
         break;
       case "thread_removed":
+        clearThreadSelectionViews(update.threadId);
         next = removeThread(next, update.threadId);
         break;
       case "message_created": {
+        clearThreadSelectionViews(update.message.threadId);
         const currentPrincipalIds = new Set([
           next.navigation.personalOwner.id,
           ...(next.navigation.teamPrincipal
@@ -2002,6 +2118,7 @@ export const createCollaborationRendererClient = (
         next = applyReadState(next, update.readState);
         break;
       case "shared_session_upserted": {
+        clearSharedSessionSelectionView(update.session.id);
         const recoverableSelection = recoverableSharedSessionSelection();
         const selectedSharedSession =
           next.view.kind === "shared_session" &&
@@ -2094,6 +2211,7 @@ export const createCollaborationRendererClient = (
         break;
       }
       case "shared_session_removed": {
+        clearSharedSessionSelectionView(update.sharedSessionId);
         const selected =
           next.selection.kind === "shared_session" &&
           next.selection.sharedSessionId === update.sharedSessionId;
@@ -2172,6 +2290,12 @@ export const createCollaborationRendererClient = (
       announcementId: announcement ? event.eventId : undefined,
       realtimeUpdate: update
     });
+    if (
+      update.type === "navigation_snapshot" ||
+      update.type === "shared_session_upserted"
+    ) {
+      void prewarmSharedSessionViews(next.navigation);
+    }
     if (refreshSelection) {
       try {
         await select(refreshSelection, true);
@@ -2548,6 +2672,7 @@ export const createCollaborationRendererClient = (
     }
     await publishValidated(next, { kind: "command" });
     await syncTeamSubscription(next.selection);
+    void prewarmSharedSessionViews(next.navigation);
     return requireSnapshot();
   };
 
@@ -2636,11 +2761,20 @@ export const createCollaborationRendererClient = (
     }
     const generation = ++selectionRequestGeneration;
     const previous = snapshot;
+    const warming = selectionViewInFlight.get(selectionIdentity(selection));
+    if (warming) {
+      const warmed = await warming;
+      if (generation !== selectionRequestGeneration) return requireSnapshot();
+      if (
+        warmed &&
+        selectionIdentity(warmed.selection) === selectionIdentity(selection)
+      ) {
+        return applyCommandSnapshot(warmed);
+      }
+    }
     const shell = snapshot ? optimisticSelection(snapshot, selection) : null;
-    const cachedView = shell ? cachedSelectionView(selection) : null;
-    const optimistic = shell
-      ? { ...shell, ...(cachedView ? { view: cachedView } : {}) }
-      : null;
+    const cachedView = snapshot ? cachedSelectionView(selection) : null;
+    const optimistic = cachedView ? { selection, view: cachedView } : shell;
     const selectionCommand = command("collaboration.select", { selection });
     if (snapshot && optimistic) {
       await publishTrusted(

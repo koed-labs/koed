@@ -155,7 +155,15 @@ const createFixture = async (input?: {
     getTeamDefaultWorkspace: vi.fn(async () => workspace()),
     listTeamWorkspaces: vi.fn(async () => [workspace()]),
     getTeamMembership: vi.fn(async () => membership()),
-    listTeamRoster: vi.fn(async () => []),
+    listTeamRoster: vi.fn(async () => [
+      {
+        userId: user.id,
+        displayName: user.displayName,
+        avatarReference: null,
+        status: "enabled" as const,
+        presence: "unknown" as const
+      }
+    ]),
     listTeamManagementMembers: vi.fn(async () => []),
     listTeamWorkspaceContexts: vi.fn(async () => []),
     updateTeamMemberRole: vi.fn(async () => membership()),
@@ -207,6 +215,19 @@ const createFixture = async (input?: {
       access
     })),
     getTeamWorkspaceAccess: vi.fn(async () => access),
+    getAuthorizedSnapshot: vi.fn(async () => ({
+      scope: "team" as const,
+      personalOwnerUserId: null,
+      teamId,
+      highWaterCursor: 0,
+      threads: []
+    })),
+    listWorkspaceGrants: vi.fn(async () => ({
+      entries: [],
+      limit: 100,
+      offset: 0,
+      hasMore: false
+    })),
     archiveTeamWorkspace: vi.fn(async () => ({
       ...workspace(),
       lifecycle: "archived" as const,
@@ -319,6 +340,53 @@ const createFixture = async (input?: {
 };
 
 describe("Team lifecycle routes", () => {
+  it("returns one authorized Team navigation snapshot", async () => {
+    const fixture = await createFixture();
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/teams/navigation"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      principal: { id: user.id },
+      teams: [
+        {
+          team: { id: teamId },
+          membership: {
+            teamId,
+            userId: user.id,
+            status: "enabled"
+          },
+          members: [{ userId: user.id }],
+          highWaterCursor: 0,
+          workspaces: [
+            {
+              teamWorkspace: { id: workspaceId },
+              access: { userId: user.id, access: "write" },
+              shareGrants: []
+            }
+          ]
+        }
+      ]
+    });
+    await fixture.app.close();
+  });
+
+  it("requires both Team Workspace and Team Chat read scopes for aggregate navigation", async () => {
+    const fixture = await createFixture({
+      deviceOperationFamilies: ["team_workspace_read"]
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/teams/navigation",
+      headers: { authorization: "Koed-Device device-key:secret" }
+    });
+
+    expect(response.statusCode).toBe(403);
+    await fixture.app.close();
+  });
+
   it("returns opaque, actor-and-filter-bound invitation continuations", async () => {
     const firstInvite = {
       id: randomUUID(),

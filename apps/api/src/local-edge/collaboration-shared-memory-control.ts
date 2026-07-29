@@ -431,6 +431,20 @@ export interface CollaborationSharedMemoryControl {
     command: unknown,
     context: CollaborationSharedMemoryControlDispatchContext
   ): Promise<CollaborationCommandResult | null>;
+  loadInitialSharedSession(
+    input: {
+      requestId: string;
+      teamId: string;
+      workspaceId: string;
+      sharedSessionId: string;
+      representation: Representation;
+      limit: number;
+    },
+    context: CollaborationSharedMemoryControlDispatchContext
+  ): Promise<{
+    sourceResult: CollaborationCommandResult;
+    companion: Record<string, unknown>;
+  } | null>;
 }
 
 const safeError = (
@@ -1331,7 +1345,8 @@ const dispatchLoadSource = async (
   command: Extract<
     CollaborationSharedMemoryControlCommand,
     { command: "collaboration.load_shared_source_page" }
-  >
+  >,
+  prefetchedPayload?: Record<string, unknown>
 ): Promise<CollaborationCommandResult> => {
   const ref = command.input.sharedSession;
   const preliminaryCursor = command.input.cursor
@@ -1358,21 +1373,23 @@ const dispatchLoadSource = async (
       throw new ControlFailure("history_expired");
     }
   }
-  const payload = await remoteRequest(options, authority, {
-    method: "GET",
-    path: queryPath(
-      scopedGrantPath({
-        teamId: ref.teamId,
-        workspaceId: ref.workspaceId,
-        shareGrantId: ref.sharedSessionId
-      }),
-      {
-        representation: preliminaryCursor?.success
-          ? preliminaryCursor.data.representation
-          : null
-      }
-    )
-  });
+  const payload =
+    prefetchedPayload ??
+    (await remoteRequest(options, authority, {
+      method: "GET",
+      path: queryPath(
+        scopedGrantPath({
+          teamId: ref.teamId,
+          workspaceId: ref.workspaceId,
+          shareGrantId: ref.sharedSessionId
+        }),
+        {
+          representation: preliminaryCursor?.success
+            ? preliminaryCursor.data.representation
+            : null
+        }
+      )
+    }));
   const parsed = remoteReadSchema.safeParse(payload.sharedMemory);
   if (!parsed.success) throw new ControlFailure("internal_error");
   const remote = parsed.data;
@@ -2378,6 +2395,94 @@ export const createCollaborationSharedMemoryControl = (
       return { previewId: preview.data.previewId };
     } catch {
       return null;
+    }
+  },
+  async loadInitialSharedSession(input, contextInput) {
+    let command: Extract<
+      CollaborationSharedMemoryControlCommand,
+      { command: "collaboration.load_shared_source_page" }
+    > | null = null;
+    const context = dispatchContextSchema.safeParse(contextInput);
+    const parsedInput = z
+      .object({
+        requestId: uuidSchema,
+        teamId: uuidSchema,
+        workspaceId: uuidSchema,
+        sharedSessionId: uuidSchema,
+        representation: representationSchema,
+        limit: z
+          .number()
+          .int()
+          .safe()
+          .min(1)
+          .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS)
+      })
+      .strict()
+      .safeParse(input);
+    if (!context.success || !parsedInput.success) return null;
+    try {
+      const candidate = collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: parsedInput.data.requestId,
+        command: "collaboration.load_shared_source_page",
+        input: {
+          sharedSession: {
+            teamId: parsedInput.data.teamId,
+            workspaceId: parsedInput.data.workspaceId,
+            sharedSessionId: parsedInput.data.sharedSessionId
+          },
+          direction: "older",
+          cursor: null,
+          limit: parsedInput.data.limit
+        }
+      });
+      if (candidate.command !== "collaboration.load_shared_source_page") {
+        return null;
+      }
+      command = candidate;
+      const authority = await resolveAuthority(options, command, context.data);
+      const payload = await remoteRequest(options, authority, {
+        method: "GET",
+        path: queryPath(
+          `${scopedGrantPath({
+            teamId: parsedInput.data.teamId,
+            workspaceId: parsedInput.data.workspaceId,
+            shareGrantId: parsedInput.data.sharedSessionId
+          })}/initial-view`,
+          { representation: parsedInput.data.representation }
+        )
+      });
+      const companion =
+        payload.companion &&
+        typeof payload.companion === "object" &&
+        !Array.isArray(payload.companion)
+          ? (payload.companion as Record<string, unknown>)
+          : null;
+      if (!companion) throw new ControlFailure("internal_error");
+      const sourceResult = await dispatchLoadSource(
+        options,
+        authority,
+        command,
+        payload
+      );
+      return { sourceResult, companion };
+    } catch (error) {
+      if (!command) return null;
+      const code =
+        error instanceof ControlFailure ? error.code : "internal_error";
+      const sourceResult =
+        error instanceof ControlFailure &&
+        code === "rate_limited" &&
+        error.retryAfter !== null
+          ? collaborationCommandResultSchema.parse({
+              ...failure(command, code),
+              error: safeError(code, error.retryAfter)
+            })
+          : failure(command, code);
+      return {
+        sourceResult,
+        companion: {}
+      };
     }
   },
   async dispatch(commandInput, contextInput) {

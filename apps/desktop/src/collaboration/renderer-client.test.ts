@@ -711,6 +711,107 @@ const waitFor = async (check: () => void) => {
 };
 
 describe("collaboration renderer client", () => {
+  it("prewarms recent Shared Memory and renders the cached view before revalidation", async () => {
+    const prepared = sharedFixture();
+    const initial = collaborationSnapshotSchema.parse({
+      ...prepared,
+      selection: { kind: "notes_to_self" },
+      view: {
+        kind: "thread",
+        thread: notes(),
+        messages: emptyPage(ids.notes)
+      }
+    });
+    const versions = new Map<string, number>();
+    let releaseRevalidation: () => void = () => {
+      throw new Error("Shared-session revalidation did not start.");
+    };
+    let sharedSelections = 0;
+    const bridge: CollaborationRendererBridge = {
+      command: vi.fn(async (command) => {
+        if (
+          command.command === "collaboration.select" &&
+          command.input.selection.kind === "shared_session"
+        ) {
+          sharedSelections += 1;
+          if (sharedSelections > 1) {
+            await new Promise<void>((resolve) => {
+              releaseRevalidation = resolve;
+            });
+          }
+          return success(command, prepared, versions);
+        }
+        return success(command, initial, versions);
+      }),
+      subscribe: () => () => undefined
+    };
+    const client = createCollaborationRendererClient(bridge);
+    await client.load();
+    await waitFor(() => expect(sharedSelections).toBe(1));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const selected = client.select(prepared.selection);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(client.current()?.view).toMatchObject({
+      kind: "shared_session",
+      session: { id: ids.sharedSession }
+    });
+    releaseRevalidation();
+    await selected;
+    expect(sharedSelections).toBe(2);
+    client.dispose();
+  });
+
+  it("joins an in-flight Shared Memory prewarm instead of issuing a duplicate selection", async () => {
+    const prepared = sharedFixture();
+    const initial = collaborationSnapshotSchema.parse({
+      ...prepared,
+      selection: { kind: "notes_to_self" },
+      view: {
+        kind: "thread",
+        thread: notes(),
+        messages: emptyPage(ids.notes)
+      }
+    });
+    const versions = new Map<string, number>();
+    let releasePrewarm: () => void = () => {
+      throw new Error("Shared-session prewarm did not start.");
+    };
+    let sharedSelections = 0;
+    const bridge: CollaborationRendererBridge = {
+      command: vi.fn(async (command) => {
+        if (
+          command.command === "collaboration.select" &&
+          command.input.selection.kind === "shared_session"
+        ) {
+          sharedSelections += 1;
+          await new Promise<void>((resolve) => {
+            releasePrewarm = resolve;
+          });
+          return success(command, prepared, versions);
+        }
+        return success(command, initial, versions);
+      }),
+      subscribe: () => () => undefined
+    };
+    const client = createCollaborationRendererClient(bridge);
+    await client.load();
+    await waitFor(() => expect(sharedSelections).toBe(1));
+
+    const selected = client.select(prepared.selection);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(sharedSelections).toBe(1);
+    releasePrewarm();
+    await selected;
+
+    expect(sharedSelections).toBe(1);
+    expect(client.current()?.view).toMatchObject({
+      kind: "shared_session",
+      session: { id: ids.sharedSession }
+    });
+    client.dispose();
+  });
+
   it("projects a durable queue immediately and reconciles duplicate confirmation to one sent row", async () => {
     const mock = createBridge();
     const client = createCollaborationRendererClient(mock.bridge);

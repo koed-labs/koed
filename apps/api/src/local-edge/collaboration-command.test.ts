@@ -10,7 +10,6 @@ import type {
 } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
-  COLLABORATION_HISTORY_PAGE_MAX_ITEMS,
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages
@@ -930,6 +929,8 @@ const createHarness = (options: HarnessOptions = {}) => {
   const personalRepository =
     options.personalRepository ?? createPersonalRepository();
   const desktopOwnerUserId = options.desktopOwnerUserId ?? ids.actor;
+  let navigationInvalidationListener: ((backendId: string) => void) | null =
+    null;
 
   app.setErrorHandler((error, _request, reply) => {
     const statusCodeCandidate =
@@ -1004,13 +1005,22 @@ const createHarness = (options: HarnessOptions = {}) => {
           ? (configuredBackend?.id ?? null)
           : options.activeBackendId,
       backends: registryBackends
-    })
+    }),
+    subscribeRemoteNavigationInvalidation: (listener) => {
+      navigationInvalidationListener = listener;
+      return () => {
+        navigationInvalidationListener = null;
+      };
+    }
   });
   return {
     app,
     calls,
     localCredentialReads,
-    repositoryRequests: () => repositoryRequests
+    repositoryRequests: () => repositoryRequests,
+    invalidateRemoteNavigation: (backendId = "team-vps") => {
+      navigationInvalidationListener?.(backendId);
+    }
   };
 };
 
@@ -1102,6 +1112,62 @@ const parseResult = (body: string): unknown => parseResultAs<unknown>(body);
 const parseCommand = (command: unknown): CollaborationRendererCommand =>
   collaborationCommandValidator.parse(command) as CollaborationRendererCommand;
 
+const remoteNavigationPayload = (input?: {
+  threads?: unknown[];
+  workspaces?: unknown[];
+}) => ({
+  principal: {
+    id: ids.remotePrincipal,
+    email: "remote-alice@example.test",
+    displayName: "Remote Alice"
+  },
+  teams: [
+    {
+      team: remoteTeam,
+      membership: {
+        teamId: ids.team,
+        userId: ids.remotePrincipal,
+        role: "member",
+        status: "enabled",
+        version: 1
+      },
+      members: [
+        {
+          userId: ids.remotePrincipal,
+          displayName: "Remote Alice",
+          status: "enabled",
+          presence: "unknown"
+        },
+        {
+          userId: ids.participant,
+          displayName: "Bob",
+          status: "enabled",
+          presence: "unknown"
+        }
+      ],
+      threads: input?.threads ?? [
+        teamThread,
+        directMessageThread,
+        sharedDiscussionThread
+      ],
+      highWaterCursor: 3,
+      workspaces: input?.workspaces ?? [
+        {
+          teamWorkspace: remoteWorkspace,
+          access: {
+            teamWorkspaceId: ids.workspace,
+            teamId: ids.team,
+            userId: ids.remotePrincipal,
+            access: "write",
+            canRecall: true
+          },
+          shareGrants: [remoteSharedGrant]
+        }
+      ]
+    }
+  ]
+});
+
 const remoteCompositionResponse = (call: FetchCall): Response => {
   const url = new URL(call.url);
   const path = url.pathname.replace(/^\/koed/, "");
@@ -1124,6 +1190,9 @@ const remoteCompositionResponse = (call: FetchCall): Response => {
         ]
       }
     });
+  }
+  if (path === "/v1/teams/navigation") {
+    return Response.json(remoteNavigationPayload());
   }
   if (path === "/v1/teams") {
     return Response.json({ teams: [remoteTeam] });
@@ -1864,6 +1933,7 @@ describe("local-edge collaboration command route", () => {
       sharedMemoryControl: {
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
+        loadInitialSharedSession: async () => null,
         dispatch: async (input, context) => {
           dispatches.push({ input, context });
           return collaborationCommandResultSchema.parse({
@@ -2269,29 +2339,37 @@ describe("local-edge collaboration command route", () => {
     );
     expect(harness.calls.map((call) => new URL(call.url).pathname)).toEqual([
       "/v1/local-edge/device-credentials/status",
-      "/koed/v1/teams",
-      `/koed/v1/teams/${ids.team}/membership`,
-      `/koed/v1/teams/${ids.team}/members`,
-      `/koed/v1/teams/${ids.team}/workspaces`,
-      `/koed/v1/collaboration/teams/${ids.team}/threads`,
-      `/koed/v1/team-workspaces/${ids.workspace}/access`,
-      `/koed/v1/shared-memory/teams/${ids.team}/workspaces/${ids.workspace}/share-grants`
+      "/koed/v1/teams/navigation"
     ]);
-    const threadCatalogRequest = harness.calls.find(
-      (call) =>
-        new URL(call.url).pathname ===
-        `/koed/v1/collaboration/teams/${ids.team}/threads`
-    );
-    expect(
-      threadCatalogRequest &&
-        new URL(threadCatalogRequest.url).searchParams.get("limit")
-    ).toBe(String(COLLABORATION_HISTORY_PAGE_MAX_ITEMS));
     for (const call of harness.calls) {
       const headers = new Headers(call.init.headers);
       expect(headers.get("authorization")).toBe(upstreamAuthorization);
       expect(headers.get("authorization")).not.toBe(desktopAuthorization);
       expect(headers.get("cookie")).toBeNull();
     }
+  });
+
+  it("reuses Team navigation until an authoritative realtime event invalidates it", async () => {
+    const harness = createHarness({ response: remoteCompositionResponse });
+    const load = () =>
+      injectPersonalCommand(harness.app, {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load",
+        input: {}
+      } as CollaborationRendererCommand);
+    const navigationReads = () =>
+      harness.calls.filter(
+        (call) => new URL(call.url).pathname === "/koed/v1/teams/navigation"
+      ).length;
+
+    expect((await load()).statusCode).toBe(200);
+    expect((await load()).statusCode).toBe(200);
+    expect(navigationReads()).toBe(1);
+
+    harness.invalidateRemoteNavigation();
+    expect((await load()).statusCode).toBe(200);
+    expect(navigationReads()).toBe(2);
   });
 
   it("does not advertise remote Team navigation when Team collaboration is disabled", async () => {
@@ -2326,20 +2404,42 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       response: (call) => {
         const path = new URL(call.url).pathname.replace(/^\/koed/, "");
-        if (path === `/v1/teams/${ids.team}/workspaces`) {
-          return Response.json({
-            teamWorkspaces: [
-              remoteWorkspace,
-              {
-                ...remoteWorkspace,
-                id: archivedWorkspaceId,
-                name: "Archived Workspace",
-                version: 2,
-                lifecycle: "archived",
-                archivedAt: iso
-              }
-            ]
-          });
+        if (path === "/v1/teams/navigation") {
+          return Response.json(
+            remoteNavigationPayload({
+              workspaces: [
+                {
+                  teamWorkspace: remoteWorkspace,
+                  access: {
+                    teamWorkspaceId: ids.workspace,
+                    teamId: ids.team,
+                    userId: ids.remotePrincipal,
+                    access: "write",
+                    canRecall: true
+                  },
+                  shareGrants: [remoteSharedGrant]
+                },
+                {
+                  teamWorkspace: {
+                    ...remoteWorkspace,
+                    id: archivedWorkspaceId,
+                    name: "Archived Workspace",
+                    version: 2,
+                    lifecycle: "archived",
+                    archivedAt: iso
+                  },
+                  access: {
+                    teamWorkspaceId: archivedWorkspaceId,
+                    teamId: ids.team,
+                    userId: ids.remotePrincipal,
+                    access: "write",
+                    canRecall: true
+                  },
+                  shareGrants: []
+                }
+              ]
+            })
+          );
         }
         if (path === archivedAccessPath)
           return Response.json(
@@ -2411,7 +2511,7 @@ describe("local-edge collaboration command route", () => {
       }
     });
     expect(harness.calls.map((call) => new URL(call.url).pathname)).toContain(
-      "/koed/v1/teams"
+      "/koed/v1/teams/navigation"
     );
   });
 
@@ -2419,51 +2519,52 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       response: (call) => {
         const path = new URL(call.url).pathname.replace(/^\/koed/, "");
-        if (path === `/v1/collaboration/teams/${ids.team}/threads`) {
-          return Response.json({
-            threads: [
-              {
-                id: ids.thread,
-                logicalId: ids.logicalThread,
-                scope: "team",
-                kind: "workspace_channel",
-                personalOwnerUserId: null,
-                teamId: ids.team,
-                teamWorkspaceId: ids.workspace,
-                sharedLogicalMemoryId: null,
-                shareGrantId: null,
-                systemKey: "workspace.general",
-                name: null,
-                topic: null,
-                createdByUserId: ids.remotePrincipal,
-                version: 1,
-                lifecycle: "active",
-                latestSequence: 0,
-                lastReadMessageId: null,
-                lastReadSequence: 0,
-                unreadCount: 0,
-                participants: [],
-                createdAt: iso,
-                updatedAt: iso,
-                lastActivityAt: iso,
-                archivedAt: null
-              }
-            ]
-          });
-        }
-        if (
-          path ===
-          `/v1/shared-memory/teams/${ids.team}/workspaces/${ids.workspace}/share-grants`
-        ) {
-          return Response.json({
-            shareGrants: [],
-            pagination: {
-              limit: 100,
-              offset: 0,
-              hasMore: false,
-              nextOffset: null
-            }
-          });
+        if (path === "/v1/teams/navigation") {
+          return Response.json(
+            remoteNavigationPayload({
+              threads: [
+                {
+                  id: ids.thread,
+                  logicalId: ids.logicalThread,
+                  scope: "team",
+                  kind: "workspace_channel",
+                  personalOwnerUserId: null,
+                  teamId: ids.team,
+                  teamWorkspaceId: ids.workspace,
+                  sharedLogicalMemoryId: null,
+                  shareGrantId: null,
+                  systemKey: "workspace.general",
+                  name: null,
+                  topic: null,
+                  createdByUserId: ids.remotePrincipal,
+                  version: 1,
+                  lifecycle: "active",
+                  latestSequence: 0,
+                  lastReadMessageId: null,
+                  lastReadSequence: 0,
+                  unreadCount: 0,
+                  participants: [],
+                  createdAt: iso,
+                  updatedAt: iso,
+                  lastActivityAt: iso,
+                  archivedAt: null
+                }
+              ],
+              workspaces: [
+                {
+                  teamWorkspace: remoteWorkspace,
+                  access: {
+                    teamWorkspaceId: ids.workspace,
+                    teamId: ids.team,
+                    userId: ids.remotePrincipal,
+                    access: "write",
+                    canRecall: true
+                  },
+                  shareGrants: []
+                }
+              ]
+            })
+          );
         }
         return remoteCompositionResponse(call);
       }
@@ -2599,16 +2700,10 @@ describe("local-edge collaboration command route", () => {
   it("loads manager-only member and Workspace Access details without widening the roster", async () => {
     const ownerResponse = (call: FetchCall): Response => {
       const path = new URL(call.url).pathname.replace(/^\/koed/, "");
-      if (path === `/v1/teams/${ids.team}/membership`) {
-        return Response.json({
-          membership: {
-            teamId: ids.team,
-            userId: ids.remotePrincipal,
-            role: "owner",
-            status: "enabled",
-            version: 1
-          }
-        });
+      if (path === "/v1/teams/navigation") {
+        const payload = remoteNavigationPayload();
+        payload.teams[0]!.membership.role = "owner";
+        return Response.json(payload);
       }
       if (path === `/v1/teams/${ids.team}/members/manage`) {
         return Response.json({
@@ -2705,19 +2800,42 @@ describe("local-edge collaboration command route", () => {
       sharedMemoryControl: {
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
-        dispatch: async (command, context) => {
-          const parsed = parseCommand(command);
-          dispatches.push({ command: parsed, context });
-          if (parsed.command !== "collaboration.load_shared_source_page") {
-            return null;
-          }
-          return collaborationCommandResultSchema.parse({
+        dispatch: async () => null,
+        loadInitialSharedSession: async (input, context) => {
+          const parsed = parseCommand({
             contractVersion: COLLABORATION_CONTRACT_VERSION,
-            requestId: parsed.requestId,
-            command: parsed.command,
-            ok: true,
-            data: { page: sharedSourcePage }
+            requestId: input.requestId,
+            command: "collaboration.load_shared_source_page",
+            input: {
+              sharedSession: {
+                teamId: input.teamId,
+                workspaceId: input.workspaceId,
+                sharedSessionId: input.sharedSessionId
+              },
+              direction: "older",
+              cursor: null,
+              limit: input.limit
+            }
           });
+          dispatches.push({ command: parsed, context });
+          return {
+            sourceResult: collaborationCommandResultSchema.parse({
+              contractVersion: COLLABORATION_CONTRACT_VERSION,
+              requestId: parsed.requestId,
+              command: parsed.command,
+              ok: true,
+              data: { page: sharedSourcePage }
+            }),
+            companion: {
+              thread: sharedDiscussionThread,
+              messages: {
+                messages: [sharedDiscussionMessage],
+                hasMore: false,
+                nextBeforeSequence: null,
+                nextAfterSequence: null
+              }
+            }
+          };
         }
       }
     });
@@ -2794,13 +2912,7 @@ describe("local-edge collaboration command route", () => {
         }
       }
     ]);
-    expect(
-      harness.calls.some((call) =>
-        new URL(call.url).pathname.endsWith(
-          `/v1/collaboration/teams/${ids.team}/threads/${ids.sharedDiscussionThread}/messages`
-        )
-      )
-    ).toBe(true);
+    expect(harness.calls).toHaveLength(2);
     await harness.app.close();
   });
 
@@ -2810,6 +2922,7 @@ describe("local-edge collaboration command route", () => {
       sharedMemoryControl: {
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
+        loadInitialSharedSession: async () => null,
         dispatch: async (command) => {
           const parsed = parseCommand(command);
           dispatched.push(parsed);
@@ -2868,6 +2981,7 @@ describe("local-edge collaboration command route", () => {
         sharedMemoryControl: {
           resolvePreviewTarget: async () => null,
           resolveConsentPreview: async () => null,
+          loadInitialSharedSession: async () => null,
           dispatch: async (command) => {
             const parsed = parseCommand(command);
             return collaborationCommandResultSchema.parse({
@@ -2922,21 +3036,24 @@ describe("local-edge collaboration command route", () => {
         sharedMemoryControl: {
           resolvePreviewTarget: async () => null,
           resolveConsentPreview: async () => null,
-          dispatch: async (command) => {
-            const parsed = parseCommand(command);
+          dispatch: async () => null,
+          loadInitialSharedSession: async (input) => {
             sourceDispatches += 1;
-            return collaborationCommandResultSchema.parse({
-              contractVersion: COLLABORATION_CONTRACT_VERSION,
-              requestId: parsed.requestId,
-              command: parsed.command,
-              ok: false,
-              error: {
-                code,
-                userMessage: collaborationSafeErrorMessages[code],
-                retryable: code === "temporarily_unavailable",
-                retryAfterMs: null
-              }
-            });
+            return {
+              sourceResult: collaborationCommandResultSchema.parse({
+                contractVersion: COLLABORATION_CONTRACT_VERSION,
+                requestId: input.requestId,
+                command: "collaboration.load_shared_source_page",
+                ok: false,
+                error: {
+                  code,
+                  userMessage: collaborationSafeErrorMessages[code],
+                  retryable: code === "temporarily_unavailable",
+                  retryAfterMs: null
+                }
+              }),
+              companion: {}
+            };
           }
         }
       });
@@ -2968,15 +3085,12 @@ describe("local-edge collaboration command route", () => {
       sharedMemoryControl: {
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
-        dispatch: async (command) => {
-          const parsed = parseCommand(command);
-          if (parsed.command !== "collaboration.load_shared_source_page") {
-            return null;
-          }
-          return collaborationCommandResultSchema.parse({
+        dispatch: async () => null,
+        loadInitialSharedSession: async (input) => ({
+          sourceResult: collaborationCommandResultSchema.parse({
             contractVersion: COLLABORATION_CONTRACT_VERSION,
-            requestId: parsed.requestId,
-            command: parsed.command,
+            requestId: input.requestId,
+            command: "collaboration.load_shared_source_page",
             ok: true,
             data: {
               page: {
@@ -2995,8 +3109,9 @@ describe("local-edge collaboration command route", () => {
                 ]
               }
             }
-          });
-        }
+          }),
+          companion: {}
+        })
       }
     });
     const command = {

@@ -551,6 +551,7 @@ interface HarnessOptions {
     ownerUserId: string,
     upstreamBackendId: string
   ) => Promise<void>;
+  onRemoteNavigationInvalidated?: (backendId: string) => void;
 }
 
 const snapshotResponse = (teamId: string) => ({
@@ -897,7 +898,8 @@ const createHarness = async (
     reconnectJitter: 0,
     sleep: options.sleep,
     now: options.now,
-    afterRemoteAck: options.afterRemoteAck
+    afterRemoteAck: options.afterRemoteAck,
+    onRemoteNavigationInvalidated: options.onRemoteNavigationInvalidated
   });
   service.registerRoutes();
   let listeningUrl: string | null = null;
@@ -1684,7 +1686,9 @@ describe("local collaboration realtime broker", () => {
   });
 
   it("deduplicates replayed event IDs and emits renderer updates", async () => {
+    const onRemoteNavigationInvalidated = vi.fn();
     const harness = await createHarness({
+      onRemoteNavigationInvalidated,
       stream: () =>
         sseResponse([
           {
@@ -1717,6 +1721,8 @@ describe("local collaboration realtime broker", () => {
     expect(JSON.stringify(payload)).not.toContain("cursor");
     expect(JSON.stringify(payload)).not.toContain("bodyText");
     expect(JSON.stringify(payload)).not.toContain(remoteSubscriptionId);
+    expect(onRemoteNavigationInvalidated).toHaveBeenCalledTimes(1);
+    expect(onRemoteNavigationInvalidated).toHaveBeenCalledWith("backend-a");
   });
 
   it("accepts the complete remote envelope and preserves Shared Session identity", async () => {

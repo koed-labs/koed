@@ -221,6 +221,18 @@ export const registerTeamRoutes = (
     );
   };
 
+  const authenticateTeamNavigationRead = async (request: FastifyRequest) => {
+    const workspaceUser = await authenticateTeamRead(request);
+    const chatUser = await authenticateSessionOrDeviceCredential(
+      request,
+      "team_chat_read"
+    );
+    if (workspaceUser.id !== chatUser.id) {
+      throw forbidden("Team navigation identity is inconsistent");
+    }
+    return workspaceUser;
+  };
+
   const requireFreshSession = async (request: FastifyRequest) => {
     rejectApiToken(request);
     const session = await authenticateSessionContext(request);
@@ -358,6 +370,118 @@ export const registerTeamRoutes = (
     const user = await authenticateTeamRead(request);
     return { teams: await requireRepository().listTeams({ userId: user.id }) };
   });
+
+  app.get(
+    "/v1/teams/navigation",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const user = await authenticateTeamNavigationRead(request);
+      const repository = requireRepository();
+      const actor = { userId: user.id };
+      const teams = (await repository.listTeams(actor)).slice(0, 50);
+      const navigationTeams = await Promise.all(
+        teams.map(async (team) => {
+          const [membership, members, teamWorkspaces, snapshot] =
+            await Promise.all([
+              repository.getTeamMembership(actor, team.id),
+              repository.listTeamRoster(actor, team.id),
+              repository.listTeamWorkspaces(actor, {
+                teamId: team.id,
+                includeArchived: true,
+                limit: 20
+              }),
+              repository.getAuthorizedSnapshot(actor, {
+                scope: "team",
+                teamId: team.id,
+                includeArchived: true
+              })
+            ]);
+          if (
+            !membership ||
+            membership.teamId !== team.id ||
+            membership.userId !== user.id ||
+            membership.status !== "enabled" ||
+            !members ||
+            !members.some((member) => member.userId === user.id) ||
+            !teamWorkspaces ||
+            !snapshot ||
+            snapshot.scope !== "team" ||
+            snapshot.teamId !== team.id ||
+            snapshot.personalOwnerUserId !== null
+          ) {
+            throw forbidden("Team navigation cannot be viewed");
+          }
+          const workspaces = await Promise.all(
+            teamWorkspaces.map(async (teamWorkspace) => {
+              const [access, grants] = await Promise.all([
+                repository.getTeamWorkspaceAccess(actor, teamWorkspace.id),
+                repository.listWorkspaceGrants(actor, {
+                  teamId: team.id,
+                  teamWorkspaceId: teamWorkspace.id,
+                  limit: 100,
+                  offset: 0
+                })
+              ]);
+              if (
+                !access ||
+                access.teamId !== team.id ||
+                access.teamWorkspaceId !== teamWorkspace.id ||
+                access.userId !== user.id ||
+                access.access === "disabled" ||
+                grants.offset !== 0 ||
+                grants.limit !== 100 ||
+                grants.hasMore ||
+                grants.entries.some(
+                  (grant) =>
+                    grant.lifecycle !== "active" ||
+                    (grant.representationState !== "available" &&
+                      grant.representationState !== "stale") ||
+                    grant.companionScope.teamId !== team.id ||
+                    grant.companionScope.teamWorkspaceId !== teamWorkspace.id ||
+                    grant.companionScope.logicalMemoryId !==
+                      grant.logicalMemoryId ||
+                    grant.companionScope.shareGrantId !== grant.shareGrantId
+                )
+              ) {
+                throw forbidden("Team Workspace navigation cannot be viewed");
+              }
+              return {
+                teamWorkspace,
+                access,
+                shareGrants: grants.entries.map((grant) => ({
+                  id: grant.shareGrantId,
+                  logicalMemoryId: grant.logicalMemoryId,
+                  ownerUserId: grant.ownerUserId,
+                  activeRepresentation: grant.activeRepresentation,
+                  representationState: grant.representationState,
+                  representationSourceRevision:
+                    grant.representationSourceRevision,
+                  representationUpdatedAt: grant.representationUpdatedAt,
+                  freshness: grant.freshness,
+                  lifecycle: grant.lifecycle,
+                  createdAt: grant.createdAt,
+                  updatedAt: grant.updatedAt,
+                  companionScope: grant.companionScope
+                }))
+              };
+            })
+          );
+          return {
+            team,
+            membership,
+            members,
+            threads: snapshot.threads,
+            highWaterCursor: snapshot.highWaterCursor,
+            workspaces
+          };
+        })
+      );
+      return {
+        principal: publicUser(user),
+        teams: navigationTeams
+      };
+    }
+  );
 
   app.get(
     "/v1/team-context",

@@ -1229,6 +1229,16 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/teams/navigation",
+    "session_or_device_credential",
+    "collaboration",
+    "Read an authorized Team navigation snapshot.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/teams",
     "session_or_device_credential",
@@ -1604,6 +1614,16 @@ export const routeIdentityContracts = [
     "session_or_device_credential",
     "shared_memory",
     "Read an authorized Team Workspace Share Grant.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/initial-view",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read an authorized Shared Memory source with its companion discussion.",
     "request_time_team_workspace",
     "implemented",
     teamDeploymentModes
