@@ -88,9 +88,10 @@ export type CollaborationModalState =
   | { kind: "share_personal_memory"; sessionId: string }
   | { kind: "connection" };
 
-const modalIsAuthorized = (
+export const modalIsAuthorized = (
   modal: CollaborationModalState,
-  snapshot: CollaborationSnapshot
+  snapshot: CollaborationSnapshot,
+  localPersonalSessionIds: ReadonlySet<string>
 ): boolean => {
   if (modal.kind === "edit_personal_channel") {
     return snapshot.navigation.personal.channels.some(
@@ -116,8 +117,11 @@ const modalIsAuthorized = (
     );
   }
   if (modal.kind === "share_personal_memory") {
-    return snapshot.navigation.personal.memory.some(
-      (entry) => entry.id === modal.sessionId
+    return (
+      localPersonalSessionIds.has(modal.sessionId) ||
+      snapshot.navigation.personal.memory.some(
+        (entry) => entry.id === modal.sessionId
+      )
     );
   }
   if (modal.kind === "workspace_channel") {
@@ -3009,17 +3013,21 @@ export function CollaborationRoutes({
 
 export function CollaborationModalLayer({
   client,
+  localPersonalSessionIds = new Set<string>(),
   modal,
   onModalChange,
   snapshot
 }: {
   client: CollaborationRendererClient;
+  localPersonalSessionIds?: ReadonlySet<string>;
   modal: CollaborationModalState | null;
   onModalChange: (modal: CollaborationModalState | null) => void;
   snapshot: CollaborationSnapshot;
 }) {
   const authorizedModal =
-    modal && modalIsAuthorized(modal, snapshot) ? modal : null;
+    modal && modalIsAuthorized(modal, snapshot, localPersonalSessionIds)
+      ? modal
+      : null;
   useEffect(() => {
     if (modal && !authorizedModal) onModalChange(null);
   }, [authorizedModal, modal, onModalChange]);
