@@ -22,6 +22,7 @@ import {
 } from "./schemas.js";
 
 const HIGH_RISK_BODY_LIMIT_BYTES = 8 * 1024;
+const HIGH_RISK_ACTION_GRANT_WAIT_MS = 20_000;
 
 type HighRiskRepository = Pick<
   MemorySourceRepository,
@@ -263,6 +264,7 @@ export const registerHighRiskRoutes = (
           ownerUserId: auth.user.id,
           deviceCredentialId: auth.credential.id,
           upstreamBackendId: auth.credential.upstreamBackendId,
+          maxWaitMs: HIGH_RISK_ACTION_GRANT_WAIT_MS,
           signal: abort.signal
         });
         if (!resolved) {

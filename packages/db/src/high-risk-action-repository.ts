@@ -90,6 +90,7 @@ export interface GetHighRiskActionGrantInput {
 }
 
 export interface AwaitHighRiskActionGrantInput extends GetHighRiskActionGrantInput {
+  maxWaitMs?: number;
   signal?: AbortSignal;
 }
 
@@ -814,10 +815,15 @@ export const createHighRiskActionRepository = (
           return { ...current, state: "expired" };
         }
         if (!notified) {
+          const maxWaitMs = input.maxWaitMs ?? remainingMs;
+          const waitMs = Math.min(
+            remainingMs,
+            Number.isFinite(maxWaitMs) ? Math.max(0, maxWaitMs) : remainingMs
+          );
           let onAbort: (() => void) | null = null;
           try {
             await new Promise<void>((resolve, reject) => {
-              const timeout = setTimeout(resolve, remainingMs);
+              const timeout = setTimeout(resolve, waitMs);
               onAbort = () => {
                 clearTimeout(timeout);
                 reject(

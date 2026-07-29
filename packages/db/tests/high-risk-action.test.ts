@@ -145,6 +145,49 @@ describeDb("high-risk action grants", () => {
     ).rejects.toThrow("Fresh authentication timestamp is too old");
   });
 
+  it("returns a pending Action Grant when a bounded wait elapses", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const { clientRequestId } = await createGrant(repository, fixture);
+
+    const result = await repository.awaitActionGrant({
+      clientRequestId,
+      ownerUserId: fixture.userId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId: fixture.upstreamBackendId,
+      maxWaitMs: 10
+    });
+
+    expect(result?.state).toBe("pending");
+  });
+
+  it("wakes a bounded Action Grant wait when browser approval arrives", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const { clientRequestId, selector } = await createGrant(
+      repository,
+      fixture
+    );
+
+    const waiting = repository.awaitActionGrant({
+      clientRequestId,
+      ownerUserId: fixture.userId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId: fixture.upstreamBackendId,
+      maxWaitMs: 1_000
+    });
+    await delay(20);
+    await repository.decideBrowserActivation({
+      selector: selector!,
+      ownerUserId: fixture.userId,
+      userSessionId: fixture.userSessionId,
+      freshlyAuthenticatedAt: new Date(),
+      decision: "approve"
+    });
+
+    await expect(waiting).resolves.toMatchObject({ state: "approved" });
+  });
+
   it("binds a one-use grant to the exact request, device, session, and backend", async () => {
     const fixture = await createFixture();
     const db = createDb(pool);

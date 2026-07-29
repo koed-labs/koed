@@ -116,6 +116,7 @@ const buildServer = async (overrides?: {
   const repository: ReturnType<HighRiskRouteContext["requireRepository"]> = {
     createActionGrant: vi.fn(async () => binding),
     getActionGrant: vi.fn(async () => binding),
+    awaitActionGrant: vi.fn(async () => binding),
     cancelActionGrant: vi.fn(async () => true),
     getBrowserActivation: vi.fn(async () => binding),
     decideBrowserActivation: vi.fn(async () => ({
@@ -178,6 +179,25 @@ const buildServer = async (overrides?: {
 };
 
 describe("high-risk action grant routes", () => {
+  it("bounds Action Grant waits below the local transport deadline", async () => {
+    const fixture = await buildServer();
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/high-risk/action-grants/${binding.id}/await`,
+      headers: { authorization: "Koed-Device device-key:secret" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.awaitActionGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientRequestId: binding.id,
+        maxWaitMs: 20_000,
+        signal: expect.any(AbortSignal)
+      })
+    );
+    await fixture.app.close();
+  });
+
   it("requires a device credential for create and never returns a grant secret", async () => {
     const fixture = await buildServer();
 
