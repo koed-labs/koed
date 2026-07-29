@@ -14,6 +14,7 @@ import {
   conversationSemanticUnitActor,
   conversationSemanticUnitChunks,
   conversationSemanticUnitTypeForActor,
+  CURRENT_CONVERSATION_PROJECTION_VERSION,
   joinedSemanticContentTokenCount,
   uniqueOrderedStrings,
   type ConversationSemanticProjectionItem,
@@ -48,6 +49,7 @@ import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
+import { createPersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
 import { createPersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
@@ -66,8 +68,10 @@ import { createUserApiTokenRepository } from "./user-api-token-repository.js";
 import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 import {
   codexIdePromptUserText,
+  countTokensForModel,
   estimateTokens,
   normalizeStoredLcmSummary,
+  tokenCounterIdentity,
   type LcmSourceItem
 } from "@koed/core";
 import type {
@@ -86,6 +90,7 @@ import {
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig,
+  pdsArtifactCompatibilityHash,
   lcmCompactionQueueJobId,
   RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
@@ -1347,8 +1352,6 @@ const semanticMemoryRebuildDebounceMs = (): number =>
     "SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS",
     DEFAULT_SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS
   );
-
-const CURRENT_CONVERSATION_PROJECTION_VERSION = "conversation-projection-v3";
 
 const isTransportChunkRow = (row: {
   logical_source_id: string | null;
@@ -3856,6 +3859,7 @@ export const createMemorySourceRepository = (
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     ...createPersonalDeviceSyncRepository(pool),
+    ...createPersonalDeviceArtifactRepository(pool),
     ...createPersonalDeviceSyncLocalRepository(pool),
     ...createPersonalDeviceSyncLifecycleRepository(pool),
     ...createPersonalDeviceSyncRelayRepository(pool),
@@ -5771,6 +5775,21 @@ export const createMemorySourceRepository = (
             and pds_session_recall_ready(me.session_id)
               and me.personal_deleted_at is null
               and me.include_in_lcm = true
+              and (
+                not exists (
+                  select 1
+                  from pds_logical_replicas pds_replica
+                  where pds_replica.local_session_id = me.session_id
+                )
+                or exists (
+                  select 1
+                  from conversation_source_artifacts source_authority
+                  where source_authority.session_id = me.session_id
+                    and source_authority.owner_user_id = me.owner_user_id
+                    and source_authority.replica_role = 'origin_local'
+                    and source_authority.lifecycle = 'active'
+                )
+              )
               and not exists (
                 select 1
                 from memory_node_sources mns
@@ -7552,9 +7571,25 @@ export const createMemorySourceRepository = (
     },
 
     async listSourcesNeedingEmbeddings(limit = 100) {
-      const embeddingTable = embeddingTableForDimensions(
-        localEmbeddingDimensions()
+      const embeddingModelConfig = resolveSupportedEmbeddingModelConfig(
+        process.env.EMBEDDING_MODEL
       );
+      const embeddingTable = embeddingTableForDimensions(
+        embeddingModelConfig.dimensions
+      );
+      const portableEmbeddingContractHash = pdsArtifactCompatibilityHash({
+        artifactClass: "memory_embedding/v1",
+        modelKey: embeddingModelConfig.key,
+        modelArtifactHash:
+          process.env.KOED_EMBEDDING_MODEL_SHA256?.trim() ||
+          embeddingModelConfig.defaultArtifactSha256,
+        dimensions: String(embeddingModelConfig.dimensions),
+        tokenizer: embeddingModelConfig.tokenizer,
+        inputTransform: embeddingModelConfig.inputTransform,
+        pooling: embeddingModelConfig.pooling,
+        normalization: embeddingModelConfig.normalization,
+        embeddingVersion: embeddingModelConfig.key
+      });
       const result = await pool.query<{
         source_type: EmbeddableSourceType;
         source_id: string;
@@ -7684,6 +7719,53 @@ export const createMemorySourceRepository = (
               and max(me.source_chunk_index) = max(me.source_chunk_count) - 1
               and min(me.source_chunk_count) = max(me.source_chunk_count)
           )
+          and (
+            not exists (
+              select 1
+              from pds_memory_event_mappings event_mapping
+              where s.source_type = 'memory_event'
+                and event_mapping.memory_event_id = s.source_id
+              union all
+              select 1
+              from pds_lcm_node_mappings node_mapping
+              where s.source_type = 'memory_node'
+                and node_mapping.memory_node_id = s.source_id
+            )
+            or (
+              s.source_type = 'memory_event'
+              and exists (
+                select 1
+                from pds_memory_event_mappings source_mapping
+                join pds_semantic_work_claims claim
+                  on claim.group_id = source_mapping.group_id
+                 and claim.local_source_type = 'memory_event'
+                 and claim.local_source_id = source_mapping.memory_event_id
+                 and claim.source_content_hash = source_mapping.content_hash
+                where source_mapping.memory_event_id = s.source_id
+                  and claim.work_class = 'memory_embedding'
+                  and claim.compatibility_contract_hash = $5
+                  and claim.state = 'active'
+                  and claim.expires_at > now()
+              )
+            )
+            or (
+              s.source_type = 'memory_node'
+              and exists (
+                select 1
+                from pds_lcm_node_mappings source_mapping
+                join pds_semantic_work_claims claim
+                  on claim.group_id = source_mapping.group_id
+                 and claim.local_source_type = 'lcm_node'
+                 and claim.local_source_id = source_mapping.memory_node_id
+                 and claim.source_content_hash = source_mapping.content_hash
+                where source_mapping.memory_node_id = s.source_id
+                  and claim.work_class = 'memory_embedding'
+                  and claim.compatibility_contract_hash = $5
+                  and claim.state = 'active'
+                  and claim.expires_at > now()
+              )
+            )
+          )
           and not exists (
             select 1
             from cross_identity_sync_relationships sync_relationship
@@ -7730,7 +7812,8 @@ export const createMemorySourceRepository = (
           localEmbeddingModel(),
           localEmbeddingDimensions(),
           localEmbeddingVersion(),
-          limit
+          limit,
+          portableEmbeddingContractHash
         ]
       );
 
@@ -8084,6 +8167,21 @@ export const createMemorySourceRepository = (
         where mn.invalidated_at is null and mn.personal_deleted_at is null
           and mn.kind in ('leaf', 'rollup')
           and mn.summary_model is null
+          and (
+            not exists (
+              select 1
+              from pds_logical_replicas pds_replica
+              where pds_replica.local_session_id = mn.session_id
+            )
+            or exists (
+              select 1
+              from conversation_source_artifacts source_authority
+              where source_authority.session_id = mn.session_id
+                and source_authority.owner_user_id = mn.owner_user_id
+                and source_authority.replica_role = 'origin_local'
+                and source_authority.lifecycle = 'active'
+            )
+          )
           and not exists (
             select 1
             from memory_replicas target_replica
@@ -8418,7 +8516,12 @@ export const createMemorySourceRepository = (
             source_hash,
             source_chunk_index,
             source_chunk_count,
-            source_text
+            source_text,
+            model_artifact_hash,
+            tokenizer,
+            input_transform,
+            pooling,
+            normalization
           )
           values (
             case when $1 = 'memory_node' then $2::uuid else null end,
@@ -8432,7 +8535,12 @@ export const createMemorySourceRepository = (
             $8,
             $9,
             $10,
-            $11
+            $11,
+            $12,
+            $13,
+            $14,
+            $15,
+            $16
           )
           on conflict do nothing
           returning id, true as inserted
@@ -8448,7 +8556,12 @@ export const createMemorySourceRepository = (
             input.source.sourceHash,
             input.chunkIndex ?? 0,
             input.chunkCount ?? 1,
-            sourceTextForStorage
+            sourceTextForStorage,
+            input.modelArtifactHash,
+            input.tokenizer,
+            input.inputTransform,
+            input.pooling,
+            input.normalization
           ]
         );
 
@@ -8656,13 +8769,19 @@ export const createMemorySourceRepository = (
                 source_hash,
                 source_chunk_index,
                 source_chunk_count,
-                source_text
+                source_text,
+                model_artifact_hash,
+                tokenizer,
+                input_transform,
+                pooling,
+                normalization
               )
               values (
                 case when $1 = 'memory_node' then $2::uuid else null end,
                 case when $1 = 'memory_event' then $2::uuid else null end,
                 case when $1 = 'message' then $2::uuid else null end,
-                $3, $4, $5, $6, $7, $8, $9, $10, $11
+                $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                $12, $13, $14, $15, $16
               )
               returning id
             `,
@@ -8677,7 +8796,12 @@ export const createMemorySourceRepository = (
               input.source.sourceHash,
               chunk.chunkIndex,
               chunk.chunkCount,
-              sourceTextForStorage
+              sourceTextForStorage,
+              input.modelArtifactHash,
+              input.tokenizer,
+              input.inputTransform,
+              input.pooling,
+              input.normalization
             ]
           );
           const id = embedding.rows[0]?.id;
@@ -8715,6 +8839,11 @@ export const createMemorySourceRepository = (
               values ($1, $2::vector)
             `,
             [id, vectorLiteral(chunk.vector)]
+          );
+        }
+        if (input.source.sourceType === "memory_event") {
+          await client.query(
+            "select pg_notify('koed_pds_local_sync','embedding_ready')"
           );
         }
         await client.query("commit");
@@ -8781,15 +8910,19 @@ export const createMemorySourceRepository = (
       if (sourceEventTime && Number.isNaN(sourceEventTime.getTime())) {
         throw new Error("sourceEventTime must be a valid timestamp");
       }
-      const tokenCount = estimateTokens(input.content, {
+      const tokenCountResult = countTokensForModel(input.content, {
         model: input.tokenModel ?? "gpt-5.4-mini"
       });
+      const tokenCount = tokenCountResult.tokens;
       const includeInEmbedding = input.metadata?.includeInEmbedding !== false;
       const includeInLcm = input.metadata?.includeInLcm !== false;
       const projectionPolicyKey =
         stringField(input.metadata ?? {}, "projectionPolicyKey") ?? null;
       const projectionPolicyRevision =
         numberField(input.metadata ?? {}, "projectionPolicyRevision") ?? null;
+      const projectionAlgorithmVersion =
+        stringField(input.metadata ?? {}, "projectionVersion") ?? null;
+      const tokenCounter = tokenCounterIdentity(tokenCountResult);
       const previousProjection =
         input.idempotencyKey?.startsWith("projection:") === true
           ? (
@@ -8871,6 +9004,8 @@ export const createMemorySourceRepository = (
           include_in_lcm = $18,
           projection_policy_key = $19,
           projection_policy_revision = $20,
+          projection_algorithm_version = $21,
+          token_counter = $22,
           token_count = $12,
           seal_reason = coalesce($13, memory_events.seal_reason),
           captured_at = coalesce($14::timestamptz, now()),
@@ -8904,6 +9039,8 @@ export const createMemorySourceRepository = (
           include_in_lcm,
           projection_policy_key,
           projection_policy_revision,
+          projection_algorithm_version,
+          token_counter,
           token_count,
           seal_reason,
           captured_at,
@@ -8912,7 +9049,7 @@ export const createMemorySourceRepository = (
         )
         select
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-          $17, $18, $19, $20, $12, $13,
+          $17, $18, $19, $20, $21, $22, $12, $13,
           coalesce($14::timestamptz, now()), $15, $16
         where not exists (select 1 from refreshed)
         on conflict do nothing
@@ -8944,7 +9081,9 @@ export const createMemorySourceRepository = (
         includeInEmbedding,
         includeInLcm,
         projectionPolicyKey,
-        projectionPolicyRevision
+        projectionPolicyRevision,
+        projectionAlgorithmVersion,
+        tokenCounter
       ];
 
       const upsertedRow = suppressPlaintextPayload
@@ -10847,6 +10986,21 @@ export const createMemorySourceRepository = (
             and coalesce(processing.work_class, 'normal_embedding_lcm') = $3
             and ($5::uuid is null or me.session_id = $5::uuid)
             and me.include_in_lcm = true
+            and (
+              not exists (
+                select 1
+                from pds_logical_replicas pds_replica
+                where pds_replica.local_session_id = me.session_id
+              )
+              or exists (
+                select 1
+                from conversation_source_artifacts source_authority
+                where source_authority.session_id = me.session_id
+                  and source_authority.owner_user_id = me.owner_user_id
+                  and source_authority.replica_role = 'origin_local'
+                  and source_authority.lifecycle = 'active'
+              )
+            )
             and not exists (
               select 1
               from memory_replicas target_replica

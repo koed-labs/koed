@@ -1,5 +1,5 @@
 {
-  "id": "e3e0161c-e77e-4535-bdfa-16e197affeb8",
+  "id": "12fdff70-c928-44a4-b617-a2b25141e14c",
   "prevId": "971958da-47ff-4e5b-a08b-1b67b5fff9e2",
   "version": "7",
   "dialect": "postgresql",
@@ -13115,6 +13115,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "model_artifact_hash": {
+          "name": "model_artifact_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "embedding_dimensions": {
           "name": "embedding_dimensions",
           "type": "integer",
@@ -13126,6 +13132,30 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "tokenizer": {
+          "name": "tokenizer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "input_transform": {
+          "name": "input_transform",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pooling": {
+          "name": "pooling",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "normalization": {
+          "name": "normalization",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "source_hash": {
           "name": "source_hash",
@@ -13880,6 +13910,18 @@
         "projection_policy_revision": {
           "name": "projection_policy_revision",
           "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "projection_algorithm_version": {
+          "name": "projection_algorithm_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "token_counter": {
+          "name": "token_counter",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -15846,6 +15888,317 @@
       },
       "isRLSEnabled": false
     },
+    "public.pds_artifact_inbox_entries": {
+      "name": "pds_artifact_inbox_entries",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "package_id": {
+          "name": "package_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "manifest_hash": {
+          "name": "manifest_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "lease_owner": {
+          "name": "lease_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "retry_at": {
+          "name": "retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_error_class": {
+          "name": "last_error_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retained_artifact_id": {
+          "name": "retained_artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_artifact_inbox_claim_idx": {
+          "name": "pds_artifact_inbox_claim_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "retry_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_artifact_inbox_entries_group_id_personal_device_groups_id_fk": {
+          "name": "pds_artifact_inbox_entries_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_artifact_inbox_entries",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pds_artifact_inbox_entries_owner_user_id_users_id_fk": {
+          "name": "pds_artifact_inbox_entries_owner_user_id_users_id_fk",
+          "tableFrom": "pds_artifact_inbox_entries",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pds_artifact_inbox_entries_retained_artifact_id_pds_portable_artifacts_id_fk": {
+          "name": "pds_artifact_inbox_entries_retained_artifact_id_pds_portable_artifacts_id_fk",
+          "tableFrom": "pds_artifact_inbox_entries",
+          "tableTo": "pds_portable_artifacts",
+          "columnsFrom": ["retained_artifact_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_artifact_inbox_replay_unique": {
+          "name": "pds_artifact_inbox_replay_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "package_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_artifact_inbox_state_check": {
+          "name": "pds_artifact_inbox_state_check",
+          "value": "\"pds_artifact_inbox_entries\".\"state\" in ('pending','downloading','verifying','processing','ready','incompatible','failed','quarantined','revoked')"
+        },
+        "pds_artifact_inbox_attempt_count_check": {
+          "name": "pds_artifact_inbox_attempt_count_check",
+          "value": "\"pds_artifact_inbox_entries\".\"attempt_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_artifact_outbox_entries": {
+      "name": "pds_artifact_outbox_entries",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_owner": {
+          "name": "lease_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "retry_at": {
+          "name": "retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_error_class": {
+          "name": "last_error_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "transport_id": {
+          "name": "transport_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_artifact_outbox_claim_idx": {
+          "name": "pds_artifact_outbox_claim_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "retry_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_artifact_outbox_entries_artifact_id_pds_portable_artifacts_id_fk": {
+          "name": "pds_artifact_outbox_entries_artifact_id_pds_portable_artifacts_id_fk",
+          "tableFrom": "pds_artifact_outbox_entries",
+          "tableTo": "pds_portable_artifacts",
+          "columnsFrom": ["artifact_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_artifact_outbox_artifact_unique": {
+          "name": "pds_artifact_outbox_artifact_unique",
+          "nullsNotDistinct": false,
+          "columns": ["artifact_id"]
+        },
+        "pds_artifact_outbox_idempotency_unique": {
+          "name": "pds_artifact_outbox_idempotency_unique",
+          "nullsNotDistinct": false,
+          "columns": ["idempotency_key"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_artifact_outbox_state_check": {
+          "name": "pds_artifact_outbox_state_check",
+          "value": "\"pds_artifact_outbox_entries\".\"state\" in ('pending','uploading','committed','acked','paused','failed','quarantined')"
+        },
+        "pds_artifact_outbox_attempt_count_check": {
+          "name": "pds_artifact_outbox_attempt_count_check",
+          "value": "\"pds_artifact_outbox_entries\".\"attempt_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.pds_conflict_resolution_records": {
       "name": "pds_conflict_resolution_records",
       "schema": "",
@@ -16132,6 +16485,158 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.pds_device_capabilities": {
+      "name": "pds_device_capabilities",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "capability": {
+          "name": "capability",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compatibility_contract_hash": {
+          "name": "compatibility_contract_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "readiness": {
+          "name": "readiness",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canonical_record": {
+          "name": "canonical_record",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "record_hash": {
+          "name": "record_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "advertised_at": {
+          "name": "advertised_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_device_capability_ready_idx": {
+          "name": "pds_device_capability_ready_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "capability",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "readiness",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_device_capabilities_group_id_personal_device_groups_id_fk": {
+          "name": "pds_device_capabilities_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_device_capabilities",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_device_capability_identity_unique": {
+          "name": "pds_device_capability_identity_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "device_id",
+            "capability",
+            "compatibility_contract_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_device_capability_kind_check": {
+          "name": "pds_device_capability_kind_check",
+          "value": "\"pds_device_capabilities\".\"capability\" in ('projection','memory_embedding','lcm')"
+        },
+        "pds_device_capability_readiness_check": {
+          "name": "pds_device_capability_readiness_check",
+          "value": "\"pds_device_capabilities\".\"readiness\" in ('ready','busy','unavailable') and \"pds_device_capabilities\".\"expires_at\" > \"pds_device_capabilities\".\"advertised_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.pds_inbox_entries": {
       "name": "pds_inbox_entries",
       "schema": "",
@@ -16300,6 +16805,105 @@
       },
       "isRLSEnabled": false
     },
+    "public.pds_lcm_node_mappings": {
+      "name": "pds_lcm_node_mappings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "memory_node_id": {
+          "name": "memory_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_node_id": {
+          "name": "logical_node_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_fingerprint": {
+          "name": "source_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_closure_hash": {
+          "name": "source_closure_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compatibility_contract_hash": {
+          "name": "compatibility_contract_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_lcm_node_mappings_group_id_personal_device_groups_id_fk": {
+          "name": "pds_lcm_node_mappings_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_lcm_node_mappings",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pds_lcm_node_mappings_memory_node_id_memory_nodes_id_fk": {
+          "name": "pds_lcm_node_mappings_memory_node_id_memory_nodes_id_fk",
+          "tableFrom": "pds_lcm_node_mappings",
+          "tableTo": "memory_nodes",
+          "columnsFrom": ["memory_node_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_lcm_node_mapping_node_unique": {
+          "name": "pds_lcm_node_mapping_node_unique",
+          "nullsNotDistinct": false,
+          "columns": ["memory_node_id"]
+        },
+        "pds_lcm_node_mapping_logical_unique": {
+          "name": "pds_lcm_node_mapping_logical_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "logical_node_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.pds_logical_replicas": {
       "name": "pds_logical_replicas",
       "schema": "",
@@ -16441,6 +17045,215 @@
           "value": "\"pds_logical_replicas\".\"materialization_state\" in ('pending','downloading','verifying','processing','ready','stale','failed','quarantined','revoked')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.pds_memory_embedding_mappings": {
+      "name": "pds_memory_embedding_mappings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "memory_embedding_id": {
+          "name": "memory_embedding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_embedding_id": {
+          "name": "logical_embedding_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_source_type": {
+          "name": "logical_source_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_source_id": {
+          "name": "logical_source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_content_hash": {
+          "name": "source_content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compatibility_contract_hash": {
+          "name": "compatibility_contract_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "vector_hash": {
+          "name": "vector_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_memory_embedding_mappings_group_id_personal_device_groups_id_fk": {
+          "name": "pds_memory_embedding_mappings_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_memory_embedding_mappings",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pds_memory_embedding_mappings_memory_embedding_id_memory_embeddings_id_fk": {
+          "name": "pds_memory_embedding_mappings_memory_embedding_id_memory_embeddings_id_fk",
+          "tableFrom": "pds_memory_embedding_mappings",
+          "tableTo": "memory_embeddings",
+          "columnsFrom": ["memory_embedding_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_memory_embedding_mapping_embedding_unique": {
+          "name": "pds_memory_embedding_mapping_embedding_unique",
+          "nullsNotDistinct": false,
+          "columns": ["memory_embedding_id"]
+        },
+        "pds_memory_embedding_mapping_logical_unique": {
+          "name": "pds_memory_embedding_mapping_logical_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "logical_embedding_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_memory_embedding_mapping_source_type_check": {
+          "name": "pds_memory_embedding_mapping_source_type_check",
+          "value": "\"pds_memory_embedding_mappings\".\"logical_source_type\" in ('memory_event','lcm_node')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_memory_event_mappings": {
+      "name": "pds_memory_event_mappings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "memory_event_id": {
+          "name": "memory_event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_event_id": {
+          "name": "logical_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_fingerprint": {
+          "name": "source_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_closure_hash": {
+          "name": "source_closure_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_ordinals": {
+          "name": "source_ordinals",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_memory_event_mappings_group_id_personal_device_groups_id_fk": {
+          "name": "pds_memory_event_mappings_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_memory_event_mappings",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pds_memory_event_mappings_memory_event_id_memory_events_id_fk": {
+          "name": "pds_memory_event_mappings_memory_event_id_memory_events_id_fk",
+          "tableFrom": "pds_memory_event_mappings",
+          "tableTo": "memory_events",
+          "columnsFrom": ["memory_event_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_memory_event_mapping_event_unique": {
+          "name": "pds_memory_event_mapping_event_unique",
+          "nullsNotDistinct": false,
+          "columns": ["memory_event_id"]
+        },
+        "pds_memory_event_mapping_logical_unique": {
+          "name": "pds_memory_event_mapping_logical_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "logical_event_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.pds_origin_high_water_marks": {
@@ -16735,6 +17548,235 @@
         "pds_outbox_attempt_count_check": {
           "name": "pds_outbox_attempt_count_check",
           "value": "\"pds_outbox_entries\".\"attempt_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_portable_artifacts": {
+      "name": "pds_portable_artifacts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_session_id": {
+          "name": "local_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "work_identity": {
+          "name": "work_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "artifact_class": {
+          "name": "artifact_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_package_id": {
+          "name": "source_package_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_manifest_hash": {
+          "name": "source_manifest_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_fingerprint": {
+          "name": "source_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_closure_hash": {
+          "name": "source_closure_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "producer_device_id": {
+          "name": "producer_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "claim_generation": {
+          "name": "claim_generation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compatibility_contract_hash": {
+          "name": "compatibility_contract_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_hash": {
+          "name": "payload_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transport_manifest_hash": {
+          "name": "transport_manifest_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "semantic_claim_completed_at": {
+          "name": "semantic_claim_completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "encrypted_envelope": {
+          "name": "encrypted_envelope",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ready'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_portable_artifact_source_idx": {
+          "name": "pds_portable_artifact_source_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_fingerprint",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_closure_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "artifact_class",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_portable_artifacts_group_id_personal_device_groups_id_fk": {
+          "name": "pds_portable_artifacts_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_portable_artifacts",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pds_portable_artifacts_owner_user_id_users_id_fk": {
+          "name": "pds_portable_artifacts_owner_user_id_users_id_fk",
+          "tableFrom": "pds_portable_artifacts",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pds_portable_artifacts_local_session_id_sessions_id_fk": {
+          "name": "pds_portable_artifacts_local_session_id_sessions_id_fk",
+          "tableFrom": "pds_portable_artifacts",
+          "tableTo": "sessions",
+          "columnsFrom": ["local_session_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_portable_artifact_group_identity_unique": {
+          "name": "pds_portable_artifact_group_identity_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "artifact_id"]
+        },
+        "pds_portable_artifact_work_generation_unique": {
+          "name": "pds_portable_artifact_work_generation_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "work_identity", "claim_generation"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_portable_artifact_class_check": {
+          "name": "pds_portable_artifact_class_check",
+          "value": "\"pds_portable_artifacts\".\"artifact_class\" in ('memory_event/v1','memory_embedding/v1','lcm_node/v1')"
+        },
+        "pds_portable_artifact_state_check": {
+          "name": "pds_portable_artifact_state_check",
+          "value": "\"pds_portable_artifacts\".\"state\" in ('ready','published','imported','incompatible','quarantined','revoked')"
+        },
+        "pds_portable_artifact_generation_check": {
+          "name": "pds_portable_artifact_generation_check",
+          "value": "\"pds_portable_artifacts\".\"claim_generation\" ~ '^(0|[1-9][0-9]*)$'"
         }
       },
       "isRLSEnabled": false
@@ -17213,6 +18255,174 @@
         "pds_retained_package_state_check": {
           "name": "pds_retained_package_state_check",
           "value": "\"pds_retained_packages\".\"state\" in ('ready','stale','quarantined','revoked')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_semantic_work_claims": {
+      "name": "pds_semantic_work_claims",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "work_identity": {
+          "name": "work_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "work_class": {
+          "name": "work_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compatibility_contract_hash": {
+          "name": "compatibility_contract_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "claimant_device_id": {
+          "name": "claimant_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_source_type": {
+          "name": "local_source_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "local_source_id": {
+          "name": "local_source_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_content_hash": {
+          "name": "source_content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_generation": {
+          "name": "claim_generation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_semantic_work_claim_expiry_idx": {
+          "name": "pds_semantic_work_claim_expiry_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_semantic_work_claims_group_id_personal_device_groups_id_fk": {
+          "name": "pds_semantic_work_claims_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_semantic_work_claims",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_semantic_work_claim_identity_unique": {
+          "name": "pds_semantic_work_claim_identity_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "work_identity"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_semantic_work_claim_class_check": {
+          "name": "pds_semantic_work_claim_class_check",
+          "value": "\"pds_semantic_work_claims\".\"work_class\" in ('projection','memory_embedding','lcm_leaf','lcm_rollup')"
+        },
+        "pds_semantic_work_claim_local_source_check": {
+          "name": "pds_semantic_work_claim_local_source_check",
+          "value": "(\"pds_semantic_work_claims\".\"local_source_type\" is null and \"pds_semantic_work_claims\".\"local_source_id\" is null and \"pds_semantic_work_claims\".\"source_content_hash\" is null)\n        or (\"pds_semantic_work_claims\".\"local_source_type\" in ('memory_event','lcm_node') and \"pds_semantic_work_claims\".\"local_source_id\" is not null and \"pds_semantic_work_claims\".\"source_content_hash\" is not null)"
+        },
+        "pds_semantic_work_claim_state_check": {
+          "name": "pds_semantic_work_claim_state_check",
+          "value": "\"pds_semantic_work_claims\".\"state\" in ('active','completed','released','superseded')"
+        },
+        "pds_semantic_work_claim_generation_check": {
+          "name": "pds_semantic_work_claim_generation_check",
+          "value": "\"pds_semantic_work_claims\".\"claim_generation\" ~ '^(0|[1-9][0-9]*)$' and \"pds_semantic_work_claims\".\"expires_at\" > \"pds_semantic_work_claims\".\"claimed_at\""
         }
       },
       "isRLSEnabled": false

@@ -13,6 +13,12 @@ describe("resolveWorkerEnv", () => {
       embeddingServiceUrl: "http://embedding-service:8000",
       embeddingDimensions: 1024,
       embeddingVersion: "qwen3-0.6b",
+      embeddingModelArtifactHash:
+        "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      embeddingTokenizer: "qwen3-embedding-0.6b-gguf",
+      embeddingInputTransform: "qwen3-retrieval-document-v1",
+      embeddingPooling: "last",
+      embeddingNormalization: "l2",
       embeddingBatchLimit: 16,
       embeddingMaxTextChars: 200_000,
       embeddingMaxRequestChars: 1_000_000,

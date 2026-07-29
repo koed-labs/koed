@@ -215,6 +215,22 @@ export interface CreatePdsSessionPackageInput {
   manifest: PdsSessionManifest;
 }
 
+export interface CreatePdsEncryptedPayloadPackageInput {
+  runtime: PdsSessionPackageRuntimeContext;
+  expiresAt: string;
+  servingSigningPrivateKey: KeyObject;
+  packageId: string;
+  manifestHash: string;
+  originDeviceId: string;
+  contentEpoch: string;
+  plaintext: string | Uint8Array;
+}
+
+export interface DecryptPdsEncryptedPayloadPackageResult {
+  package: PdsSessionPackage;
+  plaintext: Uint8Array;
+}
+
 export interface PdsSessionPackageReplayEntry {
   packageId: string;
   sourceManifestHash: string;
@@ -1719,22 +1735,18 @@ const packageRecipients = (
 };
 
 const unsignedTransportHeader = (
-  input: Pick<
-    CreatePdsSessionPackageInput & {
-      groupId: string;
-      authorityHead: string;
-      currentEpoch: string;
-      servingDeviceId: string;
-      servingSigningKeyId: string;
-    },
-    | "groupId"
-    | "authorityHead"
-    | "currentEpoch"
-    | "expiresAt"
-    | "servingDeviceId"
-    | "servingSigningKeyId"
-  >,
-  manifest: PdsSessionManifest,
+  input: {
+    groupId: string;
+    authorityHead: string;
+    currentEpoch: string;
+    expiresAt: string;
+    servingDeviceId: string;
+    servingSigningKeyId: string;
+    packageId: string;
+    manifestHash: string;
+    originDeviceId: string;
+    contentEpoch: string;
+  },
   recipients: PdsSessionRecipient[],
   plaintext: Buffer
 ): JsonRecord => {
@@ -1744,10 +1756,10 @@ const unsignedTransportHeader = (
     version: PDS_SESSION_PACKAGE_VERSION,
     transportId: randomBytes(32).toString("base64url"),
     groupId: input.groupId,
-    packageId: manifest.packageId,
-    sourceManifestHash: sourceManifestHash(manifest),
-    originDeviceId: manifest.originDeviceId,
-    contentEpoch: manifest.contentEpoch,
+    packageId: input.packageId,
+    sourceManifestHash: input.manifestHash,
+    originDeviceId: input.originDeviceId,
+    contentEpoch: input.contentEpoch,
     recipientEpoch: input.currentEpoch,
     plaintextByteCount: String(plaintext.length),
     chunkCount: String(
@@ -1808,7 +1820,32 @@ export const createPdsSessionPackage = (
   const manifest = validatePdsSessionManifest(input.manifest);
   const runtime = assertRuntimeContext(input.runtime);
   verifyOriginMembership(manifest, runtime);
+  return createPdsEncryptedPayloadPackage({
+    runtime,
+    expiresAt: input.expiresAt,
+    servingSigningPrivateKey: input.servingSigningPrivateKey,
+    packageId: manifest.packageId,
+    manifestHash: sourceManifestHash(manifest),
+    originDeviceId: manifest.originDeviceId,
+    contentEpoch: manifest.contentEpoch,
+    plaintext: bytes(manifest)
+  });
+};
+
+/**
+ * Shared bounded E2EE transport for immutable PDS source and artifact
+ * plaintext. Callers remain responsible for validating and signing the
+ * plaintext schema before transport.
+ */
+export const createPdsEncryptedPayloadPackage = (
+  input: CreatePdsEncryptedPayloadPackageInput
+): PdsSessionPackage => {
+  const runtime = assertRuntimeContext(input.runtime);
   requireIso(input.expiresAt, "transport expiry");
+  requireHash(input.packageId, "transport package ID");
+  requireHash(input.manifestHash, "transport manifest hash");
+  requireRelayId(input.originDeviceId, "transport origin device");
+  requireUint64(input.contentEpoch, "transport content epoch");
   const recipients = packageRecipients(
     runtime.recipients.map((recipient) => ({
       deviceId: recipient.deviceId,
@@ -1817,7 +1854,16 @@ export const createPdsSessionPackage = (
     })),
     runtime.serving.signingKeyId
   );
-  const plaintext = bytes(manifest);
+  const plaintext =
+    typeof input.plaintext === "string"
+      ? Buffer.from(input.plaintext, "utf8")
+      : Buffer.from(
+          input.plaintext.buffer,
+          input.plaintext.byteOffset,
+          input.plaintext.byteLength
+        );
+  if (plaintext.length === 0)
+    throw new RangeError("PDS package plaintext is empty");
   if (plaintext.length > PDS_SESSION_PACKAGE_MAX_BYTES)
     throw new RangeError("PDS package plaintext exceeds limit");
   const encrypted = encryptTransportPayload(
@@ -1828,9 +1874,12 @@ export const createPdsSessionPackage = (
         authorityHead: runtime.authorityHead,
         currentEpoch: runtime.epoch,
         servingDeviceId: runtime.serving.deviceId,
-        servingSigningKeyId: runtime.serving.signingKeyId
+        servingSigningKeyId: runtime.serving.signingKeyId,
+        packageId: input.packageId,
+        manifestHash: input.manifestHash,
+        originDeviceId: input.originDeviceId,
+        contentEpoch: input.contentEpoch
       },
-      manifest,
       recipients,
       plaintext
     ),
@@ -2038,29 +2087,9 @@ export const verifyAndDecryptPdsSessionPackage = (
   value: string | Uint8Array,
   input: VerifyPdsSessionPackageInput
 ): PdsSessionManifest => {
-  const pkg = validatePdsSessionPackage(
-    parsePdsWireJson(value, PDS_SESSION_PACKAGE_MAX_JSON_BYTES, "package JSON")
-  );
-  verifyHeader(pkg.header, input);
-  const cek = decryptCek(pkg, input);
-  const ciphertext = Buffer.concat(
-    pkg.chunks.map((chunk) =>
-      decodePdsBase64url(
-        chunk.ciphertext,
-        undefined,
-        PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
-      )
-    )
-  );
-  const plaintext = aesDecrypt(
-    cek,
-    ciphertext,
-    decodePdsBase64url(pkg.header.payloadNonce, 12),
-    decodePdsBase64url(pkg.header.payloadTag, 16),
-    headerAad(pkg.header)
-  );
-  if (plaintext.length !== Number(pkg.header.plaintextByteCount))
-    throw new TypeError("PDS plaintext size is invalid");
+  const decrypted = decryptPdsEncryptedPayloadPackage(value, input);
+  const pkg = decrypted.package;
+  const plaintext = Buffer.from(decrypted.plaintext);
   const manifest = validatePdsSessionManifest(
     parsePdsWireJson(
       plaintext,
@@ -2086,6 +2115,37 @@ export const verifyAndDecryptPdsSessionPackage = (
   )
     throw new TypeError("PDS deletion floor rejects source package");
   return manifest;
+};
+
+/** Decrypts authenticated transport bytes without interpreting plaintext. */
+export const decryptPdsEncryptedPayloadPackage = (
+  value: string | Uint8Array,
+  input: VerifyPdsSessionPackageInput
+): DecryptPdsEncryptedPayloadPackageResult => {
+  const pkg = validatePdsSessionPackage(
+    parsePdsWireJson(value, PDS_SESSION_PACKAGE_MAX_JSON_BYTES, "package JSON")
+  );
+  verifyHeader(pkg.header, input);
+  const cek = decryptCek(pkg, input);
+  const ciphertext = Buffer.concat(
+    pkg.chunks.map((chunk) =>
+      decodePdsBase64url(
+        chunk.ciphertext,
+        undefined,
+        PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
+      )
+    )
+  );
+  const plaintext = aesDecrypt(
+    cek,
+    ciphertext,
+    decodePdsBase64url(pkg.header.payloadNonce, 12),
+    decodePdsBase64url(pkg.header.payloadTag, 16),
+    headerAad(pkg.header)
+  );
+  if (plaintext.length !== Number(pkg.header.plaintextByteCount))
+    throw new TypeError("PDS plaintext size is invalid");
+  return { package: pkg, plaintext };
 };
 
 /** Retry exact bytes. Call create only for new transport or rewrap. */

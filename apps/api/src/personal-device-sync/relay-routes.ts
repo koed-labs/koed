@@ -142,6 +142,128 @@ export const registerPersonalDeviceSyncRelayRoutes = (
 
   const pre = { preHandler: context.rateLimit.memoryWrite };
   app.post(
+    "/v1/personal-device-sync/relay/semantic-work/capabilities",
+    pre,
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      const payload = body(request as RawRequest);
+      if (
+        payload.capability !== "projection" &&
+        payload.capability !== "memory_embedding" &&
+        payload.capability !== "lcm"
+      ) {
+        throw error("PDS device capability is invalid");
+      }
+      if (
+        payload.readiness !== "ready" &&
+        payload.readiness !== "busy" &&
+        payload.readiness !== "unavailable"
+      ) {
+        throw error("PDS device readiness is invalid");
+      }
+      if (
+        typeof payload.advertisedAt !== "string" ||
+        typeof payload.expiresAt !== "string"
+      ) {
+        throw error("PDS device capability timestamp is invalid");
+      }
+      const advertisedAt = new Date(payload.advertisedAt);
+      const expiresAt = new Date(payload.expiresAt);
+      const now = Date.now();
+      if (
+        Number.isNaN(advertisedAt.getTime()) ||
+        Number.isNaN(expiresAt.getTime()) ||
+        Math.abs(advertisedAt.getTime() - now) > 60_000 ||
+        expiresAt.getTime() <= now ||
+        expiresAt.getTime() - advertisedAt.getTime() > 5 * 60_000
+      ) {
+        throw error("PDS device capability timestamp is invalid");
+      }
+      const canonicalRecord = rawBody(request as RawRequest).toString("utf8");
+      return {
+        accepted: await input.relay.advertisePdsRelayDeviceCapability({
+          ...input.auth,
+          capability: payload.capability,
+          compatibilityContractHash: b64hash(
+            payload.compatibilityContractHash,
+            "compatibility contract hash"
+          ),
+          readiness: payload.readiness,
+          canonicalRecord,
+          recordHash: createHash("sha256")
+            .update(canonicalRecord)
+            .digest("base64url"),
+          advertisedAt,
+          expiresAt
+        })
+      };
+    }
+  );
+  app.post(
+    "/v1/personal-device-sync/relay/semantic-work/claims/acquire",
+    pre,
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      const payload = body(request as RawRequest);
+      const workClass = payload.workClass;
+      if (
+        workClass !== "projection" &&
+        workClass !== "memory_embedding" &&
+        workClass !== "lcm_leaf" &&
+        workClass !== "lcm_rollup"
+      ) {
+        throw error("PDS semantic work class is invalid");
+      }
+      const leaseSeconds = Number(payload.leaseSeconds ?? 60);
+      if (
+        !Number.isSafeInteger(leaseSeconds) ||
+        leaseSeconds < 5 ||
+        leaseSeconds > 3600
+      ) {
+        throw error("PDS semantic work lease is invalid");
+      }
+      return {
+        claim: await input.relay.acquirePdsRelaySemanticWorkClaim({
+          ...input.auth,
+          workIdentity: b64hash(payload.workIdentity, "work identity"),
+          workClass,
+          compatibilityContractHash: b64hash(
+            payload.compatibilityContractHash,
+            "compatibility contract hash"
+          ),
+          leaseSeconds
+        })
+      };
+    }
+  );
+  app.post(
+    "/v1/personal-device-sync/relay/semantic-work/claims/complete",
+    pre,
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      const payload = body(request as RawRequest);
+      if (
+        typeof payload.claimGeneration !== "string" ||
+        !/^(0|[1-9][0-9]*)$/.test(payload.claimGeneration)
+      ) {
+        throw error("PDS semantic work generation is invalid");
+      }
+      return {
+        completed: await input.relay.completePdsRelaySemanticWorkClaim({
+          ...input.auth,
+          workIdentity: b64hash(payload.workIdentity, "work identity"),
+          claimGeneration: payload.claimGeneration
+        })
+      };
+    }
+  );
+  app.post(
     "/v1/personal-device-sync/relay/transports",
     pre,
     async (request) => {

@@ -1,25 +1,35 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import type { MemorySourceRepository } from "@koed/db";
+import type { LocalEmbeddingStatus, MemorySourceRepository } from "@koed/db";
 import {
+  PDS_ARTIFACT_PROTOCOL,
   PDS_PROTOCOL,
   PdsRelayClient,
   canonicalizePdsJson,
+  createPdsArtifactRecord,
+  createPdsEncryptedPayloadPackage,
   createPdsSessionPackageRuntimeContext,
+  decryptPdsEncryptedPayloadPackage,
   decryptEnvelopeToUtf8,
   parseCanonicalPdsJson,
+  parsePdsArtifactRecordJson,
   parsePdsSessionPackageJson,
   pdsEd25519PrivateKey,
+  pdsArtifactCompatibilityHash,
   pdsFinalizedStatementHash,
   pdsSessionPackageDigest,
   signPdsRecord,
+  resolveSupportedEmbeddingModelConfig,
   validatePdsConflictResolution,
   validatePdsGroupStatement,
   validatePdsTombstone,
+  verifyPdsArtifactRecord,
   verifyAndDecryptPdsSessionPackage,
   type EnvelopeEncryptionProvider,
+  type PdsEmbeddingContractV1,
   type PdsSessionPackage,
-  type PdsSessionManifest
+  type PdsSessionManifest,
+  type SupportedEmbeddingModelConfig
 } from "@koed/shared";
 import type { PdsWorkerSecureRuntime } from "./personal-device-sync-service.js";
 
@@ -179,6 +189,43 @@ type PdsRuntimeFactoryInput = {
   environment?: NodeJS.ProcessEnv;
 };
 
+const pdsEmbeddingContract = (input: {
+  model: SupportedEmbeddingModelConfig;
+  modelArtifactHash: string;
+}): PdsEmbeddingContractV1 => ({
+  artifactClass: "memory_embedding/v1",
+  modelKey: input.model.key,
+  modelArtifactHash: input.modelArtifactHash,
+  dimensions: String(input.model.dimensions),
+  tokenizer: input.model.tokenizer,
+  inputTransform: input.model.inputTransform,
+  pooling: input.model.pooling,
+  normalization: input.model.normalization,
+  embeddingVersion: input.model.key
+});
+
+export const resolvePdsEmbeddingCapability = (input: {
+  model: SupportedEmbeddingModelConfig;
+  modelArtifactHash: string;
+  status: LocalEmbeddingStatus;
+}): {
+  contract: PdsEmbeddingContractV1;
+  compatibilityContractHash: string;
+  readiness: "ready" | "unavailable";
+} => {
+  const contract = pdsEmbeddingContract(input);
+  return {
+    contract,
+    compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
+    readiness:
+      input.status.healthy &&
+      input.status.model === input.model.key &&
+      input.status.dimensions === input.model.dimensions
+        ? "ready"
+        : "unavailable"
+  };
+};
+
 const createPdsWorkerRuntimeFromSecret = (
   input: PdsRuntimeFactoryInput,
   secret: RuntimeSecret
@@ -243,6 +290,418 @@ const createPdsWorkerRuntimeFromSecret = (
       heartbeatGroups() {
         return Promise.resolve([secret.groupId]);
       },
+      async reconcileArtifacts() {
+        const pendingCompletions =
+          await input.repository.listPdsPendingArtifactClaimCompletions({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            producerDeviceId: runtime.recipient.deviceId,
+            limit: 100
+          });
+        for (const pending of pendingCompletions) {
+          if (
+            !(await relay.completeSemanticWorkClaim({
+              workIdentity: pending.workIdentity,
+              claimGeneration: pending.claimGeneration
+            }))
+          ) {
+            continue;
+          }
+          await input.repository.markPdsArtifactClaimCompleted({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            artifactId: pending.artifactId,
+            producerDeviceId: runtime.recipient.deviceId,
+            claimGeneration: pending.claimGeneration
+          });
+        }
+        const candidates =
+          await input.repository.listPdsPortableMemoryEventCandidates({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            limit: 50
+          });
+        let staged = 0;
+        for (const candidate of candidates) {
+          const compatibilityContractHash = pdsArtifactCompatibilityHash(
+            candidate.compatibilityContract
+          );
+          const claim = await relay.acquireSemanticWorkClaim({
+            workIdentity: candidate.workIdentity,
+            workClass: "projection",
+            compatibilityContractHash
+          });
+          if (!claim) continue;
+          if (
+            claim.claimantDeviceId !== runtime.recipient.deviceId ||
+            claim.workIdentity !== candidate.workIdentity ||
+            claim.compatibilityContractHash !== compatibilityContractHash ||
+            !(await input.repository.recordPdsSemanticWorkClaim({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              claim
+            }))
+          ) {
+            throw new Error("PdsCryptoAuthorityError");
+          }
+          const record = createPdsArtifactRecord({
+            groupId: secret.groupId,
+            workIdentity: candidate.workIdentity,
+            sourcePackageId: candidate.sourcePackageId,
+            sourceManifestHash: candidate.sourceManifestHash,
+            sourceFingerprint: candidate.sourceFingerprint,
+            sourceClosureHash: candidate.sourceClosureHash,
+            producerDeviceId: runtime.recipient.deviceId,
+            producerSigningKeyId: runtime.recipient.signingKeyId,
+            claimGeneration: claim.claimGeneration,
+            compatibilityContract: candidate.compatibilityContract,
+            payload: {
+              artifactClass: "memory_event/v1",
+              items: [candidate.event]
+            },
+            createdAt: new Date().toISOString(),
+            producerSigningPrivateKey: signingKey
+          });
+          const canonicalRecord = canonicalizePdsJson(record);
+          const manifestHash = createHash("sha256")
+            .update(canonicalRecord)
+            .digest("base64url");
+          const transport = createPdsEncryptedPayloadPackage({
+            runtime,
+            expiresAt: new Date(
+              Date.now() + 24 * 60 * 60 * 1_000
+            ).toISOString(),
+            servingSigningPrivateKey: signingKey,
+            packageId: record.manifest.artifactId,
+            manifestHash,
+            originDeviceId: runtime.recipient.deviceId,
+            contentEpoch: runtime.epoch,
+            plaintext: canonicalRecord
+          });
+          const encryptedEnvelope =
+            await input.envelopeEncryptionProvider.encrypt({
+              plaintext: canonicalizePdsJson(transport),
+              scope: {
+                tenantId: secret.userId,
+                objectClass: "pds_outbound_artifact"
+              },
+              provenance: {
+                rowFamily: "pds_portable_artifacts",
+                sourceTable: "pds_portable_artifacts",
+                sourceId: record.manifest.artifactId
+              },
+              ciphertextLocation: "pds_portable_artifacts",
+              aad: {
+                ownerUserId: secret.userId,
+                groupId: secret.groupId,
+                artifactId: record.manifest.artifactId
+              }
+            });
+          const result = await input.repository.stagePdsPortableArtifact({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            localSessionId: candidate.localSessionId,
+            localMemoryEventId: candidate.localMemoryEventId,
+            record,
+            transportManifestHash: manifestHash,
+            encryptedEnvelope
+          });
+          if (
+            !(await relay.completeSemanticWorkClaim({
+              workIdentity: claim.workIdentity,
+              claimGeneration: claim.claimGeneration
+            })) ||
+            !(await input.repository.markPdsArtifactClaimCompleted({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              artifactId: record.manifest.artifactId,
+              producerDeviceId: runtime.recipient.deviceId,
+              claimGeneration: claim.claimGeneration
+            }))
+          ) {
+            throw new Error("PdsRelayRetryableError");
+          }
+          if (result.inserted) staged += 1;
+        }
+        const environment = input.environment ?? process.env;
+        const embeddingModel = resolveSupportedEmbeddingModelConfig(
+          environment.EMBEDDING_MODEL
+        );
+        const modelArtifactHash =
+          environment.KOED_EMBEDDING_MODEL_SHA256?.trim() ||
+          embeddingModel.defaultArtifactSha256;
+        const embeddingContract = pdsEmbeddingContract({
+          model: embeddingModel,
+          modelArtifactHash
+        });
+        const embeddingClaimCandidates =
+          await input.repository.listPdsMemoryEmbeddingClaimCandidates({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            contract: embeddingContract,
+            limit: 100
+          });
+        if (embeddingClaimCandidates.length > 0) {
+          const status = await input.repository.getLocalEmbeddingStatus();
+          const capability = resolvePdsEmbeddingCapability({
+            model: embeddingModel,
+            modelArtifactHash,
+            status
+          });
+          const advertisedAt = new Date();
+          const accepted = await relay.advertiseSemanticCapability({
+            capability: "memory_embedding",
+            compatibilityContractHash: capability.compatibilityContractHash,
+            readiness: capability.readiness,
+            advertisedAt: advertisedAt.toISOString(),
+            expiresAt: new Date(
+              advertisedAt.getTime() + 2 * 60_000
+            ).toISOString()
+          });
+          if (!accepted) throw new Error("PdsCryptoAuthorityError");
+          if (capability.readiness === "ready") {
+            for (const candidate of embeddingClaimCandidates) {
+              const claim = await relay.acquireSemanticWorkClaim({
+                workIdentity: candidate.workIdentity,
+                workClass: "memory_embedding",
+                compatibilityContractHash: candidate.compatibilityContractHash,
+                leaseSeconds: 3600
+              });
+              if (
+                claim &&
+                claim.claimantDeviceId === runtime.recipient.deviceId
+              ) {
+                await input.repository.recordPdsSemanticWorkClaim({
+                  userId: secret.userId,
+                  groupId: secret.groupId,
+                  claim,
+                  localSource: {
+                    sourceType: candidate.localSourceType,
+                    sourceId: candidate.localSourceId,
+                    contentHash: candidate.sourceContentHash
+                  }
+                });
+              }
+            }
+          }
+        }
+        const embeddingCandidates =
+          await input.repository.listPdsPortableMemoryEmbeddingCandidates({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            contract: embeddingContract,
+            limit: 100
+          });
+        for (const candidate of embeddingCandidates) {
+          const compatibilityContractHash = pdsArtifactCompatibilityHash(
+            candidate.compatibilityContract
+          );
+          const claim = await relay.acquireSemanticWorkClaim({
+            workIdentity: candidate.workIdentity,
+            workClass: "memory_embedding",
+            compatibilityContractHash
+          });
+          if (!claim) continue;
+          if (
+            claim.claimantDeviceId !== runtime.recipient.deviceId ||
+            claim.workIdentity !== candidate.workIdentity ||
+            claim.compatibilityContractHash !== compatibilityContractHash ||
+            !(await input.repository.recordPdsSemanticWorkClaim({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              claim
+            }))
+          ) {
+            throw new Error("PdsCryptoAuthorityError");
+          }
+          const record = createPdsArtifactRecord({
+            groupId: secret.groupId,
+            workIdentity: candidate.workIdentity,
+            sourcePackageId: candidate.sourcePackageId,
+            sourceManifestHash: candidate.sourceManifestHash,
+            sourceFingerprint: candidate.sourceFingerprint,
+            sourceClosureHash: candidate.sourceClosureHash,
+            producerDeviceId: runtime.recipient.deviceId,
+            producerSigningKeyId: runtime.recipient.signingKeyId,
+            claimGeneration: claim.claimGeneration,
+            compatibilityContract: candidate.compatibilityContract,
+            payload: {
+              artifactClass: "memory_embedding/v1",
+              items: [candidate.embedding]
+            },
+            createdAt: new Date().toISOString(),
+            producerSigningPrivateKey: signingKey
+          });
+          const canonicalRecord = canonicalizePdsJson(record);
+          const manifestHash = createHash("sha256")
+            .update(canonicalRecord)
+            .digest("base64url");
+          const transport = createPdsEncryptedPayloadPackage({
+            runtime,
+            expiresAt: new Date(
+              Date.now() + 24 * 60 * 60 * 1_000
+            ).toISOString(),
+            servingSigningPrivateKey: signingKey,
+            packageId: record.manifest.artifactId,
+            manifestHash,
+            originDeviceId: runtime.recipient.deviceId,
+            contentEpoch: runtime.epoch,
+            plaintext: canonicalRecord
+          });
+          const encryptedEnvelope =
+            await input.envelopeEncryptionProvider.encrypt({
+              plaintext: canonicalizePdsJson(transport),
+              scope: {
+                tenantId: secret.userId,
+                objectClass: "pds_outbound_artifact"
+              },
+              provenance: {
+                rowFamily: "pds_portable_artifacts",
+                sourceTable: "pds_portable_artifacts",
+                sourceId: record.manifest.artifactId
+              },
+              ciphertextLocation: "pds_portable_artifacts",
+              aad: {
+                ownerUserId: secret.userId,
+                groupId: secret.groupId,
+                artifactId: record.manifest.artifactId
+              }
+            });
+          const result = await input.repository.stagePdsPortableArtifact({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            localSessionId: candidate.localSessionId,
+            localMemoryEmbeddingId: candidate.localMemoryEmbeddingId,
+            record,
+            transportManifestHash: manifestHash,
+            encryptedEnvelope
+          });
+          if (
+            !(await relay.completeSemanticWorkClaim({
+              workIdentity: claim.workIdentity,
+              claimGeneration: claim.claimGeneration
+            })) ||
+            !(await input.repository.markPdsArtifactClaimCompleted({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              artifactId: record.manifest.artifactId,
+              producerDeviceId: runtime.recipient.deviceId,
+              claimGeneration: claim.claimGeneration
+            }))
+          ) {
+            throw new Error("PdsRelayRetryableError");
+          }
+          if (result.inserted) staged += 1;
+        }
+        const lcmCandidates =
+          await input.repository.listPdsPortableLcmNodeCandidates({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            limit: 50
+          });
+        for (const candidate of lcmCandidates) {
+          const compatibilityContractHash = pdsArtifactCompatibilityHash(
+            candidate.compatibilityContract
+          );
+          const claim = await relay.acquireSemanticWorkClaim({
+            workIdentity: candidate.workIdentity,
+            workClass: candidate.workClass,
+            compatibilityContractHash
+          });
+          if (!claim) continue;
+          if (
+            claim.claimantDeviceId !== runtime.recipient.deviceId ||
+            claim.workIdentity !== candidate.workIdentity ||
+            claim.compatibilityContractHash !== compatibilityContractHash ||
+            !(await input.repository.recordPdsSemanticWorkClaim({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              claim
+            }))
+          ) {
+            throw new Error("PdsCryptoAuthorityError");
+          }
+          const record = createPdsArtifactRecord({
+            groupId: secret.groupId,
+            workIdentity: candidate.workIdentity,
+            sourcePackageId: candidate.sourcePackageId,
+            sourceManifestHash: candidate.sourceManifestHash,
+            sourceFingerprint: candidate.sourceFingerprint,
+            sourceClosureHash: candidate.sourceClosureHash,
+            producerDeviceId: runtime.recipient.deviceId,
+            producerSigningKeyId: runtime.recipient.signingKeyId,
+            claimGeneration: claim.claimGeneration,
+            compatibilityContract: candidate.compatibilityContract,
+            payload: {
+              artifactClass: "lcm_node/v1",
+              items: [candidate.node]
+            },
+            createdAt: new Date().toISOString(),
+            producerSigningPrivateKey: signingKey
+          });
+          const canonicalRecord = canonicalizePdsJson(record);
+          const manifestHash = createHash("sha256")
+            .update(canonicalRecord)
+            .digest("base64url");
+          const transport = createPdsEncryptedPayloadPackage({
+            runtime,
+            expiresAt: new Date(
+              Date.now() + 24 * 60 * 60 * 1_000
+            ).toISOString(),
+            servingSigningPrivateKey: signingKey,
+            packageId: record.manifest.artifactId,
+            manifestHash,
+            originDeviceId: runtime.recipient.deviceId,
+            contentEpoch: runtime.epoch,
+            plaintext: canonicalRecord
+          });
+          const encryptedEnvelope =
+            await input.envelopeEncryptionProvider.encrypt({
+              plaintext: canonicalizePdsJson(transport),
+              scope: {
+                tenantId: secret.userId,
+                objectClass: "pds_outbound_artifact"
+              },
+              provenance: {
+                rowFamily: "pds_portable_artifacts",
+                sourceTable: "pds_portable_artifacts",
+                sourceId: record.manifest.artifactId
+              },
+              ciphertextLocation: "pds_portable_artifacts",
+              aad: {
+                ownerUserId: secret.userId,
+                groupId: secret.groupId,
+                artifactId: record.manifest.artifactId
+              }
+            });
+          const result = await input.repository.stagePdsPortableArtifact({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            localSessionId: candidate.localSessionId,
+            localMemoryNodeId: candidate.localMemoryNodeId,
+            record,
+            transportManifestHash: manifestHash,
+            encryptedEnvelope
+          });
+          if (
+            !(await relay.completeSemanticWorkClaim({
+              workIdentity: claim.workIdentity,
+              claimGeneration: claim.claimGeneration
+            })) ||
+            !(await input.repository.markPdsArtifactClaimCompleted({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              artifactId: record.manifest.artifactId,
+              producerDeviceId: runtime.recipient.deviceId,
+              claimGeneration: claim.claimGeneration
+            }))
+          ) {
+            throw new Error("PdsRelayRetryableError");
+          }
+          if (result.inserted) staged += 1;
+        }
+        return staged;
+      },
       waitForWake(signal) {
         return relay.waitForWake(signal, Array.from(pendingOutboundTransports));
       },
@@ -262,6 +721,37 @@ const createPdsWorkerRuntimeFromSecret = (
         if (
           pkg.header.packageId !== work.packageId ||
           pkg.header.sourceManifestHash !== work.sourceManifestHash
+        ) {
+          throw new Error("PdsCryptoIdentityError");
+        }
+        const committed = await relay.upload(pkg);
+        if (committed.deliveryState === "acked") {
+          pendingOutboundTransports.delete(committed.transportId);
+        } else {
+          pendingOutboundTransports.add(committed.transportId);
+        }
+        return {
+          state: committed.deliveryState,
+          transportId: committed.transportId
+        };
+      },
+      async publishArtifact(work) {
+        const stored =
+          await input.repository.getPdsArtifactOutboxEncryptedEnvelope({
+            workerId: work.workerId,
+            outboxId: work.outboxId
+          });
+        if (!stored) throw new Error("PdsRelayRetryableError");
+        const pkg = parsePdsSessionPackageJson(
+          await decryptEnvelopeToUtf8(
+            input.envelopeEncryptionProvider,
+            stored.encryptedEnvelope as never
+          )
+        );
+        if (
+          pkg.header.packageId !== work.packageId ||
+          pkg.header.packageId !== work.artifactId ||
+          pkg.header.sourceManifestHash !== work.manifestHash
         ) {
           throw new Error("PdsCryptoIdentityError");
         }
@@ -506,7 +996,9 @@ const createPdsWorkerRuntimeFromSecret = (
           }
         };
         await relay.acknowledge(ack);
-        await relay.advanceCursor(work.originDeviceId, work.sourceSequence);
+        if (work.sourceSequence !== undefined) {
+          await relay.advanceCursor(work.originDeviceId, work.sourceSequence);
+        }
         downloaded.delete(work.inboxId);
       },
       async materialize(work) {
@@ -570,10 +1062,103 @@ const createPdsWorkerRuntimeFromSecret = (
             })
           })
         );
+        const servingRuntime = runtimeForServing(pkg.header.servingDeviceId);
+        const decrypted = decryptPdsEncryptedPayloadPackage(
+          canonicalizePdsJson(pkg),
+          {
+            runtime: servingRuntime,
+            recipientKemPrivateKey: secret.device.kemPrivateSeed
+          }
+        );
+        const plaintextRecord = record(
+          parseCanonicalPdsJson(
+            Buffer.from(decrypted.plaintext).toString("utf8")
+          ),
+          "decrypted package payload"
+        );
+        if (plaintextRecord.protocol === PDS_ARTIFACT_PROTOCOL) {
+          const unverifiedArtifact = parsePdsArtifactRecordJson(
+            decrypted.plaintext
+          );
+          const producerCertificate = secret.recipientCertificates
+            .map((value) => record(parseCanonicalPdsJson(value), "certificate"))
+            .find(
+              (value) =>
+                value.deviceId ===
+                  unverifiedArtifact.manifest.producerDeviceId &&
+                value.deviceSigningKeyId ===
+                  unverifiedArtifact.manifest.producerSigningKeyId &&
+                typeof value.deviceSigningPublicKey === "string"
+            );
+          if (
+            !producerCertificate ||
+            pkg.header.servingDeviceId !==
+              unverifiedArtifact.manifest.producerDeviceId ||
+            pkg.header.servingSigningKeyId !==
+              unverifiedArtifact.manifest.producerSigningKeyId
+          ) {
+            throw new TypeError("PdsCryptoAuthorityError");
+          }
+          const artifact = verifyPdsArtifactRecord(
+            unverifiedArtifact,
+            producerCertificate.deviceSigningPublicKey as string
+          );
+          const canonicalArtifact = canonicalizePdsJson(artifact);
+          const artifactManifestHash = createHash("sha256")
+            .update(canonicalArtifact)
+            .digest("base64url");
+          if (
+            artifact.manifest.artifactId !== work.packageId ||
+            artifact.manifest.groupId !== work.groupId ||
+            pkg.header.packageId !== artifact.manifest.artifactId ||
+            pkg.header.sourceManifestHash !== work.sourceManifestHash ||
+            artifactManifestHash !== work.sourceManifestHash
+          ) {
+            throw new Error("PdsCryptoIdentityError");
+          }
+          const encryptedArtifactEnvelope =
+            await input.envelopeEncryptionProvider.encrypt({
+              plaintext: canonicalizePdsJson(pkg),
+              scope: {
+                tenantId: secret.userId,
+                objectClass: "pds_inbound_artifact"
+              },
+              provenance: {
+                rowFamily: "pds_portable_artifacts",
+                sourceTable: "pds_portable_artifacts",
+                sourceId: artifact.manifest.artifactId
+              },
+              ciphertextLocation: "pds_portable_artifacts",
+              aad: {
+                ownerUserId: secret.userId,
+                groupId: secret.groupId,
+                artifactId: artifact.manifest.artifactId
+              }
+            });
+          const imported = await input.repository.importPdsPortableArtifact({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            inboxId: work.inboxId,
+            workerId: work.workerId,
+            transportManifestHash: artifactManifestHash,
+            record: artifact,
+            encryptedEnvelope: encryptedArtifactEnvelope
+          });
+          downloaded.set(work.inboxId, { pkg, transport });
+          return {
+            kind: "artifact" as const,
+            userId: secret.userId,
+            originDeviceId: artifact.manifest.producerDeviceId,
+            artifactState: imported.state
+          };
+        }
+        if (plaintextRecord.protocol !== PDS_PROTOCOL) {
+          throw new TypeError("PdsCryptoPackageError");
+        }
         const manifest = verifyAndDecryptPdsSessionPackage(
           canonicalizePdsJson(pkg),
           {
-            runtime: runtimeForServing(pkg.header.servingDeviceId),
+            runtime: servingRuntime,
             recipientKemPrivateKey: secret.device.kemPrivateSeed,
             deletionFloors
           }

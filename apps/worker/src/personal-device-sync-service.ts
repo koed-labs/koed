@@ -11,6 +11,7 @@ import type { Logger } from "pino";
 export interface PdsWorkerSecureRuntime {
   heartbeatGroups?(): Promise<string[]>;
   waitForWake?(signal?: AbortSignal): Promise<void>;
+  reconcileArtifacts?(): Promise<number>;
   publish(input: {
     workerId: string;
     outboxId: string;
@@ -18,6 +19,13 @@ export interface PdsWorkerSecureRuntime {
     packageId: string;
     sourceManifestHash: string;
   }): Promise<{ state: "committed" | "acked"; transportId?: string }>;
+  publishArtifact?(input: {
+    workerId: string;
+    outboxId: string;
+    artifactId: string;
+    packageId: string;
+    manifestHash: string;
+  }): Promise<{ state: "committed" | "acked"; transportId: string }>;
   outboundState(input: {
     groupId: string;
     transportId: string;
@@ -39,26 +47,36 @@ export interface PdsWorkerSecureRuntime {
     packageId: string;
     sourceManifestHash: string;
     originDeviceId: string;
-    sourceSequence: string;
+    sourceSequence?: string;
   }): Promise<void>;
   materialize(input: {
+    workerId: string;
     inboxId: string;
     groupId: string;
     packageId: string;
     sourceManifestHash: string;
-  }): Promise<{
-    userId: string;
-    retainedPackageId: string;
-    localSessionId: string;
-    sourceFingerprint: string | null;
-    closureHash: string;
-    originDeploymentId: string;
-    originDeviceId: string;
-    sourceSequence: string;
-    sourceClosedAt: Date;
-    observedAt: Date;
-    sourceItemIds: string[];
-  }>;
+  }): Promise<
+    | {
+        kind?: "source";
+        userId: string;
+        retainedPackageId: string;
+        localSessionId: string;
+        sourceFingerprint: string | null;
+        closureHash: string;
+        originDeploymentId: string;
+        originDeviceId: string;
+        sourceSequence: string;
+        sourceClosedAt: Date;
+        observedAt: Date;
+        sourceItemIds: string[];
+      }
+    | {
+        kind: "artifact";
+        userId: string;
+        originDeviceId: string;
+        artifactState: "ready" | "incompatible";
+      }
+  >;
 }
 
 let installedSecureRuntime: PdsWorkerSecureRuntime | null = null;
@@ -153,6 +171,9 @@ export const createPdsLocalSyncService = (input: {
         ]);
       }
       await input.secureRuntime.pollLifecycle?.();
+      const stagedArtifacts =
+        (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
+      needsDrain ||= stagedArtifacts >= 50;
       const incomingPackages = await input.secureRuntime.poll();
       needsDrain ||= incomingPackages.length >= 50;
       for (const incoming of incomingPackages) {
@@ -212,6 +233,59 @@ export const createPdsLocalSyncService = (input: {
           });
         }
       }
+      const artifactOutbox = await input.repository.claimPdsArtifactOutbox({
+        workerId
+      });
+      needsDrain ||= artifactOutbox.length >= 10;
+      for (const entry of artifactOutbox) {
+        try {
+          if (!input.secureRuntime.publishArtifact) {
+            throw new Error("PdsArtifactRuntimeUnavailableError");
+          }
+          if (
+            !(await input.repository.beginPdsArtifactOutboxNetworkAction({
+              workerId,
+              outboxId: entry.id
+            }))
+          ) {
+            continue;
+          }
+          const result = await input.secureRuntime.publishArtifact({
+            workerId,
+            outboxId: entry.id,
+            artifactId: entry.artifactId,
+            packageId: entry.packageId,
+            manifestHash: entry.manifestHash
+          });
+          await input.repository.completePdsArtifactOutbox({
+            workerId,
+            outboxId: entry.id,
+            state: result.state,
+            transportId: result.transportId
+          });
+        } catch (error) {
+          input.logger.warn(
+            {
+              err: error,
+              event: {
+                name: "worker.pds.artifact_outbox.failed",
+                category: "pds"
+              },
+              pds: {
+                artifactId: entry.artifactId,
+                attemptCount: entry.attemptCount
+              }
+            },
+            "PDS outbound artifact processing failed"
+          );
+          await input.repository.retryPdsArtifactOutbox({
+            workerId,
+            outboxId: entry.id,
+            errorClass: errorClass(error),
+            retryAt: retryAt(entry.attemptCount)
+          });
+        }
+      }
       const committedOutbox = await input.repository.claimPdsCommittedOutbox({
         workerId
       });
@@ -253,16 +327,82 @@ export const createPdsLocalSyncService = (input: {
           });
         }
       }
+      const committedArtifactOutbox =
+        await input.repository.claimPdsArtifactOutbox({
+          workerId,
+          state: "committed"
+        });
+      needsDrain ||= committedArtifactOutbox.length >= 10;
+      for (const entry of committedArtifactOutbox) {
+        try {
+          if (!entry.transportId) {
+            throw new Error("PdsArtifactTransportIdentityError");
+          }
+          const state = await input.secureRuntime.outboundState({
+            groupId: entry.groupId,
+            transportId: entry.transportId
+          });
+          if (state === "acked") {
+            await input.repository.completePdsArtifactOutbox({
+              workerId,
+              outboxId: entry.id,
+              state: "acked",
+              transportId: entry.transportId
+            });
+          } else {
+            await input.repository.releasePdsCommittedArtifactOutbox({
+              workerId,
+              outboxId: entry.id
+            });
+          }
+        } catch (error) {
+          input.logger.warn(
+            {
+              err: error,
+              event: {
+                name: "worker.pds.artifact_outbox_ack.failed",
+                category: "pds"
+              },
+              pds: { artifactId: entry.artifactId }
+            },
+            "PDS artifact acknowledgement reconciliation failed"
+          );
+          await input.repository.releasePdsCommittedArtifactOutbox({
+            workerId,
+            outboxId: entry.id
+          });
+        }
+      }
       const inbox = await input.repository.claimPdsInbox({ workerId });
       needsDrain ||= inbox.length >= 10;
       for (const entry of inbox) {
         try {
           const materialized = await input.secureRuntime.materialize({
+            workerId,
             inboxId: entry.id,
             groupId: entry.groupId,
             packageId: entry.packageId,
             sourceManifestHash: entry.sourceManifestHash
           });
+          if (materialized.kind === "artifact") {
+            await input.secureRuntime.acknowledge?.({
+              inboxId: entry.id,
+              groupId: entry.groupId,
+              packageId: entry.packageId,
+              sourceManifestHash: entry.sourceManifestHash,
+              originDeviceId: materialized.originDeviceId
+            });
+            if (
+              !(await input.repository.completePdsInbox({
+                workerId,
+                inboxId: entry.id,
+                state: "ready"
+              }))
+            ) {
+              throw new Error("PdsInboxLeaseUnavailableError");
+            }
+            continue;
+          }
           const result = await input.repository.materializePdsReplica({
             ...materialized,
             groupId: entry.groupId,

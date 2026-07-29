@@ -190,12 +190,20 @@ export { createMemoryNodeRepository } from "./memory-node-repository.js";
 export { createMemoryQuestionRepository } from "./memory-question-repository.js";
 export {
   createPersonalDeviceSyncRelayRepository,
+  type PdsRelayDeviceCapability,
+  type PdsRelayDeviceReadiness,
   type PersonalDeviceSyncRelayRepository
 } from "./personal-device-sync-relay-repository.js";
 export {
   createPersonalDeviceSyncLifecycleRepository,
   type PersonalDeviceSyncLifecycleRepository
 } from "./personal-device-sync-lifecycle-repository.js";
+export {
+  createPersonalDeviceArtifactRepository,
+  type PdsSemanticWorkClaimRecord,
+  type PdsSemanticWorkClass,
+  type PersonalDeviceArtifactRepository
+} from "./personal-device-artifact-repository.js";
 export {
   createPersonalDeviceSyncLocalRepository,
   type PersonalDeviceSyncLocalRepository,

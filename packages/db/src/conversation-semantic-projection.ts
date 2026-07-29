@@ -4,6 +4,8 @@ import type { Visibility } from "./types.js";
 import { isRecord } from "./value-helpers.js";
 
 export type ConversationSemanticUnitType = "user_turn" | "agent_turn";
+export const CURRENT_CONVERSATION_PROJECTION_VERSION =
+  "conversation-projection-v3";
 
 export type ConversationSemanticProjectionRow = {
   id: string;

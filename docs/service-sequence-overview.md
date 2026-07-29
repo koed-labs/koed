@@ -1137,9 +1137,11 @@ seals contiguous raw closure; origin signs JCS source manifest; source encrypts
 package and recipient CEK envelopes; relay stores encrypted chunks; every active
 device verifies membership/log, signatures, hashes, and AEAD before local
 materialization. A receiver imports separately signed compatible portable
-Memory Event and embedding artifacts when available, otherwise it rebuilds them
-locally; LCM Summary work remains local. Local indexes, queues, credentials, and
-runtime state never replicate. Team-owned collaboration data remains Team
+Memory Event, embedding, and LCM node artifacts when available, otherwise it
+rebuilds them locally. Semantic work uses stable logical identities, exact
+compatibility contracts, signed bounded capability advertisements, and fenced
+claims; physical queue leases remain local. Local indexes, queues, credentials,
+and runtime state never replicate. Team-owned collaboration data remains Team
 backend governed. PDS must not use Cross-Identity Sync's RSA recipient-envelope
 or target-processing path.
 

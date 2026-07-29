@@ -29,6 +29,24 @@ export interface PdsRelayClientOptions {
   fetch?: typeof fetch;
 }
 
+export interface PdsRelaySemanticWorkClaim {
+  workIdentity: string;
+  workClass: "projection" | "memory_embedding" | "lcm_leaf" | "lcm_rollup";
+  compatibilityContractHash: string;
+  claimantDeviceId: string;
+  claimGeneration: string;
+  claimedAt: string;
+  expiresAt: string;
+}
+
+export interface PdsRelayDeviceCapabilityAdvertisement {
+  capability: "projection" | "memory_embedding" | "lcm";
+  compatibilityContractHash: string;
+  readiness: "ready" | "busy" | "unavailable";
+  advertisedAt: string;
+  expiresAt: string;
+}
+
 const relayPath = "/v1/personal-device-sync/relay";
 
 export const normalizePdsRelayBaseUrl = (value: string): string => {
@@ -241,6 +259,73 @@ export class PdsRelayClient {
         await this.uploadChunk(initialized.transportId, chunk);
     }
     return this.commit(pkg);
+  }
+
+  async acquireSemanticWorkClaim(input: {
+    workIdentity: string;
+    workClass: PdsRelaySemanticWorkClaim["workClass"];
+    compatibilityContractHash: string;
+    leaseSeconds?: number;
+  }): Promise<PdsRelaySemanticWorkClaim | null> {
+    const response = asRecord(
+      await this.request<unknown>(
+        "POST",
+        `${relayPath}/semantic-work/claims/acquire`,
+        {
+          ...input,
+          leaseSeconds: input.leaseSeconds ?? 60
+        }
+      )
+    );
+    if (response.claim === null) return null;
+    const claim = asRecord(response.claim);
+    for (const key of [
+      "workIdentity",
+      "workClass",
+      "compatibilityContractHash",
+      "claimantDeviceId",
+      "claimGeneration",
+      "claimedAt",
+      "expiresAt"
+    ]) {
+      if (typeof claim[key] !== "string") {
+        throw new TypeError("PDS semantic work claim response is invalid");
+      }
+    }
+    return claim as unknown as PdsRelaySemanticWorkClaim;
+  }
+
+  async advertiseSemanticCapability(
+    input: PdsRelayDeviceCapabilityAdvertisement
+  ): Promise<boolean> {
+    const response = asRecord(
+      await this.request<unknown>(
+        "POST",
+        `${relayPath}/semantic-work/capabilities`,
+        input
+      )
+    );
+    if (typeof response.accepted !== "boolean") {
+      throw new TypeError("PDS semantic capability response is invalid");
+    }
+    return response.accepted;
+  }
+
+  async completeSemanticWorkClaim(input: {
+    workIdentity: string;
+    claimGeneration: string;
+  }): Promise<boolean> {
+    const response = asRecord(
+      await this.request<unknown>(
+        "POST",
+        `${relayPath}/semantic-work/claims/complete`,
+        input
+      )
+    );
+    if (typeof response.completed !== "boolean") {
+      throw new TypeError("PDS semantic work completion response is invalid");
+    }
+    return response.completed;
   }
 
   mailbox(cursor?: string, limit = 50): Promise<unknown> {

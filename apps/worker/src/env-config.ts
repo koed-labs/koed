@@ -30,6 +30,11 @@ export interface WorkerEnvConfig {
   embeddingServiceToken?: string;
   embeddingDimensions: number;
   embeddingVersion: string;
+  embeddingModelArtifactHash: string;
+  embeddingTokenizer: string;
+  embeddingInputTransform: string;
+  embeddingPooling: string;
+  embeddingNormalization: string;
   embeddingBatchLimit: number;
   embeddingMaxTextChars: number;
   embeddingMaxRequestChars: number;
@@ -161,6 +166,13 @@ export const resolveWorkerEnv = (
     ...(embeddingServiceToken ? { embeddingServiceToken } : {}),
     embeddingDimensions: embeddingModel.dimensions,
     embeddingVersion: embeddingModel.key,
+    embeddingModelArtifactHash:
+      optionalEnv(environment.KOED_EMBEDDING_MODEL_SHA256) ??
+      embeddingModel.defaultArtifactSha256,
+    embeddingTokenizer: embeddingModel.tokenizer,
+    embeddingInputTransform: embeddingModel.inputTransform,
+    embeddingPooling: embeddingModel.pooling,
+    embeddingNormalization: embeddingModel.normalization,
     embeddingBatchLimit: positiveIntEnv(
       environment,
       "EMBEDDING_BATCH_LIMIT",

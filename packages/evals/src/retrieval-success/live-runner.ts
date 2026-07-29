@@ -16,6 +16,7 @@ import {
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerWorkerResponse
 } from "@koed/mcp-server";
+import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
 import { retrievalSuccessCases, type RetrievalSuccessCase } from "./cases.js";
 import {
   scoreRetrievalSuccessRun,
@@ -704,11 +705,21 @@ export const embedPendingSources = async (
     for (let index = 0; index < sources.length; index += 1) {
       const source = sources[index]!;
       const vector = embedded.vectors[index]!;
+      const embeddingModel = resolveSupportedEmbeddingModelConfig(
+        embedded.model || embeddingProvider.model
+      );
       await repo.upsertSourceEmbedding({
         source,
-        model: embedded.model || embeddingProvider.model,
+        model: embeddingModel.key,
+        modelArtifactHash:
+          process.env.KOED_EMBEDDING_MODEL_SHA256?.trim() ||
+          embeddingModel.defaultArtifactSha256,
         dimensions: embedded.dimensions || embeddingProvider.dimensions,
-        version: embedded.model || embeddingProvider.model,
+        version: embeddingModel.key,
+        tokenizer: embeddingModel.tokenizer,
+        inputTransform: embeddingModel.inputTransform,
+        pooling: embeddingModel.pooling,
+        normalization: embeddingModel.normalization,
         vector
       });
     }

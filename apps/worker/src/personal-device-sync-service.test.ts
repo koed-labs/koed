@@ -25,6 +25,7 @@ describe("Personal Device Sync service", () => {
     const repository = {
       heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
       claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
       claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
       claimPdsInbox: vi.fn().mockResolvedValue([]),
       getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
@@ -89,6 +90,7 @@ describe("Personal Device Sync service", () => {
       claimPdsOutbox: vi
         .fn()
         .mockRejectedValue(new Error("database unavailable")),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
       claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
       claimPdsInbox: vi.fn().mockResolvedValue([]),
       getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
@@ -130,6 +132,7 @@ describe("Personal Device Sync service", () => {
       heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
       receivePdsInbox: vi.fn().mockResolvedValue("idempotent"),
       claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
       claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
       claimPdsInbox: vi.fn().mockResolvedValue([
         {
@@ -190,6 +193,7 @@ describe("Personal Device Sync service", () => {
       heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
       receivePdsInbox: vi.fn().mockResolvedValue("idempotent"),
       claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
       claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
       claimPdsInbox: vi.fn().mockResolvedValue([
         {
@@ -252,6 +256,7 @@ describe("Personal Device Sync service", () => {
       heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
       receivePdsInbox: vi.fn().mockResolvedValue("idempotent"),
       claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
       claimPdsCommittedOutbox: vi.fn().mockResolvedValue([
         {
           id: "outbox",

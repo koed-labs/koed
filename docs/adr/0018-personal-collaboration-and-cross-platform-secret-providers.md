@@ -12,8 +12,9 @@ Related decisions:
 
 Personal notes-to-self and Personal channels currently live only in the local
 collaboration store. A User therefore sees different Personal conversations on
-two devices. Personal Device Sync cannot solve that problem: its V1 contract
-deliberately transports only immutable, closed Captured Session source packages.
+two devices. Personal Device Sync cannot solve mutable collaboration replication:
+its V1 contract transports immutable, closed Captured Session source packages
+and compatible derived artifacts, not mutable notes or channel event streams.
 
 Desktop PDS needs a cross-platform secure provider that can bootstrap, enroll,
 refresh, and revoke without putting private material into renderer state or
@@ -40,10 +41,11 @@ owning authenticated User and that User's enrolled devices.
 
 ### Captured-session source replication
 
-PDS remains limited to encrypted immutable closed Captured Session sources.
-It does not carry mutable Personal collaboration records. Source replication,
-materialization, Projection, embedding, and Recall continue to follow ADR 0014
-and the PDS V1 protocol independently from Personal collaboration replication.
+PDS carries encrypted immutable closed Captured Session sources and separately
+signed compatible derived artifacts. It does not carry mutable Personal
+collaboration records. Source replication, materialization, portable artifact
+reuse, fallback derivation, and Recall continue to follow the PDS V1 protocol
+independently from Personal collaboration replication.
 
 ### Secure secret providers
 

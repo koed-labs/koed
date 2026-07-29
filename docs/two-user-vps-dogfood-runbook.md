@@ -16,16 +16,18 @@ Workspace, local profiles, and database that can all be discarded.
 Run both topologies from fully fresh local profiles. They establish different
 properties and neither is a substitute for the other.
 
-| Topology                        | Authority and transport                                                                                                                                                                   | Required proof                                                                                                                                                                       |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Local-only Personal Device Sync | A PDS relay carries encrypted immutable closed Captured Session packages between two devices in one Personal Device Group. Neither device has a configured remote `koed-server` upstream. | A closed source session materializes once on the second device, then its local Projection creates equivalent Personal Memory without copying derived Memory from the first device.   |
-| Remote Personal/Team backend    | Each local edge connects and enrolls with one remote `koed-server`; the backend provides the Personal/Team authority and source-replication target.                                       | Personal source replication, Team authorization, Share Grant visibility, and realtime collaboration work with the remote service unavailable only for its remote-dependent features. |
+| Topology                        | Authority and transport                                                                                                                                                                                                             | Required proof                                                                                                                                                                                                                      |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local-only Personal Device Sync | A PDS relay carries encrypted immutable closed Captured Session packages and compatible portable artifact packages between two devices in one Personal Device Group. Neither device has a configured remote `koed-server` upstream. | A closed source session materializes once on the second device; compatible Memory Event, embedding, and LCM artifacts are reused without copying device-local execution state, with local derivation as the compatibility fallback. |
+| Remote Personal/Team backend    | Each local edge connects and enrolls with one remote `koed-server`; the backend provides the Personal/Team authority and source-replication target.                                                                                 | Personal source replication, Team authorization, Share Grant visibility, and realtime collaboration work with the remote service unavailable only for its remote-dependent features.                                                |
 
 PDS V1 deliberately transfers only eligible future **closed** Captured Sessions.
-It does not transfer open sessions, mutable Personal notes/channels, derived
-Memory Events, LCM summaries, embeddings, or renderer state. Do not represent
-an absent note/channel on the other device as a PDS transport failure: that
-requires the separate mutable-collaboration replication design.
+It does not transfer open sessions, mutable Personal notes/channels, renderer
+state, indexes, queue jobs, or runtime credentials. It may transfer separately
+signed compatible Memory Event, embedding, and LCM node artifacts bound to an
+accepted closed source package. Do not represent an absent note/channel on the
+other device as a PDS transport failure: that requires the separate
+mutable-collaboration replication design.
 
 ### Remote Backend Topology
 
@@ -356,28 +358,33 @@ not project or embed source data, and does not make either device a hub.
    arbitrary sleep-based timing.
 3. On device A, capture a unique User prompt, tool call/result, and completed
    Agent turn. Close the Captured Session through the supported source lifecycle.
-4. Confirm device A emits one immutable PDS package for that closed Session;
-   its package contains source observations only, never Memory Events, LCM
-   summaries, embeddings, or plaintext relay metadata.
+4. Confirm device A emits one immutable source package for that closed Session.
+   The source package contains source observations only. Portable Memory Event,
+   embedding, and LCM node artifacts use separate signed and encrypted packages;
+   no package exposes plaintext relay metadata.
 5. Confirm device B validates and materializes the package once. In device B's
    database, verify original source actor/type/order and one local terminal
    closure marker; verify no duplicate raw source row exists. Confirm its inbox
    is not completed before the signed relay ACK succeeds.
-6. Confirm device B's normal local Projection creates the expected User and
-   sealed Agent Memory Events, queues local embedding, and renders the source
-   in Personal Memory without manual refresh.
+6. Confirm device B transactionally imports compatible Memory Events and
+   embeddings without duplicate local work. For one deliberately incompatible
+   embedding contract, confirm source still materializes and local derivation
+   remains pending instead of coercing the vector. Confirm rendering occurs
+   without manual refresh.
 7. Restart device B. Confirm the package is not replayed into duplicate source
    rows or Memory Events, and local recall can retrieve the unique marker once
    embedding completes. Confirm device A's durable outbox reaches `acked` only
    after device B's ACK, and that device A never receives its own transport as
    an inbox delivery.
-8. Confirm a Personal note, Personal channel, edited/open Session, and any
-   derived Memory state do **not** appear on device B. Record them as excluded
-   PDS V1 data classes, not as a failed retry.
+8. Confirm a Personal note, Personal channel, and edited/open Session do **not**
+   appear on device B. Confirm local indexes, queue rows, physical leases, and
+   credentials were not transferred. Record them as excluded PDS V1 data
+   classes, not as a failed retry.
 
-Reject the run if PDS copies derived Memory, changes source actor/type/order,
-creates duplicate source items, projects an unverified/open source, or blocks
-local capture and Recall while the relay is unavailable.
+Reject the run if PDS changes source actor/type/order, accepts an artifact
+without exact source/contract/claim validation, copies device-local execution
+state, creates duplicate source or semantic rows, processes an unverified/open
+source, or blocks local capture and Recall while the relay is unavailable.
 
 ## Enrollment And Team Setup
 
@@ -414,11 +421,10 @@ Use unique, harmless markers for this run.
      completion.
    - Confirm one canonical transcript item per source item.
    - Confirm the Agent turn seals according to item/token boundaries.
-   - Confirm Alice device B receives the source material once, performs its
-     own local Projection, and creates equivalent local Memory Events rather
-     than receiving Alice device A's derived Memory.
-   - Wait for local embedding on each device and confirm both Personal views
-     render the closed source without a manual refresh.
+   - Confirm Alice device B receives the source material once and imports
+     compatible derived artifacts under their exact source identities.
+   - Confirm incompatible or unavailable artifacts fall back to local work and
+     both Personal views render the closed source without a manual refresh.
 
 2. **Personal Isolation**
    - Confirm Bob cannot see the Personal source.

@@ -105,4 +105,48 @@ describe("PDS relay URL boundary", () => {
       expect.objectContaining({ method: "GET" })
     );
   });
+
+  it("signs semantic capability advertisements without credentials in the payload", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const privateJwk = keys.privateKey.export({ format: "jwk" });
+    const publicJwk = keys.publicKey.export({ format: "jwk" });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ accepted: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const client = new PdsRelayClient({
+      baseUrl: "http://192.168.1.2:3310",
+      identity: {
+        certificate: "{}",
+        deviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+        signingKeyId: "AQEBAQEBAQEBAQEBAQEBAQ",
+        signingPublicKey: publicJwk.x!,
+        signingPrivateSeed: privateJwk.d!
+      },
+      fetch: fetcher
+    });
+    const advertisedAt = new Date("2026-07-29T00:00:00.000Z");
+
+    await expect(
+      client.advertiseSemanticCapability({
+        capability: "memory_embedding",
+        compatibilityContractHash: Buffer.alloc(32, 3).toString("base64url"),
+        readiness: "ready",
+        advertisedAt: advertisedAt.toISOString(),
+        expiresAt: new Date(advertisedAt.getTime() + 120_000).toISOString()
+      })
+    ).resolves.toBe(true);
+
+    const [requestedUrl, requestedInit] = fetcher.mock.calls[0]!;
+    expect(requestedUrl).toBe(
+      "http://192.168.1.2:3310/v1/personal-device-sync/relay/semantic-work/capabilities"
+    );
+    expect(requestedInit?.method).toBe("POST");
+    expect(String(requestedInit?.body)).not.toContain("signingPrivateSeed");
+    expect(
+      new Headers(requestedInit?.headers).get("x-pds-relay-proof")
+    ).toEqual(expect.any(String));
+  });
 });

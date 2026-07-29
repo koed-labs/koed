@@ -58,6 +58,12 @@ export interface TokenCountResult extends TokenEncodingResolution {
 }
 
 export const DEFAULT_CODEX_TOKEN_MODEL = "gpt-5.4-mini";
+export const TOKEN_COUNTER_CONTRACT_VERSION = "koed-token-counter-v1";
+
+export const tokenCounterIdentity = (
+  result: Pick<TokenCountResult, "tokenizer" | "encoding">
+): string =>
+  `${TOKEN_COUNTER_CONTRACT_VERSION}:${result.tokenizer}:${result.encoding}`;
 
 export interface CodexIdePromptParts {
   ideContext: string;

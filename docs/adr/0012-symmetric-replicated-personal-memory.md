@@ -70,7 +70,7 @@ relay-required full replication of future closed Captured Sessions; Ed25519
 signatures; X25519/HKDF-SHA-256/AES-256-GCM recipient envelopes with
 role-separated keys; active-device or recovery-root authorization plus Authority
 countersignature; conflict quarantine; current protocol version only; bounded
-relay/tombstone retention; no first-slice LCM Summary replication; and only one
+relay/tombstone retention; compatible portable LCM node reuse; and only one
 unambiguous canonical Project alias auto-match. That normative specification
 controls where this ADR's earlier exploratory language differs.
 
@@ -124,7 +124,8 @@ provenance, encrypted resumable transport, durable inbox/outbox work,
 idempotency, retry, and readiness/freshness gates. They retain distinct
 identity, key-management, package-closure, lifecycle, and anti-entropy
 contracts. A hosted target's independently generated LCM Summary is not a PDS
-source record; PDS LCM Summary replication is non-V1.
+source record. PDS may reuse a compatible LCM Summary only as a separately
+signed `lcm_node/v1` artifact bound to its exact source range and work claim.
 
 ## Personal Device Group Authority And Association
 
@@ -290,8 +291,10 @@ matches, including source closure, Projection schema and policy revision,
 embedding model artifact, dimensions, tokenizer and input transformation,
 pooling, normalization, and embedding version. Otherwise it derives them from
 the canonical source package. Local vector indexes are rebuilt from imported
-vectors. Source-owned LCM leaves and rollups may join the registry once their
-cross-Session logical identity and update/conflict rules are specified.
+vectors. Source-owned LCM leaves and rollups are registry artifacts. Their
+identity binds the exact ordered logical source range and complete LCM contract.
+Only the source-authoritative device may compact that range; compatible
+completed nodes may then be imported by other devices.
 
 The registry is extensible. Adding a durable Personal table requires an
 explicit replication classification and tests. It must never silently include a

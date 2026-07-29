@@ -6,6 +6,7 @@ Related decisions:
 
 - [0012 Symmetric Replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0019 Same-Network Personal Device Enrollment](./0019-same-network-personal-device-enrollment.md)
+- [0021 Portable Semantic Work Ownership](./0021-portable-semantic-work-ownership.md)
 - [Personal Device Sync Protocol V1](../personal-device-sync-protocol.md)
 
 ## Context
@@ -54,6 +55,13 @@ The initial reusable artifact classes are:
 - portable projected Memory Events with stable source-item bindings; and
 - canonical Memory Event embeddings with a complete compatibility contract.
 
+Portable LCM nodes follow their stable source-range identity and single-writer
+work-claim contract. The unfinished LCM compaction frontier is deterministic:
+it is reconstructed from ordered logical Memory Events after subtracting
+complete leaf coverage. Managed Conversation execution authority therefore
+continues the accumulated source range without another mutable replicated
+record, resetting the threshold, or duplicating work.
+
 An enrolled Personal device may trust those artifacts from another active
 device only after verifying membership, signatures, source binding, content
 hashes, schema version, and compatibility. Embedding compatibility includes the
@@ -61,9 +69,12 @@ model artifact identity, dimensions, tokenizer and input transformation,
 pooling, normalization, and embedding version. A mismatch causes local
 derivation, not coercion or partial import.
 
-Local vector indexes are rebuilt from imported vectors. LCM leaves and rollups
-remain locally derived until their cross-Session identity, replacement,
-conflict, and compatibility rules are specified.
+Local vector indexes are rebuilt from imported vectors. Portable LCM leaves and
+rollups use logical source-range identities rather than local database IDs.
+Their summaries may be reused only when the exact source range, node kind,
+algorithm, prompt, model, structured-output contract, and correction state are
+compatible. Otherwise the source range remains eligible for one claimed local
+derivation.
 
 Portable artifacts contain logical identities and content hashes, not local
 database primary keys. The implementation selects explicitly allowlisted table
@@ -75,7 +86,13 @@ The following remain device-local:
 - device and authority keys, credentials, API Tokens, and browser sessions;
 - local paths, checkout identifiers, process state, health state, and runtime
   configuration;
-- queue jobs, leases, retry state, transient cursors, and local indexes.
+- queue jobs, retry state, transient cursors, and local indexes;
+- physical process leases and runner identities.
+
+Semantic work claims are replicated coordination records rather than ordinary
+queue rows. They name stable semantic work, carry a bounded expiry and fencing
+generation, and prevent two active devices from publishing competing
+Projection, embedding, or LCM results for the same logical source range.
 
 Every new durable Personal table or artifact must receive an explicit registry
 classification and tests. Absence from the registry is a failing development
@@ -126,11 +143,11 @@ This decision does not introduce:
 - trust in artifacts from revoked, unknown, or Team-only identities;
 - replication of Team-owned collaboration data through PDS;
 - implicit compatibility across embedding models or Projection revisions;
-- LCM Summary replication before its identity and conflict contract exists.
+- copying physical execution leases or queue ownership between devices.
 
 ## Implementation Boundary
 
 The PDS source-package data plane, same-network enrollment, Authority/Relay, and
-local materialization paths exist. Portable Memory Event and embedding artifact
-transfer is the required next data-plane slice. Until that slice is implemented,
-receivers derive those artifacts locally from the replicated canonical source.
+local materialization paths are the authority for artifact transport. Portable
+Memory Event, embedding, and compatible LCM node transfer use
+separate immutable artifact packages bound to an accepted source package.

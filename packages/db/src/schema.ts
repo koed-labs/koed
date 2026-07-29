@@ -1588,6 +1588,8 @@ export const memoryEvents = pgTable(
     projectionPolicyRevision: bigint("projection_policy_revision", {
       mode: "number"
     }),
+    projectionAlgorithmVersion: text("projection_algorithm_version"),
+    tokenCounter: text("token_counter"),
     tokenCount: integer("token_count"),
     sealReason: text("seal_reason"),
     sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
@@ -2104,8 +2106,13 @@ export const memoryEmbeddings = pgTable(
     ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull(),
     embeddingModel: text("embedding_model").notNull(),
+    modelArtifactHash: text("model_artifact_hash"),
     embeddingDimensions: integer("embedding_dimensions").notNull(),
     embeddingVersion: text("embedding_version").notNull(),
+    tokenizer: text("tokenizer"),
+    inputTransform: text("input_transform"),
+    pooling: text("pooling"),
+    normalization: text("normalization"),
     sourceHash: text("source_hash").notNull(),
     sourceChunkIndex: integer("source_chunk_index").notNull().default(0),
     sourceChunkCount: integer("source_chunk_count").notNull().default(1),
@@ -9458,6 +9465,329 @@ export const pdsInboxEntries = pgTable(
       sql`${table.state} in ('pending','downloading','verifying','processing','ready','stale','failed','quarantined','revoked')`
     ),
     check("pds_inbox_attempt_count_check", sql`${table.attemptCount} >= 0`)
+  ]
+);
+
+export const pdsPortableArtifacts = pgTable(
+  "pds_portable_artifacts",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    localSessionId: uuid("local_session_id").references(() => sessions.id, {
+      onDelete: "set null"
+    }),
+    artifactId: text("artifact_id").notNull(),
+    workIdentity: text("work_identity").notNull(),
+    artifactClass: text("artifact_class").notNull(),
+    sourcePackageId: text("source_package_id").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    sourceFingerprint: text("source_fingerprint").notNull(),
+    sourceClosureHash: text("source_closure_hash").notNull(),
+    producerDeviceId: text("producer_device_id").notNull(),
+    claimGeneration: text("claim_generation").notNull(),
+    compatibilityContractHash: text("compatibility_contract_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    transportManifestHash: text("transport_manifest_hash").notNull(),
+    semanticClaimCompletedAt: timestamp("semantic_claim_completed_at", {
+      withTimezone: true
+    }),
+    encryptedEnvelope: jsonb("encrypted_envelope")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    state: text("state").notNull().default("ready"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_portable_artifact_group_identity_unique").on(
+      table.groupId,
+      table.artifactId
+    ),
+    unique("pds_portable_artifact_work_generation_unique").on(
+      table.groupId,
+      table.workIdentity,
+      table.claimGeneration
+    ),
+    index("pds_portable_artifact_source_idx").on(
+      table.groupId,
+      table.sourceFingerprint,
+      table.sourceClosureHash,
+      table.artifactClass
+    ),
+    check(
+      "pds_portable_artifact_class_check",
+      sql`${table.artifactClass} in ('memory_event/v1','memory_embedding/v1','lcm_node/v1')`
+    ),
+    check(
+      "pds_portable_artifact_state_check",
+      sql`${table.state} in ('ready','published','imported','incompatible','quarantined','revoked')`
+    ),
+    check(
+      "pds_portable_artifact_generation_check",
+      sql`${table.claimGeneration} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsArtifactOutboxEntries = pgTable(
+  "pds_artifact_outbox_entries",
+  {
+    id: id(),
+    artifactId: uuid("artifact_id")
+      .notNull()
+      .references(() => pdsPortableArtifacts.id, { onDelete: "cascade" }),
+    state: text("state").notNull().default("pending"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastErrorClass: text("last_error_class"),
+    transportId: text("transport_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_artifact_outbox_artifact_unique").on(table.artifactId),
+    unique("pds_artifact_outbox_idempotency_unique").on(table.idempotencyKey),
+    index("pds_artifact_outbox_claim_idx").on(table.state, table.retryAt),
+    check(
+      "pds_artifact_outbox_state_check",
+      sql`${table.state} in ('pending','uploading','committed','acked','paused','failed','quarantined')`
+    ),
+    check(
+      "pds_artifact_outbox_attempt_count_check",
+      sql`${table.attemptCount} >= 0`
+    )
+  ]
+);
+
+export const pdsArtifactInboxEntries = pgTable(
+  "pds_artifact_inbox_entries",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    packageId: text("package_id").notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    state: text("state").notNull().default("pending"),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastErrorClass: text("last_error_class"),
+    retainedArtifactId: uuid("retained_artifact_id").references(
+      () => pdsPortableArtifacts.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_artifact_inbox_replay_unique").on(
+      table.groupId,
+      table.packageId
+    ),
+    index("pds_artifact_inbox_claim_idx").on(table.state, table.retryAt),
+    check(
+      "pds_artifact_inbox_state_check",
+      sql`${table.state} in ('pending','downloading','verifying','processing','ready','incompatible','failed','quarantined','revoked')`
+    ),
+    check(
+      "pds_artifact_inbox_attempt_count_check",
+      sql`${table.attemptCount} >= 0`
+    )
+  ]
+);
+
+export const pdsMemoryEventMappings = pgTable(
+  "pds_memory_event_mappings",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    memoryEventId: uuid("memory_event_id")
+      .notNull()
+      .references(() => memoryEvents.id, { onDelete: "cascade" }),
+    logicalEventId: text("logical_event_id").notNull(),
+    sourceFingerprint: text("source_fingerprint").notNull(),
+    sourceClosureHash: text("source_closure_hash").notNull(),
+    contentHash: text("content_hash").notNull(),
+    sourceOrdinals: text("source_ordinals").array().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_memory_event_mapping_event_unique").on(table.memoryEventId),
+    unique("pds_memory_event_mapping_logical_unique").on(
+      table.groupId,
+      table.logicalEventId
+    )
+  ]
+);
+
+export const pdsMemoryEmbeddingMappings = pgTable(
+  "pds_memory_embedding_mappings",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    memoryEmbeddingId: uuid("memory_embedding_id")
+      .notNull()
+      .references(() => memoryEmbeddings.id, { onDelete: "cascade" }),
+    logicalEmbeddingId: text("logical_embedding_id").notNull(),
+    logicalSourceType: text("logical_source_type").notNull(),
+    logicalSourceId: text("logical_source_id").notNull(),
+    sourceContentHash: text("source_content_hash").notNull(),
+    compatibilityContractHash: text("compatibility_contract_hash").notNull(),
+    vectorHash: text("vector_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_memory_embedding_mapping_embedding_unique").on(
+      table.memoryEmbeddingId
+    ),
+    unique("pds_memory_embedding_mapping_logical_unique").on(
+      table.groupId,
+      table.logicalEmbeddingId
+    ),
+    check(
+      "pds_memory_embedding_mapping_source_type_check",
+      sql`${table.logicalSourceType} in ('memory_event','lcm_node')`
+    )
+  ]
+);
+
+export const pdsLcmNodeMappings = pgTable(
+  "pds_lcm_node_mappings",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    memoryNodeId: uuid("memory_node_id")
+      .notNull()
+      .references(() => memoryNodes.id, { onDelete: "cascade" }),
+    logicalNodeId: text("logical_node_id").notNull(),
+    sourceFingerprint: text("source_fingerprint").notNull(),
+    sourceClosureHash: text("source_closure_hash").notNull(),
+    compatibilityContractHash: text("compatibility_contract_hash").notNull(),
+    contentHash: text("content_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_lcm_node_mapping_node_unique").on(table.memoryNodeId),
+    unique("pds_lcm_node_mapping_logical_unique").on(
+      table.groupId,
+      table.logicalNodeId
+    )
+  ]
+);
+
+export const pdsSemanticWorkClaims = pgTable(
+  "pds_semantic_work_claims",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    workIdentity: text("work_identity").notNull(),
+    workClass: text("work_class").notNull(),
+    compatibilityContractHash: text("compatibility_contract_hash").notNull(),
+    claimantDeviceId: text("claimant_device_id").notNull(),
+    localSourceType: text("local_source_type"),
+    localSourceId: uuid("local_source_id"),
+    sourceContentHash: text("source_content_hash"),
+    claimGeneration: text("claim_generation").notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    state: text("state").notNull().default("active"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_semantic_work_claim_identity_unique").on(
+      table.groupId,
+      table.workIdentity
+    ),
+    index("pds_semantic_work_claim_expiry_idx").on(
+      table.groupId,
+      table.state,
+      table.expiresAt
+    ),
+    check(
+      "pds_semantic_work_claim_class_check",
+      sql`${table.workClass} in ('projection','memory_embedding','lcm_leaf','lcm_rollup')`
+    ),
+    check(
+      "pds_semantic_work_claim_local_source_check",
+      sql`(${table.localSourceType} is null and ${table.localSourceId} is null and ${table.sourceContentHash} is null)
+        or (${table.localSourceType} in ('memory_event','lcm_node') and ${table.localSourceId} is not null and ${table.sourceContentHash} is not null)`
+    ),
+    check(
+      "pds_semantic_work_claim_state_check",
+      sql`${table.state} in ('active','completed','released','superseded')`
+    ),
+    check(
+      "pds_semantic_work_claim_generation_check",
+      sql`${table.claimGeneration} ~ '^(0|[1-9][0-9]*)$' and ${table.expiresAt} > ${table.claimedAt}`
+    )
+  ]
+);
+
+export const pdsDeviceCapabilities = pgTable(
+  "pds_device_capabilities",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    capability: text("capability").notNull(),
+    compatibilityContractHash: text("compatibility_contract_hash").notNull(),
+    readiness: text("readiness").notNull(),
+    canonicalRecord: text("canonical_record").notNull(),
+    recordHash: text("record_hash").notNull(),
+    advertisedAt: timestamp("advertised_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_device_capability_identity_unique").on(
+      table.groupId,
+      table.deviceId,
+      table.capability,
+      table.compatibilityContractHash
+    ),
+    index("pds_device_capability_ready_idx").on(
+      table.groupId,
+      table.capability,
+      table.readiness,
+      table.expiresAt
+    ),
+    check(
+      "pds_device_capability_kind_check",
+      sql`${table.capability} in ('projection','memory_embedding','lcm')`
+    ),
+    check(
+      "pds_device_capability_readiness_check",
+      sql`${table.readiness} in ('ready','busy','unavailable') and ${table.expiresAt} > ${table.advertisedAt}`
+    )
   ]
 );
 

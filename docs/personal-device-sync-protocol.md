@@ -4,10 +4,10 @@ Status: Normative V1 profile for [ADR 0012](adr/0012-symmetric-replicated-person
 
 This document freezes Personal Device Sync (PDS) V1. The shared protocol,
 Authority/Relay API, control client, secure local runtime, and Worker data plane
-implement the canonical source-package profile. Portable Memory Event and
-embedding artifact transfer is normative but remains an implementation slice;
-receivers currently derive those artifacts from replicated source. In
-particular, existing
+implement the canonical source-package and portable-derived-artifact profiles.
+Receivers transactionally import compatible signed Memory Event, embedding, and
+LCM node artifacts and fall back to local derivation from canonical source when
+an artifact is absent or incompatible. In particular, existing
 [Directed Hosted Cross-Identity Sync](self-hosted-to-hosted-sync.md) uses a
 distinct RSA-OAEP target-envelope contract and must not be reused as PDS V1.
 PDS is not Directed Hosted Cross-Identity Sync. It is a symmetric Personal
@@ -446,7 +446,9 @@ The V1 artifact registry initially permits:
   item bindings and no database primary keys;
 - `memory_embedding/v1`, containing an event content hash, canonical vector, and
   the exact embedding contract: model artifact identity, dimensions, tokenizer
-  and input transformation, pooling, normalization, and embedding version.
+  and input transformation, pooling, normalization, and embedding version;
+- `lcm_node/v1`, containing a leaf or rollup bound to its exact ordered logical
+  source identities and complete LCM compatibility contract.
 
 The receiver verifies group membership, signatures, source binding, payload
 hash, artifact schema, and contract compatibility before a transactional,
@@ -456,12 +458,41 @@ artifact is ignored without weakening source replication and is rebuilt from
 the canonical source closure. Local HNSW/vector indexes, queue state, leases,
 credentials, paths, and operational rows are never artifact payloads.
 
+`modelArtifactHash` and embedding `sourceHash` use lowercase SHA-256 hex because
+they bind the installed model artifact and local embedding-source contract.
+Logical identities, source-content hashes, source-text hashes, vector hashes,
+payload hashes, and closure hashes use unpadded SHA-256 base64url.
+
 Artifact types are registered explicitly in code. Every future durable Personal
 data class must be classified as replicated, locally derived, or device-local,
 with tests. Unknown classes and versions fail closed independently and do not
 invalidate an otherwise valid canonical source package. Team-owned data is not
 admitted merely because a local table contains it; its Team authority,
 revocation, and retention protocol remains controlling.
+
+Semantic work claims are separate signed coordination records. They bind
+`groupId`, stable `workIdentity`, `workClass`, claimant device, compatibility
+contract hash, claim generation, claim time, and expiry. Artifact publication
+must present the current claim generation. Physical queue leases remain local
+and are never replicated.
+
+The unfinished LCM frontier is deterministic state, not another replicated
+mutable record. It is reconstructed from ordered logical Memory Events after
+subtracting complete, current `lcm_node/v1` leaf coverage. Managed Conversation
+handoff transfers source authority, so the new source device reconstructs and
+continues the same frontier. Fork finalizes the parent at the exact fork
+boundary, including a below-threshold tail, and starts the child from its
+distinct logical source lineage. A compatible enrolled device may claim
+embedding work when the execution device does not advertise a ready compatible
+embedding capability.
+
+An embedding capability advertisement is signed, expires after a bounded
+interval, and names the exact embedding compatibility-contract hash. A new
+embedding claim requires a fresh `ready` advertisement for that contract. An
+existing claimant may renew only the same work identity, work class, claimant
+device, source binding, and compatibility contract. Local embedding dispatch
+for synchronized Memory Events or LCM nodes requires that exact active claim;
+an approximate model match or stale capability cannot admit the work.
 
 Materialized replica source identity, provenance, ordering, and source payload
 remain immutable. Local Projection may update only its allowlisted processing

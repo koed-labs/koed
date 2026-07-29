@@ -2,6 +2,7 @@ import {
   createHash,
   createCipheriv,
   createDecipheriv,
+  generateKeyPairSync,
   randomBytes,
   randomUUID
 } from "node:crypto";
@@ -36,12 +37,21 @@ import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
+  createPdsArtifactRecord,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
   crossIdentitySyncPackageRequestHash,
   decryptEnvelopeToUtf8,
+  pdsArtifactCompatibilityHash,
+  pdsPortableEmbeddingVectorHash,
+  pdsPortableLcmNodeContentHash,
+  pdsPortableLcmNodeId,
+  pdsPortableMemoryEmbeddingId,
+  pdsPortableMemoryEventContentHash,
+  pdsPortableMemoryEventId,
   rawConversationTransportChunkGroupId,
+  resolveSupportedEmbeddingModelConfig,
   type CapturedSessionSyncPackageV1,
   type CapturedSessionSyncUploadPackageManifest,
   type EncryptedPayloadEnvelope,
@@ -150,6 +160,87 @@ const codexCanonicalConversationItemKey = (input: {
 describeDb("memory repository visibility", () => {
   let pool: pg.Pool;
   let repo: MemorySourceRepository;
+
+  const createPdsTestGroup = async (input: {
+    userId: string;
+    memberCount?: number;
+  }): Promise<{
+    groupDbId: string;
+    groupId: string;
+    deviceIds: string[];
+  }> => {
+    const suffix = randomUUID();
+    const identity = await pool.query<{ id: string }>(
+      `insert into local_personal_identities
+       (owner_user_id,opaque_identity_id)
+       values ($1,$2)
+       returning id`,
+      [input.userId, `identity-${suffix}`]
+    );
+    const groupId = `group-${suffix}`;
+    const group = await pool.query<{ id: string }>(
+      `insert into personal_device_groups
+       (local_personal_identity_id,group_id,authority_key_id,
+        authority_public_key,recovery_signing_key_id,
+        recovery_signing_public_key,recovery_kem_key_id,
+        recovery_kem_public_key,recovery_kit_hash,current_epoch,
+        head_sequence,head_hash)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'1','1',$10)
+       returning id`,
+      [
+        identity.rows[0]!.id,
+        groupId,
+        `authority-${suffix}`,
+        `authority-public-${suffix}`,
+        `recovery-signing-${suffix}`,
+        `recovery-signing-public-${suffix}`,
+        `recovery-kem-${suffix}`,
+        `recovery-kem-public-${suffix}`,
+        `recovery-kit-${suffix}`,
+        `head-${suffix}`
+      ]
+    );
+    const subject = await pool.query<{ id: string }>(
+      `insert into personal_device_group_user_subjects
+       (group_id,user_id,subject_id,deployment_id)
+       values ($1,$2,$3,$4)
+       returning id`,
+      [
+        group.rows[0]!.id,
+        input.userId,
+        `subject-${suffix}`,
+        `deployment-${suffix}`
+      ]
+    );
+    const deviceIds = Array.from(
+      { length: input.memberCount ?? 1 },
+      (_, index) => `device-${index + 1}-${suffix}`
+    );
+    for (const [index, deviceId] of deviceIds.entries()) {
+      await pool.query(
+        `insert into personal_device_group_members
+         (group_id,user_subject_id,device_id,signing_key_id,
+          signing_public_key,kem_key_id,kem_public_key,operation_families,
+          admitted_sequence)
+         values ($1,$2,$3,$4,$5,$6,$7,array['pds_relay']::text[],$8)`,
+        [
+          group.rows[0]!.id,
+          subject.rows[0]!.id,
+          deviceId,
+          `signing-${index}-${suffix}`,
+          `signing-public-${index}-${suffix}`,
+          `kem-${index}-${suffix}`,
+          `kem-public-${index}-${suffix}`,
+          String(index + 1)
+        ]
+      );
+    }
+    return {
+      groupDbId: group.rows[0]!.id,
+      groupId,
+      deviceIds
+    };
+  };
 
   const captureUserEvent = (
     engine: ReturnType<typeof createMemoryEngine>,
@@ -28817,6 +28908,532 @@ describeDb("memory repository visibility", () => {
 
     expect(projection.memoryEventsCreated).toBe(1);
     expect(events.rows).toEqual([{ content: "PDS projection marker" }]);
+  });
+
+  it("imports compatible PDS Memory Event, embedding, and LCM artifacts transactionally", async () => {
+    const owner = await repo.createUser({
+      email: `pds-artifact-import-${randomUUID()}@example.com`
+    });
+    const group = await createPdsTestGroup({ userId: owner.id });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `pds-artifact-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const sourceTime = "2026-07-29T02:00:00.000Z";
+    const content = "Portable artifacts should be imported exactly once.";
+    const [sourceItem] = await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "pds_relay",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            sourceSequence: 0,
+            eventTime: sourceTime,
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "user_message", message: content }
+            },
+            rawText: content,
+            sourceHash: createHash("sha256").update(content).digest("hex"),
+            idempotencyKey: `pds-artifact-source-${randomUUID()}`,
+            metadata: {
+              transcriptType: "user_message",
+              sourceRole: "user"
+            }
+          }
+        ]
+      }
+    );
+    const sourcePackageId = createHash("sha256")
+      .update(`package-${session.id}`)
+      .digest("base64url");
+    const sourceManifestHash = createHash("sha256")
+      .update(`manifest-${session.id}`)
+      .digest("base64url");
+    const sourceFingerprint = createHash("sha256")
+      .update(`fingerprint-${session.id}`)
+      .digest("base64url");
+    const sourceClosureHash = createHash("sha256")
+      .update(`closure-${session.id}`)
+      .digest("base64url");
+    const closure = await pool.query<{ id: string }>(
+      `insert into pds_session_closures
+       (group_id,owner_user_id,source_session_id,source_sequence,
+        terminal_cursor,terminal_item_count,source_closure_hash,package_id,
+        source_manifest_hash,state,closed_at)
+       values ($1,$2,$3,'1','1','1',$4,$5,$6,'ready',$7)
+       returning id`,
+      [
+        group.groupDbId,
+        owner.id,
+        session.id,
+        sourceClosureHash,
+        sourcePackageId,
+        sourceManifestHash,
+        new Date(sourceTime)
+      ]
+    );
+    await pool.query(
+      `insert into pds_source_item_mappings
+       (closure_id,conversation_item_id,source_ordinal)
+       values ($1,$2,'0')`,
+      [closure.rows[0]!.id, sourceItem!.id]
+    );
+    await pool.query(
+      `insert into pds_retained_packages
+       (group_id,owner_user_id,package_id,source_manifest_hash,
+        source_fingerprint,source_closure_hash,origin_deployment_id,
+        origin_device_id,source_sequence,encrypted_envelope,state)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,'1',$9::jsonb,'ready')`,
+      [
+        group.groupDbId,
+        owner.id,
+        sourcePackageId,
+        sourceManifestHash,
+        sourceFingerprint,
+        sourceClosureHash,
+        `deployment-${randomUUID()}`,
+        group.deviceIds[0],
+        JSON.stringify({ ciphertext: "retained-source-fixture" })
+      ]
+    );
+    const policy = await pool.query<{ revision: string }>(
+      "select revision::text as revision from projection_policy_state where id=1"
+    );
+    const eventContract = {
+      artifactClass: "memory_event/v1" as const,
+      projectionPolicyKey: "user_message",
+      projectionPolicyRevision: policy.rows[0]!.revision,
+      projectionAlgorithmVersion: "conversation-projection-v3",
+      tokenCounter: "koed-token-counter-v1:js-tiktoken:o200k_base"
+    };
+    const eventContent = {
+      sourceOrdinals: ["0"],
+      eventType: "captured" as const,
+      actor: "user",
+      rawEventType: "user_message",
+      content,
+      metadata: {},
+      includeInEmbedding: true,
+      includeInLcm: true,
+      tokenCount: String(estimateTokens(content)),
+      sealReason: "user_message",
+      sourceEventTime: sourceTime,
+      sourceSequence: "0"
+    };
+    const eventContentHash = pdsPortableMemoryEventContentHash(eventContent);
+    const logicalEventId = pdsPortableMemoryEventId({
+      sourceFingerprint,
+      sourceClosureHash,
+      sourceOrdinals: eventContent.sourceOrdinals,
+      projectionPolicyKey: eventContract.projectionPolicyKey,
+      projectionPolicyRevision: eventContract.projectionPolicyRevision,
+      contentHash: eventContentHash
+    });
+    const producerKeys = generateKeyPairSync("ed25519");
+    const createRecord = (
+      contract:
+        | typeof eventContract
+        | {
+            artifactClass: "memory_embedding/v1";
+            modelKey: string;
+            modelArtifactHash: string;
+            dimensions: string;
+            tokenizer: string;
+            inputTransform: string;
+            pooling: string;
+            normalization: string;
+            embeddingVersion: string;
+          }
+        | {
+            artifactClass: "lcm_node/v1";
+            nodeKind: "leaf";
+            lcmAlgorithmVersion: string;
+            summaryPromptVersion: string;
+            summaryModel: string;
+            structuredOutputSchema: string;
+            sourceSelectionPolicy: string;
+          },
+      workIdentity: string,
+      payload: Parameters<typeof createPdsArtifactRecord>[0]["payload"]
+    ) =>
+      createPdsArtifactRecord({
+        groupId: group.groupId,
+        workIdentity,
+        sourcePackageId,
+        sourceManifestHash,
+        sourceFingerprint,
+        sourceClosureHash,
+        producerDeviceId: group.deviceIds[0]!,
+        producerSigningKeyId: "fixture-signing-key",
+        claimGeneration: "1",
+        compatibilityContract: contract,
+        payload,
+        createdAt: sourceTime,
+        producerSigningPrivateKey: producerKeys.privateKey
+      });
+    const importRecord = async (
+      record: ReturnType<typeof createPdsArtifactRecord>
+    ) => {
+      const workerId = `artifact-import-${randomUUID()}`;
+      const inbox = await pool.query<{ id: string }>(
+        `insert into pds_inbox_entries
+         (group_id,owner_user_id,package_id,source_manifest_hash,state,
+          lease_owner,lease_until)
+         values ($1,$2,$3,$4,'downloading',$5,now()+interval '1 minute')
+         returning id`,
+        [
+          group.groupDbId,
+          owner.id,
+          record.manifest.artifactId,
+          record.manifest.payloadHash,
+          workerId
+        ]
+      );
+      return repo.importPdsPortableArtifact({
+        userId: owner.id,
+        groupId: group.groupId,
+        inboxId: inbox.rows[0]!.id,
+        workerId,
+        transportManifestHash: createHash("sha256")
+          .update(record.manifest.artifactId)
+          .digest("base64url"),
+        record,
+        encryptedEnvelope: { ciphertext: record.manifest.artifactId }
+      });
+    };
+    const eventRecord = createRecord(eventContract, logicalEventId, {
+      artifactClass: "memory_event/v1",
+      items: [
+        {
+          logicalEventId,
+          ...eventContent,
+          contentHash: eventContentHash
+        }
+      ]
+    });
+    const importedEvent = await importRecord(eventRecord);
+    expect(importedEvent.state).toBe("ready");
+    expect(typeof importedEvent.localSourceId).toBe("string");
+
+    const model = resolveSupportedEmbeddingModelConfig(
+      process.env.EMBEDDING_MODEL
+    );
+    const embeddingContract = {
+      artifactClass: "memory_embedding/v1" as const,
+      modelKey: model.key,
+      modelArtifactHash:
+        process.env.KOED_EMBEDDING_MODEL_SHA256?.trim() ||
+        model.defaultArtifactSha256,
+      dimensions: String(model.dimensions),
+      tokenizer: model.tokenizer,
+      inputTransform: model.inputTransform,
+      pooling: model.pooling,
+      normalization: model.normalization,
+      embeddingVersion: model.key
+    };
+    const vector = Array.from({ length: model.dimensions }, (_, index) =>
+      index === 0 ? "1" : "0"
+    );
+    const vectorHash = pdsPortableEmbeddingVectorHash(vector);
+    const embeddingId = pdsPortableMemoryEmbeddingId({
+      logicalSourceType: "memory_event",
+      logicalSourceId: logicalEventId,
+      sourceContentHash: eventContentHash,
+      sourceChunkIndex: "0",
+      sourceChunkCount: "1",
+      compatibilityContractHash:
+        pdsArtifactCompatibilityHash(embeddingContract),
+      vectorHash
+    });
+    const embeddingRecord = createRecord(embeddingContract, embeddingId, {
+      artifactClass: "memory_embedding/v1",
+      items: [
+        {
+          logicalEmbeddingId: embeddingId,
+          logicalSourceType: "memory_event",
+          logicalSourceId: logicalEventId,
+          sourceContentHash: eventContentHash,
+          sourceChunkIndex: "0",
+          sourceChunkCount: "1",
+          sourceHash: createHash("sha256")
+            .update(`memory_event:${importedEvent.localSourceId}:${content}`)
+            .digest("hex"),
+          sourceText: content,
+          sourceTextHash: createHash("sha256")
+            .update(content)
+            .digest("base64url"),
+          vector,
+          vectorHash
+        }
+      ]
+    });
+    const importedEmbedding = await importRecord(embeddingRecord);
+    expect(importedEmbedding.state).toBe("ready");
+    expect(typeof importedEmbedding.localSourceId).toBe("string");
+
+    const lcmContract = {
+      artifactClass: "lcm_node/v1" as const,
+      nodeKind: "leaf" as const,
+      lcmAlgorithmVersion: "depth0-source-items-v1",
+      summaryPromptVersion: "lcm-summary-leaf-v1",
+      summaryModel: "gpt-5.4-mini",
+      structuredOutputSchema: "lcm-semantic-summary-v1",
+      sourceSelectionPolicy: "depth0-source-items-v1"
+    };
+    const lcmContent = {
+      nodeKind: "leaf" as const,
+      orderedSourceIds: [logicalEventId],
+      summaryText: "Portable artifacts were imported once.",
+      summaryTokenCount: "6",
+      structuredSummary: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Portable artifact import",
+        summary_text: "Portable artifacts were imported once."
+      },
+      correctedRevision: "0",
+      sourceSpanStart: sourceTime,
+      sourceSpanEnd: sourceTime
+    };
+    const lcmContentHash = pdsPortableLcmNodeContentHash(lcmContent);
+    const logicalNodeId = pdsPortableLcmNodeId({
+      nodeKind: "leaf",
+      orderedSourceIds: lcmContent.orderedSourceIds,
+      compatibilityContractHash: pdsArtifactCompatibilityHash(lcmContract),
+      correctedRevision: lcmContent.correctedRevision,
+      contentHash: lcmContentHash
+    });
+    const lcmRecord = createRecord(lcmContract, logicalNodeId, {
+      artifactClass: "lcm_node/v1",
+      items: [
+        {
+          logicalNodeId,
+          ...lcmContent,
+          contentHash: lcmContentHash
+        }
+      ]
+    });
+    const importedLcm = await importRecord(lcmRecord);
+    expect(importedLcm.state).toBe("ready");
+    expect(typeof importedLcm.localSourceId).toBe("string");
+
+    const mappings = await pool.query<{ count: string }>(
+      `select count(*)::text as count from (
+         select memory_event_id::text as id from pds_memory_event_mappings
+          where group_id=$1 and logical_event_id=$2
+         union all
+         select memory_embedding_id::text from pds_memory_embedding_mappings
+          where group_id=$1 and logical_embedding_id=$3
+         union all
+         select memory_node_id::text from pds_lcm_node_mappings
+          where group_id=$1 and logical_node_id=$4
+       ) imported`,
+      [group.groupDbId, logicalEventId, embeddingId, logicalNodeId]
+    );
+    expect(mappings.rows[0]?.count).toBe("3");
+  });
+
+  it("requires an exact active semantic claim before embedding a mapped PDS source", async () => {
+    const owner = await repo.createUser({
+      email: `pds-embedding-claim-${randomUUID()}@example.com`
+    });
+    const group = await createPdsTestGroup({ userId: owner.id });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `pds-embedding-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        projectId: "pds-embedding-project",
+        sessionId: session.id,
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        content: "Only the exact fenced worker may embed this portable event.",
+        visibility: "personal",
+        captureMethod: "transcript",
+        sourceEventTime: "2026-07-29T01:00:00.000Z",
+        sourceSequence: 0
+      }
+    );
+    const contentHash = createHash("sha256")
+      .update(`portable-content-${event.id}`)
+      .digest("base64url");
+    await pool.query(
+      `insert into pds_memory_event_mappings
+       (group_id,memory_event_id,logical_event_id,source_fingerprint,
+        source_closure_hash,content_hash,source_ordinals)
+       values ($1,$2,$3,$4,$5,$6,array['0']::text[])`,
+      [
+        group.groupDbId,
+        event.id,
+        `logical-event-${randomUUID()}`,
+        createHash("sha256").update("source").digest("base64url"),
+        createHash("sha256").update("closure").digest("base64url"),
+        contentHash
+      ]
+    );
+
+    const beforeClaim = await repo.listSourcesNeedingEmbeddings(100);
+    expect(beforeClaim.some((source) => source.sourceId === event.id)).toBe(
+      false
+    );
+
+    const model = resolveSupportedEmbeddingModelConfig(
+      process.env.EMBEDDING_MODEL
+    );
+    const compatibilityContractHash = pdsArtifactCompatibilityHash({
+      artifactClass: "memory_embedding/v1",
+      modelKey: model.key,
+      modelArtifactHash:
+        process.env.KOED_EMBEDDING_MODEL_SHA256?.trim() ||
+        model.defaultArtifactSha256,
+      dimensions: String(model.dimensions),
+      tokenizer: model.tokenizer,
+      inputTransform: model.inputTransform,
+      pooling: model.pooling,
+      normalization: model.normalization,
+      embeddingVersion: model.key
+    });
+    const now = Date.now();
+    await expect(
+      repo.recordPdsSemanticWorkClaim({
+        userId: owner.id,
+        groupId: group.groupId,
+        claim: {
+          workIdentity: `embedding-work-${event.id}`,
+          workClass: "memory_embedding",
+          compatibilityContractHash,
+          claimantDeviceId: group.deviceIds[0]!,
+          claimGeneration: "1",
+          claimedAt: new Date(now - 1_000).toISOString(),
+          expiresAt: new Date(now + 60_000).toISOString()
+        },
+        localSource: {
+          sourceType: "memory_event",
+          sourceId: event.id,
+          contentHash
+        }
+      })
+    ).resolves.toBe(true);
+
+    const afterClaim = await repo.listSourcesNeedingEmbeddings(100);
+    expect(afterClaim.some((source) => source.sourceId === event.id)).toBe(
+      true
+    );
+
+    await pool.query(
+      `update pds_semantic_work_claims
+       set source_content_hash=$1
+       where group_id=$2 and work_identity=$3`,
+      [
+        createHash("sha256").update("stale-content").digest("base64url"),
+        group.groupDbId,
+        `embedding-work-${event.id}`
+      ]
+    );
+    const afterContentChange = await repo.listSourcesNeedingEmbeddings(100);
+    expect(
+      afterContentChange.some((source) => source.sourceId === event.id)
+    ).toBe(false);
+  });
+
+  it("continues LCM only after a PDS replica acquires source authority", async () => {
+    const owner = await repo.createUser({
+      email: `pds-lcm-authority-${randomUUID()}@example.com`
+    });
+    const group = await createPdsTestGroup({ userId: owner.id });
+    const externalSessionId = `pds-lcm-session-${randomUUID()}`;
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const engine = createMemoryEngine(repo);
+    for (let index = 0; index < 5; index += 1) {
+      await captureUserEvent(engine, owner.id, {
+        projectId: "pds-lcm-project",
+        sessionId: session.id,
+        content: `Portable LCM source event ${index + 1}`
+      });
+    }
+    await pool.query(
+      `insert into pds_logical_replicas
+       (group_id,owner_user_id,source_fingerprint,closure_hash,
+        local_session_id,materialization_state)
+       values ($1,$2,$3,$4,$5,'ready')`,
+      [
+        group.groupDbId,
+        owner.id,
+        createHash("sha256").update("replica-source").digest("base64url"),
+        createHash("sha256").update("replica-closure").digest("base64url"),
+        session.id
+      ]
+    );
+
+    expect(
+      await repo.listPendingLcmDispatchScopes({ ownerUserId: owner.id })
+    ).toEqual([]);
+    await expect(
+      repo.createLcmNodes(
+        { userId: owner.id },
+        { visibility: "personal", sessionId: session.id }
+      )
+    ).resolves.toEqual({ leafNodeIds: [], rollupNodeId: null });
+
+    await pool.query(
+      `insert into conversation_source_artifacts
+       (owner_user_id,session_id,logical_source_id,source_generation_id,
+        replica_role,source_kind,source_runtime,external_session_id,
+        source_fingerprint,artifact_format,artifact_format_version,
+        source_adapter_version,source_created_at,storage_provider,
+        storage_prefix,origin_deployment_id,origin_device_id,origin_key_id,
+        origin_public_key,redacted_source_label)
+       values ($1,$2,$3,$4,'origin_local','codex','codex',$5,$6,
+        'jsonl',1,'codex-transcript-v1',now(),'filesystem',$7,$8,$9,$10,
+        $11,$12)`,
+      [
+        owner.id,
+        session.id,
+        randomUUID(),
+        randomUUID(),
+        externalSessionId,
+        createHash("sha256").update("handoff-source").digest("hex"),
+        `pds-test/${session.id}`,
+        `deployment-${randomUUID()}`,
+        group.deviceIds[0],
+        `origin-key-${randomUUID()}`,
+        "A".repeat(43),
+        "PDS handoff source"
+      ]
+    );
+
+    const scopes = await repo.listPendingLcmDispatchScopes({
+      ownerUserId: owner.id
+    });
+    expect(scopes).toHaveLength(1);
+    const compacted = await repo.createLcmNodes(
+      { userId: owner.id },
+      { visibility: "personal", sessionId: session.id }
+    );
+    expect(compacted.leafNodeIds).toHaveLength(1);
   });
 
   it("exports every protected Curated Memory proposal beyond 500 rows", async () => {

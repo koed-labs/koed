@@ -1,12 +1,88 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MemorySourceRepository } from "@koed/db";
 import type { PdsSessionManifest } from "@koed/shared";
-import { canonicalizePdsJson } from "@koed/shared";
+import {
+  canonicalizePdsJson,
+  resolveSupportedEmbeddingModelConfig
+} from "@koed/shared";
 import {
   createReloadablePdsWorkerRuntimeFromEnvironment,
   materializePdsSession,
+  resolvePdsEmbeddingCapability,
   resolvePdsProviderRuntimeSecret
 } from "./personal-device-sync-runtime.js";
+
+describe("PDS semantic capability", () => {
+  const model = resolveSupportedEmbeddingModelConfig("qwen3-0.6b");
+  const modelArtifactHash = model.defaultArtifactSha256;
+
+  it("advertises readiness only for the exact healthy embedding runtime", () => {
+    const capability = resolvePdsEmbeddingCapability({
+      model,
+      modelArtifactHash,
+      status: {
+        enabled: true,
+        healthy: true,
+        model: model.key,
+        dimensions: model.dimensions
+      }
+    });
+
+    expect(capability).toEqual({
+      contract: {
+        artifactClass: "memory_embedding/v1",
+        modelKey: model.key,
+        modelArtifactHash,
+        dimensions: String(model.dimensions),
+        tokenizer: model.tokenizer,
+        inputTransform: model.inputTransform,
+        pooling: model.pooling,
+        normalization: model.normalization,
+        embeddingVersion: model.key
+      },
+      compatibilityContractHash: expect.any(String),
+      readiness: "ready"
+    });
+  });
+
+  it.each([
+    {
+      label: "unhealthy",
+      status: {
+        enabled: true,
+        healthy: false,
+        model: model.key,
+        dimensions: model.dimensions
+      }
+    },
+    {
+      label: "wrong model",
+      status: {
+        enabled: true,
+        healthy: true,
+        model: "other-model",
+        dimensions: model.dimensions
+      }
+    },
+    {
+      label: "wrong dimensions",
+      status: {
+        enabled: true,
+        healthy: true,
+        model: model.key,
+        dimensions: model.dimensions / 2
+      }
+    }
+  ])("advertises unavailable for a $label runtime", ({ status }) => {
+    expect(
+      resolvePdsEmbeddingCapability({
+        model,
+        modelArtifactHash,
+        status
+      }).readiness
+    ).toBe("unavailable");
+  });
+});
 
 describe("PDS session materialization", () => {
   it("adopts a replaced secure runtime between reconciliation cycles", async () => {

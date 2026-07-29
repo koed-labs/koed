@@ -269,7 +269,7 @@ export interface PersonalDeviceSyncLocalRepository {
   completePdsInbox(input: {
     workerId: string;
     inboxId: string;
-    retainedPackageId: string;
+    retainedPackageId?: string;
     state: "ready" | "quarantined";
   }): Promise<boolean>;
   markPdsInboxFailure(input: {
@@ -1154,7 +1154,10 @@ export const createPersonalDeviceSyncLocalRepository = (
     const result = await pool.query(
       `update pds_inbox_entries
        set state=$4,lease_owner=null,lease_until=null,last_error_class=null,updated_at=now()
-       where id=$1 and retained_package_id=$2 and lease_owner=$3
+       where id=$1
+         and (($2::uuid is null and retained_package_id is null)
+           or retained_package_id=$2)
+         and lease_owner=$3
          and lease_until>=now() and state='processing'`,
       [input.inboxId, input.retainedPackageId, input.workerId, input.state]
     );

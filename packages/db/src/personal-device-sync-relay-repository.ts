@@ -32,6 +32,11 @@ const number = (value: string): number => {
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw publicError();
   return parsed;
 };
+type PdsRelaySemanticWorkClass =
+  | "projection"
+  | "memory_embedding"
+  | "lcm_leaf"
+  | "lcm_rollup";
 
 export interface PdsRelayAuthContext {
   groupDbId: string;
@@ -79,6 +84,12 @@ export interface PdsRelayOperationalStatus {
     oldestTombstoneAckLagSeconds: number;
   };
 }
+
+export type PdsRelayDeviceCapability =
+  | "projection"
+  | "memory_embedding"
+  | "lcm";
+export type PdsRelayDeviceReadiness = "ready" | "busy" | "unavailable";
 
 const transportRecord = (
   value: Record<string, unknown>
@@ -345,6 +356,224 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         throw securityError("PDS relay request nonce was already used");
       }
       await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async advertisePdsRelayDeviceCapability(
+    input: PdsRelayAuthContext & {
+      capability: PdsRelayDeviceCapability;
+      compatibilityContractHash: string;
+      readiness: PdsRelayDeviceReadiness;
+      canonicalRecord: string;
+      recordHash: string;
+      advertisedAt: Date;
+      expiresAt: Date;
+    }
+  ): Promise<boolean> {
+    if (
+      input.expiresAt <= input.advertisedAt ||
+      input.expiresAt.getTime() - input.advertisedAt.getTime() > 5 * 60_000
+    ) {
+      return false;
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const auth = await assertCurrentRelayAuth(client, input);
+      const result = await client.query(
+        `insert into pds_device_capabilities
+         (group_id,device_id,capability,compatibility_contract_hash,readiness,
+          canonical_record,record_hash,advertised_at,expires_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         on conflict (group_id,device_id,capability,compatibility_contract_hash)
+         do update set readiness=excluded.readiness,
+           canonical_record=excluded.canonical_record,
+           record_hash=excluded.record_hash,
+           advertised_at=excluded.advertised_at,
+           expires_at=excluded.expires_at,updated_at=now()
+         where pds_device_capabilities.advertised_at<=excluded.advertised_at`,
+        [
+          auth.groupDbId,
+          auth.deviceId,
+          input.capability,
+          input.compatibilityContractHash,
+          input.readiness,
+          input.canonicalRecord,
+          input.recordHash,
+          input.advertisedAt,
+          input.expiresAt
+        ]
+      );
+      await client.query("commit");
+      return result.rowCount === 1;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async acquirePdsRelaySemanticWorkClaim(
+    input: PdsRelayAuthContext & {
+      workIdentity: string;
+      workClass: PdsRelaySemanticWorkClass;
+      compatibilityContractHash: string;
+      leaseSeconds?: number;
+    }
+  ): Promise<{
+    workIdentity: string;
+    workClass: PdsRelaySemanticWorkClass;
+    compatibilityContractHash: string;
+    claimantDeviceId: string;
+    claimGeneration: string;
+    claimedAt: string;
+    expiresAt: string;
+  } | null> {
+    const seconds = Math.min(Math.max(input.leaseSeconds ?? 60, 5), 3600);
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const auth = await assertCurrentRelayAuth(client, input);
+      if (input.workClass === "memory_embedding") {
+        const existingClaim = await client.query(
+          `select 1 from pds_semantic_work_claims
+           where group_id=$1 and work_identity=$2 and claimant_device_id=$3
+             and compatibility_contract_hash=$4 and state='active'
+             and expires_at>now() for share`,
+          [
+            auth.groupDbId,
+            input.workIdentity,
+            auth.deviceId,
+            input.compatibilityContractHash
+          ]
+        );
+        if (!existingClaim.rowCount) {
+          const capability = await client.query(
+            `select 1 from pds_device_capabilities
+             where group_id=$1 and device_id=$2
+               and capability='memory_embedding'
+               and compatibility_contract_hash=$3
+               and readiness='ready' and expires_at>now()
+             for share`,
+            [auth.groupDbId, auth.deviceId, input.compatibilityContractHash]
+          );
+          if (!capability.rowCount) {
+            await client.query("commit");
+            return null;
+          }
+        }
+      }
+      const result = await client.query<{
+        work_identity: string;
+        work_class: PdsRelaySemanticWorkClass;
+        compatibility_contract_hash: string;
+        claimant_device_id: string;
+        claim_generation: string;
+        claimed_at: Date;
+        expires_at: Date;
+      }>(
+        `insert into pds_semantic_work_claims
+         (group_id,work_identity,work_class,compatibility_contract_hash,
+          claimant_device_id,claim_generation,claimed_at,expires_at,state)
+         values ($1,$2,$3,$4,$5,'1',now(),
+           now()+($6::text || ' seconds')::interval,'active')
+         on conflict (group_id,work_identity) do update
+         set work_class=excluded.work_class,
+           compatibility_contract_hash=excluded.compatibility_contract_hash,
+           claimant_device_id=excluded.claimant_device_id,
+           claim_generation=case
+             when pds_semantic_work_claims.claimant_device_id=
+               excluded.claimant_device_id
+             then pds_semantic_work_claims.claim_generation
+             else (pds_semantic_work_claims.claim_generation::numeric+1)::text
+           end,
+           claimed_at=now(),expires_at=excluded.expires_at,state='active',
+           updated_at=now()
+         where pds_semantic_work_claims.state<>'active'
+            or pds_semantic_work_claims.expires_at<=now()
+            or (
+              pds_semantic_work_claims.claimant_device_id=
+                excluded.claimant_device_id
+              and pds_semantic_work_claims.compatibility_contract_hash=
+                excluded.compatibility_contract_hash
+            )
+         returning work_identity,work_class,compatibility_contract_hash,
+           claimant_device_id,claim_generation,claimed_at,expires_at`,
+        [
+          auth.groupDbId,
+          input.workIdentity,
+          input.workClass,
+          input.compatibilityContractHash,
+          auth.deviceId,
+          seconds
+        ]
+      );
+      await client.query("commit");
+      const claim = result.rows[0];
+      return claim
+        ? {
+            workIdentity: claim.work_identity,
+            workClass: claim.work_class,
+            compatibilityContractHash: claim.compatibility_contract_hash,
+            claimantDeviceId: claim.claimant_device_id,
+            claimGeneration: claim.claim_generation,
+            claimedAt: claim.claimed_at.toISOString(),
+            expiresAt: claim.expires_at.toISOString()
+          }
+        : null;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async completePdsRelaySemanticWorkClaim(
+    input: PdsRelayAuthContext & {
+      workIdentity: string;
+      claimGeneration: string;
+    }
+  ): Promise<boolean> {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const auth = await assertCurrentRelayAuth(client, input);
+      const result = await client.query(
+        `update pds_semantic_work_claims
+         set state='completed',updated_at=now()
+         where group_id=$1 and work_identity=$2 and claimant_device_id=$3
+           and claim_generation=$4 and state='active' and expires_at>now()`,
+        [
+          auth.groupDbId,
+          input.workIdentity,
+          auth.deviceId,
+          input.claimGeneration
+        ]
+      );
+      const completed =
+        result.rowCount === 1 ||
+        (
+          await client.query(
+            `select 1 from pds_semantic_work_claims
+             where group_id=$1 and work_identity=$2 and claimant_device_id=$3
+               and claim_generation=$4 and state='completed'`,
+            [
+              auth.groupDbId,
+              input.workIdentity,
+              auth.deviceId,
+              input.claimGeneration
+            ]
+          )
+        ).rowCount === 1;
+      await client.query("commit");
+      return completed;
     } catch (error) {
       await client.query("rollback");
       throw error;

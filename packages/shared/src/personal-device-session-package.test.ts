@@ -4,11 +4,13 @@ import { describe, expect, it } from "vitest";
 import { signPdsRecord } from "./personal-device-sync.js";
 import { canonicalizePdsJson } from "./personal-device-sync-jcs.js";
 import {
+  createPdsEncryptedPayloadPackage,
   PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
   classifyPdsSessionPackageReplay,
   createPdsSessionPackageRuntimeContext,
   createPdsSessionManifest,
   createPdsSessionPackage,
+  decryptPdsEncryptedPayloadPackage,
   pdsDeletionFloorToken,
   pdsLogicalMemoryId,
   pdsProjectAliasToken,
@@ -297,6 +299,32 @@ const withDigest = (pkg: PdsSessionPackage): PdsSessionPackage => ({
 });
 
 describe("PDS origin-signed session package", () => {
+  it("uses one authenticated encrypted transport for source and artifact plaintext", () => {
+    const { input, verify, manifest } = fixture();
+    const plaintext = canonicalizePdsJson({
+      artifactClass: "memory_event/v1",
+      value: "derived"
+    });
+    const pkg = createPdsEncryptedPayloadPackage({
+      runtime: input.runtime,
+      expiresAt: input.expiresAt,
+      servingSigningPrivateKey: input.servingSigningPrivateKey,
+      packageId: createHash("sha256")
+        .update("artifact-package")
+        .digest("base64url"),
+      manifestHash: createHash("sha256").update(plaintext).digest("base64url"),
+      originDeviceId: manifest.originDeviceId,
+      contentEpoch: manifest.contentEpoch,
+      plaintext
+    });
+
+    const decrypted = decryptPdsEncryptedPayloadPackage(
+      canonicalizePdsJson(pkg),
+      verify
+    );
+    expect(Buffer.from(decrypted.plaintext).toString("utf8")).toBe(plaintext);
+  });
+
   it("orders recipients by device ID without imposing an unrelated KEM-key order", () => {
     const { input } = fixture(undefined, true);
     const pkg = createPdsSessionPackage(input);

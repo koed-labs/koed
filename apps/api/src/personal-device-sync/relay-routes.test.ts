@@ -17,11 +17,15 @@ const relayProof = (input: {
   privateKey: KeyObject;
   target: string;
   nonce: string;
+  method?: "GET" | "POST";
+  body?: Buffer;
 }) => {
+  const method = input.method ?? "GET";
+  const body = input.body ?? Buffer.alloc(0);
   const unsigned = {
-    method: "GET",
+    method,
     target: input.target,
-    bodyDigest: pdsRelayBodyDigest(Buffer.alloc(0)),
+    bodyDigest: pdsRelayBodyDigest(body),
     timestamp: new Date().toISOString(),
     nonce: input.nonce,
     deviceId,
@@ -63,6 +67,94 @@ const relayContext = (
   }) as unknown as ApiRouteContext;
 
 describe("PDS relay routes", () => {
+  it("accepts only a signed, fresh semantic capability advertisement", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const publicKey = keys.publicKey.export({ format: "jwk" }).x!;
+    const advertisePdsRelayDeviceCapability = vi.fn(async () => true);
+    const repository = {
+      authenticatePdsRelayRequest: vi.fn(async () => ({
+        groupDbId: "group-db",
+        groupId: "group",
+        headHash: "head",
+        epoch: "1",
+        deviceId,
+        signingKeyId,
+        signingPublicKey: publicKey,
+        recipientDeviceIds: [deviceId],
+        certificate: {}
+      })),
+      consumePdsRelayRequestNonce: vi.fn(async () => undefined),
+      advertisePdsRelayDeviceCapability
+    };
+    const app = Fastify();
+    registerPersonalDeviceSyncRelayRoutes(app, relayContext(repository));
+    const target = "/v1/personal-device-sync/relay/semantic-work/capabilities";
+    const advertisedAt = new Date();
+    const payload = canonicalizePdsJson({
+      capability: "memory_embedding",
+      compatibilityContractHash: Buffer.alloc(32, 4).toString("base64url"),
+      readiness: "ready",
+      advertisedAt: advertisedAt.toISOString(),
+      expiresAt: new Date(advertisedAt.getTime() + 120_000).toISOString()
+    });
+    const body = Buffer.from(payload, "utf8");
+    const accepted = await app.inject({
+      method: "POST",
+      url: target,
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target,
+          nonce: Buffer.alloc(32, 5).toString("base64url"),
+          method: "POST",
+          body
+        })
+      }
+    });
+
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toEqual({ accepted: true });
+    expect(advertisePdsRelayDeviceCapability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deviceId,
+        capability: "memory_embedding",
+        readiness: "ready",
+        canonicalRecord: payload
+      })
+    );
+
+    const stalePayload = canonicalizePdsJson({
+      capability: "memory_embedding",
+      compatibilityContractHash: Buffer.alloc(32, 4).toString("base64url"),
+      readiness: "ready",
+      advertisedAt: new Date(Date.now() - 120_000).toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString()
+    });
+    const staleBody = Buffer.from(stalePayload, "utf8");
+    const stale = await app.inject({
+      method: "POST",
+      url: target,
+      payload: stalePayload,
+      headers: {
+        "content-type": "application/json",
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target,
+          nonce: Buffer.alloc(32, 6).toString("base64url"),
+          method: "POST",
+          body: staleBody
+        })
+      }
+    });
+    expect(stale.statusCode).toBe(400);
+    expect(advertisePdsRelayDeviceCapability).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
   it("rejects browser, API-token, and legacy credential bypasses", async () => {
     const app = Fastify();
     registerPersonalDeviceSyncRelayRoutes(app, relayContext({}));

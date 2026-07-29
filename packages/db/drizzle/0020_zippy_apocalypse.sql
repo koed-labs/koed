@@ -1129,14 +1129,17 @@ CREATE TABLE "managed_conversation_commands" (
         and "managed_conversation_commands"."request_digest" ~ '^[0-9a-f]{64}$'
         and (
           ("managed_conversation_commands"."state" = 'blocked'
-            and "managed_conversation_commands"."blocked_on_kind" in ('source_replica','source_registration','runtime_binding')
+            and "managed_conversation_commands"."blocked_on_kind" in (
+              'source_replica',
+              'source_registration',
+              'runtime_binding'
+            )
             and "managed_conversation_commands"."blocked_on_id" is not null
             and (
               "managed_conversation_commands"."blocked_on_kind" <> 'runtime_binding'
               or (
                 "managed_conversation_commands"."command_kind" = 'start'
-                and "managed_conversation_commands"."blocked_on_id" =
-                    "managed_conversation_commands"."execution_id"
+                and "managed_conversation_commands"."blocked_on_id" = "managed_conversation_commands"."execution_id"
               )
             ))
           or ("managed_conversation_commands"."state" <> 'blocked'
@@ -1559,6 +1562,45 @@ CREATE TABLE "managed_conversation_runtime_bindings" (
         ))
 );
 --> statement-breakpoint
+CREATE TABLE "pds_artifact_inbox_entries" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"owner_user_id" uuid NOT NULL,
+	"package_id" text NOT NULL,
+	"manifest_hash" text NOT NULL,
+	"state" text DEFAULT 'pending' NOT NULL,
+	"lease_owner" text,
+	"lease_until" timestamp with time zone,
+	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"retry_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_error_class" text,
+	"retained_artifact_id" uuid,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_artifact_inbox_replay_unique" UNIQUE("group_id","package_id"),
+	CONSTRAINT "pds_artifact_inbox_state_check" CHECK ("pds_artifact_inbox_entries"."state" in ('pending','downloading','verifying','processing','ready','incompatible','failed','quarantined','revoked')),
+	CONSTRAINT "pds_artifact_inbox_attempt_count_check" CHECK ("pds_artifact_inbox_entries"."attempt_count" >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "pds_artifact_outbox_entries" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"artifact_id" uuid NOT NULL,
+	"state" text DEFAULT 'pending' NOT NULL,
+	"idempotency_key" text NOT NULL,
+	"lease_owner" text,
+	"lease_until" timestamp with time zone,
+	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"retry_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_error_class" text,
+	"transport_id" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_artifact_outbox_artifact_unique" UNIQUE("artifact_id"),
+	CONSTRAINT "pds_artifact_outbox_idempotency_unique" UNIQUE("idempotency_key"),
+	CONSTRAINT "pds_artifact_outbox_state_check" CHECK ("pds_artifact_outbox_entries"."state" in ('pending','uploading','committed','acked','paused','failed','quarantined')),
+	CONSTRAINT "pds_artifact_outbox_attempt_count_check" CHECK ("pds_artifact_outbox_entries"."attempt_count" >= 0)
+);
+--> statement-breakpoint
 CREATE TABLE "pds_conflict_resolution_records" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"group_id" uuid NOT NULL,
@@ -1600,6 +1642,24 @@ CREATE TABLE "pds_deletion_floors" (
 	CONSTRAINT "pds_deletion_floor_group_logical_unique" UNIQUE("group_id","logical_memory_id")
 );
 --> statement-breakpoint
+CREATE TABLE "pds_device_capabilities" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"device_id" text NOT NULL,
+	"capability" text NOT NULL,
+	"compatibility_contract_hash" text NOT NULL,
+	"readiness" text NOT NULL,
+	"canonical_record" text NOT NULL,
+	"record_hash" text NOT NULL,
+	"advertised_at" timestamp with time zone NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_device_capability_identity_unique" UNIQUE("group_id","device_id","capability","compatibility_contract_hash"),
+	CONSTRAINT "pds_device_capability_kind_check" CHECK ("pds_device_capabilities"."capability" in ('projection','memory_embedding','lcm')),
+	CONSTRAINT "pds_device_capability_readiness_check" CHECK ("pds_device_capabilities"."readiness" in ('ready','busy','unavailable') and "pds_device_capabilities"."expires_at" > "pds_device_capabilities"."advertised_at")
+);
+--> statement-breakpoint
 CREATE TABLE "pds_inbox_entries" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"group_id" uuid NOT NULL,
@@ -1620,6 +1680,20 @@ CREATE TABLE "pds_inbox_entries" (
 	CONSTRAINT "pds_inbox_attempt_count_check" CHECK ("pds_inbox_entries"."attempt_count" >= 0)
 );
 --> statement-breakpoint
+CREATE TABLE "pds_lcm_node_mappings" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"memory_node_id" uuid NOT NULL,
+	"logical_node_id" text NOT NULL,
+	"source_fingerprint" text NOT NULL,
+	"source_closure_hash" text NOT NULL,
+	"compatibility_contract_hash" text NOT NULL,
+	"content_hash" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_lcm_node_mapping_node_unique" UNIQUE("memory_node_id"),
+	CONSTRAINT "pds_lcm_node_mapping_logical_unique" UNIQUE("group_id","logical_node_id")
+);
+--> statement-breakpoint
 CREATE TABLE "pds_logical_replicas" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"group_id" uuid NOT NULL,
@@ -1634,6 +1708,36 @@ CREATE TABLE "pds_logical_replicas" (
 	CONSTRAINT "pds_logical_replica_fingerprint_closure_unique" UNIQUE("group_id","source_fingerprint","closure_hash"),
 	CONSTRAINT "pds_logical_replica_local_session_unique" UNIQUE("local_session_id"),
 	CONSTRAINT "pds_logical_replica_state_check" CHECK ("pds_logical_replicas"."materialization_state" in ('pending','downloading','verifying','processing','ready','stale','failed','quarantined','revoked'))
+);
+--> statement-breakpoint
+CREATE TABLE "pds_memory_embedding_mappings" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"memory_embedding_id" uuid NOT NULL,
+	"logical_embedding_id" text NOT NULL,
+	"logical_source_type" text NOT NULL,
+	"logical_source_id" text NOT NULL,
+	"source_content_hash" text NOT NULL,
+	"compatibility_contract_hash" text NOT NULL,
+	"vector_hash" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_memory_embedding_mapping_embedding_unique" UNIQUE("memory_embedding_id"),
+	CONSTRAINT "pds_memory_embedding_mapping_logical_unique" UNIQUE("group_id","logical_embedding_id"),
+	CONSTRAINT "pds_memory_embedding_mapping_source_type_check" CHECK ("pds_memory_embedding_mappings"."logical_source_type" in ('memory_event','lcm_node'))
+);
+--> statement-breakpoint
+CREATE TABLE "pds_memory_event_mappings" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"memory_event_id" uuid NOT NULL,
+	"logical_event_id" text NOT NULL,
+	"source_fingerprint" text NOT NULL,
+	"source_closure_hash" text NOT NULL,
+	"content_hash" text NOT NULL,
+	"source_ordinals" text[] NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_memory_event_mapping_event_unique" UNIQUE("memory_event_id"),
+	CONSTRAINT "pds_memory_event_mapping_logical_unique" UNIQUE("group_id","logical_event_id")
 );
 --> statement-breakpoint
 CREATE TABLE "pds_origin_high_water_marks" (
@@ -1676,6 +1780,35 @@ CREATE TABLE "pds_outbox_entries" (
 	CONSTRAINT "pds_outbox_idempotency_unique" UNIQUE("idempotency_key"),
 	CONSTRAINT "pds_outbox_state_check" CHECK ("pds_outbox_entries"."state" in ('pending','uploading','committed','acked','paused','failed','quarantined')),
 	CONSTRAINT "pds_outbox_attempt_count_check" CHECK ("pds_outbox_entries"."attempt_count" >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "pds_portable_artifacts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"owner_user_id" uuid NOT NULL,
+	"local_session_id" uuid,
+	"artifact_id" text NOT NULL,
+	"work_identity" text NOT NULL,
+	"artifact_class" text NOT NULL,
+	"source_package_id" text NOT NULL,
+	"source_manifest_hash" text NOT NULL,
+	"source_fingerprint" text NOT NULL,
+	"source_closure_hash" text NOT NULL,
+	"producer_device_id" text NOT NULL,
+	"claim_generation" text NOT NULL,
+	"compatibility_contract_hash" text NOT NULL,
+	"payload_hash" text NOT NULL,
+	"transport_manifest_hash" text NOT NULL,
+	"semantic_claim_completed_at" timestamp with time zone,
+	"encrypted_envelope" jsonb NOT NULL,
+	"state" text DEFAULT 'ready' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_portable_artifact_group_identity_unique" UNIQUE("group_id","artifact_id"),
+	CONSTRAINT "pds_portable_artifact_work_generation_unique" UNIQUE("group_id","work_identity","claim_generation"),
+	CONSTRAINT "pds_portable_artifact_class_check" CHECK ("pds_portable_artifacts"."artifact_class" in ('memory_event/v1','memory_embedding/v1','lcm_node/v1')),
+	CONSTRAINT "pds_portable_artifact_state_check" CHECK ("pds_portable_artifacts"."state" in ('ready','published','imported','incompatible','quarantined','revoked')),
+	CONSTRAINT "pds_portable_artifact_generation_check" CHECK ("pds_portable_artifacts"."claim_generation" ~ '^(0|[1-9][0-9]*)$')
 );
 --> statement-breakpoint
 CREATE TABLE "pds_replica_lifecycle_state" (
@@ -1740,6 +1873,30 @@ CREATE TABLE "pds_retained_packages" (
 	CONSTRAINT "pds_retained_origin_sequence_unique" UNIQUE("group_id","origin_deployment_id","origin_device_id","source_sequence"),
 	CONSTRAINT "pds_retained_package_sequence_check" CHECK ("pds_retained_packages"."source_sequence" ~ '^(0|[1-9][0-9]*)$'),
 	CONSTRAINT "pds_retained_package_state_check" CHECK ("pds_retained_packages"."state" in ('ready','stale','quarantined','revoked'))
+);
+--> statement-breakpoint
+CREATE TABLE "pds_semantic_work_claims" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"work_identity" text NOT NULL,
+	"work_class" text NOT NULL,
+	"compatibility_contract_hash" text NOT NULL,
+	"claimant_device_id" text NOT NULL,
+	"local_source_type" text,
+	"local_source_id" uuid,
+	"source_content_hash" text,
+	"claim_generation" text NOT NULL,
+	"claimed_at" timestamp with time zone NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"state" text DEFAULT 'active' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pds_semantic_work_claim_identity_unique" UNIQUE("group_id","work_identity"),
+	CONSTRAINT "pds_semantic_work_claim_class_check" CHECK ("pds_semantic_work_claims"."work_class" in ('projection','memory_embedding','lcm_leaf','lcm_rollup')),
+	CONSTRAINT "pds_semantic_work_claim_local_source_check" CHECK (("pds_semantic_work_claims"."local_source_type" is null and "pds_semantic_work_claims"."local_source_id" is null and "pds_semantic_work_claims"."source_content_hash" is null)
+        or ("pds_semantic_work_claims"."local_source_type" in ('memory_event','lcm_node') and "pds_semantic_work_claims"."local_source_id" is not null and "pds_semantic_work_claims"."source_content_hash" is not null)),
+	CONSTRAINT "pds_semantic_work_claim_state_check" CHECK ("pds_semantic_work_claims"."state" in ('active','completed','released','superseded')),
+	CONSTRAINT "pds_semantic_work_claim_generation_check" CHECK ("pds_semantic_work_claims"."claim_generation" ~ '^(0|[1-9][0-9]*)$' and "pds_semantic_work_claims"."expires_at" > "pds_semantic_work_claims"."claimed_at")
 );
 --> statement-breakpoint
 CREATE TABLE "pds_session_closures" (
@@ -2844,8 +3001,6 @@ ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "state_before_pause" 
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "source_summary_revision_hash" text;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "target_summary_revision_hash" text;--> statement-breakpoint
 ALTER TABLE "encrypted_field_payloads" ADD COLUMN "owner_principal_id" uuid;--> statement-breakpoint
-TRUNCATE TABLE "historical_import_sources", "historical_import_runs" CASCADE;--> statement-breakpoint
-TRUNCATE TABLE "memory_replicas", "logical_memories" CASCADE;--> statement-breakpoint
 ALTER TABLE "historical_import_sources" ADD COLUMN "artifact_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "protocol_logical_id" uuid DEFAULT gen_random_uuid() NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "owner_principal_id" uuid;--> statement-breakpoint
@@ -2855,6 +3010,13 @@ ALTER TABLE "logical_memories" ADD COLUMN "lifecycle" "memory_replica_lifecycle"
 ALTER TABLE "logical_memories" ADD COLUMN "tombstoned_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "retain_until" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "purge_completed_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "memory_embeddings" ADD COLUMN "model_artifact_hash" text;--> statement-breakpoint
+ALTER TABLE "memory_embeddings" ADD COLUMN "tokenizer" text;--> statement-breakpoint
+ALTER TABLE "memory_embeddings" ADD COLUMN "input_transform" text;--> statement-breakpoint
+ALTER TABLE "memory_embeddings" ADD COLUMN "pooling" text;--> statement-breakpoint
+ALTER TABLE "memory_embeddings" ADD COLUMN "normalization" text;--> statement-breakpoint
+ALTER TABLE "memory_events" ADD COLUMN "projection_algorithm_version" text;--> statement-breakpoint
+ALTER TABLE "memory_events" ADD COLUMN "token_counter" text;--> statement-breakpoint
 ALTER TABLE "memory_nodes" ADD COLUMN "session_id" uuid;--> statement-breakpoint
 ALTER TABLE "memory_questions" ADD COLUMN "project_id" text;--> statement-breakpoint
 ALTER TABLE "memory_replicas" ADD COLUMN "owner_principal_id" uuid;--> statement-breakpoint
@@ -3025,24 +3187,39 @@ ALTER TABLE "managed_conversation_handoffs" ADD CONSTRAINT "managed_conversation
 ALTER TABLE "managed_conversation_handoffs" ADD CONSTRAINT "managed_conversation_handoffs_workspace_snapshot_id_development_workspace_snapshots_id_fk" FOREIGN KEY ("workspace_snapshot_id") REFERENCES "public"."development_workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "managed_conversation_runtime_bindings" ADD CONSTRAINT "managed_conversation_runtime_bindings_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "managed_conversation_runtime_bindings" ADD CONSTRAINT "managed_conversation_runtime_bindings_local_session_id_sessions_id_fk" FOREIGN KEY ("local_session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_artifact_inbox_entries" ADD CONSTRAINT "pds_artifact_inbox_entries_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_artifact_inbox_entries" ADD CONSTRAINT "pds_artifact_inbox_entries_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_artifact_inbox_entries" ADD CONSTRAINT "pds_artifact_inbox_entries_retained_artifact_id_pds_portable_artifacts_id_fk" FOREIGN KEY ("retained_artifact_id") REFERENCES "public"."pds_portable_artifacts"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_artifact_outbox_entries" ADD CONSTRAINT "pds_artifact_outbox_entries_artifact_id_pds_portable_artifacts_id_fk" FOREIGN KEY ("artifact_id") REFERENCES "public"."pds_portable_artifacts"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_conflict_resolution_records" ADD CONSTRAINT "pds_conflict_resolution_records_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_conflicts" ADD CONSTRAINT "pds_conflicts_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_deletion_floors" ADD CONSTRAINT "pds_deletion_floors_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_device_capabilities" ADD CONSTRAINT "pds_device_capabilities_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_inbox_entries" ADD CONSTRAINT "pds_inbox_entries_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_inbox_entries" ADD CONSTRAINT "pds_inbox_entries_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_inbox_entries" ADD CONSTRAINT "pds_inbox_entries_retained_package_id_pds_retained_packages_id_fk" FOREIGN KEY ("retained_package_id") REFERENCES "public"."pds_retained_packages"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_lcm_node_mappings" ADD CONSTRAINT "pds_lcm_node_mappings_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_lcm_node_mappings" ADD CONSTRAINT "pds_lcm_node_mappings_memory_node_id_memory_nodes_id_fk" FOREIGN KEY ("memory_node_id") REFERENCES "public"."memory_nodes"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_logical_replicas" ADD CONSTRAINT "pds_logical_replicas_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_logical_replicas" ADD CONSTRAINT "pds_logical_replicas_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_logical_replicas" ADD CONSTRAINT "pds_logical_replicas_local_session_id_sessions_id_fk" FOREIGN KEY ("local_session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_memory_embedding_mappings" ADD CONSTRAINT "pds_memory_embedding_mappings_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_memory_embedding_mappings" ADD CONSTRAINT "pds_memory_embedding_mappings_memory_embedding_id_memory_embeddings_id_fk" FOREIGN KEY ("memory_embedding_id") REFERENCES "public"."memory_embeddings"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_memory_event_mappings" ADD CONSTRAINT "pds_memory_event_mappings_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_memory_event_mappings" ADD CONSTRAINT "pds_memory_event_mappings_memory_event_id_memory_events_id_fk" FOREIGN KEY ("memory_event_id") REFERENCES "public"."memory_events"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_origin_high_water_marks" ADD CONSTRAINT "pds_origin_high_water_marks_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_origin_sequences" ADD CONSTRAINT "pds_origin_sequences_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_outbox_entries" ADD CONSTRAINT "pds_outbox_entries_closure_id_pds_session_closures_id_fk" FOREIGN KEY ("closure_id") REFERENCES "public"."pds_session_closures"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_portable_artifacts" ADD CONSTRAINT "pds_portable_artifacts_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_portable_artifacts" ADD CONSTRAINT "pds_portable_artifacts_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_portable_artifacts" ADD CONSTRAINT "pds_portable_artifacts_local_session_id_sessions_id_fk" FOREIGN KEY ("local_session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_replica_lifecycle_state" ADD CONSTRAINT "pds_replica_lifecycle_state_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_replica_observations" ADD CONSTRAINT "pds_replica_observations_replica_id_pds_logical_replicas_id_fk" FOREIGN KEY ("replica_id") REFERENCES "public"."pds_logical_replicas"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_replica_observations" ADD CONSTRAINT "pds_replica_observations_retained_package_id_pds_retained_packages_id_fk" FOREIGN KEY ("retained_package_id") REFERENCES "public"."pds_retained_packages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_restore_reconciliations" ADD CONSTRAINT "pds_restore_reconciliations_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_retained_packages" ADD CONSTRAINT "pds_retained_packages_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_retained_packages" ADD CONSTRAINT "pds_retained_packages_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pds_semantic_work_claims" ADD CONSTRAINT "pds_semantic_work_claims_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_session_closures" ADD CONSTRAINT "pds_session_closures_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_session_closures" ADD CONSTRAINT "pds_session_closures_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_session_closures" ADD CONSTRAINT "pds_session_closures_source_session_id_sessions_id_fk" FOREIGN KEY ("source_session_id") REFERENCES "public"."sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -3197,21 +3374,26 @@ CREATE INDEX "high_risk_action_grant_execution_receipts_owner_idx" ON "high_risk
 CREATE INDEX "high_risk_confirmations_active_idx" ON "high_risk_browser_confirmations" USING btree ("owner_user_id","expires_at") WHERE "high_risk_browser_confirmations"."state" in ('pending', 'approved');--> statement-breakpoint
 CREATE INDEX "high_risk_action_grants_active_idx" ON "high_risk_device_action_grants" USING btree ("device_credential_id","expires_at") WHERE "high_risk_device_action_grants"."state" = 'active';--> statement-breakpoint
 CREATE INDEX "legal_holds_active_team_idx" ON "legal_holds" USING btree ("team_id","scope","placed_at" DESC NULLS LAST) WHERE "legal_holds"."state" <> 'released';--> statement-breakpoint
-CREATE INDEX "local_edge_collaboration_subscriptions_active_idx" ON "local_edge_collaboration_subscriptions" USING btree ("upstream_backend_id","state","updated_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE UNIQUE INDEX "local_edge_collaboration_subscriptions_personal_binding_unique" ON "local_edge_collaboration_subscriptions" USING btree ("upstream_backend_id","credential_binding_hash","protocol_version") WHERE "local_edge_collaboration_subscriptions"."scope" = 'personal' and "local_edge_collaboration_subscriptions"."team_id" is null;--> statement-breakpoint
 CREATE UNIQUE INDEX "local_edge_collaboration_subscriptions_team_binding_unique" ON "local_edge_collaboration_subscriptions" USING btree ("upstream_backend_id","credential_binding_hash","team_id","protocol_version") WHERE "local_edge_collaboration_subscriptions"."scope" = 'team' and "local_edge_collaboration_subscriptions"."team_id" is not null;--> statement-breakpoint
+CREATE INDEX "local_edge_collaboration_subscriptions_active_idx" ON "local_edge_collaboration_subscriptions" USING btree ("upstream_backend_id","state","updated_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "managed_conversation_commands_claim_idx" ON "managed_conversation_commands" USING btree ("state","lease_expires_at","created_at");--> statement-breakpoint
 CREATE INDEX "managed_conversation_executions_owner_state_idx" ON "managed_conversation_executions" USING btree ("owner_user_id","state","updated_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "managed_conversation_executions_runner_lease_idx" ON "managed_conversation_executions" USING btree ("state","runner_lease_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "managed_conversation_handoff_active_execution_unique" ON "managed_conversation_handoffs" USING btree ("execution_id") WHERE "managed_conversation_handoffs"."state" not in ('running','failed','quarantined');--> statement-breakpoint
 CREATE INDEX "managed_conversation_handoff_target_idx" ON "managed_conversation_handoffs" USING btree ("owner_user_id","target_device_id","state","updated_at");--> statement-breakpoint
 CREATE INDEX "managed_conversation_runtime_binding_device_idx" ON "managed_conversation_runtime_bindings" USING btree ("owner_user_id","device_id","execution_generation");--> statement-breakpoint
+CREATE INDEX "pds_artifact_inbox_claim_idx" ON "pds_artifact_inbox_entries" USING btree ("state","retry_at");--> statement-breakpoint
+CREATE INDEX "pds_artifact_outbox_claim_idx" ON "pds_artifact_outbox_entries" USING btree ("state","retry_at");--> statement-breakpoint
 CREATE INDEX "pds_conflict_resolution_control_idx" ON "pds_conflict_resolution_records" USING btree ("group_id","statement_sequence");--> statement-breakpoint
+CREATE INDEX "pds_device_capability_ready_idx" ON "pds_device_capabilities" USING btree ("group_id","capability","readiness","expires_at");--> statement-breakpoint
 CREATE INDEX "pds_inbox_claim_idx" ON "pds_inbox_entries" USING btree ("state","retry_at");--> statement-breakpoint
 CREATE INDEX "pds_logical_replica_recall_idx" ON "pds_logical_replicas" USING btree ("owner_user_id","materialization_state");--> statement-breakpoint
 CREATE INDEX "pds_outbox_claim_idx" ON "pds_outbox_entries" USING btree ("state","retry_at");--> statement-breakpoint
+CREATE INDEX "pds_portable_artifact_source_idx" ON "pds_portable_artifacts" USING btree ("group_id","source_fingerprint","source_closure_hash","artifact_class");--> statement-breakpoint
 CREATE INDEX "pds_restore_reconciliation_group_created_idx" ON "pds_restore_reconciliations" USING btree ("group_id","created_at");--> statement-breakpoint
 CREATE INDEX "pds_retained_packages_floor_idx" ON "pds_retained_packages" USING btree ("group_id","deletion_floor_token");--> statement-breakpoint
+CREATE INDEX "pds_semantic_work_claim_expiry_idx" ON "pds_semantic_work_claims" USING btree ("group_id","state","expires_at");--> statement-breakpoint
 CREATE INDEX "pds_tombstone_ledger_retention_idx" ON "pds_tombstone_ledger" USING btree ("retain_until");--> statement-breakpoint
 CREATE INDEX "pds_tombstone_ledger_control_idx" ON "pds_tombstone_ledger" USING btree ("group_id","statement_sequence");--> statement-breakpoint
 CREATE INDEX "personal_device_enrollment_challenge_active_idx" ON "personal_device_enrollment_challenges" USING btree ("user_id","expires_at") WHERE "personal_device_enrollment_challenges"."used_at" is null;--> statement-breakpoint
@@ -3275,19 +3457,6 @@ CREATE INDEX "memory_replicas_owner_status_idx" ON "memory_replicas" USING btree
 CREATE INDEX "team_session_share_grants_owner_idx" ON "team_session_share_grants" USING btree ("owner_principal_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "team_workspaces_team_idx" ON "team_workspaces" USING btree ("team_id","created_at" DESC NULLS LAST) WHERE "team_workspaces"."lifecycle" = 'active';--> statement-breakpoint
 CREATE INDEX "teams_active_idx" ON "teams" USING btree ("created_at" DESC NULLS LAST) WHERE "teams"."lifecycle" = 'active';--> statement-breakpoint
-DELETE FROM "encrypted_field_payloads"
-WHERE (
-  "source_table" IN (
-    'sessions', 'turns', 'messages', 'tool_events',
-    'memory_events', 'memory_nodes'
-  )
-  AND "source_column" = 'codex_transcript_path'
-) OR (
-  "source_table" IN (
-    'conversation_items', 'conversation_item_observations'
-  )
-  AND "source_column" = 'source_path'
-);--> statement-breakpoint
 ALTER TABLE "conversation_item_observations" DROP COLUMN "source_path";--> statement-breakpoint
 ALTER TABLE "conversation_items" DROP COLUMN "source_path";--> statement-breakpoint
 ALTER TABLE "historical_import_sources" DROP COLUMN "source_kind";--> statement-breakpoint
@@ -3537,6 +3706,25 @@ ALTER TABLE "teams" ADD CONSTRAINT "teams_lifecycle_shape_check" CHECK ((
         and "teams"."tombstoned_at" is not null
         and "teams"."purge_completed_at" is not null
       ));
+CREATE OR REPLACE FUNCTION pds_session_recall_ready(candidate_session_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    candidate_session_id IS NULL
+    OR NOT EXISTS (
+      SELECT 1
+      FROM pds_logical_replicas replica
+      WHERE replica.local_session_id = candidate_session_id
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM pds_logical_replicas replica
+      WHERE replica.local_session_id = candidate_session_id
+        AND replica.materialization_state = 'ready'
+    );
+$$;
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION notify_koed_graph_update()
 RETURNS trigger
@@ -3899,7 +4087,7 @@ BEGIN
       preview_uuid, expected_scope_count, actual_migration_count;
   END IF;
   IF preview_state <> 'confirmed' AND actual_migration_count <> 0 THEN
-    RAISE EXCEPTION 'unconfirmed retention policy shortening preview % cannot have migrations', preview_uuid;
+    RAISE EXCEPTION 'unconfirmed retention policy shortening preview cannot have migrations';
   END IF;
   RETURN NULL;
 END;
@@ -3931,16 +4119,6 @@ CREATE CONSTRAINT TRIGGER retention_policy_shortening_migration_aggregate
 AFTER INSERT OR UPDATE OR DELETE ON retention_policy_shortening_migrations
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION validate_retention_policy_shortening_aggregate();
---> statement-breakpoint
-CREATE OR REPLACE FUNCTION pds_session_recall_ready(session_uuid uuid) RETURNS boolean AS $$
-  SELECT session_uuid IS NULL OR NOT EXISTS (
-    SELECT 1 FROM pds_source_item_mappings m
-    JOIN pds_logical_replicas r ON r.id=m.replica_id
-    WHERE m.conversation_item_id IN (
-      SELECT ci.id FROM conversation_items ci WHERE ci.session_id=session_uuid
-    ) AND r.materialization_state <> 'ready'
-  );
-$$ LANGUAGE sql STABLE;
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION pds_set_policy_enabled_at() RETURNS trigger AS $$
 BEGIN
@@ -3999,12 +4177,18 @@ BEGIN
   END IF;
   IF TG_OP = 'INSERT' THEN
     PERFORM pg_advisory_xact_lock(hashtext('pds-session:' || NEW.session_id::text));
-    IF EXISTS (SELECT 1 FROM pds_session_closures c WHERE c.source_session_id = NEW.session_id AND c.state = 'ready') THEN
+    IF EXISTS (
+      SELECT 1 FROM pds_session_closures c
+      WHERE c.source_session_id = NEW.session_id AND c.state = 'ready'
+    ) THEN
       RAISE EXCEPTION 'PDS closed source Session cannot accept later items';
     END IF;
   END IF;
   IF TG_OP IN ('UPDATE', 'DELETE') THEN
-    IF EXISTS (SELECT 1 FROM pds_source_item_mappings m WHERE m.conversation_item_id = OLD.id) THEN
+    IF EXISTS (
+      SELECT 1 FROM pds_source_item_mappings m
+      WHERE m.conversation_item_id = OLD.id
+    ) THEN
       IF TG_OP = 'DELETE' OR (
         to_jsonb(NEW) - ARRAY[
           'projection_status',

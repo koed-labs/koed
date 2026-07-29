@@ -534,9 +534,11 @@ export {
   PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES,
   PDS_SESSION_PACKAGE_MAX_JSON_BYTES,
   PDS_SESSION_PACKAGE_MAX_RECIPIENTS,
+  createPdsEncryptedPayloadPackage,
   createPdsSessionPackageRuntimeContext,
   createPdsSessionManifest,
   createPdsSessionPackage,
+  decryptPdsEncryptedPayloadPackage,
   parsePdsSessionManifestJson,
   parsePdsSessionPackageJson,
   pdsDeletionFloorToken,
@@ -551,7 +553,9 @@ export {
 } from "./personal-device-session-package.js";
 export type {
   CreatePdsSessionManifestInput,
+  CreatePdsEncryptedPayloadPackageInput,
   CreatePdsSessionPackageInput,
+  DecryptPdsEncryptedPayloadPackageResult,
   CreatePdsSessionPackageRuntimeContextInput,
   PdsClosedSessionMetadata,
   PdsConversationSourceItem,
@@ -570,6 +574,41 @@ export type {
   PdsRawSourceRecord,
   VerifyPdsSessionPackageInput
 } from "./personal-device-session-package.js";
+export {
+  PDS_ARTIFACT_MAX_ITEMS,
+  PDS_ARTIFACT_MAX_JSON_BYTES,
+  PDS_ARTIFACT_PROTOCOL,
+  PDS_ARTIFACT_SCHEMA_VERSION,
+  PDS_PERSONAL_REPLICATION_REGISTRY,
+  createPdsArtifactRecord,
+  parsePdsArtifactRecordJson,
+  pdsArtifactClasses,
+  pdsArtifactCompatibilityHash,
+  pdsArtifactPayloadHash,
+  pdsPortableEmbeddingVectorHash,
+  pdsPortableLcmNodeContentHash,
+  pdsPortableLcmNodeId,
+  pdsPortableMemoryEventContentHash,
+  pdsPortableMemoryEmbeddingId,
+  pdsPortableMemoryEmbeddingWorkIdentity,
+  pdsPortableMemoryEventId,
+  validatePdsArtifactRecord,
+  verifyPdsArtifactRecord
+} from "./personal-device-artifact.js";
+export type {
+  PdsArtifactClass,
+  PdsArtifactCompatibilityContract,
+  PdsArtifactManifest,
+  PdsArtifactPayload,
+  PdsArtifactRecord,
+  PdsEmbeddingContractV1,
+  PdsLcmNodeContractV1,
+  PdsMemoryEventContractV1,
+  PdsPortableLcmNodeV1,
+  PdsPortableMemoryEmbeddingV1,
+  PdsPortableMemoryEventV1,
+  PdsReplicationClassification
+} from "./personal-device-artifact.js";
 export {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
@@ -1037,6 +1076,11 @@ export const metadataWithStorageSanitization = (
 export interface SupportedEmbeddingModelConfig {
   key: string;
   dimensions: number;
+  defaultArtifactSha256: string;
+  tokenizer: string;
+  inputTransform: string;
+  pooling: string;
+  normalization: string;
 }
 
 export interface SupportedRerankerModelConfig {
@@ -1053,7 +1097,13 @@ export const SUPPORTED_EMBEDDING_MODELS: Record<
 > = {
   "qwen3-0.6b": {
     key: "qwen3-0.6b",
-    dimensions: 1024
+    dimensions: 1024,
+    defaultArtifactSha256:
+      "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+    tokenizer: "qwen3-embedding-0.6b-gguf",
+    inputTransform: "qwen3-retrieval-document-v1",
+    pooling: "last",
+    normalization: "l2"
   }
 };
 

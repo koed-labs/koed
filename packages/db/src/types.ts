@@ -6,6 +6,7 @@ import type {
 import type { KoedWorkClass } from "@koed/shared";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
 import type { PersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
+import type { PersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
 import type { PersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
 import type { ConversationSourceJournalRepository } from "./conversation-source-journal-repository.js";
@@ -1709,6 +1710,7 @@ export interface MemorySourceRepository
     ManagedConversationRepository,
     ManagedConversationForkRepository,
     ManagedConversationTransferRepository,
+    PersonalDeviceArtifactRepository,
     PersonalDeviceSyncRepository,
     PersonalDeviceSyncLocalRepository,
     PersonalDeviceSyncLifecycleRepository,
@@ -2299,8 +2301,13 @@ export interface MemorySourceRepository
   upsertSourceEmbedding(input: {
     source: EmbeddableSourceRecord;
     model: string;
+    modelArtifactHash: string;
     dimensions: number;
     version: string;
+    tokenizer: string;
+    inputTransform: string;
+    pooling: string;
+    normalization: string;
     vector: number[];
     chunkIndex?: number;
     chunkCount?: number;
@@ -2309,8 +2316,13 @@ export interface MemorySourceRepository
   replaceSourceEmbeddings(input: {
     source: EmbeddableSourceRecord;
     model: string;
+    modelArtifactHash: string;
     dimensions: number;
     version: string;
+    tokenizer: string;
+    inputTransform: string;
+    pooling: string;
+    normalization: string;
     chunks: Array<{
       vector: number[];
       chunkIndex: number;
