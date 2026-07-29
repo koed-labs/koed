@@ -1302,6 +1302,7 @@ export const createCollaborationRendererClient = (
   const selectionViewCache = new Map<string, SelectionViewCacheEntry>();
   let subscriptionGeneration = 0;
   let authorityGeneration = 0;
+  let actionGrantAuthorityGeneration = 0;
   let authorityChangeWasRevocation = false;
   let selectionRequestGeneration = 0;
   let selectionIntentGeneration = 0;
@@ -1597,7 +1598,7 @@ export const createCollaborationRendererClient = (
   const waitForActionGrant = async (
     intent: CollaborationActionGrantIntent
   ): Promise<CollaborationActionGrantReference> => {
-    const grantAuthorityGeneration = authorityGeneration;
+    const grantAuthorityGeneration = actionGrantAuthorityGeneration;
     let result = await command("collaboration.request_action_grant", {
       intent
     });
@@ -1619,7 +1620,7 @@ export const createCollaborationRendererClient = (
             : terminalProjectionState(status.state)
     });
     while (status.state === "pending") {
-      if (grantAuthorityGeneration !== authorityGeneration) {
+      if (grantAuthorityGeneration !== actionGrantAuthorityGeneration) {
         publishActionGrant({
           expiresAt: status.expiresAt,
           id: status.actionGrant.id,
@@ -1646,7 +1647,7 @@ export const createCollaborationRendererClient = (
         });
       }
       if (disposed) throw new CollaborationClientError(offlineError());
-      if (grantAuthorityGeneration !== authorityGeneration) {
+      if (grantAuthorityGeneration !== actionGrantAuthorityGeneration) {
         throw new CollaborationClientError(accessRevokedError());
       }
       try {
@@ -2393,6 +2394,9 @@ export const createCollaborationRendererClient = (
   const advanceAuthority = (event: CollaborationRendererEvent): void => {
     authorityGeneration += 1;
     authorityChangeWasRevocation = eventRevokesAuthority(event);
+    if (authorityChangeWasRevocation) {
+      actionGrantAuthorityGeneration += 1;
+    }
     selectionRequestGeneration += 1;
   };
 
@@ -2536,6 +2540,7 @@ export const createCollaborationRendererClient = (
       previousTeamPrincipalId !== undefined &&
       next.navigation.teamPrincipal?.id !== previousTeamPrincipalId;
     if ((backendChanged || teamPrincipalChanged) && snapshot) {
+      actionGrantAuthorityGeneration += 1;
       pendingSharedSessionRecovery = null;
       dropPendingDeliveries();
       await resetSubscriptions();
@@ -2810,6 +2815,7 @@ export const createCollaborationRendererClient = (
         throw new Error("Unexpected collaboration result.");
       }
       authorityGeneration += 1;
+      actionGrantAuthorityGeneration += 1;
       authorityChangeWasRevocation = true;
       selectionRequestGeneration += 1;
       dropPendingDeliveries();

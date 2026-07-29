@@ -1178,6 +1178,106 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
+  it("continues an Action Grant across a non-revoking realtime resnapshot", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const defaultCommand = mock.command.getMockImplementation();
+    if (!defaultCommand) throw new Error("Expected collaboration mock");
+    let waits = 0;
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.request_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: ids.actionGrant },
+              state: "pending",
+              activationUrl: "https://team.example.test/approve",
+              expiresAt: new Date(Date.now() + 60_000).toISOString()
+            }
+          }
+        });
+      }
+      if (command.command === "collaboration.await_action_grant") {
+        waits += 1;
+        if (waits === 1) {
+          mock.emit({
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            type: "control",
+            subscriptionId: ids.subscription,
+            occurredAt: timestamp,
+            reason: "requires_snapshot"
+          });
+        }
+      }
+      return defaultCommand(command);
+    });
+
+    await client.createTeam({ name: "Product Team" });
+
+    expect(waits).toBe(2);
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.create_team"
+      )
+    ).toBe(true);
+    client.dispose();
+  });
+
+  it("cancels an Action Grant when realtime authority is actually revoked", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const defaultCommand = mock.command.getMockImplementation();
+    if (!defaultCommand) throw new Error("Expected collaboration mock");
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.request_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: ids.actionGrant },
+              state: "pending",
+              activationUrl: "https://team.example.test/approve",
+              expiresAt: new Date(Date.now() + 60_000).toISOString()
+            }
+          }
+        });
+      }
+      if (command.command === "collaboration.await_action_grant") {
+        mock.emit({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "control",
+          subscriptionId: ids.subscription,
+          occurredAt: timestamp,
+          reason: "access_revoked"
+        });
+      }
+      return defaultCommand(command);
+    });
+
+    await expect(
+      client.createTeam({ name: "Product Team" })
+    ).rejects.toMatchObject({
+      code: "access_revoked"
+    });
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.create_team"
+      )
+    ).toBe(false);
+    client.dispose();
+  });
+
   it("uses strict versioned commands for Team and Workspace administration", async () => {
     const mock = createBridge(fixture({ selectedTeam: true }));
     const client = createCollaborationRendererClient(mock.bridge);
