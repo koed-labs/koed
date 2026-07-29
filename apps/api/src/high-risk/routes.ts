@@ -100,10 +100,7 @@ const requireOperationFamily = (
     | "sync"
     | "managed_execution"
 ): void => {
-  if (
-    !auth.credential.operationFamilies.includes(operationFamily) &&
-    !auth.credential.operationFamilies.includes("*")
-  ) {
+  if (!auth.credential.operationFamilies.includes(operationFamily)) {
     throw forbidden(
       "Device credential is not allowed for this high-risk action"
     );

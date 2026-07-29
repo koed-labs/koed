@@ -7678,7 +7678,8 @@ describe("account and access flows", () => {
       payload: {
         challenge_hash: challengeHash,
         upstream_backend_id: "team-vps",
-        protocol_deployment_id: testProtocolDeploymentId
+        protocol_deployment_id: testProtocolDeploymentId,
+        requested_operation_families: ["team_workspace_read"]
       }
     });
     const createdChallenge = await app.inject({
@@ -7885,7 +7886,8 @@ describe("account and access flows", () => {
           challenge_hash: `challenge-${randomUUID()}-${randomUUID()}`,
           upstream_backend_id: "team-vps",
           protocol_deployment_id: testProtocolDeploymentId,
-          device_instance_id: "desktop-rate-limit"
+          device_instance_id: "desktop-rate-limit",
+          requested_operation_families: ["team_workspace_read"]
         }
       });
       expect(response.statusCode).toBe(200);
@@ -7899,7 +7901,8 @@ describe("account and access flows", () => {
         challenge_hash: `challenge-${randomUUID()}-${randomUUID()}`,
         upstream_backend_id: "team-vps",
         protocol_deployment_id: testProtocolDeploymentId,
-        device_instance_id: "desktop-rate-limit"
+        device_instance_id: "desktop-rate-limit",
+        requested_operation_families: ["team_workspace_read"]
       }
     });
     expect(rejected.statusCode).toBe(429);

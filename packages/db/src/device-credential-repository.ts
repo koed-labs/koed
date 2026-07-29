@@ -116,10 +116,11 @@ const resolveCredentialOperationFamilies = (
   challengeFamilies: string[],
   requestedFamilies: string[] | undefined
 ): string[] => {
-  const families = requestedFamilies ?? challengeFamilies;
+  const families = validateOperationFamilies(
+    requestedFamilies ?? challengeFamilies
+  );
   const allowed = new Set(challengeFamilies);
-  const requested = Array.from(new Set(families));
-  if (requested.some((family) => !allowed.has(family))) {
+  if (families.some((family) => !allowed.has(family))) {
     throw Object.assign(
       new Error(
         "Device credential operation families exceed enrollment challenge"
@@ -127,7 +128,24 @@ const resolveCredentialOperationFamilies = (
       { statusCode: 400 }
     );
   }
-  return requested;
+  return families;
+};
+
+const operationFamilyPattern = /^[A-Za-z0-9_.:-]{1,80}$/;
+
+const validateOperationFamilies = (families: string[]): string[] => {
+  const normalized = Array.from(new Set(families));
+  if (
+    normalized.length === 0 ||
+    normalized.length > 32 ||
+    normalized.some((family) => !operationFamilyPattern.test(family))
+  ) {
+    throw Object.assign(
+      new Error("Device credential operation families are invalid"),
+      { statusCode: 400 }
+    );
+  }
+  return normalized;
 };
 
 type DeviceCredentialTransaction = Pick<KoedDb, "execute" | "update">;
@@ -210,7 +228,7 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
     rotationOwnerUserId?: string | null;
     rotationCredentialId?: string | null;
     deviceLabel?: string | null;
-    requestedOperationFamilies?: string[];
+    requestedOperationFamilies: string[];
     metadata?: Record<string, unknown>;
     expiresAt: Date;
   }): Promise<DeviceEnrollmentChallengeRecord> {
@@ -224,7 +242,9 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         rotationOwnerUserId: input.rotationOwnerUserId ?? null,
         rotationCredentialId: input.rotationCredentialId ?? null,
         deviceLabel: input.deviceLabel ?? null,
-        requestedOperationFamilies: input.requestedOperationFamilies ?? [],
+        requestedOperationFamilies: validateOperationFamilies(
+          input.requestedOperationFamilies
+        ),
         metadata: input.metadata ?? {},
         expiresAt: input.expiresAt
       })

@@ -436,10 +436,7 @@ export const registerManagedConversationRoutes = (
       );
     }
     const status = remoteDeviceStatusSchema.parse(payload);
-    if (
-      !status.credential.operationFamilies.includes("managed_execution") &&
-      !status.credential.operationFamilies.includes("*")
-    ) {
+    if (!status.credential.operationFamilies.includes("managed_execution")) {
       throw Object.assign(
         new Error(
           "Enrolled Personal Device cannot authorize managed execution"
@@ -542,10 +539,7 @@ export const registerManagedConversationRoutes = (
     }
     if (/^Koed-Device(?:\s|$)/i.test(authorization)) {
       const auth = await context.auth.authenticateDeviceCredential(request);
-      if (
-        !auth.credential.operationFamilies.includes("managed_execution") &&
-        !auth.credential.operationFamilies.includes("*")
-      ) {
+      if (!auth.credential.operationFamilies.includes("managed_execution")) {
         throw Object.assign(
           new Error(
             "Device credential is not allowed for managed execution transfer"
@@ -662,8 +656,7 @@ export const registerManagedConversationRoutes = (
       if (
         !authenticated.credential.operationFamilies.includes(
           "managed_execution"
-        ) &&
-        !authenticated.credential.operationFamilies.includes("*")
+        )
       ) {
         throw Object.assign(
           new Error("Device credential is not allowed for managed execution"),
@@ -764,9 +757,8 @@ export const registerManagedConversationRoutes = (
       if (
         credential.deviceInstanceId === currentDeviceId ||
         !activeMembers.has(credential.deviceInstanceId) ||
-        ((!credential.operationFamilies.includes("sync") ||
-          !credential.operationFamilies.includes("managed_execution")) &&
-          !credential.operationFamilies.includes("*")) ||
+        !credential.operationFamilies.includes("sync") ||
+        !credential.operationFamilies.includes("managed_execution") ||
         (credential.expiresAt !== null &&
           Date.parse(credential.expiresAt) <= now)
       ) {

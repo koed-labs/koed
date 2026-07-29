@@ -29,10 +29,7 @@ const assertSyncDeviceCredential = async (
   context: ApiRouteContext
 ): Promise<DeviceCredentialAuthContext> => {
   const auth = await context.auth.authenticateDeviceCredential(request);
-  if (
-    !auth.credential.operationFamilies.includes("sync") &&
-    !auth.credential.operationFamilies.includes("*")
-  ) {
+  if (!auth.credential.operationFamilies.includes("sync")) {
     throw Object.assign(
       new Error("Device credential is not allowed for sync"),
       { statusCode: 403 }

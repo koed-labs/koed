@@ -2007,7 +2007,7 @@ export interface MemorySourceRepository
     rotationOwnerUserId?: string | null;
     rotationCredentialId?: string | null;
     deviceLabel?: string | null;
-    requestedOperationFamilies?: string[];
+    requestedOperationFamilies: string[];
     metadata?: Record<string, unknown>;
     expiresAt: Date;
   }): Promise<DeviceEnrollmentChallengeRecord>;

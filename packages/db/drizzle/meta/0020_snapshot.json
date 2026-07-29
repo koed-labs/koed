@@ -7867,8 +7867,7 @@
           "name": "operation_families",
           "type": "text[]",
           "primaryKey": false,
-          "notNull": true,
-          "default": "array[]::text[]"
+          "notNull": true
         },
         "metadata": {
           "name": "metadata",
@@ -8159,8 +8158,7 @@
           "name": "requested_operation_families",
           "type": "text[]",
           "primaryKey": false,
-          "notNull": true,
-          "default": "array[]::text[]"
+          "notNull": true
         },
         "metadata": {
           "name": "metadata",

@@ -2610,8 +2610,7 @@ export const deviceEnrollmentChallenges = pgTable(
     deviceLabel: text("device_label"),
     requestedOperationFamilies: text("requested_operation_families")
       .array()
-      .notNull()
-      .default(sql`array[]::text[]`),
+      .notNull(),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -2662,10 +2661,7 @@ export const deviceCredentials = pgTable(
     verifierKind: deviceCredentialVerifierKind("verifier_kind").notNull(),
     verifierHash: text("verifier_hash"),
     publicKeyJwk: jsonb("public_key_jwk").$type<Record<string, unknown>>(),
-    operationFamilies: text("operation_families")
-      .array()
-      .notNull()
-      .default(sql`array[]::text[]`),
+    operationFamilies: text("operation_families").array().notNull(),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()

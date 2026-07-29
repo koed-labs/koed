@@ -3509,6 +3509,27 @@ ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_s
         or ("cross_identity_sync_relationships"."state" <> 'paused'
           and "cross_identity_sync_relationships"."paused_at" is null
           and "cross_identity_sync_relationships"."state_before_pause" is null));--> statement-breakpoint
+UPDATE "device_credentials"
+SET
+  "operation_families" = ARRAY['revoked']::text[],
+  "revoked_at" = coalesce("revoked_at", now()),
+  "revocation_reason" = coalesce("revocation_reason", 'invalid_operation_families'),
+  "updated_at" = now()
+WHERE cardinality("operation_families") = 0
+   OR array_position("operation_families", null) is not null
+   OR array_to_string("operation_families", ',')
+      !~ '^[A-Za-z0-9_.:-]+(,[A-Za-z0-9_.:-]+)*$';--> statement-breakpoint
+UPDATE "device_enrollment_challenges"
+SET
+  "requested_operation_families" = ARRAY['revoked']::text[],
+  "redeemed_at" = coalesce("redeemed_at", now()),
+  "metadata" = "metadata" || '{"invalidatedReason":"invalid_operation_families"}'::jsonb
+WHERE cardinality("requested_operation_families") = 0
+   OR array_position("requested_operation_families", null) is not null
+   OR array_to_string("requested_operation_families", ',')
+      !~ '^[A-Za-z0-9_.:-]+(,[A-Za-z0-9_.:-]+)*$';--> statement-breakpoint
+ALTER TABLE "device_credentials" ALTER COLUMN "operation_families" DROP DEFAULT;--> statement-breakpoint
+ALTER TABLE "device_enrollment_challenges" ALTER COLUMN "requested_operation_families" DROP DEFAULT;--> statement-breakpoint
 ALTER TABLE "device_credentials" ADD CONSTRAINT "device_credentials_operation_families_check" CHECK (array_position("device_credentials"."operation_families", null) is null
         and cardinality("device_credentials"."operation_families") > 0
         and array_to_string("device_credentials"."operation_families", ',')

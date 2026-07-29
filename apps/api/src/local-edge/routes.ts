@@ -132,9 +132,7 @@ const activeDeviceCredentialForDecision = (
 const credentialAllowsOperation = (
   credential: DeviceCredentialRecord,
   operationFamily: LocalEdgeOperationFamily
-): boolean =>
-  credential.operationFamilies.includes(operationFamily) ||
-  credential.operationFamilies.includes("*");
+): boolean => credential.operationFamilies.includes(operationFamily);
 
 const secretMetadataKeyParts = [
   "token",
@@ -462,7 +460,13 @@ export const registerLocalEdgeRoutes = (
       const requestedOperationFamilies =
         input.requested_operation_families ??
         pendingCredential?.operationFamilies;
-      const requestedFamilySet = new Set(requestedOperationFamilies ?? []);
+      if (!requestedOperationFamilies) {
+        throw Object.assign(
+          new Error("At least one requested operation family is required"),
+          { statusCode: 400 }
+        );
+      }
+      const requestedFamilySet = new Set(requestedOperationFamilies);
       if (
         pendingCredential?.operationFamilies?.some(
           (family) => !requestedFamilySet.has(family)
@@ -488,7 +492,7 @@ export const registerLocalEdgeRoutes = (
         rotationOwnerUserId,
         rotationCredentialId,
         deviceLabel: input.device_label,
-        requestedOperationFamilies: requestedOperationFamilies,
+        requestedOperationFamilies,
         metadata,
         expiresAt: new Date(Date.now() + input.ttl_seconds * 1000)
       });

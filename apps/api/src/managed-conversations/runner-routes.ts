@@ -355,10 +355,7 @@ const authenticateRunner = async (
   context: ApiRouteContext
 ): Promise<RunnerAuth> => {
   const auth = await context.auth.authenticateDeviceCredential(request);
-  if (
-    !auth.credential.operationFamilies.includes("managed_execution") &&
-    !auth.credential.operationFamilies.includes("*")
-  ) {
+  if (!auth.credential.operationFamilies.includes("managed_execution")) {
     throw Object.assign(
       new Error("Device credential is not allowed for managed execution"),
       { statusCode: 403 }
@@ -381,10 +378,7 @@ const authenticateRunner = async (
 };
 
 const requireSyncRunner = (auth: RunnerAuth): void => {
-  if (
-    !auth.operationFamilies.includes("sync") &&
-    !auth.operationFamilies.includes("*")
-  ) {
+  if (!auth.operationFamilies.includes("sync")) {
     throw Object.assign(
       new Error("Device credential is not allowed for source replication"),
       { statusCode: 403 }

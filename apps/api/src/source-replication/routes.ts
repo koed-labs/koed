@@ -92,10 +92,7 @@ const authenticatedSyncDevice = async (
   context: ApiRouteContext
 ) => {
   const auth = await context.auth.authenticateDeviceCredential(request);
-  if (
-    !auth.credential.operationFamilies.includes("sync") &&
-    !auth.credential.operationFamilies.includes("*")
-  ) {
+  if (!auth.credential.operationFamilies.includes("sync")) {
     throw sourceReplicationError(
       "Device credential is not allowed for source replication",
       403

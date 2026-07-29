@@ -77,6 +77,7 @@ export const createDeviceEnrollmentChallengeSchema = z
     device_label: z.string().trim().min(1).max(160).optional(),
     requested_operation_families: z
       .array(operationFamilySchema)
+      .min(1)
       .max(20)
       .optional(),
     pending_credential: z
@@ -84,7 +85,11 @@ export const createDeviceEnrollmentChallengeSchema = z
         credential_key_id: credentialKeyIdSchema,
         verifier_kind: z.literal("secret_hash"),
         verifier_secret: z.string().min(32),
-        operation_families: z.array(operationFamilySchema).max(20).optional(),
+        operation_families: z
+          .array(operationFamilySchema)
+          .min(1)
+          .max(20)
+          .optional(),
         expires_at: z.coerce.date().optional()
       })
       .optional(),
@@ -92,6 +97,16 @@ export const createDeviceEnrollmentChallengeSchema = z
     ttl_seconds: z.number().int().min(60).max(3600).default(600)
   })
   .superRefine((input, context) => {
+    if (
+      input.requested_operation_families === undefined &&
+      input.pending_credential?.operation_families === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["requested_operation_families"],
+        message: "at least one requested operation family is required"
+      });
+    }
     if (input.requested_operation_families?.includes("admin")) {
       context.addIssue({
         code: "custom",
@@ -124,7 +139,11 @@ export const redeemDeviceEnrollmentChallengeSchema = z
     credential_key_id: credentialKeyIdSchema,
     verifier_kind: z.literal("secret_hash"),
     verifier_secret: z.string().min(32).optional(),
-    operation_families: z.array(operationFamilySchema).max(20).optional(),
+    operation_families: z
+      .array(operationFamilySchema)
+      .min(1)
+      .max(20)
+      .optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     expires_at: z.coerce.date().optional()
   })

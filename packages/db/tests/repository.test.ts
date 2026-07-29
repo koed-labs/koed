@@ -4993,6 +4993,25 @@ describeDb("memory repository visibility", () => {
     const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
     const verifierHash = `verifier-${randomUUID()}-${randomUUID()}`;
 
+    await expect(
+      repo.createDeviceEnrollmentChallenge({
+        challengeHash: `challenge-${randomUUID()}-${randomUUID()}`,
+        upstreamBackendId: "team-vps",
+        deviceInstanceId: "desktop-empty-scope",
+        requestedOperationFamilies: [],
+        expiresAt: new Date(Date.now() + 60_000)
+      })
+    ).rejects.toThrow("operation families are invalid");
+    await expect(
+      repo.createDeviceEnrollmentChallenge({
+        challengeHash: `challenge-${randomUUID()}-${randomUUID()}`,
+        upstreamBackendId: "team-vps",
+        deviceInstanceId: "desktop-wildcard-scope",
+        requestedOperationFamilies: ["*"],
+        expiresAt: new Date(Date.now() + 60_000)
+      })
+    ).rejects.toThrow("operation families are invalid");
+
     const challenge = await repo.createDeviceEnrollmentChallenge({
       challengeHash,
       upstreamBackendId: "team-vps",
