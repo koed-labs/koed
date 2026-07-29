@@ -684,6 +684,18 @@ export const createHighRiskActionRepository = (
     return { confirmation: row.confirmation, grant: row.grant };
   };
 
+  const matchesConfirmationBinding = (
+    confirmation: BrowserConfirmationRow,
+    input: CreateHighRiskActionGrantInput
+  ): boolean =>
+    confirmation.teamId === input.teamId &&
+    confirmation.operationFamily === input.operationFamily &&
+    confirmation.action === input.action &&
+    confirmation.targetId === input.targetId &&
+    confirmation.scopeHash === input.scopeHash &&
+    confirmation.requestHash === input.requestHash &&
+    confirmation.secretCommitment === input.grantCommitment;
+
   return {
     async createActionGrant(input) {
       validateUuid("High-risk action grant request ID", input.clientRequestId);
@@ -700,15 +712,7 @@ export const createHighRiskActionRepository = (
           upstreamBackendId: input.upstreamBackendId
         });
         if (existing) {
-          if (
-            existing.confirmation.teamId === input.teamId &&
-            existing.confirmation.operationFamily === input.operationFamily &&
-            existing.confirmation.action === input.action &&
-            existing.confirmation.targetId === input.targetId &&
-            existing.confirmation.scopeHash === input.scopeHash &&
-            existing.confirmation.requestHash === input.requestHash &&
-            existing.confirmation.secretCommitment === input.grantCommitment
-          ) {
+          if (matchesConfirmationBinding(existing.confirmation, input)) {
             return mapBindingRecord(existing.confirmation, existing.grant);
           }
           return null;
@@ -753,7 +757,25 @@ export const createHighRiskActionRepository = (
             createdAt,
             expiresAt: new Date(createdAt.getTime() + confirmationTtlMs)
           })
+          .onConflictDoNothing({
+            target: [
+              highRiskBrowserConfirmations.deviceCredentialId,
+              highRiskBrowserConfirmations.clientRequestId
+            ]
+          })
           .returning();
+        if (!confirmation) {
+          const concurrent = await selectConfirmationWithGrant(tx, {
+            clientRequestId: input.clientRequestId,
+            ownerUserId: input.ownerUserId,
+            deviceCredentialId: input.deviceCredentialId,
+            upstreamBackendId: input.upstreamBackendId
+          });
+          return concurrent &&
+            matchesConfirmationBinding(concurrent.confirmation, input)
+            ? mapBindingRecord(concurrent.confirmation, concurrent.grant)
+            : null;
+        }
 
         await insertAudit(tx, {
           actorUserId: input.ownerUserId,
@@ -1023,19 +1045,30 @@ export const createHighRiskActionRepository = (
               decidedAt: sql`now()`,
               state: "denied"
             })
-            .where(eq(highRiskBrowserConfirmations.selector, input.selector))
+            .where(
+              and(
+                eq(highRiskBrowserConfirmations.selector, input.selector),
+                eq(highRiskBrowserConfirmations.ownerUserId, input.ownerUserId),
+                eq(highRiskBrowserConfirmations.state, "pending"),
+                isNull(highRiskBrowserConfirmations.decidedAt),
+                gt(highRiskBrowserConfirmations.expiresAt, sql`now()`)
+              )
+            )
             .returning();
+          if (!confirmation) {
+            return null;
+          }
           await insertAudit(tx, {
             actorUserId: input.ownerUserId,
-            ownerUserId: confirmation!.ownerUserId,
-            teamId: confirmation!.teamId,
+            ownerUserId: confirmation.ownerUserId,
+            teamId: confirmation.teamId,
             action: "high_risk.browser_confirmation.denied",
             targetTable: "high_risk_browser_confirmations",
-            targetId: confirmation!.id,
-            metadata: confirmationAuditMetadata(confirmation!)
+            targetId: confirmation.id,
+            metadata: confirmationAuditMetadata(confirmation)
           });
-          await notifyActionGrantWithDb(tx, confirmation!.clientRequestId);
-          return mapBindingRecord(confirmation!, null);
+          await notifyActionGrantWithDb(tx, confirmation.clientRequestId);
+          return mapBindingRecord(confirmation, null);
         }
 
         const [confirmation] = await tx
@@ -1049,7 +1082,9 @@ export const createHighRiskActionRepository = (
           .where(
             and(
               eq(highRiskBrowserConfirmations.selector, input.selector),
+              eq(highRiskBrowserConfirmations.ownerUserId, input.ownerUserId),
               eq(highRiskBrowserConfirmations.state, "pending"),
+              isNull(highRiskBrowserConfirmations.decidedAt),
               gt(highRiskBrowserConfirmations.expiresAt, sql`now()`)
             )
           )

@@ -4,6 +4,7 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   highRiskActionGrantCommitment
 } from "@koed/shared";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import {
@@ -12,7 +13,13 @@ import {
   createHighRiskActionRepository,
   runDbMigrations
 } from "../src/index.js";
-import { deviceCredentials, userSessions, users } from "../src/schema.js";
+import {
+  deviceCredentials,
+  highRiskBrowserConfirmations,
+  highRiskDeviceActionGrants,
+  userSessions,
+  users
+} from "../src/schema.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDb = databaseUrl ? describe : describe.skip;
@@ -186,6 +193,77 @@ describeDb("high-risk action grants", () => {
     });
 
     await expect(waiting).resolves.toMatchObject({ state: "approved" });
+  });
+
+  it("returns one canonical confirmation for concurrent idempotent creation", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const operation = binding(fixture);
+    const clientRequestId = randomUUID();
+    const grantCommitment = highRiskActionGrantCommitment(createGrantSecret());
+    const input = {
+      ...operation,
+      clientRequestId,
+      credentialOperationFamily: "action_grant" as const,
+      grantCommitment
+    };
+
+    const [first, second] = await Promise.all([
+      repository.createActionGrant(input),
+      repository.createActionGrant(input)
+    ]);
+
+    expect(first).not.toBeNull();
+    expect(second).toEqual(first);
+    const count = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from high_risk_browser_confirmations
+        where device_credential_id = $1
+          and client_request_id = $2`,
+      [fixture.deviceCredentialId, clientRequestId]
+    );
+    expect(count.rows[0]?.count).toBe("1");
+  });
+
+  it("allows only one concurrent browser decision to win", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const { selector } = await createGrant(repository, fixture);
+    const decisionInput = {
+      selector: selector!,
+      ownerUserId: fixture.userId,
+      userSessionId: fixture.userSessionId,
+      freshlyAuthenticatedAt: new Date()
+    };
+
+    const [approved, denied] = await Promise.all([
+      repository.decideBrowserActivation({
+        ...decisionInput,
+        decision: "approve"
+      }),
+      repository.decideBrowserActivation({
+        ...decisionInput,
+        decision: "deny"
+      })
+    ]);
+
+    expect([approved, denied].filter(Boolean)).toHaveLength(1);
+    const db = createDb(pool);
+    const confirmations = await db
+      .select({
+        id: highRiskBrowserConfirmations.id,
+        state: highRiskBrowserConfirmations.state
+      })
+      .from(highRiskBrowserConfirmations)
+      .where(eq(highRiskBrowserConfirmations.selector, decisionInput.selector));
+    expect(confirmations).toHaveLength(1);
+    const grants = await db
+      .select({ id: highRiskDeviceActionGrants.id })
+      .from(highRiskDeviceActionGrants)
+      .where(
+        eq(highRiskDeviceActionGrants.confirmationId, confirmations[0]!.id)
+      );
+    expect(grants).toHaveLength(confirmations[0]!.state === "approved" ? 1 : 0);
   });
 
   it("binds a one-use grant to the exact request, device, session, and backend", async () => {
