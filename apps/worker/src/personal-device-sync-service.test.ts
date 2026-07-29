@@ -12,6 +12,35 @@ describe("Personal Device Sync service", () => {
   };
   const logger = { warn: vi.fn() } as unknown as Logger;
 
+  it("stays idle before a device has joined a Personal Device Group", async () => {
+    const repository = {
+      heartbeatPdsWorker: vi.fn(),
+      claimPdsOutbox: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue([]),
+      pollLifecycle: vi.fn().mockRejectedValue(new Error("must not run")),
+      poll: vi.fn().mockRejectedValue(new Error("must not run")),
+      publish: vi.fn(),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+
+    expect(secureRuntime.heartbeatGroups).toHaveBeenCalledOnce();
+    expect(secureRuntime.pollLifecycle).not.toHaveBeenCalled();
+    expect(secureRuntime.poll).not.toHaveBeenCalled();
+    expect(repository.heartbeatPdsWorker).not.toHaveBeenCalled();
+    expect(repository.claimPdsOutbox).not.toHaveBeenCalled();
+  });
+
   it("uses durable local and relay wakeups without periodic polling", async () => {
     const listeners = new Map<string, (value: never) => void>();
     const wakeClient = {

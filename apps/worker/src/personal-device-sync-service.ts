@@ -155,6 +155,7 @@ export const createPdsLocalSyncService = (input: {
       if (!runtimeAvailable) {
         remoteWakeAbort?.abort();
         remoteWakeAbort = null;
+        return { failed: false, needsDrain: false };
       }
       for (const groupId of groups) {
         await Promise.all([
