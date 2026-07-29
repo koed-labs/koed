@@ -3001,6 +3001,8 @@ ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "state_before_pause" 
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "source_summary_revision_hash" text;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "target_summary_revision_hash" text;--> statement-breakpoint
 ALTER TABLE "encrypted_field_payloads" ADD COLUMN "owner_principal_id" uuid;--> statement-breakpoint
+TRUNCATE TABLE "historical_import_sources", "historical_import_runs" CASCADE;--> statement-breakpoint
+TRUNCATE TABLE "memory_replicas", "logical_memories" CASCADE;--> statement-breakpoint
 ALTER TABLE "historical_import_sources" ADD COLUMN "artifact_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "protocol_logical_id" uuid DEFAULT gen_random_uuid() NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "owner_principal_id" uuid;--> statement-breakpoint
@@ -3457,6 +3459,19 @@ CREATE INDEX "memory_replicas_owner_status_idx" ON "memory_replicas" USING btree
 CREATE INDEX "team_session_share_grants_owner_idx" ON "team_session_share_grants" USING btree ("owner_principal_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "team_workspaces_team_idx" ON "team_workspaces" USING btree ("team_id","created_at" DESC NULLS LAST) WHERE "team_workspaces"."lifecycle" = 'active';--> statement-breakpoint
 CREATE INDEX "teams_active_idx" ON "teams" USING btree ("created_at" DESC NULLS LAST) WHERE "teams"."lifecycle" = 'active';--> statement-breakpoint
+DELETE FROM "encrypted_field_payloads"
+WHERE (
+  "source_table" IN (
+    'sessions', 'turns', 'messages', 'tool_events',
+    'memory_events', 'memory_nodes'
+  )
+  AND "source_column" = 'codex_transcript_path'
+) OR (
+  "source_table" IN (
+    'conversation_items', 'conversation_item_observations'
+  )
+  AND "source_column" = 'source_path'
+);--> statement-breakpoint
 ALTER TABLE "conversation_item_observations" DROP COLUMN "source_path";--> statement-breakpoint
 ALTER TABLE "conversation_items" DROP COLUMN "source_path";--> statement-breakpoint
 ALTER TABLE "historical_import_sources" DROP COLUMN "source_kind";--> statement-breakpoint
