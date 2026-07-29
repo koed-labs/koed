@@ -100,6 +100,8 @@ const grantResponse = (
     grantVersion?: number;
     representation?: "memory_events" | "lcm_leaves";
     consentId?: string;
+    sourceRevision?: number;
+    updatedAt?: string;
   } = {}
 ) => ({
   id: ids.grant,
@@ -112,11 +114,11 @@ const grantResponse = (
   ownerAllowedRepresentations: [input.representation ?? "memory_events"],
   activeRepresentation: input.representation ?? "memory_events",
   representationPolicyRevision: 3,
-  sourceRevision: 4,
+  sourceRevision: input.sourceRevision ?? 4,
   grantVersion: input.grantVersion ?? 1,
   lifecycle: input.lifecycle ?? "active",
   createdAt: iso,
-  updatedAt: iso,
+  updatedAt: input.updatedAt ?? iso,
   revokedAt: input.lifecycle === "revoked" ? iso : null,
   companionScope: {
     scope: "team" as const,
@@ -159,6 +161,8 @@ const collaborationGrant = (
     grantVersion?: number;
     representation?: "memory_events" | "lcm_leaves";
     consentId?: string;
+    sourceRevision?: number;
+    updatedAt?: string;
   } = {}
 ): CollaborationPersistedSharedMemoryGrant => ({
   backendId: "team-backend",
@@ -175,11 +179,11 @@ const collaborationGrant = (
     ownerAllowedRepresentations: [input.representation ?? "memory_events"],
     activeRepresentation: input.representation ?? "memory_events",
     representationPolicyRevision: 3,
-    sourceRevision: 4,
+    sourceRevision: input.sourceRevision ?? 4,
     grantVersion: input.grantVersion ?? 1,
     lifecycle: input.lifecycle ?? "active",
     createdAt: iso,
-    updatedAt: iso,
+    updatedAt: input.updatedAt ?? iso,
     revokedAt: input.lifecycle === "revoked" ? iso : null,
     companionThreadId: ids.companion
   }
@@ -369,7 +373,9 @@ const createFixture = (
           remote.activeRepresentation === "lcm_leaves"
             ? "lcm_leaves"
             : "memory_events",
-        consentId: remote.consentId
+        consentId: remote.consentId,
+        sourceRevision: remote.sourceRevision,
+        updatedAt: remote.updatedAt
       });
       persisted.grant.companionThreadId = input.companion.companionThreadId;
       grants.set(remote.id, persisted);
@@ -654,6 +660,39 @@ describe("collaboration Shared Memory control", () => {
     expect(fixture.grants.get(ids.grant)).toMatchObject({
       grant: { grantVersion: 2, lifecycle: "unavailable" }
     });
+  });
+
+  it("reconciles monotonic source freshness within the same grant version", async () => {
+    const fixture = createFixture({
+      remoteOwnerGrants: [
+        grantResponse({
+          sourceRevision: 11,
+          updatedAt: "2026-07-17T12:11:00.000Z"
+        })
+      ]
+    });
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shared_memory_grants"),
+        input: { logicalMemoryId: ids.logicalMemory }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        grants: [
+          {
+            id: ids.grant,
+            grantVersion: 1,
+            sourceRevision: 11,
+            lifecycle: "active"
+          }
+        ]
+      }
+    });
+    expect(fixture.grantPersistenceModes).toEqual(["authoritative_snapshot"]);
   });
 
   it("creates an authoritative preview without accepting renderer content or secrets", async () => {

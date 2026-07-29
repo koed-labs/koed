@@ -352,6 +352,34 @@ const sameDto = (left: unknown, right: unknown): boolean =>
   hashDto(left) === hashDto(right) &&
   canonicalJson(left) === canonicalJson(right);
 
+const canRefreshAuthoritativeGrant = (
+  current: CollaborationPersistedSharedMemoryGrant,
+  next: CollaborationPersistedSharedMemoryGrant
+): boolean => {
+  if (
+    !sameIdentity(current, next) ||
+    current.grant.lifecycle !== "active" ||
+    next.grant.lifecycle !== "active" ||
+    current.grant.revokedAt !== null ||
+    next.grant.revokedAt !== null ||
+    next.grant.sourceRevision <= current.grant.sourceRevision ||
+    Date.parse(next.grant.updatedAt) <= Date.parse(current.grant.updatedAt)
+  ) {
+    return false;
+  }
+  const {
+    sourceRevision: _currentSourceRevision,
+    updatedAt: _currentUpdatedAt,
+    ...currentAuthority
+  } = current.grant;
+  const {
+    sourceRevision: _nextSourceRevision,
+    updatedAt: _nextUpdatedAt,
+    ...nextAuthority
+  } = next.grant;
+  return sameDto(currentAuthority, nextAuthority);
+};
+
 const validIdentity = (
   identity: CollaborationSharedMemoryAuthorityIdentity
 ): boolean =>
@@ -1378,7 +1406,40 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         const existing = existingResult.rows[0];
         if (existing) {
           const decoded = await decodeGrant(existing, identity);
-          return decoded && sameDto(decoded, persisted) ? decoded : null;
+          if (!decoded) return null;
+          if (sameDto(decoded, persisted)) return decoded;
+          if (
+            mode !== "authoritative_snapshot" ||
+            prior === null ||
+            !sameDto(decoded, prior) ||
+            !canRefreshAuthoritativeGrant(decoded, persisted)
+          ) {
+            return null;
+          }
+          const protectedValue = await encryptedDto(provider, {
+            table: "collaboration_shared_memory_grants",
+            sourceId: grant.id,
+            identity,
+            dto: persisted
+          });
+          const refreshed = await client.query(
+            `update collaboration_shared_memory_grants
+                set source_revision = $1,
+                    protected_dto_hash = $2,
+                    protected_dto = $3
+              where enrollment_id = $4 and share_grant_id = $5
+                and grant_version = $6 and source_revision = $7`,
+            [
+              grant.sourceRevision,
+              protectedValue.hash,
+              protectedValue.envelope,
+              active.id,
+              grant.id,
+              grant.grantVersion,
+              decoded.grant.sourceRevision
+            ]
+          );
+          return refreshed.rowCount === 1 ? persisted : null;
         }
         const latestResult = await client.query<GrantRow>(
           `${selectGrantSql}

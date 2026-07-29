@@ -1187,6 +1187,43 @@ const remoteGrantMatchesPersisted = (
   );
 };
 
+const remoteGrantCanRefreshPersisted = (
+  remote: z.infer<typeof remoteGrantSchema>,
+  persisted: CollaborationPersistedSharedMemoryGrant,
+  identity: AuthorityIdentity
+): boolean => {
+  const grant = persisted.grant;
+  return (
+    sameIdentity(persisted, identity) &&
+    grant.lifecycle === "active" &&
+    remote.lifecycle === "active" &&
+    grant.revokedAt === null &&
+    remote.revokedAt === null &&
+    grant.id === remote.id &&
+    grant.logicalGrantId === remote.logicalGrantId &&
+    grant.logicalMemoryId === remote.logicalMemoryId &&
+    grant.ownerUserId === remote.ownerUserId &&
+    grant.teamId === remote.teamId &&
+    grant.workspaceId === remote.teamWorkspaceId &&
+    grant.consentId === remote.consentId &&
+    sameRepresentations(
+      grant.ownerAllowedRepresentations,
+      remote.ownerAllowedRepresentations
+    ) &&
+    grant.activeRepresentation === remote.activeRepresentation &&
+    grant.representationPolicyRevision ===
+      remote.representationPolicyRevision &&
+    grant.grantVersion === remote.grantVersion &&
+    grant.createdAt === remote.createdAt &&
+    remote.sourceRevision > grant.sourceRevision &&
+    Date.parse(remote.updatedAt) > Date.parse(grant.updatedAt) &&
+    remote.companionScope.teamId === grant.teamId &&
+    remote.companionScope.teamWorkspaceId === grant.workspaceId &&
+    remote.companionScope.logicalMemoryId === grant.logicalMemoryId &&
+    remote.companionScope.shareGrantId === grant.id
+  );
+};
+
 const requirePersistedGrant = async (
   store: CollaborationSharedMemoryAuthorityStore,
   identity: AuthorityIdentity,
@@ -2012,10 +2049,26 @@ const dispatchListOwnedGrants = async (
         throw new ControlFailure("permission_denied");
       }
       if (prior && remote.grantVersion === prior.grant.grantVersion) {
-        if (!remoteGrantMatchesPersisted(remote, prior, identity)) {
+        if (remoteGrantMatchesPersisted(remote, prior, identity)) {
+          reconciled.push(prior);
+          continue;
+        }
+        if (!remoteGrantCanRefreshPersisted(remote, prior, identity)) {
           throw new ControlFailure("permission_denied");
         }
-        reconciled.push(prior);
+        const persisted = await persistGrant(
+          options.authorityStore,
+          identity,
+          remote,
+          prior,
+          {
+            companionThreadId: prior.grant.companionThreadId,
+            sharedSessionId: remote.id
+          },
+          "authoritative_snapshot"
+        );
+        localById.set(remote.id, persisted);
+        reconciled.push(persisted);
         continue;
       }
       const companion = prior

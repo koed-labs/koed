@@ -955,6 +955,97 @@ describeDb("Collaboration Shared Memory authority store", () => {
     ).resolves.toBeNull();
   });
 
+  it("refreshes only monotonic source freshness within an active grant version", async () => {
+    const fixture = await createFixture();
+    await bindFixture(fixture);
+    const initial = grantFor(fixture, randomUUID(), {
+      grantVersion: 4,
+      sourceRevision: 4,
+      updatedAt: "2026-07-17T09:04:00.000Z"
+    });
+    const first = await store.persistAuthoritativeGrant({
+      identity: fixture.identity,
+      grant: initial,
+      prior: null,
+      mode: "authoritative_snapshot",
+      companion: companionFor(fixture)
+    });
+    expect(first).toMatchObject({
+      grant: { grantVersion: 4, sourceRevision: 4 }
+    });
+
+    const refreshed = grantFor(fixture, initial.consentId, {
+      ...initial,
+      sourceRevision: 11,
+      updatedAt: "2026-07-17T09:11:00.000Z"
+    });
+    const second = await store.persistAuthoritativeGrant({
+      identity: fixture.identity,
+      grant: refreshed,
+      prior: first,
+      mode: "authoritative_snapshot",
+      companion: companionFor(fixture)
+    });
+    expect(second).toMatchObject({
+      grant: { grantVersion: 4, sourceRevision: 11 }
+    });
+    await expect(
+      store.readAuthoritativeGrant({
+        ...fixture.identity,
+        shareGrantId: initial.id
+      })
+    ).resolves.toEqual(second);
+    expect(
+      await pool.query(
+        `select 1
+           from collaboration_shared_memory_grants
+          where share_grant_id = $1`,
+        [initial.id]
+      )
+    ).toHaveProperty("rowCount", 1);
+
+    await expect(
+      store.persistAuthoritativeGrant({
+        identity: fixture.identity,
+        grant: {
+          ...refreshed,
+          sourceRevision: 12,
+          representationPolicyRevision:
+            refreshed.representationPolicyRevision + 1,
+          updatedAt: "2026-07-17T09:12:00.000Z"
+        },
+        prior: second,
+        mode: "authoritative_snapshot",
+        companion: companionFor(fixture)
+      })
+    ).resolves.toBeNull();
+    await expect(
+      store.persistAuthoritativeGrant({
+        identity: fixture.identity,
+        grant: {
+          ...refreshed,
+          sourceRevision: 10,
+          updatedAt: "2026-07-17T09:13:00.000Z"
+        },
+        prior: second,
+        mode: "authoritative_snapshot",
+        companion: companionFor(fixture)
+      })
+    ).resolves.toBeNull();
+    await expect(
+      store.persistAuthoritativeGrant({
+        identity: fixture.identity,
+        grant: {
+          ...refreshed,
+          sourceRevision: 12,
+          updatedAt: "2026-07-17T09:12:00.000Z"
+        },
+        prior: second,
+        companion: companionFor(fixture)
+      })
+    ).resolves.toBeNull();
+  });
+
   it("persists a strict revocation after snapshot reconciliation without local consent history", async () => {
     const fixture = await createFixture();
     await bindFixture(fixture);
