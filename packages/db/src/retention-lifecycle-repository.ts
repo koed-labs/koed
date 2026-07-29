@@ -1,6 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 
+import {
+  cleanupPurgeTargetArtifact,
+  lockPurgeTarget,
+  preparePurgeTargetForClaim,
+  preparePurgeTargetCompletion,
+  recordPurgeTargetCompletion,
+  requiredArtifactsForPurgeTarget,
+  validatePurgeTargetAttempt,
+  validatePurgeTargetEvidenceArtifacts,
+  type ExecutablePurgeTarget
+} from "./retention/purge-target-registry.js";
+import { createPurgeTargetStrategies } from "./retention/purge-target-strategies.js";
+
 export type RetentionPolicyScope =
   | "team"
   | "workspace"
@@ -1609,14 +1622,20 @@ const assertSameRequiredArtifacts = (
   expected: RequiredPurgeArtifact[],
   actual: EvidenceRow[]
 ): void => {
-  const actualKeys = actual
-    .map((row) =>
-      requiredArtifactKey({
-        artifactKind: row.artifact_kind,
-        artifactLocatorHash: row.artifact_locator_hash
-      })
-    )
-    .sort();
+  assertSameArtifactSet(
+    expected,
+    actual.map((row) => ({
+      artifactKind: row.artifact_kind,
+      artifactLocatorHash: row.artifact_locator_hash
+    }))
+  );
+};
+
+const assertSameArtifactSet = (
+  expected: RequiredPurgeArtifact[],
+  actual: RequiredPurgeArtifact[]
+): void => {
+  const actualKeys = actual.map(requiredArtifactKey).sort();
   const expectedKeys = expected.map(requiredArtifactKey).sort();
   if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
     throw new Error(
@@ -1968,7 +1987,14 @@ export const scheduleShareGrantRevocationRetentionWithClient = async (
       [existingJob.rows[0].id]
     );
     assertSameRequiredArtifacts(
-      shareGrantArtifacts(input.shareGrantId),
+      requiredArtifactsForPurgeTarget(purgeTargetStrategies, {
+        kind: "share_grant",
+        targetId: input.shareGrantId,
+        teamId: grant.team_id,
+        teamWorkspaceId: grant.team_workspace_id,
+        shareGrantId: input.shareGrantId,
+        logicalMemoryId: grant.logical_memory_id
+      }),
       evidence.rows
     );
     return;
@@ -2124,7 +2150,10 @@ export const scheduleShareGrantRevocationRetentionWithClient = async (
     ]
   );
   const job = jobResult.rows[0]!;
-  for (const artifact of shareGrantArtifacts(input.shareGrantId)) {
+  for (const artifact of requiredArtifactsForPurgeTarget(
+    purgeTargetStrategies,
+    target
+  )) {
     await client.query(
       `insert into purge_job_evidence (
          purge_job_id, artifact_kind, artifact_locator_hash,
@@ -3497,6 +3526,52 @@ const cleanupShareGrantArtifact = async (
   }
 };
 
+const purgeTargetStrategies = createPurgeTargetStrategies({
+  teamArtifacts: teamDeletionArtifacts,
+  shareGrantArtifacts,
+  ownerPrivateReplicaArtifacts,
+  prepareShareGrantForClaim: markShareGrantPurgePending,
+  cleanupTeamArtifact: (client, input) =>
+    cleanupTeamArtifact(client, {
+      teamId: input.target.teamId,
+      artifactKind: input.artifactKind,
+      observedAt: input.observedAt,
+      backupExpiresAt: input.backupExpiresAt
+    }),
+  cleanupShareGrantArtifact,
+  cleanupOwnerPrivateArtifact: async (client, input) => {
+    const cleanupTarget = await loadOwnerPrivateCleanupTarget(
+      client,
+      input.target.ownerPrivateReplicaId,
+      input.target.logicalMemoryId
+    );
+    return cleanupOwnerPrivateArtifact(client, {
+      target: cleanupTarget,
+      artifactKind: input.artifactKind,
+      observedAt: input.observedAt,
+      backupExpiresAt: input.backupExpiresAt
+    });
+  }
+});
+
+const isExecutablePurgeTarget = (
+  target: RetentionDecisionTarget
+): target is ExecutablePurgeTarget =>
+  target.kind === "team" ||
+  target.kind === "share_grant" ||
+  target.kind === "owner_private_replica";
+
+const executablePurgeTarget = (
+  target: RetentionDecisionTarget
+): ExecutablePurgeTarget => {
+  if (!isExecutablePurgeTarget(target)) {
+    throw new Error(
+      "Only root Team, Share Grant, and owner-private replica purge jobs can be processed here"
+    );
+  }
+  return target;
+};
+
 export const createRetentionLifecycleRepository = (
   pool: Pool,
   options: RetentionLifecycleRepositoryOptions
@@ -4712,7 +4787,10 @@ export const createRetentionLifecycleRepository = (
           [decision.id, input.teamId, idempotencyKey]
         );
         const job = jobResult.rows[0]!;
-        for (const artifact of teamDeletionArtifacts(input.teamId)) {
+        for (const artifact of requiredArtifactsForPurgeTarget(
+          purgeTargetStrategies,
+          executablePurgeTarget(target)
+        )) {
           await client.query(
             `insert into purge_job_evidence (
                purge_job_id, artifact_kind, artifact_locator_hash,
@@ -4940,8 +5018,14 @@ export const createRetentionLifecycleRepository = (
         const existingReplica = replicaResult.rows[0];
         if (!existingReplica) return null;
 
-        const requiredArtifacts = ownerPrivateReplicaArtifacts(
-          input.ownerPrivateReplicaId
+        const requiredArtifacts = requiredArtifactsForPurgeTarget(
+          purgeTargetStrategies,
+          {
+            kind: "owner_private_replica",
+            targetId: input.ownerPrivateReplicaId,
+            ownerPrivateReplicaId: input.ownerPrivateReplicaId,
+            logicalMemoryId: existingReplica.logical_memory_id
+          }
         );
         const existingJob = await client.query<JobRow>(
           "select * from purge_jobs where idempotency_key = $1 for update",
@@ -5209,18 +5293,15 @@ export const createRetentionLifecycleRepository = (
         if (!decision) throw new Error("Retention decision not found");
         const target = targetFromDecisionForJob(decision);
         const requiredArtifacts =
+          target.kind === "team" ||
+          target.kind === "share_grant" ||
           target.kind === "owner_private_replica"
-            ? ownerPrivateReplicaArtifacts(target.ownerPrivateReplicaId)
+            ? requiredArtifactsForPurgeTarget(
+                purgeTargetStrategies,
+                target,
+                suppliedArtifacts
+              )
             : suppliedArtifacts;
-        if (
-          target.kind === "owner_private_replica" &&
-          JSON.stringify(suppliedArtifacts.map(requiredArtifactKey).sort()) !==
-            JSON.stringify(requiredArtifacts.map(requiredArtifactKey).sort())
-        ) {
-          throw new Error(
-            "Owner-private purge artifacts must use server discovery"
-          );
-        }
         const existing = await client.query<JobRow>(
           "select * from purge_jobs where idempotency_key = $1 for update",
           [input.idempotencyKey]
@@ -5323,13 +5404,23 @@ export const createRetentionLifecycleRepository = (
             client,
             scopeKeysForDecisionTarget(unlockedTarget)
           );
-          if (unlockedTarget.kind === "share_grant") {
-            const targetLock = await client.query(
-              `select id from team_session_share_grants
-                where id = $1 for update`,
-              [unlockedTarget.shareGrantId]
-            );
-            if (!targetLock.rowCount) return null;
+          if (isExecutablePurgeTarget(unlockedTarget)) {
+            try {
+              await lockPurgeTarget(
+                purgeTargetStrategies,
+                client,
+                unlockedTarget
+              );
+            } catch (error) {
+              if (
+                unlockedTarget.kind === "share_grant" &&
+                error instanceof Error &&
+                error.message === "Share Grant purge target is unavailable"
+              ) {
+                return null;
+              }
+              throw error;
+            }
           }
           const lockedCandidates = await client.query<JobRow & DecisionRow>(
             `select j.*, d.decision_version, d.policy_id, d.policy_version,
@@ -5353,8 +5444,13 @@ export const createRetentionLifecycleRepository = (
           const candidate = lockedCandidates.rows[0];
           if (!candidate) return null;
           const target = targetFromDecisionRow(candidate);
-          if (target.kind === "share_grant") {
-            await markShareGrantPurgePending(client, target, now);
+          if (isExecutablePurgeTarget(target)) {
+            await preparePurgeTargetForClaim(
+              purgeTargetStrategies,
+              client,
+              target,
+              now
+            );
           }
           const holds = await activeHoldsForPurgeTarget(client, target);
           if (holds.length > 0) {
@@ -5451,15 +5547,8 @@ export const createRetentionLifecycleRepository = (
             scopeKeysForDecisionTarget(targetFromDecisionRow(scopeDecision))
           );
           const scopeTarget = targetFromDecisionRow(scopeDecision);
-          if (scopeTarget.kind === "share_grant") {
-            const targetLock = await client.query(
-              `select id from team_session_share_grants
-                where id = $1 for update`,
-              [scopeTarget.shareGrantId]
-            );
-            if (!targetLock.rowCount) {
-              throw new Error("Share Grant purge target is unavailable");
-            }
+          if (isExecutablePurgeTarget(scopeTarget)) {
+            await lockPurgeTarget(purgeTargetStrategies, client, scopeTarget);
           }
           const active = await client.query<
             QueryResultRow & {
@@ -5490,18 +5579,10 @@ export const createRetentionLifecycleRepository = (
             input.purgeJobId
           );
           const target = targetFromDecisionForJob(decision);
-          if (
-            target.kind !== "team" &&
-            target.kind !== "share_grant" &&
-            target.kind !== "owner_private_replica"
-          ) {
-            throw new Error(
-              "Only root Team, Share Grant, and owner-private replica purge jobs can be processed here"
-            );
-          }
-          if (target.kind === "team" && !attempt.team_id) {
-            throw new Error("Root Team purge job is missing its Team scope");
-          }
+          const executableTarget = executablePurgeTarget(target);
+          validatePurgeTargetAttempt(purgeTargetStrategies, executableTarget, {
+            teamId: attempt.team_id
+          });
           const policy = await client.query<
             QueryResultRow & { backup_retention_seconds: string | number }
           >(
@@ -5530,18 +5611,14 @@ export const createRetentionLifecycleRepository = (
             for update`,
             [input.purgeJobId]
           );
-          if (target.kind === "owner_private_replica") {
-            assertSameRequiredArtifacts(
-              ownerPrivateReplicaArtifacts(target.ownerPrivateReplicaId),
-              evidence.rows
-            );
-          }
-          if (target.kind === "share_grant") {
-            assertSameRequiredArtifacts(
-              shareGrantArtifacts(target.shareGrantId),
-              evidence.rows
-            );
-          }
+          validatePurgeTargetEvidenceArtifacts(
+            purgeTargetStrategies,
+            executableTarget,
+            evidence.rows.map((row) => ({
+              artifactKind: row.artifact_kind,
+              artifactLocatorHash: row.artifact_locator_hash
+            }))
+          );
           const artifact = evidence.rows.find((candidate) => {
             const terminal =
               candidate.state === "verified" ||
@@ -5581,40 +5658,21 @@ export const createRetentionLifecycleRepository = (
               now.getTime() + backupRetentionSeconds * 1_000
             );
             requireValidDate("Backup expiry timestamp", backupExpiresAt);
-            const ownerPrivateCleanupTarget =
-              target.kind === "owner_private_replica"
-                ? await loadOwnerPrivateCleanupTarget(
-                    client,
-                    target.ownerPrivateReplicaId,
-                    target.logicalMemoryId
-                  )
-                : null;
             let cleanup: CleanupResult & {
               state: Exclude<PurgeEvidenceState, "pending" | "failed">;
               backupExpiresAt?: Date | null;
             };
             try {
-              cleanup =
-                target.kind === "team"
-                  ? await cleanupTeamArtifact(client, {
-                      teamId: target.teamId,
-                      artifactKind: artifact.artifact_kind,
-                      observedAt: now,
-                      backupExpiresAt
-                    })
-                  : target.kind === "share_grant"
-                    ? await cleanupShareGrantArtifact(client, {
-                        target,
-                        artifactKind: artifact.artifact_kind,
-                        observedAt: now,
-                        backupExpiresAt
-                      })
-                    : await cleanupOwnerPrivateArtifact(client, {
-                        target: ownerPrivateCleanupTarget!,
-                        artifactKind: artifact.artifact_kind,
-                        observedAt: now,
-                        backupExpiresAt
-                      });
+              cleanup = await cleanupPurgeTargetArtifact(
+                purgeTargetStrategies,
+                client,
+                {
+                  target: executableTarget,
+                  artifactKind: artifact.artifact_kind,
+                  observedAt: now,
+                  backupExpiresAt
+                }
+              );
             } catch (error) {
               throw new PurgeArtifactProcessingError(
                 {
@@ -5956,15 +6014,8 @@ export const createRetentionLifecycleRepository = (
           scopeKeysForDecisionTarget(targetFromDecisionRow(scope.rows[0]))
         );
         const scopeTarget = targetFromDecisionRow(scope.rows[0]);
-        if (scopeTarget.kind === "share_grant") {
-          const targetLock = await client.query(
-            `select id from team_session_share_grants
-              where id = $1 for update`,
-            [scopeTarget.shareGrantId]
-          );
-          if (!targetLock.rowCount) {
-            throw new Error("Share Grant purge target is unavailable");
-          }
+        if (isExecutablePurgeTarget(scopeTarget)) {
+          await lockPurgeTarget(purgeTargetStrategies, client, scopeTarget);
         }
         const { job, decision } = await loadJobAndDecision(client, purgeJobId);
         if (job.state === "verified") {
@@ -6022,15 +6073,18 @@ export const createRetentionLifecycleRepository = (
           };
         }
         const now = clock();
-        if (target.kind === "team") {
-          await client.query(
-            `update teams
-                set lifecycle = 'purged',
-                    purge_completed_at = $2,
-                    updated_at = $2
-              where id = $1
-                and lifecycle in ('deletion_requested', 'purge_pending')`,
-            [target.teamId, now]
+        const completionContext = {
+          retentionDecisionId: job.retention_decision_id,
+          purgeJobId,
+          completedAt: now,
+          verifiedArtifactCount: evidence.rows.length
+        };
+        if (isExecutablePurgeTarget(target)) {
+          await preparePurgeTargetCompletion(
+            purgeTargetStrategies,
+            client,
+            target,
+            completionContext
           );
         }
         const completed = await client.query<JobRow>(
@@ -6042,82 +6096,12 @@ export const createRetentionLifecycleRepository = (
             returning *`,
           [purgeJobId, now]
         );
-        if (target.kind === "team") {
-          await client.query(
-            `insert into audit_events (
-               actor_user_id, action, target_table, target_id, metadata
-             ) values (
-               null, 'team.purge_completed', 'teams', $1, $2::jsonb
-             )`,
-            [
-              target.teamId,
-              JSON.stringify({
-                teamId: target.teamId,
-                retentionDecisionId: job.retention_decision_id,
-                purgeJobId,
-                completedAt: now.toISOString(),
-                verifiedArtifactCount: evidence.rows.length
-              })
-            ]
-          );
-        }
-        if (target.kind === "owner_private_replica") {
-          await client.query(
-            `insert into audit_events (
-               actor_user_id, owner_user_id, visibility, action,
-               target_table, target_id, metadata
-             )
-             select null, replica.owner_user_id, 'personal',
-                    'owner_private_replica.purge_completed',
-                    'memory_replicas', replica.id, $3::jsonb
-               from memory_replicas replica
-              where replica.id = $1
-                and not exists (
-                  select 1 from audit_events audit
-                   where audit.action = 'owner_private_replica.purge_completed'
-                     and audit.target_id = replica.id
-                     and audit.metadata ->> 'purgeJobId' = $2::text
-                )`,
-            [
-              target.ownerPrivateReplicaId,
-              purgeJobId,
-              JSON.stringify({
-                ownerPrivateReplicaId: target.ownerPrivateReplicaId,
-                logicalMemoryId: target.logicalMemoryId,
-                retentionDecisionId: job.retention_decision_id,
-                purgeJobId,
-                completedAt: now.toISOString(),
-                verifiedArtifactCount: evidence.rows.length
-              })
-            ]
-          );
-        }
-        if (target.kind === "share_grant") {
-          await client.query(
-            `insert into audit_events (
-               actor_user_id, action, target_table, target_id, metadata
-             )
-             select null, 'share_grant.purge_completed',
-                    'team_session_share_grants', $1, $3::jsonb
-              where not exists (
-                select 1 from audit_events audit
-                 where audit.action = 'share_grant.purge_completed'
-                   and audit.target_id = $1
-                   and audit.metadata ->> 'purgeJobId' = $2::text
-              )`,
-            [
-              target.shareGrantId,
-              purgeJobId,
-              JSON.stringify({
-                teamId: target.teamId,
-                teamWorkspaceId: target.teamWorkspaceId,
-                shareGrantId: target.shareGrantId,
-                retentionDecisionId: job.retention_decision_id,
-                purgeJobId,
-                completedAt: now.toISOString(),
-                verifiedArtifactCount: evidence.rows.length
-              })
-            ]
+        if (isExecutablePurgeTarget(target)) {
+          await recordPurgeTargetCompletion(
+            purgeTargetStrategies,
+            client,
+            target,
+            completionContext
           );
         }
         return { completed: true, job: mapJob(completed.rows[0]!) };
