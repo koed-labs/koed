@@ -25214,6 +25214,7 @@ describeDb("memory repository visibility", () => {
     await repo.createMemoryEvent(
       { userId: alice.id },
       {
+        projectId: "replicated-title-project",
         sessionId: session.id,
         actor: "user",
         eventType: "captured",
