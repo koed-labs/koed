@@ -69,6 +69,7 @@ export const llamaServerEnvironment = (
   const existing = environment.LD_LIBRARY_PATH?.trim();
   return {
     ...environment,
+    LLAMA_ARG_UI: "false",
     LD_LIBRARY_PATH: existing ? `${llamaDir}:${existing}` : llamaDir
   };
 };
@@ -197,7 +198,6 @@ export class LlamaServerClient {
       String(this.options.port),
       "--pooling",
       this.options.pooling,
-      "--no-ui",
       "--log-disable"
     ];
     if (!this.options.promptCacheEnabled) {

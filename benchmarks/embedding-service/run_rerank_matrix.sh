@@ -113,6 +113,7 @@ run_raw_llama() {
   docker run -d --name koed-embedding-benchmark-rerank-llama \
     -p 18180:8080 \
     -v "$MODEL_VOLUME":/root/.cache/huggingface:ro \
+    -e LLAMA_ARG_UI=false \
     "$LLAMA_IMAGE" \
     --model "$RERANKER_MODEL_PATH" \
     --embedding \
@@ -127,7 +128,6 @@ run_raw_llama() {
     --n-gpu-layers 0 \
     --host 0.0.0.0 \
     --port 8080 \
-    --no-ui \
     "${cache_args[@]}" \
     --log-disable >/dev/null
   wait_http http://127.0.0.1:18180/health llama

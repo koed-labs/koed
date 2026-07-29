@@ -20,13 +20,23 @@ describe("llama-server adapter helpers", () => {
   it("derives llama-server library path from configured binary", () => {
     expect(
       llamaServerEnvironment("/runtime/llama.cpp/llama-server", {})
-        .LD_LIBRARY_PATH
-    ).toBe("/runtime/llama.cpp");
+    ).toEqual(
+      expect.objectContaining({
+        LD_LIBRARY_PATH: "/runtime/llama.cpp",
+        LLAMA_ARG_UI: "false"
+      })
+    );
     expect(
       llamaServerEnvironment("/runtime/llama.cpp/llama-server", {
-        LD_LIBRARY_PATH: "/existing"
-      }).LD_LIBRARY_PATH
-    ).toBe("/runtime/llama.cpp:/existing");
+        LD_LIBRARY_PATH: "/existing",
+        LLAMA_ARG_UI: "true"
+      })
+    ).toEqual(
+      expect.objectContaining({
+        LD_LIBRARY_PATH: "/runtime/llama.cpp:/existing",
+        LLAMA_ARG_UI: "false"
+      })
+    );
   });
 
   it("extracts rerank scores in original document order", () => {
