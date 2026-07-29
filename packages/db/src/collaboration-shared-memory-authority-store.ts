@@ -352,6 +352,15 @@ const sameDto = (left: unknown, right: unknown): boolean =>
   hashDto(left) === hashDto(right) &&
   canonicalJson(left) === canonicalJson(right);
 
+const grantAuthoritySnapshot = (
+  grant: SharedMemoryGrant
+): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(grant).filter(
+      ([key]) => key !== "sourceRevision" && key !== "updatedAt"
+    )
+  );
+
 const canRefreshAuthoritativeGrant = (
   current: CollaborationPersistedSharedMemoryGrant,
   next: CollaborationPersistedSharedMemoryGrant
@@ -367,17 +376,10 @@ const canRefreshAuthoritativeGrant = (
   ) {
     return false;
   }
-  const {
-    sourceRevision: _currentSourceRevision,
-    updatedAt: _currentUpdatedAt,
-    ...currentAuthority
-  } = current.grant;
-  const {
-    sourceRevision: _nextSourceRevision,
-    updatedAt: _nextUpdatedAt,
-    ...nextAuthority
-  } = next.grant;
-  return sameDto(currentAuthority, nextAuthority);
+  return sameDto(
+    grantAuthoritySnapshot(current.grant),
+    grantAuthoritySnapshot(next.grant)
+  );
 };
 
 const validIdentity = (
