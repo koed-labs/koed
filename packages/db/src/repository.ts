@@ -2745,6 +2745,7 @@ const applyProvisionalCapturedSessionTitle = async (
         and owner_user_id = $1
         and visibility = 'personal'
         and invalidated_at is null
+        and coalesce(metadata ->> 'sourceTransport', '') <> 'replicated_transcript'
         and coalesce(metadata ->> 'threadNameSource', '') <> 'manual'
         and (
           metadata ->> 'threadName' is null

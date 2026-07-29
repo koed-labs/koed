@@ -30,7 +30,12 @@ describe("conversation source replication materialization", () => {
       {
         timestamp,
         type: "session_meta",
-        payload: { id: "replicated-thread", cwd: "/workspace/project" }
+        payload: {
+          id: "replicated-thread",
+          cwd: "/workspace/project",
+          originator: "sensitive-source-originator",
+          agent_nickname: "sensitive-agent-name"
+        }
       },
       {
         timestamp,
@@ -215,6 +220,15 @@ describe("conversation source replication materialization", () => {
     expect(
       createCapturedSession.mock.calls[0]?.[1]?.metadata
     ).not.toHaveProperty("cwd");
+    expect(
+      createCapturedSession.mock.calls[0]?.[1]?.metadata
+    ).not.toHaveProperty("id");
+    expect(
+      createCapturedSession.mock.calls[0]?.[1]?.metadata
+    ).not.toHaveProperty("originator");
+    expect(
+      createCapturedSession.mock.calls[0]?.[1]?.metadata
+    ).not.toHaveProperty("agent_nickname");
     expect(advanceConversationSourceConsumerCursor).toHaveBeenCalledWith(
       { userId: ownerUserId },
       expect.objectContaining({

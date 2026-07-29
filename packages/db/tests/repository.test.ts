@@ -25191,6 +25191,50 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("does not persist prompt-derived titles for replicated transcript sessions", async () => {
+    const alice = await repo.createUser({
+      email: `alice-replicated-title-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: randomUUID(),
+        sourceRuntime: "codex-cli",
+        idempotencyKey: `replicated-title-session-${randomUUID()}`,
+        metadata: {
+          sourceTransport: "replicated_transcript",
+          sourceReplication: {
+            logicalSourceId: randomUUID(),
+            sourceGenerationId: randomUUID()
+          }
+        }
+      }
+    );
+
+    await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        sessionId: session.id,
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "message",
+        visibility: "personal",
+        content: "Sensitive prompt must stay out of session metadata.",
+        idempotencyKey: `replicated-title-event-${randomUUID()}`,
+        sourceHash: `replicated-title-event-${randomUUID()}`
+      }
+    );
+
+    const stored = await pool.query<{ metadata: Record<string, unknown> }>(
+      "select metadata from sessions where id=$1",
+      [session.id]
+    );
+    expect(stored.rows[0]?.metadata).not.toHaveProperty("threadName");
+    expect(JSON.stringify(stored.rows[0]?.metadata)).not.toContain(
+      "Sensitive prompt"
+    );
+  });
+
   it("excludes personally deleted rows and uses user id to break actor ties", async () => {
     const users = await Promise.all([
       repo.createUser({ email: `actor-a-${randomUUID()}@example.com` }),

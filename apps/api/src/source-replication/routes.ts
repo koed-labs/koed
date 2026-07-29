@@ -637,13 +637,12 @@ export const registerConversationSourceReplicationRoutes = (
         );
       }
       const repository = context.requireRepository();
+      const targetExternalSessionId = registration.logicalSourceId;
       const session = await repository.createCapturedSession(
         { userId: auth.user.id },
         {
           logicalSessionId: source.logicalSessionId,
-          externalSessionId: source.externalSessionId,
-          forkedFromExternalThreadId:
-            source.forkedFromExternalThreadId ?? undefined,
+          externalSessionId: targetExternalSessionId,
           sourceRuntime: source.sourceRuntime,
           captureMethod: "transcript",
           sourceKind: source.sourceKind,
@@ -658,18 +657,7 @@ export const registerConversationSourceReplicationRoutes = (
               logicalSourceId: registration.logicalSourceId,
               sourceGenerationId: registration.sourceGenerationId
             }
-          },
-          ...(source.project
-            ? {
-                detectedProjects: [
-                  {
-                    id: source.project.id,
-                    name: source.project.name,
-                    path: null
-                  }
-                ]
-              }
-            : {})
+          }
         }
       );
       const artifact =
@@ -684,7 +672,7 @@ export const registerConversationSourceReplicationRoutes = (
               : "hosted_personal",
             sourceKind: source.sourceKind,
             sourceRuntime: source.sourceRuntime,
-            externalSessionId: source.externalSessionId,
+            externalSessionId: targetExternalSessionId,
             sourceFingerprint: source.sourceFingerprint,
             artifactFormat: source.artifactFormat,
             artifactFormatVersion: source.artifactFormatVersion,

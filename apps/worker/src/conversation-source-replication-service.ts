@@ -936,9 +936,6 @@ export const createConversationSourceReplicationService = (options: {
       typeof transcriptContext.transcriptMetadata.model === "string"
         ? transcriptContext.transcriptMetadata.model
         : undefined;
-    const { cwd: _sourceDeviceCwd, ...replicatedTranscriptMetadata } =
-      transcriptContext.transcriptMetadata;
-    void _sourceDeviceCwd;
     await options.repository.createCapturedSession(actor, {
       logicalSessionId: sourceSession.logicalSessionId,
       externalSessionId: artifact.externalSessionId,
@@ -949,7 +946,6 @@ export const createConversationSourceReplicationService = (options: {
       sourceAdapterVersion: artifact.sourceAdapterVersion,
       sourceFingerprint: artifact.sourceFingerprint,
       metadata: {
-        ...replicatedTranscriptMetadata,
         sourceTransport: "replicated_transcript",
         sourceReplication: {
           logicalSourceId: artifact.logicalSourceId,
