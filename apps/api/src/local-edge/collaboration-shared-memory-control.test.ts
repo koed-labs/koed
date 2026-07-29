@@ -406,6 +406,7 @@ const createFixture = (
       state: "available"
     },
     items: [sourceItem(0), sourceItem(1), sourceItem(2)],
+    sourcePage: { itemOffset: 0, itemCount: 3 },
     freshness: "fresh",
     companionScope: grantResponse().companionScope
   };
@@ -507,7 +508,31 @@ const createFixture = (
           })
         };
       } else if (recorded.method === "GET") {
-        response = { sharedMemory: overrides.remoteRead ?? defaultRead };
+        const remote = overrides.remoteRead ?? defaultRead;
+        const direction = url.searchParams.get("direction");
+        const limit = Number(
+          url.searchParams.get("limit") ?? remote.items.length
+        );
+        const requestedBoundary = url.searchParams.get("boundary");
+        const boundary =
+          requestedBoundary === null
+            ? direction === "older"
+              ? remote.items.length
+              : 0
+            : Number(requestedBoundary);
+        const itemOffset =
+          direction === "older" ? Math.max(0, boundary - limit) : boundary;
+        const end =
+          direction === "older"
+            ? boundary
+            : Math.min(remote.items.length, boundary + limit);
+        response = {
+          sharedMemory: {
+            ...remote,
+            items: remote.items.slice(itemOffset, end),
+            sourcePage: { itemOffset, itemCount: remote.items.length }
+          }
+        };
       } else {
         return json({ error: "not found" }, 404);
       }
@@ -993,6 +1018,9 @@ describe("collaboration Shared Memory control", () => {
     expect(fixture.requests.at(-1)?.pathname).toContain(
       `/teams/${ids.team}/workspaces/${ids.workspace}/share-grants/${ids.grant}`
     );
+    expect(fixture.requests.at(-1)?.pathname.endsWith("/page")).toBe(true);
+    expect(fixture.requests.at(-1)?.search).toContain("direction=older");
+    expect(fixture.requests.at(-1)?.search).toContain("limit=2");
 
     const older = await fixture.control.dispatch(
       {
@@ -1250,6 +1278,7 @@ describe("collaboration Shared Memory control", () => {
           state: "available"
         },
         items: [sourceItem()],
+        sourcePage: { itemOffset: 0, itemCount: 1 },
         freshness: "fresh",
         companionScope: grantResponse().companionScope
       }

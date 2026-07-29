@@ -2483,6 +2483,7 @@ describeDb("Shared Memory repository", () => {
       new Set(index.entries.map((entry) => entry.activeRepresentation))
     ).toEqual(new Set(allRepresentations));
 
+    const ownerDecryptsBeforeReads = ownerDecryptSpy.mock.calls.length;
     for (const grant of grants) {
       const read = await repository.readGrantRepresentation(
         actor(fixture.readerUserId),
@@ -2512,7 +2513,27 @@ describeDb("Shared Memory repository", () => {
       expect(read?.items.map((item) => item.occurredAt)).toEqual(
         grant.preview.items.map((item) => item.occurredAt)
       );
+      expect(read?.sourcePage).toEqual({
+        itemOffset: 0,
+        itemCount: grant.preview.items.length
+      });
+      const newest = await repository.readGrantRepresentation(
+        actor(fixture.readerUserId),
+        {
+          shareGrantId: grant.shareGrantId,
+          representation: grant.representation,
+          page: { direction: "older", limit: 1 }
+        }
+      );
+      expect(newest?.sourcePage).toEqual({
+        itemOffset: grant.preview.items.length - 1,
+        itemCount: grant.preview.items.length
+      });
+      expect(newest?.items.map((item) => item.itemType)).toEqual([
+        grant.preview.items.at(-1)!.itemType
+      ]);
     }
+    expect(ownerDecryptSpy).toHaveBeenCalledTimes(ownerDecryptsBeforeReads);
     const stored = await pool.query<{
       stored: string;
       ciphertext: string;

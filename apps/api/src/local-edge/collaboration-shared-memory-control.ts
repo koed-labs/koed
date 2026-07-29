@@ -659,7 +659,15 @@ const remoteReadSchema = z
         state: z.enum(["available", "stale"])
       })
       .passthrough(),
-    items: z.array(redactedSourceItemSchema).max(2_048),
+    items: z
+      .array(redactedSourceItemSchema)
+      .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
+    sourcePage: z
+      .object({
+        itemOffset: z.number().int().safe().min(0),
+        itemCount: z.number().int().safe().min(0)
+      })
+      .strict(),
     freshness: z.enum(["fresh", "stale"]),
     companionScope: companionScopeSchema
   })
@@ -1378,15 +1386,20 @@ const dispatchLoadSource = async (
     (await remoteRequest(options, authority, {
       method: "GET",
       path: queryPath(
-        scopedGrantPath({
+        `${scopedGrantPath({
           teamId: ref.teamId,
           workspaceId: ref.workspaceId,
           shareGrantId: ref.sharedSessionId
-        }),
+        })}/page`,
         {
           representation: preliminaryCursor?.success
             ? preliminaryCursor.data.representation
-            : null
+            : null,
+          direction: command.input.direction,
+          boundary: preliminaryCursor?.success
+            ? preliminaryCursor.data.boundary
+            : null,
+          limit: command.input.limit
         }
       )
     }));
@@ -1416,7 +1429,9 @@ const dispatchLoadSource = async (
       (item) =>
         item.sourceLogicalMemoryId !== binding.logicalMemoryId ||
         item.sourceRevision !== remote.representation.sourceRevision
-    )
+    ) ||
+    remote.sourcePage.itemOffset + remote.items.length >
+      remote.sourcePage.itemCount
   ) {
     throw new ControlFailure("permission_denied");
   }
@@ -1436,7 +1451,7 @@ const dispatchLoadSource = async (
     sourceRevision: remote.representation.sourceRevision,
     sourceRevisionHash: remote.representation.sourceRevisionHash,
     recordVersion: remote.representation.recordVersion,
-    itemIds: remote.items.map((item) => item.sourceId)
+    itemCount: remote.sourcePage.itemCount
   });
   const cursor = preliminaryCursor;
   if (
@@ -1452,26 +1467,34 @@ const dispatchLoadSource = async (
       cursor.data.representation !== binding.representation ||
       cursor.data.direction !== command.input.direction ||
       cursor.data.snapshotKey !== snapshotKey ||
-      cursor.data.boundary > remote.items.length)
+      cursor.data.boundary > remote.sourcePage.itemCount)
   ) {
     throw new ControlFailure("history_expired");
   }
-  const boundary = cursor?.success
+  const requestedBoundary = cursor?.success
     ? cursor.data.boundary
     : command.input.direction === "older"
-      ? remote.items.length
+      ? remote.sourcePage.itemCount
       : 0;
-  const start =
+  const expectedStart =
     command.input.direction === "older"
-      ? Math.max(0, boundary - command.input.limit)
-      : boundary;
-  const end =
+      ? Math.max(0, requestedBoundary - command.input.limit)
+      : requestedBoundary;
+  const expectedEnd =
     command.input.direction === "older"
-      ? boundary
-      : Math.min(remote.items.length, boundary + command.input.limit);
+      ? requestedBoundary
+      : Math.min(
+          remote.sourcePage.itemCount,
+          requestedBoundary + command.input.limit
+        );
+  const start = remote.sourcePage.itemOffset;
+  const end = start + remote.items.length;
+  if (start !== expectedStart || end !== expectedEnd) {
+    throw new ControlFailure("history_expired");
+  }
   const items = mapSourceItems(
     binding.representation,
-    remote.items.slice(start, end),
+    remote.items,
     start,
     remote.representation.sourceRevisionHash
   );
@@ -1500,7 +1523,7 @@ const dispatchLoadSource = async (
             })
           : null,
       newerCursor:
-        end < remote.items.length
+        end < remote.sourcePage.itemCount
           ? signCursor(authority.desktopCredential, SOURCE_CURSOR_PREFIX, {
               ...cursorBase,
               direction: "newer",
@@ -1508,7 +1531,7 @@ const dispatchLoadSource = async (
             })
           : null,
       hasOlder: start > 0,
-      hasNewer: end < remote.items.length,
+      hasNewer: end < remote.sourcePage.itemCount,
       sharedSessionId: ref.sharedSessionId,
       representation: binding.representation,
       items
@@ -2449,7 +2472,12 @@ export const createCollaborationSharedMemoryControl = (
             workspaceId: parsedInput.data.workspaceId,
             shareGrantId: parsedInput.data.sharedSessionId
           })}/initial-view`,
-          { representation: parsedInput.data.representation }
+          {
+            representation: parsedInput.data.representation,
+            direction: "older",
+            boundary: null,
+            limit: parsedInput.data.limit
+          }
         )
       });
       const companion =

@@ -1,3 +1,4 @@
+import { COLLABORATION_SOURCE_PAGE_MAX_ITEMS } from "@koed/shared";
 import { z } from "zod";
 import { SHARED_MEMORY_AUTHORITY } from "@koed/db";
 
@@ -177,6 +178,21 @@ export const materializeGrantRepresentationSchema = z
 export const readGrantRepresentationQuerySchema = z
   .object({ representation: sharedMemoryRepresentationSchema.optional() })
   .strict();
+
+export const readGrantRepresentationPageQuerySchema =
+  readGrantRepresentationQuerySchema
+    .extend({
+      direction: z.enum(["older", "newer"]).default("older"),
+      boundary: z.coerce.number().int().safe().min(0).optional(),
+      limit: z.coerce
+        .number()
+        .int()
+        .safe()
+        .min(1)
+        .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS)
+        .default(COLLABORATION_SOURCE_PAGE_MAX_ITEMS)
+    })
+    .strict();
 
 export const revokeShareGrantSchema = z
   .object({

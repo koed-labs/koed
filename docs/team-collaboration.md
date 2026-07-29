@@ -240,10 +240,11 @@ The endpoint- and channel-level rules are defined in the
 ### Read Composition And Prewarming
 
 - The Team backend exposes bounded aggregate read contracts for initial Team
-  navigation and for the first authorized Shared Memory source page with its
-  companion discussion. Aggregation reduces network round trips without
-  weakening the underlying Team, Workspace, Share Grant, representation, or
-  thread predicates.
+  navigation and for the newest authorized Shared Memory source page with its
+  companion discussion. The backend returns only that bounded page rather than
+  transferring the complete representation. Aggregation reduces network round
+  trips without weakening the underlying Team, Workspace, Share Grant,
+  representation, or thread predicates.
 - The local edge validates every aggregate relationship before projecting it
   into the Desktop contract. It may deduplicate concurrent reads and reuse a
   bounded navigation result, but validated upstream realtime events invalidate
@@ -252,6 +253,10 @@ The endpoint- and channel-level rules are defined in the
   Memory sessions with bounded concurrency. Selecting a warm session renders
   the memory-only view immediately, then revalidates it through the normal
   command path.
+- A cold Shared Memory selection renders its newest bounded page first, then
+  follows authorized older-page cursors asynchronously until the renderer's
+  row budget is full or the beginning is reached. This applies equally to
+  Memory Events, LCM leaves, and LCM rollups and does not use polling.
 - Realtime remains the freshness mechanism. This flow does not poll, persist
   decrypted Team content, or treat cached data as current authorization.
 

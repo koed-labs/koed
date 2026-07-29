@@ -36,6 +36,7 @@ import {
   listWorkspaceSharedMemoryQuerySchema,
   materializeGrantRepresentationSchema,
   putSharedMemoryPolicySchema,
+  readGrantRepresentationPageQuerySchema,
   readGrantRepresentationQuerySchema,
   representationParamsSchema,
   revokeShareGrantSchema,
@@ -501,6 +502,7 @@ const readDto = (
   grant: grantDto(result.grant),
   representation: representationDto(result.representation),
   items,
+  sourcePage: result.sourcePage,
   freshness: result.freshness,
   companionScope: result.companionScope
 });
@@ -509,14 +511,19 @@ const readScopedGrant = async (
   context: SharedMemoryRouteContext,
   actor: { id: string },
   scope: { teamId: string; teamWorkspaceId: string; shareGrantId: string },
-  representation?: "memory_events" | "lcm_leaves" | "lcm_rollups"
+  representation?: "memory_events" | "lcm_leaves" | "lcm_rollups",
+  page?: {
+    direction: "older" | "newer";
+    boundary?: number;
+    limit: number;
+  }
 ) => {
   const result = await executeRepositoryOperation(() =>
     context
       .requireSharedMemoryRepository()
       .readGrantRepresentation(
         { userId: actor.id },
-        { shareGrantId: scope.shareGrantId, representation }
+        { shareGrantId: scope.shareGrantId, representation, page }
       )
   );
   if (
@@ -1038,12 +1045,13 @@ export const registerSharedMemoryRoutes = (
       );
       if (workspaceActor.id !== chatActor.id) throw forbidden();
       const params = scopedShareGrantParamsSchema.parse(request.params);
-      const query = readGrantRepresentationQuerySchema.parse(request.query);
+      const query = readGrantRepresentationPageQuerySchema.parse(request.query);
       const { result, items } = await readScopedGrant(
         context,
         workspaceActor,
         params,
-        query.representation
+        query.representation,
+        query
       );
       const repository = context.requireCollaborationRepository();
       const snapshot = await repository.getAuthorizedSnapshot(
@@ -1095,6 +1103,26 @@ export const registerSharedMemoryRoutes = (
           thread: resolvedThread,
           messages
         }
+      };
+    }
+  );
+
+  app.get(
+    `${scopedGrantPath}/page`,
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const actor = await authenticateReader(request, context);
+      const params = scopedShareGrantParamsSchema.parse(request.params);
+      const query = readGrantRepresentationPageQuerySchema.parse(request.query);
+      const { result, items } = await readScopedGrant(
+        context,
+        actor,
+        params,
+        query.representation,
+        query
+      );
+      return {
+        sharedMemory: readDto(result, items)
       };
     }
   );

@@ -518,6 +518,7 @@ describe("route identity contract", () => {
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/initial-view",
+        "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/page",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items",
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items/{sourceId}"
       ],

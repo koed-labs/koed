@@ -330,6 +330,10 @@ export interface SharedMemoryReadResult {
   grant: SharedMemoryGrantRecord;
   representation: SharedMemoryRepresentationRecord;
   items: SharedMemoryRedactedSourceItemDto[];
+  sourcePage: {
+    itemOffset: number;
+    itemCount: number;
+  };
   freshness: "fresh" | "stale";
   companionScope: SharedMemoryCompanionScopeDto;
 }
@@ -500,7 +504,15 @@ export interface SharedMemoryRepository {
   ): Promise<SharedMemoryOwnerGrantPage>;
   readGrantRepresentation(
     actor: ActorContext,
-    input: { shareGrantId: string; representation?: SharedMemoryRepresentation }
+    input: {
+      shareGrantId: string;
+      representation?: SharedMemoryRepresentation;
+      page?: {
+        direction: "older" | "newer";
+        boundary?: number;
+        limit: number;
+      };
+    }
   ): Promise<SharedMemoryReadResult | null>;
 }
 
@@ -1735,6 +1747,9 @@ const envelopeAad = (input: {
   representation: SharedMemoryRepresentation;
   chunkIndex: number;
   chunkCount: number;
+  itemOffset: number;
+  itemCount: number;
+  totalItemCount: number;
   binding: SharedMemorySourceBindingDto;
   redactedContentHash: string;
   provenanceHash: string;
@@ -1748,6 +1763,9 @@ const envelopeAad = (input: {
   representation: input.representation,
   chunkIndex: input.chunkIndex,
   chunkCount: input.chunkCount,
+  itemOffset: input.itemOffset,
+  itemCount: input.itemCount,
+  totalItemCount: input.totalItemCount,
   sourceRevision: input.binding.sourceRevision,
   sourceHash: input.binding.sourceHash,
   representationPolicyRevision: input.binding.representationPolicyRevision,
@@ -5698,9 +5716,11 @@ export const createSharedMemoryRepository = (
           );
         }
         const chunks = chunkItems(previewBody.items);
+        let itemOffset = 0;
         for (let index = 0; index < chunks.length; index += 1) {
+          const chunk = chunks[index]!;
           const envelope = await teamProvider.encrypt({
-            plaintext: Buffer.from(JSON.stringify(chunks[index]!), "utf8"),
+            plaintext: Buffer.from(JSON.stringify(chunk), "utf8"),
             scope: envelopeScope({
               teamId: grant.teamId,
               teamWorkspaceId: grant.teamWorkspaceId
@@ -5717,6 +5737,9 @@ export const createSharedMemoryRepository = (
               representation: preview.representation,
               chunkIndex: index,
               chunkCount: chunks.length,
+              itemOffset,
+              itemCount: chunk.length,
+              totalItemCount: previewBody.items.length,
               binding: preview.binding,
               redactedContentHash: preview.redactedContentHash,
               provenanceHash
@@ -5775,6 +5798,7 @@ export const createSharedMemoryRepository = (
               envelope.reencryptedAt
             ]
           );
+          itemOffset += chunk.length;
         }
         await client.query(
           `delete from team_memory_representation_chunks
@@ -6208,6 +6232,9 @@ export const createSharedMemoryRepository = (
                 c.classifier_hash as consent_classifier_hash,
                 c.redacted_content_hash as consent_redacted_content_hash,
                 sp.preview_hash as representation_preview_hash,
+                sp.source_artifact_id as preview_source_artifact_id,
+                sp.source_hash as preview_source_hash,
+                sp.representation as preview_representation,
                 sa.artifact_hash as representation_artifact_hash,
                 mr.freshness_status as replica_freshness_status,
                 sr.state as sync_relationship_state,
@@ -6303,27 +6330,22 @@ export const createSharedMemoryRepository = (
           invalidation_reason_code: row.invalidation_reason_code
         };
         const representation = mapRepresentation(representationRow);
-        const loaded = await loadPersistedPreviewByReference(client, {
-          preview: {
-            previewId: representation.sourcePreviewId,
-            previewHash: stringValue(row.representation_preview_hash)
-          },
-          requiredMessage: "Team representation source preview is unavailable"
-        });
         if (
-          loaded.artifact.artifactId !== representation.sourceArtifactId ||
-          loaded.artifact.artifactHash !==
-            stringValue(row.representation_artifact_hash) ||
-          loaded.preview.previewId !== representation.sourcePreviewId ||
-          loaded.preview.sourceHash !== representation.sourceRevisionHash ||
-          loaded.preview.representation !== representation.representation
+          stringValue(row.preview_source_artifact_id) !==
+            representation.sourceArtifactId ||
+          stringValue(row.preview_source_hash) !==
+            representation.sourceRevisionHash ||
+          stringValue(row.preview_representation) !==
+            representation.representation ||
+          stringValue(row.representation_preview_hash).length !== 64 ||
+          stringValue(row.representation_artifact_hash).length !== 64
         ) {
           throw new SharedMemoryConflictError(
             "Team representation source preview binding mismatch"
           );
         }
         const chunksResult = await client.query(
-          `select * from team_memory_representation_chunks
+          `select id,chunk_index,aad from team_memory_representation_chunks
           where representation_id=$1 and share_grant_id=$2 and team_id=$3
             and team_workspace_id=$4 and logical_memory_id=$5 and purged_at is null
           order by chunk_index`,
@@ -6340,11 +6362,118 @@ export const createSharedMemoryRepository = (
             "Encrypted representation chunks are incomplete"
           );
 
+        const chunkPages = chunksResult.rows.map((rawChunk, index) => {
+          const chunk = rawChunk as Row;
+          const actualAad = chunk.aad as Record<string, string>;
+          const itemOffset = numberValue(actualAad.itemOffset);
+          const itemCount = numberValue(actualAad.itemCount);
+          const totalItemCount = numberValue(actualAad.totalItemCount);
+          if (
+            numberValue(chunk.chunk_index) !== index ||
+            !Number.isSafeInteger(itemOffset) ||
+            itemOffset < 0 ||
+            !Number.isSafeInteger(itemCount) ||
+            itemCount < 1 ||
+            !Number.isSafeInteger(totalItemCount) ||
+            totalItemCount < 1 ||
+            itemOffset + itemCount > totalItemCount
+          ) {
+            throw new SharedMemoryConflictError(
+              "Encrypted representation chunk integrity check failed"
+            );
+          }
+          return { index, itemOffset, itemCount, totalItemCount };
+        });
+        let itemCount = 0;
+        for (const chunkPage of chunkPages) {
+          if (
+            chunkPage.itemOffset !== itemCount ||
+            (itemCount > 0 &&
+              chunkPage.totalItemCount !== chunkPages[0]!.totalItemCount)
+          ) {
+            throw new SharedMemoryConflictError(
+              "Encrypted representation chunk paging metadata is inconsistent"
+            );
+          }
+          itemCount += chunkPage.itemCount;
+        }
+        if (
+          chunkPages.length === 0 ||
+          itemCount !== chunkPages[0]!.totalItemCount
+        ) {
+          throw new SharedMemoryConflictError(
+            "Encrypted representation item count is inconsistent"
+          );
+        }
+        const pageBoundary =
+          input.page?.boundary ??
+          (input.page?.direction === "newer" ? 0 : itemCount);
+        if (
+          !Number.isSafeInteger(pageBoundary) ||
+          pageBoundary < 0 ||
+          pageBoundary > itemCount ||
+          (input.page &&
+            (!Number.isSafeInteger(input.page.limit) ||
+              input.page.limit < 1 ||
+              input.page.limit > MAX_SOURCE_ITEMS))
+        ) {
+          throw new SharedMemoryConflictError(
+            "Shared Memory source page is outside the current representation"
+          );
+        }
+        const itemOffset =
+          input.page?.direction === "newer"
+            ? pageBoundary
+            : Math.max(0, pageBoundary - (input.page?.limit ?? itemCount));
+        const itemEnd =
+          input.page?.direction === "newer"
+            ? Math.min(
+                itemCount,
+                pageBoundary + (input.page?.limit ?? itemCount)
+              )
+            : pageBoundary;
+        const selectedChunkPages = chunkPages.filter(
+          (chunkPage) =>
+            chunkPage.itemOffset < itemEnd &&
+            chunkPage.itemOffset + chunkPage.itemCount > itemOffset
+        );
+        const selectedChunks =
+          selectedChunkPages.length === 0
+            ? []
+            : (
+                await client.query(
+                  `select * from team_memory_representation_chunks
+                    where representation_id=$1 and share_grant_id=$2 and team_id=$3
+                      and team_workspace_id=$4 and logical_memory_id=$5
+                      and purged_at is null and chunk_index=any($6::integer[])
+                    order by chunk_index`,
+                  [
+                    representation.id,
+                    grant.id,
+                    grant.teamId,
+                    grant.teamWorkspaceId,
+                    grant.logicalMemoryId,
+                    selectedChunkPages.map(({ index }) => index)
+                  ]
+                )
+              ).rows;
+        if (selectedChunks.length !== selectedChunkPages.length) {
+          throw new SharedMemoryConflictError(
+            "Encrypted representation page chunks are incomplete"
+          );
+        }
+
         // Every request-time authorization predicate above completes before key resolution or decryption.
-        const items: SharedMemoryRedactedSourceItemDto[] = [];
+        const selectedItems: SharedMemoryRedactedSourceItemDto[] = [];
         let expectedRedactedContentHash: string | null = null;
-        for (let index = 0; index < chunksResult.rows.length; index += 1) {
-          const chunk = chunksResult.rows[index] as Row;
+        for (
+          let selectedIndex = 0;
+          selectedIndex < selectedChunkPages.length;
+          selectedIndex += 1
+        ) {
+          const chunkPage = selectedChunkPages[selectedIndex]!;
+          const chunk = selectedChunks[selectedIndex] as Row;
+          const { index } = chunkPage;
           if (
             numberValue(chunk.chunk_index) !== index ||
             ciphertextHash(stringValue(chunk.ciphertext)) !==
@@ -6414,6 +6543,9 @@ export const createSharedMemoryRepository = (
             representation: representation.representation,
             chunkIndex: index,
             chunkCount: representation.chunkCount,
+            itemOffset: chunkPage.itemOffset,
+            itemCount: chunkPage.itemCount,
+            totalItemCount: chunkPage.totalItemCount,
             binding,
             redactedContentHash,
             provenanceHash: representation.provenanceHash
@@ -6475,8 +6607,13 @@ export const createSharedMemoryRepository = (
             throw new SharedMemoryConflictError(
               "Encrypted representation plaintext is not a source item chunk"
             );
+          if (parsed.length !== chunkPage.itemCount) {
+            throw new SharedMemoryConflictError(
+              "Encrypted representation chunk item count is inconsistent"
+            );
+          }
           for (const item of parsed as SharedMemoryRedactedSourceItemDto[]) {
-            items.push(
+            selectedItems.push(
               redactEligibleSharedMemorySourceItem({
                 representation: representation.representation,
                 logicalMemoryId: grant.logicalMemoryId,
@@ -6486,14 +6623,22 @@ export const createSharedMemoryRepository = (
             );
           }
         }
+        const selectedItemOffset =
+          selectedChunkPages[0]?.itemOffset ?? itemOffset;
+        const pageItems = selectedItems.slice(
+          itemOffset - selectedItemOffset,
+          itemEnd - selectedItemOffset
+        );
         if (
-          !expectedRedactedContentHash ||
-          crossIdentitySyncDigest(items) !== expectedRedactedContentHash
+          itemOffset === 0 &&
+          itemEnd === itemCount &&
+          (!expectedRedactedContentHash ||
+            crossIdentitySyncDigest(pageItems) !== expectedRedactedContentHash)
         )
           throw new SharedMemoryConflictError(
             "Decrypted representation content hash mismatch"
           );
-        const grantScopedItems = items.map((item) => {
+        const grantScopedItems = pageItems.map((item) => {
           const content = item.content;
           const contentSourceIds = (content as { sourceIds?: unknown[] })
             .sourceIds;
@@ -6521,6 +6666,7 @@ export const createSharedMemoryRepository = (
           grant,
           representation,
           items: grantScopedItems,
+          sourcePage: { itemOffset, itemCount },
           freshness:
             representation.state === "stale" ||
             row.replica_freshness_status === "stale" ||

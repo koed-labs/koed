@@ -1630,6 +1630,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/page",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read a bounded page of an authorized Shared Memory source.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items",
     "session_or_device_credential",
     "shared_memory",

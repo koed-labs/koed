@@ -34,6 +34,12 @@ import {
   type SharedMemorySourcePage
 } from "@koed/shared/collaboration";
 
+import { CollaborationActionGrantProjectionStore } from "./action-grant-projection-store.js";
+import { RendererEventQueue } from "./renderer-event-queue.js";
+import { CollaborationSelectionViewCache } from "./selection-view-cache.js";
+import { SharedSourceBackfillCoordinator } from "./shared-source-backfill.js";
+import { CollaborationSubscriptionCoordinator } from "./subscription-coordinator.js";
+
 export interface CollaborationRendererBridge {
   command(
     command: CollaborationRendererCommand
@@ -316,18 +322,6 @@ export interface CollaborationRendererClient {
   dispose(): void;
 }
 
-type SubscriptionRecord = {
-  subscription: CollaborationSubscription;
-  preferredSelection: CollaborationSelection | null;
-  selectionIntentGeneration: number;
-};
-
-type PendingEvent = {
-  event: CollaborationRendererEvent;
-  bytes: number;
-  retryAttempt: number;
-};
-
 const AUTHORITATIVE_SNAPSHOT_RECOVERY_MAX_ATTEMPTS = 5;
 const AUTHORITATIVE_SNAPSHOT_RECOVERY_BASE_DELAY_MS = 250;
 const SHARED_SESSION_RECOVERY_TTL_MS = 5 * 60 * 1_000;
@@ -335,13 +329,6 @@ const SELECTION_VIEW_CACHE_LIMIT = 32;
 const SELECTION_VIEW_CACHE_RETENTION_MS = 15 * 60 * 1_000;
 const SHARED_SESSION_PREWARM_LIMIT = 5;
 const SHARED_SESSION_PREWARM_CONCURRENCY = 2;
-
-interface SelectionViewCacheEntry {
-  selection: CollaborationSelection;
-  view: CollaborationSnapshot["view"];
-  lastAccessedAt: number;
-  loadedAt: number;
-}
 
 const offlineError = (): CollaborationSafeError => ({
   code: "offline",
@@ -1289,26 +1276,17 @@ export const createCollaborationRendererClient = (
 ): CollaborationRendererClient => {
   let snapshot: CollaborationSnapshot | null = null;
   let disposed = false;
-  let processing = false;
-  let pendingBytes = 0;
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let connectedRemoteUrl: string | null = null;
-  let pending: PendingEvent[] = [];
   const listeners = new Set<CollaborationClientListener>();
-  const actionGrantListeners = new Set<() => void>();
-  const actionGrants = new Map<string, CollaborationActionGrantProjection>();
-  let actionGrantSnapshot: readonly CollaborationActionGrantProjection[] = [];
-  const subscriptions = new Map<string, SubscriptionRecord>();
-  const subscriptionByScope = new Map<string, string>();
-  const subscriptionInFlight = new Map<string, Promise<void>>();
-  const selectionViewCache = new Map<string, SelectionViewCacheEntry>();
-  const selectionViewInFlight = new Map<
-    string,
-    Promise<CollaborationSnapshot | null>
-  >();
-  let subscriptionGeneration = 0;
+  const actionGrantProjections = new CollaborationActionGrantProjectionStore();
+  const selectionViews = new CollaborationSelectionViewCache(
+    selectionIdentity,
+    teamIdForSelection,
+    SELECTION_VIEW_CACHE_LIMIT,
+    SELECTION_VIEW_CACHE_RETENTION_MS
+  );
+  const sourceBackfills = new SharedSourceBackfillCoordinator();
   let authorityGeneration = 0;
-  let actionGrantAuthorityGeneration = 0;
   let authorityChangeWasRevocation = false;
   let selectionRequestGeneration = 0;
   let selectionIntentGeneration = 0;
@@ -1331,20 +1309,6 @@ export const createCollaborationRendererClient = (
     | null = null;
 
   const limits = () => snapshot?.limits ?? COLLABORATION_DEFAULT_LIMITS;
-
-  const publishActionGrant = (
-    projection: CollaborationActionGrantProjection
-  ) => {
-    actionGrants.delete(projection.id);
-    actionGrants.set(projection.id, projection);
-    while (actionGrants.size > 20) {
-      const oldest = actionGrants.keys().next().value;
-      if (!oldest) break;
-      actionGrants.delete(oldest);
-    }
-    actionGrantSnapshot = [...actionGrants.values()];
-    for (const listener of actionGrantListeners) listener();
-  };
 
   const actionGrantOperation = (
     intent: CollaborationActionGrantIntent["intent"]
@@ -1380,82 +1344,19 @@ export const createCollaborationRendererClient = (
   ): CollaborationActionGrantProjection["state"] =>
     state === "consumed" ? "completed" : state === "revoked" ? "denied" : state;
 
-  const pruneSelectionViewCache = () => {
-    const now = Date.now();
-    for (const [key, entry] of selectionViewCache) {
-      if (now - entry.lastAccessedAt > SELECTION_VIEW_CACHE_RETENTION_MS) {
-        selectionViewCache.delete(key);
-      }
-    }
-    if (selectionViewCache.size <= SELECTION_VIEW_CACHE_LIMIT) return;
-    const oldest = [...selectionViewCache.entries()].sort(
-      ([, left], [, right]) => left.lastAccessedAt - right.lastAccessedAt
-    );
-    for (const [key] of oldest) {
-      if (selectionViewCache.size <= SELECTION_VIEW_CACHE_LIMIT) break;
-      selectionViewCache.delete(key);
-    }
-  };
+  const publishActionGrant = (projection: CollaborationActionGrantProjection) =>
+    actionGrantProjections.publish(projection);
 
-  const rememberSelectionView = (next: CollaborationSnapshot) => {
-    if (next.view.kind === "empty") return;
-    const now = Date.now();
-    selectionViewCache.set(selectionIdentity(next.selection), {
-      selection: next.selection,
-      view: next.view,
-      lastAccessedAt: now,
-      loadedAt: now
-    });
-    pruneSelectionViewCache();
-  };
-
-  const cachedSelectionView = (selection: CollaborationSelection) => {
-    const key = selectionIdentity(selection);
-    const entry = selectionViewCache.get(key);
-    if (
-      !entry ||
-      Date.now() - entry.loadedAt > SELECTION_VIEW_CACHE_RETENTION_MS
-    ) {
-      selectionViewCache.delete(key);
-      return null;
-    }
-    entry.lastAccessedAt = Date.now();
-    return entry.view;
-  };
-
-  const clearTeamSelectionViews = (teamId?: string) => {
-    for (const [key, entry] of selectionViewCache) {
-      if (
-        teamIdForSelection(entry.selection) !== null &&
-        (teamId === undefined || teamIdForSelection(entry.selection) === teamId)
-      ) {
-        selectionViewCache.delete(key);
-      }
-    }
-  };
-
-  const clearThreadSelectionViews = (threadId: string) => {
-    for (const [key, entry] of selectionViewCache) {
-      if (
-        (entry.view.kind === "thread" && entry.view.thread.id === threadId) ||
-        (entry.view.kind === "shared_session" &&
-          entry.view.companion.thread.id === threadId)
-      ) {
-        selectionViewCache.delete(key);
-      }
-    }
-  };
-
-  const clearSharedSessionSelectionView = (sharedSessionId: string) => {
-    for (const [key, entry] of selectionViewCache) {
-      if (
-        entry.selection.kind === "shared_session" &&
-        entry.selection.sharedSessionId === sharedSessionId
-      ) {
-        selectionViewCache.delete(key);
-      }
-    }
-  };
+  const rememberSelectionView = (next: CollaborationSnapshot) =>
+    selectionViews.remember(next);
+  const cachedSelectionView = (selection: CollaborationSelection) =>
+    selectionViews.get(selection);
+  const clearTeamSelectionViews = (teamId?: string) =>
+    selectionViews.clearTeam(teamId);
+  const clearThreadSelectionViews = (threadId: string) =>
+    selectionViews.clearThread(threadId);
+  const clearSharedSessionSelectionView = (sharedSessionId: string) =>
+    selectionViews.clearSharedSession(sharedSessionId);
 
   const recoverableSharedSessionSelection = () => {
     if (
@@ -1624,6 +1525,46 @@ export const createCollaborationRendererClient = (
       })
     );
 
+  const unsubscribeSubscriptionId = async (subscriptionId: string) => {
+    const request = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: crypto.randomUUID(),
+      command: "collaboration.unsubscribe",
+      input: { subscriptionId }
+    });
+    try {
+      const result = await bridge.command(request);
+      if (
+        result.requestId !== request.requestId ||
+        result.command !== request.command ||
+        !result.ok
+      ) {
+        throw new Error("Invalid collaboration unsubscribe result.");
+      }
+    } catch {
+      // Cleanup is best effort; the local broker also closes streams on exit.
+    }
+  };
+
+  const subscriptions = new CollaborationSubscriptionCoordinator(
+    async (scope) => {
+      const result = await command("collaboration.subscribe", { scope });
+      return result.ok && result.command === "collaboration.subscribe"
+        ? result.data.subscription
+        : null;
+    },
+    unsubscribeSubscriptionId,
+    (scope) => ({
+      selection:
+        scope.scope === "team" &&
+        snapshot &&
+        teamIdForSelection(snapshot.selection) === scope.teamId
+          ? snapshot.selection
+          : null,
+      intentGeneration: selectionIntentGeneration
+    })
+  );
+
   const prewarmSharedSessionViews = async (
     navigation: CollaborationSnapshot["navigation"]
   ): Promise<void> => {
@@ -1658,39 +1599,33 @@ export const createCollaborationRendererClient = (
       while (index < candidates.length) {
         const candidate = candidates[index++];
         if (!candidate) return;
-        const key = selectionIdentity(candidate.selection);
-        const existing = selectionViewInFlight.get(key);
+        const existing = selectionViews.inFlight(candidate.selection);
         if (existing) {
           await existing;
           continue;
         }
-        const pending: Promise<CollaborationSnapshot | null> = command(
-          "collaboration.select",
-          {
+        const pending = selectionViews.coordinate(candidate.selection, () =>
+          command("collaboration.select", {
             selection: candidate.selection
-          }
-        )
-          .then((result) => {
-            if (
-              result.ok &&
-              result.command === "collaboration.select" &&
-              result.data.snapshot.selection.kind === "shared_session" &&
-              result.data.snapshot.selection.sharedSessionId ===
-                candidate.session.id &&
-              result.data.snapshot.view.kind === "shared_session" &&
-              result.data.snapshot.view.session.sourceRevision ===
-                candidate.session.sourceRevision
-            ) {
-              rememberSelectionView(result.data.snapshot);
-              return result.data.snapshot;
-            }
-            return null;
           })
-          .catch(() => null)
-          .finally(() => {
-            selectionViewInFlight.delete(key);
-          });
-        selectionViewInFlight.set(key, pending);
+            .then((result) => {
+              if (
+                result.ok &&
+                result.command === "collaboration.select" &&
+                result.data.snapshot.selection.kind === "shared_session" &&
+                result.data.snapshot.selection.sharedSessionId ===
+                  candidate.session.id &&
+                result.data.snapshot.view.kind === "shared_session" &&
+                result.data.snapshot.view.session.sourceRevision ===
+                  candidate.session.sourceRevision
+              ) {
+                rememberSelectionView(result.data.snapshot);
+                return result.data.snapshot;
+              }
+              return null;
+            })
+            .catch(() => null)
+        );
         await pending;
       }
     };
@@ -1707,10 +1642,64 @@ export const createCollaborationRendererClient = (
     );
   };
 
+  const startSharedSourceBackfill = (next: CollaborationSnapshot): void => {
+    if (
+      next.selection.kind !== "shared_session" ||
+      next.view.kind !== "shared_session" ||
+      !next.view.source.hasOlder
+    ) {
+      return;
+    }
+    sourceBackfills.start(next.selection, next.view.source.snapshotRevision, {
+      current: () => {
+        const current = snapshot;
+        if (
+          !current ||
+          current.selection.kind !== "shared_session" ||
+          current.view.kind !== "shared_session"
+        ) {
+          return null;
+        }
+        return {
+          selection: current.selection,
+          source: current.view.source,
+          maximumItems: current.limits.renderedRowMaxCount,
+          pageLimit: current.limits.historyPageMaxItems
+        };
+      },
+      loadOlder: async ({ selection, cursor, limit }) => {
+        const result = await command("collaboration.load_shared_source_page", {
+          sharedSession: {
+            teamId: selection.teamId,
+            workspaceId: selection.workspaceId,
+            sharedSessionId: selection.sharedSessionId
+          },
+          direction: "older",
+          cursor,
+          limit
+        });
+        if (
+          !result.ok ||
+          result.command !== "collaboration.load_shared_source_page"
+        ) {
+          throw new Error("Unexpected collaboration result.");
+        }
+        return result.data.page;
+      },
+      apply: async (page) => {
+        if (!snapshot) return;
+        await publish(mergeSourcePage(snapshot, page, "older"), {
+          kind: "command"
+        });
+      }
+    });
+  };
+
   const waitForActionGrant = async (
     intent: CollaborationActionGrantIntent
   ): Promise<CollaborationActionGrantReference> => {
-    const grantAuthorityGeneration = actionGrantAuthorityGeneration;
+    const grantAuthorityGeneration =
+      actionGrantProjections.authorityGeneration();
     let result = await command("collaboration.request_action_grant", {
       intent
     });
@@ -1732,7 +1721,9 @@ export const createCollaborationRendererClient = (
             : terminalProjectionState(status.state)
     });
     while (status.state === "pending") {
-      if (grantAuthorityGeneration !== actionGrantAuthorityGeneration) {
+      if (
+        !actionGrantProjections.authorityIsCurrent(grantAuthorityGeneration)
+      ) {
         publishActionGrant({
           expiresAt: status.expiresAt,
           id: status.actionGrant.id,
@@ -1759,7 +1750,9 @@ export const createCollaborationRendererClient = (
         });
       }
       if (disposed) throw new CollaborationClientError(offlineError());
-      if (grantAuthorityGeneration !== actionGrantAuthorityGeneration) {
+      if (
+        !actionGrantProjections.authorityIsCurrent(grantAuthorityGeneration)
+      ) {
         throw new CollaborationClientError(accessRevokedError());
       }
       try {
@@ -1823,7 +1816,9 @@ export const createCollaborationRendererClient = (
     const actionGrant = (
       command.input as { actionGrant?: CollaborationActionGrantReference }
     ).actionGrant;
-    const existing = actionGrant ? actionGrants.get(actionGrant.id) : undefined;
+    const existing = actionGrant
+      ? actionGrantProjections.get(actionGrant.id)
+      : undefined;
     if (existing) {
       publishActionGrant({
         ...existing,
@@ -1868,123 +1863,34 @@ export const createCollaborationRendererClient = (
     }
   };
 
-  const scopeKey = (scope: CollaborationSubscription["scope"]) =>
-    scope.scope === "personal" ? "personal" : `team:${scope.teamId}`;
-
-  const unsubscribeSubscriptionId = async (subscriptionId: string) => {
-    const request = collaborationRendererCommandSchema.parse({
-      contractVersion: COLLABORATION_CONTRACT_VERSION,
-      requestId: crypto.randomUUID(),
-      command: "collaboration.unsubscribe",
-      input: { subscriptionId }
-    });
-    try {
-      const result = await bridge.command(request);
-      if (
-        result.requestId !== request.requestId ||
-        result.command !== request.command ||
-        !result.ok
-      ) {
-        throw new Error("Invalid collaboration unsubscribe result.");
-      }
-    } catch {
-      // Cleanup is best effort; the local broker also closes streams on process exit.
-    }
-  };
-
-  const resetSubscriptions = async () => {
-    subscriptionGeneration += 1;
-    const subscriptionIds = [...subscriptions.keys()];
-    subscriptions.clear();
-    subscriptionByScope.clear();
-    await Promise.allSettled([
-      ...subscriptionInFlight.values(),
-      ...subscriptionIds.map(unsubscribeSubscriptionId)
-    ]);
-  };
-
+  const resetSubscriptions = () => subscriptions.reset();
   const recordSubscription = (
     subscription: CollaborationSubscription,
     preferredSelection?: CollaborationSelection | null,
     preferredSelectionIntentGeneration?: number
-  ) => {
-    const key = scopeKey(subscription.scope);
-    const previousId = subscriptionByScope.get(key);
-    const previous = previousId ? subscriptions.get(previousId) : undefined;
-    if (previousId && previousId !== subscription.id) {
-      subscriptions.delete(previousId);
-    }
-    subscriptions.set(subscription.id, {
+  ) =>
+    subscriptions.record(
       subscription,
-      preferredSelection:
-        preferredSelection === undefined
-          ? (previous?.preferredSelection ?? null)
-          : preferredSelection,
-      selectionIntentGeneration:
-        preferredSelectionIntentGeneration ??
-        previous?.selectionIntentGeneration ??
-        selectionIntentGeneration
-    });
-    subscriptionByScope.set(key, subscription.id);
-  };
+      preferredSelection,
+      preferredSelectionIntentGeneration
+    );
 
   const dropPendingDeliveries = (subscriptionId?: string) => {
-    pending = pending.filter((item) => {
-      if (item.event.type !== "snapshot" && item.event.type !== "update") {
-        return true;
-      }
+    eventQueue.drop((event) => {
+      if (event.type !== "snapshot" && event.type !== "update") return false;
       const eventSubscriptionId =
-        item.event.type === "snapshot"
-          ? item.event.subscription.id
-          : item.event.subscriptionId;
+        event.type === "snapshot"
+          ? event.subscription.id
+          : event.subscriptionId;
       if (subscriptionId && eventSubscriptionId !== subscriptionId) {
-        return true;
+        return false;
       }
-      pendingBytes -= item.bytes;
-      return false;
+      return true;
     });
-    pendingBytes = Math.max(0, pendingBytes);
   };
 
-  const subscribeScope = async (scope: CollaborationSubscription["scope"]) => {
-    const key = scopeKey(scope);
-    if (subscriptionByScope.has(key) || disposed) return;
-    const activeAttempt = subscriptionInFlight.get(key);
-    if (activeAttempt) return activeAttempt;
-    const generation = subscriptionGeneration;
-    const preferredSelection =
-      scope.scope === "team" &&
-      snapshot &&
-      teamIdForSelection(snapshot.selection) === scope.teamId
-        ? snapshot.selection
-        : null;
-    const preferredSelectionIntentGeneration = selectionIntentGeneration;
-    const attempt = (async () => {
-      const result = await command("collaboration.subscribe", { scope });
-      if (!result.ok || result.command !== "collaboration.subscribe") return;
-      if (
-        disposed ||
-        generation !== subscriptionGeneration ||
-        subscriptionByScope.has(key)
-      ) {
-        await unsubscribeSubscriptionId(result.data.subscription.id);
-        return;
-      }
-      recordSubscription(
-        result.data.subscription,
-        preferredSelection,
-        preferredSelectionIntentGeneration
-      );
-    })();
-    subscriptionInFlight.set(key, attempt);
-    try {
-      await attempt;
-    } finally {
-      if (subscriptionInFlight.get(key) === attempt) {
-        subscriptionInFlight.delete(key);
-      }
-    }
-  };
+  const subscribeScope = (scope: CollaborationSubscription["scope"]) =>
+    subscriptions.subscribe(scope);
 
   const syncTeamSubscription = async (selection: CollaborationSelection) => {
     const teamId = teamIdForSelection(selection);
@@ -2009,11 +1915,10 @@ export const createCollaborationRendererClient = (
     if (result.ok && result.command === "collaboration.acknowledge_delivery") {
       const record = subscriptions.get(subscriptionId);
       if (record) {
-        record.subscription = {
-          ...record.subscription,
-          state: "active",
-          version: result.data.subscriptionVersion
-        };
+        subscriptions.updateVersion(
+          subscriptionId,
+          result.data.subscriptionVersion
+        );
       }
     }
   };
@@ -2401,13 +2306,7 @@ export const createCollaborationRendererClient = (
           ? retainedSelection
           : (currentPreferredSelection ?? subscribedPreferredSelection);
       dropPendingDeliveries(event.subscriptionId);
-      subscriptions.delete(event.subscriptionId);
-      if (
-        record &&
-        subscriptionByScope.get(scopeKey(record.scope)) === event.subscriptionId
-      ) {
-        subscriptionByScope.delete(scopeKey(record.scope));
-      }
+      subscriptions.drop(event.subscriptionId);
       if (record?.scope.scope === "team") {
         await purgeTeam(
           record.scope.teamId,
@@ -2519,112 +2418,58 @@ export const createCollaborationRendererClient = (
     authorityGeneration += 1;
     authorityChangeWasRevocation = eventRevokesAuthority(event);
     if (authorityChangeWasRevocation) {
-      actionGrantAuthorityGeneration += 1;
+      actionGrantProjections.revokeAuthority();
     }
     selectionRequestGeneration += 1;
   };
 
-  const drain = async () => {
-    if (processing || disposed || retryTimer !== null) return;
-    processing = true;
-    try {
-      while (pending.length > 0 && !disposed) {
-        const next = pending.shift()!;
-        pendingBytes -= next.bytes;
-        const authorityBoundary = eventChangesAuthority(next.event);
-        try {
-          await applyEvent(next.event);
-        } catch (cause) {
-          if (cause instanceof CollaborationAuthorityChangedError) {
-            // A newer queued authority/control event owns cleanup and recovery.
-          } else if (
-            cause instanceof CollaborationClientError &&
-            cause.code === "access_revoked" &&
-            snapshot
-          ) {
-            const subscriptionId =
-              next.event.type === "snapshot"
-                ? next.event.subscription.id
-                : next.event.type === "update"
-                  ? next.event.subscriptionId
-                  : null;
-            const record = subscriptionId
-              ? subscriptions.get(subscriptionId)?.subscription
-              : null;
-            if (record?.scope.scope === "team") {
-              await purgeTeam(record.scope.teamId, cause.userMessage);
-            } else if (!record) {
-              await purgeAllTeams(
-                { ...snapshot.connection, state: "access_revoked" },
-                cause.userMessage
-              );
-            }
-          } else if (
-            cause instanceof CollaborationClientError &&
-            cause.retryable &&
-            (next.event.type === "snapshot" || next.event.type === "update")
-          ) {
-            pending.unshift({
-              ...next,
-              retryAttempt: next.retryAttempt + 1
-            });
-            pendingBytes += next.bytes;
-            const delay = Math.min(
-              Math.max(cause.retryAfterMs ?? 250 * 2 ** next.retryAttempt, 250),
-              1_000
+  const eventQueue = new RendererEventQueue<CollaborationRendererEvent>(
+    () => ({
+      maxCount: limits().rendererMaxPendingEvents,
+      maxBytes: limits().rendererMaxPendingBytes
+    }),
+    async (event, retryAttempt) => {
+      try {
+        await applyEvent(event);
+      } catch (cause) {
+        if (cause instanceof CollaborationAuthorityChangedError) {
+          // A newer queued authority/control event owns cleanup and recovery.
+        } else if (
+          cause instanceof CollaborationClientError &&
+          cause.code === "access_revoked" &&
+          snapshot
+        ) {
+          const subscriptionId =
+            event.type === "snapshot"
+              ? event.subscription.id
+              : event.type === "update"
+                ? event.subscriptionId
+                : null;
+          const record = subscriptionId
+            ? subscriptions.get(subscriptionId)?.subscription
+            : null;
+          if (record?.scope.scope === "team") {
+            await purgeTeam(record.scope.teamId, cause.userMessage);
+          } else if (!record) {
+            await purgeAllTeams(
+              { ...snapshot.connection, state: "access_revoked" },
+              cause.userMessage
             );
-            retryTimer = setTimeout(() => {
-              retryTimer = null;
-              void drain();
-            }, delay);
-            return;
           }
-        } finally {
-          if (authorityBoundary) {
-            advanceAuthority(next.event);
-          }
+        } else if (
+          cause instanceof CollaborationClientError &&
+          cause.retryable &&
+          (event.type === "snapshot" || event.type === "update")
+        ) {
+          return Math.min(
+            Math.max(cause.retryAfterMs ?? 250 * 2 ** retryAttempt, 250),
+            1_000
+          );
         }
       }
-    } finally {
-      processing = false;
-      if (pending.length > 0 && retryTimer === null && !disposed) {
-        queueMicrotask(() => void drain());
-      }
-    }
-  };
-
-  const enqueue = (raw: CollaborationRendererEvent) => {
-    if (disposed) return;
-    const event = collaborationRendererEventSchema.parse(raw);
-    const authorityBoundary = eventChangesAuthority(event);
-    if (authorityBoundary) {
-      advanceAuthority(event);
-    }
-    const bytes = encoder.encode(JSON.stringify(event)).byteLength;
-    const scopedAccessRevocation =
-      event.type === "update" && event.family === "access_revoked";
-    const terminalConnection =
-      event.type === "connection" &&
-      (event.connection.state === "disconnected" ||
-        event.connection.state === "access_revoked");
-    const preemptsRetry =
-      event.type === "control" || terminalConnection || scopedAccessRevocation;
-    if (preemptsRetry && retryTimer !== null) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
-    if (terminalConnection) {
-      dropPendingDeliveries();
-    } else if (scopedAccessRevocation) {
-      dropPendingDeliveries(event.subscriptionId);
-    }
-    const nextCount = pending.length + 1;
-    if (
-      nextCount > limits().rendererMaxPendingEvents ||
-      pendingBytes + bytes > limits().rendererMaxPendingBytes
-    ) {
-      pending = [];
-      pendingBytes = 0;
+      return null;
+    },
+    () => {
       authorityGeneration += 1;
       authorityChangeWasRevocation = false;
       selectionRequestGeneration += 1;
@@ -2638,13 +2483,35 @@ export const createCollaborationRendererClient = (
           selectionRequestGeneration += 1;
         });
       }
-      return;
+    },
+    (event) => {
+      if (eventChangesAuthority(event)) advanceAuthority(event);
     }
-    const item = { event, bytes, retryAttempt: 0 };
-    if (preemptsRetry) pending.unshift(item);
-    else pending.push(item);
-    pendingBytes += bytes;
-    void drain();
+  );
+
+  const enqueue = (raw: CollaborationRendererEvent) => {
+    if (disposed) return;
+    const event = collaborationRendererEventSchema.parse(raw);
+    const authorityBoundary = eventChangesAuthority(event);
+    if (authorityBoundary) advanceAuthority(event);
+    const bytes = encoder.encode(JSON.stringify(event)).byteLength;
+    const scopedAccessRevocation =
+      event.type === "update" && event.family === "access_revoked";
+    const terminalConnection =
+      event.type === "connection" &&
+      (event.connection.state === "disconnected" ||
+        event.connection.state === "access_revoked");
+    const preemptsRetry =
+      event.type === "control" || terminalConnection || scopedAccessRevocation;
+    if (terminalConnection) {
+      dropPendingDeliveries();
+    } else if (scopedAccessRevocation) {
+      dropPendingDeliveries(event.subscriptionId);
+    }
+    eventQueue.enqueue(event, bytes, {
+      prepend: preemptsRetry,
+      preemptRetry: preemptsRetry
+    });
   };
 
   const removeBridgeListener = bridge.subscribe(enqueue);
@@ -2664,7 +2531,7 @@ export const createCollaborationRendererClient = (
       previousTeamPrincipalId !== undefined &&
       next.navigation.teamPrincipal?.id !== previousTeamPrincipalId;
     if ((backendChanged || teamPrincipalChanged) && snapshot) {
-      actionGrantAuthorityGeneration += 1;
+      actionGrantProjections.revokeAuthority();
       pendingSharedSessionRecovery = null;
       dropPendingDeliveries();
       await resetSubscriptions();
@@ -2673,6 +2540,7 @@ export const createCollaborationRendererClient = (
     await publishValidated(next, { kind: "command" });
     await syncTeamSubscription(next.selection);
     void prewarmSharedSessionViews(next.navigation);
+    startSharedSourceBackfill(next);
     return requireSnapshot();
   };
 
@@ -2761,7 +2629,7 @@ export const createCollaborationRendererClient = (
     }
     const generation = ++selectionRequestGeneration;
     const previous = snapshot;
-    const warming = selectionViewInFlight.get(selectionIdentity(selection));
+    const warming = selectionViews.inFlight(selection);
     if (warming) {
       const warmed = await warming;
       if (generation !== selectionRequestGeneration) return requireSnapshot();
@@ -2874,13 +2742,12 @@ export const createCollaborationRendererClient = (
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    currentActionGrants: () => actionGrantSnapshot,
+    currentActionGrants: () => actionGrantProjections.current(),
     subscribeActionGrants(listener) {
-      actionGrantListeners.add(listener);
-      return () => actionGrantListeners.delete(listener);
+      return actionGrantProjections.subscribe(listener);
     },
     async cancelActionGrant(id) {
-      const existing = actionGrants.get(id);
+      const existing = actionGrantProjections.get(id);
       if (!existing || existing.state !== "awaiting_approval") return;
       const result = await command("collaboration.cancel_action_grant", {
         actionGrant: { id }
@@ -2949,7 +2816,7 @@ export const createCollaborationRendererClient = (
         throw new Error("Unexpected collaboration result.");
       }
       authorityGeneration += 1;
-      actionGrantAuthorityGeneration += 1;
+      actionGrantProjections.revokeAuthority();
       authorityChangeWasRevocation = true;
       selectionRequestGeneration += 1;
       dropPendingDeliveries();
@@ -3639,21 +3506,11 @@ export const createCollaborationRendererClient = (
     dispose() {
       if (disposed) return;
       disposed = true;
-      subscriptionGeneration += 1;
-      if (retryTimer !== null) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
+      eventQueue.dispose();
       removeBridgeListener();
-      pending = [];
-      pendingBytes = 0;
       listeners.clear();
-      actionGrantListeners.clear();
-      actionGrants.clear();
-      actionGrantSnapshot = [];
-      const ids = [...subscriptions.keys()];
-      subscriptions.clear();
-      subscriptionByScope.clear();
+      actionGrantProjections.dispose();
+      const ids = subscriptions.dispose();
       for (const subscriptionId of ids) {
         void unsubscribeSubscriptionId(subscriptionId);
       }

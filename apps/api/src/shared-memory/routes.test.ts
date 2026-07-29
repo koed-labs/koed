@@ -241,30 +241,51 @@ const createFixture = () => {
     createdAt: iso
   });
 
-  const readResult = (): SharedMemoryReadResult => ({
-    grant: grantRecord(),
-    representation: representationRecord(),
-    items: [
-      {
-        itemType: "tool_result",
-        schemaVersion: 1,
-        sourceId: ids.source,
-        sourceLogicalMemoryId: ids.logicalMemory,
-        sourceRevision: 1,
-        occurredAt: iso,
-        content: {
-          toolName: "fixture_tool",
-          toolCallId: "call-shared-route-fixture",
-          payload: {
-            authorization: "raw-device-secret",
-            note: "Bearer secret-value-with-enough-length"
+  const readResult = (page?: {
+    direction: "older" | "newer";
+    boundary?: number;
+    limit: number;
+  }): SharedMemoryReadResult => {
+    const itemCount = 1;
+    const boundary =
+      page?.boundary ?? (page?.direction === "newer" ? 0 : itemCount);
+    if (boundary > itemCount) {
+      throw new SharedMemoryConflictError("Source page is out of range");
+    }
+    const itemOffset =
+      page?.direction === "newer"
+        ? boundary
+        : Math.max(0, boundary - (page?.limit ?? itemCount));
+    const itemEnd =
+      page?.direction === "newer"
+        ? Math.min(itemCount, boundary + (page?.limit ?? itemCount))
+        : boundary;
+    return {
+      grant: grantRecord(),
+      representation: representationRecord(),
+      items: [
+        {
+          itemType: "tool_result",
+          schemaVersion: 1,
+          sourceId: ids.source,
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 1,
+          occurredAt: iso,
+          content: {
+            toolName: "fixture_tool",
+            toolCallId: "call-shared-route-fixture",
+            payload: {
+              authorization: "raw-device-secret",
+              note: "Bearer secret-value-with-enough-length"
+            }
           }
         }
-      }
-    ],
-    freshness: "fresh",
-    companionScope
-  });
+      ].slice(itemOffset, itemEnd),
+      sourcePage: { itemOffset, itemCount },
+      freshness: "fresh",
+      companionScope
+    };
+  };
 
   const consentRecord = (): SharedMemoryConsentRecord => ({
     id: ids.consent,
@@ -493,7 +514,7 @@ const createFixture = () => {
           "Private Team, Workspace, and lifecycle detail"
         );
       }
-      return readResult();
+      return readResult(input.page);
     }
   };
 
@@ -1174,7 +1195,8 @@ describe("Shared Memory HTTP routes", () => {
         companionScope: {
           shareGrantId: fixture.ids.grant,
           logicalMemoryId: fixture.ids.logicalMemory
-        }
+        },
+        sourcePage: { itemOffset: 0, itemCount: 1 }
       },
       companion: {
         thread: {
@@ -1186,6 +1208,31 @@ describe("Shared Memory HTTP routes", () => {
         }
       }
     });
+    await app.close();
+  });
+
+  it("returns bounded Shared Memory pages and rejects out-of-range boundaries", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const page = await app.inject({
+      method: "GET",
+      url: `${scopedGrantUrl(fixture)}/page?direction=older&limit=1`,
+      headers: { authorization: "Koed-Device reader:secret" }
+    });
+    const outOfRange = await app.inject({
+      method: "GET",
+      url: `${scopedGrantUrl(fixture)}/page?direction=older&boundary=2&limit=1`,
+      headers: { authorization: "Koed-Device reader:secret" }
+    });
+
+    expect(page.statusCode).toBe(200);
+    expect(jsonBody<Record<string, unknown>>(page)).toMatchObject({
+      sharedMemory: {
+        sourcePage: { itemOffset: 0, itemCount: 1 },
+        items: [{ sourceId: fixture.ids.source }]
+      }
+    });
+    expect(outOfRange.statusCode).toBe(409);
     await app.close();
   });
 
