@@ -937,6 +937,10 @@ const sharedReadResult = (
       invalidationReasonCode: null
     },
     items: [],
+    sourcePage: {
+      itemOffset: 0,
+      itemCount: 0
+    },
     freshness: "fresh",
     companionScope
   };

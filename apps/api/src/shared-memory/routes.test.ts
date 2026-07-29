@@ -265,8 +265,8 @@ const createFixture = () => {
       representation: representationRecord(),
       items: [
         {
-          itemType: "tool_result",
-          schemaVersion: 1,
+          itemType: "tool_result" as const,
+          schemaVersion: 1 as const,
           sourceId: ids.source,
           sourceLogicalMemoryId: ids.logicalMemory,
           sourceRevision: 1,

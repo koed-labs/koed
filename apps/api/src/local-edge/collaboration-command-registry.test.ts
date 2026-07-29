@@ -25,7 +25,7 @@ type ExpectedDescriptor = {
 const read = "personal_collaboration_read" as const;
 const write = "personal_collaboration_write" as const;
 
-const expectedRegistry = {
+const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.load": { scope: "personal", desktop: read },
   "collaboration.select": { scope: "dynamic", desktop: read },
   "collaboration.connect_backend": { scope: "unsupported", desktop: write },
@@ -168,7 +168,7 @@ const expectedRegistry = {
     scope: "unsupported",
     desktop: write
   }
-} satisfies Record<CollaborationCommandName, ExpectedDescriptor>;
+};
 
 const requestId = "00000000-0000-4000-8000-000000000001";
 const teamId = "00000000-0000-4000-8000-000000000002";

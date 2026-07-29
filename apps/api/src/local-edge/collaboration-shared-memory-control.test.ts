@@ -130,6 +130,28 @@ const grantResponse = (
   }
 });
 
+const remoteReadResponse = () => ({
+  grant: grantResponse(),
+  representation: {
+    shareGrantId: ids.grant,
+    consentId: ids.consent,
+    teamId: ids.team,
+    teamWorkspaceId: ids.workspace,
+    logicalMemoryId: ids.logicalMemory,
+    representation: "memory_events" as const,
+    sourceRevision: 4,
+    sourceRevisionHash: hash,
+    recordVersion: 1,
+    state: "available" as const
+  },
+  items: [sourceItem(0), sourceItem(1), sourceItem(2)],
+  sourcePage: { itemOffset: 0, itemCount: 3 },
+  freshness: "fresh" as const,
+  companionScope: grantResponse().companionScope
+});
+
+type RemoteReadResponse = ReturnType<typeof remoteReadResponse>;
+
 const collaborationConsent = (): CollaborationPersistedSharedMemoryConsent => ({
   backendId: "team-backend",
   localOwnerUserId: ids.localOwner,
@@ -272,7 +294,7 @@ const createFixture = (
     prepareLocalLcmRepresentation?: NonNullable<
       CollaborationSharedMemoryControlOptions["prepareLocalLcmRepresentation"]
     >;
-    remoteRead?: Record<string, unknown>;
+    remoteRead?: RemoteReadResponse;
     remoteOwnerGrants?: ReturnType<typeof grantResponse>[];
     mutateResponse?: (
       request: RecordedRequest,
@@ -391,25 +413,7 @@ const createFixture = (
     }
   };
 
-  const defaultRead = {
-    grant: grantResponse(),
-    representation: {
-      shareGrantId: ids.grant,
-      consentId: ids.consent,
-      teamId: ids.team,
-      teamWorkspaceId: ids.workspace,
-      logicalMemoryId: ids.logicalMemory,
-      representation: "memory_events",
-      sourceRevision: 4,
-      sourceRevisionHash: hash,
-      recordVersion: 1,
-      state: "available"
-    },
-    items: [sourceItem(0), sourceItem(1), sourceItem(2)],
-    sourcePage: { itemOffset: 0, itemCount: 3 },
-    freshness: "fresh",
-    companionScope: grantResponse().companionScope
-  };
+  const defaultRead = remoteReadResponse();
 
   const fetcher = vi.fn(
     async (input: URL | RequestInfo, init?: RequestInit) => {
