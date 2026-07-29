@@ -14,6 +14,10 @@
     "./server": {
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"
+    },
+    "./personal-device-sync/secure-runtime": {
+      "types": "./dist/personal-device-sync/secure-runtime.d.ts",
+      "import": "./dist/personal-device-sync/secure-runtime.js"
     }
   },
   "files": [

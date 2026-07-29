@@ -38,7 +38,7 @@ export interface CodexTranscriptRawItem {
   [key: string]: unknown;
   sourceKind: "codex";
   sourceAdapterVersion: typeof codexTranscriptAdapterVersion;
-  sourceTransport: "hook" | "transcript" | "historical_import";
+  sourceTransport: "transcript" | "historical_import";
   sessionId?: string;
   externalSessionId?: string;
   externalThreadId?: string;
@@ -46,7 +46,6 @@ export interface CodexTranscriptRawItem {
   externalItemId?: string;
   sourceRecordType: string;
   sourceEventType?: string;
-  sourcePath?: string;
   sourceLineNumber: number;
   sourceSequence: number;
   eventTime?: string;
@@ -54,7 +53,6 @@ export interface CodexTranscriptRawItem {
   rawText?: string;
   sourceHash: string;
   idempotencyKey: string;
-  legacyIdempotencyKeys?: string[];
   projectionStatus: "pending";
   projectionVersion: typeof codexTranscriptAdapterVersion;
   metadata: Record<string, unknown>;
@@ -64,10 +62,8 @@ export interface CodexTranscriptAdapterInput {
   observations: CodexTranscriptObservation[];
   sessionId?: string;
   sourceSessionId?: string;
-  sourceTransport: "hook" | "transcript" | "historical_import";
-  localSourcePath?: string;
+  sourceTransport: "transcript" | "historical_import";
   sourceFingerprint?: string;
-  hookEventName?: string;
   threadKind: "conversation" | "subagent";
   parentThreadId?: string;
 }
@@ -95,24 +91,6 @@ export const codexTranscriptItemKey = (input: {
     itemDiscriminator: input.itemDiscriminator,
     recordHash: input.recordHash
   })}`;
-
-export const legacyCodexTranscriptItemKey = (input: {
-  sourceSessionId?: string;
-  transcriptPath?: string;
-  sourcePosition: number | string;
-  itemDiscriminator?: string;
-  sourceRecordType: string;
-  sourceEventType?: string;
-}): string =>
-  hash({
-    adapter: codexTranscriptAdapterVersion,
-    externalSessionId: input.sourceSessionId,
-    transcriptPath: input.transcriptPath,
-    sourcePosition: input.sourcePosition,
-    itemDiscriminator: input.itemDiscriminator,
-    sourceRecordType: input.sourceRecordType,
-    sourceEventType: input.sourceEventType
-  });
 
 const semanticTurnId = (input: {
   sourceSessionId?: string;
@@ -142,9 +120,6 @@ const observationMetadata = (input: {
     : { transcriptByteOffset: input.observation.transcriptByteOffset }),
   transcriptSourceLineNumber: input.observation.sourceLineNumber,
   transcriptItemDiscriminator: input.parsed.itemDiscriminator,
-  ...(input.adapter.hookEventName
-    ? { hookEventName: input.adapter.hookEventName }
-    : {}),
   sourceEventTimeAccuracy: input.observation.eventTimeAccuracy,
   ...(input.assignedTurnId
     ? { transcriptAssignedTurnId: input.assignedTurnId }
@@ -153,9 +128,7 @@ const observationMetadata = (input: {
   parentThreadId: input.adapter.parentThreadId,
   ...(input.adapter.sourceTransport === "historical_import"
     ? { observedViaHistoricalImport: true }
-    : input.adapter.sourceTransport === "hook"
-      ? { observedViaHook: true }
-      : { observedViaTranscript: true }),
+    : { observedViaTranscript: true }),
   ...(input.adapter.sourceFingerprint
     ? { sourceFingerprint: input.adapter.sourceFingerprint }
     : {})
@@ -168,7 +141,6 @@ const rawItemForObservation = (input: {
   assignedTurnId?: string;
   recordHash: string;
   position: number;
-  includeItemDiscriminatorInLegacyKey: boolean;
 }): CodexTranscriptRawItem => {
   const itemDiscriminator = input.parsed.itemDiscriminator;
   return {
@@ -182,10 +154,6 @@ const rawItemForObservation = (input: {
     externalItemId: input.observation.externalItemId,
     sourceRecordType: input.observation.sourceRecordType,
     sourceEventType: input.observation.sourceEventType,
-    sourcePath:
-      input.adapter.sourceTransport === "historical_import"
-        ? undefined
-        : input.adapter.localSourcePath,
     sourceLineNumber: input.observation.sourceLineNumber,
     sourceSequence: safeSourceSequence(
       input.position * 2 + input.parsed.sourceOffset
@@ -200,20 +168,6 @@ const rawItemForObservation = (input: {
       itemDiscriminator,
       recordHash: input.recordHash
     }),
-    legacyIdempotencyKeys: [
-      legacyCodexTranscriptItemKey({
-        sourceSessionId: input.adapter.sourceSessionId,
-        transcriptPath: input.adapter.localSourcePath,
-        sourcePosition:
-          input.observation.transcriptByteOffset ??
-          `line:${input.observation.sourceLineNumber}`,
-        itemDiscriminator: input.includeItemDiscriminatorInLegacyKey
-          ? itemDiscriminator
-          : undefined,
-        sourceRecordType: input.observation.sourceRecordType,
-        sourceEventType: input.observation.sourceEventType
-      })
-    ],
     projectionStatus: "pending",
     projectionVersion: codexTranscriptAdapterVersion,
     metadata: observationMetadata(input)
@@ -235,8 +189,7 @@ const observationItems = (input: {
       ...input,
       parsed,
       recordHash,
-      position,
-      includeItemDiscriminatorInLegacyKey: parsedItems.length > 1
+      position
     })
   );
 };

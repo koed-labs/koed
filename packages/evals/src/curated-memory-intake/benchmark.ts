@@ -460,7 +460,7 @@ export const idealCuratedMemoryIntakeRun = (
             "11111111-1111-4111-8111-111111111111"
           ],
           evidence_memory_event_ids: [],
-          source_workspace_id: "eval://scorer-self-test"
+          source_project_id: "eval://scorer-self-test"
         }
       }
     ],

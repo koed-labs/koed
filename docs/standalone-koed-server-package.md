@@ -351,8 +351,9 @@ Compatibility should be checked in this order:
    Postgres/pgvector and `llama-server` assets, reported by runtime status.
 4. **`koed-server` package ↔ models**: model status verifies installed model
    key/path/checksum where available.
-5. **AI Client Integration**: setup/status verifies Codex MCP Server and
-   Supported Capture Hook config point at the active API URL/token.
+5. **AI Client Integration**: setup/status verifies that the Codex MCP Server
+   points at the active API URL/token and the credential-free Supported Capture
+   Hook command points at the installed runtime.
 
 DB migrations are the strongest compatibility boundary. Desktop should not swap
 server packages while services are running. Update flow should stop the local

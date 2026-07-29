@@ -182,7 +182,7 @@ lineReader.on("line", (line) => {
       sendFinal(answer);
       return;
     }
-    send({ id: 9001, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan", namespace: "koed_memory", tool: "scan", arguments: { query: "koed docker", search_domain: "project", workspace_id: "workspace-1" } } });
+    send({ id: 9001, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan", namespace: "koed_memory", tool: "scan", arguments: { query: "koed docker", search_domain: "project", project_id: "workspace-1" } } });
     return;
   }
   if (message.id === 9001) {
@@ -196,10 +196,10 @@ lineReader.on("line", (line) => {
       return;
     }
     if (mode === "scanLoop") {
-      send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan-again", namespace: "koed_memory", tool: "scan", arguments: { query: "koed docker again", search_domain: "project", workspace_id: "workspace-1" } } });
+      send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan-again", namespace: "koed_memory", tool: "scan", arguments: { query: "koed docker again", search_domain: "project", project_id: "workspace-1" } } });
       return;
     }
-    send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-search", namespace: "koed_memory", tool: "search", arguments: { query: "koed docker", stage: "leaf_search", search_domain: "project", workspace_id: "workspace-1", limit: 1 } } });
+    send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-search", namespace: "koed_memory", tool: "search", arguments: { query: "koed docker", stage: "leaf_search", search_domain: "project", project_id: "workspace-1", limit: 1 } } });
     return;
   }
   if (message.id === 9002) {
@@ -372,7 +372,7 @@ describe("memory answer worker", () => {
         },
         retrievalScope: "personal",
         searchDomain: "project",
-        workspaceId: "workspace-1",
+        projectId: "workspace-1",
         config: resolveMemoryAnswerWorkerConfig({
           MEMORY_ANSWER_PROVIDER: "codex",
           MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
@@ -443,7 +443,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "workspace-1",
+          projectId: "workspace-1",
           responseDetail: "with_evidence",
           config: resolveMemoryAnswerWorkerConfig({
             MEMORY_ANSWER_PROVIDER: "codex",
@@ -530,7 +530,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "workspace-1",
+          projectId: "workspace-1",
           config: resolveMemoryAnswerWorkerConfig({
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
@@ -616,7 +616,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "workspace-1",
+          projectId: "workspace-1",
           config: resolveMemoryAnswerWorkerConfig({
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
@@ -685,7 +685,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "workspace-1",
+          projectId: "workspace-1",
           config: resolveMemoryAnswerWorkerConfig({
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
@@ -757,7 +757,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "workspace-1",
+          projectId: "workspace-1",
           config: resolveMemoryAnswerWorkerConfig({
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
@@ -823,7 +823,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "workspace-1",
+          projectId: "workspace-1",
           config: resolveMemoryAnswerWorkerConfig({
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
@@ -874,7 +874,7 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "workspace-1",
+          projectId: "workspace-1",
           config: resolveMemoryAnswerWorkerConfig({
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_CODEX_BINARY: appServerBinary,

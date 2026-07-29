@@ -2,9 +2,12 @@
 
 Status: Normative V1 profile for [ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
 
-This document freezes Personal Device Sync (PDS) V1. It is implementation
-input, not an implementation. No current production API or RSA
-recipient-envelope code implements this protocol. In particular, existing
+This document freezes Personal Device Sync (PDS) V1. The shared protocol,
+Authority/Relay API, control client, secure local runtime, and Worker data plane
+implement the canonical source-package profile. Portable Memory Event and
+embedding artifact transfer is normative but remains an implementation slice;
+receivers currently derive those artifacts from replicated source. In
+particular, existing
 [Directed Hosted Cross-Identity Sync](self-hosted-to-hosted-sync.md) uses a
 distinct RSA-OAEP target-envelope contract and must not be reused as PDS V1.
 PDS is not Directed Hosted Cross-Identity Sync. It is a symmetric Personal
@@ -20,8 +23,9 @@ in V1.
 
 PDS replicates all **eligible future closed Captured Sessions** to every active
 Personal Device Group device. It is relay-required. Each device remains a
-symmetric local replica: capture, materialization, Projection, embeddings, and
-Recall are local. Relay outage never stops local capture or Recall of already
+symmetric local replica: capture and Recall are local, while compatible
+origin-signed derived artifacts may be imported to avoid repeating Projection
+or embedding work. Relay outage never stops local capture or Recall of already
 materialized Memory.
 
 PDS is not PostgreSQL replication, Team replication, a Personal Hub, or
@@ -44,6 +48,32 @@ No Operator, support agent, browser session, email proof, authority-only action,
 or copied API Token can add/recover/revoke a device, rotate an epoch, resolve a
 conflict, or delete PDS Memory. Browser auth may bind an enrollment request to a
 human identity, but does not authorize group transition.
+
+### Same-network Desktop enrollment transport
+
+The Desktop ceremony is specified by
+[ADR 0019](adr/0019-same-network-personal-device-enrollment.md). It transports
+the existing PDS challenge, signed join request, active-device approval,
+membership transition, Key Bundle, and epoch acknowledgements; it does not
+define an alternate membership protocol.
+
+The one-use invitation secret remains in a URL fragment and is never sent as an
+HTTP bearer credential. HKDF-SHA-256 derives an invitation transport key, and
+all pairing exchanges use AES-256-GCM with direction, invitation ID, and
+message ID bound as AAD. The listener permits only the exact enrollment routes
+and the existing authenticated encrypted relay route. It is hosted alongside
+the group's Authority/Relay by the Authority-hosting installation; joined
+replicas do not receive or copy the Authority private key merely to originate
+invitations. A valid invitation can request approval, but only the active
+device's existing PDS signing key can authorize the transition.
+
+Completion is not successful until the joining deployment has verified and
+durably reconciled the active group state into its own database. That local
+binding uses the joining deployment's local User id for Projection,
+materialization, and Recall; the authority-side subject remains enrollment
+provenance and is never substituted for the local User. The local group,
+membership, and Personal Sync Policy must survive service restart before the
+device reports synchronization as ready.
 
 ## 2. Encoding and signed bytes
 
@@ -287,7 +317,11 @@ X25519 envelopes. It is never Authority plaintext. It is exactly:
 
 `recipientSnapshot` is unique, ASCII sorted, and equals post-transition active
 devices plus exactly one recovery recipient. `recipientSnapshotHash` is SHA-256
-of its JCS array. `keyBundleHash` is SHA-256 of full finalized Key Bundle.
+of its JCS array. `keyBundleHash` is SHA-256 of the JCS object containing the
+exact `draft` and device `authorization`. This stable pre-acceptance identifier
+lets the device bind the transition before the Authority countersignature
+exists. The Authority countersignature still authenticates final acceptance and
+is mandatory on every stored or served Key Bundle.
 Commitments are SHA-256 of exact 32-byte key values. `epoch` is `nextEpoch`;
 `keyType` is exactly `group-secret-set`; `version` is exactly `1`.
 
@@ -359,7 +393,7 @@ canonical remote alias exists:
     "closed": true,
     "sourceAdapter": "adapter-id",
     "sourceAdapterVersion": "version",
-    "captureMethod": "supported_capture_hook",
+    "captureMethod": "transcript",
     "sourceCreatedAt": "2026-07-15T00:00:00.000Z",
     "sourceClosedAt": "2026-07-15T00:00:01.000Z",
     "observedClosedAt": "2026-07-15T00:00:02.000Z"
@@ -376,9 +410,9 @@ canonical remote alias exists:
 (base64url SHA-256). `recordCount` equals records length; `rawByteCount` equals
 sum of decoded `payload` byte lengths; and
 `sourceClosureHash = base64url(SHA256(UTF8(JCS(rawClosure.records))))`.
-Payload plaintext is exactly UTF-8 JCS of complete source manifest, including
-`originSignature`. `originSignature` is excluded only for source-manifest hash,
-package-id preimage, and source-manifest signature bytes as defined in section 2.
+Payload plaintext is exactly UTF-8 JCS of one complete immutable source item.
+`originSignature` is excluded only for source-manifest hash, package-id preimage,
+and source-manifest signature bytes as defined in section 2.
 
 Closure is contiguous ordered raw source observations with ordinals `0..n-1`,
 no gaps, and no duplicate ordinal. Origin attests immutable `terminal.cursor`
@@ -387,13 +421,55 @@ raw hashes, closure hash, manifest ID, and origin signature before
 materialization. Without an independently signed source feed, receiver can
 verify internal closure consistency only; it cannot prove origin omitted no
 source records. Raw source records retain original source payload bytes plus
-source-native identity, source order, and observation provenance.
+source-native identity, source order, and observation provenance. For Koed
+Conversation source items, the shared package implementation accepts only UTF-8
+JCS payloads with exactly `sourceNativeItemId`, `sequence`, `sourceTimestamp`,
+`observedAt`, `actor`, `type`, `content`, and `metadata`. `sequence` equals
+record `ordinal`; `actor` is the canonical source actor and `type` is the
+source event classification needed by the receiving device's local Projection.
+Metadata permits only `contentType`, `sourceRole`, `toolName`, and `toolCallId`,
+each a bounded string. This is an immutable source-item profile, not a derived
+Memory/Event schema. Paths, credentials, Team fields,
+queue/database identifiers, derived Memory structures, and unknown metadata
+fail closed.
 
-First slice excludes **all** derived data: Memory Events, Memory Nodes,
-Projection rows, embeddings/vectors, indexes, LCM Placeholders, LCM Summaries,
-titles, evidence, and local processing state. Source-owned LCM Summary sync is
-deferred non-V1. Each replica runs local Projection and local LCM Summary
-Service after source validation.
+The immutable source manifest excludes derived data. Derived Personal data uses
+a separate artifact package so later Projection or embedding completion cannot
+mutate the origin-signed source closure. Artifact packages bind source
+fingerprint, source closure hash, artifact class, portable schema version,
+producer device, compatibility contract, ordered content hashes, and payload
+hash before device signing and normal recipient encryption.
+
+The V1 artifact registry initially permits:
+
+- `memory_event/v1`, containing portable projected-event data with stable source
+  item bindings and no database primary keys;
+- `memory_embedding/v1`, containing an event content hash, canonical vector, and
+  the exact embedding contract: model artifact identity, dimensions, tokenizer
+  and input transformation, pooling, normalization, and embedding version.
+
+The receiver verifies group membership, signatures, source binding, payload
+hash, artifact schema, and contract compatibility before a transactional,
+idempotent upsert. A compatible artifact is trusted because its producer is an
+active explicitly enrolled Personal device. An incompatible or unavailable
+artifact is ignored without weakening source replication and is rebuilt from
+the canonical source closure. Local HNSW/vector indexes, queue state, leases,
+credentials, paths, and operational rows are never artifact payloads.
+
+Artifact types are registered explicitly in code. Every future durable Personal
+data class must be classified as replicated, locally derived, or device-local,
+with tests. Unknown classes and versions fail closed independently and do not
+invalidate an otherwise valid canonical source package. Team-owned data is not
+admitted merely because a local table contains it; its Team authority,
+revocation, and retention protocol remains controlling.
+
+Materialized replica source identity, provenance, ordering, and source payload
+remain immutable. Local Projection may update only its allowlisted processing
+fields on mapped source items. The receiving device may also maintain the
+allowlisted derived title fields on the local Session record; those fields are
+not origin source, do not alter the signed closure, and are not authority for a
+later package. Any other mutation or deletion of a materialized source Session
+or mapped source item fails closed.
 
 Equal source fingerprint plus equal closure hash converges to one logical
 Memory identity while preserving both origin observations. Equal fingerprint
@@ -410,20 +486,21 @@ distinct.
 
 ## 6. Encryption and recipient envelopes
 
-Transport uses TLS and PDS end-to-end encryption. Source plaintext package is
-encoded once, encrypted under random 32-byte content encryption key (CEK), then
-CEK is recipient-enveloped for every active recipient. Re-serving device may
-add valid recipient envelopes without changing signed source manifest, closure,
-content ciphertext, or origin claim. Serving device signs its transport envelope
-with its device signing key.
+Transport uses TLS and PDS end-to-end encryption. Each serving transport
+encrypts exact immutable origin-manifest bytes under fresh random 32-byte content
+encryption key (CEK), then recipient-envelopes CEK for every active recipient.
+Re-serving preserves origin manifest, closure, package ID, and source-manifest
+hash, but creates fresh CEK, payload nonce, transport ID, ciphertext, recipient
+envelopes, and serving signatures.
 
 ### Ciphertext
 
 Payload uses AES-256-GCM with random 96-bit nonce. CEK must be generated by OS
-CSPRNG and used once. Payload AAD is UTF-8 JCS of transport header excluding
-`payloadCiphertextHash`, `payloadTag`, and `originTransportSignature`. It
-includes exactly protocol, group id, package id, source-manifest hash, origin
-device id, `contentEpoch`, total plaintext bytes, chunk count, and payload nonce.
+CSPRNG and used once. Payload AAD is UTF-8 JCS of complete serving transport
+header excluding `payloadCiphertextHash`, `payloadTag`, and `servingSignature`.
+It binds protocol/version, transport and group IDs, package and source-manifest
+hashes, origin and serving devices, content/recipient epochs, plaintext/chunk
+bounds, nonce, expiry, Authority head, and intended recipient snapshot/hash.
 `contentEpoch` is immutable source-package metadata. Nonce reuse under a CEK is
 fatal and package is rejected. Compression is forbidden before or after
 encryption.
@@ -459,36 +536,54 @@ canonical decimal string. Envelope CEK encryption is AES-256-GCM using
 }
 ```
 
-Recipient envelope fields are exactly `protocol`, `packageId`, `contentEpoch`,
-`recipientEpoch`, `senderDeviceId`, `recipientDeviceId`, `recipientKemKeyId`,
-`ephemeralPublicKey` (raw 32-byte base64url), `nonce` (12-byte base64url),
-`ciphertext` (32-byte base64url CEK), `tag` (16-byte base64url), and
-`servingSignature` (`signerKeyId`, `signature`). It is signed under
-`transport-envelope` with `servingSignature` omitted. Reject missing/unknown
-fields, wrong lengths, recipient/key epoch mismatch, failed AEAD, stale
-membership, or bad signature. Re-serving after epoch rotation preserves source
-ciphertext/header and `contentEpoch`, then adds only a new valid
-`recipientEpoch` envelope.
+Recipient envelope fields are exactly `protocol`, `version`, `transportId`,
+`packageId`, `contentEpoch`, `recipientEpoch`, `senderDeviceId`, `recipientDeviceId`,
+`recipientKemKeyId`, `ephemeralPublicKey` (raw 32-byte base64url), `nonce`
+(12-byte base64url), `ciphertext` (32-byte base64url CEK), `tag` (16-byte
+base64url), and `servingSignature` (`signerKeyId`, `signature`).
+It is signed under `transport-envelope` with `servingSignature` omitted. Reject
+missing/unknown fields, wrong lengths, recipient/key epoch mismatch, failed
+AEAD, stale membership, or bad signature. Re-serving preserves only immutable
+origin content and creates fresh ciphertext/header/envelopes under current
+recipient epoch.
 
 ## 7. Relay, package, replay, and retention
 
 Relay accepts only current valid membership certificate and signed transport
-header. Header has exactly `protocol`, `groupId`, `packageId`,
-`sourceManifestHash`, `originDeviceId`, `contentEpoch`, `plaintextByteCount`,
-`chunkCount`, `payloadNonce`, `payloadCiphertextHash`, `payloadTag`, `expiresAt`,
-`intendedRecipientSnapshot`, `intendedRecipientSnapshotHash`, and
-`originTransportSignature` (`signerKeyId`, `signature`). Signature bytes omit
-whole `originTransportSignature` wrapper. Snapshot is unique ASCII-sorted active
-device IDs at acceptance; its hash is SHA-256 of its JCS array. Relay validates
-submitted snapshot against group head and persists exact snapshot/hash and
-`relayAcceptedAt` atomically with package acceptance. It rejects snapshot
-mismatch, stale membership, expiry, or re-acceptance with different snapshot.
+header. Package implementations construct an opaque runtime context only after
+cryptographically verifying Authority-signed membership certificates against
+configured Authority public key and current log head/epoch. Callers cannot
+supply keys, heads, epochs, or recipient snapshots to package verification.
+Public package verification accepts bounded canonical UTF-8 wire bytes only;
+objects are not a wire input. Header has exactly `protocol`, `version`,
+`transportId`, `groupId`, `packageId`, `sourceManifestHash`, `originDeviceId`,
+`contentEpoch`,
+`recipientEpoch`, `plaintextByteCount`, `chunkCount`, `payloadNonce`,
+`payloadCiphertextHash`, `payloadTag`, `expiresAt`, `servingDeviceId`,
+`servingSigningKeyId`, `authorityHead`, `intendedRecipientSnapshot`,
+`intendedRecipientSnapshotHash`, and `servingSignature` (`signerKeyId`,
+`signature`). Signature bytes omit whole `servingSignature` wrapper. Snapshot is
+unique ASCII-sorted active device IDs at acceptance; its hash is SHA-256 of its
+JCS array. Relay validates submitted snapshot against current authority head and
+persists exact snapshot/hash and `relayAcceptedAt` atomically with package
+acceptance. It rejects snapshot mismatch, stale membership, expiry, or
+re-acceptance with different snapshot.
 `payloadNonce` is 12-byte base64url, `payloadTag` is 16-byte base64url, and
 `payloadCiphertextHash` is base64url SHA-256 of
 `payloadCiphertext || payloadTag`; `payloadCiphertext` is concatenation of chunk
-`ciphertext` in ascending `chunkIndex`. Each chunk has
-exactly `protocol`, `groupId`,
-`packageId`, `chunkIndex`, `chunkCount`, `ciphertext`, and `chunkHash`. It sees
+`ciphertext` in ascending `chunkIndex`. Shared package V1 serializes this as a
+fresh, signed serving transport header with `version`, `transportId`,
+`recipientEpoch`, `servingDeviceId`, `servingSigningKeyId`, `authorityHead`,
+and `servingSignature` in addition to header bindings above. The serving
+signature uses `transport-envelope` bytes and binds exact group, Authority
+head, origin, content, recipient snapshot/epoch, nonce, expiry, and format. An origin is a
+serving replica for its initial upload. A re-serving replica creates fresh CEK,
+payload nonce, transport ID, ciphertext, recipient envelopes, and serving
+signature while preserving exact origin manifest and source-manifest hash.
+Retries reuse exact transport bytes; recipient/snapshot/epoch changes require a
+fresh transport. Each chunk has
+exactly `protocol`, `version`, `transportId`, `groupId`, `packageId`,
+`chunkIndex`, `chunkCount`, `ciphertext`, and `chunkHash`. It sees
 encrypted chunks plus redacted metadata: opaque group/source/
 target IDs, package id/hash, epoch, byte count, chunk count/index, expiry,
 delivery state, and retry cursor. It may observe IP address, timing, size,
@@ -504,31 +599,60 @@ Limits are hard limits before persistence:
 | encrypted chunk                        |   512 KiB |
 | chunks per package                     |       128 |
 | control statement/certificate          |     1 MiB |
+| recipients per package                 |        64 |
 | outstanding encrypted bytes per sender |     2 GiB |
 | retained encrypted bytes per group     |    10 GiB |
 | compression                            | forbidden |
 
 Relay retains undelivered package bytes for 30 days from accepted upload.
-`PackageAck` is exactly `protocol`, `packageId`, `sourceManifestHash`,
-`recipientDeviceId`, `intendedRecipientSnapshotHash`, `relayAcceptedAt`,
-`ackedAt`, `result` (`materialized`), and `signature` (`signerKeyId`,
-`signature`). It signs `package-ack` bytes with `signature` omitted. Relay
-accepts ACK only once receiver has validated signed header, exact persisted
-snapshot/hash, recipient membership at acceptance, ciphertext, envelopes,
-source manifest, and authority deletion floor before materialization. Same ACK
-bytes are idempotent; same `(packageId, recipientDeviceId)` with different hash,
-result, snapshot, or signature quarantines and does not count.
+Every init, upload, metadata/read, exact chunk read, commit, ACK, and cursor
+operation locks and rereads current active Group/member/certificate/head/epoch
+with no pending epoch in same transaction as its data action. A lifecycle race
+therefore fails action rather than trusting cached authorization.
 
-After every snapshot recipient ACKs, relay deletes bytes 7 days later. If a
-snapshot recipient is revoked **after acceptance**, only a valid finalized
-revoke statement waives that recipient; relay retains waiver hash. A revoked
-recipient cannot ACK after revocation. On expiry relay deletes bytes, records
-redacted expiry, and accepts no successful ACK; an authorized active replica
-must re-upload same immutable package under a fresh header/current recipient
-snapshot. Recovery recipient may re-serve retained validated package after
-membership recovery, subject to current epoch/bundle and deletion-floor checks.
-Redacted delivery receipt may remain only through quota/audit retention.
-Retention expiry never changes local replicas.
+The Relay exposes an authenticated held wake request for package, membership,
+key-epoch, conflict, and tombstone availability. A wake contains no plaintext
+or authorization result and is never durable authority. Devices reconcile
+bounded mailbox and lifecycle state after startup, reconnect, or a wake.
+Listening begins before the durable mailbox check, closing the check/listen
+race. Duplicate or missed wakes are harmless. Continuous interval polling is
+not a V1 synchronization path; connection recovery backoff and persisted retry
+due-times may schedule bounded reconciliation.
+
+`PackageAck` is exactly `protocol`, `groupId`, `transportId`, `packageId`,
+`sourceManifestHash`, `recipientDeviceId`,
+`intendedRecipientSnapshotHash`, `relayAcceptedAt`, `ackedAt`, `result`
+(`materialized`), and `signature` (`signerKeyId`, `signature`). It signs
+`package-ack` bytes with `signature` omitted. Relay accepts ACK only once
+receiver has validated signed header, exact persisted transport/package/snapshot
+identity and `relayAcceptedAt`, current recipient membership, ciphertext,
+envelopes, source manifest, and authority deletion floor before materialization.
+Same ACK bytes are idempotent; same `(groupId, transportId, packageId,
+recipientDeviceId)` with different hash, result, snapshot, or signature
+quarantines and does not count.
+
+The sender records upload acceptance as `committed`, not delivered. Its durable
+outbox advances to `acked` only after an authenticated transport read confirms
+that every intended recipient snapshot member has a valid ACK. The held wake
+request includes only opaque pending transport IDs, begins listening before its
+durable mailbox and ACK checks, and wakes both recipients with pending packages
+and senders whose transports became fully acknowledged. A lost notification is
+therefore repaired by the post-listen durable check without interval polling.
+The receiver keeps its local inbox leased until materialization, relay ACK, and
+durable local completion all succeed; an ACK failure leaves the inbox
+retryable.
+
+After every snapshot recipient ACKs, relay deletes encrypted chunk bytes and
+recipient envelopes 7 days later. If a snapshot recipient is revoked **after
+acceptance**, only a valid finalized revoke statement waives that recipient;
+relay retains waiver hash. A revoked recipient cannot ACK after revocation. On
+expiry relay deletes encrypted chunk bytes and envelopes, records bounded
+redacted receipt metadata, creates no tombstone, and accepts no successful ACK;
+an authorized active replica must re-upload same immutable package under a
+fresh header/current recipient snapshot. Recovery recipient may re-serve
+retained validated package after membership recovery, subject to current
+epoch/bundle and deletion-floor checks. Retention expiry never changes local
+replicas.
 
 Receiver replay table key is `(groupId, packageId)`. Same id and same signed
 source-manifest hash is idempotent. Same id with different hash is tampering:

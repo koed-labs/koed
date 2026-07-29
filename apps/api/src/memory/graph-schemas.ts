@@ -178,7 +178,7 @@ export const expandMemoryNodeQuerySchema = z
   .object({
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
-    workspace_id: z.string().min(1).optional(),
+    project_id: z.string().min(1).optional(),
     team_workspace_id: z.string().uuid().optional(),
     recent_days: z.coerce.number().int().positive().max(36500).optional(),
     source_after: z.coerce.date().optional(),
@@ -192,11 +192,11 @@ export const expandMemoryNodeQuerySchema = z
         message: "session_id is required when search_domain is session"
       });
     }
-    if (input.search_domain === "project" && !input.workspace_id) {
+    if (input.search_domain === "project" && !input.project_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["workspace_id"],
-        message: "workspace_id is required when search_domain is project"
+        path: ["project_id"],
+        message: "project_id is required when search_domain is project"
       });
     }
     if (

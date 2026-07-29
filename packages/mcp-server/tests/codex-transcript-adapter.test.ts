@@ -1,17 +1,12 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   adaptCodexTranscriptV1,
   codexTranscriptRecordHash,
-  legacyCodexTranscriptItemKey,
   type CodexTranscriptObservation
 } from "../src/codex-transcript-adapter.js";
 import {
   buildCodexTranscriptConversationItems,
-  parseTranscriptFileRecords,
-  type CodexTranscriptCheckpointState
+  parseTranscriptJournalBytes
 } from "../src/codex-transcript-parser.js";
 
 const record = {
@@ -46,51 +41,27 @@ const observation: CodexTranscriptObservation = {
 };
 
 describe("codex-transcript-v1 adapter", () => {
-  it("exposes append-safe checkpoint reads for future transcript tailers", () => {
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-transcript-parser-")
-    );
-    const transcriptPath = path.join(directory, "session.jsonl");
+  it("parses an appended journal segment from its durable source cursor", () => {
     const first = `${JSON.stringify(record)}\n`;
     const second = `${JSON.stringify({
       ...record,
       timestamp: "2026-07-01T12:00:01.000Z",
       payload: { type: "agent_message", message: "Captured from append" }
     })}\n`;
-    fs.writeFileSync(transcriptPath, first);
     const initialSize = Buffer.byteLength(first);
-    fs.appendFileSync(transcriptPath, second);
-    const state: CodexTranscriptCheckpointState = {
-      seen: {},
-      rawSeen: {},
-      transcriptOffsets: {
-        [`watcher:${transcriptPath}`]: {
-          offset: initialSize,
-          lineCount: 1,
-          size: initialSize
-        }
-      }
-    };
+    const result = parseTranscriptJournalBytes({
+      bytes: Buffer.from(second),
+      absoluteStartOffset: initialSize,
+      lineIndexOffset: 1,
+      prior: { lastEventTime: record.timestamp }
+    });
 
-    try {
-      const result = parseTranscriptFileRecords({
-        transcriptPath,
-        state,
-        stateScope: "watcher"
-      });
-
-      expect(result.records).toHaveLength(1);
-      expect(JSON.stringify(result.records[0])).toContain(
-        "Captured from append"
-      );
-      expect(result.checkpoint).toMatchObject({
-        offset: Buffer.byteLength(first + second),
-        lineCount: 2,
-        size: Buffer.byteLength(first + second)
-      });
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
+    expect(result.records).toHaveLength(1);
+    expect(JSON.stringify(result.records[0])).toContain("Captured from append");
+    expect(result.checkpoint).toMatchObject({
+      offset: Buffer.byteLength(first + second),
+      lineCount: 2
+    });
   });
 
   it("keeps canonical identity transport and path independent", () => {
@@ -99,35 +70,22 @@ describe("codex-transcript-v1 adapter", () => {
       sourceSessionId: "session-1",
       threadKind: "conversation" as const
     };
-    const hook = adaptCodexTranscriptV1({
+    const watched = adaptCodexTranscriptV1({
       ...common,
-      sourceTransport: "hook",
-      localSourcePath: "/Users/alice/.codex/session.jsonl"
+      sourceTransport: "transcript"
     })[0]!;
     const imported = adaptCodexTranscriptV1({
       ...common,
       sourceTransport: "historical_import",
-      localSourcePath: "/Users/bob/moved/session.jsonl",
       sourceFingerprint: "a".repeat(64)
     })[0]!;
-    const watched = adaptCodexTranscriptV1({
-      ...common,
-      sourceTransport: "transcript",
-      localSourcePath: "/Users/alice/.codex/session.jsonl"
-    })[0]!;
-
-    expect(imported.idempotencyKey).toBe(hook.idempotencyKey);
-    expect(watched.idempotencyKey).toBe(hook.idempotencyKey);
-    expect(imported.sourceHash).toBe(hook.sourceHash);
-    expect(watched.sourceHash).toBe(hook.sourceHash);
+    expect(imported.idempotencyKey).toBe(watched.idempotencyKey);
+    expect(imported.sourceHash).toBe(watched.sourceHash);
     expect(imported.sourceHash).toHaveLength(64);
     expect(imported.metadata).toMatchObject({
       transcriptItemDiscriminator: "primary:codex_transcript_user"
     });
     expect(codexTranscriptRecordHash(record)).toHaveLength(64);
-    expect(imported.sourcePath).toBeUndefined();
-    expect(hook.sourcePath).toBe("/Users/alice/.codex/session.jsonl");
-    expect(watched.sourcePath).toBe("/Users/alice/.codex/session.jsonl");
     expect(imported.metadata).toMatchObject({
       transcriptByteOffset: 512,
       transcriptItemDiscriminator: "primary:codex_transcript_user",
@@ -135,51 +93,27 @@ describe("codex-transcript-v1 adapter", () => {
     });
   });
 
-  it("emits the exact path-bound v1 identity as a migration alias", () => {
-    const item = adaptCodexTranscriptV1({
-      observations: [observation],
-      sourceSessionId: "session-1",
-      sourceTransport: "hook",
-      localSourcePath: "/Users/alice/.codex/session.jsonl",
-      threadKind: "conversation"
-    })[0]!;
-
-    expect(item.legacyIdempotencyKeys).toEqual([
-      legacyCodexTranscriptItemKey({
-        sourceSessionId: "session-1",
-        transcriptPath: "/Users/alice/.codex/session.jsonl",
-        sourcePosition: 512,
-        sourceRecordType: "event_msg",
-        sourceEventType: "user_message"
-      })
-    ]);
-  });
-
-  it("uses one parser and adapter path for Hook and historical observations", () => {
+  it("uses one parser and adapter path for live and historical journals", () => {
     const common = {
       records: [record],
       sourceSessionId: "session-parser-parity",
       threadKind: "conversation" as const
     };
-    const hook = buildCodexTranscriptConversationItems({
+    const watched = buildCodexTranscriptConversationItems({
       ...common,
-      sourceTransport: "hook",
-      localSourcePath: "/Users/alice/.codex/session.jsonl",
-      hookEventName: "Stop"
+      sourceTransport: "transcript"
     });
     const imported = buildCodexTranscriptConversationItems({
       ...common,
       sourceTransport: "historical_import",
-      localSourcePath: "/Users/alice/.codex/session.jsonl",
       sourceFingerprint: "b".repeat(64)
     });
 
     expect(imported).toHaveLength(1);
     expect(imported[0]).toMatchObject({
-      idempotencyKey: hook[0]?.idempotencyKey,
-      sourceHash: hook[0]?.sourceHash,
-      rawText: hook[0]?.rawText,
-      sourcePath: undefined,
+      idempotencyKey: watched[0]?.idempotencyKey,
+      sourceHash: watched[0]?.sourceHash,
+      rawText: watched[0]?.rawText,
       metadata: {
         transcriptItemDiscriminator: "primary:codex_transcript_user",
         sourceFingerprint: "b".repeat(64)
@@ -246,46 +180,79 @@ describe("codex-transcript-v1 adapter", () => {
     };
     const first = buildCodexTranscriptConversationItems({
       ...common,
-      sourceTransport: "hook",
-      localSourcePath: "/private/first/session.jsonl"
-    });
-    const moved = buildCodexTranscriptConversationItems({
-      ...common,
-      sourceTransport: "transcript",
-      localSourcePath: "/private/moved/session.jsonl"
+      sourceTransport: "transcript"
     });
     const imported = buildCodexTranscriptConversationItems({
       ...common,
-      sourceTransport: "historical_import",
-      localSourcePath: "/private/import/session.jsonl"
+      sourceTransport: "historical_import"
     });
 
-    expect(moved.map((item) => item.idempotencyKey)).toEqual(
-      first.map((item) => item.idempotencyKey)
-    );
     expect(imported.map((item) => item.idempotencyKey)).toEqual(
       first.map((item) => item.idempotencyKey)
-    );
-    expect(moved.map((item) => item.externalTurnId)).toEqual(
-      first.map((item) => item.externalTurnId)
     );
     expect(imported.map((item) => item.externalTurnId)).toEqual(
       first.map((item) => item.externalTurnId)
     );
-    expect(first.every((item) => item.metadata.observedViaHook === true)).toBe(
-      true
-    );
     expect(
-      moved.every(
-        (item) =>
-          item.metadata.observedViaTranscript === true &&
-          item.metadata.observedViaHook === undefined
-      )
+      first.every((item) => item.metadata.observedViaTranscript === true)
     ).toBe(true);
     expect(
       imported.every(
         (item) => item.metadata.observedViaHistoricalImport === true
       )
     ).toBe(true);
+  });
+
+  it("uses the parsed semantic kind for new provider tool response types", () => {
+    const turnId = "turn-provider-tool-search";
+    const records = [
+      {
+        timestamp: "2026-07-01T12:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "tool_search_call",
+          id: "tool-search-1",
+          call_id: "call-tool-search-1",
+          status: "completed",
+          execution: "client",
+          arguments: { query: "find a browser tool" },
+          internal_chat_message_metadata_passthrough: { turn_id: turnId }
+        }
+      },
+      {
+        timestamp: "2026-07-01T12:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "tool_search_output",
+          call_id: "call-tool-search-1",
+          status: "completed",
+          execution: "client",
+          tools: [
+            {
+              type: "namespace",
+              name: "mcp__chrome_devtools",
+              tools: [{ type: "function", name: "list_pages" }]
+            }
+          ],
+          internal_chat_message_metadata_passthrough: { turn_id: turnId }
+        }
+      }
+    ];
+
+    const items = buildCodexTranscriptConversationItems({
+      records,
+      sourceSessionId: "response-session-tool-search",
+      sessionId: "3c4054a6-51b8-4eb9-9eef-63cc630cfd8a",
+      sourceTransport: "transcript",
+      threadKind: "conversation",
+      preferStableResponseItems: true
+    });
+
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.observationComponent)).toEqual([
+      "tool_call",
+      "tool_result"
+    ]);
+    expect(items.every((item) => item.canonicalItemKey)).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import {
 } from "@koed/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
+import { completeUpstreamDisconnectCleanup } from "./upstream-disconnect-cleanup.js";
 import {
   refreshUpstreamBackendCapabilities,
   registerUpstreamBackend,
@@ -19,8 +20,17 @@ import {
   disconnectUpstreamBackendEnrollment,
   getUpstreamEnrollmentStatus,
   invalidateUpstreamEnrollmentReferences,
+  readUpstreamEnrollmentBinding,
   startUpstreamEnrollment
 } from "./upstream-enrollment.js";
+
+const remotePrincipalUserId = "11111111-1111-4111-8111-111111111111";
+const remoteDeviceCredentialId = "22222222-2222-4222-8222-222222222222";
+const activeCredentialPayload = {
+  ok: true,
+  user: { id: remotePrincipalUserId },
+  credential: { id: remoteDeviceCredentialId }
+};
 
 const temps: string[] = [];
 const proofTemps: string[] = [];
@@ -74,7 +84,7 @@ const deferredCredentialStatusFetch = () => {
       ) {
         requested.resolve();
         await release.promise;
-        return response(true, 200, { ok: true });
+        return response(true, 200, activeCredentialPayload);
       }
       return fallback(input, init);
     }
@@ -150,9 +160,20 @@ const enrollmentFetch =
         return response(false, 503, { error: "temporarily unavailable" });
       }
       if (credentialActive) {
-        return response(true, 200, { ok: true });
+        return response(true, 200, activeCredentialPayload);
       }
       return response(false, 401, { error: "credential not active" });
+    }
+    if (
+      init?.method === "DELETE" &&
+      parsed.pathname === "/v1/local-edge/device-credentials/current"
+    ) {
+      if (credentialActive === "unknown") {
+        return response(false, 503, { error: "temporarily unavailable" });
+      }
+      return credentialActive
+        ? response(true, 200, { revoked: true })
+        : response(false, 401, { error: "credential not active" });
     }
     return response(false, 404, {
       error: `Unhandled ${init?.method} ${parsed.pathname}`
@@ -170,23 +191,36 @@ const updateRegistry = (
   writeFileSync(paths.upstreamBackendsPath, `${JSON.stringify(registry)}\n`);
 };
 
-const registerValidatedBackend = async () => {
-  const paths = tempPaths();
-  registerUpstreamBackend(paths, {
-    id: "team-vps",
-    url: "https://team.example.test",
-    profile: "team-self-hosted"
-  });
+const validateBackendCapabilities = async (
+  paths: ReturnType<typeof tempPaths>,
+  options: { collaboration?: boolean } = {}
+) => {
   await refreshUpstreamBackendCapabilities(paths, "team-vps", {
     now: () => new Date("2026-01-01T00:00:00.000Z"),
     fetch: async () =>
       response(true, 200, {
         product: "koed",
         apiVersion: "v1",
-        capabilitySchemaVersion: 3,
-        deployment: { profile: "team_self_hosted" }
+        capabilitySchemaVersion: 6,
+        deployment: { profile: "team_self_hosted" },
+        capabilities:
+          options.collaboration === false
+            ? {}
+            : { "memory.collaboration": { availability: "partial" } }
       })
   });
+};
+
+const registerValidatedBackend = async (
+  options: { collaboration?: boolean } = {}
+) => {
+  const paths = tempPaths();
+  registerUpstreamBackend(paths, {
+    id: "team-vps",
+    url: "https://team.example.test",
+    profile: "team-self-hosted"
+  });
+  await validateBackendCapabilities(paths, options);
   return paths;
 };
 
@@ -279,6 +313,7 @@ describe("upstream enrollment orchestration", () => {
     });
 
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      personalCollaboration: "enabled",
       teamWorkspaceRead: "enabled",
       sync: "enabled"
     });
@@ -294,7 +329,14 @@ describe("upstream enrollment orchestration", () => {
       enrollment: {
         backendId: "team-vps",
         requestId: "enroll-1",
-        requestedOperationFamilies: ["team_workspace_read", "sync"],
+        requestedOperationFamilies: [
+          "personal_collaboration_read",
+          "personal_collaboration_write",
+          "team_workspace_read",
+          "team_chat_read",
+          "team_chat_write",
+          "sync"
+        ],
         credential: {
           status: "unknown"
         }
@@ -306,8 +348,93 @@ describe("upstream enrollment orchestration", () => {
     expect(started.enrollment?.credential.reference).toMatch(
       /^keychain:\/\/koed-upstream\/team-vps\//
     );
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+        ?.operationFamilies
+    ).toEqual([
+      "personal_collaboration_read",
+      "personal_collaboration_write",
+      "team_workspace_read",
+      "team_chat_read",
+      "team_chat_write"
+    ]);
     expect(readFileSync(paths.upstreamEnrollmentsPath, "utf8")).not.toMatch(
       /token|verifier|password|bearer|cookie|authorization/i
+    );
+  });
+
+  it("does not grant collaboration scopes when the upstream omits that capability", async () => {
+    const paths = await registerValidatedBackend({ collaboration: false });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "enroll-without-chat",
+      fetch: enrollmentFetch()
+    });
+
+    expect(started.enrollment?.requestedOperationFamilies).toEqual([
+      "team_workspace_read"
+    ]);
+  });
+
+  it("admits shared-memory control locally without copying remote-only authority", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      shareGrantManagement: "enabled",
+      sync: "enabled",
+      admin: "enabled"
+    });
+
+    await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "enroll-shared-memory",
+      fetch: enrollmentFetch()
+    });
+
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+        ?.operationFamilies
+    ).toEqual([
+      "team_workspace_read",
+      "team_chat_read",
+      "team_chat_write",
+      "share_grant_management"
+    ]);
+  });
+
+  it("uses the browser activation URL returned by the Team backend", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const fallback = enrollmentFetch();
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "enroll-public-explorer",
+      fetch: async (input, init) => {
+        const url =
+          typeof input === "string" || input instanceof URL ? input : input.url;
+        if (
+          init?.method === "POST" &&
+          new URL(String(url)).pathname ===
+            "/v1/local-edge/device-enrollments/challenges"
+        ) {
+          return response(true, 200, {
+            challenge: { id: "challenge-public-explorer", status: "pending" },
+            activationUrl:
+              "https://app.example.test/device-enrollment/challenge-public-explorer"
+          });
+        }
+        return fallback(input, init);
+      }
+    });
+
+    expect(started.enrollment?.activationUrl).toBe(
+      "https://app.example.test/device-enrollment/challenge-public-explorer"
     );
   });
 
@@ -364,8 +491,16 @@ describe("upstream enrollment orchestration", () => {
       ok: true,
       state: "exchanged",
       enrollment: {
-        credential: { status: "configured", reference }
+        credential: { status: "configured", reference },
+        principalUserId: remotePrincipalUserId,
+        deviceCredentialId: remoteDeviceCredentialId
       }
+    });
+    expect(readUpstreamEnrollmentBinding(paths, "team-vps")).toEqual({
+      backendId: "team-vps",
+      enrollmentId: "enroll-exchange",
+      principalUserId: remotePrincipalUserId,
+      deviceCredentialId: remoteDeviceCredentialId
     });
   });
 
@@ -481,25 +616,28 @@ describe("upstream enrollment orchestration", () => {
     });
   });
 
-  it("rejects admin-only browser-mediated enrollment", async () => {
+  it("maps admin routing to narrow browser-confirmed action-grant authority", async () => {
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
       admin: "enabled"
     });
 
     const started = await startUpstreamEnrollment(paths, "team-vps", {
-      now: () => new Date("2026-01-01T00:00:00.000Z")
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-action-grant-only",
+      fetch: enrollmentFetch()
     });
 
     expect(started).toMatchObject({
-      ok: false,
-      state: "failed",
-      message:
-        "Upstream backend team-vps only enables admin routing, which cannot be enrolled through browser-mediated device enrollment."
+      ok: true,
+      state: "pending",
+      enrollment: {
+        requestedOperationFamilies: ["action_grant"]
+      }
     });
   });
 
-  it("omits admin from mixed browser-mediated enrollment requests", async () => {
+  it("never requests reusable admin authority during mixed browser enrollment", async () => {
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
       admin: "enabled",
@@ -516,9 +654,17 @@ describe("upstream enrollment orchestration", () => {
       ok: true,
       state: "pending",
       enrollment: {
-        requestedOperationFamilies: ["team_workspace_read"]
+        requestedOperationFamilies: [
+          "team_workspace_read",
+          "team_chat_read",
+          "team_chat_write",
+          "action_grant"
+        ]
       }
     });
+    expect(started.enrollment?.requestedOperationFamilies).not.toContain(
+      "admin"
+    );
   });
 
   it("does not cancel terminal enrollment state", async () => {
@@ -612,7 +758,8 @@ describe("upstream enrollment orchestration", () => {
       paths,
       "team-vps",
       {
-        now: () => new Date("2026-01-01T00:03:00.000Z")
+        now: () => new Date("2026-01-01T00:03:00.000Z"),
+        fetch: enrollmentFetch()
       }
     );
 
@@ -640,9 +787,11 @@ describe("upstream enrollment orchestration", () => {
       readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
     ).toBeNull();
 
+    completeUpstreamDisconnectCleanup(paths, "team-vps");
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
       teamWorkspaceRead: "enabled"
     });
+    await validateBackendCapabilities(paths);
     const restarted = await startUpstreamEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:04:00.000Z"),
       randomId: () => "enroll-after-disconnect",
@@ -659,6 +808,90 @@ describe("upstream enrollment orchestration", () => {
     expect(restarted.enrollment?.activationUrl).toContain(
       "/device-enrollment/"
     );
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+    ).not.toBeNull();
+  });
+
+  it("revokes an exchanged upstream credential before clearing local state", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-remote-revoke",
+      fetch: enrollmentFetch()
+    });
+    const reference = started.enrollment!.credential.reference!;
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch("approved", true)
+    });
+    let remoteAuthorization: string | null = null;
+    const disconnected = await disconnectUpstreamBackendEnrollment(
+      paths,
+      "team-vps",
+      {
+        now: () => new Date("2026-01-01T00:02:00.000Z"),
+        fetch: async (input, init) => {
+          const url =
+            typeof input === "string" || input instanceof URL
+              ? input
+              : input.url;
+          expect(init?.method).toBe("DELETE");
+          expect(new URL(String(url)).pathname).toBe(
+            "/v1/local-edge/device-credentials/current"
+          );
+          remoteAuthorization = new Headers(init?.headers).get("authorization");
+          return response(true, 200, { revoked: true });
+        }
+      }
+    );
+
+    expect(remoteAuthorization).toMatch(/^Koed-Device /);
+    expect(disconnected).toMatchObject({ ok: true, state: "revoked" });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, reference)
+    ).toBeNull();
+  });
+
+  it("keeps local enrollment usable for retry when remote revocation is unavailable", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-revoke-retry",
+      fetch: enrollmentFetch()
+    });
+    const reference = started.enrollment!.credential.reference!;
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch("approved", true)
+    });
+
+    const disconnected = await disconnectUpstreamBackendEnrollment(
+      paths,
+      "team-vps",
+      {
+        now: () => new Date("2026-01-01T00:02:00.000Z"),
+        fetch: enrollmentFetch("approved", "unknown")
+      }
+    );
+
+    expect(disconnected).toMatchObject({
+      ok: false,
+      state: "failed",
+      backend: {
+        routePolicy: { teamWorkspaceRead: "enabled" },
+        credential: { status: "configured", reference }
+      }
+    });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, reference)
+    ).not.toBeNull();
     expect(
       readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
     ).not.toBeNull();
@@ -683,7 +916,8 @@ describe("upstream enrollment orchestration", () => {
     await pendingStatus.requested;
 
     await disconnectUpstreamBackendEnrollment(paths, "team-vps", {
-      now: () => new Date("2026-01-01T00:02:00.000Z")
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      fetch: enrollmentFetch()
     });
     pendingStatus.release();
 
@@ -723,11 +957,14 @@ describe("upstream enrollment orchestration", () => {
     await pendingStatus.requested;
 
     await disconnectUpstreamBackendEnrollment(paths, "team-vps", {
-      now: () => new Date("2026-01-01T00:02:00.000Z")
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      fetch: enrollmentFetch()
     });
+    completeUpstreamDisconnectCleanup(paths, "team-vps");
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
       teamWorkspaceRead: "enabled"
     });
+    await validateBackendCapabilities(paths);
     const replacement = await startUpstreamEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:03:00.000Z"),
       randomId: () => "replacement-enrollment",
@@ -768,7 +1005,8 @@ describe("upstream enrollment orchestration", () => {
 
     await disconnectUpstreamBackendEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:01:00.000Z"),
-      randomId: () => "disconnect-record"
+      randomId: () => "disconnect-record",
+      fetch: enrollmentFetch()
     });
     pendingChallenge.release();
 

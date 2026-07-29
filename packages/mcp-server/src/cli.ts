@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   CURATED_MEMORY_REVIEW_MAX_EVIDENCE,
-  readLocalEdgeClientCredentialAuthorization
+  readLocalEdgeClientCredentialAuthorization,
+  watchKoedLocalWork
 } from "@koed/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -158,11 +159,9 @@ const memoryAnswerResponseDetailSchema = z.enum([
   "with_evidence"
 ]);
 const uuidSchema = z.string().uuid();
-const defaultWorkspaceId = (): string => process.cwd();
-const normalizeToolWorkspaceId = (workspaceId?: string): string =>
-  workspaceId && path.isAbsolute(workspaceId)
-    ? workspaceId
-    : defaultWorkspaceId();
+const defaultProjectId = (): string => process.cwd();
+const normalizeToolProjectId = (projectId?: string): string =>
+  projectId && path.isAbsolute(projectId) ? projectId : defaultProjectId();
 
 class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
   constructor(
@@ -174,14 +173,9 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
   async search(
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
-    return await this.client.upstreamOperation(
-      {
-        upstreamBackendId: this.upstreamBackendId,
-        operationFamily: "team_workspace_read",
-        method: "POST",
-        path: "/v1/memory/search",
-        body: input
-      },
+    return await this.client.teamMemorySearch(
+      this.upstreamBackendId,
+      input,
       this.authorization
     );
   }
@@ -191,34 +185,24 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
     input: {
       searchDomain?: string;
       sessionId?: string;
-      workspaceId?: string;
+      projectId?: string;
       teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
     } = {}
   ): Promise<Record<string, unknown>> {
-    const params = new URLSearchParams();
-    if (input.searchDomain) params.set("search_domain", input.searchDomain);
-    if (input.sessionId) params.set("session_id", input.sessionId);
-    if (input.workspaceId) params.set("workspace_id", input.workspaceId);
-    if (input.teamWorkspaceId) {
-      params.set("team_workspace_id", input.teamWorkspaceId);
-    }
-    if (input.recentDays !== undefined) {
-      params.set("recent_days", String(input.recentDays));
-    }
-    if (input.sourceAfter) params.set("source_after", input.sourceAfter);
-    if (input.sourceBefore) params.set("source_before", input.sourceBefore);
-    const query = params.toString();
-    return await this.client.upstreamOperation(
+    return await this.client.teamMemoryExpand(
+      this.upstreamBackendId,
+      nodeId,
       {
-        upstreamBackendId: this.upstreamBackendId,
-        operationFamily: "team_workspace_read",
-        method: "GET",
-        path: `/v1/memory/nodes/${encodeURIComponent(nodeId)}/expand${
-          query ? `?${query}` : ""
-        }`
+        search_domain: input.searchDomain,
+        session_id: input.sessionId,
+        project_id: input.projectId,
+        team_workspace_id: input.teamWorkspaceId,
+        recent_days: input.recentDays,
+        source_after: input.sourceAfter,
+        source_before: input.sourceBefore
       },
       this.authorization
     );
@@ -365,6 +349,20 @@ const backgroundLcmSummaryService = startLcmSummaryService(client, {
   serviceConfig: resolveLcmSummaryServiceConfig(process.env),
   workerConfig: resolveLcmSummaryWorkerConfig(process.env)
 });
+const localLcmWorkWatcher = backgroundLcmSummaryService
+  ? await watchKoedLocalWork(
+      path.resolve(
+        process.env.KOED_HOME?.trim() || path.join(os.homedir(), ".koed")
+      ),
+      "lcm-summary",
+      () => backgroundLcmSummaryService.nudge("share_bound_summary_requested"),
+      (error) =>
+        logger.warn(
+          { err: error },
+          "local LCM Summary Service work signal failed"
+        )
+    )
+  : null;
 const backgroundCuratedMemoryReviewService = startCuratedMemoryReviewService(
   client,
   { workerConfig: resolveCuratedMemoryReviewConfig(process.env) }
@@ -419,14 +417,14 @@ server.registerTool(
       search_domain: searchDomainSchema
         .default("project")
         .describe(
-          "Search boundary. Use project for the current workspace/project, session for one conversation thread, or global across all visible memory."
+          "Search boundary. Use project for the current Project, session for one conversation thread, or global across all visible memory."
         ),
-      workspace_id: z
+      project_id: z
         .string()
         .min(1)
         .optional()
         .describe(
-          "Project/workspace identifier for project search. Defaults to this Codex process cwd."
+          "Project identifier for project search. Defaults to this Codex process cwd."
         ),
       session_id: uuidSchema
         .optional()
@@ -475,7 +473,7 @@ server.registerTool(
       {
         searchDomain: input.search_domain,
         responseDetail: requestedResponseDetail,
-        hasWorkspaceId: Boolean(input.workspace_id),
+        hasProjectId: Boolean(input.project_id),
         hasTeamWorkspaceId: Boolean(input.team_workspace_id),
         hasSessionId: Boolean(input.session_id),
         hasRecentDays: input.recent_days !== undefined,
@@ -500,12 +498,12 @@ server.registerTool(
         localMemoryAgentSettingFor(localAgentSettings, "mcp_memory_answer")
       )
     );
-    const workspace_id =
+    const project_id =
       input.search_domain === "project"
-        ? normalizeToolWorkspaceId(input.workspace_id)
-        : input.workspace_id;
+        ? normalizeToolProjectId(input.project_id)
+        : input.project_id;
     const teamWorkspaceRoute = resolveProjectTeamWorkspaceRoute({
-      projectRoot: input.search_domain === "project" ? workspace_id : undefined,
+      projectRoot: input.search_domain === "project" ? project_id : undefined,
       requestedTeamWorkspaceId: input.team_workspace_id,
       env: process.env
     });
@@ -580,7 +578,7 @@ server.registerTool(
       client: retrievalClient,
       retrievalScope: retrieval_scope,
       searchDomain: input.search_domain,
-      workspaceId: workspace_id,
+      projectId: project_id,
       teamWorkspaceId: team_workspace_id,
       sessionId: input.session_id,
       recentDays: input.recent_days,
@@ -599,7 +597,7 @@ server.registerTool(
                 origin: "mcp_memory_answer",
                 retrieval_scope,
                 search_domain: input.search_domain,
-                workspace_id,
+                project_id,
                 team_workspace_id,
                 session_id: input.session_id,
                 status: "error",
@@ -616,7 +614,7 @@ server.registerTool(
                 origin: "mcp_memory_answer",
                 retrieval_scope,
                 search_domain: input.search_domain,
-                workspace_id,
+                project_id,
                 team_workspace_id,
                 session_id: input.session_id,
                 status: "answered",
@@ -703,7 +701,7 @@ server.registerTool(
               executionThreadId: execution.threadId,
               executionTurnId: execution.turnId,
               searchDomain: input.search_domain,
-              workspaceId: workspace_id,
+              projectId: project_id,
               attemptIndex: execution.attemptIndex,
               executionStatus: execution.status ?? "succeeded",
               replacementThreadReason: execution.replacementThreadReason,
@@ -794,7 +792,7 @@ if (backendToolCapabilities.curatedMemoryIntakeAvailable) {
           .describe(
             "Optional current Curated Memory assertion ID that may be relevant to a duplicate, correction, or conflict."
           ),
-        source_workspace_id: z
+        source_project_id: z
           .string()
           .min(1)
           .optional()
@@ -832,9 +830,7 @@ if (backendToolCapabilities.curatedMemoryIntakeAvailable) {
       );
       const result = await client.proposeCuratedMemory({
         ...input,
-        source_workspace_id: normalizeToolWorkspaceId(
-          input.source_workspace_id
-        ),
+        source_project_id: normalizeToolProjectId(input.source_project_id),
         created_by_model: "codex",
         created_by_prompt_version: "memory-intake-propose-mcp-v1"
       });
@@ -865,7 +861,7 @@ if (toolExposure.exposeLowLevelMemoryTools) {
       inputSchema: {
         query: z.string().min(1),
         search_domain: searchDomainSchema.default("project"),
-        workspace_id: z.string().min(1).optional(),
+        project_id: z.string().min(1).optional(),
         session_id: uuidSchema.optional(),
         recent_days: z.number().int().positive().max(36500).optional(),
         source_after: z.string().datetime().optional(),
@@ -878,10 +874,10 @@ if (toolExposure.exposeLowLevelMemoryTools) {
         await client.search({
           ...input,
           retrieval_scope: "personal",
-          workspace_id:
+          project_id:
             input.search_domain === "project"
-              ? normalizeToolWorkspaceId(input.workspace_id)
-              : input.workspace_id
+              ? normalizeToolProjectId(input.project_id)
+              : input.project_id
         })
       )
   );
@@ -909,6 +905,7 @@ const cleanup = () => {
   cleanedUp = true;
   logger.info("koed MCP server shutting down");
   answerBridgeHandle.close();
+  localLcmWorkWatcher?.stop();
   backgroundLcmSummaryService?.stop();
   backgroundCuratedMemoryReviewService.stop();
 };

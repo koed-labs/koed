@@ -17,15 +17,16 @@ import {
   type ReactNode
 } from "react";
 
-import { Button } from "../components/ui/button";
 import {
+  Button,
+  cn,
   Select,
   SelectItem,
   SelectPopup,
   SelectTrigger,
-  SelectValue
-} from "../components/ui/select";
-import { Spinner } from "../components/ui/spinner";
+  SelectValue,
+  Spinner
+} from "@koed/ui";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -33,7 +34,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem
 } from "../components/ui/sidebar";
-import { cn } from "../lib/cn";
 import { apiBaseUrl } from "./api";
 import { codexIdePromptUserText } from "./codexIdePrompt";
 import { PatchBody } from "./PatchDisclosure";
@@ -624,7 +624,9 @@ function AgentFlowSettingsCard({
           ) : null}
           <Button
             disabled={!localAgentReady || saving || !draft.model}
-            onClick={save}
+            onClick={() => {
+              void save();
+            }}
             size="sm"
             variant="secondary"
           >

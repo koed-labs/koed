@@ -1,5 +1,3 @@
-import type { DesktopThreadGroup } from "./project-memory-ui.js";
-
 export type DesktopConversationEvent = {
   id: string;
   actor: string | null;
@@ -35,13 +33,37 @@ export type DesktopConversationTimelineItem =
     };
 
 export function conversationEventText(event: DesktopConversationEvent): string {
-  return (
-    event.contentFull ??
-    event.content ??
-    event.rawContent ??
-    event.contentPreview ??
-    ""
-  ).trim();
+  return (event.content ?? event.contentPreview ?? "").trim();
+}
+
+export type ConversationEventPatch = {
+  sourceText: string;
+  summary: string;
+};
+
+const patchFilePattern =
+  /^(?:\*{3} (?:Add|Delete|Update) File: [^\n]+|diff --git [^\n]+)$/gmu;
+
+export function conversationEventPatch(
+  event: DesktopConversationEvent
+): ConversationEventPatch | null {
+  const toolName =
+    typeof event.metadata.toolName === "string"
+      ? event.metadata.toolName.toLocaleLowerCase()
+      : "";
+  const sourceText = conversationEventText(event);
+  const patchLike =
+    toolName.includes("patch") ||
+    sourceText.includes("*** Begin Patch") ||
+    /^diff --git /mu.test(sourceText);
+  if (!patchLike || !sourceText) return null;
+  const fileCount = new Set(sourceText.match(patchFilePattern) ?? []).size;
+  return {
+    sourceText,
+    summary: fileCount
+      ? `${fileCount} ${fileCount === 1 ? "file" : "files"} changed`
+      : "Source diff"
+  };
 }
 
 export function compareConversationEvents(
@@ -115,37 +137,4 @@ export function groupConversationEvents(
   }
   flushTools();
   return items;
-}
-
-export function conversationEventsUrl({
-  apiBaseUrl,
-  cursor,
-  limit,
-  thread
-}: {
-  apiBaseUrl: string;
-  cursor?: ConversationCursor;
-  limit: number;
-  thread: Pick<DesktopThreadGroup, "id" | "projectId">;
-}): string {
-  const url = new URL(
-    "/v1/memory/graph/events",
-    `${apiBaseUrl.replace(/\/$/, "")}/`
-  );
-  url.searchParams.set("projectId", thread.projectId);
-  url.searchParams.set("threadId", thread.id);
-  url.searchParams.set("limit", String(limit));
-  url.searchParams.set("includeContent", "true");
-  url.searchParams.set("includeInvalidated", "false");
-  if (cursor) {
-    url.searchParams.set("cursorTimestamp", cursor.timestamp);
-    url.searchParams.set("cursorId", cursor.id);
-    if (typeof cursor.sourceSequence === "number") {
-      url.searchParams.set(
-        "cursorSourceSequence",
-        String(cursor.sourceSequence)
-      );
-    }
-  }
-  return url.toString();
 }

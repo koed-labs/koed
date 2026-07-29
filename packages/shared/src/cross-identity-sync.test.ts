@@ -4,53 +4,126 @@ import {
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHUNKS,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
+  capturedSessionSyncUploadPackageManifestSchema,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
+  crossIdentitySyncPackageRequestHash,
+  crossIdentitySyncSummaryNodeRevisionHash,
   isCapturedSessionSyncChunkV1,
   isCapturedSessionSyncPackageV1,
+  type CapturedSessionSyncSummaryNodeV1,
   type CapturedSessionSyncPackageV1
 } from "./cross-identity-sync.js";
 
-const packageFixture = (): CapturedSessionSyncPackageV1 => ({
-  format: CAPTURED_SESSION_SYNC_FORMAT,
-  formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
-  policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
-  packageId: "11111111-1111-4111-8111-111111111111",
-  relationshipId: "22222222-2222-4222-8222-222222222222",
-  logicalMemoryId: "33333333-3333-4333-8333-333333333333",
-  sourceDeploymentId: "44444444-4444-4444-8444-444444444444",
-  sourceUserId: "55555555-5555-4555-8555-555555555555",
-  sourceReplicaId: "66666666-6666-4666-8666-666666666666",
-  targetDeploymentId: "77777777-7777-4777-8777-777777777777",
-  targetUserId: "88888888-8888-4888-8888-888888888888",
-  targetReplicaId: "99999999-9999-4999-8999-999999999999",
-  packageSequence: 1,
-  fromCursor: 0,
-  toCursor: 1,
-  createdAt: "2026-07-12T00:00:00.000Z",
-  consentDigest: "a".repeat(64),
-  policyDigest: "b".repeat(64),
-  session: {
-    originSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    externalSessionId: "thread-1",
-    sourceRuntime: "codex",
-    captureMethod: "mcp",
-    capturedAt: "2026-07-12T00:00:00.000Z",
-    title: "Test session",
-    sourceAdapterVersion: "1"
-  },
-  changes: [
-    {
-      cursor: 1,
-      operation: "delete",
-      originEventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      revisionHash: "c".repeat(64),
-      event: null
-    }
-  ]
-});
+const summaryNodeFixture = (): CapturedSessionSyncSummaryNodeV1 => {
+  const node = {
+    originNodeId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    kind: "leaf",
+    depth: 0,
+    lcmAlgorithmVersion: "lcm-v1",
+    summaryText: "A canonical LCM summary.",
+    summaryModel: "local-summary-model",
+    summaryPromptVersion: "prompt-v1",
+    summaryStructuredJson: {
+      schema_version: "lcm-structured-summary-v1",
+      summary_text: "A canonical LCM summary."
+    },
+    summaryStructuredSchemaVersion: "lcm-structured-summary-v1",
+    sourceOriginEventIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+    childOriginNodeIds: [],
+    sourceHash: "d".repeat(64),
+    sourceEventCount: 1,
+    sourceTokenEstimate: 12,
+    summaryTokenEstimate: 6,
+    createdAt: "2026-07-12T00:00:00.000Z",
+    updatedAt: "2026-07-12T00:01:00.000Z"
+  } satisfies Omit<CapturedSessionSyncSummaryNodeV1, "revisionHash">;
+  return {
+    ...node,
+    revisionHash: crossIdentitySyncSummaryNodeRevisionHash(node)
+  };
+};
+
+const packageFixture = (): CapturedSessionSyncPackageV1 => {
+  const summaryNodes = [summaryNodeFixture()];
+  return {
+    format: CAPTURED_SESSION_SYNC_FORMAT,
+    formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+    policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
+    packageId: "11111111-1111-4111-8111-111111111111",
+    relationshipId: "22222222-2222-4222-8222-222222222222",
+    logicalMemoryId: "33333333-3333-4333-8333-333333333333",
+    sourceDeploymentId: "44444444-4444-4444-8444-444444444444",
+    sourceUserId: "55555555-5555-4555-8555-555555555555",
+    sourceReplicaId: "66666666-6666-4666-8666-666666666666",
+    targetDeploymentId: "77777777-7777-4777-8777-777777777777",
+    targetUserId: "88888888-8888-4888-8888-888888888888",
+    targetReplicaId: "99999999-9999-4999-8999-999999999999",
+    packageSequence: 1,
+    fromCursor: 0,
+    toCursor: 1,
+    createdAt: "2026-07-12T00:00:00.000Z",
+    consentDigest: "a".repeat(64),
+    policyDigest: "b".repeat(64),
+    summaryRevisionHash: crossIdentitySyncDigest(summaryNodes),
+    session: {
+      originSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      externalSessionId: "thread-1",
+      sourceRuntime: "codex",
+      captureMethod: "mcp",
+      capturedAt: "2026-07-12T00:00:00.000Z",
+      title: "Test session",
+      sourceAdapterVersion: "1"
+    },
+    changes: [
+      {
+        cursor: 1,
+        operation: "delete",
+        originEventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        revisionHash: "c".repeat(64),
+        event: null
+      }
+    ],
+    summaryNodes
+  };
+};
 
 describe("Cross-Identity Sync protocol", () => {
+  it("uses one strict upload manifest contract across protocol boundaries", () => {
+    const manifest = {
+      objectClass: "sync_package",
+      format: CAPTURED_SESSION_SYNC_FORMAT,
+      formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+      packageDigest: "a".repeat(64),
+      summaryRevisionHash: null,
+      recipientKeyId: "sync-recipient:test",
+      recipientKeyVersion: 1,
+      recordCount: 2
+    };
+
+    expect(
+      capturedSessionSyncUploadPackageManifestSchema.safeParse(manifest).success
+    ).toBe(true);
+    expect(
+      capturedSessionSyncUploadPackageManifestSchema.safeParse({
+        ...manifest,
+        summaryRevisionHash: "b".repeat(64)
+      }).success
+    ).toBe(true);
+    const missingRevision: Partial<typeof manifest> = { ...manifest };
+    delete missingRevision.summaryRevisionHash;
+    expect(
+      capturedSessionSyncUploadPackageManifestSchema.safeParse(missingRevision)
+        .success
+    ).toBe(false);
+    expect(
+      capturedSessionSyncUploadPackageManifestSchema.safeParse({
+        ...manifest,
+        sourceText: "must not enter control metadata"
+      }).success
+    ).toBe(false);
+  });
+
   it("derives stable, namespace-sensitive protocol UUIDs", () => {
     const input = { relationship: "source", idempotencyKey: "retry-key" };
     const first = crossIdentitySyncDeterministicUuid(input);
@@ -114,6 +187,130 @@ describe("Cross-Identity Sync protocol", () => {
             extra: "../../not-a-protocol-field"
           }
         ]
+      })
+    ).toBe(false);
+  });
+
+  it("validates authoritative summary nodes and binds their canonical digest", () => {
+    const value = packageFixture();
+    const originalRequestHash = crossIdentitySyncPackageRequestHash(value);
+    const changedSummaryHash = crossIdentitySyncDigest([
+      { ...value.summaryNodes[0], summaryText: "Changed summary." }
+    ]);
+
+    expect(isCapturedSessionSyncPackageV1(value)).toBe(true);
+    expect(
+      crossIdentitySyncPackageRequestHash({
+        ...value,
+        summaryRevisionHash: changedSummaryHash
+      })
+    ).not.toBe(originalRequestHash);
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        summaryNodes: [
+          { ...value.summaryNodes[0], summaryText: "Tampered summary." }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        summaryNodes: [...value.summaryNodes, value.summaryNodes[0]]
+      })
+    ).toBe(false);
+  });
+
+  it("accepts a summary-only package without advancing the event cursor", () => {
+    const value = packageFixture();
+
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        fromCursor: 1,
+        toCursor: 1,
+        changes: []
+      })
+    ).toBe(true);
+  });
+
+  it("accepts an empty authoritative summary snapshot", () => {
+    const value = packageFixture();
+
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        fromCursor: 1,
+        toCursor: 1,
+        changes: [],
+        summaryNodes: [],
+        summaryRevisionHash: crossIdentitySyncDigest([])
+      })
+    ).toBe(true);
+  });
+
+  it("rejects malformed summary provenance and kind/children shapes", () => {
+    const value = packageFixture();
+    const node = value.summaryNodes[0]!;
+    const revise = (
+      candidate: CapturedSessionSyncSummaryNodeV1
+    ): CapturedSessionSyncSummaryNodeV1 => ({
+      ...candidate,
+      revisionHash: crossIdentitySyncSummaryNodeRevisionHash(candidate)
+    });
+    const invalidNodes = (
+      [
+        {
+          ...node,
+          sourceOriginEventIds: [
+            node.sourceOriginEventIds[0]!,
+            node.sourceOriginEventIds[0]!
+          ]
+        },
+        {
+          ...node,
+          childOriginNodeIds: ["dddddddd-dddd-4ddd-8ddd-dddddddddddd"]
+        },
+        {
+          ...node,
+          kind: "rollup",
+          childOriginNodeIds: []
+        },
+        { ...node, summaryPromptVersion: "" },
+        { ...node, summaryText: "" },
+        {
+          ...node,
+          updatedAt: "2026-07-12T07:01:00.000+07:00"
+        }
+      ] satisfies CapturedSessionSyncSummaryNodeV1[]
+    ).map(revise);
+
+    for (const node of invalidNodes) {
+      const summaryNodes = [node];
+      expect(
+        isCapturedSessionSyncPackageV1({
+          ...value,
+          summaryNodes,
+          summaryRevisionHash: crossIdentitySyncDigest(summaryNodes)
+        })
+      ).toBe(false);
+    }
+
+    const invalidRevision = [{ ...node, revisionHash: "f".repeat(64) }];
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        summaryNodes: invalidRevision,
+        summaryRevisionHash: crossIdentitySyncDigest(invalidRevision)
+      })
+    ).toBe(false);
+
+    const nodesWithoutPrompt = [{ ...node, summaryPromptVersion: null }];
+    expect(
+      isCapturedSessionSyncPackageV1({
+        ...value,
+        summaryNodes: nodesWithoutPrompt,
+        summaryRevisionHash: crossIdentitySyncDigest(nodesWithoutPrompt)
       })
     ).toBe(false);
   });

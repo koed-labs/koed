@@ -4,7 +4,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  acquireLocalSummaryLock,
   buildLcmSummaryPrompt,
+  lcmSummaryLockState,
   parseStructuredLcmSummary,
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
@@ -33,6 +35,61 @@ const summaryJson = (summary_text: string) =>
     title: "Structured LCM Details",
     summary_text
   });
+
+it("reclaims an LCM summary lock whose process no longer exists", async () => {
+  const lockPath = await tempLockPath();
+  await writeFile(
+    lockPath,
+    JSON.stringify({ pid: 2_147_483_647, createdAt: new Date().toISOString() })
+  );
+  const env = { MEMORY_LCM_SUMMARY_LOCK_PATH: lockPath };
+
+  expect(lcmSummaryLockState(env, 60_000)).toEqual({
+    locked: false,
+    stale: true
+  });
+  const release = acquireLocalSummaryLock(env, 60_000);
+  expect(release).not.toBeNull();
+  expect(lcmSummaryLockState(env, 60_000)).toEqual({
+    locked: true,
+    stale: false
+  });
+  release?.();
+});
+
+it("does not steal a current process LCM summary lock", async () => {
+  const lockPath = await tempLockPath();
+  await writeFile(
+    lockPath,
+    JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })
+  );
+  const env = { MEMORY_LCM_SUMMARY_LOCK_PATH: lockPath };
+
+  expect(lcmSummaryLockState(env, 60_000)).toEqual({
+    locked: true,
+    stale: false
+  });
+  expect(acquireLocalSummaryLock(env, 60_000)).toBeNull();
+});
+
+it("isolates the default LCM summary lock by KOED_HOME", async () => {
+  const firstHome = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-home-a-"));
+  const secondHome = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-home-b-"));
+  tempDirs.push(firstHome, secondHome);
+
+  const releaseFirst = acquireLocalSummaryLock(
+    { KOED_HOME: firstHome },
+    60_000
+  );
+  const releaseSecond = acquireLocalSummaryLock(
+    { KOED_HOME: secondHome },
+    60_000
+  );
+  expect(releaseFirst).not.toBeNull();
+  expect(releaseSecond).not.toBeNull();
+  releaseFirst?.();
+  releaseSecond?.();
+});
 
 it("persists the loaded LCM prompt version for operator overrides", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-prompts-"));

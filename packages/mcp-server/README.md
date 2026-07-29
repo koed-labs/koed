@@ -203,8 +203,12 @@ installs.
 
 ## Capture Hook
 
-The capture hook reads Codex lifecycle payloads from stdin and writes raw
-capture records to the Koed API.
+The capture hook drains and ignores Codex lifecycle payloads, then writes a
+content-free local wake signal. Stop signals additionally record a boundary
+timestamp and exact complete JSONL byte frontier under hashed source-routing
+identities. The supervised Transcript Watcher journals through that frontier,
+persists one idempotent content-free turn control, and then resumes newer bytes.
+Exact Codex JSONL remains the only automatic capture content path.
 
 Use the built hook path in Codex hook configuration:
 
@@ -223,17 +227,14 @@ SubagentStart
 SubagentStop
 ```
 
-Common hook settings:
+Common Transcript Watcher settings:
 
 ```bash
-MEMORY_HOOK_STRICT=false
-MEMORY_HOOK_API_REQUEST_TIMEOUT_MS=1500
-MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD=3
-MEMORY_HOOK_BREAKER_COOLDOWN_MS=60000
-MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS=60000
-MEMORY_HOOK_TRIGGER_LCM_SUMMARY=true
-MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=10000
-MEMORY_HOOK_LCM_SUMMARY_LIMIT=2
+MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true
+MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS=200
+MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN=4000
+MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN=200
+MEMORY_CODEX_TRANSCRIPT_MAX_BYTES_PER_BATCH=1048576
 ```
 
 Verify capture from the repo root:

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   copyFile,
   mkdir,
@@ -13,19 +14,12 @@ import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import {
-  createLocalTestKeyEnvelopeEncryptionProvider,
-  rawConversationTransportChunkGroupId
-} from "@koed/shared";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
 import { loadRootEnv } from "../../../scripts/api-token-bootstrap-lib.mjs";
 import {
   getLatestMigrationTimestamp,
   runDbMigrations
 } from "../dist/migrate.js";
-import {
-  createEncryptedPayloadRepository,
-  createMemorySourceRepository
-} from "../dist/index.js";
 
 const { Client, Pool } = pg;
 
@@ -66,39 +60,118 @@ const withDatabase = (connectionString, database) => {
 
 const quoteIdentifier = (value) => `"${value.replaceAll('"', '""')}"`;
 
-const appServerMigrationMarker =
-  'CREATE TABLE "conversation_item_observations"';
+const migrationsFolder = resolve(packageDir, "drizzle");
+const pre0020LastIndex = 19;
+const current0020Index = 20;
+const expectedPre0020Tag = "0019_tidy_rhino";
+const expectedCurrent0020Tag = "0020_volatile_earthquake";
+const expectedPre0020Fingerprint =
+  "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
-const createPreAppServerMigrationFolder = async () => {
-  const sourceFolder = resolve(packageDir, "drizzle");
-  const targetFolder = await mkdtemp(
-    resolve(tmpdir(), "koed-pre-app-server-migrations-")
-  );
-  const targetMetaFolder = resolve(targetFolder, "meta");
-  await mkdir(targetMetaFolder, { recursive: true });
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+
+const loadMigrationJournal = async (folder = migrationsFolder) => {
   const journal = JSON.parse(
-    await readFile(resolve(sourceFolder, "meta", "_journal.json"), "utf8")
+    await readFile(resolve(folder, "meta", "_journal.json"), "utf8")
   );
-  const migrationContents = await Promise.all(
-    journal.entries.map((entry) =>
-      readFile(resolve(sourceFolder, `${entry.tag}.sql`), "utf8")
+  if (!Array.isArray(journal.entries) || journal.entries.length === 0) {
+    throw new Error("Drizzle migration journal has no entries");
+  }
+  for (const [index, entry] of journal.entries.entries()) {
+    if (
+      entry.idx !== index ||
+      typeof entry.tag !== "string" ||
+      typeof entry.when !== "number" ||
+      (index > 0 && entry.when <= journal.entries[index - 1].when)
+    ) {
+      throw new Error(
+        `Drizzle migration journal is not sequential at entry ${index}`
+      );
+    }
+  }
+  return journal;
+};
+
+const migrationRecords = async (folder, entries) =>
+  Promise.all(
+    entries.map(async (entry) => {
+      const sql = await readFile(resolve(folder, `${entry.tag}.sql`), "utf8");
+      return { ...entry, hash: sha256(sql), sql };
+    })
+  );
+
+const assertAlphaMigrationContract = async () => {
+  const journal = await loadMigrationJournal();
+  const pre0020Entries = journal.entries.slice(0, pre0020LastIndex + 1);
+  const pre0020Records = await migrationRecords(
+    migrationsFolder,
+    pre0020Entries
+  );
+  const pre0020Fingerprint = sha256(
+    JSON.stringify(
+      pre0020Records.map(({ idx, when, tag, hash }) => ({
+        idx,
+        when,
+        tag,
+        hash
+      }))
     )
   );
-  const appServerMigrationIndexes = migrationContents.flatMap(
-    (contents, index) =>
-      contents.includes(appServerMigrationMarker) ? [index] : []
-  );
-  if (appServerMigrationIndexes.length !== 1) {
+  if (
+    pre0020Entries.at(-1)?.tag !== expectedPre0020Tag ||
+    pre0020Fingerprint !== expectedPre0020Fingerprint
+  ) {
     throw new Error(
-      `Expected exactly one app-server ingestion migration, found ${appServerMigrationIndexes.length}`
+      `Pre-0020 migration history is not the exact current-main baseline: ${pre0020Fingerprint}`
     );
   }
-  const entries = journal.entries.slice(0, appServerMigrationIndexes[0]);
-  for (const entry of entries) {
-    await copyFile(
-      resolve(sourceFolder, `${entry.tag}.sql`),
-      resolve(targetFolder, `${entry.tag}.sql`)
+  const entriesAt0020 = journal.entries.filter(
+    (entry) => entry.idx === current0020Index || entry.tag.startsWith("0020_")
+  );
+  if (
+    entriesAt0020.length !== 1 ||
+    entriesAt0020[0].idx !== current0020Index ||
+    entriesAt0020[0].tag !== expectedCurrent0020Tag
+  ) {
+    throw new Error(
+      `Expected one ${expectedCurrent0020Tag} migration at index ${current0020Index}`
     );
+  }
+  const current0020Sql = await readFile(
+    resolve(migrationsFolder, `${expectedCurrent0020Tag}.sql`),
+    "utf8"
+  );
+  if (
+    current0020Sql.includes("team_chat_threads") ||
+    current0020Sql.includes("team_chat_messages")
+  ) {
+    throw new Error(
+      "Current 0020 migration contains discarded experimental Team Chat compatibility objects"
+    );
+  }
+  return journal;
+};
+
+const createMigrationSlice = async (
+  journal,
+  lastIndex,
+  { folderPrefix = "koed-migration-slice-", transformLastSql } = {}
+) => {
+  const targetFolder = await mkdtemp(resolve(tmpdir(), folderPrefix));
+  const targetMetaFolder = resolve(targetFolder, "meta");
+  await mkdir(targetMetaFolder, { recursive: true });
+  const entries = journal.entries.slice(0, lastIndex + 1);
+  if (entries.length !== lastIndex + 1) {
+    throw new Error(`Migration journal does not reach index ${lastIndex}`);
+  }
+  for (const entry of entries) {
+    const source = resolve(migrationsFolder, `${entry.tag}.sql`);
+    const target = resolve(targetFolder, `${entry.tag}.sql`);
+    if (entry.idx === lastIndex && transformLastSql) {
+      await writeFile(target, transformLastSql(await readFile(source, "utf8")));
+    } else {
+      await copyFile(source, target);
+    }
   }
   await writeFile(
     resolve(targetMetaFolder, "_journal.json"),
@@ -107,106 +180,117 @@ const createPreAppServerMigrationFolder = async () => {
   return targetFolder;
 };
 
-const seedPopulatedPreAppServerFixture = async (pool, provider) => {
+const seedRemovedPathCompanion = async (
+  pool,
+  provider,
+  { ownerUserId, sourceId, sourceTable, sourceColumn, plaintext }
+) => {
+  const aad = {
+    ownerUserId,
+    visibility: "personal",
+    encryptionScope: "personal",
+    teamId: null,
+    teamWorkspaceId: null,
+    sourceTable,
+    sourceId,
+    sourceColumn
+  };
+  const envelope = await provider.encrypt({
+    plaintext,
+    scope: {},
+    provenance: {
+      rowFamily: sourceTable,
+      sourceTable,
+      sourceColumn,
+      sourceId
+    },
+    ciphertextLocation: "encrypted_field_payloads",
+    aad
+  });
+  await pool.query(
+    `
+      insert into encrypted_field_payloads (
+        owner_user_id, visibility, encryption_scope, source_table, source_id,
+        source_column, plaintext_content_type, plaintext_encoding,
+        envelope_version, provider_mode, key_id, key_version, scope,
+        provenance, algorithm, ciphertext, nonce, tag, wrapped_dek,
+        ciphertext_location, aad, envelope_created_at, envelope_reencrypted_at
+      )
+      values (
+        $1, 'personal', 'personal', $2, $3, $4, 'text/plain', 'utf8',
+        $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12, $13, $14,
+        $15::jsonb, $16, $17::jsonb, $18, $19
+      )
+    `,
+    [
+      ownerUserId,
+      sourceTable,
+      sourceId,
+      sourceColumn,
+      envelope.version,
+      envelope.providerMode,
+      envelope.keyId,
+      envelope.keyVersion,
+      JSON.stringify(envelope.scope),
+      JSON.stringify(envelope.provenance),
+      envelope.algorithm,
+      envelope.ciphertext,
+      envelope.nonce,
+      envelope.tag,
+      JSON.stringify(envelope.wrappedDek),
+      envelope.ciphertextLocation,
+      JSON.stringify(envelope.aad),
+      envelope.createdAt,
+      envelope.reencryptedAt
+    ]
+  );
+};
+
+const seedAlphaResetFixture = async (pool, provider) => {
   const ownerUserId = randomUUID();
+  const workspaceId = randomUUID();
   const sessionId = randomUUID();
   const conversationItemId = randomUUID();
-  const messageId = randomUUID();
-  const memoryEventId = randomUUID();
-  const externalThreadId = `legacy-thread-${randomUUID()}`;
-  const externalTurnId = "legacy-turn";
-  const externalItemId = "legacy-message";
+  const importRunId = randomUUID();
+  const importSourceId = randomUUID();
+  const deploymentId = randomUUID();
+  const logicalMemoryId = randomUUID();
+  const sourceReplicaId = randomUUID();
+  const targetReplicaId = randomUUID();
   const sourcePath = "/private/legacy/operator/transcript.jsonl";
-  const sourceHash = `legacy-source-${randomUUID()}`;
-  const legacyCanonicalKey = `conversation-item:legacy-${randomUUID()}`;
-  const rawText = "Legacy encrypted replay sentinel.";
-  const rawJson = {
-    timestamp: "2026-07-01T01:02:03.000Z",
-    type: "response_item",
-    payload: {
-      id: externalItemId,
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: rawText }]
-    }
-  };
-  const metadata = {
-    canonicalConversationItemKey: legacyCanonicalKey,
-    canonicalConversationItemActor: "user",
-    canonicalConversationItemKind: "message",
-    transcriptType: "user_message",
-    sensitiveLegacyMetadata: "must remain encrypted"
-  };
-  const chunkConversationItemIds = [randomUUID(), randomUUID()];
-  const chunkExternalTurnId = "legacy-chunk-turn";
-  const chunkExternalItemId = "legacy-chunk-message";
-  const chunkCanonicalKey = `conversation-item:${createHash("sha256")
-    .update(
-      JSON.stringify({
-        version: 3,
-        provider: "codex",
-        externalThreadId,
-        externalTurnId: chunkExternalTurnId,
-        stableItemId: chunkExternalItemId,
-        component: "message"
-      })
-    )
-    .digest("hex")}`;
-  const chunkLogicalSourceId = chunkCanonicalKey;
-  const chunkSourceItemHash = `legacy-chunk-source-${randomUUID()}`;
-  const chunkText = "Legacy encrypted transport chunks reconstruct safely.";
-  const chunkEnvelope = JSON.stringify({
-    rawJson: {
-      type: "response_item",
-      payload: {
-        id: chunkExternalItemId,
-        client_id: chunkExternalItemId,
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: chunkText }]
-      }
-    },
-    rawText: chunkText,
-    metadata: { transcriptType: "user_message" }
-  });
-  const chunkMidpoint = Math.floor(chunkEnvelope.length / 2);
-  const chunkTexts = [
-    chunkEnvelope.slice(0, chunkMidpoint),
-    chunkEnvelope.slice(chunkMidpoint)
-  ];
-  const chunkTransportGroupId = rawConversationTransportChunkGroupId({
-    sourceKind: "codex",
-    sourceAdapterVersion: "codex-transcript-v1",
-    sourceTransport: "transcript",
-    logicalSourceId: chunkLogicalSourceId,
-    sourceItemHash: chunkSourceItemHash,
-    transportChunkCount: chunkTexts.length,
-    transportChunkEncoding: "conversation-item-json-v2"
-  });
-  const chunkSourceHashes = chunkTexts.map(
-    (_, index) => `legacy-chunk-observation-${index}-${randomUUID()}`
-  );
+  const retainedText = "Retained canonical conversation item.";
+  const externalThreadId = `alpha-reset-${randomUUID()}`;
 
   await pool.query("insert into users (id, email) values ($1, $2)", [
     ownerUserId,
-    `migration-smoke-${ownerUserId}@example.com`
+    `alpha-reset-${ownerUserId}@example.test`
   ]);
   await pool.query(
     `
+      insert into workspaces (id, owner_user_id, visibility, name, root_path)
+      values ($1, $2, 'personal', 'Obsolete Personal Workspace', '/private/project')
+    `,
+    [workspaceId, ownerUserId]
+  );
+  await pool.query(
+    `
       insert into sessions (
-        id, owner_user_id, visibility, external_session_id, external_thread_id,
-        source_runtime, capture_method, codex_transcript_path,
-        idempotency_key, source_hash, metadata
+        id, owner_user_id, workspace_id, visibility, external_session_id,
+        external_thread_id, source_runtime, capture_method,
+        codex_transcript_path, idempotency_key, source_hash
       )
-      values ($1, $2, 'personal', $3, $3, 'codex-cli', 'hook', $4, $5, $5, $6)
+      values (
+        $1, $2, $3, 'personal', $4, $4, 'codex-cli', 'api',
+        $5, $6, $6
+      )
     `,
     [
       sessionId,
       ownerUserId,
+      workspaceId,
       externalThreadId,
       sourcePath,
-      `legacy-session-${sessionId}`,
-      { managedConversation: false }
+      `alpha-reset-session-${sessionId}`
     ]
   );
   await pool.query(
@@ -214,19 +298,14 @@ const seedPopulatedPreAppServerFixture = async (pool, provider) => {
       insert into conversation_items (
         id, owner_user_id, visibility, session_id, source_kind,
         source_adapter_version, source_transport, external_session_id,
-        external_thread_id, external_turn_id, external_item_id,
-        source_record_type, source_event_type, source_path, source_line_number,
-        source_sequence, event_time, observed_at, raw_json, raw_text,
-        source_hash, idempotency_key, projection_status, projection_version,
-        metadata, transport_chunk_index, transport_chunk_count,
-        transport_chunk_text, transport_chunk_encoding
+        external_thread_id, source_record_type, source_event_type,
+        source_path, source_line_number, source_sequence, raw_json, raw_text,
+        source_hash, idempotency_key, canonical_item_key
       )
       values (
         $1, $2, 'personal', $3, 'codex', 'codex-transcript-v1',
-        'transcript', $4, $4, $5, $6, 'response_item', 'message', $7,
-        7, 7, '2026-07-01T01:02:03.000Z', '2026-07-01T01:02:04.000Z',
-        $8, $9, $10, $11, 'projected', 'conversation-projection-v2',
-        $12, 0, 1, null, null
+        'transcript', $4, $4, 'response_item', 'message', $5, 7, 7,
+        $6::jsonb, $7, $8, $8, $8
       )
     `,
     [
@@ -234,575 +313,175 @@ const seedPopulatedPreAppServerFixture = async (pool, provider) => {
       ownerUserId,
       sessionId,
       externalThreadId,
-      externalTurnId,
-      externalItemId,
       sourcePath,
-      rawJson,
-      rawText,
-      sourceHash,
-      legacyCanonicalKey,
-      metadata
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "message", role: "user", content: retainedText }
+      }),
+      retainedText,
+      `alpha-reset-item-${conversationItemId}`
     ]
   );
   await pool.query(
     `
-      insert into messages (
-        id, session_id, owner_user_id, visibility, role, content,
-        source_runtime, capture_method, codex_transcript_path,
-        transcript_item_id, idempotency_key, source_hash
+      insert into historical_import_runs (id, owner_user_id, source_count)
+      values ($1, $2, 1)
+    `,
+    [importRunId, ownerUserId]
+  );
+  await pool.query(
+    `
+      insert into historical_import_sources (
+        id, run_id, owner_user_id, ai_client, source_kind, source_session_id,
+        source_fingerprint, registration_prefix_hash, local_source_path,
+        redacted_source_label
       )
-      values ($1, $2, $3, 'personal', 'user', $4, 'codex-cli', 'hook',
-        $5, '7', $6, $6)
+      values (
+        $1, $2, $3, 'codex', 'transcript', $4, $5, $5, $6, 'legacy.jsonl'
+      )
     `,
     [
-      messageId,
-      sessionId,
+      importSourceId,
+      importRunId,
       ownerUserId,
-      rawText,
-      sourcePath,
-      `message:${legacyCanonicalKey}`
+      externalThreadId,
+      sha256(sourcePath),
+      sourcePath
     ]
   );
   await pool.query(
     `
-      insert into memory_events (
-        id, actor_user_id, owner_user_id, visibility, event_type,
-        source_runtime, capture_method, codex_transcript_path, session_id,
-        idempotency_key, source_hash, payload
+      insert into deployment_identities (
+        id, protocol_deployment_id, locality, profile, display_name
       )
-      values ($1, $2, $2, 'personal', 'captured', 'codex-cli', 'hook',
-        $3, $4, $5, $5, $6)
+      values ($1, $1, 'local', 'local_personal', 'Alpha reset')
+    `,
+    [deploymentId]
+  );
+  await pool.query(
+    `
+      insert into logical_memories (
+        id, owner_user_id, origin_deployment_identity_id, source_boundary,
+        origin_source_id, local_session_id, logical_key
+      )
+      values ($1, $2, $3, 'captured_session', $4, $5, $6)
     `,
     [
-      memoryEventId,
+      logicalMemoryId,
       ownerUserId,
-      sourcePath,
+      deploymentId,
+      externalThreadId,
       sessionId,
-      `projection:user_turn:${legacyCanonicalKey}`,
-      {
-        actor: "user",
-        content: rawText,
-        metadata: { includeInEmbedding: true, includeInLcm: true }
-      }
+      `logical-${sessionId}`
     ]
   );
   await pool.query(
     `
-      insert into memory_event_sources (
-        memory_event_id, conversation_item_id, source_order, source_role
+      insert into memory_replicas (
+        id, logical_memory_id, deployment_identity_id, owner_user_id,
+        replica_role, source_boundary, local_session_id
       )
-      values ($1, $2, 0, 'derived')
+      values
+        ($1, $3, $4, $5, 'source', 'captured_session', $6),
+        ($2, $3, $4, $5, 'target', 'captured_session', $6)
     `,
-    [memoryEventId, conversationItemId]
+    [
+      sourceReplicaId,
+      targetReplicaId,
+      logicalMemoryId,
+      deploymentId,
+      ownerUserId,
+      sessionId
+    ]
   );
-
-  const encryptedRepository = createEncryptedPayloadRepository(pool);
-  for (const sourceColumn of [
-    "raw_json",
-    "raw_text",
-    "source_path",
-    "metadata"
-  ]) {
-    const run = await encryptedRepository.createEncryptedFieldBackfillRun(
-      { userId: ownerUserId },
-      {
-        sourceTable: "conversation_items",
-        sourceColumn,
-        providerMode: "local_test_key",
-        totalRows: 1
-      }
-    );
-    const result = await encryptedRepository.backfillEncryptedFieldBatch(
-      { userId: ownerUserId },
-      provider,
-      {
-        runId: run.id,
-        sourceTable: "conversation_items",
-        sourceColumn,
-        batchSize: 10
-      }
-    );
-    if (!result.done || result.encryptedRows !== 1 || result.failedRows !== 0) {
-      throw new Error(
-        `Pre-app-server encrypted fixture backfill failed for ${sourceColumn}`
-      );
-    }
-  }
-  for (const [index, chunk] of chunkTexts.entries()) {
-    await pool.query(
-      `
-        insert into conversation_items (
-          id, owner_user_id, visibility, session_id, source_kind,
-          source_adapter_version, source_transport, external_session_id,
-          external_thread_id, external_turn_id, external_item_id,
-          source_record_type, source_event_type, source_path,
-          source_line_number, source_sequence, event_time, observed_at,
-          raw_json, logical_source_id, transport_chunk_index,
-          transport_chunk_count, transport_chunk_text,
-          transport_chunk_encoding, source_hash, idempotency_key,
-          projection_status, projection_version, metadata
-        )
-        values (
-          $1, $2, 'personal', $3, 'codex', 'codex-transcript-v1',
-          'transcript', $4, $4, $5, $6, 'response_item', 'message', $7,
-          11, $8, '2026-07-01T01:03:00.000Z',
-          '2026-07-01T01:03:01.000Z', $9, $10, $11, $12, $13,
-          'conversation-item-json-v2', $14, $15, 'pending',
-          'conversation-projection-v2', $16
-        )
-      `,
-      [
-        chunkConversationItemIds[index],
-        ownerUserId,
-        sessionId,
-        externalThreadId,
-        chunkExternalTurnId,
-        chunkExternalItemId,
-        sourcePath,
-        11 + index,
-        {
-          transportChunk: true,
-          transportChunkGroupId: chunkTransportGroupId,
-          sourceItemHash: chunkSourceItemHash,
-          chunkIndex: index,
-          chunkCount: chunkTexts.length
-        },
-        chunkLogicalSourceId,
-        index,
-        chunkTexts.length,
-        chunk,
-        chunkSourceHashes[index],
-        `legacy-chunk-idempotency-${index}-${randomUUID()}`,
-        {
-          canonicalConversationItemKey: chunkCanonicalKey,
-          canonicalConversationItemActor: "user",
-          canonicalConversationItemKind: "message",
-          canonicalStableItemId: chunkExternalItemId,
-          sourceItemHash: chunkSourceItemHash,
-          transcriptType: "user_message"
-        }
-      ]
-    );
-  }
-  const chunkBackfillRun =
-    await encryptedRepository.createEncryptedFieldBackfillRun(
-      { userId: ownerUserId },
-      {
-        sourceTable: "conversation_items",
-        sourceColumn: "transport_chunk_text",
-        providerMode: "local_test_key",
-        totalRows: chunkTexts.length
-      }
-    );
-  const chunkBackfill = await encryptedRepository.backfillEncryptedFieldBatch(
-    { userId: ownerUserId },
-    provider,
-    {
-      runId: chunkBackfillRun.id,
-      sourceTable: "conversation_items",
-      sourceColumn: "transport_chunk_text",
-      batchSize: 10
-    }
-  );
-  if (
-    !chunkBackfill.done ||
-    chunkBackfill.encryptedRows !== chunkTexts.length ||
-    chunkBackfill.failedRows !== 0
-  ) {
-    throw new Error("Pre-app-server encrypted transport chunk backfill failed");
-  }
+  await seedRemovedPathCompanion(pool, provider, {
+    ownerUserId,
+    sourceId: conversationItemId,
+    sourceTable: "conversation_items",
+    sourceColumn: "source_path",
+    plaintext: sourcePath
+  });
 
   return {
     ownerUserId,
+    workspaceId,
     sessionId,
     conversationItemId,
-    messageId,
-    memoryEventId,
-    externalThreadId,
-    externalTurnId,
-    externalItemId,
-    sourcePath,
-    sourceHash,
-    rawText,
-    rawJson,
-    metadata,
-    chunkConversationItemIds,
-    chunkExternalTurnId,
-    chunkExternalItemId,
-    chunkCanonicalKey,
-    chunkLogicalSourceId,
-    chunkSourceItemHash,
-    chunkSourceHashes,
-    chunkText,
-    chunkTexts,
-    chunkTransportGroupId
+    importRunId,
+    importSourceId,
+    sourceReplicaId,
+    targetReplicaId,
+    retainedText
   };
 };
 
-const verifyPopulatedAppServerUpgrade = async (pool, provider, fixture) => {
-  const encryptedRepository = createEncryptedPayloadRepository(pool);
-  const observationCount = await pool.query(
-    "select count(*)::int as count from conversation_item_observations"
-  );
-  const copiedCompanions = await pool.query(
-    `
-      select count(*)::int as count
-      from encrypted_field_payloads
-      where source_table = 'conversation_item_observations'
-    `
-  );
-  if (observationCount.rows[0]?.count !== 0) {
-    throw new Error(
-      "App-server migration synthesized historical conversation observations"
-    );
-  }
-  if (copiedCompanions.rows[0]?.count !== 0) {
-    throw new Error(
-      "App-server migration copied encrypted companions without rebinding"
-    );
-  }
-
-  for (const [sourceColumn, expected] of [
-    ["raw_json", fixture.rawJson],
-    ["raw_text", fixture.rawText],
-    ["source_path", fixture.sourcePath],
-    ["metadata", fixture.metadata]
-  ]) {
-    const decrypted = await encryptedRepository.decryptAuthorizedEncryptedField(
-      { userId: fixture.ownerUserId },
-      provider,
-      {
-        sourceTable: "conversation_items",
-        sourceId: fixture.conversationItemId,
-        sourceColumn
-      }
-    );
-    if (!isDeepStrictEqual(decrypted?.plaintext, expected)) {
-      throw new Error(
-        `Populated app-server upgrade could not decrypt legacy ${sourceColumn}`
-      );
-    }
-  }
-
-  const canonicalItemKey = `conversation-item:${createHash("sha256")
-    .update(
-      JSON.stringify({
-        version: 3,
-        provider: "codex",
-        externalThreadId: fixture.externalThreadId,
-        externalTurnId: fixture.externalTurnId,
-        stableItemId: fixture.externalItemId,
-        component: "message"
-      })
-    )
-    .digest("hex")}`;
-  const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
-  process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
-  try {
-    const repository = createMemorySourceRepository(pool, {
-      envelopeEncryptionProvider: provider
-    });
-    const replayed = await repository.createConversationItems(
-      { userId: fixture.ownerUserId },
-      {
-        items: [
-          {
-            sessionId: fixture.sessionId,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "transcript",
-            externalSessionId: fixture.externalThreadId,
-            externalThreadId: fixture.externalThreadId,
-            externalTurnId: fixture.externalTurnId,
-            externalItemId: fixture.externalItemId,
-            canonicalItemKey,
-            canonicalStableItemId: fixture.externalItemId,
-            observationComponent: "message",
-            sourceRecordType: "response_item",
-            sourceEventType: "message",
-            sourcePath: fixture.sourcePath,
-            sourceLineNumber: 7,
-            sourceSequence: 7,
-            eventTime: "2026-07-01T01:02:03.000Z",
-            rawJson: fixture.rawJson,
-            rawText: fixture.rawText,
-            sourceHash: fixture.sourceHash,
-            idempotencyKey: `post-app-server-replay-${randomUUID()}`,
-            metadata: { transcriptType: "user_message" }
-          }
-        ]
-      }
-    );
-    if (!replayed[0]?.id) {
-      throw new Error(
-        "App-server migration legacy replay did not create a canonical parent"
-      );
-    }
-    const legacyReplayConvergence = await pool.query(
-      `
-        select
-          count(*) filter (
-            where canonical_item_key = $2
-              and memory_excluded_at is null
-          )::int as active_canonical_parents,
-          count(*) filter (
-            where id = $1
-              and memory_exclusion_reason = 'canonical_observation_migrated'
-          )::int as retired_legacy_parents
-        from conversation_items
-        where owner_user_id = $3
-      `,
-      [fixture.conversationItemId, canonicalItemKey, fixture.ownerUserId]
-    );
-    if (
-      JSON.stringify(legacyReplayConvergence.rows[0]) !==
-      JSON.stringify({
-        active_canonical_parents: 1,
-        retired_legacy_parents: 1
-      })
-    ) {
-      throw new Error(
-        `App-server migration legacy replay did not converge safely: ${JSON.stringify(legacyReplayConvergence.rows[0])}`
-      );
-    }
-
-    for (const [index, expected] of fixture.chunkTexts.entries()) {
-      const decrypted =
-        await encryptedRepository.decryptAuthorizedEncryptedField(
-          { userId: fixture.ownerUserId },
-          provider,
-          {
-            sourceTable: "conversation_items",
-            sourceId: fixture.chunkConversationItemIds[index],
-            sourceColumn: "transport_chunk_text"
-          }
-        );
-      if (decrypted?.plaintext !== expected) {
-        throw new Error(
-          `App-server migration could not decrypt legacy transport chunk ${index}`
-        );
-      }
-    }
-    const chunkProjection = await repository.projectPendingConversationItems(
-      { userId: fixture.ownerUserId },
-      { limit: 10 }
-    );
-    if (chunkProjection.memoryEventsCreated !== 1) {
-      throw new Error(
-        `App-server migration legacy chunk Projection created ${chunkProjection.memoryEventsCreated} Memory Events`
-      );
-    }
-    const replayedChunks = await repository.createConversationItems(
-      { userId: fixture.ownerUserId },
-      {
-        items: fixture.chunkTexts.map((chunk, index) => ({
-          sessionId: fixture.sessionId,
-          sourceKind: "codex",
-          sourceAdapterVersion: "codex-transcript-v1",
-          sourceTransport: "transcript",
-          externalSessionId: fixture.externalThreadId,
-          externalThreadId: fixture.externalThreadId,
-          externalTurnId: fixture.chunkExternalTurnId,
-          externalItemId: fixture.chunkExternalItemId,
-          canonicalItemKey: fixture.chunkCanonicalKey,
-          canonicalStableItemId: fixture.chunkExternalItemId,
-          observationKind: "reconciliation",
-          observationComponent: "message",
-          sourceRecordType: "response_item",
-          sourceEventType: "message",
-          sourcePath: fixture.sourcePath,
-          sourceLineNumber: 11,
-          sourceSequence: 11 + index,
-          eventTime: "2026-07-01T01:03:00.000Z",
-          rawJson: {
-            transportChunk: true,
-            transportChunkGroupId: fixture.chunkTransportGroupId,
-            sourceItemHash: fixture.chunkSourceItemHash,
-            chunkIndex: index,
-            chunkCount: fixture.chunkTexts.length
-          },
-          logicalSourceId: fixture.chunkLogicalSourceId,
-          transportChunkIndex: index,
-          transportChunkCount: fixture.chunkTexts.length,
-          transportChunkText: chunk,
-          transportChunkEncoding: "conversation-item-json-v2",
-          sourceHash: fixture.chunkSourceHashes[index],
-          idempotencyKey: `post-app-server-chunk-replay-${index}-${randomUUID()}`,
-          metadata: {
-            canonicalConversationItemActor: "user",
-            canonicalConversationItemKind: "message",
-            transcriptType: "user_message"
-          }
-        }))
-      }
-    );
-    if (new Set(replayedChunks.map((item) => item.id)).size !== 1) {
-      throw new Error(
-        "App-server migration legacy chunk replay did not converge on one parent"
-      );
-    }
-    const convergence = await pool.query(
-      `
-        select
-          count(*)::int as parents,
-          count(*) filter (where memory_excluded_at is null)::int as active_parents,
-          count(*) filter (
-            where memory_exclusion_reason = 'canonical_observation_migrated'
-          )::int as retired_parents
-        from conversation_items
-        where logical_source_id = $1
-      `,
-      [fixture.chunkLogicalSourceId]
-    );
-    if (
-      JSON.stringify(convergence.rows[0]) !==
-      JSON.stringify({ parents: 2, active_parents: 1, retired_parents: 1 })
-    ) {
-      throw new Error(
-        `App-server migration legacy chunk convergence failed: ${JSON.stringify(convergence.rows[0])}`
-      );
-    }
-    const chunkMemoryEvents = await pool.query(
-      "select id from memory_events where session_id = $1 order by created_at asc",
-      [fixture.sessionId]
-    );
-    const embeddableTexts = (
-      await Promise.all(
-        chunkMemoryEvents.rows.map((event) =>
-          repository.getEmbeddableSource("memory_event", event.id)
-        )
-      )
-    ).map((source) => source?.text);
-    if (!embeddableTexts.includes(fixture.chunkText)) {
-      throw new Error(
-        "App-server migration encrypted legacy chunks projected the wrong text"
-      );
-    }
-  } finally {
-    if (previousProfile === undefined) {
-      delete process.env.KOED_DEPLOYMENT_PROFILE;
-    } else {
-      process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
-    }
-  }
-
-  const counts = await pool.query(
+const verifyAlphaResetUpgrade = async (pool, fixture) => {
+  const result = await pool.query(
     `
       select
-        (select count(*)::int from conversation_items) as parents,
-        (select count(*)::int from conversation_item_observations) as observations,
-        (select count(*)::int from messages) as messages,
-        (select count(*)::int from memory_events) as memory_events,
+        to_regclass('public.workspaces')::text as personal_workspaces_table,
+        (
+          select count(*)::int
+          from information_schema.columns
+          where table_schema = 'public'
+            and column_name in ('source_path', 'codex_transcript_path')
+        ) as removed_path_columns,
         (
           select count(*)::int
           from encrypted_field_payloads
-          where source_table = 'conversation_item_observations'
-        ) as observation_companions
-    `
-  );
-  if (
-    JSON.stringify(counts.rows[0]) !==
-    JSON.stringify({
-      parents: 4,
-      observations: 3,
-      messages: 2,
-      memory_events: 2,
-      observation_companions: 12
-    })
-  ) {
-    throw new Error(
-      `App-server migration replay integrity counts were unexpected: ${JSON.stringify(counts.rows[0])}`
-    );
-  }
-
-  const observation = await pool.query(
-    `
-      select id, source_path, metadata
-      from conversation_item_observations
-      where canonical_item_key = $1
-      limit 1
+          where (source_table in (
+              'sessions', 'turns', 'messages', 'tool_events',
+              'memory_events', 'memory_nodes'
+            ) and source_column = 'codex_transcript_path')
+             or (source_table in (
+              'conversation_items', 'conversation_item_observations'
+            ) and source_column = 'source_path')
+        ) as removed_path_companions,
+        (select count(*)::int from historical_import_runs) as import_runs,
+        (select count(*)::int from historical_import_sources) as import_sources,
+        (select count(*)::int from conversation_source_artifacts) as artifacts,
+        (select count(*)::int from conversation_source_segments) as segments,
+        (select count(*)::int from conversation_source_consumer_cursors) as cursors,
+        (
+          select raw_text
+          from conversation_items
+          where id = $1 and owner_user_id = $2 and session_id = $3
+        ) as retained_text,
+        (
+          select encryption_scope
+          from memory_replicas
+          where id = $4
+        ) as source_encryption_scope,
+        (
+          select encryption_scope
+          from memory_replicas
+          where id = $5
+        ) as target_encryption_scope
     `,
-    [canonicalItemKey]
+    [
+      fixture.conversationItemId,
+      fixture.ownerUserId,
+      fixture.sessionId,
+      fixture.sourceReplicaId,
+      fixture.targetReplicaId
+    ]
   );
-  const observationJson = JSON.stringify(observation.rows[0]);
-  if (
-    observationJson.includes(fixture.sourcePath) ||
-    observationJson.includes("must remain encrypted")
-  ) {
+  const expected = {
+    personal_workspaces_table: null,
+    removed_path_columns: 0,
+    removed_path_companions: 0,
+    import_runs: 0,
+    import_sources: 0,
+    artifacts: 0,
+    segments: 0,
+    cursors: 0,
+    retained_text: fixture.retainedText,
+    source_encryption_scope: null,
+    target_encryption_scope: null
+  };
+  if (!isDeepStrictEqual(result.rows[0], expected)) {
     throw new Error(
-      "App-server migration replay persisted sensitive observation plaintext"
-    );
-  }
-  for (const [sourceColumn, expected] of [
-    ["raw_json", fixture.rawJson],
-    ["raw_text", fixture.rawText],
-    ["source_path", fixture.sourcePath]
-  ]) {
-    const decrypted = await encryptedRepository.decryptAuthorizedEncryptedField(
-      { userId: fixture.ownerUserId },
-      provider,
-      {
-        sourceTable: "conversation_item_observations",
-        sourceId: observation.rows[0].id,
-        sourceColumn
-      }
-    );
-    if (!isDeepStrictEqual(decrypted?.plaintext, expected)) {
-      throw new Error(
-        `App-server migration replay observation ${sourceColumn} did not decrypt`
-      );
-    }
-  }
-  const decryptedObservationMetadata =
-    await encryptedRepository.decryptAuthorizedEncryptedField(
-      { userId: fixture.ownerUserId },
-      provider,
-      {
-        sourceTable: "conversation_item_observations",
-        sourceId: observation.rows[0].id,
-        sourceColumn: "metadata"
-      }
-    );
-  const observationMetadata = decryptedObservationMetadata?.plaintext;
-  if (
-    typeof observationMetadata !== "object" ||
-    observationMetadata === null ||
-    observationMetadata.transcriptType !== "user_message" ||
-    observationMetadata.canonicalConversationItemKey !== canonicalItemKey ||
-    JSON.stringify(observationMetadata).includes("must remain encrypted")
-  ) {
-    throw new Error(
-      "App-server migration replay observation metadata did not decrypt safely"
-    );
-  }
-
-  const redactionClient = await pool.connect();
-  let arbitraryRedactionBlocked = false;
-  try {
-    await redactionClient.query("begin");
-    await redactionClient.query(
-      "select set_config('koed.observation_redaction_source_id', $1, true)",
-      [observation.rows[0].id]
-    );
-    await redactionClient.query(
-      "select set_config('koed.observation_redaction_source_column', 'raw_text', true)"
-    );
-    try {
-      await redactionClient.query(
-        "update conversation_item_observations set raw_text = 'attacker plaintext' where id = $1",
-        [observation.rows[0].id]
-      );
-    } catch (error) {
-      arbitraryRedactionBlocked =
-        typeof error === "object" && error !== null && error.code === "55000";
-    }
-  } finally {
-    await redactionClient.query("rollback");
-    redactionClient.release();
-  }
-  if (!arbitraryRedactionBlocked) {
-    throw new Error(
-      "Conversation observation immutability accepted an arbitrary redaction write"
+      `Alpha reset upgrade produced an unexpected boundary: ${JSON.stringify(result.rows[0])}`
     );
   }
 };
@@ -813,137 +492,680 @@ const isPostgresAdminTermination = (error) =>
   "code" in error &&
   error.code === "57P01";
 
+const assertMigrationLedger = async (pool, expectedRecords) => {
+  const result = await pool.query(
+    "select hash, created_at::text from drizzle.__drizzle_migrations order by id"
+  );
+  const expected = expectedRecords.map(({ hash, when }) => ({
+    hash,
+    created_at: String(when)
+  }));
+  if (!isDeepStrictEqual(result.rows, expected)) {
+    throw new Error(
+      `Migration ledger mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify(result.rows)}`
+    );
+  }
+};
+
+const assertCurrentSchema = async (pool) => {
+  const result = await pool.query(
+    `
+      select
+        to_regclass('public.users')::text as users_table,
+        to_regclass('public.collaboration_threads')::text as collaboration_threads_table,
+        to_regclass('public.collaboration_messages')::text as collaboration_messages_table,
+        to_regclass('public.conversation_source_artifacts')::text as source_artifacts_table,
+        to_regclass('public.conversation_source_segments')::text as source_segments_table,
+        to_regclass('public.conversation_source_consumer_cursors')::text as source_cursors_table,
+        to_regclass('public.workspaces')::text as removed_personal_workspaces_table,
+        to_regclass('drizzle.__drizzle_migrations')::text as migrations_table,
+        to_regclass('public.team_chat_threads')::text as discarded_team_chat_table,
+        to_regprocedure('public.notify_koed_graph_update()')::text
+          as graph_notify_function,
+        to_regprocedure('public.pds_session_recall_ready(uuid)')::text
+          as pds_recall_function,
+        (
+          select count(*)::int
+          from information_schema.columns
+          where table_schema = 'public'
+            and column_name in ('source_path', 'codex_transcript_path')
+        ) as removed_path_columns,
+        (
+          select count(*)::int
+          from pg_trigger
+          where not tgisinternal
+            and tgname in (
+              'collaboration_threads_participant_set_check',
+              'collaboration_threads_participant_identity_check',
+              'collaboration_participants_set_check'
+            )
+        ) as collaboration_participant_triggers
+        ,
+        (
+          select count(*)::int
+          from pg_trigger
+          where not tgisinternal
+            and tgname in (
+              'pds_personal_sync_policy_enabled_at',
+              'pds_session_closure_immutable',
+              'pds_conversation_item_read_only',
+              'pds_replica_session_read_only'
+            )
+        ) as pds_guard_triggers,
+        (
+          select count(*)::int
+          from pg_trigger
+          where not tgisinternal
+            and tgname in (
+              'retention_policy_shortening_preview_transition',
+              'retention_policy_shortening_scope_immutable',
+              'retention_policy_shortening_migration_immutable',
+              'retention_policy_shortening_preview_aggregate',
+              'retention_policy_shortening_scope_aggregate',
+              'retention_policy_shortening_migration_aggregate'
+            )
+        ) as retention_policy_triggers
+    `
+  );
+  const row = result.rows[0];
+  if (
+    row?.users_table !== "users" ||
+    row?.collaboration_threads_table !== "collaboration_threads" ||
+    row?.collaboration_messages_table !== "collaboration_messages" ||
+    row?.source_artifacts_table !== "conversation_source_artifacts" ||
+    row?.source_segments_table !== "conversation_source_segments" ||
+    row?.source_cursors_table !== "conversation_source_consumer_cursors" ||
+    row?.removed_personal_workspaces_table !== null ||
+    row?.migrations_table !== "drizzle.__drizzle_migrations" ||
+    row?.discarded_team_chat_table !== null ||
+    row?.graph_notify_function !== "notify_koed_graph_update()" ||
+    row?.pds_recall_function !== "pds_session_recall_ready(uuid)" ||
+    row?.removed_path_columns !== 0 ||
+    row?.collaboration_participant_triggers !== 3 ||
+    row?.pds_guard_triggers !== 4 ||
+    row?.retention_policy_triggers !== 6
+  ) {
+    throw new Error(
+      `Current migration schema assertion failed: ${JSON.stringify(row)}`
+    );
+  }
+};
+
+const schemaFingerprint = async (pool) => {
+  const [columns, constraints, indexes, triggers, enums] = await Promise.all([
+    pool.query(
+      `select table_name, ordinal_position, column_name, data_type, udt_name,
+              is_nullable, coalesce(column_default, '') as column_default
+         from information_schema.columns
+        where table_schema = 'public'
+        order by table_name, ordinal_position`
+    ),
+    pool.query(
+      `select c.conname, c.contype, pg_get_constraintdef(c.oid, true) as definition
+         from pg_constraint c
+         join pg_namespace n on n.oid = c.connamespace
+        where n.nspname = 'public'
+        order by c.conname`
+    ),
+    pool.query(
+      `select tablename, indexname, indexdef
+         from pg_indexes
+        where schemaname = 'public'
+        order by tablename, indexname`
+    ),
+    pool.query(
+      `select c.relname as table_name, t.tgname,
+              pg_get_triggerdef(t.oid, true) as definition
+         from pg_trigger t
+         join pg_class c on c.oid = t.tgrelid
+         join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and not t.tgisinternal
+        order by c.relname, t.tgname`
+    ),
+    pool.query(
+      `select t.typname, e.enumsortorder, e.enumlabel
+         from pg_type t
+         join pg_enum e on e.enumtypid = t.oid
+         join pg_namespace n on n.oid = t.typnamespace
+        where n.nspname = 'public'
+        order by t.typname, e.enumsortorder`
+    )
+  ]);
+  return sha256(
+    JSON.stringify(
+      [columns, constraints, indexes, triggers, enums].map(
+        (result) => result.rows
+      )
+    )
+  );
+};
+
+const seedStablePre0020Fixture = async (pool, ownerUserId) => {
+  let ownerId = ownerUserId;
+  if (!ownerId) {
+    ownerId = randomUUID();
+    await pool.query(
+      "insert into users (id, email, display_name) values ($1, $2, $3)",
+      [ownerId, `stable-${ownerId}@example.test`, "Stable migration owner"]
+    );
+  }
+  const teamId = randomUUID();
+  const membershipId = randomUUID();
+  const workspaceId = randomUUID();
+  await pool.query("insert into teams (id, name) values ($1, $2)", [
+    teamId,
+    "Migration Acceptance Team"
+  ]);
+  await pool.query(
+    `insert into team_memberships (id, team_id, user_id, role, status)
+     values ($1, $2, $3, 'owner', 'enabled')`,
+    [membershipId, teamId, ownerId]
+  );
+  await pool.query(
+    "insert into team_workspaces (id, team_id, name) values ($1, $2, $3)",
+    [workspaceId, teamId, "Migration Acceptance Workspace"]
+  );
+  await pool.query(
+    `insert into team_workspace_access_grants
+       (team_workspace_id, team_id, user_id, access, granted_by_user_id)
+     values ($1, $2, $3, 'write', $3)`,
+    [workspaceId, teamId, ownerId]
+  );
+  return { ownerId, teamId, membershipId, workspaceId };
+};
+
+const stableFixtureFingerprint = async (pool, fixture) => {
+  const result = await pool.query(
+    `
+      select jsonb_build_object(
+        'user', (select jsonb_build_array(id, email, display_name) from users where id = $1),
+        'team', (select jsonb_build_array(id, name, archived_at) from teams where id = $2),
+        'membership', (
+          select jsonb_build_array(id, team_id, user_id, role, status)
+          from team_memberships where id = $3
+        ),
+        'workspace', (
+          select jsonb_build_array(id, team_id, name, archived_at)
+          from team_workspaces where id = $4
+        ),
+        'access', (
+          select jsonb_build_array(team_workspace_id, team_id, user_id, access, granted_by_user_id)
+          from team_workspace_access_grants
+          where team_workspace_id = $4 and user_id = $1
+        )
+      ) as fixture
+    `,
+    [fixture.ownerId, fixture.teamId, fixture.membershipId, fixture.workspaceId]
+  );
+  const value = result.rows[0]?.fixture;
+  if (!value || Object.values(value).some((entry) => entry === null)) {
+    throw new Error(
+      `Stable pre-0020 fixture was not retained: ${JSON.stringify(value)}`
+    );
+  }
+  return sha256(JSON.stringify(value));
+};
+
+const assertUpgradedStableDefaults = async (pool, fixture) => {
+  const result = await pool.query(
+    `
+      select
+        (select version from teams where id = $1) as team_version,
+        (select lifecycle::text from teams where id = $1) as team_lifecycle,
+        (select version from team_memberships where id = $2) as membership_version,
+        (select version from team_workspaces where id = $3) as workspace_version,
+        (select lifecycle::text from team_workspaces where id = $3) as workspace_lifecycle,
+        (select version from team_workspace_access_grants
+          where team_workspace_id = $3 and user_id = $4) as access_version,
+        (select can_share_owned_memory from team_workspace_access_grants
+          where team_workspace_id = $3 and user_id = $4) as can_share_owned_memory
+    `,
+    [fixture.teamId, fixture.membershipId, fixture.workspaceId, fixture.ownerId]
+  );
+  const expected = {
+    team_version: 1,
+    team_lifecycle: "active",
+    membership_version: 1,
+    workspace_version: 1,
+    workspace_lifecycle: "active",
+    access_version: 1,
+    can_share_owned_memory: false
+  };
+  if (!isDeepStrictEqual(result.rows[0], expected)) {
+    throw new Error(
+      `Stable rows received unexpected 0020 defaults: ${JSON.stringify(result.rows[0])}`
+    );
+  }
+};
+
+const expectSqlState = async (pool, sql, expectedCode, description) => {
+  try {
+    await pool.query(sql);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === expectedCode
+    ) {
+      return;
+    }
+    throw error;
+  }
+  throw new Error(`${description} unexpectedly succeeded`);
+};
+
+const runPostgresTool = (command, args, connectionString) =>
+  new Promise((resolvePromise, reject) => {
+    const connection = new URL(connectionString);
+    const postgresEnvironment = {
+      PGHOST: connection.hostname,
+      PGPORT: connection.port || "5432",
+      PGUSER: decodeURIComponent(connection.username),
+      PGPASSWORD: decodeURIComponent(connection.password),
+      PGDATABASE: decodeURIComponent(connection.pathname.slice(1))
+    };
+    const sslMode = connection.searchParams.get("sslmode");
+    if (sslMode) {
+      postgresEnvironment.PGSSLMODE = sslMode;
+    }
+    const child = spawn(command, args, {
+      cwd: rootDir,
+      env: { ...process.env, ...postgresEnvironment },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      reject(
+        new Error(`${command} could not start: ${error.message}`, {
+          cause: error
+        })
+      );
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolvePromise();
+      } else {
+        reject(
+          new Error(
+            `${command} failed closed with exit ${code}: ${stderr.trim()}`
+          )
+        );
+      }
+    });
+  });
+
+const waitForInterruptProbe = async (
+  admin,
+  database,
+  applicationName,
+  marker
+) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const result = await admin.query(
+      `select pid
+         from pg_stat_activity
+        where datname = $1
+          and application_name = $2
+          and state = 'active'
+          and query like $3`,
+      [database, applicationName, `%${marker}%`]
+    );
+    if (result.rows[0]?.pid) {
+      return result.rows[0].pid;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  throw new Error("Timed out waiting for interrupted migration probe");
+};
+
+const scenarioDatabaseName = (scenario) => {
+  const suffix = scenario.replaceAll(/[^a-zA-Z0-9_]/g, "_");
+  const digest = sha256(`${targetDatabase}:${scenario}`).slice(0, 8);
+  return `${targetDatabase.slice(0, 42)}_${suffix.slice(0, 10)}_${digest}`;
+};
+
 const admin = new Client({
   connectionString: withDatabase(databaseUrl, adminDatabase)
 });
-const targetUrl = withDatabase(databaseUrl, targetDatabase);
 await admin.connect();
 
-try {
+const disposableDatabases = new Set();
+const results = [];
+const temporaryFolders = new Set();
+
+const createDisposableDatabase = async (scenario) => {
+  const database = scenarioDatabaseName(scenario);
+  if (
+    database === adminDatabase ||
+    database === new URL(databaseUrl).pathname.slice(1)
+  ) {
+    throw new Error(`Refusing to use non-disposable database ${database}`);
+  }
   await admin.query(
-    `drop database if exists ${quoteIdentifier(targetDatabase)} with (force)`
+    `drop database if exists ${quoteIdentifier(database)} with (force)`
   );
-  await admin.query(`create database ${quoteIdentifier(targetDatabase)}`);
+  await admin.query(`create database ${quoteIdentifier(database)}`);
+  disposableDatabases.add(database);
+  return { database, url: withDatabase(databaseUrl, database) };
+};
 
-  const pool = new Pool({ connectionString: targetUrl });
-  let poolClosing = false;
-  let unexpectedPoolError;
-
+const withPool = async (url, callback, options = {}) => {
+  const pool = new Pool({ connectionString: url, ...options });
   pool.on("error", (error) => {
-    if (poolClosing && isPostgresAdminTermination(error)) {
-      return;
+    if (!isPostgresAdminTermination(error)) {
+      console.error(error);
     }
-    unexpectedPoolError ??= error;
+  });
+  try {
+    return await callback(pool);
+  } finally {
+    await pool.end();
+  }
+};
+
+const runScenario = async (name, callback) => {
+  const startedAt = Date.now();
+  await callback();
+  const result = { name, status: "passed", durationMs: Date.now() - startedAt };
+  results.push(result);
+  console.error(
+    `[migration-acceptance] ${name}: passed (${result.durationMs}ms)`
+  );
+};
+
+try {
+  const journal = await assertAlphaMigrationContract();
+  const pre0020Folder = await createMigrationSlice(journal, pre0020LastIndex, {
+    folderPrefix: "koed-pre-0020-migrations-"
+  });
+  temporaryFolders.add(pre0020Folder);
+  const through0020Folder = await createMigrationSlice(
+    journal,
+    current0020Index,
+    { folderPrefix: "koed-through-0020-migrations-" }
+  );
+  temporaryFolders.add(through0020Folder);
+  const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const pre0020Records = await migrationRecords(
+    pre0020Folder,
+    journal.entries.slice(0, pre0020LastIndex + 1)
+  );
+  const through0020Records = await migrationRecords(
+    through0020Folder,
+    journal.entries.slice(0, current0020Index + 1)
+  );
+
+  await runScenario("clean-full-migration", async () => {
+    const target = await createDisposableDatabase("clean_full");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      await assertCurrentSchema(pool);
+    });
   });
 
-  const throwUnexpectedPoolError = () => {
-    if (unexpectedPoolError) {
-      throw unexpectedPoolError;
-    }
-  };
-  let syncUpgradeFixture;
-
-  try {
-    const preAppServerMigrationFolder =
-      await createPreAppServerMigrationFolder();
+  await runScenario("populated-current-main-through-alpha-reset", async () => {
+    const target = await createDisposableDatabase("populated");
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 19).toString("base64")
     );
-    try {
+    await withPool(target.url, async (pool) => {
       await runDbMigrations(pool, {
-        migrationsFolder: preAppServerMigrationFolder
+        migrationsFolder: pre0020Folder
       });
-      const fixture = await seedPopulatedPreAppServerFixture(pool, provider);
-      const legacyUser = await pool.query(
-        "insert into users (email,display_name) values ($1,'Migration fixture') returning id",
-        [`migration-${process.pid}@example.test`]
+      await assertMigrationLedger(pool, pre0020Records);
+      const fixture = await seedAlphaResetFixture(pool, provider);
+      const stableFixture = await seedStablePre0020Fixture(
+        pool,
+        fixture.ownerUserId
       );
-      await pool.query(
-        "insert into deployment_identities (owner_user_id,deployment_key,profile) values ($1,'legacy-local','local_personal')",
-        [legacyUser.rows[0].id]
+      const beforeFingerprint = await stableFixtureFingerprint(
+        pool,
+        stableFixture
       );
-      await runDbMigrations(pool);
-      await verifyPopulatedAppServerUpgrade(pool, provider, fixture);
-      const upgradeResult = await pool.query(
+      await runDbMigrations(pool, { migrationsFolder: through0020Folder });
+      await assertMigrationLedger(pool, through0020Records);
+      const afterFingerprint = await stableFixtureFingerprint(
+        pool,
+        stableFixture
+      );
+      if (beforeFingerprint !== afterFingerprint) {
+        throw new Error("Stable current-main rows changed while applying 0020");
+      }
+      await assertUpgradedStableDefaults(pool, stableFixture);
+      await verifyAlphaResetUpgrade(pool, fixture);
+      await assertCurrentSchema(pool);
+    });
+  });
+
+  await runScenario("interrupted-transaction-recovery", async () => {
+    const target = await createDisposableDatabase("interrupted");
+    let stableFixture;
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: pre0020Folder });
+      stableFixture = await seedStablePre0020Fixture(pool);
+    });
+    const beforeFingerprint = await withPool(target.url, (pool) =>
+      stableFixtureFingerprint(pool, stableFixture)
+    );
+    const marker = `koed_interrupt_${randomUUID()}`;
+    const interruptedFolder = await createMigrationSlice(
+      journal,
+      current0020Index,
+      {
+        folderPrefix: "koed-interrupted-0020-migrations-",
+        transformLastSql: (sql) =>
+          sql.replace(
+            "--> statement-breakpoint",
+            `--> statement-breakpoint\nselect pg_sleep(30) /* ${marker} */;--> statement-breakpoint`
+          )
+      }
+    );
+    temporaryFolders.add(interruptedFolder);
+    const applicationName = `koed-migration-interrupt-${process.pid}`;
+    const interruptedPool = new Pool({
+      connectionString: target.url,
+      application_name: applicationName,
+      max: 1
+    });
+    interruptedPool.on("error", () => {});
+    const interruptedRun = runDbMigrations(interruptedPool, {
+      migrationsFolder: interruptedFolder
+    }).then(
+      () => null,
+      (error) => error
+    );
+    const backendPid = await waitForInterruptProbe(
+      admin,
+      target.database,
+      applicationName,
+      marker
+    );
+    const cancelled = await admin.query(
+      "select pg_cancel_backend($1) as cancelled",
+      [backendPid]
+    );
+    if (cancelled.rows[0]?.cancelled !== true) {
+      throw new Error("Postgres refused to cancel the migration statement");
+    }
+    const interruptionError = await interruptedRun;
+    await interruptedPool.end();
+    if (!interruptionError) {
+      throw new Error("Interrupted migration unexpectedly committed");
+    }
+    await withPool(target.url, async (pool) => {
+      await assertMigrationLedger(pool, pre0020Records);
+      const rollbackState = await pool.query(
         `select
-           (select count(*)::int from users where id=$1) as preserved_users,
-           (select count(*)::int from deployment_identities) as legacy_sync_rows`,
-        [legacyUser.rows[0].id]
+           to_regtype('public.collaboration_event_family')::text as first_type,
+           to_regclass('public.collaboration_threads')::text as collaboration_table`
       );
       if (
-        upgradeResult.rows[0]?.preserved_users !== 1 ||
-        upgradeResult.rows[0]?.legacy_sync_rows !== 0
+        rollbackState.rows[0]?.first_type !== null ||
+        rollbackState.rows[0]?.collaboration_table !== null
       ) {
         throw new Error(
-          "Cross-Identity Sync migration did not replace legacy sync identity rows safely"
+          `Interrupted migration left partial schema: ${JSON.stringify(rollbackState.rows[0])}`
         );
       }
-      syncUpgradeFixture = upgradeResult.rows[0];
-    } finally {
-      await rm(preAppServerMigrationFolder, { recursive: true, force: true });
-    }
-    throwUnexpectedPoolError();
+      if (
+        (await stableFixtureFingerprint(pool, stableFixture)) !==
+        beforeFingerprint
+      ) {
+        throw new Error("Interrupted migration changed retained data");
+      }
+      await runDbMigrations(pool, { migrationsFolder: through0020Folder });
+      await assertMigrationLedger(pool, through0020Records);
+      await assertCurrentSchema(pool);
+    });
+  });
 
-    const expectedLatestMigrationTimestamp =
-      await getLatestMigrationTimestamp();
-    const migrationResult = await pool.query(
-      `
-        select coalesce(max(created_at), 0)::bigint as latest_migration
-        from drizzle.__drizzle_migrations
-      `
+  await runScenario("backup-before-upgrade-restore", async () => {
+    const source = await createDisposableDatabase("backup_source");
+    let stableFixture;
+    await withPool(source.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: pre0020Folder });
+      stableFixture = await seedStablePre0020Fixture(pool);
+    });
+    const beforeFingerprint = await withPool(source.url, (pool) =>
+      stableFixtureFingerprint(pool, stableFixture)
     );
-    const tableResult = await pool.query(
-      `
-        select
-          to_regclass('public.users') as users_table,
-          to_regclass('drizzle.__drizzle_migrations') as migrations_table
-      `
+    const backupFolder = await mkdtemp(
+      resolve(tmpdir(), "koed-migration-backup-")
     );
-    throwUnexpectedPoolError();
-
-    const actualLatestMigrationTimestamp = BigInt(
-      migrationResult.rows[0]?.latest_migration ?? 0
+    temporaryFolders.add(backupFolder);
+    const backupPath = resolve(backupFolder, "pre-0020.dump");
+    await runPostgresTool(
+      process.env.PG_DUMP_BIN ?? "pg_dump",
+      [
+        "--format=custom",
+        "--no-owner",
+        "--no-privileges",
+        "--file",
+        backupPath
+      ],
+      source.url
     );
-    if (
-      actualLatestMigrationTimestamp < BigInt(expectedLatestMigrationTimestamp)
-    ) {
-      throw new Error(
-        `Latest applied migration ${actualLatestMigrationTimestamp.toString()} is older than expected ${expectedLatestMigrationTimestamp}`
+    await withPool(source.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: through0020Folder });
+      await assertCurrentSchema(pool);
+    });
+    const restored = await createDisposableDatabase("backup_restore");
+    await runPostgresTool(
+      process.env.PG_RESTORE_BIN ?? "pg_restore",
+      [
+        "--exit-on-error",
+        "--single-transaction",
+        "--no-owner",
+        "--no-privileges",
+        "--dbname",
+        restored.database,
+        backupPath
+      ],
+      restored.url
+    );
+    await withPool(restored.url, async (pool) => {
+      await assertMigrationLedger(pool, pre0020Records);
+      if (
+        (await stableFixtureFingerprint(pool, stableFixture)) !==
+        beforeFingerprint
+      ) {
+        throw new Error(
+          "Restored pre-upgrade backup did not retain fixture data"
+        );
+      }
+      const boundary = await pool.query(
+        "select to_regclass('public.collaboration_threads')::text as collaboration_table"
       );
-    }
+      if (boundary.rows[0]?.collaboration_table !== null) {
+        throw new Error(
+          "Pre-0020 backup unexpectedly restored post-0020 schema"
+        );
+      }
+      await runDbMigrations(pool, { migrationsFolder: through0020Folder });
+      await assertMigrationLedger(pool, through0020Records);
+      await assertCurrentSchema(pool);
+    });
+  });
 
-    const tables = tableResult.rows[0];
-    if (tables?.users_table !== "users") {
-      throw new Error("Migration smoke test did not create public.users");
-    }
-    if (tables?.migrations_table !== "drizzle.__drizzle_migrations") {
-      throw new Error(
-        "Migration smoke test did not create drizzle.__drizzle_migrations"
+  await runScenario("idempotent-rerun", async () => {
+    const target = await createDisposableDatabase("idempotent");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: pre0020Folder });
+      const stableFixture = await seedStablePre0020Fixture(pool);
+      await runDbMigrations(pool, { migrationsFolder: through0020Folder });
+      const before = {
+        schema: await schemaFingerprint(pool),
+        data: await stableFixtureFingerprint(pool, stableFixture)
+      };
+      await runDbMigrations(pool, { migrationsFolder: through0020Folder });
+      const after = {
+        schema: await schemaFingerprint(pool),
+        data: await stableFixtureFingerprint(pool, stableFixture)
+      };
+      await assertMigrationLedger(pool, through0020Records);
+      if (!isDeepStrictEqual(after, before)) {
+        throw new Error(
+          `Idempotent rerun changed database state: ${JSON.stringify({ before, after })}`
+        );
+      }
+    });
+  });
+
+  await runScenario("alpha-old-new-forward-boundaries", async () => {
+    const target = await createDisposableDatabase("boundaries");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: pre0020Folder });
+      await expectSqlState(
+        pool,
+        "select id from collaboration_threads limit 1",
+        "42P01",
+        "Current collaboration query against pre-0020"
       );
-    }
-    console.log(
-      JSON.stringify(
-        {
-          database: targetDatabase,
-          latestMigration: actualLatestMigrationTimestamp.toString(),
-          usersTable: tables.users_table,
-          migrationsTable: tables.migrations_table,
-          upgradeFixture: {
-            preservedUsers: syncUpgradeFixture?.preserved_users,
-            legacySyncRows: syncUpgradeFixture?.legacy_sync_rows
-          }
+      await runDbMigrations(pool, { migrationsFolder: through0020Folder });
+      await expectSqlState(
+        pool,
+        "select id from team_chat_threads limit 1",
+        "42P01",
+        "Discarded experimental Team Chat query against current 0020"
+      );
+      const oldShapeFixture = await seedStablePre0020Fixture(pool);
+      await stableFixtureFingerprint(pool, oldShapeFixture);
+      await assertUpgradedStableDefaults(pool, oldShapeFixture);
+      await assertMigrationLedger(pool, through0020Records);
+    });
+  });
+
+  const latestMigration = await getLatestMigrationTimestamp();
+  console.log(
+    JSON.stringify(
+      {
+        status: "passed",
+        baseline: {
+          lastTag: expectedPre0020Tag,
+          fingerprint: expectedPre0020Fingerprint
         },
-        null,
-        2
-      )
-    );
-  } finally {
-    poolClosing = true;
-    await pool.end();
-  }
-} finally {
-  await admin.query(
-    `drop database if exists ${quoteIdentifier(targetDatabase)} with (force)`
+        current0020: expectedCurrent0020Tag,
+        latestMigration: String(latestMigration),
+        scenarios: results
+      },
+      null,
+      2
+    )
   );
+} finally {
+  for (const database of disposableDatabases) {
+    await admin.query(
+      `drop database if exists ${quoteIdentifier(database)} with (force)`
+    );
+  }
   await admin.end();
+  for (const folder of temporaryFolders) {
+    await rm(folder, { recursive: true, force: true });
+  }
 }

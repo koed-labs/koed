@@ -1,14 +1,34 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
 import type { DeviceCredentialRecord } from "@koed/db";
-import { assertSecureHttpTransport } from "@koed/shared";
+import {
+  assertSecureHttpTransport,
+  readLocalEdgeUpstreamRegistry,
+  upstreamAdvertisesCapability,
+  upstreamBackendById,
+  type LocalEdgeUpstreamBackend,
+  type LocalEdgeUpstreamRegistry,
+  type LocalEdgeUpstreamRoutePolicyKey
+} from "@koed/shared";
 import type { CapturePolicy } from "../server/context.js";
+
+export {
+  readLocalEdgeUpstreamRegistry,
+  upstreamAdvertisesCapability,
+  upstreamBackendById
+};
+export type { LocalEdgeUpstreamBackend, LocalEdgeUpstreamRegistry };
 
 export type LocalEdgeOperationFamily =
   | "personal_memory_read"
+  | "personal_collaboration_read"
+  | "personal_collaboration_write"
   | "team_workspace_read"
+  | "team_chat_read"
+  | "team_chat_write"
   | "share_grant_management"
+  | "action_grant"
   | "capture_writes"
   | "sync"
+  | "managed_execution"
   | "admin";
 
 export type LocalEdgeRouteMode =
@@ -39,123 +59,62 @@ export interface LocalEdgeRouteDecision {
   relayCredentialState: "configured" | "missing" | "not_required";
 }
 
-export interface LocalEdgeUpstreamBackend {
-  id: string;
-  baseUrl: string;
-  routePolicy: Partial<Record<RoutePolicyKey, "enabled" | "disabled">>;
-  credential?: { status?: string };
-  capabilities?: {
-    state?: "validated" | "stale" | "failed" | "not_checked";
-    expiresAt?: string | null;
-    payload?: {
-      capabilities?: Record<
-        string,
-        { availability?: "available" | "partial" | "unavailable" }
-      >;
-    };
-  };
-}
-
-export interface LocalEdgeUpstreamRegistry {
-  backends: LocalEdgeUpstreamBackend[];
-}
-
-interface RegistryCacheEntry {
-  mtimeMs: number;
-  refreshAfterMs: number;
-  registry: LocalEdgeUpstreamRegistry;
-}
-
-type RoutePolicyKey =
-  | "personalMemoryRead"
-  | "teamWorkspaceRead"
-  | "shareGrantManagement"
-  | "captureWrites"
-  | "sync"
-  | "admin";
+type RoutePolicyKey = LocalEdgeUpstreamRoutePolicyKey;
 
 const operationRoutePolicyKey: Record<
   LocalEdgeOperationFamily,
   RoutePolicyKey
 > = {
   personal_memory_read: "personalMemoryRead",
+  personal_collaboration_read: "personalCollaboration",
+  personal_collaboration_write: "personalCollaboration",
   team_workspace_read: "teamWorkspaceRead",
+  team_chat_read: "teamWorkspaceRead",
+  team_chat_write: "teamWorkspaceRead",
   share_grant_management: "shareGrantManagement",
+  action_grant: "admin",
   capture_writes: "captureWrites",
   sync: "sync",
+  managed_execution: "managedExecution",
   admin: "admin"
 };
 
 const defaultRouteMode: Record<LocalEdgeOperationFamily, LocalEdgeRouteMode> = {
   personal_memory_read: "local_only",
+  personal_collaboration_read: "live_upstream_proxy",
+  personal_collaboration_write: "live_upstream_proxy",
   team_workspace_read: "live_upstream_proxy",
+  team_chat_read: "live_upstream_proxy",
+  team_chat_write: "live_upstream_proxy",
   share_grant_management: "live_upstream_proxy",
+  action_grant: "live_upstream_proxy",
   capture_writes: "queued_sync_handoff",
   sync: "queued_sync_handoff",
+  managed_execution: "live_upstream_proxy",
   admin: "live_upstream_proxy"
 };
 
-const registryCache = new Map<string, RegistryCacheEntry>();
-const registryRefreshIntervalMs = 1000;
-
-export const readLocalEdgeUpstreamRegistry = (
-  path: string,
-  deps: {
-    existsSync?: typeof existsSync;
-    readFileSync?: typeof readFileSync;
-    statSync?: typeof statSync;
-  } = {}
-): LocalEdgeUpstreamRegistry => {
-  const resolvedExistsSync = deps.existsSync ?? existsSync;
-  const resolvedReadFileSync = deps.readFileSync ?? readFileSync;
-  const resolvedStatSync = deps.statSync ?? statSync;
-  const now = Date.now();
-  const cached = registryCache.get(path);
-  if (cached && cached.refreshAfterMs > now) {
-    return cached.registry;
-  }
-  if (!resolvedExistsSync(path)) {
-    const registry = { backends: [] };
-    registryCache.set(path, {
-      mtimeMs: -1,
-      refreshAfterMs: now + registryRefreshIntervalMs,
-      registry
-    });
-    return registry;
-  }
-  const mtimeMs = resolvedStatSync(path).mtimeMs;
-  if (cached?.mtimeMs === mtimeMs) {
-    cached.refreshAfterMs = now + registryRefreshIntervalMs;
-    return cached.registry;
-  }
-  const parsed = JSON.parse(
-    resolvedReadFileSync(path, "utf8") as string
-  ) as Partial<LocalEdgeUpstreamRegistry>;
-  const registry = {
-    backends: Array.isArray(parsed.backends)
-      ? parsed.backends.filter(isUpstreamBackend)
-      : []
-  };
-  registryCache.set(path, {
-    mtimeMs,
-    refreshAfterMs: now + registryRefreshIntervalMs,
-    registry
-  });
-  return registry;
-};
-
-export const upstreamBackendById = (
-  registry: LocalEdgeUpstreamRegistry,
-  upstreamBackendId: string
+export const activeUpstreamBackend = (
+  registry: LocalEdgeUpstreamRegistry
 ): LocalEdgeUpstreamBackend | null =>
-  registry.backends.find((backend) => backend.id === upstreamBackendId) ?? null;
+  registry.activeBackendId
+    ? upstreamBackendById(registry, registry.activeBackendId)
+    : null;
 
-export const upstreamAdvertisesCapability = (
-  backend: LocalEdgeUpstreamBackend,
-  capability: string
-): boolean =>
-  backend.capabilities?.payload?.capabilities?.[capability]?.availability ===
-  "available";
+export const upstreamSupportsCollaborationRealtime = (
+  backend: LocalEdgeUpstreamBackend
+): boolean => {
+  const availability =
+    backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
+      ?.availability;
+  return (
+    backend.capabilities?.schemaVersion === 6 &&
+    backend.capabilities.payload?.capabilitySchemaVersion === 6 &&
+    (availability === "available" || availability === "partial") &&
+    backend.capabilities.payload?.protocols?.collaborationRealtime?.version ===
+      1
+  );
+};
 
 export const resolveLocalEdgeRouteDecision = (input: {
   operationFamily: LocalEdgeOperationFamily;
@@ -366,10 +325,7 @@ export const assertUpstreamOperationPathAllowed = (
     );
   };
 
-  if (
-    operationFamily === "personal_memory_read" ||
-    operationFamily === "team_workspace_read"
-  ) {
+  if (operationFamily === "personal_memory_read") {
     if (method !== "GET" && method !== "POST") {
       deny();
     }
@@ -387,14 +343,29 @@ export const assertUpstreamOperationPathAllowed = (
     deny();
   }
 
-  if (operationFamily === "share_grant_management") {
-    if (method !== "GET" && method !== "POST" && method !== "DELETE") {
-      deny();
-    }
+  if (operationFamily === "personal_collaboration_read") {
     if (
-      /^\/v1\/team-workspaces\/[^/]+\/session-share-grants(?:\/[^/]+)?$/.test(
-        pathname
-      )
+      (method === "POST" &&
+        (pathname === "/v1/collaboration/realtime/snapshot" ||
+          pathname === "/v1/collaboration/realtime/ack")) ||
+      (method === "GET" && pathname === "/v1/collaboration/realtime/stream")
+    ) {
+      return;
+    }
+    deny();
+  }
+
+  if (operationFamily === "personal_collaboration_write") {
+    deny();
+  }
+
+  if (operationFamily === "team_workspace_read") {
+    if (
+      (method === "GET" && pathname === "/v1/team-context") ||
+      (method === "POST" &&
+        pathname === "/v1/collaboration/realtime/snapshot") ||
+      (method === "GET" && pathname === "/v1/collaboration/realtime/stream") ||
+      (method === "POST" && pathname === "/v1/collaboration/realtime/ack")
     ) {
       return;
     }
@@ -419,6 +390,57 @@ export const assertUpstreamOperationPathAllowed = (
     deny();
   }
 
+  if (operationFamily === "managed_execution") {
+    if (
+      pathname === "/v1/managed-conversation-runner/commands/claim" ||
+      pathname === "/v1/managed-conversation-runner/wake" ||
+      pathname === "/v1/managed-conversations" ||
+      pathname === "/v1/managed-conversations/target-devices" ||
+      /^\/v1\/managed-conversations\/[^/]+$/.test(pathname) ||
+      /^\/v1\/managed-conversations\/[^/]+\/(?:prompts|handoffs|forks)$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversations\/[^/]+\/(?:handoffs|forks)\/active$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversation-runner\/executions\/[^/]+$/.test(pathname) ||
+      /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/(?:lease|complete|fail)$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversation-runner\/executions\/[^/]+\/(?:lease|release|state|runtime|runtime-binding-ready)$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversation-runner\/handoffs\/[^/]+\/(?:prepare|attest|verify|commit|restore|restore-lease|complete)$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversation-runner\/forks\/[^/]+\/(?:prepare-source|attest|target-material|prepare-child|complete|fail)$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversation-runner\/(?:handoffs|forks)\/active\/[^/]+$/.test(
+        pathname
+      )
+    ) {
+      return;
+    }
+    deny();
+  }
+
+  if (operationFamily === "action_grant") {
+    if (
+      pathname === "/v1/high-risk/action-grants" ||
+      /^\/v1\/high-risk\/action-grants\/[^/]+$/.test(pathname) ||
+      /^\/v1\/high-risk\/action-grants\/[^/]+\/await$/.test(pathname) ||
+      pathname === "/v1/teams" ||
+      pathname === "/v1/team-invites/accept" ||
+      pathname.startsWith("/v1/teams/") ||
+      pathname.startsWith("/v1/team-workspaces/") ||
+      pathname.startsWith("/v1/retention/")
+    ) {
+      return;
+    }
+    deny();
+  }
+
   if (operationFamily === "admin") {
     if (pathname === "/v1/teams" || pathname.startsWith("/v1/teams/")) {
       return;
@@ -427,30 +449,6 @@ export const assertUpstreamOperationPathAllowed = (
   }
 
   deny();
-};
-
-const hasSecureUpstreamBaseUrl = (value: string): boolean => {
-  try {
-    assertSecureHttpTransport(new URL(value), "Upstream URL");
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const isUpstreamBackend = (
-  value: unknown
-): value is LocalEdgeUpstreamBackend => {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    typeof (value as { id?: unknown }).id !== "string" ||
-    typeof (value as { baseUrl?: unknown }).baseUrl !== "string"
-  ) {
-    return false;
-  }
-  return hasSecureUpstreamBaseUrl((value as { baseUrl: string }).baseUrl);
 };
 
 const capabilityState = (
@@ -488,8 +486,7 @@ const credentialState = (input: {
   if (credential.upstreamBackendId !== input.upstreamBackendId) {
     return "wrong_upstream";
   }
-  return credential.operationFamilies.includes(input.operationFamily) ||
-    credential.operationFamilies.includes("*")
+  return credential.operationFamilies.includes(input.operationFamily)
     ? "configured"
     : "operation_not_allowed";
 };

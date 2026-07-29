@@ -1,5 +1,284 @@
 import { createHash } from "node:crypto";
 
+// Internal bootstrap identity shared by local capture and Desktop credentials.
+export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
+
+export {
+  resolveTeamCollaborationEnabled,
+  teamCollaborationFeatureEnvironmentName
+} from "./team-collaboration-feature.js";
+
+export {
+  assertConversationSourceReplicationJsonlSegment,
+  CONVERSATION_SOURCE_DOWNLOAD_AUTHORIZATION_TTL_MS,
+  CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES,
+  CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  assertConversationSourceOriginKeyAcceptsManifest,
+  calculateConversationSourceDownloadRequestHash,
+  calculateConversationSourceDownloadScopeHash,
+  calculateConversationSourceClosureDigest,
+  calculateConversationSourceDiscoveryRequestHash,
+  calculateConversationSourceDiscoveryScopeHash,
+  calculateConversationSourceGenerationRegistrationDigest,
+  calculateConversationSourceOriginKeyRegistrationDigest,
+  calculateConversationSourceRootDigest,
+  calculateConversationSourceReplicationContentDigest,
+  calculateConversationSourceReplicationManifestDigest,
+  calculateConversationSourceReplicationOperationDigest,
+  calculateConversationSourceReplicationPlaintextDigest,
+  canonicalizeConversationSourceClosureManifest,
+  canonicalizeConversationSourceReplicationManifest,
+  conversationSourceOriginKeyLifecycles,
+  exportConversationSourceReplicationPublicKey,
+  generateConversationSourceReplicationOriginKeyPair,
+  importConversationSourceReplicationPublicKey,
+  parseCanonicalConversationSourceReplicationManifestJson,
+  parseConversationSourceClosureManifest,
+  parseConversationSourceOriginKeyPin,
+  parseConversationSourceOriginKeyRegistration,
+  parseConversationSourceReplicationManifest,
+  parseConversationSourceReplicationSegmentEnvelope,
+  parseConversationSourceReplicationSourceDescriptor,
+  parseSignedConversationSourceClosureManifest,
+  parseSignedConversationSourceReplicationManifest,
+  signConversationSourceClosureManifest,
+  signConversationSourceReplicationManifest,
+  verifyConversationSourceClosureManifestSignature,
+  verifyConversationSourceReplicationManifestForAcceptance,
+  verifyConversationSourceReplicationManifestSignature
+} from "./conversation-source-replication.js";
+export type {
+  ConversationSourceClosureManifest,
+  ConversationSourceOriginKeyLifecycle,
+  ConversationSourceOriginKeyPair,
+  ConversationSourceOriginKeyPin,
+  ConversationSourceOriginKeyRegistration,
+  ConversationSourcePriorGenerationClosure,
+  ConversationSourceReplicationManifest,
+  ConversationSourceReplicationSegmentEnvelope,
+  ConversationSourceReplicationSourceDescriptor,
+  SignedConversationSourceClosureManifest,
+  SignedConversationSourceReplicationManifest
+} from "./conversation-source-replication.js";
+export {
+  MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
+  MANAGED_CONVERSATION_TRANSFER_PROTOCOL,
+  assertManagedConversationHandoffTransition,
+  canonicalManagedConversationTargetReadinessEvidence,
+  canonicalManagedConversationHandoffManifest,
+  countersignManagedConversationHandoffCertificate,
+  createManagedConversationAuthorityPrivateKey,
+  managedConversationAuthorityLogHead,
+  managedConversationHandoffCertificateDigest,
+  managedConversationHandoffStates,
+  managedConversationTargetReadinessDimensions,
+  managedConversationTargetReadinessEvidenceDigest,
+  managedConversationTargetReadinessIsFresh,
+  parseManagedConversationHandoffCertificate,
+  parseManagedConversationHandoffManifest,
+  parseManagedConversationTargetReadinessEvidence,
+  signManagedConversationHandoffCertificate,
+  verifyManagedConversationHandoffCertificate,
+  verifyManagedConversationHandoffSourceAttestation
+} from "./managed-conversation-transfer.js";
+export {
+  MANAGED_CONVERSATION_FORK_PROTOCOL,
+  canonicalManagedConversationForkManifest,
+  managedConversationForkManifestDigest,
+  parseManagedConversationForkManifest,
+  parseSignedManagedConversationForkManifest,
+  verifyManagedConversationForkManifest
+} from "./managed-conversation-fork.js";
+export type {
+  ManagedConversationForkManifest,
+  SignedManagedConversationForkManifest
+} from "./managed-conversation-fork.js";
+export type {
+  ManagedConversationHandoffCertificate,
+  ManagedConversationHandoffManifest,
+  ManagedConversationHandoffState,
+  ManagedConversationReadinessProof,
+  ManagedConversationTargetReadinessDimension,
+  ManagedConversationTargetReadinessEvidence
+} from "./managed-conversation-transfer.js";
+export {
+  activeUpstreamBackend,
+  readLocalEdgeUpstreamEnrollmentBinding,
+  readLocalEdgeUpstreamRegistry,
+  upstreamAdvertisesCapability,
+  upstreamBackendById
+} from "./local-edge-upstream-registry.js";
+export type {
+  LocalEdgeUpstreamBackend,
+  LocalEdgeUpstreamEnrollmentBinding,
+  LocalEdgeUpstreamRegistry,
+  LocalEdgeUpstreamRoutePolicyKey
+} from "./local-edge-upstream-registry.js";
+
+export {
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT,
+  PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
+  personalDesktopConversationCursorSchema,
+  personalDesktopConversationEventSchema,
+  personalDesktopChangeEventRefSchema,
+  personalDesktopChangeSchema,
+  personalDesktopErrorSchema,
+  personalDesktopEventPageInputSchema,
+  personalDesktopEventsDataSchema,
+  personalDesktopProjectSchema,
+  personalDesktopProjectsDataSchema,
+  personalDesktopProjectThreadSchema,
+  personalDesktopRequestSchema,
+  personalDesktopResultSchema,
+  personalDesktopSessionProjectDataSchema,
+  personalDesktopSessionProjectInputSchema
+} from "./personal-desktop-contract.js";
+export type {
+  PersonalDesktopApi,
+  PersonalDesktopConversationCursor,
+  PersonalDesktopConversationEvent,
+  PersonalDesktopChange,
+  PersonalDesktopEventPageInput,
+  PersonalDesktopProject,
+  PersonalDesktopProjectThread,
+  PersonalDesktopRequest,
+  PersonalDesktopResult,
+  PersonalDesktopSessionProjectInput
+} from "./personal-desktop-contract.js";
+
+export {
+  calculateCollaborationReconnectDelay,
+  COLLABORATION_CONTRACT_VERSION,
+  COLLABORATION_DEFAULT_LIMITS,
+  COLLABORATION_DECRYPT_BATCH_MAX_ITEMS,
+  COLLABORATION_DEPLOYMENT_MESSAGE_MAX_PER_MINUTE,
+  COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS,
+  COLLABORATION_CONNECTION_ATTEMPT_MAX_PER_MINUTE,
+  COLLABORATION_CHANNEL_CREATION_MAX_PER_HOUR,
+  COLLABORATION_HISTORY_PAGE_MAX_ITEMS,
+  COLLABORATION_INVITE_CREATION_MAX_PER_HOUR,
+  COLLABORATION_MAX_DM_PARTICIPANTS,
+  COLLABORATION_MESSAGE_BURST_MAX_COUNT,
+  COLLABORATION_MESSAGE_BURST_WINDOW_MS,
+  COLLABORATION_MESSAGE_MAX_UTF8_BYTES,
+  COLLABORATION_MESSAGE_SUSTAINED_MAX_COUNT,
+  COLLABORATION_MESSAGE_SUSTAINED_WINDOW_MS,
+  COLLABORATION_NAME_MAX_CODE_POINTS,
+  COLLABORATION_REALTIME_CURSOR_MAX_BYTES,
+  COLLABORATION_RECONNECT_BACKOFF_CAP_MS,
+  COLLABORATION_RECONNECT_MAX_ATTEMPTS,
+  COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS,
+  COLLABORATION_RECONNECT_WINDOW_MS,
+  COLLABORATION_RENDERED_ROW_MAX_COUNT,
+  COLLABORATION_RENDERER_ACK_DEADLINE_MS,
+  COLLABORATION_RENDERER_MAX_PENDING_BYTES,
+  COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
+  COLLABORATION_SEND_RETRY_MAX_ATTEMPTS,
+  COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
+  COLLABORATION_SPLIT_VIEW_BREAKPOINT_PX,
+  COLLABORATION_SPLIT_VIEW_DISCUSSION_MIN_PX,
+  COLLABORATION_SPLIT_VIEW_SOURCE_MIN_PX,
+  COLLABORATION_TEAM_MESSAGE_MAX_PER_MINUTE,
+  COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES,
+  collaborationActionGrantIntentSchema,
+  collaborationActionGrantReferenceSchema,
+  collaborationActionGrantStatusSchema,
+  collaborationBackendIdentitySchema,
+  collaborationCommandResultSchema,
+  collaborationConnectionEventSchema,
+  collaborationDurableSendAuthoritySchema,
+  collaborationDurableSendEventSchema,
+  collaborationDurableSendSchema,
+  collaborationConnectionSchema,
+  isPersonalCollaborationSelection,
+  isTeamCollaborationSelection,
+  collaborationDeliveryIdSchema,
+  collaborationDisplayNameSchema,
+  collaborationIdentifierSchema,
+  collaborationInvitationPageSchema,
+  collaborationInvitationSchema,
+  collaborationLimitsSchema,
+  collaborationMessageBodySchema,
+  collaborationMessagePageSchema,
+  collaborationMessageSchema,
+  collaborationMembershipSchema,
+  collaborationNameSchema,
+  collaborationOpaqueCursorSchema,
+  personalMemoryEntrySchema,
+  collaborationPersonSchema,
+  collaborationReadStateSchema,
+  collaborationRealtimeControlSchema,
+  collaborationRealtimeCursorSchema,
+  collaborationRealtimeEventFamilySchema,
+  collaborationRealtimeSnapshotSchema,
+  collaborationRemoteBackendUrlSchema,
+  collaborationRendererCommandSchema,
+  collaborationRendererEventSchema,
+  collaborationSafeErrorSchema,
+  collaborationSafeErrorMessages,
+  collaborationSelectionSchema,
+  collaborationSnapshotSchema,
+  collaborationSubscriptionSchema,
+  collaborationTeamPersonSchema,
+  collaborationThreadSchema,
+  collaborationThreadReferenceSchema,
+  collaborationTimestampSchema,
+  collaborationTopicDescriptionSchema,
+  collaborationViewSchema,
+  collaborationWorkspaceSchema,
+  collaborationWorkspaceAccessSchema,
+  sharedMemoryConsentSchema,
+  sharedMemoryEventSourceKindSchema,
+  sharedMemoryRepresentationSchema,
+  sharedMemoryGrantSchema,
+  sharedMemoryPreviewSchema,
+  sharedMemorySessionSchema,
+  sharedMemorySessionReferenceSchema,
+  sharedMemorySourceItemSchema,
+  sharedMemorySourcePageSchema
+} from "./collaboration-contract.js";
+export type {
+  CollaborationActionGrantIntent,
+  CollaborationActionGrantReference,
+  CollaborationActionGrantStatus,
+  CollaborationBackendIdentity,
+  CollaborationCommandResult,
+  CollaborationConnection,
+  CollaborationDurableSend,
+  CollaborationLimits,
+  CollaborationMessage,
+  CollaborationMessagePage,
+  PersonalMemoryEntry,
+  CollaborationMembership,
+  CollaborationInvitation,
+  CollaborationInvitationPage,
+  CollaborationPerson,
+  CollaborationTeamPerson,
+  CollaborationReadState,
+  CollaborationRealtimeControl,
+  CollaborationRealtimeSnapshot,
+  CollaborationRendererCommand,
+  CollaborationRendererEvent,
+  CollaborationSafeError,
+  CollaborationSelection,
+  CollaborationSnapshot,
+  CollaborationSubscription,
+  CollaborationThread,
+  CollaborationThreadReference,
+  CollaborationView,
+  CollaborationWorkspace,
+  CollaborationWorkspaceAccess,
+  SharedMemoryConsent,
+  SharedMemoryGrant,
+  SharedMemoryPreview,
+  SharedMemoryRepresentation,
+  SharedMemorySession,
+  SharedMemorySessionReference,
+  SharedMemorySourceItem,
+  SharedMemorySourcePage
+} from "./collaboration-contract.js";
+
 export {
   fetchWithTimeout,
   fetchBoundedJsonObject,
@@ -8,6 +287,7 @@ export {
   RemoteResponseLimitError,
   upstreamApiUrl
 } from "./bounded-http.js";
+export { isPrivateNetworkIpv4Address } from "./private-network.js";
 export {
   API_DATA_ENCRYPTION_KEY_ENV,
   createByokEnvelopeEncryptionProvider,
@@ -16,6 +296,7 @@ export {
   createHttpManagedKmsKeyring,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
+  createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createRecipientPrivateKeyEnvelopeEncryptionProvider,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   createUnsupportedEnvelopeEncryptionProvider,
@@ -32,6 +313,12 @@ export {
   generateRecipientKeyMaterial,
   InvalidEncryptedPayloadEnvelopeError,
   ManagedKmsProviderError,
+  OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY_ENV,
+  OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID_ENV,
+  OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION_ENV,
   RECIPIENT_PUBLIC_KEY_PROVIDER_MODE,
   RECIPIENT_RSA_JWK_ALGORITHM,
   RECIPIENT_RSA_KEY_BITS,
@@ -54,6 +341,7 @@ export {
   isLoopbackHostname
 } from "./http-transport-security.js";
 export {
+  createDeviceBoundSourceSigner,
   createPlatformHostProofStore,
   deviceIdentitySchemaVersion,
   deviceIdentityStatePathFor,
@@ -66,12 +354,17 @@ export {
   serializeHostProof
 } from "./device-identity.js";
 export type {
+  DeviceBoundSourceSigner,
   DeviceIdentityHealth,
   DeviceIdentityInspection,
   DeviceIdentityState,
   HostProofReadResult,
   HostProofStore
 } from "./device-identity.js";
+export {
+  highRiskActionGrantCommitment,
+  highRiskActionGrantCommitmentHash
+} from "./high-risk-action-grant-commitment.js";
 export {
   deriveLocalProjectId,
   hmacProjectValue,
@@ -82,16 +375,63 @@ export {
   safeProjectMetadataForRemote
 } from "./project-metadata.js";
 export {
+  clearCollaborationActionGrantCustodyForBackend,
+  deleteCollaborationActionGrantCustody,
+  clearCollaborationPendingTeamSends,
+  deleteCollaborationPendingSend,
+  deleteDesktopLocalCredential,
   deleteLocalEdgeClientCredential,
   deleteUpstreamCredentialSecret,
+  desktopLocalCredentialReferenceFor,
   localEdgeClientCredentialReferenceFor,
   parseUpstreamCredentialReference,
+  readCollaborationActionGrantCustodyCommitmentHash,
+  readCollaborationActionGrantCustodyStatus,
+  listCollaborationPendingSends,
+  readDesktopLocalCredentialAuthorization,
   readLocalEdgeClientCredentialAuthorization,
   readUpstreamCredentialAuthorization,
+  resolveCollaborationActionGrantSecret,
+  rotateDesktopLocalCredential,
+  storeCollaborationActionGrantCustody,
+  storeCollaborationPendingSend,
+  storeDesktopLocalCredential,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret,
+  updateCollaborationActionGrantCustodyStatus,
+  updateCollaborationPendingSendState,
   upstreamCredentialReferenceFor,
+  verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
+} from "./upstream-credential-store.js";
+export {
+  SHARED_MEMORY_AUTHORITY_ACTION,
+  sharedMemoryConsentActionGrantBinding,
+  sharedMemoryGrantManagementRequestHash,
+  sharedMemoryGrantManagementScopeHash,
+  sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryRepresentationActionGrantBinding,
+  sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryShareActionGrantBinding
+} from "./shared-memory-action-grant.js";
+export type {
+  SharedMemoryActionGrantBinding,
+  SharedMemoryRepresentation as SharedMemoryActionGrantRepresentation
+} from "./shared-memory-action-grant.js";
+export { DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES } from "./upstream-credential-store.js";
+export type {
+  CollaborationActionGrantAccessInput,
+  CollaborationActionGrantCustodyInput,
+  CollaborationActionGrantMethod,
+  CollaborationActionGrantOperationFamily,
+  CollaborationActionGrantResolveInput,
+  CollaborationActionGrantState,
+  CollaborationActionGrantStatusRecord,
+  CollaborationPendingSendInput,
+  CollaborationPendingSendRecord,
+  DesktopLocalCredentialAuthorization,
+  DesktopLocalCredentialInput,
+  DesktopLocalCredentialOperationFamily
 } from "./upstream-credential-store.js";
 export type {
   EncryptedPayloadEnvelope,
@@ -122,6 +462,115 @@ export type {
   EncryptedPackageObjectClass
 } from "./encrypted-package.js";
 export {
+  PDS_PROTOCOL,
+  PDS_CERTIFICATE_CLOCK_SKEW_MS,
+  PDS_CERTIFICATE_MAX_LIFETIME_MS,
+  assertEpochAdvance,
+  certificateIsPdsValid,
+  comparePdsCanonicalIds,
+  decodePdsBase64url,
+  createPdsAuthorizedKeyBundle,
+  decryptPdsKeyBundleSecretSet,
+  pdsEd25519PrivateKey,
+  pdsEd25519PublicKey,
+  pdsX25519PrivateKey,
+  pdsX25519PublicKey,
+  pdsFinalizedStatementHash,
+  pdsFinalizedTwoStageRecordHash,
+  pdsPublicKeyCommitment,
+  pdsSha256,
+  signPdsGroupDraft,
+  signPdsGroupFinal,
+  signPdsTwoStageDraft,
+  signPdsRecord,
+  signPdsTwoStageFinal,
+  validatePdsGroupStatement,
+  validatePdsTombstone,
+  validatePdsTombstoneAck,
+  validatePdsPackageAck,
+  validatePdsConflictResolution,
+  validatePdsKeyBundle,
+  validatePdsEpochAck,
+  validatePdsKeyBundleAck,
+  validatePdsKeyBundleMetadata,
+  verifyPdsEnrollmentProof
+} from "./personal-device-sync.js";
+export type {
+  PdsConflictResolution,
+  PdsGroupSecretSet,
+  PdsGroupStatement,
+  PdsKeyBundleRecipient,
+  PdsSignature,
+  PdsTombstone
+} from "./personal-device-sync.js";
+export {
+  canonicalizePdsJson,
+  parseCanonicalPdsJson,
+  parsePdsUint64,
+  pdsUint64be
+} from "./personal-device-sync-jcs.js";
+export {
+  PDS_RELAY_REQUEST_CLOCK_SKEW_MS,
+  PDS_RELAY_REQUEST_NONCE_BYTES,
+  canonicalizePdsRelayRequestTarget,
+  parsePdsRelayRequestProof,
+  pdsRelayBodyDigest,
+  pdsRelayNonceDigest,
+  pdsRelayRequestNonceExpiresAt,
+  pdsRelayRequestSigningBytes,
+  verifyPdsRelayRequestProof
+} from "./personal-device-sync-relay.js";
+export type { PdsRelayRequestProof } from "./personal-device-sync-relay.js";
+export { PdsRelayClient } from "./personal-device-sync-relay-client.js";
+export type {
+  PdsRelayClientIdentity,
+  PdsRelayClientOptions
+} from "./personal-device-sync-relay-client.js";
+export {
+  PDS_SESSION_PACKAGE_VERSION,
+  PDS_SESSION_PACKAGE_MAX_BYTES,
+  PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
+  PDS_SESSION_PACKAGE_MAX_CHUNKS,
+  PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES,
+  PDS_SESSION_PACKAGE_MAX_JSON_BYTES,
+  PDS_SESSION_PACKAGE_MAX_RECIPIENTS,
+  createPdsSessionPackageRuntimeContext,
+  createPdsSessionManifest,
+  createPdsSessionPackage,
+  parsePdsSessionManifestJson,
+  parsePdsSessionPackageJson,
+  pdsDeletionFloorToken,
+  pdsLogicalMemoryId,
+  pdsProjectAliasToken,
+  pdsSessionPackageDigest,
+  pdsSourceFingerprint,
+  rewrapPdsSessionPackage,
+  validatePdsRelayTransport,
+  validatePdsSessionPackageChunk,
+  verifyAndDecryptPdsSessionPackage
+} from "./personal-device-session-package.js";
+export type {
+  CreatePdsSessionManifestInput,
+  CreatePdsSessionPackageInput,
+  CreatePdsSessionPackageRuntimeContextInput,
+  PdsClosedSessionMetadata,
+  PdsConversationSourceItem,
+  PdsProjectAliasManifest,
+  PdsRetainedSessionPackage,
+  PdsSessionManifest,
+  PdsSessionPackage,
+  PdsSessionPackageChunk,
+  PdsSessionPackageReplayEntry,
+  PdsSessionPackageReplayResult,
+  PdsSessionPackageHeader,
+  PdsRelayTransportRuntime,
+  PdsSessionPackageRuntimeContext,
+  PdsSessionRecipient,
+  PdsSessionRecipientEnvelope,
+  PdsRawSourceRecord,
+  VerifyPdsSessionPackageInput
+} from "./personal-device-session-package.js";
+export {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
@@ -132,20 +581,52 @@ export {
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
+  capturedSessionSyncUploadPackageManifestSchema,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
   crossIdentitySyncPackageRequestHash,
+  crossIdentitySyncSummaryNodeRevisionHash,
   isCapturedSessionSyncChunkV1,
   isCapturedSessionSyncPackageV1
 } from "./cross-identity-sync.js";
+export {
+  koedLocalWorkSignalPath,
+  requestKoedLocalWork,
+  watchKoedLocalWork
+} from "./local-work-signal.js";
+export type { KoedLocalWorkSignal } from "./local-work-signal.js";
 export type {
   CapturedSessionSyncChangeOperation,
   CapturedSessionSyncChangeV1,
   CapturedSessionSyncChunkV1,
   CapturedSessionSyncContributorV1,
   CapturedSessionSyncEventV1,
-  CapturedSessionSyncPackageV1
+  CapturedSessionSyncPackageV1,
+  CapturedSessionSyncSummaryNodeV1,
+  CapturedSessionSyncUploadPackageManifest
 } from "./cross-identity-sync.js";
+export {
+  SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION,
+  SHARED_SOURCE_PREVIEW_SCHEMA_VERSION,
+  sharedMemoryGrantScopedSourceId,
+  sharedSourceArtifactHash,
+  sharedSourceArtifactId,
+  sharedSourcePreviewHash,
+  sharedSourcePreviewId
+} from "./shared-source-artifact.js";
+export type {
+  SharedSourceArtifactBindingV1,
+  SharedSourceArtifactItemType,
+  SharedSourceArtifactItemV1,
+  SharedSourceArtifactManifestEntryV1,
+  SharedSourceArtifactPolicyBindingV1,
+  SharedSourceArtifactReference,
+  SharedSourceArtifactRepresentation,
+  SharedSourceArtifactSyncBindingV1,
+  SharedSourceArtifactV1,
+  SharedSourcePreviewReference,
+  SharedSourcePreviewV1
+} from "./shared-source-artifact.js";
 export type {
   NormalizedGitRemote,
   ProjectMetadataV1,
@@ -351,7 +832,11 @@ export const requireEnv = (
 ): void => {
   const missing = names.filter((name) => {
     const value = environment[name];
-    return value === undefined || value.trim() === "";
+    return (
+      value === undefined ||
+      value.trim() === "" ||
+      value.trim().startsWith("replace_with_generated")
+    );
   });
 
   if (missing.length > 0) {

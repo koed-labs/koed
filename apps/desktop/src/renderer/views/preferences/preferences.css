@@ -1,0 +1,355 @@
+.koed-preferences {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 760px);
+  min-block-size: 100%;
+  justify-content: center;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.koed-preferences > nav {
+  padding: 24px 12px;
+  border-inline-end: 1px solid var(--border);
+}
+
+.koed-preferences > nav h1 {
+  margin: 0 10px 18px;
+  font-size: 18px;
+}
+
+.koed-preferences > nav button {
+  display: block;
+  inline-size: 100%;
+  min-block-size: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: start;
+}
+
+.koed-preferences > nav button:hover,
+.koed-preferences > nav button[data-active] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.koed-preferences > nav button[data-active] {
+  font-weight: 650;
+}
+
+.koed-preferences-content {
+  min-inline-size: 0;
+  padding: 0 28px 48px;
+}
+
+.koed-preferences-content > header {
+  padding: 24px 0 18px;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-preferences-content > header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.koed-preference-section {
+  padding-block-start: 8px;
+}
+
+.koed-preference-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
+  gap: 24px;
+  align-items: center;
+  min-block-size: 76px;
+  padding-block: 14px;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-preference-row strong,
+.koed-theme-options legend {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.koed-preference-row p,
+.koed-theme-options > p,
+.koed-connection-state p,
+.koed-connection-form > p,
+.koed-preference-unavailable p,
+.koed-advanced-intro {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.koed-preference-control {
+  justify-self: end;
+}
+
+.koed-preference-control select {
+  min-block-size: 34px;
+  min-inline-size: 150px;
+  padding: 5px 30px 5px 9px;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.koed-theme-options {
+  margin: 0;
+  padding: 18px 0;
+  border: 0;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-theme-options > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-block-start: 14px;
+}
+
+.koed-theme-options label {
+  display: flex;
+  min-block-size: 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.koed-theme-options label:has(input:checked) {
+  border-color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 8%, transparent);
+}
+
+.koed-theme-options input {
+  accent-color: var(--primary);
+}
+
+.koed-preference-unavailable,
+.koed-connection-state {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-block-start: 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.koed-preference-unavailable > svg,
+.koed-connection-state > svg {
+  inline-size: 18px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.koed-trust-note {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  border-inline-start: 3px solid var(--memory);
+  background: color-mix(in oklch, var(--memory) 6%, transparent);
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.koed-connection-state[data-state="live"] > svg {
+  color: var(--success);
+}
+
+.koed-connection-state[data-state="access_revoked"] > svg,
+.koed-connection-state[data-state="unavailable"] > svg {
+  color: var(--destructive);
+}
+
+.koed-connection-form {
+  display: grid;
+  gap: 8px;
+  margin-block-start: 20px;
+}
+
+.koed-connection-form label {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.koed-connection-form > p[role="alert"],
+.koed-diagnostic-error {
+  color: var(--destructive-foreground);
+}
+
+.koed-connection-actions,
+.koed-diagnostic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-block-start: 10px;
+}
+
+.koed-about-list {
+  margin: 0;
+}
+
+.koed-about-list > div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 16px;
+  padding-block: 14px;
+  border-block-end: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.koed-about-list dt {
+  color: var(--muted-foreground);
+}
+
+.koed-about-list dd {
+  margin: 0;
+}
+
+.koed-preference-section > section {
+  padding-block-start: 22px;
+}
+
+.koed-preference-section > section h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.koed-preference-section > section ul {
+  margin: 10px 0 0;
+  padding-inline-start: 20px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+.koed-advanced-intro {
+  max-inline-size: 62ch;
+  margin-block: 18px;
+}
+
+.koed-diagnostics {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.koed-diagnostics summary {
+  display: flex;
+  min-block-size: 44px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.koed-diagnostics summary svg {
+  inline-size: 16px;
+  transition: rotate 140ms ease;
+}
+
+.koed-diagnostics[open] summary {
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-diagnostics[open] summary svg {
+  rotate: 180deg;
+}
+
+.koed-diagnostics > p {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.koed-diagnostics dl {
+  margin: 0;
+}
+
+.koed-diagnostics dl > div {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 16px;
+  padding: 9px 12px;
+  border-block-end: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.koed-diagnostics dl > div:last-child {
+  border-block-end: 0;
+}
+
+.koed-diagnostics dt {
+  color: var(--muted-foreground);
+}
+
+.koed-diagnostics dd {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+
+.koed-diagnostics dd strong {
+  text-transform: capitalize;
+}
+
+.koed-diagnostics dd span {
+  overflow-wrap: anywhere;
+  color: var(--muted-foreground);
+}
+
+@media (max-width: 720px) {
+  .koed-preferences {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .koed-preferences > nav {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    padding: 10px 14px;
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--border);
+  }
+
+  .koed-preferences > nav h1 {
+    display: none;
+  }
+
+  .koed-preferences > nav button {
+    inline-size: auto;
+    flex: 0 0 auto;
+  }
+
+  .koed-preferences-content {
+    padding-inline: 18px;
+  }
+
+  .koed-preference-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .koed-preference-control {
+    justify-self: stretch;
+  }
+
+  .koed-preference-control select {
+    inline-size: 100%;
+  }
+}

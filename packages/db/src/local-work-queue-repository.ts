@@ -35,8 +35,14 @@ export interface ClaimLocalWorkQueueJobInput {
   leaseMs: number;
 }
 
+export interface LocalWorkQueueRuntimeLease {
+  requeueAbandonedJobs(): Promise<number>;
+  release(): Promise<void>;
+}
+
 export interface LocalWorkQueueRepository {
   enqueue(input: EnqueueLocalWorkQueueJobInput): Promise<{ id: number }>;
+  tryAcquireRuntimeLease(): Promise<LocalWorkQueueRuntimeLease | null>;
   claim<TData = unknown>(
     input: ClaimLocalWorkQueueJobInput
   ): Promise<LocalWorkQueueJobRecord<TData> | null>;
@@ -189,6 +195,62 @@ export const createLocalWorkQueueRepository = (
     return { id: Number(result.rows[0]?.id) };
   },
 
+  async tryAcquireRuntimeLease() {
+    const client = await pool.connect();
+    try {
+      const result = await client.query<{ acquired: boolean }>(
+        `
+          select pg_try_advisory_lock(
+            hashtextextended('koed-local-work-queue-runtime', 0)
+          ) as acquired
+        `
+      );
+      if (!result.rows[0]?.acquired) {
+        client.release();
+        return null;
+      }
+
+      let released = false;
+      return {
+        async requeueAbandonedJobs() {
+          const recovered = await client.query(
+            `
+              update local_work_queue
+              set status = 'pending',
+                  attempt_count = greatest(attempt_count - 1, 0),
+                  available_at = now(),
+                  lock_token = null,
+                  locked_at = null,
+                  locked_until = null,
+                  last_error = null,
+                  updated_at = now()
+              where status = 'active'
+            `
+          );
+          return recovered.rowCount ?? 0;
+        },
+        async release() {
+          if (released) return;
+          released = true;
+          try {
+            await client.query(
+              `
+                select pg_advisory_unlock(
+                  hashtextextended('koed-local-work-queue-runtime', 0)
+                )
+              `
+            );
+          } finally {
+            client.release();
+          }
+        }
+      };
+    } catch (error) {
+      client.release(true);
+      throw error;
+    }
+  },
+
   async claim<TData = unknown>(input: ClaimLocalWorkQueueJobInput) {
     const lockToken = randomUUID();
     const leaseMs = toPositiveInteger(input.leaseMs, 60_000);
@@ -267,6 +329,8 @@ export const createLocalWorkQueueRepository = (
         update local_work_queue
         set status = 'completed',
             completed_at = now(),
+            failed_at = null,
+            last_error = null,
             lock_token = null,
             locked_at = null,
             locked_until = null,

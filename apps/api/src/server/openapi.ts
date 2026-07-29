@@ -119,16 +119,14 @@ const securityForIdentity = (
       return [{ sessionCookie: [] }, { bearerApiToken: [] }];
     case "session_or_device_credential":
       return [{ sessionCookie: [] }, { deviceCredential: [] }];
-    case "conditional_team_session_or_device":
-      return [
-        { sessionCookie: [] },
-        { bearerApiToken: [] },
-        { deviceCredential: [] }
-      ];
     case "api_token_or_device_credential":
       return [{ bearerApiToken: [] }, { deviceCredential: [] }];
     case "device_credential":
       return [{ deviceCredential: [] }];
+    case "local_edge_client_credential":
+      return [{ localEdgeClientCredential: [] }];
+    case "pds_relay_proof":
+      return [{ pdsRelayProof: [] }];
     case "internal_service_token":
       return [{ bearerApiToken: [] }];
     case "upstream_credential":
@@ -177,6 +175,20 @@ export const openApiDocument = {
         name: "Authorization",
         description:
           "Use the custom device credential header value: Koed-Device <credentialKeyId>:<secret>."
+      },
+      localEdgeClientCredential: {
+        type: "apiKey",
+        in: "header",
+        name: "Authorization",
+        description:
+          "Use the scoped local-edge client header value: Koed-Device <credentialKeyId>:<secret>."
+      },
+      pdsRelayProof: {
+        type: "apiKey",
+        in: "header",
+        name: "X-PDS-Relay-Proof",
+        description:
+          "Canonical PDS relay request proof. X-PDS-Membership-Certificate is also required; browser sessions, API Tokens, and Koed-Device credentials are rejected."
       },
       sessionCookie: {
         type: "apiKey",

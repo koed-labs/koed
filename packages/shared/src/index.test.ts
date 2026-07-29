@@ -56,6 +56,15 @@ describe("requireEnv", () => {
     );
   });
 
+  it("rejects generated-secret placeholders", () => {
+    expect(() =>
+      requireEnv(["COLLABORATION_REALTIME_CURSOR_SECRET"], {
+        COLLABORATION_REALTIME_CURSOR_SECRET:
+          "replace_with_generated_realtime_cursor_secret"
+      })
+    ).toThrow("COLLABORATION_REALTIME_CURSOR_SECRET");
+  });
+
   it("allows present required values", () => {
     expect(() =>
       requireEnv(["DATABASE_URL"], { DATABASE_URL: "postgres://db" })

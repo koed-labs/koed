@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { expandMemoryNodeQuerySchema } from "../memory/graph-schemas.js";
+import { searchMemorySchema } from "../memory/recall-schemas.js";
 
 const operationFamilySchema = z
   .string()
@@ -14,12 +16,48 @@ const credentialKeyIdSchema = z
   .max(160)
   .regex(/^[a-z0-9_.-]+$/i);
 
+const localEdgeBackendIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(160)
+  .regex(/^[A-Za-z0-9._:-]+$/);
+
+const localCollaborationDeliveryIdSchema = z
+  .string()
+  .min(32)
+  .max(86)
+  .regex(/^[A-Za-z0-9_-]+$/);
+
+const localPersonalCollaborationBindingSchema = z
+  .object({
+    scope: z.literal("personal")
+  })
+  .strict();
+
+const localTeamCollaborationBindingSchema = z
+  .object({
+    scope: z.literal("team"),
+    upstream_backend_id: localEdgeBackendIdSchema,
+    team_id: z.uuid()
+  })
+  .strict();
+
+const localCollaborationBindingSchema = z.discriminatedUnion("scope", [
+  localPersonalCollaborationBindingSchema,
+  localTeamCollaborationBindingSchema
+]);
+
 export const localEdgeOperationFamilySchema = z.enum([
   "personal_memory_read",
   "team_workspace_read",
+  "team_chat_read",
+  "team_chat_write",
   "share_grant_management",
+  "action_grant",
   "capture_writes",
   "sync",
+  "managed_execution",
   "admin"
 ]);
 
@@ -34,6 +72,7 @@ export const createDeviceEnrollmentChallengeSchema = z
     challenge_hash: z.string().min(32),
     upstream_backend_id: z.string().trim().min(1).max(160),
     device_instance_id: z.string().trim().min(1).max(160).optional(),
+    protocol_deployment_id: z.uuid(),
     rotate_credential_id: z.uuid().optional(),
     device_label: z.string().trim().min(1).max(160).optional(),
     requested_operation_families: z
@@ -125,7 +164,7 @@ export const localEdgeRouteDecisionSchema = z.object({
   requested_mode: localEdgeRouteModeSchema.optional(),
   capture_context: z
     .object({
-      workspace_id: z.string().min(1).optional(),
+      project_id: z.string().min(1).optional(),
       session_id: z.uuid().optional(),
       thread_id: z.string().min(1).optional()
     })
@@ -142,3 +181,104 @@ export const localEdgeUpstreamOperationSchema =
     path: z.string().min(1).max(2048),
     body: z.unknown().optional()
   });
+
+const localEdgeTeamMemoryBaseSchema = z
+  .object({
+    upstream_backend_id: localEdgeBackendIdSchema
+  })
+  .strict();
+
+const localEdgeTeamMemoryRecallSchema = z
+  .object({
+    upstream_backend_id: localEdgeBackendIdSchema,
+    input: searchMemorySchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.input.team_workspace_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["input", "team_workspace_id"],
+        message: "team_workspace_id is required for Team Memory recall"
+      });
+    }
+  });
+
+export const localEdgeTeamMemorySearchSchema =
+  localEdgeTeamMemoryRecallSchema.superRefine((_value, context) => {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Generic Team Memory search is unavailable; use dedicated Shared Memory controls"
+    });
+  });
+
+export const localEdgeTeamMemoryAnswerSchema =
+  localEdgeTeamMemoryRecallSchema.superRefine((_value, context) => {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Generic Team Memory answer is unavailable; use dedicated Shared Memory controls"
+    });
+  });
+
+export const localEdgeTeamMemoryExpandSchema = localEdgeTeamMemoryBaseSchema
+  .extend({
+    node_id: z.uuid(),
+    input: expandMemoryNodeQuerySchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.input.team_workspace_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["input", "team_workspace_id"],
+        message: "team_workspace_id is required for Team Memory expansion"
+      });
+    }
+    context.addIssue({
+      code: "custom",
+      message:
+        "Generic Team Memory expansion is unavailable; use dedicated Shared Memory controls"
+    });
+  });
+
+export const createLocalEdgeCollaborationSubscriptionSchema =
+  localCollaborationBindingSchema;
+
+export const localEdgeCollaborationSubscriptionParamsSchema = z
+  .object({ subscriptionId: z.uuid() })
+  .strict();
+
+export const localEdgeCollaborationBackendParamsSchema = z
+  .object({ backendId: localEdgeBackendIdSchema })
+  .strict();
+
+export const localEdgeCollaborationStreamQuerySchema =
+  localCollaborationBindingSchema;
+
+export const acknowledgeLocalEdgeCollaborationDeliverySchema =
+  z.discriminatedUnion("scope", [
+    localPersonalCollaborationBindingSchema.extend({
+      delivery_id: localCollaborationDeliveryIdSchema,
+      event_id: z.uuid().nullable(),
+      expected_version: z.number().int().safe().min(0)
+    }),
+    localTeamCollaborationBindingSchema.extend({
+      delivery_id: localCollaborationDeliveryIdSchema,
+      event_id: z.uuid().nullable(),
+      expected_version: z.number().int().safe().min(0)
+    })
+  ]);
+
+export const unsubscribeLocalEdgeCollaborationSchema = z.discriminatedUnion(
+  "scope",
+  [
+    localPersonalCollaborationBindingSchema.extend({
+      expected_version: z.number().int().safe().positive()
+    }),
+    localTeamCollaborationBindingSchema.extend({
+      expected_version: z.number().int().safe().positive()
+    })
+  ]
+);

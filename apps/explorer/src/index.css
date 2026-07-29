@@ -1,4 +1,8 @@
 @import "tailwindcss";
+@import "@koed/ui/tailwind.css";
+@import "@koed/ui/tokens.css";
+@import "@koed/ui/base.css";
+@source "../../../packages/ui/src";
 
 @custom-variant dark (&:is(.dark, .dark *));
 
@@ -32,10 +36,10 @@
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: var(--radius);
+  --radius-4xl: var(--radius);
   @keyframes skeleton {
     to {
       background-position: -200% 0;
@@ -81,7 +85,7 @@
   animation-duration: 0s !important;
 }
 
-:root {
+:root.__legacy-theme {
   color-scheme: light;
   --radius: 0.625rem;
   --background: var(--color-white);
@@ -163,7 +167,6 @@ body {
     "DM Sans",
     -apple-system,
     BlinkMacSystemFont,
-    "Segoe UI",
     system-ui,
     sans-serif;
   margin: 0;

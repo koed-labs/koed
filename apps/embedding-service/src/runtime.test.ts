@@ -13,8 +13,8 @@ class FakeLlamaServer implements LlamaEmbeddingClient {
     return true;
   }
 
-  stop(): void {
-    return undefined;
+  async stop(): Promise<void> {
+    return Promise.resolve();
   }
 
   async tokenize(text: string): Promise<TokenPiece[]> {

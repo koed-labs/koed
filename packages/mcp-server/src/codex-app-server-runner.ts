@@ -35,6 +35,7 @@ export interface CodexAppServerThreadInfo {
   id: string;
   sessionId?: string;
   parentThreadId?: string;
+  forkedFromId?: string;
   path?: string;
   cwd?: string;
   source?: unknown;
@@ -677,7 +678,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
 const threadInfoFromResponse = (
-  method: "thread/start" | "thread/resume",
+  method: "thread/start" | "thread/resume" | "thread/fork",
   value: unknown
 ): CodexAppServerThreadInfo => {
   const thread = asRecord(asRecord(value).thread);
@@ -691,6 +692,9 @@ const threadInfoFromResponse = (
       : {}),
     ...(typeof thread.parentThreadId === "string"
       ? { parentThreadId: thread.parentThreadId }
+      : {}),
+    ...(typeof thread.forkedFromId === "string"
+      ? { forkedFromId: thread.forkedFromId }
       : {}),
     ...(typeof thread.path === "string" ? { path: thread.path } : {}),
     ...(typeof thread.cwd === "string" ? { cwd: thread.cwd } : {}),
@@ -1004,6 +1008,41 @@ export class CodexAppServerClient {
     const response = await this.request("thread/resume", params);
     this.recordRawEvent("thread/resume", params, response.result);
     return threadInfoFromResponse("thread/resume", response.result);
+  }
+
+  async forkThread(
+    threadId: string,
+    sourcePath: string,
+    config: CodexAppServerRunConfig
+  ): Promise<CodexAppServerThreadInfo> {
+    this.currentDynamicToolHandler = config.dynamicToolHandler;
+    const params = {
+      threadId,
+      path: sourcePath,
+      model: config.model,
+      cwd: config.cwd,
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      ephemeral: false,
+      excludeTurns: true,
+      deferGoalContinuation: true,
+      config: koedAppServerMinimalContextConfig,
+      baseInstructions: config.baseInstructions,
+      developerInstructions: config.developerInstructions ?? "",
+      threadSource: "user"
+    };
+    const response = await this.request("thread/fork", params);
+    const thread = threadInfoFromResponse("thread/fork", response.result);
+    this.recordRawEvent(
+      "thread/fork",
+      {
+        ...params,
+        parentThreadId: threadId,
+        threadId: thread.id
+      },
+      response.result
+    );
+    return thread;
   }
 
   async startTurn(

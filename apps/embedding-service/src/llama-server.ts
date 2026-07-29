@@ -36,6 +36,30 @@ export class LlamaServerError extends Error {}
 
 type FetchLike = typeof fetch;
 type SpawnLike = typeof spawn;
+const llamaServerShutdownGraceMs = 2_000;
+
+const waitForChildExit = (
+  child: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> => {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
+};
 
 export const llamaServerEnvironment = (
   llamaServerBinary: string,
@@ -142,9 +166,9 @@ export class LlamaServerClient {
     this.logPath = `/tmp/koed-${options.name}-llama-server.log`;
   }
 
-  start(): Promise<void> {
+  async start(): Promise<void> {
     if (this.isRunning()) {
-      return Promise.resolve();
+      return;
     }
     const args = [
       "--model",
@@ -225,14 +249,9 @@ export class LlamaServerClient {
       this.process = child;
       child.stdout?.pipe(this.logFile, { end: false });
       child.stderr?.pipe(this.logFile, { end: false });
-      return this.waitReady(this.config.llamaServerStartupTimeoutSeconds).catch(
-        (error: unknown) => {
-          this.stop();
-          throw error;
-        }
-      );
+      await this.waitReady(this.config.llamaServerStartupTimeoutSeconds);
     } catch (error) {
-      this.stop();
+      await this.stop();
       throw error;
     }
   }
@@ -267,22 +286,22 @@ export class LlamaServerClient {
     );
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.process === null) {
       return;
     }
     const child = this.process;
-    if (child.exitCode === null) {
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (child.exitCode === null) {
-          child.kill("SIGKILL");
-        }
-      }, 10000).unref();
-    }
     this.process = null;
     this.logFile?.end();
     this.logFile = null;
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      const exited = await waitForChildExit(child, llamaServerShutdownGraceMs);
+      if (!exited && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await waitForChildExit(child, llamaServerShutdownGraceMs);
+      }
+    }
   }
 
   async get(path: string, timeoutMs: number): Promise<Record<string, unknown>> {

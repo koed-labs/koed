@@ -8,6 +8,16 @@ const port = Number(process.env.PORT ?? 5733);
 const host = process.env.HOST?.trim() || "localhost";
 const configuredAppVersion = process.env.APP_VERSION?.trim() || pkg.version;
 const sourcemapEnv = process.env.KOED_WEB_SOURCEMAP?.trim().toLowerCase();
+const apiProxyTarget =
+  process.env.VITE_KOED_API_BASE_URL?.trim() ||
+  process.env.EXPLORER_API_BASE_URL?.trim() ||
+  "http://localhost:3300";
+
+const browserApiProxy = {
+  "/auth": { target: apiProxyTarget },
+  "/me": { target: apiProxyTarget },
+  "/v1": { target: apiProxyTarget }
+};
 
 const buildSourcemap =
   sourcemapEnv === "0" || sourcemapEnv === "false"
@@ -30,10 +40,14 @@ export default defineConfig({
     host,
     port,
     strictPort: true,
+    proxy: browserApiProxy,
     hmr: {
       protocol: "ws",
       host
     }
+  },
+  preview: {
+    proxy: browserApiProxy
   },
   build: {
     outDir: "dist",

@@ -21,6 +21,7 @@
   "dependencies": {
     "@koed/core": "workspace:*",
     "@koed/db": "workspace:*",
+    "@koed/mcp-server": "workspace:*",
     "@koed/shared": "workspace:*",
     "bullmq": "^5.76.9",
     "dotenv": "^17.2.3",

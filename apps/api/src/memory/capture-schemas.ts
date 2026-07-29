@@ -22,13 +22,12 @@ const personalProjectReferenceSchema = z
   .transform((project) => ({ ...project, path: project.path ?? null }));
 
 export const createMcpSessionSchema = z.object({
-  workspaceId: z.string().uuid().optional(),
+  projectId: z.string().trim().min(1).max(512).optional(),
   externalSessionId: z.string().min(1).optional(),
   sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex"),
-  captureMethod: z.enum(["hook", "mcp", "web", "api"]).default("mcp"),
+  captureMethod: z.enum(["transcript", "mcp", "web", "api"]).default("mcp"),
   model: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
-  codexTranscriptPath: z.string().min(1).optional(),
   idempotencyKey: z.string().min(1).optional(),
   sourceHash: z.string().min(1).optional(),
   metadata: metadataSchema,
@@ -37,18 +36,18 @@ export const createMcpSessionSchema = z.object({
 
 export const latestCapturedSessionQuerySchema = z
   .object({
-    workspace_id: z.string().trim().min(1)
+    project_id: z.string().trim().min(1)
   })
   .strict();
 
 export const capturedSessionQuerySchema = z
   .object({
-    workspace_id: z.string().trim().min(1).optional()
+    project_id: z.string().trim().min(1).optional()
   })
   .strict();
 
 export const mcpSessionEventSchema = z.object({
-  workspaceId: z.string().min(1).default("default"),
+  projectId: z.string().min(1).default("default"),
   turnId: z.string().uuid().optional(),
   actor: memoryActorSchema,
   eventType: z.string().min(1).default("session_event"),
@@ -57,7 +56,7 @@ export const mcpSessionEventSchema = z.object({
 });
 
 export const capturePersonalEventSchema = z.object({
-  workspaceId: z.string().min(1).default("default"),
+  projectId: z.string().min(1).default("default"),
   sessionId: z.string().uuid().optional(),
   turnId: z.string().uuid().optional(),
   actor: memoryActorSchema,
@@ -65,8 +64,9 @@ export const capturePersonalEventSchema = z.object({
   content: z.string().min(1),
   metadata: metadataSchema,
   sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex-cli"),
-  captureMethod: z.enum(["hook", "mcp", "web", "api"]).default("hook"),
-  codexTranscriptPath: z.string().min(1).optional(),
+  captureMethod: z
+    .enum(["transcript", "mcp", "web", "api"])
+    .default("transcript"),
   idempotencyKey: z.string().min(1).optional(),
   sourceHash: z.string().min(1).optional()
 });

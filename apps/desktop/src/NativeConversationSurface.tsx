@@ -1,11 +1,18 @@
-import { VirtualizedTimeline, threadSelectionKey } from "@koed/memory-ui";
+import {
+  MemoryEventFrame,
+  SecureMarkdown,
+  VirtualizedTimeline,
+  threadSelectionKey,
+  type MarkdownPlatformAdapters
+} from "@koed/memory-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  conversationEventsUrl,
+  conversationEventPatch,
   conversationEventText,
   groupConversationEvents,
   mergeConversationEvents,
+  type ConversationCursor,
   type DesktopConversationEvent,
   type DesktopConversationTimelineItem
 } from "./desktop-conversation.js";
@@ -13,6 +20,39 @@ import type { DesktopThreadGroup } from "./project-memory-ui.js";
 
 const initialEventLimit = 50;
 const olderEventLimit = 500;
+
+export type ConversationEventsPageLoader = (input: {
+  cursor?: ConversationCursor;
+  limit: 50 | 500;
+  thread: DesktopThreadGroup;
+}) => Promise<DesktopConversationEvent[]>;
+
+export type ConversationSurfaceModel = {
+  error: string;
+  events: readonly DesktopConversationEvent[];
+  hasOlderEvents: boolean;
+  status: "idle" | "loading" | "ready" | "error";
+};
+
+type ConversationSurfaceCommonProps = {
+  markdownAdapters?: MarkdownPlatformAdapters;
+  onInspectEvent?: (event: DesktopConversationEvent) => void;
+  thread: DesktopThreadGroup;
+};
+
+export type NativeConversationSurfaceProps =
+  | (ConversationSurfaceCommonProps & {
+      loadEventsPage: ConversationEventsPageLoader;
+      model?: never;
+      onLoadOlder?: never;
+      onRetry?: never;
+    })
+  | (ConversationSurfaceCommonProps & {
+      loadEventsPage?: never;
+      model: ConversationSurfaceModel;
+      onLoadOlder: () => Promise<void> | void;
+      onRetry: () => Promise<void> | void;
+    });
 
 function eventActorLabel(event: DesktopConversationEvent): string {
   if (event.actor === "user") return "You";
@@ -33,15 +73,63 @@ function eventTime(value: string): string {
   }).format(date);
 }
 
-function ConversationEventRow({ event }: { event: DesktopConversationEvent }) {
+function EventActions({
+  event,
+  onInspectEvent
+}: {
+  event: DesktopConversationEvent;
+  onInspectEvent?: (event: DesktopConversationEvent) => void;
+}) {
+  if (!onInspectEvent) return null;
+  return (
+    <button
+      aria-label={`Inspect ${eventActorLabel(event)} event`}
+      className="native-inspect-event"
+      onClick={() => onInspectEvent(event)}
+      type="button"
+    >
+      Inspect
+    </button>
+  );
+}
+
+function InvalidationLabel({ event }: { event: DesktopConversationEvent }) {
+  if (!event.invalidatedAt) return null;
+  return (
+    <span className="personal-event-invalidated" role="status">
+      Invalidated · excluded from current recall
+    </span>
+  );
+}
+
+function ConversationEventRow({
+  event,
+  markdownAdapters,
+  onInspectEvent
+}: {
+  event: DesktopConversationEvent;
+  markdownAdapters?: MarkdownPlatformAdapters;
+  onInspectEvent?: (event: DesktopConversationEvent) => void;
+}) {
   const text = conversationEventText(event);
   if (!text && event.actor !== "tool") return null;
   const actor = eventActorLabel(event);
   const tone =
     event.actor === "user" ? "user" : event.actor === "tool" ? "tool" : "agent";
+  const patch = conversationEventPatch(event);
+  const metadata = (
+    <>
+      <time dateTime={event.timestamp}>{eventTime(event.timestamp)}</time>
+      <InvalidationLabel event={event} />
+    </>
+  );
+
   if (event.actor === "tool") {
     return (
-      <div className="native-event-wrap">
+      <div
+        className="native-event-wrap"
+        data-invalidated={event.invalidatedAt ? "true" : undefined}
+      >
         <details className="native-tool-event">
           <summary>
             <span className={`native-event-avatar ${tone}`} aria-hidden="true">
@@ -52,41 +140,85 @@ function ConversationEventRow({ event }: { event: DesktopConversationEvent }) {
               <small>{eventTime(event.timestamp)}</small>
             </span>
             <span className="native-tool-preview">
-              {text.split("\n")[0] || "Tool activity"}
+              {patch?.summary ?? text.split("\n")[0] ?? "Tool activity"}
             </span>
+            <InvalidationLabel event={event} />
           </summary>
-          <pre>
-            {text || "Tool activity captured without displayable content."}
-          </pre>
+          <MemoryEventFrame
+            actions={
+              <EventActions event={event} onInspectEvent={onInspectEvent} />
+            }
+            className="native-tool-event-frame"
+            contentType={patch ? "diff" : "tool"}
+            header={actor}
+            metadata={metadata}
+            scope="personal"
+          >
+            {patch ? (
+              <details className="native-diff-disclosure">
+                <summary>{patch.summary}</summary>
+                <pre>{patch.sourceText}</pre>
+              </details>
+            ) : (
+              <pre>
+                {text || "Tool activity captured without displayable content."}
+              </pre>
+            )}
+          </MemoryEventFrame>
         </details>
       </div>
     );
   }
   return (
-    <div className="native-event-wrap">
-      <article className={`native-conversation-event ${tone}`}>
-        <span className={`native-event-avatar ${tone}`} aria-hidden="true">
-          {event.actor === "user" ? "Y" : "K"}
-        </span>
-        <div className="native-event-body">
-          <header>
+    <div
+      className="native-event-wrap"
+      data-invalidated={event.invalidatedAt ? "true" : undefined}
+    >
+      <MemoryEventFrame
+        actions={<EventActions event={event} onInspectEvent={onInspectEvent} />}
+        className={`native-conversation-event ${tone}`}
+        contentType={event.eventType || "message"}
+        header={
+          <>
+            <span className={`native-event-avatar ${tone}`} aria-hidden="true">
+              {event.actor === "user" ? "Y" : "K"}
+            </span>
             <strong>{actor}</strong>
-            <time dateTime={event.timestamp}>{eventTime(event.timestamp)}</time>
-          </header>
+          </>
+        }
+        metadata={metadata}
+        scope="personal"
+      >
+        {markdownAdapters ? (
+          <SecureMarkdown
+            adapters={markdownAdapters}
+            className="native-event-content"
+            source={text}
+          />
+        ) : (
           <div className="native-event-content">{text}</div>
-        </div>
-      </article>
+        )}
+      </MemoryEventFrame>
     </div>
   );
 }
 
-function ToolActivityGroup({ events }: { events: DesktopConversationEvent[] }) {
+function ToolActivityGroup({
+  events,
+  markdownAdapters,
+  onInspectEvent
+}: {
+  events: DesktopConversationEvent[];
+  markdownAdapters?: MarkdownPlatformAdapters;
+  onInspectEvent?: (event: DesktopConversationEvent) => void;
+}) {
   const toolNames = [
     ...new Set(events.map(eventActorLabel).filter((name) => name !== "Tool"))
   ];
   const summary = toolNames.length
     ? toolNames.slice(0, 3).join(", ")
     : "Commands and tool calls";
+  const invalidatedCount = events.filter((event) => event.invalidatedAt).length;
   return (
     <div className="native-event-wrap">
       <details className="native-tool-group">
@@ -100,13 +232,23 @@ function ToolActivityGroup({ events }: { events: DesktopConversationEvent[] }) {
               {events.length} activity items · {summary}
             </small>
           </span>
+          {invalidatedCount ? (
+            <span className="personal-event-invalidated">
+              {invalidatedCount} invalidated
+            </span>
+          ) : null}
           <span className="native-tool-group-disclosure" aria-hidden="true">
             +
           </span>
         </summary>
         <div className="native-tool-group-events">
           {events.map((event) => (
-            <ConversationEventRow key={event.id} event={event} />
+            <ConversationEventRow
+              event={event}
+              key={event.id}
+              markdownAdapters={markdownAdapters}
+              onInspectEvent={onInspectEvent}
+            />
           ))}
         </div>
       </details>
@@ -114,184 +256,25 @@ function ToolActivityGroup({ events }: { events: DesktopConversationEvent[] }) {
   );
 }
 
-async function requestEvents({
-  apiBaseUrl,
-  apiToken,
-  cursor,
-  limit,
-  signal,
+function ConversationPresentation({
+  model,
+  markdownAdapters,
+  onInspectEvent,
+  onLoadOlder,
+  onRetry,
   thread
-}: {
-  apiBaseUrl: string;
-  apiToken: string;
-  cursor?: DesktopConversationEvent;
-  limit: number;
-  signal?: AbortSignal;
-  thread: DesktopThreadGroup;
-}): Promise<DesktopConversationEvent[]> {
-  const response = await fetch(
-    conversationEventsUrl({ apiBaseUrl, cursor, limit, thread }),
-    {
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${apiToken}`
-      },
-      signal
-    }
-  );
-  const payload = (await response.json().catch(() => ({}))) as {
-    error?: unknown;
-    events?: DesktopConversationEvent[];
-  };
-  if (!response.ok) {
-    throw new Error(
-      typeof payload.error === "string"
-        ? payload.error
-        : `Conversation request failed with HTTP ${response.status}`
-    );
-  }
-  return Array.isArray(payload.events) ? payload.events : [];
-}
-
-export function NativeConversationSurface({
-  apiBaseUrl,
-  apiToken,
-  thread
-}: {
-  apiBaseUrl: string | null;
-  apiToken: string | null;
-  thread: DesktopThreadGroup;
+}: ConversationSurfaceCommonProps & {
+  model: ConversationSurfaceModel;
+  onLoadOlder: () => Promise<void> | void;
+  onRetry: () => Promise<void> | void;
 }) {
-  const [events, setEvents] = useState<DesktopConversationEvent[]>([]);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [hasOlderEvents, setHasOlderEvents] = useState(false);
-  const [requestRevision, setRequestRevision] = useState(0);
-  const eventsRef = useRef(events);
-  const olderControllerRef = useRef<AbortController | null>(null);
-  const requestGenerationRef = useRef(0);
-
-  useEffect(() => {
-    eventsRef.current = events;
-  }, [events]);
-
-  useEffect(() => {
-    requestGenerationRef.current += 1;
-    olderControllerRef.current?.abort();
-    olderControllerRef.current = null;
-    const controller = new AbortController();
-    const cleanup = () => {
-      controller.abort();
-      olderControllerRef.current?.abort();
-      olderControllerRef.current = null;
-    };
-    setEvents([]);
-    setError("");
-    setHasOlderEvents(false);
-    setLoadingOlder(false);
-    if (!apiBaseUrl || !apiToken) {
-      setLoading(false);
-      setError(
-        "Local Personal Memory is not ready. Refresh status, then reopen this Captured Session."
-      );
-      return cleanup;
-    }
-    setLoading(true);
-    void requestEvents({
-      apiBaseUrl,
-      apiToken,
-      limit: initialEventLimit,
-      signal: controller.signal,
-      thread
-    })
-      .then((nextEvents) => {
-        const merged = mergeConversationEvents([], nextEvents);
-        setEvents(merged);
-        setHasOlderEvents(merged.length < thread.eventCount);
-      })
-      .catch((cause: unknown) => {
-        if (controller.signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return cleanup;
-  }, [
-    apiBaseUrl,
-    apiToken,
-    requestRevision,
-    thread.eventCount,
-    thread.id,
-    thread.projectId
-  ]);
-
-  const loadOlder = useCallback(async () => {
-    if (
-      !apiBaseUrl ||
-      !apiToken ||
-      loadingOlder ||
-      !hasOlderEvents ||
-      eventsRef.current.length === 0
-    ) {
-      return;
-    }
-    setLoadingOlder(true);
-    setError("");
-    const cursor = eventsRef.current[0];
-    if (!cursor) return;
-    const generation = requestGenerationRef.current;
-    const controller = new AbortController();
-    olderControllerRef.current = controller;
-    const currentEvents = eventsRef.current;
-    try {
-      const older = await requestEvents({
-        apiBaseUrl,
-        apiToken,
-        cursor,
-        limit: olderEventLimit,
-        signal: controller.signal,
-        thread
-      });
-      if (
-        controller.signal.aborted ||
-        generation !== requestGenerationRef.current
-      ) {
-        return;
-      }
-      const repeatedCursor = older.some(
-        (event) =>
-          event.id === cursor.id && event.timestamp === cursor.timestamp
-      );
-      const merged = mergeConversationEvents(currentEvents, older);
-      const madeProgress = merged.length > currentEvents.length;
-      eventsRef.current = merged;
-      setEvents(merged);
-      setHasOlderEvents(
-        !repeatedCursor &&
-          madeProgress &&
-          older.length > 0 &&
-          merged.length < thread.eventCount
-      );
-    } catch (cause) {
-      if (controller.signal.aborted) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (olderControllerRef.current === controller) {
-        olderControllerRef.current = null;
-        setLoadingOlder(false);
-      }
-    }
-  }, [apiBaseUrl, apiToken, hasOlderEvents, loadingOlder, thread]);
-
   const visibleEvents = useMemo(
     () =>
-      events.filter(
+      model.events.filter(
         (event) =>
           event.actor === "tool" || conversationEventText(event).length > 0
       ),
-    [events]
+    [model.events]
   );
   const timelineItems = useMemo(
     () => groupConversationEvents(visibleEvents),
@@ -300,29 +283,37 @@ export function NativeConversationSurface({
   const renderEvent = useCallback(
     (item: DesktopConversationTimelineItem) =>
       item.kind === "tool-group" ? (
-        <ToolActivityGroup events={item.events} />
+        <ToolActivityGroup
+          events={item.events}
+          markdownAdapters={markdownAdapters}
+          onInspectEvent={onInspectEvent}
+        />
       ) : (
-        <ConversationEventRow event={item.event} />
+        <ConversationEventRow
+          event={item.event}
+          markdownAdapters={markdownAdapters}
+          onInspectEvent={onInspectEvent}
+        />
       ),
-    []
+    [markdownAdapters, onInspectEvent]
   );
 
-  if (loading) {
+  if (
+    (model.status === "loading" || model.status === "idle") &&
+    visibleEvents.length === 0
+  ) {
     return (
       <div className="native-conversation-state" role="status">
-        Loading raw Conversation…
+        Loading Conversation…
       </div>
     );
   }
-  if (error && visibleEvents.length === 0) {
+  if (model.error && visibleEvents.length === 0) {
     return (
       <div className="native-conversation-state error" role="alert">
         <strong>Conversation could not be loaded</strong>
-        <p>{error}</p>
-        <button
-          type="button"
-          onClick={() => setRequestRevision((revision) => revision + 1)}
-        >
+        <p>{model.error}</p>
+        <button type="button" onClick={() => void onRetry()}>
           Retry loading
         </button>
       </div>
@@ -341,24 +332,166 @@ export function NativeConversationSurface({
   }
   return (
     <div className="native-conversation-content">
-      {loadingOlder ? (
+      {model.status === "loading" ? (
         <div className="native-older-status">
           Loading earlier Memory Events…
         </div>
       ) : null}
-      {error ? (
+      {model.error ? (
         <div className="native-older-status error" role="alert">
-          {error}
+          {model.error}
         </div>
       ) : null}
       <VirtualizedTimeline
         className="native-timeline-scroll"
         events={timelineItems}
-        hasOlderEvents={hasOlderEvents}
-        onLoadOlder={loadOlder}
+        hasOlderEvents={model.hasOlderEvents}
+        onLoadOlder={onLoadOlder}
         renderEvent={renderEvent}
         threadKey={threadSelectionKey(thread)}
       />
     </div>
+  );
+}
+
+function LegacyConversationController({
+  loadEventsPage,
+  markdownAdapters,
+  onInspectEvent,
+  thread
+}: ConversationSurfaceCommonProps & {
+  loadEventsPage: ConversationEventsPageLoader;
+}) {
+  const [events, setEvents] = useState<DesktopConversationEvent[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasOlderEvents, setHasOlderEvents] = useState(false);
+  const [requestRevision, setRequestRevision] = useState(0);
+  const eventsRef = useRef(events);
+  const requestGenerationRef = useRef(0);
+
+  useEffect(() => {
+    eventsRef.current = events;
+  }, [events]);
+
+  useEffect(() => {
+    requestGenerationRef.current += 1;
+    const generation = requestGenerationRef.current;
+    setEvents([]);
+    setError("");
+    setHasOlderEvents(false);
+    setLoadingOlder(false);
+    setLoading(true);
+    void loadEventsPage({ limit: initialEventLimit, thread })
+      .then((nextEvents) => {
+        if (generation !== requestGenerationRef.current) return;
+        const merged = mergeConversationEvents([], nextEvents);
+        setEvents(merged);
+        setHasOlderEvents(merged.length < thread.eventCount);
+      })
+      .catch((cause: unknown) => {
+        if (generation !== requestGenerationRef.current) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (generation === requestGenerationRef.current) setLoading(false);
+      });
+    return () => {
+      requestGenerationRef.current += 1;
+    };
+  }, [
+    loadEventsPage,
+    requestRevision,
+    thread.eventCount,
+    thread.id,
+    thread.projectId
+  ]);
+
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder || !hasOlderEvents || eventsRef.current.length === 0) {
+      return;
+    }
+    setLoadingOlder(true);
+    setError("");
+    const cursor = eventsRef.current[0];
+    if (!cursor) {
+      setLoadingOlder(false);
+      return;
+    }
+    const generation = requestGenerationRef.current;
+    const currentEvents = eventsRef.current;
+    try {
+      const older = await loadEventsPage({
+        cursor: {
+          id: cursor.id,
+          sourceSequence: cursor.sourceSequence,
+          timestamp: cursor.timestamp
+        },
+        limit: olderEventLimit,
+        thread
+      });
+      if (generation !== requestGenerationRef.current) return;
+      const repeatedCursor = older.some(
+        (event) =>
+          event.id === cursor.id && event.timestamp === cursor.timestamp
+      );
+      const merged = mergeConversationEvents(currentEvents, older);
+      const madeProgress = merged.length > currentEvents.length;
+      eventsRef.current = merged;
+      setEvents(merged);
+      setHasOlderEvents(
+        !repeatedCursor &&
+          madeProgress &&
+          older.length > 0 &&
+          merged.length < thread.eventCount
+      );
+    } catch (cause) {
+      if (generation !== requestGenerationRef.current) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (generation === requestGenerationRef.current) setLoadingOlder(false);
+    }
+  }, [hasOlderEvents, loadEventsPage, loadingOlder, thread]);
+
+  return (
+    <ConversationPresentation
+      model={{
+        error,
+        events,
+        hasOlderEvents,
+        status: loading || loadingOlder ? "loading" : error ? "error" : "ready"
+      }}
+      markdownAdapters={markdownAdapters}
+      onInspectEvent={onInspectEvent}
+      onLoadOlder={loadOlder}
+      onRetry={() => setRequestRevision((revision) => revision + 1)}
+      thread={thread}
+    />
+  );
+}
+
+export function NativeConversationSurface(
+  props: NativeConversationSurfaceProps
+) {
+  if ("model" in props && props.model) {
+    return (
+      <ConversationPresentation
+        model={props.model}
+        markdownAdapters={props.markdownAdapters}
+        onInspectEvent={props.onInspectEvent}
+        onLoadOlder={props.onLoadOlder}
+        onRetry={props.onRetry}
+        thread={props.thread}
+      />
+    );
+  }
+  return (
+    <LegacyConversationController
+      loadEventsPage={props.loadEventsPage}
+      markdownAdapters={props.markdownAdapters}
+      onInspectEvent={props.onInspectEvent}
+      thread={props.thread}
+    />
   );
 }

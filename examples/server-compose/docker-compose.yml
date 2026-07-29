@@ -1,30 +1,48 @@
 services:
   koed-server:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: packages/koed-server/Dockerfile
     environment:
       KOED_HOME: /data/koed
+      KOED_DEVICE_PROOF_DIR: /data/koed-device-proof/device-proof
       KOED_REPO_ROOT: /app
       KOED_DEPLOYMENT_PROFILE: ${KOED_DEPLOYMENT_PROFILE:-team_self_hosted}
       KOED_RUNTIME_MODE: external
       KOED_DEPENDENCY_MODE: external
+      KOED_TEAM_COLLABORATION_ENABLED: ${KOED_TEAM_COLLABORATION_ENABLED:-false}
       API_NODE_ENV: production
       API_HOST: 0.0.0.0
       API_HOST_PORT: 3300
       EXPLORER_WEB_HOST: 0.0.0.0
       EXPLORER_WEB_HOST_PORT: 5174
-      MEMORY_API_URL: ${MEMORY_API_URL:-http://localhost:3300}
+      # Used only by koed-server's managed children inside this container.
+      # Never inherit a host- or proxy-facing URL here.
+      MEMORY_API_URL: http://127.0.0.1:3300
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
       EMBEDDING_SERVICE_URL: http://embedding-service:8000
       WORK_QUEUE_BACKEND: ${WORK_QUEUE_BACKEND:-bullmq}
       API_DATA_ENCRYPTION_KEY: ${API_DATA_ENCRYPTION_KEY}
+      OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY: ${OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:?Run pnpm env:setup and preserve the generated owner-private key}
+      OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER: ${OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER:-}
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID: ${OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID:-}
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION: ${OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION:-}
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL: ${OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL:-}
+      OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN: ${OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN:-}
       API_TOKEN_PEPPER: ${API_TOKEN_PEPPER}
+      API_COLLABORATION_LOCAL_BROKER_SECRET: ${API_COLLABORATION_LOCAL_BROKER_SECRET:-}
+      API_COLLABORATION_REALTIME_CURSOR_SECRET: ${API_COLLABORATION_REALTIME_CURSOR_SECRET:-}
       API_CORS_ORIGINS: ${API_CORS_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174}
       API_COOKIE_SECURE: ${API_COOKIE_SECURE:-false}
+      API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS: ${API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS:-1000}
+      API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL: ${API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL:-6}
+      API_RATE_LIMIT_STORE: ${API_RATE_LIMIT_STORE:-redis}
+      API_RATE_LIMIT_REDIS_URL: ${API_RATE_LIMIT_REDIS_URL:-redis://redis:6379}
       COOKIE_SECURE: ${API_COOKIE_SECURE:-false}
       KOED_ALLOW_PUBLIC_REGISTRATION: ${KOED_ALLOW_PUBLIC_REGISTRATION:-false}
+      API_EXPLORER_PUBLIC_URL: ${API_EXPLORER_PUBLIC_URL:-http://localhost:5174}
       EMBEDDING_SERVICE_TOKEN: ${EMBEDDING_SERVICE_TOKEN}
       EMBEDDING_REQUEST_TIMEOUT_MS: ${EMBEDDING_REQUEST_TIMEOUT_MS:-900000}
       EMBEDDING_MAX_TEXT_CHARS: ${EMBEDDING_MAX_TEXT_CHARS:-200000}
@@ -45,6 +63,7 @@ services:
       - "127.0.0.1:${EXPLORER_WEB_HOST_PORT:-5174}:5174"
     volumes:
       - koed-server-data:/data/koed
+      - koed-device-proof:/data/koed-device-proof
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,7 +83,8 @@ services:
       start_period: 60s
 
   postgres:
-    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -78,6 +98,7 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -89,6 +110,7 @@ services:
       retries: 10
 
   embedding-service:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: apps/embedding-service/Dockerfile
@@ -137,6 +159,7 @@ services:
 
 volumes:
   koed-server-data:
+  koed-device-proof:
   postgres-data:
   redis-data:
   embedding-model-cache:

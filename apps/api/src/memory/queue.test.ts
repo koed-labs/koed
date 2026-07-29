@@ -21,6 +21,7 @@ const createRepository = () => ({
   claim: vi.fn(),
   complete: vi.fn(),
   fail: vi.fn(),
+  tryAcquireRuntimeLease: vi.fn(),
   getJobCounts: vi.fn().mockResolvedValue({ pending: 1 })
 });
 

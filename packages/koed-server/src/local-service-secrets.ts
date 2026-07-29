@@ -6,7 +6,10 @@ import type { KoedServerPaths } from "./paths.js";
 const secretNames = [
   "POSTGRES_PASSWORD",
   "API_DATA_ENCRYPTION_KEY",
+  "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
   "API_TOKEN_PEPPER",
+  "COLLABORATION_LOCAL_BROKER_SECRET",
+  "COLLABORATION_REALTIME_CURSOR_SECRET",
   "EMBEDDING_SERVICE_TOKEN"
 ] as const;
 
@@ -78,8 +81,17 @@ const generatedSecrets = (
     existing.POSTGRES_PASSWORD ?? random(32).toString("base64url"),
   API_DATA_ENCRYPTION_KEY:
     existing.API_DATA_ENCRYPTION_KEY ?? random(32).toString("base64"),
+  OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:
+    existing.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY ??
+    random(32).toString("base64"),
   API_TOKEN_PEPPER:
     existing.API_TOKEN_PEPPER ?? random(48).toString("base64url"),
+  COLLABORATION_LOCAL_BROKER_SECRET:
+    existing.COLLABORATION_LOCAL_BROKER_SECRET ??
+    random(48).toString("base64url"),
+  COLLABORATION_REALTIME_CURSOR_SECRET:
+    existing.COLLABORATION_REALTIME_CURSOR_SECRET ??
+    random(48).toString("base64url"),
   EMBEDDING_SERVICE_TOKEN:
     existing.EMBEDDING_SERVICE_TOKEN ?? random(32).toString("base64url")
 });

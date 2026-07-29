@@ -33,7 +33,7 @@ const sourceItem = (
   text: `source for ${sessionId}`,
   payload: {
     sessionId,
-    workspaceId: "repo-a",
+    projectId: "repo-a",
     metadata: { projectPath: "/repo/a" }
   },
   position: input.position ?? 0,
@@ -85,7 +85,7 @@ describe("team-visible source boundary", () => {
         sourceItem("shared-session", {
           payload: {
             sessionId: "shared-session",
-            workspaceId: "repo-a",
+            projectId: "repo-a",
             metadata: { projectPath: "/repo/a" }
           }
         }),
@@ -93,7 +93,7 @@ describe("team-visible source boundary", () => {
           position: 1,
           payload: {
             sessionId: "same-repo-private-session",
-            workspaceId: "repo-a",
+            projectId: "repo-a",
             metadata: { projectPath: "/repo/a" }
           }
         })

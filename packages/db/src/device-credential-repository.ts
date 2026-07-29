@@ -1,8 +1,9 @@
-import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
   auditEvents,
+  collaborationStreamSubscriptions,
   deviceCredentials,
   deviceEnrollmentChallenges,
   users
@@ -127,6 +128,67 @@ const resolveCredentialOperationFamilies = (
     );
   }
   return requested;
+};
+
+type DeviceCredentialTransaction = Pick<KoedDb, "execute" | "update">;
+
+const revokeCredentialSubscriptions = async (
+  tx: DeviceCredentialTransaction,
+  credentialIds: string[]
+): Promise<void> => {
+  if (credentialIds.length === 0) return;
+
+  const revoked = await tx
+    .update(collaborationStreamSubscriptions)
+    .set({
+      state: "revoked",
+      revokedAt: sql`coalesce(${collaborationStreamSubscriptions.revokedAt}, now())`,
+      updatedAt: sql`now()`
+    })
+    .where(
+      and(
+        inArray(
+          collaborationStreamSubscriptions.deviceCredentialId,
+          credentialIds
+        ),
+        inArray(collaborationStreamSubscriptions.state, [
+          "active",
+          "requires_snapshot"
+        ]),
+        isNull(collaborationStreamSubscriptions.revokedAt)
+      )
+    )
+    .returning({
+      principalIdHash: collaborationStreamSubscriptions.principalIdHash,
+      scope: collaborationStreamSubscriptions.scope,
+      personalOwnerUserId: collaborationStreamSubscriptions.personalOwnerUserId,
+      teamId: collaborationStreamSubscriptions.teamId
+    });
+
+  const notifications = new Map<string, (typeof revoked)[number]>();
+  for (const subscription of revoked) {
+    const key = [
+      subscription.principalIdHash,
+      subscription.scope,
+      subscription.personalOwnerUserId ?? "",
+      subscription.teamId ?? ""
+    ].join(":");
+    notifications.set(key, subscription);
+  }
+  for (const subscription of notifications.values()) {
+    await tx.execute(sql`
+      select pg_notify(
+        'koed_collaboration_realtime',
+        ${JSON.stringify({
+          control: "access_revoked",
+          scope: subscription.scope,
+          personalOwnerUserId: subscription.personalOwnerUserId,
+          teamId: subscription.teamId,
+          principalIdHash: subscription.principalIdHash
+        })}
+      )
+    `);
+  }
 };
 
 const validateCredentialKeyId = (value: string): string => {
@@ -316,6 +378,10 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
 
       const credential = mapDeviceCredentialRecord(credentialRows[0]!);
       if (supersededRows.length > 0) {
+        await revokeCredentialSubscriptions(
+          tx,
+          supersededRows.map((row) => row.id)
+        );
         await tx.insert(auditEvents).values(
           supersededRows.map((row) => {
             const superseded = mapDeviceCredentialRecord(row);
@@ -485,6 +551,10 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
 
       const credential = mapDeviceCredentialRecord(credentialRows[0]!);
       if (supersededRows.length > 0) {
+        await revokeCredentialSubscriptions(
+          tx,
+          supersededRows.map((row) => row.id)
+        );
         await tx.insert(auditEvents).values(
           supersededRows.map((row) => {
             const superseded = mapDeviceCredentialRecord(row);
@@ -642,6 +712,7 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         return false;
       }
       const credential = mapDeviceCredentialRecord(row);
+      await revokeCredentialSubscriptions(tx, [credential.id]);
       await tx.insert(auditEvents).values(
         auditEventValues({
           actorUserId: actor.userId,

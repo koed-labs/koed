@@ -92,7 +92,11 @@ export const fetchBoundedJsonObject = async (
   fetchFn: typeof fetch,
   input: URL | RequestInfo,
   init: RequestInit,
-  options: { timeoutMs: number; maxBytes: number }
+  options: {
+    timeoutMs: number;
+    maxBytes: number;
+    readErrorBody?: boolean;
+  }
 ): Promise<{ response: Response; payload: Record<string, unknown> }> => {
   const controller = new AbortController();
   let response: Response | undefined;
@@ -107,7 +111,7 @@ export const fetchBoundedJsonObject = async (
   });
   const operation = (async () => {
     response = await fetchFn(input, { ...init, signal: controller.signal });
-    if (!response.ok) {
+    if (!response.ok && !options.readErrorBody) {
       await response.body?.cancel().catch(() => undefined);
       return { response, payload: {} };
     }

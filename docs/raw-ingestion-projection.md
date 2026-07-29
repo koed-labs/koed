@@ -82,59 +82,87 @@ derivations and reprojects retained canonical items under the new policy.
 
 ## Current Codex Adapters
 
-The Codex Transcript Watcher, transcript hooks, managed transcript
-reconciliation, and historical import share
-`sourceAdapterVersion=codex-transcript-v1`. Watcher and managed reconciliation
-observations use `sourceTransport=transcript`, Hook observations set `hook`, and
-historical observations set `historical_import`. Each exact transcript observation creates
-or augments a canonical raw item before selected records are projected into
-`memory_events`. None writes semantic `memory_events` directly. Hook payloads
-are capture signals, not semantic content sources; transcript JSONL timestamps
-define source chronology. If an otherwise readable row lacks a timestamp,
-catch-up holds it at the checkpoint until a later timestamped row permits
-deterministic interpolation.
+The Codex Transcript Watcher, managed transcript ingestion, and historical
+import share `sourceAdapterVersion=codex-transcript-v1`. Exact, complete JSONL
+bytes are first appended to an owner-scoped Conversation Source Journal. Live
+and historical consumers then parse those retained bytes into canonical raw
+items before Projection selects records for display, Memory Events, embedding,
+and LCM. None writes semantic `memory_events` directly.
 
-Detached hook/import identity is transport- and path-independent. Personal-row
-uniqueness combines owning User with AI Client/source kind, source session ID,
-transcript byte position or sequence, item discriminator, and raw record hash.
-Managed app-server/JSONL overlap uses exact provider thread, turn, stable item,
-and component identity instead. Raw local paths never participate. Hook/import
-overlap therefore reconciles one raw row; a later live observation promotes its
-durable Projection work class to live priority. Metadata retains whether hook
-and historical import both observed row. During migration from the earlier
-path-bound transcript identity, adapters submit the old identity as a bounded
-compatibility alias. Koed may reuse an existing canonical row through that
-alias, but never uses the alias as the identity for a new row.
+The Supported Capture Hook never supplies conversation content or provider item
+identity. It writes a private wake timestamp and, for Stop events, a matched
+boundary under hashed source-routing identities containing only the observation
+time and exact complete JSONL byte frontier. The journal consumer stops at that
+frontier and persists one idempotent, server-validated
+`codex-hook-signal-v1` control for the active transcript turn. That control has
+no renderable or embeddable payload; it only lets Projection seal the semantic
+items already read from the journal. Newer bytes are consumed separately, so a
+delayed Stop cannot seal a later turn. Transcript JSONL supplies all content,
+provider item identity, and chronology. If an otherwise readable row lacks a
+timestamp, the journal consumer holds it until a later timestamped row permits
+deterministic interpolation. If no later timestamp ever arrives, the controlled
+terminal fallback assigns monotonic timestamps immediately after the preceding
+timestamp while preserving source order.
 
-Transcript Watcher, Hook capture, reconciliation, and historical import converge
-on the same active Personal Captured Session when owning User and source session
-ID match. Session creation is serialized for that owner/source pair, so
-watcher-first, import-first, Hook-first, and concurrent observations do not split
-later raw items across duplicate sessions. A later live observation promotes
-historical work to live Projection priority without creating another canonical
-item or Memory Event.
+Personal canonical identity is transport- and path-independent. It combines the
+owning User, source kind, provider session, exact transcript position or stable
+provider item identity, component discriminator, and raw record hash. Raw local
+paths never participate or leave the local reader. Managed app-server lifecycle
+observations and journaled JSONL reconcile only when exact provider identity
+proves they are the same logical item.
+
+Live and historical journal consumers converge on one active Personal Captured
+Session for an owning User and provider session ID. Session creation is
+serialized for that pair. Independent durable cursors allow live post-frontier
+growth to proceed while historical import works through the pre-frontier range;
+overlap is idempotent and a later live observation promotes work to live
+Projection priority without another canonical item or Memory Event.
 
 The Transcript Watcher is the correctness owner for externally managed transcript
 growth. Filesystem notifications and content-free Hook wake files are hints;
 bounded rescans recover missed notifications and discover new Conversations.
-The first successful bounded full discovery cycle establishes activation; files present in
-that baseline retain their complete-record boundary as an immutable historical
-frontier. Files created after activation use
-a zero frontier and are live from their first complete record. Post-frontier
-ranges, including restart recovery, advance a durable live cursor independent
-of historical imported ranges and checkpoints. Before each page, Koed compares
-cursor offset with bounded SHA-256 first/last prefix sentinels. Partial trailing
-JSONL holds the cursor; malformed complete records, truncation, and
-sentinel-covered prefix mutation fail visibly without advancement. Mutations
-outside sentinel windows are intentionally not detected by this bounded check. Capture Policy and Capture Pause are checked before session
-creation and every raw batch. Watcher writes are Personal Memory only and grant
-no Team or Workspace authority.
+Generated Supported Capture Hook commands carry their installation's explicit
+`KOED_HOME`, so isolated Desktop profiles wake the watcher that owns their
+source journal rather than whichever default profile the hook process inherits.
+Each wake services known active sources with journal or canonical backlog before
+bounded discovery continues, so a current Conversation is not delayed by the
+number of historical transcript files under the configured roots.
+The first live observation of a transcript uses one API-token-authenticated
+source registration request. The API resolves Capture Policy, converges the
+Personal Captured Session, and registers its source artifact in one database
+transaction. An identity conflict or artifact failure rolls back the session
+creation rather than leaving an unjournaled Captured Session. Source registration
+and segment transfer have an independent local rate-limit bucket so a large
+first discovery cannot consume the interactive Memory read/write allowance used
+by Explorer and the MCP Server.
+
+The first successful bounded full discovery cycle establishes activation. Files
+present in that baseline retain their complete-record boundary as an immutable
+historical frontier but are not registered as Captured Sessions merely because
+they exist. A baselined file is registered only after post-frontier growth or an
+explicit historical import. Live registration starts both the source journal and
+its provider cursor at that frontier, so excluded historical bytes are not
+transferred before current capture can proceed. A file first discovered later is
+likewise deferred when its source timestamp predates activation. Files whose
+source timestamp is after activation use a zero frontier and are live from their
+first complete
+record. Post-frontier ranges, including restart recovery, advance a durable live
+cursor independent of historical imported ranges and checkpoints. Before each
+page, Koed compares cursor offset with bounded SHA-256 first/last prefix
+sentinels. Partial trailing JSONL holds the cursor; malformed complete records,
+truncation, and sentinel-covered prefix mutation fail visibly without
+advancement. Mutations outside sentinel windows are intentionally not detected
+by this bounded check. Capture Policy and Capture Pause are checked before
+session creation and every raw batch. Watcher writes are Personal Memory only
+and grant no Team or Workspace authority.
 
 The experimental Koed-managed conversation adapter uses
 `sourceAdapterVersion=codex-app-server-conversation-v1` and
 `sourceTransport=app_server`. A long-running, Koed-owned stdio app-server
-connection writes stable `item/started`, `item/completed`, and turn lifecycle
-observations promptly. `item/completed` is the preferred canonical payload;
+connection receives stable `item/started`, `item/completed`, and turn lifecycle
+events promptly while generated JSONL is journaled as the durable content
+source. `item/completed` may provide exact provider identity before the JSONL
+record arrives;
 provider lifecycle timestamps remain distinct from Koed observation time.
 Incremental text and command-output deltas are deliberately transient and are
 not stored as semantic items or source observations because completed item
@@ -153,20 +181,16 @@ arguments and standard Codex command results are normalized into structured
 tool metadata for Projection, while their exact strings remain in encrypted raw
 provenance.
 
-The persisted rollout remains the reconciliation and recovery source. Managed
-JSONL passes use `sourceTransport=transcript` and attach to the same canonical
-keys, add persisted chronology and transcript-only context, and recover a
-missed `turn/completed` from `task_complete`. A normal app-server completion and
-its JSONL completion share one canonical control identity. Reconciliation runs
-before the server atomically releases every held row in the terminal turn, so
-display, turn sealing, embedding, and LCM cannot race ahead of durable
-transcript catch-up. Projection also processes the completion control last
-within its turn, independent of timestamp precision or transport-specific
-sequence values. Resuming a managed session verifies the provider thread id
-and rollout path, revalidates the original Captured Session, and reuses the
-durable Codex home and atomic transcript checkpoint under `KOED_HOME`. A replay
-after a checkpoint-write failure is safe because canonical rows and source
-observations are idempotent.
+The persisted rollout and Conversation Source Journal are the reconciliation
+and recovery source. Managed journal consumers use `sourceTransport=transcript`
+and attach exact chronology and transcript-only context to canonical keys. A
+persisted `task_complete` or `turn_aborted` record is the terminal authority.
+The server releases held rows only after journal consumption and Projection
+succeed, so display, turn sealing, embedding, and LCM cannot race ahead of
+durable source capture. Resuming a managed session verifies the provider thread
+and Captured Session, reuses its durable Codex home, and resumes from the
+database-backed journal consumer cursor. A crash before cursor advancement
+causes only an idempotent replay.
 
 Oversized raw items are bounded to 64 transport chunks of 256 KiB each and a
 16 MiB logical-item ceiling. The server derives and verifies one chunk-group id
@@ -199,8 +223,8 @@ memory without relying on client-supplied Projection state.
 
 Capture Policy is enforced again at canonical raw persistence, including an
 active Capture Pause after a Captured Session was created. This is the common
-defence for watcher, hook, managed, and internal-workflow transports; API metadata cannot
-bypass it.
+defence for watcher, managed, historical-import, and internal-workflow
+transports; API metadata cannot bypass it.
 
 ## Derived Memory Events
 
@@ -242,10 +266,10 @@ item, observations never feed Projection and are never independent embedding,
 LCM, recall, graph-export, or sync sources.
 
 Agent-turn `memory_events` are sealed only on a semantic flush condition:
-turn-complete hook or transcript-verified managed control, next user
+transcript terminal control, next user
 prompt/interruption, a token-limit rollover, or the stale catch-up timeout.
 Session, thread, Project, and batch boundaries isolate pending queues but do not
-themselves seal an incomplete turn. Detached transcript catch-up may continue
+themselves seal an incomplete turn. Journal consumption may continue
 creating idempotent `messages` and `tool_events` while leaving an incomplete
 agent bundle pending until one of those seal conditions arrives. The stale
 catch-up timeout is based on the newest source item in the pending bundle, so an
@@ -259,13 +283,14 @@ is kept as one memory event. Only a source item that exceeds the embedding hard
 cap is split, and those forced split fragments keep the original item metadata
 plus explicit split index/count metadata.
 
-The worker runs a raw-projection catch-up loop so pending or previously failed
-raw rows are eventually projected after restart, outage, or hook deadline
-pressure. `MEMORY_RAW_PROJECTION_INTERVAL_MS`,
-`MEMORY_RAW_PROJECTION_BATCH_LIMIT`, and `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`
-bound normal background work. Local app-server answer and LCM workers also ask
-the API to project the exact raw rows they just persisted before they write the
-derived answer or summary.
+The worker reacts to PostgreSQL Projection-work notifications and performs a
+durable catch-up pass when it starts or reconnects, so a lost notification
+cannot strand pending or previously failed raw rows. Debounced semantic rebuilds
+use a timer for the exact next due time rather than periodically scanning.
+`MEMORY_RAW_PROJECTION_BATCH_LIMIT` and
+`MEMORY_RAW_PROJECTION_ACTOR_LIMIT` bound each background pass. Local app-server
+answer and LCM workers also ask the API to project the exact raw rows they just
+persisted before they write the derived answer or summary.
 
 The same worker pass reconciles downstream queue admission from PostgreSQL. It
 lists every eligible source still missing an embedding and every personal LCM
@@ -391,6 +416,15 @@ Detected Project data is immutable capture provenance on import source, raw row,
 and Captured Session records. It is not mutable Personal Project assignment,
 Team Workspace resolution, or authorization. Import creates Personal Memory
 only and cannot create Workspace Access or Share Grants.
+
+Fresh watcher activation records the complete byte frontier of every discovered
+existing transcript before canonical live ingestion begins, without registering
+an empty Captured Session for an untouched historical file. If a transcript that
+started before activation is first discovered later, Koed records its current
+complete-record frontier and waits for subsequent growth rather than treating
+its prior bytes as live. Only a transcript whose source start time is after
+activation can begin live ingestion at byte zero. Earlier bytes remain eligible
+only for an explicit historical import.
 
 When a display item is deleted, Koed excludes the underlying raw source item
 from semantic memory immediately and invalidates affected Memory Events and

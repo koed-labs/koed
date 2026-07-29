@@ -2,7 +2,8 @@ import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 
 const koedReleaseVersion = releaseManifest.version;
 
-export const capabilitySchemaVersion = 4;
+export const capabilitySchemaVersion = 6;
+export const collaborationRealtimeProtocolVersion = 1;
 
 export const deploymentProfiles = [
   "developer",
@@ -18,6 +19,7 @@ export type DeploymentManagedBy = "operator" | "team_operator" | "koed";
 export type RuntimeDependencyMode = "bundled-local" | "external" | "server";
 export type CapabilityAvailability = "available" | "partial" | "unavailable";
 export type CapabilityAudience = "public" | "authenticated";
+export type AuthProvider = "local" | "workos";
 export type EnrollmentSetupPath =
   | "local_simple_api_token"
   | "remote_browser_session"
@@ -73,6 +75,10 @@ export interface CapabilitiesConfig {
   workosAuthKitEnabled?: boolean;
   applicationLayerEncryption?: CapabilityAvailability;
   crossIdentitySync?: CapabilityAvailability;
+  conversationSourceReplication?: CapabilityAvailability;
+  managedConversations?: CapabilityAvailability;
+  teamCollaborationEnabled: boolean;
+  personalDeviceSync?: CapabilityAvailability;
 }
 
 export interface CapabilityDescriptor {
@@ -100,7 +106,7 @@ export interface CapabilitiesResponse {
     dependencyMode: RuntimeDependencyMode;
   };
   auth: {
-    providers: Array<"local" | "workos">;
+    providers: AuthProvider[];
     session: CapabilityAvailability;
     apiTokens: CapabilityAvailability;
     deviceEnrollment: CapabilityAvailability;
@@ -116,9 +122,22 @@ export interface CapabilitiesResponse {
   memory: {
     personal: CapabilityAvailability;
     teamWorkspaces: CapabilityAvailability;
+    collaboration: CapabilityAvailability;
     shareGrants: CapabilityAvailability;
     crossIdentitySync: CapabilityAvailability;
+    conversationSourceReplication: CapabilityAvailability;
+    managedConversations: CapabilityAvailability;
+    personalDeviceSync: CapabilityAvailability;
     memoryInbox: CapabilityAvailability;
+  };
+  protocols: {
+    collaborationRealtime: {
+      version: typeof collaborationRealtimeProtocolVersion;
+      transport: "sse";
+      snapshotEndpoint: "/v1/collaboration/realtime/snapshot";
+      streamEndpoint: "/v1/collaboration/realtime/stream";
+      acknowledgementEndpoint: "/v1/collaboration/realtime/ack";
+    };
   };
   commercial: {
     billingEntitlements: CapabilityAvailability;
@@ -146,6 +165,7 @@ export interface CapabilitiesResponse {
     };
     featureGates: Record<
       | "teamWorkspaces"
+      | "collaboration"
       | "shareGrants"
       | "memoryInbox"
       | "crossIdentitySync"
@@ -237,6 +257,19 @@ const hasTeamFoundation = (profile: DeploymentProfile): boolean =>
 
 export const supportsWorkos = (profile: DeploymentProfile): boolean =>
   profile === "team_self_hosted" || profile === "koed_managed_cloud";
+
+export const authProvidersForDeployment = (config: {
+  deploymentProfile: DeploymentProfile;
+  workosAuthKitEnabled?: boolean;
+}): AuthProvider[] => {
+  const workos =
+    supportsWorkos(config.deploymentProfile) &&
+    config.workosAuthKitEnabled === true;
+  if (config.deploymentProfile === "koed_managed_cloud") {
+    return workos ? ["workos"] : [];
+  }
+  return workos ? ["local", "workos"] : ["local"];
+};
 
 const supportsRemoteUpstreams = (profile: DeploymentProfile): boolean =>
   profile === "local_personal" || profile === "developer";
@@ -340,7 +373,7 @@ const buildCapabilities = (input: {
     }
   ),
   "auth.local": descriptor(
-    "available",
+    input.auth.providers.includes("local") ? "available" : "unavailable",
     "Local user registration and session-cookie authentication."
   ),
   "auth.workos": descriptor(
@@ -385,7 +418,7 @@ const buildCapabilities = (input: {
   ),
   "memory.mcpRecall": descriptor(
     "available",
-    "MCP recall through memory_answer."
+    "Personal Memory recall through memory_answer."
   ),
   "memory.curatedIntake": descriptor(
     "available",
@@ -400,13 +433,95 @@ const buildCapabilities = (input: {
     input.memory.teamWorkspaces,
     "Team Workspace memory access through Koed-native authorization."
   ),
+  "memory.personalCollaboration": descriptor(
+    "available",
+    "Personal notes, channels, messages, and durable live updates.",
+    {
+      endpoints: [
+        "/v1/collaboration/personal/threads",
+        "/v1/collaboration/realtime/snapshot",
+        "/v1/collaboration/realtime/stream",
+        "/v1/collaboration/realtime/ack"
+      ],
+      requiresAuthentication: true
+    }
+  ),
+  "memory.collaboration": descriptor(
+    input.memory.collaboration,
+    "Encrypted Team collaboration with durable live updates.",
+    {
+      endpoints:
+        input.memory.collaboration === "unavailable"
+          ? undefined
+          : [
+              "/v1/collaboration/teams/{teamId}/threads",
+              "/v1/collaboration/realtime/snapshot",
+              "/v1/collaboration/realtime/stream",
+              "/v1/collaboration/realtime/ack"
+            ],
+      requiresAuthentication: true
+    }
+  ),
   "memory.shareGrants": descriptor(
     input.memory.shareGrants,
-    "Captured Session Share Grants for Team Workspace recall."
+    "Captured Session Share Grants for explicit Shared Memory views."
   ),
   "memory.crossIdentitySync": descriptor(
     input.memory.crossIdentitySync,
     "Policy-aware Cross-Identity Sync preserving logical memory identity."
+  ),
+  "memory.conversationSourceReplication": descriptor(
+    input.memory.conversationSourceReplication,
+    "Signed immutable Conversation Source Journal replication for authorized Personal replicas.",
+    {
+      endpoints:
+        input.memory.conversationSourceReplication === "available"
+          ? [
+              "/v1/conversation-source-replication/intake/context",
+              "/v1/conversation-source-replication/generations",
+              "/v1/conversation-source-replication/generations/{sourceGenerationId}/segments"
+            ]
+          : undefined,
+      requiresAuthentication: true
+    }
+  ),
+  "memory.managedConversations": descriptor(
+    input.memory.managedConversations,
+    "Server-owned local AI Client conversations with durable prompt commands.",
+    {
+      endpoints:
+        input.memory.managedConversations === "available"
+          ? [
+              "/v1/managed-conversations",
+              "/v1/managed-conversations/{executionId}",
+              "/v1/managed-conversations/{executionId}/prompts"
+            ]
+          : undefined,
+      requiresAuthentication: true
+    }
+  ),
+  "memory.personalDeviceSync": descriptor(
+    input.memory.personalDeviceSync,
+    "Personal Device Group authority and device-authenticated encrypted relay. Authority or relay-state absence fails closed.",
+    {
+      endpoints:
+        input.memory.personalDeviceSync === "available"
+          ? [
+              "/v1/personal-device-sync/challenges",
+              "/v1/personal-device-sync/groups/genesis",
+              "/v1/personal-device-sync/groups/{groupId}",
+              "/v1/personal-device-sync/groups/{groupId}/transitions",
+              "/v1/personal-device-sync/groups/{groupId}/epoch-acks",
+              "/v1/personal-device-sync/groups/{groupId}/key-bundles/{epoch}",
+              "/v1/personal-device-sync/groups/{groupId}/certificates/{deviceId}",
+              "/v1/personal-device-sync/groups/{groupId}/status",
+              "/v1/personal-device-sync/relay/transports",
+              "/v1/personal-device-sync/relay/mailbox",
+              "/v1/personal-device-sync/relay/acks"
+            ]
+          : undefined,
+      requiresAuthentication: true
+    }
   ),
   "memory.memoryInbox": descriptor(
     input.memory.memoryInbox,
@@ -444,52 +559,79 @@ export const buildCapabilitiesResponse = (
   commercialEntitlement?: CommercialEntitlementInput | null,
   commercialBilling?: CommercialBillingInput | null
 ): CapabilitiesResponse => {
-  const teamFoundation = hasTeamFoundation(config.deploymentProfile);
-  const workos =
-    supportsWorkos(config.deploymentProfile) &&
-    config.workosAuthKitEnabled === true;
+  const teamFoundation =
+    config.teamCollaborationEnabled &&
+    hasTeamFoundation(config.deploymentProfile);
+  const authProviders = authProvidersForDeployment(config);
   const cloud = config.deploymentProfile === "koed_managed_cloud";
+  const collaborationCloud = cloud && config.teamCollaborationEnabled;
   const runtime = {
     localEdge:
       config.deploymentProfile === "local_personal" ||
       config.deploymentProfile === "developer",
-    remoteUpstreams: supportsRemoteUpstreams(config.deploymentProfile)
-      ? ("partial" as const)
-      : ("unavailable" as const),
+    remoteUpstreams:
+      config.teamCollaborationEnabled &&
+      supportsRemoteUpstreams(config.deploymentProfile)
+        ? ("partial" as const)
+        : ("unavailable" as const),
     dependencyMode: config.dependencyMode
   };
   const auth = {
-    providers: workos ? (["local", "workos"] as const) : (["local"] as const),
-    session: "available" as const,
+    providers: authProviders,
+    session:
+      cloud && !authProviders.includes("workos")
+        ? ("unavailable" as const)
+        : ("available" as const),
     apiTokens: "available" as const,
-    deviceEnrollment: supportsDeviceEnrollment(config.deploymentProfile)
-      ? ("available" as const)
-      : ("unavailable" as const),
-    enrollment: buildEnrollmentContract(config.deploymentProfile)
+    deviceEnrollment:
+      config.teamCollaborationEnabled &&
+      supportsDeviceEnrollment(config.deploymentProfile)
+        ? ("available" as const)
+        : ("unavailable" as const),
+    enrollment: buildEnrollmentContract(
+      config.deploymentProfile,
+      config.teamCollaborationEnabled
+    )
   };
   const memory = {
     personal: "available" as const,
     teamWorkspaces: teamFoundation
       ? ("partial" as const)
       : ("unavailable" as const),
+    collaboration: teamFoundation
+      ? ("partial" as const)
+      : ("unavailable" as const),
     shareGrants: teamFoundation
       ? ("partial" as const)
       : ("unavailable" as const),
-    crossIdentitySync:
-      config.crossIdentitySync ??
+    crossIdentitySync: config.teamCollaborationEnabled
+      ? (config.crossIdentitySync ??
+        (config.applicationLayerEncryption === "unavailable"
+          ? ("unavailable" as const)
+          : ("available" as const)))
+      : ("unavailable" as const),
+    conversationSourceReplication:
+      config.conversationSourceReplication ??
       (config.applicationLayerEncryption === "unavailable"
         ? ("unavailable" as const)
         : ("available" as const)),
+    managedConversations:
+      config.applicationLayerEncryption !== "unavailable"
+        ? (config.managedConversations ?? ("available" as const))
+        : ("unavailable" as const),
+    personalDeviceSync: config.personalDeviceSync ?? ("unavailable" as const),
     memoryInbox: "unavailable" as const
   };
   const commercial = {
-    billingEntitlements: cloud
+    billingEntitlements: collaborationCloud
       ? ("partial" as const)
       : ("unavailable" as const),
     accessSuspension: teamFoundation
       ? ("available" as const)
       : ("unavailable" as const),
-    supportAdmin: cloud ? ("partial" as const) : ("unavailable" as const),
+    supportAdmin: collaborationCloud
+      ? ("partial" as const)
+      : ("unavailable" as const),
     stateVocabulary: {
       entitlementStatuses: [...commercialEntitlementStatuses],
       billingStatuses: [...commercialBillingStatuses],
@@ -508,7 +650,7 @@ export const buildCapabilitiesResponse = (
       audience,
       commercial,
       memory,
-      cloud
+      cloud: collaborationCloud
     })
   };
   const security = {
@@ -537,6 +679,15 @@ export const buildCapabilitiesResponse = (
       providers: [...auth.providers]
     },
     memory,
+    protocols: {
+      collaborationRealtime: {
+        version: collaborationRealtimeProtocolVersion,
+        transport: "sse",
+        snapshotEndpoint: "/v1/collaboration/realtime/snapshot",
+        streamEndpoint: "/v1/collaboration/realtime/stream",
+        acknowledgementEndpoint: "/v1/collaboration/realtime/ack"
+      }
+    },
     commercial: commercialWithFeatureGates,
     security,
     authenticatedCapabilities: {
@@ -668,6 +819,7 @@ const buildCommercialFeatureGates = (input: {
 
   return {
     teamWorkspaces: gate("memory.teamWorkspaces", input.memory.teamWorkspaces),
+    collaboration: gate("memory.collaboration", input.memory.collaboration),
     shareGrants: gate("memory.shareGrants", input.memory.shareGrants),
     memoryInbox: gate("memory.memoryInbox", input.memory.memoryInbox),
     crossIdentitySync: gate(
@@ -690,32 +842,43 @@ const buildCommercialFeatureGates = (input: {
 };
 
 const buildEnrollmentContract = (
-  profile: DeploymentProfile
+  profile: DeploymentProfile,
+  teamCollaborationEnabled: boolean
 ): CapabilitiesResponse["auth"]["enrollment"] => {
   if (profile === "local_personal" || profile === "developer") {
     return {
       setupPath: "local_simple_api_token",
-      deviceEnrollment: "available",
+      deviceEnrollment: teamCollaborationEnabled ? "available" : "unavailable",
       apiTokenFallback: "personal_ai_client_only",
       authenticatedStatusEndpoint: "/v1/capabilities/authenticated",
       mcpAndCaptureHookTarget: "local_koed_server",
-      notes: [
-        "Desktop can use local setup and app-provisioned API Tokens for personal AI-client compatibility.",
-        "Device enrollment is available for registered remote/private/cloud upstream backends; it is not required for local-only Personal Memory."
-      ]
+      notes: teamCollaborationEnabled
+        ? [
+            "Desktop can use local setup and app-provisioned API Tokens for personal AI-client compatibility.",
+            "Device enrollment is available for registered remote/private/cloud upstream backends; it is not required for local-only Personal Memory."
+          ]
+        : [
+            "Desktop can use local setup and app-provisioned API Tokens for Personal Memory.",
+            "Team collaboration and remote device enrollment are disabled by server configuration."
+          ]
     };
   }
 
   return {
     setupPath: "remote_device_enrollment",
-    deviceEnrollment: "available",
+    deviceEnrollment: teamCollaborationEnabled ? "available" : "unavailable",
     apiTokenFallback: "personal_ai_client_only",
     authenticatedStatusEndpoint: "/v1/capabilities/authenticated",
     mcpAndCaptureHookTarget: "local_koed_server",
-    notes: [
-      "Desktop should authenticate the User through Explorer/browser session auth before Team or cloud setup.",
-      "Device enrollment creates revocable local-edge credentials; API Tokens remain personal AI-client compatibility credentials only."
-    ]
+    notes: teamCollaborationEnabled
+      ? [
+          "Desktop should authenticate the User through Explorer/browser session auth before Team or cloud setup.",
+          "Device enrollment creates revocable local-edge credentials; API Tokens remain personal AI-client compatibility credentials only."
+        ]
+      : [
+          "Team collaboration and remote device enrollment are disabled by server configuration.",
+          "API Tokens remain available for Personal Memory AI-client compatibility."
+        ]
   };
 };
 

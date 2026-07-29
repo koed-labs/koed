@@ -1,7 +1,6 @@
 import pg from "pg";
 import { createHash } from "node:crypto";
 import {
-  createEncryptedPayloadRepository,
   decryptAuthorizedEncryptedFieldPayloadWithClient,
   upsertEncryptedFieldPayloadWithClient
 } from "./encrypted-payload-repository.js";
@@ -34,6 +33,10 @@ export interface ConversationItemRepository {
     actor: ActorContext,
     input: { sessionId: string; externalTurnId: string }
   ): Promise<{ conversationItemIds: string[] }>;
+  findConversationItemByStableIdentity(
+    actor: ActorContext,
+    input: { sessionId: string; canonicalStableItemId: string }
+  ): Promise<ConversationItemRecord | null>;
 }
 
 export interface ConversationItemRepositoryOptions {
@@ -47,11 +50,12 @@ export interface ConversationItemRepositoryOptions {
 
 type ConversationItemSessionRow = {
   id: string;
-  workspace_id: string | null;
   external_session_id: string | null;
   external_thread_id: string | null;
-  codex_transcript_path: string | null;
   capture_method: string;
+  automatic_project_id: string | null;
+  project_override_id: string | null;
+  cwd: string | null;
   metadata: Record<string, unknown> | null;
 };
 
@@ -80,20 +84,6 @@ type ConversationItemRow = {
   source_fingerprint: string | null;
   captured_project: Record<string, unknown>;
   created_at: Date;
-};
-
-type LegacyConversationItemReplayRow = ConversationItemRow & {
-  source_path: string | null;
-  source_line_number: number | null;
-  event_time: Date | null;
-  raw_json: unknown;
-  raw_text: string | null;
-  logical_source_id: string | null;
-  transport_chunk_index: number;
-  transport_chunk_count: number;
-  transport_chunk_text: string | null;
-  transport_chunk_encoding: string | null;
-  metadata: Record<string, unknown> | null;
 };
 
 type ConversationItemObservationRow = {
@@ -139,7 +129,6 @@ const SAFE_CONVERSATION_METADATA_KEYS = new Set([
   "callId",
   "toolCallId",
   "status",
-  "hookEventName",
   "threadKind",
   "parentThreadId",
   "parentSessionId",
@@ -161,7 +150,7 @@ const SAFE_CONVERSATION_METADATA_KEYS = new Set([
   "sourceChunkCount"
 ]);
 
-const safeConversationMetadata = (
+export const safeConversationMetadataForEncryptedStorage = (
   metadata: Record<string, unknown>,
   markerKey: string,
   encryptedColumns: string[]
@@ -209,7 +198,6 @@ const ENCRYPTED_CONVERSATION_ITEM_SOURCE_COLUMNS = [
   "raw_json",
   "raw_text",
   "transport_chunk_text",
-  "source_path",
   "metadata"
 ] as const;
 
@@ -366,7 +354,6 @@ const sanitizeConversationItemForStorage = (
   );
   const sourceRecordType = sanitizeForPostgresStorage(item.sourceRecordType);
   const sourceEventType = sanitizeForPostgresStorage(item.sourceEventType);
-  const sourcePath = sanitizeForPostgresStorage(item.sourcePath);
   const logicalSourceId = sanitizeForPostgresStorage(item.logicalSourceId);
   const transportChunkText = sanitizeForPostgresStorage(
     item.transportChunkText
@@ -380,9 +367,6 @@ const sanitizeConversationItemForStorage = (
   );
   const sourceHash = sanitizeForPostgresStorage(item.sourceHash);
   const idempotencyKey = sanitizeForPostgresStorage(item.idempotencyKey);
-  const legacyIdempotencyKeys = (item.legacyIdempotencyKeys ?? []).map((key) =>
-    sanitizeForPostgresStorage(key)
-  );
   const canonicalItemKey = sanitizeForPostgresStorage(item.canonicalItemKey);
   const canonicalStableItemId = sanitizeForPostgresStorage(
     item.canonicalStableItemId
@@ -408,7 +392,6 @@ const sanitizeConversationItemForStorage = (
     parentExternalItemId,
     sourceRecordType,
     sourceEventType,
-    sourcePath,
     logicalSourceId,
     transportChunkText,
     transportChunkEncoding,
@@ -416,7 +399,6 @@ const sanitizeConversationItemForStorage = (
     capturedProject,
     sourceHash,
     idempotencyKey,
-    ...legacyIdempotencyKeys,
     canonicalItemKey,
     canonicalStableItemId,
     observationKind,
@@ -465,7 +447,6 @@ const sanitizeConversationItemForStorage = (
     parentExternalItemId: parentExternalItemId.value as string | undefined,
     sourceRecordType: sourceRecordType.value as string,
     sourceEventType: sourceEventType.value as string | undefined,
-    sourcePath: sourcePath.value as string | undefined,
     rawJson: rawJson.value,
     rawText: rawText.value as string | undefined,
     logicalSourceId: logicalSourceId.value as string | undefined,
@@ -475,9 +456,6 @@ const sanitizeConversationItemForStorage = (
     capturedProject: capturedProject.value as Record<string, unknown>,
     sourceHash: sourceHash.value as string,
     idempotencyKey: idempotencyKey.value as string,
-    legacyIdempotencyKeys: legacyIdempotencyKeys.map(
-      (key) => key.value as string
-    ),
     canonicalItemKey: canonicalItemKey.value as string | undefined,
     canonicalStableItemId: canonicalStableItemId.value as string | undefined,
     observationKind: observationKind.value as
@@ -733,7 +711,9 @@ const withCanonicalConversationIdentity = (
           (item.sourceAdapterVersion === "codex-transcript-v1" &&
             ["task_complete", "turn_aborted"].includes(
               item.sourceEventType ?? ""
-            )))
+            )) ||
+          (item.sourceAdapterVersion === "codex-hook-signal-v1" &&
+            item.sourceEventType === "turn_completed"))
           ? { semanticControl: "turn_completed" }
           : {})
       }
@@ -875,7 +855,6 @@ const assertManagedTranscriptTerminal = (
     item.sourceTransport !== "transcript" ||
     raw.type !== "event_msg" ||
     payload.type !== item.sourceEventType ||
-    !item.sourcePath ||
     item.sourceLineNumber === undefined ||
     !item.externalThreadId ||
     !item.externalTurnId ||
@@ -892,6 +871,52 @@ const assertManagedTranscriptTerminal = (
   }
 };
 
+const assertCaptureHookTurnBoundary = (item: ConversationItemInput): void => {
+  if (item.sourceAdapterVersion !== "codex-hook-signal-v1") return;
+  const raw = isRecord(item.rawJson) ? item.rawJson : {};
+  const payload = isRecord(raw.payload) ? raw.payload : {};
+  const expectedStableId = item.externalTurnId
+    ? `turn:${item.externalTurnId}:completed`
+    : null;
+  const expectedCanonicalItemKey =
+    item.externalThreadId && item.externalTurnId && expectedStableId
+      ? codexCanonicalConversationItemKey({
+          externalThreadId: item.externalThreadId,
+          externalTurnId: item.externalTurnId,
+          stableItemId: expectedStableId,
+          component: "control"
+        })
+      : null;
+  if (
+    item.sourceTransport !== "hook_signal" ||
+    item.sourceRecordType !== "hook_signal" ||
+    item.sourceEventType !== "turn_completed" ||
+    raw.type !== "hook_signal" ||
+    payload.type !== "turn_completed" ||
+    !Number.isSafeInteger(payload.sourceFrontierOffset) ||
+    Number(payload.sourceFrontierOffset) < 0 ||
+    !Number.isSafeInteger(payload.sourceFrontierLine) ||
+    Number(payload.sourceFrontierLine) < 0 ||
+    item.rawText !== undefined ||
+    !item.eventTime ||
+    !item.externalSessionId ||
+    item.externalSessionId !== item.externalThreadId ||
+    !item.externalTurnId ||
+    item.externalItemId !== expectedStableId ||
+    item.canonicalStableItemId !== expectedStableId ||
+    item.observationKind !== "control" ||
+    item.observationComponent !== "control" ||
+    item.canonicalItemKey !== expectedCanonicalItemKey
+  ) {
+    throw Object.assign(
+      new Error(
+        "Capture Hook turn boundary requires exact content-free turn identity"
+      ),
+      { statusCode: 400, code: "hook_turn_boundary_invalid" }
+    );
+  }
+};
+
 const canonicalItemKeyFor = (item: ConversationItemInput): string =>
   item.canonicalItemKey ??
   stringField(item.metadata ?? {}, "canonicalConversationItemKey") ??
@@ -899,6 +924,9 @@ const canonicalItemKeyFor = (item: ConversationItemInput): string =>
 
 const canonicalSourcePriorityFor = (item: ConversationItemInput): number => {
   if (item.sourceAdapterVersion === "codex-transcript-v1") {
+    return 200;
+  }
+  if (item.sourceAdapterVersion === "codex-hook-signal-v1") {
     return 200;
   }
   if (
@@ -910,9 +938,6 @@ const canonicalSourcePriorityFor = (item: ConversationItemInput): number => {
       ? 300
       : 100;
   }
-  if (item.sourceRecordType === "hook_payload") {
-    return 50;
-  }
   return 100;
 };
 
@@ -923,6 +948,9 @@ const observationKindFor = (
     return item.sourceTransport === "transcript"
       ? "reconciliation"
       : "snapshot";
+  }
+  if (item.sourceAdapterVersion === "codex-hook-signal-v1") {
+    return "control";
   }
   if (item.sourceAdapterVersion === "codex-app-server-conversation-v1") {
     if (item.sourceEventType === "item/started") {
@@ -984,9 +1012,6 @@ const mapConversationItem = (
 const captureMethodForConversationItem = (
   item: Pick<ConversationItemInput, "sourceTransport">
 ): CaptureMethod => {
-  if (item.sourceTransport === "hook") {
-    return "hook";
-  }
   if (item.sourceTransport === "mcp") {
     return "mcp";
   }
@@ -1061,8 +1086,9 @@ const loadAndValidateConversationItemSession = async (input: {
   const result = await input.client.query<ConversationItemSessionRow>(
     `
       select
-        id, workspace_id, external_session_id, external_thread_id,
-        codex_transcript_path, capture_method, metadata
+        id, external_session_id, external_thread_id,
+        capture_method, automatic_project_id,
+        project_override_id, cwd, metadata
       from sessions
       where id = $2
         and owner_user_id = $1
@@ -1122,18 +1148,6 @@ const loadAndValidateConversationItemSession = async (input: {
     });
   }
   if (
-    session.codex_transcript_path &&
-    input.item.sourcePath &&
-    session.codex_transcript_path !== input.item.sourcePath
-  ) {
-    throw Object.assign(
-      new Error(
-        "Conversation transcript path does not match its Captured Session"
-      ),
-      { statusCode: 409, code: "conversation_session_transcript_mismatch" }
-    );
-  }
-  if (
     session.metadata?.managedConversation === true &&
     expectedThreadIds.size > 0 &&
     !input.item.externalThreadId &&
@@ -1154,9 +1168,13 @@ const withAuthoritativeSessionMetadata = (
   session: ConversationItemSessionRow | null
 ): ConversationItemInput => {
   const metadata = { ...(item.metadata ?? {}) };
-  delete metadata.workspaceId;
-  if (session?.workspace_id) {
-    metadata.workspaceId = session.workspace_id;
+  delete metadata.projectId;
+  const projectId =
+    session?.project_override_id ??
+    session?.automatic_project_id ??
+    session?.cwd;
+  if (projectId) {
+    metadata.projectId = projectId;
   }
   return { ...item, metadata };
 };
@@ -1205,7 +1223,6 @@ const ensureConversationItemTurn = async (
             external_turn_id,
             source_runtime,
             capture_method,
-            codex_transcript_path,
             idempotency_key,
             source_hash,
             turn_index,
@@ -1215,13 +1232,13 @@ const ensureConversationItemTurn = async (
             source_metadata
           )
           values (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8, $9,
+            $1, $2, $3, $4, $5, $6,
+            $7, $8,
             coalesce(
               (select max(turn_index) + 1 from turns where session_id = $1),
               0
             ),
-            $10, $11, $12, $13
+            $9, $10, $11, $12
           )
           on conflict (session_id, external_turn_id)
             where external_turn_id is not null
@@ -1245,7 +1262,6 @@ const ensureConversationItemTurn = async (
       item.externalTurnId,
       item.sourceKind === "codex-cli" ? "codex-cli" : "codex",
       captureMethodForConversationItem(item),
-      item.sourcePath ?? null,
       `turn:${item.sessionId}:${item.externalTurnId}`,
       `turn:${item.sessionId}:${item.externalTurnId}`,
       item.sourceKind,
@@ -1289,12 +1305,8 @@ const persistConversationItemObservation = async (input: {
     hasEncryptableText(input.item.transportChunkText)
       ? ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_TEXT
       : (input.item.transportChunkText ?? null);
-  const sourcePathForStorage =
-    input.suppressPlaintextRaw && hasEncryptableText(input.item.sourcePath)
-      ? ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_TEXT
-      : (input.item.sourcePath ?? null);
   const metadata = input.suppressPlaintextRaw
-    ? safeConversationMetadata(
+    ? safeConversationMetadataForEncryptedStorage(
         input.item.metadata ?? {},
         "encryptedConversationItemObservationColumns",
         [
@@ -1303,7 +1315,6 @@ const persistConversationItemObservation = async (input: {
           ...(hasEncryptableText(input.item.transportChunkText)
             ? ["transport_chunk_text"]
             : []),
-          ...(hasEncryptableText(input.item.sourcePath) ? ["source_path"] : []),
           "metadata"
         ]
       )
@@ -1330,7 +1341,6 @@ const persistConversationItemObservation = async (input: {
         external_item_id,
         source_record_type,
         source_event_type,
-        source_path,
         source_line_number,
         source_sequence,
         event_time,
@@ -1350,7 +1360,7 @@ const persistConversationItemObservation = async (input: {
         $1, $2, $3, 'personal', $4, $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
         $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
-        $30, $31, $32, $33
+        $30, $31, $32
       )
       on conflict (owner_user_id, observation_key)
         where visibility = 'personal'
@@ -1376,7 +1386,6 @@ const persistConversationItemObservation = async (input: {
       input.item.externalItemId ?? null,
       input.item.sourceRecordType,
       input.item.sourceEventType ?? null,
-      sourcePathForStorage,
       input.item.sourceLineNumber ?? null,
       input.item.sourceSequence ?? null,
       input.item.eventTime ?? null,
@@ -1441,7 +1450,7 @@ const persistConversationItemObservation = async (input: {
       rowFamily: "conversation_item_observation",
       scope: {
         tenantId: input.actor.userId,
-        workspaceId: input.item.sessionId ?? null,
+        projectId: input.item.sessionId ?? null,
         objectClass: "conversation_item_observation"
       },
       aad: {
@@ -1491,20 +1500,6 @@ const persistConversationItemObservation = async (input: {
         }
       );
     }
-    if (hasEncryptableText(input.item.sourcePath)) {
-      await upsertEncryptedFieldPayloadWithClient(
-        input.client,
-        input.actor,
-        input.envelopeEncryptionProvider,
-        {
-          sourceTable: "conversation_item_observations",
-          sourceId: observation.id,
-          sourceColumn: "source_path",
-          plaintext: input.item.sourcePath,
-          ...encryptionInput
-        }
-      );
-    }
     await upsertEncryptedFieldPayloadWithClient(
       input.client,
       input.actor,
@@ -1520,99 +1515,34 @@ const persistConversationItemObservation = async (input: {
   }
 };
 
-const legacyConversationItemPayloadHash = async (input: {
-  pool: pg.Pool;
-  client: pg.PoolClient;
-  actor: ActorContext;
-  row: LegacyConversationItemReplayRow;
-  envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
-}): Promise<string> => {
-  const encrypted = await input.client.query<{ source_column: string }>(
-    `
-      select source_column
-      from encrypted_field_payloads
-      where source_table = 'conversation_items'
-        and source_id = $1
-        and invalidated_at is null
-        and source_column = any($2::text[])
-    `,
-    [input.row.id, ["raw_json", "raw_text", "transport_chunk_text"]]
-  );
-  const encryptedColumns = new Set(
-    encrypted.rows.map((entry) => entry.source_column)
-  );
-  const decryptColumn = async (
-    sourceColumn: "raw_json" | "raw_text" | "transport_chunk_text",
-    storedValue: unknown
-  ): Promise<unknown> => {
-    if (!encryptedColumns.has(sourceColumn)) {
-      return storedValue;
-    }
-    if (!input.envelopeEncryptionProvider) {
-      throw Object.assign(
-        new Error(
-          "Envelope encryption provider is required to verify encrypted legacy conversation replay"
-        ),
-        { statusCode: 409, code: "legacy_replay_encryption_required" }
-      );
-    }
-    const decrypted = await createEncryptedPayloadRepository(
-      input.pool
-    ).decryptAuthorizedEncryptedField(
-      input.actor,
-      input.envelopeEncryptionProvider,
-      {
-        sourceTable: "conversation_items",
-        sourceId: input.row.id,
-        sourceColumn
-      }
-    );
-    if (!decrypted) {
-      throw Object.assign(
-        new Error(
-          `Encrypted legacy conversation replay is missing ${sourceColumn}`
-        ),
-        { statusCode: 409, code: "legacy_replay_encrypted_payload_missing" }
-      );
-    }
-    return decrypted.plaintext;
-  };
-  const rawJson = await decryptColumn("raw_json", input.row.raw_json);
-  const rawText = await decryptColumn("raw_text", input.row.raw_text);
-  const transportChunkText = await decryptColumn(
-    "transport_chunk_text",
-    input.row.transport_chunk_text
-  );
-  const hasTransportChunk =
-    input.row.transport_chunk_count > 1 ||
-    typeof transportChunkText === "string" ||
-    input.row.transport_chunk_encoding !== null;
-  return observationPayloadHashFor({
-    sourceKind: input.row.source_kind,
-    sourceAdapterVersion: input.row.source_adapter_version,
-    sourceTransport: input.row.source_transport,
-    sourceRecordType: input.row.source_record_type,
-    sourceEventType: input.row.source_event_type ?? undefined,
-    rawJson,
-    rawText: typeof rawText === "string" ? rawText : undefined,
-    transportChunkIndex: hasTransportChunk
-      ? input.row.transport_chunk_index
-      : undefined,
-    transportChunkCount: hasTransportChunk
-      ? input.row.transport_chunk_count
-      : undefined,
-    transportChunkText:
-      typeof transportChunkText === "string" ? transportChunkText : undefined,
-    transportChunkEncoding: input.row.transport_chunk_encoding ?? undefined,
-    sourceHash: input.row.source_hash,
-    idempotencyKey: input.row.idempotency_key
-  });
-};
-
 export const createConversationItemRepository = (
   pool: pg.Pool,
   options: ConversationItemRepositoryOptions = {}
 ): ConversationItemRepository => ({
+  async findConversationItemByStableIdentity(actor, input) {
+    const result = await pool.query<ConversationItemRow>(
+      `
+        select
+          id, owner_user_id, session_id, turn_id, source_kind,
+          source_adapter_version, source_transport, external_session_id,
+          external_thread_id, external_turn_id, external_item_id,
+          canonical_stable_item_id, source_record_type, source_event_type,
+          source_sequence, source_hash, idempotency_key, canonical_item_key,
+          canonical_source_priority, observed_at, import_observed_at,
+          source_fingerprint, captured_project, created_at
+        from conversation_items
+        where owner_user_id = $1
+          and visibility = 'personal'
+          and session_id = $2
+          and canonical_stable_item_id = $3
+          and personal_deleted_at is null
+        limit 1
+      `,
+      [actor.userId, input.sessionId, input.canonicalStableItemId]
+    );
+    return result.rows[0] ? mapConversationItem(result.rows[0]) : null;
+  },
+
   async createConversationItems(actor, input) {
     const records: ConversationItemRecord[] = [];
     for (const inputItem of input.items) {
@@ -1620,27 +1550,14 @@ export const createConversationItemRepository = (
         sanitizeConversationItemForStorage(inputItem)
       );
       assertManagedCanonicalAdmission(sanitizedItem);
+      assertCaptureHookTurnBoundary(sanitizedItem);
       const sourceIdempotencyKey = sanitizedItem.idempotencyKey;
       let item = withCanonicalConversationIdentity({
         ...sanitizedItem,
         observationKind:
           sanitizedItem.observationKind ?? observationKindFor(sanitizedItem)
       });
-      let canonicalItemKey = canonicalItemKeyFor(item);
-      const legacyCanonicalItemKeys = [
-        ...new Set(item.legacyIdempotencyKeys ?? [])
-      ].filter((key) => key !== canonicalItemKey);
-      if (
-        legacyCanonicalItemKeys.length > 0 &&
-        item.sourceAdapterVersion !== "codex-transcript-v1"
-      ) {
-        throw Object.assign(
-          new Error(
-            "Legacy conversation identity aliases require codex-transcript-v1"
-          ),
-          { statusCode: 400, code: "legacy_identity_alias_invalid" }
-        );
-      }
+      const canonicalItemKey = canonicalItemKeyFor(item);
       const payloadHash = observationPayloadHashFor(item);
       const observationKey = observationKeyFor(item, sourceIdempotencyKey);
       const canonicalSourcePriority = canonicalSourcePriorityFor(item);
@@ -1664,10 +1581,6 @@ export const createConversationItemRepository = (
         suppressPlaintextRaw && hasEncryptableText(item.transportChunkText)
           ? ENCRYPTED_CONVERSATION_ITEM_TEXT
           : (item.transportChunkText ?? null);
-      const sourcePathForStorage =
-        suppressPlaintextRaw && hasEncryptableText(item.sourcePath)
-          ? ENCRYPTED_CONVERSATION_ITEM_TEXT
-          : (item.sourcePath ?? null);
       const ownsTransaction = !options.transactionClient;
       const client = options.transactionClient ?? (await pool.connect());
       const commit = () =>
@@ -1689,7 +1602,7 @@ export const createConversationItemRepository = (
         assertManagedTranscriptTerminal(item, verifiedSession);
         item = withAuthoritativeSessionMetadata(item, verifiedSession);
         const metadataForStorage = suppressPlaintextRaw
-          ? safeConversationMetadata(
+          ? safeConversationMetadataForEncryptedStorage(
               item.metadata ?? {},
               "encryptedConversationItemColumns",
               [
@@ -1698,7 +1611,6 @@ export const createConversationItemRepository = (
                 ...(hasEncryptableText(item.transportChunkText)
                   ? ["transport_chunk_text"]
                   : []),
-                ...(hasEncryptableText(item.sourcePath) ? ["source_path"] : []),
                 "metadata"
               ]
             )
@@ -1708,52 +1620,12 @@ export const createConversationItemRepository = (
           item,
           resolveCapturePolicy: options.resolveCapturePolicy
         });
-        for (const key of [
-          canonicalItemKey,
-          ...legacyCanonicalItemKeys
-        ].sort()) {
-          await client.query(
-            "select pg_advisory_xact_lock(hashtextextended($1, 0))",
-            [
-              `conversation-item:${ownerUserId ?? "anonymous"}:${visibility}:${key}`
-            ]
-          );
-        }
-        if (legacyCanonicalItemKeys.length > 0) {
-          const existingCanonicalRows = await client.query<{
-            canonical_item_key: string;
-          }>(
-            `
-              select canonical_item_key
-              from conversation_items
-              where owner_user_id = $1
-                and visibility = 'personal'
-                and canonical_item_key = any($2::text[])
-                and personal_deleted_at is null
-              order by case when canonical_item_key = $3 then 0 else 1 end
-            `,
-            [
-              ownerUserId,
-              [canonicalItemKey, ...legacyCanonicalItemKeys],
-              canonicalItemKey
-            ]
-          );
-          const existingKeys = [
-            ...new Set(
-              existingCanonicalRows.rows.map((row) => row.canonical_item_key)
-            )
-          ];
-          if (existingKeys.includes(canonicalItemKey)) {
-            // The current identity wins when both current and legacy rows exist.
-          } else if (existingKeys.length === 1) {
-            canonicalItemKey = existingKeys[0]!;
-          } else if (existingKeys.length > 1) {
-            throw Object.assign(
-              new Error("Legacy conversation identity matches multiple items"),
-              { statusCode: 409, code: "legacy_identity_ambiguous" }
-            );
-          }
-        }
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `conversation-item:${ownerUserId ?? "anonymous"}:${visibility}:${canonicalItemKey}`
+          ]
+        );
 
         const replayRows =
           await client.query<ExistingConversationItemObservationRow>(
@@ -1837,100 +1709,34 @@ export const createConversationItemRepository = (
           continue;
         }
 
-        const legacyCandidates =
-          await client.query<LegacyConversationItemReplayRow>(
-            `
-              select
-                ci.id, ci.owner_user_id, ci.session_id, ci.turn_id,
-                ci.source_kind, ci.source_adapter_version, ci.source_transport,
-                ci.external_session_id, ci.external_thread_id,
-                ci.external_turn_id, ci.external_item_id,
-                ci.canonical_stable_item_id, ci.source_record_type,
-                ci.source_event_type, ci.source_path, ci.source_line_number,
-                ci.source_sequence, ci.event_time, ci.observed_at, ci.raw_json,
-                ci.raw_text, ci.logical_source_id, ci.transport_chunk_index,
-                ci.transport_chunk_count, ci.transport_chunk_text,
-                ci.transport_chunk_encoding, ci.source_hash,
-                ci.idempotency_key, ci.canonical_item_key,
-                ci.canonical_source_priority, ci.metadata, ci.created_at
-              from conversation_items ci
-              where $14::boolean = false
-                and ci.owner_user_id = $1
-                and ci.visibility = $2::visibility_scope
-                and ci.session_id is not distinct from $3::uuid
-                and ci.source_kind = $4
-                and ci.source_adapter_version = $5
-                and ci.source_transport = $6
-                and ci.external_thread_id is not distinct from $7::text
-                and ci.external_turn_id is not distinct from $8::text
-                and ci.external_item_id is not distinct from $9::text
-                and ci.source_record_type = $10
-                and ci.source_event_type is not distinct from $11::text
-                and ci.source_line_number is not distinct from $12::integer
-                and ci.source_sequence is not distinct from $13::integer
-                and not exists (
-                  select 1
-                  from conversation_item_observations observation
-                  where observation.conversation_item_id = ci.id
-                )
-              order by ci.created_at asc, ci.id asc
-              limit 2
-              for update
-            `,
-            [
-              ownerUserId,
-              visibility,
-              item.sessionId ?? null,
-              item.sourceKind,
-              item.sourceAdapterVersion,
-              item.sourceTransport,
-              item.externalThreadId ?? item.externalSessionId ?? null,
-              item.externalTurnId ?? null,
-              item.externalItemId ?? null,
-              item.sourceRecordType,
-              item.sourceEventType ?? null,
-              item.sourceLineNumber ?? null,
-              item.sourceSequence ?? null,
-              item.observationOnly === true
-            ]
-          );
-        if (legacyCandidates.rows.length > 1) {
-          throw Object.assign(
-            new Error(
-              "Legacy conversation replay identity matches multiple canonical parents"
-            ),
-            { statusCode: 409, code: "legacy_replay_identity_ambiguous" }
-          );
-        }
-        const legacyParent = legacyCandidates.rows[0];
-        let legacyParentIdToRetire: string | null = null;
-        if (legacyParent) {
-          const legacyPayloadHash = await legacyConversationItemPayloadHash({
-            pool,
-            client,
-            actor: { userId: ownerUserId },
-            row: legacyParent,
-            envelopeEncryptionProvider: options.envelopeEncryptionProvider
-          });
-          if (
-            legacyParent.source_hash !== item.sourceHash ||
-            legacyPayloadHash !== payloadHash
-          ) {
-            throw Object.assign(
-              new Error(
-                "Legacy conversation replay identity conflicts with different observation bytes"
-              ),
-              { statusCode: 409, code: "legacy_replay_integrity_conflict" }
-            );
-          }
-          if (legacyParent.canonical_item_key !== canonicalItemKey) {
-            legacyParentIdToRetire = legacyParent.id;
-          }
-        }
-        const managedProjectionHold =
+        let managedProjectionHold =
           verifiedSession?.capture_method === "api" &&
           verifiedSession.metadata?.managedConversation === true &&
           Boolean(item.externalTurnId);
+        if (managedProjectionHold) {
+          const terminal = await client.query<{ reconciled: boolean }>(
+            `
+              select exists (
+                select 1
+                from conversation_item_observations
+                where owner_user_id = $1
+                  and visibility = 'personal'
+                  and session_id = $2
+                  and external_turn_id = $3
+                  and source_adapter_version = 'codex-transcript-v1'
+                  and source_transport = 'transcript'
+                  and observation_kind = 'reconciliation'
+                  and ingestion_status = 'persisted'
+                  and source_event_type in ('task_complete', 'turn_aborted')
+                  and source_line_number is not null
+                  and observation_component = 'control'
+                  and canonical_stable_item_id = 'turn:' || $3 || ':completed'
+              ) as reconciled
+            `,
+            [ownerUserId, item.sessionId, item.externalTurnId]
+          );
+          managedProjectionHold = terminal.rows[0]?.reconciled !== true;
+        }
 
         if (item.observationOnly) {
           await persistConversationItemObservation({
@@ -1970,7 +1776,6 @@ export const createConversationItemRepository = (
           parent_external_item_id,
           source_record_type,
           source_event_type,
-          source_path,
           source_line_number,
           source_sequence,
           event_time,
@@ -1999,7 +1804,7 @@ export const createConversationItemRepository = (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
           $10, $11, $12, $13, $14, $15, $16, $17, $18,
           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-          $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39
+          $29, $30, $31, $32, $33, $34, $35, $36, $37, $38
         )
         on conflict (owner_user_id, canonical_item_key)
           where visibility = 'personal'
@@ -2017,9 +1822,6 @@ export const createConversationItemRepository = (
             else conversation_items.source_adapter_version
           end,
           source_transport = case
-            when conversation_items.source_transport = 'hook'
-              or excluded.source_transport = 'hook'
-            then 'hook'
             when excluded.canonical_source_priority > conversation_items.canonical_source_priority
             then excluded.source_transport
             else conversation_items.source_transport
@@ -2059,10 +1861,6 @@ export const createConversationItemRepository = (
             then excluded.source_event_type
             else conversation_items.source_event_type
           end,
-          source_path = coalesce(
-            conversation_items.source_path,
-            excluded.source_path
-          ),
           source_line_number = coalesce(
             conversation_items.source_line_number,
             excluded.source_line_number
@@ -2286,7 +2084,6 @@ export const createConversationItemRepository = (
           item.parentExternalItemId ?? null,
           item.sourceRecordType,
           item.sourceEventType ?? null,
-          sourcePathForStorage,
           item.sourceLineNumber ?? null,
           item.sourceSequence ?? null,
           item.eventTime ?? null,
@@ -2413,7 +2210,7 @@ export const createConversationItemRepository = (
             rowFamily: "conversation_item",
             scope: {
               tenantId: ownerUserId,
-              workspaceId: item.sessionId ?? null,
+              projectId: item.sessionId ?? null,
               objectClass: "conversation_item"
             },
             aad: {
@@ -2475,20 +2272,6 @@ export const createConversationItemRepository = (
               ...encryptionInput
             }
           );
-          if (hasEncryptableText(item.sourcePath)) {
-            await upsertEncryptedFieldPayloadWithClient(
-              client,
-              { userId: ownerUserId },
-              options.envelopeEncryptionProvider,
-              {
-                sourceTable: "conversation_items",
-                sourceId: row.id,
-                sourceColumn: "source_path",
-                plaintext: item.sourcePath,
-                ...encryptionInput
-              }
-            );
-          }
           await synchronizeEncryptedConversationItemColumns({
             client,
             sourceId: row.id
@@ -2506,23 +2289,6 @@ export const createConversationItemRepository = (
           envelopeEncryptionProvider: options.envelopeEncryptionProvider,
           payloadHash
         });
-        if (legacyParentIdToRetire) {
-          await client.query(
-            `
-              update conversation_items
-              set projection_status = 'raw_only',
-                  memory_excluded_at = coalesce(memory_excluded_at, now()),
-                  memory_exclusion_reason = coalesce(
-                    memory_exclusion_reason,
-                    'canonical_observation_migrated'
-                  )
-              where id = $1
-                and owner_user_id = $2
-                and visibility = 'personal'
-            `,
-            [legacyParentIdToRetire, ownerUserId]
-          );
-        }
         await commit();
         records.push(mapConversationItem(row));
       } catch (error) {
@@ -2555,13 +2321,22 @@ export const createConversationItemRepository = (
         metadata: Record<string, unknown> | null;
       }>(
         `
-          select id, capture_method, metadata
-          from sessions
-          where id = $2
-            and owner_user_id = $1
-            and visibility = 'personal'
-            and invalidated_at is null
-            and personal_deleted_at is null
+          select s.id, s.capture_method, s.metadata
+          from sessions s
+          where s.id = $2
+            and s.owner_user_id = $1
+            and s.visibility = 'personal'
+            and s.invalidated_at is null
+            and s.personal_deleted_at is null
+            and (
+              s.capture_method = 'api'
+              or exists (
+                select 1
+                from managed_conversation_runtime_bindings mcrb
+                where mcrb.owner_user_id = s.owner_user_id
+                  and mcrb.local_session_id = s.id
+              )
+            )
           limit 1
         `,
         [actor.userId, input.sessionId]
@@ -2569,11 +2344,12 @@ export const createConversationItemRepository = (
       const managedSession = session.rows[0];
       if (
         !managedSession ||
-        managedSession.capture_method !== "api" ||
         managedSession.metadata?.managedConversation !== true
       ) {
         throw Object.assign(
-          new Error("Managed conversation session not found or not visible"),
+          new Error(
+            "Managed conversation session is not bound to the local runtime"
+          ),
           { statusCode: 404, code: "managed_session_not_found" }
         );
       }
@@ -2599,7 +2375,6 @@ export const createConversationItemRepository = (
                 and cio.observation_kind = 'reconciliation'
                 and cio.ingestion_status = 'persisted'
                 and cio.source_event_type in ('task_complete', 'turn_aborted')
-                and cio.source_path is not null
                 and cio.source_line_number is not null
                 and cio.observation_component = 'control'
                 and cio.canonical_stable_item_id = 'turn:' || $3 || ':completed'
@@ -2629,7 +2404,7 @@ export const createConversationItemRepository = (
             and visibility = 'personal'
             and session_id = $2
             and external_turn_id = $3
-            and projection_status = 'held'
+            and projection_status in ('pending', 'held')
             and personal_deleted_at is null
           returning id
         `,

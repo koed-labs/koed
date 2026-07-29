@@ -187,24 +187,34 @@ describe("stopKoedServer", () => {
     ).toBeTruthy();
   });
 
-  it("does not signal a supervisor that fails to exit naturally", () => {
+  it("escalates a supervisor that fails to exit naturally", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime({ processes: {} }));
     writeSupervisorLock(koedHome, 100);
     const signals: Array<[number, NodeJS.Signals]> = [];
+    let running = true;
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
-      kill: (pid, signal) => signals.push([pid, signal]),
-      checkPid: (pid) => pid === 100,
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        if (signal === "SIGKILL") running = false;
+      },
+      checkPid: (pid) => pid === 100 && running,
       waitForExitMs: 1,
       pollIntervalMs: 1,
       sleepSync: () => undefined
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.errors?.[0]?.error).toContain("exit naturally");
-    expect(signals).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(signals).toEqual([
+      [100, "SIGTERM"],
+      [100, "SIGKILL"]
+    ]);
+    expect(result.stoppedServices).toContain("supervisor");
+    expect(() =>
+      readFileSync(resolve(koedHome, "run", "koed-server.json"))
+    ).toThrow();
   });
 
   it("does not remove runtime state replaced while stop is in progress", () => {
@@ -344,6 +354,50 @@ describe("stopKoedServer", () => {
     expect(result.ok).toBe(true);
     expect(calls).toContainEqual({
       command: "/bin/pg_ctl",
+      args: ["stop", "-D", dataDir, "-m", "fast"]
+    });
+  });
+
+  it("loads native Postgres shutdown overrides from KOED_ENV_PATH", () => {
+    const koedHome = makeHome();
+    const dataDir = resolve(koedHome, "data", "postgres");
+    const envPath = resolve(koedHome, "local.env");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(resolve(dataDir, "PG_VERSION"), "17");
+    writeFileSync(envPath, "KOED_POSTGRES_PG_CTL_BIN=/env/bin/pg_ctl\n");
+    writeRuntime(
+      koedHome,
+      runtime({ services: ["postgres-native", "api", "worker", "explorer"] })
+    );
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    const result = stopKoedServer({
+      environment: {
+        KOED_HOME: koedHome,
+        KOED_ENV_PATH: envPath,
+        KOED_REPO_ROOT: koedHome
+      },
+      existsSync: (path) =>
+        String(path) === "/env/bin/pg_ctl" ||
+        String(path).endsWith("koed-server.json") ||
+        String(path).endsWith("PG_VERSION"),
+      kill: () => undefined,
+      checkPid: () => false,
+      spawnSync: (command, args) => {
+        calls.push({ command, args });
+        return {
+          status: 0,
+          stdout: "",
+          stderr: "",
+          pid: 1,
+          output: []
+        } as never;
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toContainEqual({
+      command: "/env/bin/pg_ctl",
       args: ["stop", "-D", dataDir, "-m", "fast"]
     });
   });

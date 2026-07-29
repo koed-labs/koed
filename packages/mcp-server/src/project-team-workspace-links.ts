@@ -15,8 +15,9 @@ export interface ProjectTeamWorkspaceRoute {
   backendId: string | undefined;
 }
 
-interface ProjectMetadataRecord {
+export interface LocalProjectMetadataRecord {
   localProjectId: string;
+  displayName: string;
   path: {
     cwd: string;
     projectRoot: string | null;
@@ -48,15 +49,20 @@ export const teamWorkspaceAutoResolutionEnabled = (
   env.KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED?.trim().toLowerCase() ===
     "true";
 
-const readProjectMetadataForRoot = (
+export const readProjectMetadataForRoot = (
   projectRoot: string,
   env: NodeJS.ProcessEnv
-): ProjectMetadataRecord | null => {
+): LocalProjectMetadataRecord | null => {
   const configPath = projectMetadataPath(env);
   if (!fs.existsSync(configPath)) return null;
-  const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-    projects?: Array<Partial<ProjectMetadataRecord>>;
+  let parsed: {
+    projects?: Array<Partial<LocalProjectMetadataRecord>>;
   };
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as typeof parsed;
+  } catch {
+    return null;
+  }
   const normalizedProjectRoot = path.resolve(projectRoot);
   const project = parsed.projects?.find((candidate) => {
     const cwd =
@@ -69,9 +75,25 @@ const readProjectMetadataForRoot = (
         : null;
     return cwd === normalizedProjectRoot || root === normalizedProjectRoot;
   });
-  if (!project || typeof project.localProjectId !== "string") return null;
+  if (
+    !project ||
+    typeof project.localProjectId !== "string" ||
+    !project.localProjectId.trim()
+  ) {
+    return null;
+  }
+  const projectPath =
+    typeof project.path?.projectRoot === "string"
+      ? project.path.projectRoot
+      : typeof project.path?.cwd === "string"
+        ? project.path.cwd
+        : normalizedProjectRoot;
   return {
-    localProjectId: project.localProjectId,
+    localProjectId: project.localProjectId.trim(),
+    displayName:
+      typeof project.displayName === "string" && project.displayName.trim()
+        ? project.displayName.trim()
+        : path.basename(projectPath) || "Project",
     path: {
       cwd:
         typeof project.path?.cwd === "string"

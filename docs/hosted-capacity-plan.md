@@ -93,7 +93,7 @@ KOED_CAPACITY_DEVICE_CREDENTIAL='device-key:secret' \
 KOED_CAPACITY_TEAM_WORKSPACE_ID='30000000-0000-4000-8000-000000000001' \
 KOED_CAPACITY_UPSTREAM_BACKEND_ID='team-vps' \
 pnpm hosted:capacity -- run \
-  --scenario local-edge-team-proxy \
+  --scenario local-edge-team-recall \
   --base-url http://127.0.0.1:3300 \
   --duration-seconds 120 \
   --concurrency 6
@@ -130,7 +130,7 @@ database passwords, raw Memory text, transcripts, prompts, or provider secrets.
   cookie and Team Workspace id.
 - `team-device-recall`: `POST /v1/memory/answer` with a scoped Koed-Device
   credential and Team Workspace id.
-- `local-edge-team-proxy`: `POST /v1/local-edge/upstream-operations` for Team
+- `local-edge-team-recall`: `POST /v1/local-edge/team-memory/answer` for Team
   Workspace answer proxying to a registered upstream backend.
 - `ops-status`: `GET /ops/status`.
 - `mixed`: public smoke plus capture, recall, graph overview, Team Workspace

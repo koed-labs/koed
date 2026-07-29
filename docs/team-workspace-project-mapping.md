@@ -1,16 +1,15 @@
 # Team Workspace Project Mapping
 
-This CLI-based workflow shares one Project's Personal Captured Sessions into a
-Team Workspace and recalls Team-shared Memory from the MCP Server. Desktop UI
-for this workflow is not currently available.
+This CLI-based workflow links one local Project to a Team Workspace so the MCP
+Server can recall Team-shared Memory for that Project. Project mapping does not
+create or authorize Shared Memory.
 
 ## Boundaries
 
-- API Tokens remain Personal Memory compatibility credentials. They can locate
-  the latest Personal Captured Session, but they cannot create Share Grants or
-  authorize Team Workspace recall.
-- Team-shared Memory stays user-owned. Sharing uses Team Workspace Share Grants
-  for Captured Sessions.
+- API Tokens remain Personal Memory compatibility credentials. They cannot
+  create Share Grants or authorize Team Workspace recall.
+- Team-shared Memory stays user-owned. Sharing requires the explicit Shared
+  Memory preview, owner consent, and Share Grant authority flow.
 - The Project root is lookup and display metadata. The Team Workspace id is the
   stable authorization boundary.
 - Project metadata config stores no secrets. It stores local discovery facts
@@ -77,34 +76,6 @@ node packages/koed-server/dist/cli.js team workspace show --project-root "$PWD" 
 node packages/koed-server/dist/cli.js team workspace remove --project-root "$PWD" --json
 ```
 
-## Share A Captured Session
-
-The share command needs a browser session cookie for the Team user because Share
-Grant management is session-only in this workflow.
-
-```bash
-KOED_TEAM_SESSION_COOKIE="cm_session=<local-session-secret>" \
-node packages/koed-server/dist/cli.js team capture share-latest \
-  --project-root "$PWD" \
-  --json
-```
-
-`share-latest` uses the Personal Memory API Token only to find the latest
-Personal Captured Session for the Project. It then creates the Share Grant with
-the browser session cookie. To share a selected Captured Session without latest
-lookup:
-
-```bash
-KOED_TEAM_SESSION_COOKIE="cm_session=<local-session-secret>" \
-node packages/koed-server/dist/cli.js team capture share-latest \
-  --project-root "$PWD" \
-  --session-id "<captured-session-uuid>" \
-  --json
-```
-
-If no matching Project mapping, browser session cookie, or Personal Captured
-Session exists, the command fails clearly.
-
 ## Recall From MCP
 
 Explicit Team Workspace recall can be requested through `memory_answer`:
@@ -113,7 +84,7 @@ Explicit Team Workspace recall can be requested through `memory_answer`:
 {
   "query": "What did the Team decide about the workspace timeline?",
   "search_domain": "project",
-  "workspace_id": "/absolute/project/root",
+  "project_id": "/absolute/project/root",
   "team_workspace_id": "<team-workspace-uuid>",
   "response_detail": "with_citations"
 }
@@ -158,14 +129,4 @@ no longer wanted locally:
 
 ```bash
 node packages/koed-server/dist/cli.js project forget --local-project-id "<local-project-id>" --json
-```
-
-Revoke a Share Grant through the existing Team Workspace API or Team UI:
-
-```bash
-curl -X DELETE \
-  -H "content-type: application/json" \
-  -H "cookie: cm_session=<local-session-secret>" \
-  -d '{"reason":"project mapping cleanup"}' \
-  "http://localhost:3300/v1/team-workspaces/<team-workspace-uuid>/session-share-grants/<share-grant-uuid>"
 ```

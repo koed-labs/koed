@@ -9,6 +9,7 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { resolve } from "node:path";
+import { environmentWithRepoEnv } from "./env-file.js";
 import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { readSupervisorLock } from "./supervisor-lock.js";
@@ -178,6 +179,10 @@ export const stopKoedServer = ({
   readSupervisorLock: readLock = readSupervisorLock
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
+  const runtimeEnvironment = environmentWithRepoEnv(
+    paths.repoRoot,
+    environment
+  );
   const runtime = readRuntimeState(paths.runtimeStatePath, {
     existsSync: pathExists,
     readFileSync: readFile
@@ -252,7 +257,7 @@ export const stopKoedServer = ({
     }
 
     if (shouldStopNativePostgres(runtime)) {
-      const stopped = stopLocalPostgresRuntime(paths, environment, {
+      const stopped = stopLocalPostgresRuntime(paths, runtimeEnvironment, {
         existsSync: pathExists,
         spawnSync
       });
@@ -290,10 +295,21 @@ export const stopKoedServer = ({
         stoppedPids.push(runtime.pid);
         stoppedServices.push("supervisor");
       } else {
-        errors.push({
-          target: `supervisor (${runtime.pid})`,
-          error: "Timed out waiting for the supervisor to exit naturally"
+        const stopped = stopPid("supervisor", runtime.pid, {
+          kill,
+          checkPid,
+          waitForExitMs,
+          pollIntervalMs,
+          sleepSync
         });
+        stoppedPids.push(...stopped.stoppedPids);
+        missingPids.push(...stopped.missingPids);
+        errors.push(...stopped.errors);
+        if (stopped.missingPids.length > 0) {
+          missingServices.push("supervisor");
+        } else if (stopped.stoppedPids.length > 0) {
+          stoppedServices.push("supervisor");
+        }
       }
     }
   }

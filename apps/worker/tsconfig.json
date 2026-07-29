@@ -10,6 +10,7 @@
   "references": [
     { "path": "../../packages/core" },
     { "path": "../../packages/db" },
+    { "path": "../../packages/mcp-server" },
     { "path": "../../packages/shared" }
   ],
   "include": ["src/**/*.ts"],

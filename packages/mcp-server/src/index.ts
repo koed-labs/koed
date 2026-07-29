@@ -8,9 +8,14 @@ import {
 } from "./answer-worker.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 export {
+  checkCodexAppServerAvailability,
   destroyManagedCodexHome,
+  prepareManagedCodexHome,
+  reuseManagedCodexHome,
   runCodexAppServerJsonTask
 } from "./codex-app-server-runner.js";
+export { assertCodexConversationProtocolCompatibility } from "./codex-app-server-protocol-compatibility.js";
+export type { CodexConversationProtocolCompatibility } from "./codex-app-server-protocol-compatibility.js";
 export {
   adaptCodexTranscriptV1,
   codexTranscriptAdapterVersion,
@@ -30,6 +35,7 @@ export {
 } from "./codex-managed-conversation.js";
 export type {
   CodexManagedConversationConfig,
+  CodexManagedConversationSealedSource,
   CodexManagedConversationStartResult
 } from "./codex-managed-conversation.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
@@ -168,7 +174,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
   mcpTransport: "stdio";
   codexCanCallTools: boolean;
   automaticDiscussionCapture: "not_via_mcp";
-  captureFallback: "codex_lifecycle_hooks_transcript_path";
+  capturePath: "journaled_codex_transcript";
   exposedTools: MemoryToolName[];
   diagnosticMemoryToolsExposed: boolean;
   lowLevelMemoryToolsExposed: boolean;
@@ -378,6 +384,118 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/sessions", input);
   }
 
+  async ensureConversationSourceArtifact(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/conversation-source-artifacts", input);
+  }
+
+  async lookupConversationSourceArtifact(input: {
+    sourceKind: "codex";
+    externalSessionId: string;
+  }): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({
+      source_kind: input.sourceKind,
+      external_session_id: input.externalSessionId
+    });
+    return this.request(
+      "GET",
+      `/v1/conversation-source-artifacts/lookup?${params.toString()}`
+    );
+  }
+
+  async getConversationSourceArtifactByGeneration(
+    sourceGenerationId: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "GET",
+      `/v1/conversation-source-artifacts/generations/${encodeURIComponent(sourceGenerationId)}`
+    );
+  }
+
+  async appendConversationSourceSegment(
+    artifactId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/segments`,
+      input
+    );
+  }
+
+  async finalizeConversationSourceArtifact(
+    artifactId: string,
+    input: { expectedProviderOffset: number; expectedProviderLine: number }
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/finalize`,
+      input
+    );
+  }
+
+  async createConversationSourceSuccessorGeneration(
+    artifactId: string,
+    input: {
+      expectedParentClosureHash: string;
+      sourceGenerationId: string;
+      originKeyId: string;
+    }
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/successor`,
+      input
+    );
+  }
+
+  async listConversationSourceSegments(
+    artifactId: string,
+    input: { afterOffset: number; limit?: number }
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({
+      after_offset: String(input.afterOffset),
+      limit: String(input.limit ?? 20)
+    });
+    return this.request(
+      "GET",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/segments?${params.toString()}`
+    );
+  }
+
+  async getConversationSourceSegmentContent(
+    artifactId: string,
+    segmentId: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "GET",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/segments/${encodeURIComponent(segmentId)}/content`
+    );
+  }
+
+  async getConversationSourceCursor(
+    artifactId: string,
+    consumerKind: string
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({ consumer_kind: consumerKind });
+    return this.request(
+      "GET",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/cursor?${params.toString()}`
+    );
+  }
+
+  async advanceConversationSourceCursor(
+    artifactId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/conversation-source-artifacts/${encodeURIComponent(artifactId)}/cursor`,
+      input
+    );
+  }
+
   async createHistoricalImportRun(): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/historical-imports", {});
   }
@@ -398,28 +516,6 @@ export class MemoryApiClient {
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/historical-import-sources", input);
-  }
-
-  async observeHistoricalImportSource(
-    sourceId: string,
-    input: Record<string, unknown>
-  ): Promise<Record<string, unknown>> {
-    return this.request(
-      "PATCH",
-      `/v1/historical-import-sources/${encodeURIComponent(sourceId)}/observation`,
-      input
-    );
-  }
-
-  async advanceLiveTranscriptCursor(
-    sourceId: string,
-    input: Record<string, unknown>
-  ): Promise<Record<string, unknown>> {
-    return this.request(
-      "POST",
-      `/v1/historical-import-sources/${encodeURIComponent(sourceId)}/live-cursor`,
-      input
-    );
   }
 
   async effectiveCapturePolicy(input: {
@@ -450,6 +546,26 @@ export class MemoryApiClient {
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/memory/conversation-items", input);
+  }
+
+  async findConversationItemByStableIdentity(input: {
+    sessionId: string;
+    canonicalStableItemId: string;
+  }): Promise<{
+    item: {
+      id: string;
+      externalTurnId: string | null;
+      canonicalStableItemId: string | null;
+    } | null;
+  }> {
+    const params = new URLSearchParams({
+      session_id: input.sessionId,
+      canonical_stable_item_id: input.canonicalStableItemId
+    });
+    return this.request(
+      "GET",
+      `/v1/memory/conversation-items/by-stable-identity?${params.toString()}`
+    );
   }
 
   async recordTokenUsage(
@@ -580,7 +696,7 @@ export class MemoryApiClient {
     input: {
       searchDomain?: string;
       sessionId?: string;
-      workspaceId?: string;
+      projectId?: string;
       teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
@@ -594,8 +710,8 @@ export class MemoryApiClient {
     if (input.sessionId) {
       params.set("session_id", input.sessionId);
     }
-    if (input.workspaceId) {
-      params.set("workspace_id", input.workspaceId);
+    if (input.projectId) {
+      params.set("project_id", input.projectId);
     }
     if (input.teamWorkspaceId) {
       params.set("team_workspace_id", input.teamWorkspaceId);
@@ -676,26 +792,35 @@ export class MemoryApiClient {
     return this.request("GET", "/v1/memory/graph/overview");
   }
 
-  async upstreamOperation(
-    input: {
-      upstreamBackendId: string;
-      operationFamily: "team_workspace_read";
-      method: "GET" | "POST";
-      path: string;
-      body?: unknown;
-    },
+  async teamMemorySearch(
+    upstreamBackendId: string,
+    input: Record<string, unknown>,
     authorization: string
   ): Promise<Record<string, unknown>> {
     return this.request(
       "POST",
-      "/v1/local-edge/upstream-operations",
+      "/v1/local-edge/team-memory/search",
       {
-        upstream_backend_id: input.upstreamBackendId,
-        operation_family: input.operationFamily,
-        requested_mode: "live_upstream_proxy",
-        method: input.method,
-        path: input.path,
-        body: input.body
+        upstream_backend_id: upstreamBackendId,
+        input
+      },
+      { authorization }
+    );
+  }
+
+  async teamMemoryExpand(
+    upstreamBackendId: string,
+    nodeId: string,
+    input: Record<string, unknown>,
+    authorization: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/team-memory/expand",
+      {
+        upstream_backend_id: upstreamBackendId,
+        node_id: nodeId,
+        input
       },
       { authorization }
     );
@@ -821,7 +946,7 @@ export const memoryAccessCheck = async (
     mcpTransport: "stdio",
     codexCanCallTools: true,
     automaticDiscussionCapture: "not_via_mcp",
-    captureFallback: "codex_lifecycle_hooks_transcript_path",
+    capturePath: "journaled_codex_transcript",
     exposedTools: exposedTools(toolExposure, backendToolCapabilities),
     diagnosticMemoryToolsExposed: toolExposure.exposeDiagnosticMemoryTools,
     lowLevelMemoryToolsExposed: toolExposure.exposeLowLevelMemoryTools,

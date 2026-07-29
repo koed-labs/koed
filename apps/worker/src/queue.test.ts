@@ -36,6 +36,10 @@ import {
 
 const createRepository = () => ({
   enqueue: vi.fn().mockResolvedValue({ id: 1 }),
+  tryAcquireRuntimeLease: vi.fn().mockResolvedValue({
+    requeueAbandonedJobs: vi.fn().mockResolvedValue(0),
+    release: vi.fn().mockResolvedValue(undefined)
+  }),
   claim: vi.fn().mockResolvedValue(null),
   complete: vi.fn().mockResolvedValue(true),
   fail: vi.fn().mockResolvedValue(true),
@@ -148,6 +152,59 @@ describe("createWorkerQueueRuntime", () => {
       id: 1,
       lockToken: "lock-1"
     });
+  });
+
+  it("recovers abandoned local jobs before workers start", async () => {
+    const repository = createRepository();
+    const runtimeLease = {
+      requeueAbandonedJobs: vi.fn().mockResolvedValue(2),
+      release: vi.fn().mockResolvedValue(undefined)
+    };
+    repository.tryAcquireRuntimeLease.mockResolvedValue(runtimeLease);
+
+    const runtime = await createWorkerQueueRuntime({
+      backend: "local",
+      redisUrl: "redis://localhost:6379",
+      localQueueRepository: repository,
+      logger,
+      lcmEmbedQueue: { add: vi.fn(), getJobCounts: vi.fn(), close: vi.fn() },
+      handleJob: vi.fn(),
+      isTransientError: () => false,
+      pollIntervalMs: 60_000
+    });
+    await runtime.close();
+
+    expect(runtimeLease.requeueAbandonedJobs).toHaveBeenCalledOnce();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: {
+          name: "worker.queue.abandoned_jobs_recovered",
+          category: "job"
+        },
+        jobs: { recovered: 2 }
+      }),
+      "abandoned local queue jobs recovered"
+    );
+    expect(runtimeLease.release).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a second Postgres-backed local queue runtime", async () => {
+    const repository = createRepository();
+    repository.tryAcquireRuntimeLease.mockResolvedValue(null);
+
+    await expect(
+      createWorkerQueueRuntime({
+        backend: "local",
+        redisUrl: "redis://localhost:6379",
+        localQueueRepository: repository,
+        logger,
+        lcmEmbedQueue: { add: vi.fn(), getJobCounts: vi.fn(), close: vi.fn() },
+        handleJob: vi.fn(),
+        isTransientError: () => false
+      })
+    ).rejects.toThrow(
+      "Another Postgres-backed local work queue runtime is already active"
+    );
   });
 
   it("reconciles unprioritized BullMQ jobs before starting workers", async () => {

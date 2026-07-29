@@ -12,6 +12,25 @@ import type {
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
 
 vi.mock("@koed/memory-ui", () => ({
+  MemoryEventFrame: ({
+    actions,
+    children,
+    header,
+    metadata
+  }: {
+    actions?: ReactNode;
+    children: ReactNode;
+    header: ReactNode;
+    metadata?: ReactNode;
+  }) => (
+    <article>
+      <header>{header}</header>
+      {actions}
+      {children}
+      <footer>{metadata}</footer>
+    </article>
+  ),
+  SecureMarkdown: ({ source }: { source: string }) => <div>{source}</div>,
   threadSelectionKey: (thread: { id: string; projectId: string }) =>
     `${thread.projectId}:${thread.id}`,
   VirtualizedTimeline: ({
@@ -69,17 +88,6 @@ function event(
   };
 }
 
-function jsonResponse(
-  events: DesktopConversationEvent[],
-  status = 200,
-  error?: string
-): Response {
-  return new Response(JSON.stringify(error ? { error } : { events }), {
-    status,
-    headers: { "content-type": "application/json" }
-  });
-}
-
 describe("NativeConversationSurface", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -97,12 +105,15 @@ describe("NativeConversationSurface", () => {
     vi.restoreAllMocks();
   });
 
-  async function renderSurface() {
+  async function renderSurface(
+    loadEventsPage: NonNullable<
+      Parameters<typeof NativeConversationSurface>[0]["loadEventsPage"]
+    >
+  ) {
     await act(async () => {
       root.render(
         <NativeConversationSurface
-          apiBaseUrl="http://127.0.0.1:3300"
-          apiToken="desktop-token"
+          loadEventsPage={loadEventsPage}
           thread={thread}
         />
       );
@@ -110,23 +121,19 @@ describe("NativeConversationSurface", () => {
   }
 
   it("loads and renders the selected Captured Session directly", async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse([event("event-1", "Hello from Koed")]));
-    vi.stubGlobal("fetch", fetchMock);
+    const loadEventsPage = vi
+      .fn()
+      .mockResolvedValue([event("event-1", "Hello from Koed")]);
 
-    await renderSurface();
+    await renderSurface(loadEventsPage);
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Hello from Koed")
     );
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(String(url)).toContain("projectId=project-1");
-    expect(String(url)).toContain("threadId=thread-1");
-    expect(new Headers(init?.headers).get("authorization")).toBe(
-      "Bearer desktop-token"
-    );
+    expect(loadEventsPage).toHaveBeenCalledWith({
+      limit: 50,
+      thread
+    });
   });
 
   it("supports focus and interaction with a labelled tool activity disclosure", async () => {
@@ -135,16 +142,14 @@ describe("NativeConversationSurface", () => {
       actor: "tool",
       metadata: { toolName }
     });
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn<typeof fetch>()
-        .mockResolvedValue(
-          jsonResponse([tool("tool-1", "exec"), tool("tool-2", "apply_patch")])
-        )
-    );
+    const loadEventsPage = vi
+      .fn()
+      .mockResolvedValue([
+        tool("tool-1", "exec"),
+        tool("tool-2", "apply_patch")
+      ]);
 
-    await renderSurface();
+    await renderSurface(loadEventsPage);
     await vi.waitFor(() =>
       expect(container.textContent).toContain("2 activity items")
     );
@@ -165,14 +170,53 @@ describe("NativeConversationSurface", () => {
     expect(group?.open).toBe(true);
   });
 
-  it("offers Retry after an actionable HTTP error", async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse([], 500, "Local API unavailable"))
-      .mockResolvedValueOnce(jsonResponse([event("event-1", "Recovered")]));
-    vi.stubGlobal("fetch", fetchMock);
+  it("renders source diffs, visible invalidation labels, and Inspector callbacks", async () => {
+    const onInspectEvent = vi.fn();
+    const changed = {
+      ...event(
+        "event-patch",
+        "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old\n+new\n*** End Patch"
+      ),
+      actor: "tool",
+      invalidatedAt: "2026-07-13T13:00:00.000Z",
+      metadata: { toolName: "apply_patch" }
+    } satisfies DesktopConversationEvent;
 
-    await renderSurface();
+    await act(async () => {
+      root.render(
+        <NativeConversationSurface
+          model={{
+            error: "",
+            events: [changed],
+            hasOlderEvents: false,
+            status: "ready"
+          }}
+          onInspectEvent={onInspectEvent}
+          onLoadOlder={vi.fn()}
+          onRetry={vi.fn()}
+          thread={thread}
+        />
+      );
+    });
+
+    expect(container.textContent).toContain("1 file changed");
+    expect(container.textContent).toContain(
+      "Invalidated · excluded from current recall"
+    );
+    const inspect = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Inspect apply_patch event"]'
+    );
+    await act(async () => inspect?.click());
+    expect(onInspectEvent).toHaveBeenCalledWith(changed);
+  });
+
+  it("offers Retry after an actionable loader error", async () => {
+    const loadEventsPage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Local API unavailable"))
+      .mockResolvedValueOnce([event("event-1", "Recovered")]);
+
+    await renderSurface(loadEventsPage);
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Local API unavailable")
     );
@@ -185,18 +229,17 @@ describe("NativeConversationSurface", () => {
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Recovered")
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(loadEventsPage).toHaveBeenCalledTimes(2);
   });
 
   it("stops pagination when the API repeats the cursor page", async () => {
     const latest = event("event-latest", "Latest");
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse([latest]))
-      .mockResolvedValueOnce(jsonResponse([latest]));
-    vi.stubGlobal("fetch", fetchMock);
+    const loadEventsPage = vi
+      .fn()
+      .mockResolvedValueOnce([latest])
+      .mockResolvedValueOnce([latest]);
 
-    await renderSurface();
+    await renderSurface(loadEventsPage);
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Load older test page")
     );
@@ -208,25 +251,32 @@ describe("NativeConversationSurface", () => {
     await vi.waitFor(() =>
       expect(container.textContent).not.toContain("Load older test page")
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(loadEventsPage).toHaveBeenCalledTimes(2);
+    expect(loadEventsPage.mock.calls[1]?.[0]).toEqual({
+      cursor: {
+        id: latest.id,
+        sourceSequence: latest.sourceSequence,
+        timestamp: latest.timestamp
+      },
+      limit: 500,
+      thread
+    });
   });
 
-  it("aborts an older-page request when the surface unmounts", async () => {
-    let olderSignal: AbortSignal | undefined;
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse([event("event-latest", "Latest")]))
-      .mockImplementationOnce((_url, init) => {
-        olderSignal = init?.signal ?? undefined;
-        return new Promise<Response>((_resolve, reject) => {
-          olderSignal?.addEventListener("abort", () =>
-            reject(new DOMException("Aborted", "AbortError"))
-          );
-        });
-      });
-    vi.stubGlobal("fetch", fetchMock);
+  it("ignores an older loader result after the surface unmounts", async () => {
+    let resolveOlder: ((events: DesktopConversationEvent[]) => void) | null =
+      null;
+    const loadEventsPage = vi
+      .fn()
+      .mockResolvedValueOnce([event("event-latest", "Latest")])
+      .mockImplementationOnce(
+        () =>
+          new Promise<DesktopConversationEvent[]>((resolve) => {
+            resolveOlder = resolve;
+          })
+      );
 
-    await renderSurface();
+    await renderSurface(loadEventsPage);
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Load older test page")
     );
@@ -236,7 +286,8 @@ describe("NativeConversationSurface", () => {
     await act(async () => loadOlder?.click());
 
     await act(async () => root.unmount());
-    expect(olderSignal?.aborted).toBe(true);
+    await act(async () => resolveOlder?.([event("event-old", "Old")]));
+    expect(loadEventsPage).toHaveBeenCalledTimes(2);
     root = createRoot(container);
   });
 });

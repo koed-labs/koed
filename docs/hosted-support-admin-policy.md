@@ -25,9 +25,8 @@ Supported hosted support/admin identities are:
   exceptional incidents. It must be separately approved, customer-visible in
   audit, scoped to a Team/Workspace/User/resource, and disabled by default.
 
-API Tokens, device credentials, Capture Hook credentials, MCP Server
-credentials, WorkOS API keys, database credentials, and embedding service
-tokens are not support identities.
+API Tokens, device credentials, MCP Server credentials, WorkOS API keys,
+database credentials, and embedding service tokens are not support identities.
 
 ## Default Support View
 

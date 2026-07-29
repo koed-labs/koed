@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global console, process, setTimeout */
+/* global clearTimeout, console, process, setTimeout */
 import { listPackage } from "@electron/asar";
 import {
   cpSync,
@@ -12,13 +12,15 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   createOwnedDiagnosticsDir,
   writeDiagnosticTail
 } from "./smoke-diagnostics.mjs";
+import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
@@ -85,7 +87,7 @@ const parseArgs = (argv) => {
   return options;
 };
 
-const usage = `Usage: pnpm desktop:package:smoke:mac -- [options]
+const usage = `Usage: pnpm desktop:package:smoke -- [options]
 
 Options:
   --json                    Emit JSON result
@@ -98,7 +100,18 @@ Options:
 `;
 
 const buildPackage = () => {
-  const result = spawnSync("pnpm", ["package:mac"], {
+  const packageScript =
+    process.platform === "darwin"
+      ? "package:mac"
+      : process.platform === "linux"
+        ? "package:linux"
+        : null;
+  if (!packageScript) {
+    throw new Error(
+      "Packaged Desktop smoke build supports macOS and Linux hosts."
+    );
+  }
+  const result = spawnSync("pnpm", [packageScript], {
     cwd: desktopRoot,
     stdio: "inherit"
   });
@@ -106,7 +119,7 @@ const buildPackage = () => {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`package:mac failed with ${result.status ?? 1}`);
+    throw new Error(`${packageScript} failed with ${result.status ?? 1}`);
   }
 };
 
@@ -196,6 +209,15 @@ const resolvePackagedLayout = () => {
   };
 };
 
+const isolatedSmokeApiPort = (koedHome) =>
+  String(
+    40_000 +
+      [...koedHome].reduce(
+        (hash, character) => (hash * 31 + character.codePointAt(0)) % 20_000,
+        0
+      )
+  );
+
 const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
   const env = {
     ...process.env,
@@ -204,6 +226,8 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
     KOED_HOME: koedHome,
     KOED_PACKAGED_DESKTOP: "1",
     KOED_PACKAGED_RESOURCES_PATH: layout.resourcesPath,
+    KOED_AUTO_PORTS: "1",
+    API_HOST_PORT: isolatedSmokeApiPort(koedHome),
     KOED_RUNTIME_MODE: "local-personal",
     KOED_DEPENDENCY_MODE: "bundled-local",
     WORK_QUEUE_BACKEND: "local"
@@ -391,7 +415,10 @@ const assertPackagedJsSurface = (layout) => {
   const entrySet = new Set(entries);
   const requiredEntries = [
     "/node_modules/@koed/koed-server/package.json",
-    "/node_modules/@koed/koed-server/dist/cli.js"
+    "/node_modules/@koed/koed-server/dist/cli.js",
+    "/node_modules/@koed/koed-server/dist/desktop-collaboration-broker.js",
+    "/node_modules/@koed/koed-server/dist/desktop-collaboration-broker-contract.js",
+    "/node_modules/@koed/koed-server/dist/desktop-collaboration-broker-local-transport.js"
   ];
   const missing = requiredEntries.filter((entry) => !entrySet.has(entry));
   if (missing.length > 0) {
@@ -473,6 +500,150 @@ const smokePackageStatus = (layout, koedHome) => {
   }
   return packageStatusJson;
 };
+
+const smokePackagedCollaborationBroker = (layout, koedHome) =>
+  new Promise((resolveSmoke, rejectSmoke) => {
+    const sessionToken = randomBytes(32).toString("base64url");
+    const requestId = randomUUID();
+    const commandEnvelopeId = randomUUID();
+    const shutdownEnvelopeId = randomUUID();
+    let settled = false;
+    let commandCompleted = false;
+    let cleanInstallError = null;
+    const child = spawn(
+      layout.executable,
+      [
+        layout.runner,
+        "node-script",
+        layout.bundledCli,
+        "desktop",
+        "collaboration-broker"
+      ],
+      {
+        cwd: layout.resourcesPath,
+        env: createSmokeEnv(layout, koedHome, {
+          KOED_DESKTOP_COLLABORATION_BROKER_SESSION_TOKEN: sessionToken
+        }),
+        stdio: ["ignore", "ignore", "ignore", "ipc"]
+      }
+    );
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeAllListeners();
+      if (child.connected) child.disconnect();
+      if (!child.killed) child.kill("SIGTERM");
+      if (error) rejectSmoke(error);
+      else resolveSmoke(value);
+    };
+    const timer = setTimeout(
+      () => finish(new Error("Packaged collaboration broker timed out.")),
+      15_000
+    );
+    timer.unref?.();
+    child.once("error", (error) => finish(error));
+    child.once("exit", (code) => {
+      if (!settled) {
+        finish(
+          new Error(
+            `Packaged collaboration broker exited before shutdown acknowledgement (${code ?? "unknown"}).`
+          )
+        );
+      }
+    });
+    child.on("message", (message) => {
+      const serialized = JSON.stringify(message);
+      if (/Koed-Desktop |Bearer |"authorization"/i.test(serialized)) {
+        finish(
+          new Error(
+            "Packaged collaboration broker exposed reusable credential material over Desktop IPC."
+          )
+        );
+        return;
+      }
+      if (
+        !message ||
+        typeof message !== "object" ||
+        message.protocolVersion !== 1 ||
+        message.contractVersion !== 1 ||
+        message.sessionToken !== sessionToken
+      ) {
+        finish(new Error("Packaged collaboration broker IPC was invalid."));
+        return;
+      }
+      if (message.type === "ready") {
+        child.send({
+          protocolVersion: 1,
+          contractVersion: 1,
+          sessionToken,
+          type: "command",
+          envelopeId: commandEnvelopeId,
+          ownerId: "packaged-smoke-renderer",
+          command: {
+            contractVersion: 1,
+            requestId,
+            command: "collaboration.load",
+            input: {}
+          }
+        });
+        return;
+      }
+      if (message.type === "command_result") {
+        cleanInstallError = message.result?.error?.code;
+        if (
+          message.envelopeId !== commandEnvelopeId ||
+          message.ownerId !== "packaged-smoke-renderer" ||
+          message.result?.requestId !== requestId ||
+          message.result?.command !== "collaboration.load" ||
+          message.result?.ok !== false ||
+          !["not_available", "offline", "temporarily_unavailable"].includes(
+            cleanInstallError
+          )
+        ) {
+          finish(
+            new Error(
+              `Packaged collaboration broker returned an unsafe or uncorrelated clean-install result (${String(message.result?.command)}:${String(message.result?.ok)}:${String(message.result?.error?.code)}).`
+            )
+          );
+          return;
+        }
+        commandCompleted = true;
+        child.send({
+          protocolVersion: 1,
+          contractVersion: 1,
+          sessionToken,
+          type: "shutdown",
+          envelopeId: shutdownEnvelopeId
+        });
+        return;
+      }
+      if (message.type === "shutdown_ack") {
+        if (!commandCompleted || message.envelopeId !== shutdownEnvelopeId) {
+          finish(
+            new Error(
+              "Packaged collaboration broker shutdown acknowledgement was uncorrelated."
+            )
+          );
+          return;
+        }
+        finish(null, {
+          ready: true,
+          cleanInstallError,
+          credentialExposedToParent: false,
+          shutdownAcknowledged: true
+        });
+        return;
+      }
+      if (message.type === "error") {
+        finish(
+          new Error(
+            `Packaged collaboration broker returned ${String(message.code)}.`
+          )
+        );
+      }
+    });
+  });
 
 const smokeMissingAssets = (layout, koedHome) => {
   const packageStatus = smokePackageStatus(layout, koedHome);
@@ -770,6 +941,17 @@ const run = async () => {
   const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-smoke-"));
   const daemonPids = [];
   try {
+    const collaborationBroker = await smokePackagedCollaborationBroker(
+      layout,
+      koedHome
+    );
+    const rendererFaults = await smokePackagedRendererFaults({
+      executable: layout.executable,
+      env: createSmokeEnv(layout, koedHome, {
+        ELECTRON_RUN_AS_NODE: undefined
+      }),
+      koedHome
+    });
     if (options.missingAssets) {
       const result = smokeMissingAssets(layout, koedHome);
       if (options.json) {
@@ -779,6 +961,8 @@ const run = async () => {
               ok: true,
               mode: "missing-assets",
               appPath: layout.appPath,
+              collaborationBroker,
+              rendererFaults,
               ...result
             },
             null,
@@ -800,6 +984,8 @@ const run = async () => {
             ok: true,
             mode: "healthy-daemon",
             appPath: layout.appPath,
+            collaborationBroker,
+            rendererFaults,
             runtime: { ok: result.install.ok, state: result.install.state },
             status: {
               ok: result.firstStatus.ok,

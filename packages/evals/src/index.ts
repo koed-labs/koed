@@ -36,7 +36,7 @@ interface EvalWorld {
     alice: EvalUser;
     bob: EvalUser;
   };
-  workspaceId: string;
+  projectId: string;
 }
 
 interface EvalResult {
@@ -78,7 +78,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
   createMemoryEvent(
     actor: RequesterContext,
     input: {
-      workspaceId: string;
+      projectId: string;
       sessionId?: string;
       turnId?: string;
       actor: MemoryActor;
@@ -91,7 +91,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
   ): Promise<MemoryEventRecord> {
     const event: MemoryEventRecord = {
       id: randomUUID(),
-      workspaceId: input.workspaceId,
+      projectId: input.projectId,
       sessionId: input.sessionId ?? null,
       turnId: input.turnId ?? null,
       actor: input.actor,
@@ -273,7 +273,7 @@ const createWorld = (): EvalWorld => {
       email: "bob@example.test"
     }
   };
-  return { repository, users, workspaceId: "eval-workspace" };
+  return { repository, users, projectId: "eval-workspace" };
 };
 
 const ingestCodexStopHook = async (
@@ -294,7 +294,7 @@ const ingestCodexStopHook = async (
           content: item.content,
           metadata: {
             transcriptIndex: index,
-            captureFallback: "transcript_path"
+            captureSource: "eval_transcript_fixture"
           }
         }))
       : [
@@ -304,7 +304,7 @@ const ingestCodexStopHook = async (
                   actor: "user" as const,
                   eventType: "codex_user_prompt",
                   content: payload.prompt,
-                  metadata: { captureFallback: "hook_payload" }
+                  metadata: { captureSource: "eval_prompt_fixture" }
                 }
               ]
             : []),
@@ -314,7 +314,7 @@ const ingestCodexStopHook = async (
                   actor: "assistant" as const,
                   eventType: "codex_assistant_message",
                   content: payload.lastAssistantMessage,
-                  metadata: { captureFallback: "hook_payload" }
+                  metadata: { captureSource: "eval_assistant_fixture" }
                 }
               ]
             : [])
@@ -325,7 +325,7 @@ const ingestCodexStopHook = async (
     events.push(
       await engine.capturePersonalEvent({
         requesterContext: actor,
-        workspaceId: world.workspaceId,
+        projectId: world.projectId,
         actor: item.actor,
         eventType: item.eventType,
         content: item.content,
@@ -362,14 +362,14 @@ const seedEvalDataset = async (world: EvalWorld) => {
 
   await ingestCodexStopHook(world, alice, {
     prompt:
-      "During this Codex stop hook fallback test, my private deployment alias is violet-saturn.",
+      "During this Codex transcript capture test, my private deployment alias is violet-saturn.",
     lastAssistantMessage:
       "The private deployment alias violet-saturn was discussed."
   });
 
   await engine.capturePersonalEvent({
     requesterContext: alice,
-    workspaceId: world.workspaceId,
+    projectId: world.projectId,
     actor: "user",
     eventType: "codex_user_prompt",
     content: "The Koed deployment target is a local Docker Compose stack.",
@@ -378,7 +378,7 @@ const seedEvalDataset = async (world: EvalWorld) => {
 
   await engine.capturePersonalEvent({
     requesterContext: alice,
-    workspaceId: world.workspaceId,
+    projectId: world.projectId,
     actor: "user",
     eventType: "codex_user_prompt",
     content: "Personal conflict fact: deploy window is 10:00 Oslo.",
@@ -388,7 +388,7 @@ const seedEvalDataset = async (world: EvalWorld) => {
   for (let index = 1; index <= 9; index += 1) {
     await engine.capturePersonalEvent({
       requesterContext: alice,
-      workspaceId: world.workspaceId,
+      projectId: world.projectId,
       actor: "user",
       eventType: "codex_user_prompt",
       content: `LCM compaction fact ${index}: archive marker old-cobalt-${index}.`,

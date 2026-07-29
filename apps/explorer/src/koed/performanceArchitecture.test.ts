@@ -99,7 +99,7 @@ const makeEvent = (
   overrides: Partial<GraphEvent> = {}
 ): GraphEvent => ({
   actor: index % 2 === 0 ? "user" : "assistant",
-  captureMethod: "hook",
+  captureMethod: "transcript",
   contentPreview: `event ${index}`,
   eventType: "captured",
   id: `${threadKey(thread)}-event-${index}`,
@@ -122,7 +122,6 @@ const makeEvent = (
   capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
   createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
   visibility: "personal",
-  workspaceId: thread.projectId,
   ...overrides
 });
 
@@ -273,19 +272,19 @@ describe("KOE-103 performance architecture", () => {
       makeQuestion("global-1", { searchDomain: "global" }),
       makeQuestion("project-1", {
         searchDomain: "project",
-        workspaceId: "workspace-1",
+        projectId: "workspace-1",
         projectName: "Project One"
       }),
       makeQuestion("session-1", {
         searchDomain: "session",
-        workspaceId: "workspace-1",
+        projectId: "workspace-1",
         projectName: "Project One",
         sessionId: "11111111-1111-4111-8111-111111111111",
         threadName: "Session One"
       }),
       makeQuestion("session-2", {
         searchDomain: "session",
-        workspaceId: "workspace-1",
+        projectId: "workspace-1",
         projectName: "Project One",
         sessionId: "11111111-1111-4111-8111-111111111111",
         threadName: "Session One"
@@ -997,7 +996,7 @@ describe("KOE-103 performance architecture", () => {
       sessionId: thread.id,
       threadId: thread.id,
       threadName: thread.name,
-      workspaceId: "workspace-1"
+      projectId: "workspace-1"
     });
   });
 

@@ -155,6 +155,29 @@ export const createExternalAuthRepository = (db: KoedDb) => ({
     return rows[0] ? mapExternalAuthIdentity(rows[0]) : null;
   },
 
+  async getVerifiedExternalAuthIdentityForUser(
+    userId: string
+  ): Promise<ExternalAuthIdentityRecord | null> {
+    const rows = await db
+      .select({ identity: externalAuthIdentities })
+      .from(externalAuthIdentities)
+      .innerJoin(users, eq(users.id, externalAuthIdentities.userId))
+      .where(
+        and(
+          eq(externalAuthIdentities.userId, userId),
+          eq(externalAuthIdentities.status, "linked"),
+          eq(externalAuthIdentities.emailVerified, true),
+          isNull(users.disabledAt),
+          isNull(users.deletedAt),
+          sql`lower(trim(${externalAuthIdentities.email})) = lower(trim(${users.email}))`
+        )
+      )
+      .orderBy(sql`${externalAuthIdentities.lastSeenAt} desc nulls last`)
+      .limit(1);
+
+    return rows[0] ? mapExternalAuthIdentity(rows[0].identity) : null;
+  },
+
   async upsertExternalAuthSession(input: {
     provider: "workos_authkit";
     providerEnvironment?: string;

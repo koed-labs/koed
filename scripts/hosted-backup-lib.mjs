@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -131,6 +132,15 @@ const kmsWrapAlgorithm = "kms-wrapped-dek-v1";
 const localTestKeyVersion = 1;
 const aes256KeyBytes = 32;
 const gcmNonceBytes = 12;
+const collaborationTransportSummaryVersion = 1;
+const collaborationRestoreSentinelVersion = 1;
+const collaborationThreadNameMarker = "[koed encrypted collaboration name]";
+const collaborationThreadTopicMarker = "[koed encrypted collaboration topic]";
+const collaborationMessageBodyMarker = "[koed encrypted collaboration message]";
+const collaborationMessageMetadataMarker =
+  "[koed encrypted collaboration metadata]";
+const collaborationMessageProvenanceMarker =
+  "[koed encrypted collaboration provenance]";
 
 const optionalEnvValue = (value) => {
   const trimmed = value?.trim();
@@ -719,6 +729,827 @@ const decryptBackupArchive = async ({
   fs.writeFileSync(plaintextFile, plaintext);
 };
 
+const collaborationTransportSummarySql = `-- koed collaboration transport summary v1
+set time zone 'UTC';
+with
+thread_rows as (
+  select
+    thread.id::text as sort_key,
+    encode(digest(to_jsonb(thread)::text, 'sha256'), 'hex') as row_value
+  from collaboration_threads thread
+),
+thread_summary as (
+  select
+    count(*)::bigint as row_count,
+    encode(digest(coalesce(string_agg(row_value, E'\\n' order by sort_key), ''), 'sha256'), 'hex') as row_sha256
+  from thread_rows
+),
+message_rows as (
+  select
+    message.id::text as sort_key,
+    encode(digest(to_jsonb(message)::text, 'sha256'), 'hex') as row_value
+  from collaboration_messages message
+),
+message_summary as (
+  select
+    count(*)::bigint as row_count,
+    encode(digest(coalesce(string_agg(row_value, E'\\n' order by sort_key), ''), 'sha256'), 'hex') as row_sha256
+  from message_rows
+),
+companion_rows as (
+  select
+    concat_ws(':', payload.source_table, payload.source_id::text, payload.source_column, payload.id::text) as sort_key,
+    encode(digest(to_jsonb(payload)::text, 'sha256'), 'hex') as row_value
+  from encrypted_field_payloads payload
+  where payload.source_table in ('collaboration_threads', 'collaboration_messages')
+),
+companion_summary as (
+  select
+    count(*)::bigint as row_count,
+    encode(digest(coalesce(string_agg(row_value, E'\\n' order by sort_key), ''), 'sha256'), 'hex') as row_sha256
+  from companion_rows
+),
+outbox_rows as (
+  select
+    event.id::text as sort_key,
+    encode(digest(to_jsonb(event)::text, 'sha256'), 'hex') as row_value
+  from collaboration_outbox event
+),
+outbox_summary as (
+  select
+    count(*)::bigint as row_count,
+    encode(digest(coalesce(string_agg(row_value, E'\\n' order by sort_key), ''), 'sha256'), 'hex') as row_sha256
+  from outbox_rows
+),
+key_reference_rows as (
+  select
+    concat_ws(':', payload.provider_mode, payload.key_id, payload.key_version::text) as sort_key,
+    jsonb_build_array(
+      payload.provider_mode,
+      payload.key_id,
+      payload.key_version,
+      count(*)
+    )::text as row_value
+  from encrypted_field_payloads payload
+  where payload.source_table in ('collaboration_threads', 'collaboration_messages')
+  group by payload.provider_mode, payload.key_id, payload.key_version
+),
+key_reference_summary as (
+  select
+    count(*)::bigint as reference_count,
+    encode(digest(coalesce(string_agg(row_value, E'\\n' order by sort_key), ''), 'sha256'), 'hex') as reference_sha256
+  from key_reference_rows
+),
+relationship_summary as (
+  select
+    (select count(*) from collaboration_messages message
+      left join collaboration_threads thread on thread.id = message.thread_id
+      where thread.id is null)::bigint as broken_message_thread_links,
+    (select count(*) from encrypted_field_payloads payload
+      left join collaboration_threads thread
+        on payload.source_table = 'collaboration_threads'
+       and thread.id = payload.source_id
+      left join collaboration_messages message
+        on payload.source_table = 'collaboration_messages'
+       and message.id = payload.source_id
+      where payload.source_table in ('collaboration_threads', 'collaboration_messages')
+        and thread.id is null
+        and message.id is null)::bigint as broken_companion_source_links,
+    (select count(*) from collaboration_outbox event
+      left join collaboration_threads thread on thread.id = event.thread_id
+      where event.thread_id is not null and thread.id is null)::bigint as broken_outbox_thread_links,
+    (select count(*) from collaboration_outbox event
+      left join collaboration_messages message
+        on message.id = event.message_id
+       and (event.thread_id is null or message.thread_id = event.thread_id)
+      where event.message_id is not null and message.id is null)::bigint as broken_outbox_message_links,
+    (select count(*) from collaboration_outbox event
+      left join collaboration_threads thread
+        on event.resource_type = 'collaboration_thread'
+       and thread.id = event.resource_id
+      left join collaboration_messages message
+        on event.resource_type = 'collaboration_message'
+       and message.id = event.resource_id
+      where (event.resource_type = 'collaboration_thread' and thread.id is null)
+         or (event.resource_type = 'collaboration_message' and message.id is null)
+    )::bigint as broken_outbox_resource_links,
+    (select count(*) from encrypted_field_payloads payload
+      left join collaboration_threads thread
+        on payload.source_table = 'collaboration_threads'
+       and thread.id = payload.source_id
+      left join collaboration_messages message
+        on payload.source_table = 'collaboration_messages'
+       and message.id = payload.source_id
+      where payload.source_table in ('collaboration_threads', 'collaboration_messages')
+        and not (
+          (
+            payload.source_table = 'collaboration_threads'
+            and (
+              (thread.scope = 'personal'
+                and payload.encryption_scope = 'personal'
+                and payload.owner_user_id = thread.personal_owner_user_id
+                and payload.team_id is null
+                and payload.team_workspace_id is null)
+              or
+              (thread.scope = 'team'
+                and payload.encryption_scope = 'team'
+                and payload.team_id = thread.team_id
+                and payload.team_workspace_id is not distinct from thread.team_workspace_id)
+            )
+          )
+          or
+          (
+            payload.source_table = 'collaboration_messages'
+            and (
+              (message.scope = 'personal'
+                and payload.encryption_scope = 'personal'
+                and payload.owner_user_id = message.personal_owner_user_id
+                and payload.team_id is null
+                and payload.team_workspace_id is null)
+              or
+              (message.scope = 'team'
+                and payload.encryption_scope = 'team'
+                and payload.team_id = message.team_id
+                and payload.team_workspace_id is not distinct from message.team_workspace_id)
+            )
+          )
+        )
+    )::bigint as broken_companion_authorization_bindings
+)
+select json_build_object(
+  'version', ${collaborationTransportSummaryVersion},
+  'state', case
+    when thread_summary.row_count = 0
+      and message_summary.row_count = 0
+      and companion_summary.row_count = 0
+      and outbox_summary.row_count = 0
+    then 'empty'
+    else 'non_empty'
+  end,
+  'families', json_build_object(
+    'threads', json_build_object(
+      'count', thread_summary.row_count,
+      'sha256', thread_summary.row_sha256
+    ),
+    'messages', json_build_object(
+      'count', message_summary.row_count,
+      'sha256', message_summary.row_sha256
+    ),
+    'encryptedCompanions', json_build_object(
+      'count', companion_summary.row_count,
+      'sha256', companion_summary.row_sha256
+    ),
+    'outbox', json_build_object(
+      'count', outbox_summary.row_count,
+      'sha256', outbox_summary.row_sha256
+    )
+  ),
+  'keyReferences', json_build_object(
+    'count', key_reference_summary.reference_count,
+    'sha256', key_reference_summary.reference_sha256
+  ),
+  'relationships', json_build_object(
+    'brokenMessageThreadLinks', relationship_summary.broken_message_thread_links,
+    'brokenCompanionSourceLinks', relationship_summary.broken_companion_source_links,
+    'brokenOutboxThreadLinks', relationship_summary.broken_outbox_thread_links,
+    'brokenOutboxMessageLinks', relationship_summary.broken_outbox_message_links,
+    'brokenOutboxResourceLinks', relationship_summary.broken_outbox_resource_links,
+    'brokenCompanionAuthorizationBindings', relationship_summary.broken_companion_authorization_bindings
+  )
+)::text
+from thread_summary, message_summary, companion_summary, outbox_summary,
+  key_reference_summary, relationship_summary;
+`;
+
+const collaborationTransportFamilyNames = [
+  "threads",
+  "messages",
+  "encryptedCompanions",
+  "outbox"
+];
+
+const collaborationTransportRelationshipNames = [
+  "brokenMessageThreadLinks",
+  "brokenCompanionSourceLinks",
+  "brokenOutboxThreadLinks",
+  "brokenOutboxMessageLinks",
+  "brokenOutboxResourceLinks",
+  "brokenCompanionAuthorizationBindings"
+];
+
+const normalizeCollaborationTransportSummary = (summary) => {
+  if (
+    !summary ||
+    summary.version !== collaborationTransportSummaryVersion ||
+    !["empty", "non_empty"].includes(summary.state)
+  ) {
+    throw new Error("Collaboration transport summary is invalid.");
+  }
+  const families = {};
+  for (const name of collaborationTransportFamilyNames) {
+    const family = summary.families?.[name];
+    const count = Number(family?.count);
+    if (
+      !Number.isSafeInteger(count) ||
+      count < 0 ||
+      !/^[a-f0-9]{64}$/.test(family?.sha256 ?? "")
+    ) {
+      throw new Error("Collaboration transport summary is invalid.");
+    }
+    families[name] = { count, sha256: family.sha256 };
+  }
+  const keyReferenceCount = Number(summary.keyReferences?.count);
+  if (
+    !Number.isSafeInteger(keyReferenceCount) ||
+    keyReferenceCount < 0 ||
+    !/^[a-f0-9]{64}$/.test(summary.keyReferences?.sha256 ?? "")
+  ) {
+    throw new Error("Collaboration transport summary is invalid.");
+  }
+  const relationships = {};
+  for (const name of collaborationTransportRelationshipNames) {
+    const count = Number(summary.relationships?.[name]);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error("Collaboration transport summary is invalid.");
+    }
+    relationships[name] = count;
+  }
+  const isEmpty = collaborationTransportFamilyNames.every(
+    (name) => families[name].count === 0
+  );
+  if ((summary.state === "empty") !== isEmpty) {
+    throw new Error("Collaboration transport summary state is inconsistent.");
+  }
+  if (Object.values(relationships).some((count) => count !== 0)) {
+    throw new Error(
+      "Collaboration transport summary contains broken encrypted or outbox links."
+    );
+  }
+  return {
+    version: collaborationTransportSummaryVersion,
+    state: summary.state,
+    families,
+    keyReferences: {
+      count: keyReferenceCount,
+      sha256: summary.keyReferences.sha256
+    },
+    relationships
+  };
+};
+
+const sha256Text = (value) =>
+  crypto.createHash("sha256").update(value).digest("hex");
+
+const createCollaborationRestoreSentinel = async ({ provider, now }) => {
+  const ownerUserId = crypto.randomUUID();
+  const threadId = crypto.randomUUID();
+  const messageId = crypto.randomUUID();
+  const threadName = `restore-${crypto.randomBytes(24).toString("base64url")}`;
+  const plaintextFields = [
+    {
+      id: crypto.randomUUID(),
+      sourceTable: "collaboration_threads",
+      sourceId: threadId,
+      sourceColumn: "name",
+      plaintextContentType: "text/plain",
+      plaintext: threadName
+    },
+    {
+      id: crypto.randomUUID(),
+      sourceTable: "collaboration_threads",
+      sourceId: threadId,
+      sourceColumn: "topic",
+      plaintextContentType: "text/plain",
+      plaintext: `topic-${crypto.randomBytes(24).toString("base64url")}`
+    },
+    {
+      id: crypto.randomUUID(),
+      sourceTable: "collaboration_messages",
+      sourceId: messageId,
+      sourceColumn: "body",
+      plaintextContentType: "text/plain",
+      plaintext: `message-${crypto.randomBytes(24).toString("base64url")}`
+    },
+    {
+      id: crypto.randomUUID(),
+      sourceTable: "collaboration_messages",
+      sourceId: messageId,
+      sourceColumn: "metadata",
+      plaintextContentType: "application/json",
+      plaintext: JSON.stringify({
+        restoreProof: crypto.randomBytes(24).toString("base64url")
+      })
+    },
+    {
+      id: crypto.randomUUID(),
+      sourceTable: "collaboration_messages",
+      sourceId: messageId,
+      sourceColumn: "provenance",
+      plaintextContentType: "application/json",
+      plaintext: JSON.stringify({
+        kind: "hosted_restore_smoke",
+        id: crypto.randomBytes(24).toString("base64url")
+      })
+    }
+  ];
+  const companions = [];
+  for (const field of plaintextFields) {
+    const isMessage = field.sourceTable === "collaboration_messages";
+    const envelope = await provider.encrypt({
+      plaintext: Buffer.from(field.plaintext, "utf8"),
+      scope: {
+        objectClass: isMessage
+          ? "collaboration_message"
+          : "collaboration_thread"
+      },
+      provenance: {
+        rowFamily: isMessage ? "collaboration_message" : "collaboration_thread",
+        sourceTable: field.sourceTable,
+        sourceColumn: field.sourceColumn,
+        sourceId: field.sourceId
+      },
+      ciphertextLocation: "encrypted_field_payloads",
+      aad: {
+        ownerUserId,
+        visibility: "personal",
+        encryptionScope: "personal",
+        sourceTable: field.sourceTable,
+        sourceId: field.sourceId,
+        sourceColumn: field.sourceColumn,
+        ...(isMessage
+          ? {
+              threadId,
+              threadSequence: 1,
+              collaborationScope: "personal",
+              threadKind: "personal_channel"
+            }
+          : {
+              collaborationScope: "personal",
+              threadKind: "personal_channel"
+            })
+      },
+      now
+    });
+    companions.push({
+      id: field.id,
+      sourceTable: field.sourceTable,
+      sourceId: field.sourceId,
+      sourceColumn: field.sourceColumn,
+      plaintextContentType: field.plaintextContentType,
+      plaintextSha256: sha256Text(field.plaintext),
+      envelope
+    });
+  }
+  return {
+    version: collaborationRestoreSentinelVersion,
+    createdAt: now.toISOString(),
+    ownerUserId,
+    thread: {
+      id: threadId,
+      logicalId: crypto.randomUUID(),
+      normalizedNameHash: sha256Text(threadName.trim().toLowerCase())
+    },
+    message: {
+      id: messageId,
+      idempotencyKeyHash: sha256Text(crypto.randomBytes(32)),
+      requestHash: sha256Text(crypto.randomBytes(32)),
+      provenanceId: sha256Text(crypto.randomBytes(32))
+    },
+    outbox: [
+      {
+        id: crypto.randomUUID(),
+        family: "thread_lifecycle",
+        mutationId: crypto.randomUUID()
+      },
+      {
+        id: crypto.randomUUID(),
+        family: "message_created",
+        mutationId: crypto.randomUUID()
+      }
+    ],
+    companions
+  };
+};
+
+const sqlLiteral = (value) =>
+  value === null || value === undefined
+    ? "null"
+    : `'${String(value).replaceAll("'", "''")}'`;
+
+const jsonSqlLiteral = (value) => `${sqlLiteral(JSON.stringify(value))}::jsonb`;
+
+const buildCollaborationRestoreSentinelSeedSql = (sentinel) => {
+  const companionRows = sentinel.companions
+    .map((companion) => {
+      const envelope = companion.envelope;
+      return `(
+        ${sqlLiteral(companion.id)}::uuid,
+        ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+        'personal', 'personal',
+        ${sqlLiteral(companion.sourceTable)},
+        ${sqlLiteral(companion.sourceId)}::uuid,
+        ${sqlLiteral(companion.sourceColumn)},
+        ${sqlLiteral(companion.plaintextContentType)}, 'utf8',
+        ${Number(envelope.version)},
+        ${sqlLiteral(envelope.providerMode)},
+        ${sqlLiteral(envelope.keyId)},
+        ${Number(envelope.keyVersion)},
+        ${jsonSqlLiteral(envelope.scope)},
+        ${jsonSqlLiteral(envelope.provenance)},
+        ${sqlLiteral(envelope.algorithm)},
+        ${sqlLiteral(envelope.ciphertext)},
+        ${sqlLiteral(envelope.nonce)},
+        ${sqlLiteral(envelope.tag)},
+        ${jsonSqlLiteral(envelope.wrappedDek)},
+        ${sqlLiteral(envelope.ciphertextLocation)},
+        ${jsonSqlLiteral(envelope.aad)},
+        ${sqlLiteral(envelope.createdAt)}::timestamptz,
+        ${sqlLiteral(envelope.reencryptedAt)}::timestamptz
+      )`;
+    })
+    .join(",\n");
+  const threadOutbox = sentinel.outbox.find(
+    (event) => event.family === "thread_lifecycle"
+  );
+  const messageOutbox = sentinel.outbox.find(
+    (event) => event.family === "message_created"
+  );
+  return `-- koed collaboration restore sentinel seed v1
+begin;
+insert into users (id, email)
+values (
+  ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+  ${sqlLiteral(`restore-smoke-${sentinel.ownerUserId}@invalid.koed`)}
+);
+
+insert into collaboration_threads (
+  id, logical_id, scope, kind, personal_owner_user_id, name_marker,
+  topic_marker, normalized_name_hash, created_by_user_id, next_sequence
+)
+values (
+  ${sqlLiteral(sentinel.thread.id)}::uuid,
+  ${sqlLiteral(sentinel.thread.logicalId)}::uuid,
+  'personal', 'personal_channel',
+  ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+  ${sqlLiteral(collaborationThreadNameMarker)},
+  ${sqlLiteral(collaborationThreadTopicMarker)},
+  ${sqlLiteral(sentinel.thread.normalizedNameHash)},
+  ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+  2
+);
+
+insert into collaboration_messages (
+  id, thread_id, thread_sequence, scope, personal_owner_user_id,
+  sender_kind, sender_principal_id, sender_user_id, idempotency_key_hash,
+  request_hash, body_marker, metadata_marker, provenance_kind,
+  provenance_id, provenance_marker
+)
+values (
+  ${sqlLiteral(sentinel.message.id)}::uuid,
+  ${sqlLiteral(sentinel.thread.id)}::uuid,
+  1, 'personal', ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+  'user', ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+  ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+  ${sqlLiteral(sentinel.message.idempotencyKeyHash)},
+  ${sqlLiteral(sentinel.message.requestHash)},
+  ${sqlLiteral(collaborationMessageBodyMarker)},
+  ${sqlLiteral(collaborationMessageMetadataMarker)},
+  'encrypted', ${sqlLiteral(sentinel.message.provenanceId)},
+  ${sqlLiteral(collaborationMessageProvenanceMarker)}
+);
+
+insert into encrypted_field_payloads (
+  id, owner_user_id, visibility, encryption_scope, source_table, source_id,
+  source_column, plaintext_content_type, plaintext_encoding, envelope_version,
+  provider_mode, key_id, key_version, scope, provenance, algorithm, ciphertext,
+  nonce, tag, wrapped_dek, ciphertext_location, aad, envelope_created_at,
+  envelope_reencrypted_at
+)
+values
+${companionRows};
+
+insert into collaboration_outbox (
+  id, protocol_version, family, scope, personal_owner_user_id, thread_id,
+  message_id, resource_type, resource_id, actor_principal_id, mutation_id,
+  replay_until
+)
+values
+  (
+    ${sqlLiteral(threadOutbox.id)}::uuid, 1, 'thread_lifecycle', 'personal',
+    ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+    ${sqlLiteral(sentinel.thread.id)}::uuid, null,
+    'collaboration_thread', ${sqlLiteral(sentinel.thread.id)}::uuid,
+    ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+    ${sqlLiteral(threadOutbox.mutationId)}::uuid,
+    now() + interval '30 days'
+  ),
+  (
+    ${sqlLiteral(messageOutbox.id)}::uuid, 1, 'message_created', 'personal',
+    ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+    ${sqlLiteral(sentinel.thread.id)}::uuid,
+    ${sqlLiteral(sentinel.message.id)}::uuid,
+    'collaboration_message', ${sqlLiteral(sentinel.message.id)}::uuid,
+    ${sqlLiteral(sentinel.ownerUserId)}::uuid,
+    ${sqlLiteral(messageOutbox.mutationId)}::uuid,
+    now() + interval '30 days'
+  );
+commit;
+`;
+};
+
+const buildCollaborationRestoreSentinelProbeSql = (
+  sentinel
+) => `-- koed collaboration restore sentinel probe v1
+with authorized_sources as (
+  select 'collaboration_threads'::text as source_table, thread.id as source_id
+  from collaboration_threads thread
+  where thread.id = ${sqlLiteral(sentinel.thread.id)}::uuid
+    and thread.personal_owner_user_id = ${sqlLiteral(sentinel.ownerUserId)}::uuid
+  union all
+  select 'collaboration_messages'::text, message.id
+  from collaboration_messages message
+  join collaboration_threads thread on thread.id = message.thread_id
+  where message.id = ${sqlLiteral(sentinel.message.id)}::uuid
+    and thread.personal_owner_user_id = ${sqlLiteral(sentinel.ownerUserId)}::uuid
+), authorized_companions as (
+  select payload.*
+  from encrypted_field_payloads payload
+  join authorized_sources source
+    on source.source_table = payload.source_table
+   and source.source_id = payload.source_id
+  where payload.owner_user_id = ${sqlLiteral(sentinel.ownerUserId)}::uuid
+    and payload.visibility = 'personal'
+    and payload.encryption_scope = 'personal'
+    and payload.invalidated_at is null
+)
+select json_build_object(
+  'threadCount', (
+    select count(*) from collaboration_threads thread
+    where thread.id = ${sqlLiteral(sentinel.thread.id)}::uuid
+      and thread.logical_id = ${sqlLiteral(sentinel.thread.logicalId)}::uuid
+      and thread.personal_owner_user_id = ${sqlLiteral(sentinel.ownerUserId)}::uuid
+      and thread.scope = 'personal'
+      and thread.kind = 'personal_channel'
+      and thread.name_marker = ${sqlLiteral(collaborationThreadNameMarker)}
+      and thread.topic_marker = ${sqlLiteral(collaborationThreadTopicMarker)}
+      and thread.normalized_name_hash = ${sqlLiteral(sentinel.thread.normalizedNameHash)}
+      and thread.next_sequence = 2
+  ),
+  'messageCount', (
+    select count(*) from collaboration_messages message
+    where message.id = ${sqlLiteral(sentinel.message.id)}::uuid
+      and message.thread_id = ${sqlLiteral(sentinel.thread.id)}::uuid
+      and message.thread_sequence = 1
+      and message.personal_owner_user_id = ${sqlLiteral(sentinel.ownerUserId)}::uuid
+      and message.body_marker = ${sqlLiteral(collaborationMessageBodyMarker)}
+      and message.metadata_marker = ${sqlLiteral(collaborationMessageMetadataMarker)}
+      and message.provenance_marker = ${sqlLiteral(collaborationMessageProvenanceMarker)}
+  ),
+  'outboxCount', (
+    select count(*) from collaboration_outbox event
+    where event.id in (
+      ${sqlLiteral(sentinel.outbox[0].id)}::uuid,
+      ${sqlLiteral(sentinel.outbox[1].id)}::uuid
+    )
+      and event.personal_owner_user_id = ${sqlLiteral(sentinel.ownerUserId)}::uuid
+      and event.thread_id = ${sqlLiteral(sentinel.thread.id)}::uuid
+      and (
+        (event.family = 'thread_lifecycle' and event.message_id is null
+          and event.resource_type = 'collaboration_thread'
+          and event.resource_id = ${sqlLiteral(sentinel.thread.id)}::uuid)
+        or
+        (event.family = 'message_created'
+          and event.message_id = ${sqlLiteral(sentinel.message.id)}::uuid
+          and event.resource_type = 'collaboration_message'
+          and event.resource_id = ${sqlLiteral(sentinel.message.id)}::uuid)
+      )
+  ),
+  'companions', coalesce((
+    select json_agg(json_build_object(
+      'id', payload.id,
+      'ownerUserId', payload.owner_user_id,
+      'sourceTable', payload.source_table,
+      'sourceId', payload.source_id,
+      'sourceColumn', payload.source_column,
+      'plaintextContentType', payload.plaintext_content_type,
+      'envelope', json_build_object(
+        'version', payload.envelope_version,
+        'providerMode', payload.provider_mode,
+        'keyId', payload.key_id,
+        'keyVersion', payload.key_version,
+        'scope', payload.scope,
+        'provenance', payload.provenance,
+        'algorithm', payload.algorithm,
+        'ciphertext', payload.ciphertext,
+        'nonce', payload.nonce,
+        'tag', payload.tag,
+        'wrappedDek', payload.wrapped_dek,
+        'ciphertextLocation', payload.ciphertext_location,
+        'aad', payload.aad,
+        'createdAt', to_char(
+          payload.envelope_created_at at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+        ),
+        'reencryptedAt', case
+          when payload.envelope_reencrypted_at is null then null
+          else to_char(
+            payload.envelope_reencrypted_at at time zone 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+          )
+        end
+      )
+    ) order by payload.source_table, payload.source_id, payload.source_column)
+    from authorized_companions payload
+  ), '[]'::json)
+)::text;
+`;
+
+const runPostgresScript = async ({
+  env,
+  run,
+  postgresClient,
+  databaseUrl,
+  script,
+  captureOutput = false
+}) => {
+  const tempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "koed-postgres-script-")
+  );
+  const scriptPath = path.join(tempDir, "operation.sql");
+  try {
+    fs.writeFileSync(scriptPath, script, { mode: 0o600 });
+    const outputArgs = captureOutput
+      ? ["--tuples-only", "--no-align", "--quiet"]
+      : ["--quiet"];
+    if (postgresClient.kind === "docker-compose") {
+      return await run(
+        "docker",
+        dockerComposeExecArgs(env, "postgres", "psql", [
+          "--no-psqlrc",
+          "--set=ON_ERROR_STOP=1",
+          ...outputArgs,
+          "--dbname",
+          dockerContainerDatabaseUrl(databaseUrl, env)
+        ]),
+        { stdinFile: scriptPath }
+      );
+    }
+    return await run(postgresClient.psqlBin ?? env.PSQL_BIN ?? "psql", [
+      databaseUrl,
+      "--no-psqlrc",
+      "--set=ON_ERROR_STOP=1",
+      ...outputArgs,
+      "--file",
+      scriptPath
+    ]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+};
+
+const readCollaborationTransportSummary = async ({
+  env,
+  run,
+  postgresClient,
+  databaseUrl
+}) => {
+  const result = await runPostgresScript({
+    env,
+    run,
+    postgresClient,
+    databaseUrl,
+    script: collaborationTransportSummarySql,
+    captureOutput: true
+  });
+  let summary;
+  try {
+    summary = JSON.parse(result.stdout.trim());
+  } catch {
+    throw new Error("Collaboration transport summary returned invalid output.");
+  }
+  return normalizeCollaborationTransportSummary(summary);
+};
+
+const assertMatchingCollaborationTransportSummaries = (
+  expected,
+  actual,
+  message
+) => {
+  if (canonicalJson(expected) !== canonicalJson(actual)) {
+    throw new Error(message);
+  }
+};
+
+const validateCollaborationRestoreSentinel = async ({
+  sentinel,
+  archiveEnvelope,
+  provider,
+  probe
+}) => {
+  if (
+    sentinel?.version !== collaborationRestoreSentinelVersion ||
+    !Array.isArray(sentinel.companions) ||
+    sentinel.companions.length !== 5 ||
+    !Array.isArray(sentinel.outbox) ||
+    sentinel.outbox.length !== 2
+  ) {
+    throw new Error(
+      "Encrypted backup archive is missing valid collaboration restore sentinel metadata."
+    );
+  }
+  if (
+    Number(probe.threadCount) !== 1 ||
+    Number(probe.messageCount) !== 1 ||
+    Number(probe.outboxCount) !== 2 ||
+    !Array.isArray(probe.companions) ||
+    probe.companions.length !== sentinel.companions.length
+  ) {
+    throw new Error("Restored collaboration sentinel integrity check failed.");
+  }
+  const restoredBySource = new Map(
+    probe.companions.map((companion) => [
+      `${companion.sourceTable}:${companion.sourceId}:${companion.sourceColumn}`,
+      companion
+    ])
+  );
+  for (const expected of sentinel.companions) {
+    const restored = restoredBySource.get(
+      `${expected.sourceTable}:${expected.sourceId}:${expected.sourceColumn}`
+    );
+    if (
+      !restored ||
+      restored.id !== expected.id ||
+      restored.ownerUserId !== sentinel.ownerUserId ||
+      restored.plaintextContentType !== expected.plaintextContentType ||
+      canonicalJson(restored.envelope) !== canonicalJson(expected.envelope)
+    ) {
+      throw new Error(
+        "Restored collaboration encrypted companion integrity check failed."
+      );
+    }
+    if (
+      restored.envelope.providerMode !== archiveEnvelope.providerMode ||
+      restored.envelope.keyId !== archiveEnvelope.keyId ||
+      restored.envelope.keyVersion !== archiveEnvelope.keyVersion
+    ) {
+      throw new Error(
+        "Restored collaboration key reference does not match the backup provider key."
+      );
+    }
+    const plaintext = await provider.decrypt(restored.envelope);
+    if (sha256Text(plaintext) !== expected.plaintextSha256) {
+      throw new Error(
+        "Authorized restored collaboration decrypt integrity check failed."
+      );
+    }
+  }
+};
+
+const proveCollaborationRestoreSentinel = async ({
+  env,
+  run,
+  postgresClient,
+  targetDatabaseUrl,
+  manifest
+}) => {
+  const sentinel = manifest?.collaborationRestoreSentinel;
+  if (!sentinel) {
+    throw new Error(
+      "Encrypted backup archive does not contain collaboration restore sentinel metadata."
+    );
+  }
+  const provider = archiveEncryptionProvider(env, {});
+  await runPostgresScript({
+    env,
+    run,
+    postgresClient,
+    databaseUrl: targetDatabaseUrl,
+    script: buildCollaborationRestoreSentinelSeedSql(sentinel)
+  });
+  const probeResult = await runPostgresScript({
+    env,
+    run,
+    postgresClient,
+    databaseUrl: targetDatabaseUrl,
+    script: buildCollaborationRestoreSentinelProbeSql(sentinel),
+    captureOutput: true
+  });
+  let probe;
+  try {
+    probe = JSON.parse(probeResult.stdout.trim());
+  } catch {
+    throw new Error(
+      "Restored collaboration sentinel probe returned invalid output."
+    );
+  }
+  await validateCollaborationRestoreSentinel({
+    sentinel,
+    archiveEnvelope: manifest.encryption.envelope,
+    provider,
+    probe
+  });
+};
+
 const withReadableBackupArchive = async ({ env, options, now, callback }) => {
   const manifest = readJsonIfPresent(inferManifestPath(options.backupFile));
   if (manifest?.encrypted === true) {
@@ -918,7 +1749,15 @@ export const createHostedBackup = async ({
     command: "create",
     databaseUrl
   });
+  let completed = false;
   try {
+    const collaborationTransportSummary =
+      await readCollaborationTransportSummary({
+        env,
+        run,
+        postgresClient,
+        databaseUrl
+      });
     if (postgresClient.kind === "docker-compose") {
       await run(
         "docker",
@@ -941,6 +1780,18 @@ export const createHostedBackup = async ({
         databaseUrl
       ]);
     }
+    const collaborationTransportSummaryAfterDump =
+      await readCollaborationTransportSummary({
+        env,
+        run,
+        postgresClient,
+        databaseUrl
+      });
+    assertMatchingCollaborationTransportSummaries(
+      collaborationTransportSummary,
+      collaborationTransportSummaryAfterDump,
+      "Collaboration data changed while pg_dump was running; retry the backup."
+    );
 
     let encryption = null;
     if (encryptionProvider) {
@@ -955,10 +1806,16 @@ export const createHostedBackup = async ({
         envelope
       };
     }
+    const collaborationRestoreSentinel = encryptionProvider
+      ? await createCollaborationRestoreSentinel({
+          provider: encryptionProvider,
+          now
+        })
+      : null;
 
     const stats = fs.statSync(backupFile);
     const manifest = {
-      schemaVersion: 2,
+      schemaVersion: 4,
       provider: "pg_dump",
       createdAt: now.toISOString(),
       encrypted: Boolean(encryptionProvider),
@@ -968,7 +1825,9 @@ export const createHostedBackup = async ({
       sha256: sha256File(backupFile),
       rpoSeconds: DEFAULT_BACKUP_RPO_SECONDS,
       rtoSeconds: DEFAULT_RESTORE_RTO_SECONDS,
-      ...(encryption ? { encryption } : {})
+      collaborationTransportSummary,
+      ...(encryption ? { encryption } : {}),
+      ...(collaborationRestoreSentinel ? { collaborationRestoreSentinel } : {})
     };
     const manifestPath = `${backupFile}.manifest.json`;
     writeJson(manifestPath, manifest);
@@ -988,10 +1847,15 @@ export const createHostedBackup = async ({
       }
     });
     writeStatus(options.statusPath ?? env.KOED_BACKUP_STATUS_PATH, status);
+    completed = true;
     return { ok: true, backupFile, manifestPath, manifest, status };
   } finally {
-    if (encryptionProvider) {
+    if (encryptionProvider || !completed) {
       fs.rmSync(plaintextBackupFile, { force: true });
+    }
+    if (!completed && backupFile !== plaintextBackupFile) {
+      fs.rmSync(backupFile, { force: true });
+      fs.rmSync(inferManifestPath(backupFile), { force: true });
     }
   }
 };
@@ -1069,6 +1933,20 @@ export const restoreSmokeHostedBackup = async ({
     databaseUrl: options.targetDatabaseUrl
   });
   const manifest = readJsonIfPresent(inferManifestPath(options.backupFile));
+  if (!manifest?.collaborationTransportSummary) {
+    throw new Error(
+      "Backup archive does not contain a collaboration transport summary."
+    );
+  }
+  const expectedCollaborationTransportSummary =
+    normalizeCollaborationTransportSummary(
+      manifest.collaborationTransportSummary
+    );
+  if (manifest?.encrypted === true && !manifest.collaborationRestoreSentinel) {
+    throw new Error(
+      "Encrypted backup archive does not contain collaboration restore sentinel metadata."
+    );
+  }
   await withReadableBackupArchive({
     env,
     options,
@@ -1100,6 +1978,27 @@ export const restoreSmokeHostedBackup = async ({
             ]
           )
   });
+  const restoredCollaborationTransportSummary =
+    await readCollaborationTransportSummary({
+      env,
+      run,
+      postgresClient,
+      databaseUrl: options.targetDatabaseUrl
+    });
+  assertMatchingCollaborationTransportSummaries(
+    expectedCollaborationTransportSummary,
+    restoredCollaborationTransportSummary,
+    "Restored collaboration data does not match the source backup summary."
+  );
+  if (manifest?.encrypted === true) {
+    await proveCollaborationRestoreSentinel({
+      env,
+      run,
+      postgresClient,
+      targetDatabaseUrl: options.targetDatabaseUrl,
+      manifest
+    });
+  }
   const status = statusPayload({
     now,
     status: "ok",
@@ -1111,6 +2010,13 @@ export const restoreSmokeHostedBackup = async ({
         manifest?.encryption?.envelope?.providerMode ?? null,
       encryptionKeyId: manifest?.encryption?.envelope?.keyId ?? null,
       restoreSmoke: "passed",
+      collaborationTransportIntegrity: "passed",
+      collaborationTransportSourceState:
+        expectedCollaborationTransportSummary.state,
+      collaborationSyntheticIntegrity:
+        manifest?.encrypted === true ? "passed" : "not_available",
+      collaborationSentinelVersion:
+        manifest?.collaborationRestoreSentinel?.version ?? null,
       targetDatabaseUrl: redactDatabaseUrl(options.targetDatabaseUrl)
     }
   });

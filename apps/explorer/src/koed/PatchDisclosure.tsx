@@ -2,9 +2,8 @@ import { FileDiff } from "@pierre/diffs/react";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { Button } from "../components/ui/button";
+import { Button, cn } from "@koed/ui";
 import { useTheme } from "../hooks/useTheme";
-import { cn } from "../lib/cn";
 import { type PatchDetails } from "./diff";
 
 export function PatchBody({

@@ -2,8 +2,8 @@
 
 This document defines the local parity target for Koed-managed Codex threads.
 Threads started outside Koed use the Transcript Watcher for transcript-growth
-correctness and the Supported Capture Hook for low-latency wake signals and
-completion evidence. This managed-thread experiment does not imply production
+correctness and the Supported Capture Hook only for low-latency wake signals.
+This managed-thread experiment does not imply production
 rollout.
 
 ## Boundary
@@ -163,17 +163,14 @@ lease. Normal close releases the lease but preserves the durable home. Explicit
 managed-home destruction acquires the same lease before removing the home,
 rollout, checkpoint, and stale-lease tombstones.
 
-Hook-triggered foreground reads capture the transcript byte length at signal
-time and never read beyond it, even if Codex appends another turn while the pass
-is running. Foreground work has a bounded scan budget; a larger backlog advances
-one exact sequential page and leaves the remainder to detached catch-up. A
-page-ending assistant event is held until the next provider record determines
-whether the persisted assistant representation is an event or response item.
-`Stop` remains completion evidence: its control is not admitted until catch-up
-reaches that signal's captured byte boundary. Independently, the Transcript
-Watcher owns growth correctness through bounded rescans and a durable live
-cursor, so Hook absence, duplication, delay, or reordering cannot gap or
-duplicate canonical rows.
+The watcher and managed coordinator append complete JSONL bytes to the
+Conversation Source Journal before canonical consumption. A page-ending
+assistant event is held until the next provider record determines whether the
+persisted assistant representation is an event or response item. Persisted
+`task_complete` or `turn_aborted` records provide terminal authority. Durable
+journal cursors advance only after canonical persistence and Projection
+succeed, so retries are idempotent. Hook absence, duplication, delay, or
+reordering cannot gap or duplicate canonical rows.
 
 App-server `thread/started` events for subagents create linked child Captured
 Sessions. Child lifecycle items and child rollout JSONL reconcile through the
@@ -255,6 +252,6 @@ observation rows before applying the migration to a populated deployment.
 The managed coordinator is a local backend module with no Desktop or Explorer
 entry point. It does not attach to an independently running Codex process.
 Externally managed threads use the supervised Transcript Watcher and canonical
-JSONL ingestion; the Supported Capture Hook adds low-latency wakeups and
-completion evidence without owning correctness. Both paths converge on the same
+JSONL ingestion; the Supported Capture Hook only adds low-latency wakeups.
+Both paths converge on the same
 Personal Captured Session, raw records, and Projection pipeline.

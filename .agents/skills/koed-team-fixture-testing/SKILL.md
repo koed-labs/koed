@@ -50,10 +50,15 @@ are automated, which require staged remote/VPS inputs, and which remain manual.
      VPS/staging/cloud-like API using a browser session, scoped device
      credential, optional API Token rejection check, and optional local-edge
      proxy check.
-   - `pnpm team-fixture:reset` to remove only fixture rows and return to square
-     1.
+   - `pnpm team-fixture:reset` to remove fixture-owned child/session rows while
+     retaining User and Team shells that may own unrelated sentinel data.
+     Fixture commands run only under `NODE_ENV=test` or a local development
+     process with the `developer`/omitted deployment profile. Do not bypass the
+     guard for Private VPS, Team Self-Hosted, managed cloud, production, or shared
+     staging.
 4. Use the truth sheet to build API, repository, lexical recall, graph,
-   expansion, evidence, Agent, or Electron checks.
+   expansion, evidence, collaboration, Shared Memory representation, Agent, or
+   Electron checks.
 5. Assert positive and negative outcomes. Do not only test happy paths.
 6. If the task asks "are we ready to use this as a team?", include a minimal
    dogfood proof:
@@ -62,8 +67,11 @@ are automated, which require staged remote/VPS inputs, and which remain manual.
      Workspace,
    - browser session or scoped device credential can recall that shared memory,
    - API Token cannot access Team Workspace recall,
-   - private, revoked, removed-member, and retained-knowledge cases match the
-     truth sheet,
+   - private, revoked, disabled-member, removed-member, access-downgrade, and
+     retained-knowledge cases match the truth sheet,
+   - personal collaboration and every Team thread kind match the truth sheet,
+   - Memory Events, LCM Leaves, and LCM Rollups decrypt only through authorized
+     Shared Memory reads,
    - graph/source/evidence expansion follows the same Team boundary.
 7. If a result disagrees with the truth sheet, classify it as one of:
    - fixture bug,
@@ -82,10 +90,17 @@ are automated, which require staged remote/VPS inputs, and which remain manual.
 
 The fixture contains:
 
-- Four users: Alice, Bob, Carol, and David.
+- Seven users: active Alice, Bob, Carol, David, and Erin; disabled Dana; and
+  removed/non-member Frank.
 - Three Workspaces: Electron Team App, Cloud Memory Platform, and Managed
   Knowledge Ingestion.
+- Personal notes-to-self and personal-channel threads.
+- Every Team collaboration kind: Workspace channel, DM, group DM, and Shared
+  Session discussion, including deterministic companion history and unread
+  state.
 - Active shared memories.
+- Active Shared Memory representations covering Memory Events, LCM Leaves, and
+  LCM Rollups through production-shaped encrypted artifacts and chunks.
 - Private memories that must not leak to Team recall.
 - Revoked shares that must not appear to Team readers.
 - A removed Workspace member who must lose access while their prior
@@ -98,17 +113,23 @@ Prefer this order:
 
 1. Data-level fixture integrity: rows exist, reset is fixture-scoped, reseed is
    deterministic.
-2. Authorization: disabled or unauthorized users cannot access Workspace memory.
-3. Team lexical recall/search: authorized users see only shared, active,
+2. Authorization: disabled, removed, or unauthorized users cannot access
+   Workspace memory or collaboration; read-only users cannot write.
+3. Collaboration: personal and Team scopes, every thread kind, companion
+   history, and unread state match the truth sheet without plaintext leakage.
+4. Shared Memory: authorized production repository reads decrypt each
+   representation; revocation and access removal deny the same operation.
+5. Team lexical recall/search: authorized users see only shared, active,
    retained Workspace memory.
-4. Graph and expansion: sources, evidence, and supporting context respect the
+6. Graph and expansion: sources, evidence, and supporting context respect the
    same Workspace boundary.
-5. Agent workflow checks: Agents reason from the same fixture truth sheet and
+7. Agent workflow checks: Agents reason from the same fixture truth sheet and
    report discrepancies consistently.
-6. Staged remote checks: a running private VPS/staging/cloud-like API accepts
+8. Staged remote checks: a running private VPS/staging/cloud-like API accepts
    browser session and scoped device credential Team routes, rejects API Token
-   Team access, and does not echo credential sentinels.
-7. Electron/UI checks: UI state must match the same fixture expectations rather
+   access across every active Team-authority route advertised by its current
+   capabilities and OpenAPI contract, and does not echo credential sentinels.
+9. Electron/UI checks: UI state must match the same fixture expectations rather
    than using separate demo data.
 
 ## Environment Notes
@@ -121,20 +142,32 @@ Prefer this order:
   concluding the product behavior is broken.
 - `API_TOKEN_PEPPER` must be configured before seeding when API-session-backed
   fixture users or staged remote browser-session checks are required.
-- The fixture seeds production-shaped rows but does not precompute embeddings.
+- The fixture seeds production-shaped encrypted collaboration and Shared Memory
+  rows with deterministic, synthetic local-test key material. It never embeds
+  real credentials or production secrets.
+- When `API_TOKEN_PEPPER` is configured, the deterministic fixture session
+  secrets are reusable local-only test bearer credentials. Treat them as valid
+  synthetic-User authentication until reset or expiry; never publish them or
+  use them against a shared environment.
+- The fixture does not precompute embeddings.
   Do not expect semantic vector search hits until the normal embedding service
   or backfill path has embedded the relevant records. Use deterministic
   fixture validation, lexical/data-level checks, graph, evidence, and
   `/v1/memory/answer` where appropriate.
 - For `--with-staged-remote`, provide the target API base URL, browser session
   cookie, scoped device credential, optional API Token, Team Workspace ID, and
-  optional local-edge backend ID. Do not paste real production credentials into
-  committed files or issue comments.
+  optional local-edge backend ID. When Explorer and API have different origins,
+  also provide `KOED_LAUNCH_BROWSER_ORIGIN` (or `--browser-origin`) so browser-
+  session writes carry the same CSRF evidence as the real application. Do not
+  paste real production credentials into committed files or issue comments.
 
 ## Guardrails
 
 - Never run destructive full-database resets for fixture work.
 - Use the fixture reset command when cleanup is needed.
+- Reset must match deterministic IDs and fixture markers. It must not delete a
+  row merely because a fixture User owns it or because it is associated with
+  the fixture Team.
 - Do not add real captured memory, API tokens, session cookies, production
   exports, or secrets to the fixture.
 - Do not seed the deterministic fixture into production or shared staging with

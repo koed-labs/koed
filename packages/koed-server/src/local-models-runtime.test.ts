@@ -41,6 +41,11 @@ const paths = (root: string): KoedServerPaths => ({
     "project-team-workspaces.json"
   ),
   upstreamEnrollmentsPath: resolve(root, "run", "upstream-enrollments.json"),
+  upstreamDisconnectCleanupPath: resolve(
+    root,
+    "run",
+    "upstream-disconnect-cleanup.json"
+  ),
   repoRoot: root
 });
 
@@ -197,5 +202,43 @@ describe("local model runtime", () => {
 
     expect(result.ok).toBe(true);
     expect(result.state).toBe("installed");
+  });
+
+  it("reports download bytes and verification progress", async () => {
+    const root = tempDir();
+    const contents = "model-download-bytes";
+    const progress: Array<{
+      completedBytes: number | null;
+      phase: string;
+      totalBytes: number | null;
+    }> = [];
+
+    const result = await installLocalModel(
+      paths(root),
+      "embedding",
+      {
+        KOED_EMBEDDING_MODEL_URL: "https://example.test/model.gguf",
+        KOED_EMBEDDING_MODEL_SHA256: sha256(contents)
+      },
+      {
+        fetch: async () =>
+          new Response(contents, {
+            headers: { "content-length": String(contents.length) }
+          }),
+        onProgress: (update) => progress.push(update)
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(progress.map(({ phase }) => phase)).toEqual([
+      "downloading",
+      "downloading",
+      "verifying",
+      "complete"
+    ]);
+    expect(progress[1]).toMatchObject({
+      completedBytes: contents.length,
+      totalBytes: contents.length
+    });
   });
 });

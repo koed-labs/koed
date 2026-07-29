@@ -23,6 +23,7 @@ const requestMethods = [
   "initialize",
   "thread/start",
   "thread/resume",
+  "thread/fork",
   "turn/start",
   "turn/interrupt"
 ];
@@ -278,13 +279,29 @@ const deltaSchemas = ${JSON.stringify({
 for (const [file, fields] of Object.entries(deltaSchemas)) {
   write(file, { required: requiredFor(file, fields) });
 }
-const threadResponse = (file) => ({
+const threadResponse = (file, extraRequiredFields = [], extraProperties = []) => ({
   required: requiredFor(file, ["thread"]),
   definitions: {
     Thread: {
-      required: requiredFor(file, ["id", "sessionId"], {
-        definition: "Thread"
-      })
+      required: requiredFor(
+        file,
+        ["id", "sessionId", ...extraRequiredFields],
+        {
+          definition: "Thread"
+        }
+      ),
+      properties: Object.fromEntries(
+        [
+          "id",
+          "sessionId",
+          ...extraRequiredFields,
+          ...extraProperties
+        ].flatMap((field) =>
+          propertyFor(file, field, { definition: "Thread" })
+            ? [[field, {}]]
+            : []
+        )
+      )
     }
   }
 });
@@ -318,6 +335,10 @@ write(
   "v2/ThreadResumeResponse.json",
   threadResponse("v2/ThreadResumeResponse.json")
 );
+write(
+  "v2/ThreadForkResponse.json",
+  threadResponse("v2/ThreadForkResponse.json", [], ["forkedFromId"])
+);
 write("v2/TurnStartResponse.json", {
   required: requiredFor("v2/TurnStartResponse.json", ["turn"]),
   definitions: {
@@ -330,6 +351,15 @@ write("v2/TurnStartResponse.json", {
 });
 write("v2/ThreadResumeParams.json", {
   required: requiredFor("v2/ThreadResumeParams.json", ["threadId"])
+});
+write("v2/ThreadForkParams.json", {
+  required: requiredFor("v2/ThreadForkParams.json", ["threadId"]),
+  properties: Object.fromEntries(
+    ["threadId", "path", "deferGoalContinuation", "excludeTurns"].flatMap(
+      (field) =>
+        propertyFor("v2/ThreadForkParams.json", field) ? [[field, {}]] : []
+    )
+  )
 });
 write("v2/ThreadStartParams.json", {
   properties: {
@@ -532,6 +562,20 @@ describe("Codex app-server conversation protocol compatibility", () => {
           env: process.env
         })
       ).toThrow("v2/ThreadStartParams.json properties: historyMode");
+
+      expect(() =>
+        assertCodexConversationProtocolCompatibility({
+          binary: writeSchemaGenerator(directory, {
+            omitProperty: {
+              file: "v2/ThreadForkResponse.json",
+              definition: "Thread",
+              field: "forkedFromId"
+            }
+          }),
+          cwd: directory,
+          env: process.env
+        })
+      ).toThrow("v2/ThreadForkResponse.json Thread properties: forkedFromId");
 
       expect(() =>
         assertCodexConversationProtocolCompatibility({

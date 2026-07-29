@@ -172,7 +172,7 @@ const requestSchema = z
     question_id: z.string().uuid().optional(),
     retrieval_scope: z.literal("personal").optional(),
     search_domain: z.enum(["global", "project", "session"]).default("global"),
-    workspace_id: z.string().min(1).optional(),
+    project_id: z.string().min(1).optional(),
     project_name: z.string().min(1).optional(),
     project_path: z.string().min(1).optional(),
     session_id: z.string().uuid().optional(),
@@ -198,11 +198,11 @@ const requestSchema = z
         message: "session_id is required when search_domain is session"
       });
     }
-    if (input.search_domain === "project" && !input.workspace_id) {
+    if (input.search_domain === "project" && !input.project_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["workspace_id"],
-        message: "workspace_id is required when search_domain is project"
+        path: ["project_id"],
+        message: "project_id is required when search_domain is project"
       });
     }
   });
@@ -226,7 +226,7 @@ interface MemoryQuestionRecord {
   query: string;
   retrievalScope?: string | null;
   searchDomain?: "global" | "project" | "session" | string | null;
-  workspaceId?: string | null;
+  projectId?: string | null;
   sessionId?: string | null;
   status?: MemoryQuestionStatus | string;
   localMemoryWorkerConfig?: Record<string, unknown> | null;
@@ -918,7 +918,7 @@ const persistAnswerAppServerEvents = async (
         answerJobId: entry.execution.answerJobId,
         primaryAppServerThreadId: entry.execution.primaryThreadId,
         searchDomain: question.searchDomain,
-        workspaceId: question.workspaceId,
+        projectId: question.projectId,
         sessionId: question.sessionId,
         executionIndex: entry.executionIndex
       }
@@ -1020,7 +1020,7 @@ export const answerClaimedMemoryQuestion = async (
       attemptCount: question.attemptCount ?? 0,
       searchDomain,
       retrievalScope,
-      hasWorkspaceId: Boolean(question.workspaceId),
+      hasProjectId: Boolean(question.projectId),
       hasSessionId: Boolean(question.sessionId),
       queryLength: question.query.length
     },
@@ -1046,7 +1046,7 @@ export const answerClaimedMemoryQuestion = async (
       client,
       retrievalScope,
       searchDomain,
-      workspaceId: question.workspaceId ?? undefined,
+      projectId: question.projectId ?? undefined,
       sessionId: question.sessionId ?? undefined,
       limit: options.limit ?? 10,
       responseDetail: "with_evidence"
@@ -1308,7 +1308,7 @@ export const handleAnswerLocal = async (
       requestId: requestContext.id,
       hasQuestionId: Boolean(input.question_id),
       searchDomain: input.search_domain,
-      hasWorkspaceId: Boolean(input.workspace_id),
+      hasProjectId: Boolean(input.project_id),
       hasSessionId: Boolean(input.session_id),
       queryLength: input.query.length,
       limit: input.limit
@@ -1329,7 +1329,7 @@ export const handleAnswerLocal = async (
         query: input.query,
         retrieval_scope: retrievalScope,
         search_domain: input.search_domain,
-        workspace_id: input.workspace_id,
+        project_id: input.project_id,
         project_name: input.project_name,
         project_path: input.project_path,
         session_id: input.session_id,

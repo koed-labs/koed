@@ -82,6 +82,9 @@ const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
     value.dependencyMode === undefined ||
     value.dependencyMode === "bundled-local" ||
     value.dependencyMode === "external";
+  const validAutomaticPorts =
+    value.automaticPorts === undefined ||
+    typeof value.automaticPorts === "boolean";
   return (
     typeof value.pid === "number" &&
     Number.isInteger(value.pid) &&
@@ -96,6 +99,7 @@ const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
     value.services.every((service) => typeof service === "string") &&
     validRuntimeMode &&
     validDependencyMode &&
+    validAutomaticPorts &&
     validProcessMap(value.processes)
   );
 };
@@ -126,12 +130,9 @@ const applyActiveRuntimeUrls = (
   runtime: KoedServerRuntimeState | null
 ): NodeJS.ProcessEnv => ({
   ...environment,
-  ...(runtime?.apiUrl && !environment.MEMORY_API_URL
-    ? { MEMORY_API_URL: runtime.apiUrl }
-    : {}),
-  ...(runtime?.explorerUrl && !environment.KOED_EXPLORER_URL
-    ? { KOED_EXPLORER_URL: runtime.explorerUrl }
-    : {})
+  ...(runtime?.apiUrl ? { MEMORY_API_URL: runtime.apiUrl } : {}),
+  ...(runtime?.explorerUrl ? { KOED_EXPLORER_URL: runtime.explorerUrl } : {}),
+  ...(runtime?.automaticPorts ? { KOED_AUTO_PORTS: "1" } : {})
 });
 
 export interface KoedServerSetupOptions {
@@ -194,38 +195,19 @@ const configureCodexIntegration = ({
   const appServerBinary = environment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
   const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
   const codexConfigPath = resolve(
-    environment.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
+    environment.CODEX_CONFIG_PATH ??
+      `${environment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
   );
-  const hookConfigPath = resolve(
-    environment.MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed/config.json`
-  );
-  const hookRequestTimeoutMs = Number.parseInt(
-    environment.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS ?? "1500",
-    10
-  );
-
-  mkdirSync(dirname(hookConfigPath), { recursive: true, mode: 0o700 });
-  writeFileSync(
-    hookConfigPath,
-    `${JSON.stringify(
-      {
-        apiUrl,
-        apiToken,
-        captureEnabled: true,
-        requestTimeoutMs:
-          Number.isFinite(hookRequestTimeoutMs) && hookRequestTimeoutMs > 0
-            ? hookRequestTimeoutMs
-            : 1500
-      },
-      null,
-      2
-    )}\n`,
-    { mode: 0o600 }
-  );
-
   const markerStart = "# >>> koed";
   const markerEnd = "# <<< koed";
-  const hookCommand = `${nodeCommand} ${runtime.captureHook} --config ${hookConfigPath}`;
+  const hookCommand = [
+    nodeCommand,
+    runtime.captureHook,
+    "--koed-home",
+    paths.koedHome
+  ]
+    .map(tomlString)
+    .join(" ");
   const hookEvents = [
     ["SessionStart", 10],
     ["UserPromptSubmit", 10],
@@ -278,8 +260,7 @@ ${markerEnd}
       `Detected API URL: ${apiUrl}`,
       `Detected Node command: ${nodeCommand}`,
       `Detected Codex app-server binary: ${appServerBinary}`,
-      `Wrote Codex MCP config: ${codexConfigPath}`,
-      `Wrote Capture Hook config: ${hookConfigPath}`
+      `Wrote Codex MCP config: ${codexConfigPath}`
     ].join("\n")
   };
 };

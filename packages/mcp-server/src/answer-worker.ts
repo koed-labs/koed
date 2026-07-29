@@ -240,7 +240,7 @@ export interface MemoryAnswerRetrievalClient {
     input?: {
       searchDomain?: string;
       sessionId?: string;
-      workspaceId?: string;
+      projectId?: string;
       teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
@@ -378,7 +378,7 @@ interface ToolSearchRecord {
   searchDomain: string;
   retrievalStage?: string;
   sessionId?: string;
-  workspaceId?: string;
+  projectId?: string;
   teamWorkspaceId?: string;
   recentDays?: number;
   sourceAfter?: string;
@@ -392,7 +392,7 @@ interface MemoryAnswerToolState {
   retrievalScope: string;
   searchDomain: string;
   sessionId?: string;
-  workspaceId?: string;
+  projectId?: string;
   teamWorkspaceId?: string;
   recentDays?: number;
   sourceAfter?: string;
@@ -614,12 +614,12 @@ const resolveDynamicToolSearchDomain = (
   options: {
     searchDomain: string;
     sessionId?: string;
-    workspaceId?: string;
+    projectId?: string;
   }
 ): {
   searchDomain: string;
   sessionId?: string;
-  workspaceId?: string;
+  projectId?: string;
 } => {
   const searchDomain = requested ?? options.searchDomain;
   if (searchDomain === "session") {
@@ -632,20 +632,20 @@ const resolveDynamicToolSearchDomain = (
       : {
           searchDomain: options.searchDomain,
           sessionId: options.sessionId,
-          workspaceId: options.workspaceId
+          projectId: options.projectId
         };
   }
   if (searchDomain === "project") {
-    const workspaceId =
-      stringArg(args, "workspace_id") ??
-      stringArg(args, "workspaceId") ??
-      options.workspaceId;
-    return workspaceId
-      ? { searchDomain: "project", workspaceId }
+    const projectId =
+      stringArg(args, "project_id") ??
+      stringArg(args, "projectId") ??
+      options.projectId;
+    return projectId
+      ? { searchDomain: "project", projectId }
       : {
           searchDomain: options.searchDomain,
           sessionId: options.sessionId,
-          workspaceId: options.workspaceId
+          projectId: options.projectId
         };
   }
   return { searchDomain: "global" };
@@ -874,7 +874,7 @@ const dynamicToolSpecs = (): CodexAppServerDynamicToolSpec[] => [
           type: "string",
           enum: ["project", "session", "global"]
         },
-        workspace_id: { type: "string" },
+        project_id: { type: "string" },
         session_id: { type: "string" }
       },
       additionalProperties: false
@@ -904,7 +904,7 @@ const dynamicToolSpecs = (): CodexAppServerDynamicToolSpec[] => [
           type: "string",
           enum: ["project", "session", "global"]
         },
-        workspace_id: { type: "string" },
+        project_id: { type: "string" },
         session_id: { type: "string" },
         parent_node_ids: { type: "array", items: { type: "string" } },
         limit: { type: "integer", minimum: 1, maximum: 50 }
@@ -926,7 +926,7 @@ const dynamicToolSpecs = (): CodexAppServerDynamicToolSpec[] => [
           type: "string",
           enum: ["project", "session", "global"]
         },
-        workspace_id: { type: "string" },
+        project_id: { type: "string" },
         session_id: { type: "string" }
       },
       required: ["nodeId"],
@@ -951,7 +951,7 @@ const createMemoryAnswerDynamicToolHandler = (
     retrievalScope: string;
     searchDomain: string;
     sessionId?: string;
-    workspaceId?: string;
+    projectId?: string;
     teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
@@ -981,14 +981,14 @@ const createMemoryAnswerDynamicToolHandler = (
         return dynamicToolResult({ kind: "validation_error", message }, false);
       }
       const searchQuery = stringArg(args, "query") ?? state.query;
-      const { searchDomain, sessionId, workspaceId } = normalizeDomain(args);
+      const { searchDomain, sessionId, projectId } = normalizeDomain(args);
       try {
         const scanResult = await options.client.search({
           query: searchQuery,
           retrieval_scope: options.retrievalScope,
           search_domain: searchDomain,
           session_id: sessionId,
-          workspace_id: workspaceId,
+          project_id: projectId,
           team_workspace_id: options.teamWorkspaceId,
           recent_days: options.recentDays,
           source_after: options.sourceAfter,
@@ -1003,7 +1003,7 @@ const createMemoryAnswerDynamicToolHandler = (
           searchDomain,
           retrievalStage: "score_scan",
           sessionId,
-          workspaceId,
+          projectId,
           teamWorkspaceId: options.teamWorkspaceId,
           recentDays: options.recentDays,
           sourceAfter: options.sourceAfter,
@@ -1051,7 +1051,7 @@ const createMemoryAnswerDynamicToolHandler = (
         return dynamicToolResult({ kind: "validation_error", message }, false);
       }
       const searchQuery = stringArg(args, "query") ?? state.query;
-      const { searchDomain, sessionId, workspaceId } = normalizeDomain(args);
+      const { searchDomain, sessionId, projectId } = normalizeDomain(args);
       const limit = clampLimit(args.limit, options.limit);
       try {
         const searchResult = await options.client.search({
@@ -1059,7 +1059,7 @@ const createMemoryAnswerDynamicToolHandler = (
           retrieval_scope: options.retrievalScope,
           search_domain: searchDomain,
           session_id: sessionId,
-          workspace_id: workspaceId,
+          project_id: projectId,
           team_workspace_id: options.teamWorkspaceId,
           recent_days: options.recentDays,
           source_after: options.sourceAfter,
@@ -1082,7 +1082,7 @@ const createMemoryAnswerDynamicToolHandler = (
           searchDomain,
           retrievalStage: stage,
           sessionId,
-          workspaceId,
+          projectId,
           teamWorkspaceId: options.teamWorkspaceId,
           recentDays: options.recentDays,
           sourceAfter: options.sourceAfter,
@@ -1120,12 +1120,12 @@ const createMemoryAnswerDynamicToolHandler = (
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
       }
-      const { searchDomain, sessionId, workspaceId } = normalizeDomain(args);
+      const { searchDomain, sessionId, projectId } = normalizeDomain(args);
       try {
         const expanded = await options.client.expand(nodeId, {
           searchDomain,
           sessionId,
-          workspaceId,
+          projectId,
           teamWorkspaceId: options.teamWorkspaceId,
           recentDays: options.recentDays,
           sourceAfter: options.sourceAfter,
@@ -1198,7 +1198,7 @@ const buildDynamicMemoryAnswerPrompt = (
   );
 
   const optionalDefaults = [
-    state.workspaceId ? `Default workspace_id: ${state.workspaceId}` : "",
+    state.projectId ? `Default project_id: ${state.projectId}` : "",
     state.sessionId ? `Default session_id: ${state.sessionId}` : "",
     state.recentDays ? `Default recent_days: ${state.recentDays}` : "",
     state.sourceAfter ? `Default source_after: ${state.sourceAfter}` : "",
@@ -1363,7 +1363,7 @@ const runDynamicToolMemoryAnswer = async (
     retrievalScope: string;
     searchDomain: string;
     sessionId?: string;
-    workspaceId?: string;
+    projectId?: string;
     teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
@@ -1395,7 +1395,7 @@ const runDynamicToolMemoryAnswer = async (
     retrievalScope: options.retrievalScope,
     searchDomain: options.searchDomain,
     sessionId: options.sessionId,
-    workspaceId: options.workspaceId,
+    projectId: options.projectId,
     teamWorkspaceId: options.teamWorkspaceId,
     recentDays: options.recentDays,
     sourceAfter: options.sourceAfter,
@@ -1542,7 +1542,7 @@ export const answerWithMemoryWorker = async (
     retrievalScope?: string;
     searchDomain?: string;
     sessionId?: string;
-    workspaceId?: string;
+    projectId?: string;
     teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
@@ -1607,7 +1607,7 @@ export const answerWithMemoryWorker = async (
       retrievalScope: options.retrievalScope ?? "personal",
       searchDomain: options.searchDomain ?? "project",
       sessionId: options.sessionId,
-      workspaceId: options.workspaceId,
+      projectId: options.projectId,
       teamWorkspaceId: options.teamWorkspaceId,
       recentDays: options.recentDays,
       sourceAfter: options.sourceAfter,

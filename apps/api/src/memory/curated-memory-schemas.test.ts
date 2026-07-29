@@ -64,7 +64,7 @@ describe("Curated Memory API contracts", () => {
     expect(() =>
       curatedMemoryProposalSchema.parse({
         proposed_claim: "Ambiguous evidence",
-        source_workspace_id: "/workspace"
+        source_project_id: "/workspace"
       })
     ).toThrow("exact user quote");
   });

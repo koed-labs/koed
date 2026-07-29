@@ -5,12 +5,40 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   resolve: {
-    alias: {
-      "@koed/core": `${root}packages/core/src/index.ts`,
-      "@koed/db": `${root}packages/db/src/index.ts`,
-      "@koed/mcp-server": `${root}packages/mcp-server/src/index.ts`,
-      "@koed/shared": `${root}packages/shared/src/index.ts`
-    }
+    alias: [
+      {
+        find: "@koed/shared/collaboration",
+        replacement: `${root}packages/shared/src/collaboration-contract.ts`
+      },
+      {
+        find: "@koed/shared/personal-desktop",
+        replacement: `${root}packages/shared/src/personal-desktop-contract.ts`
+      },
+      {
+        find: "@koed/shared/secure-upstream-fetch",
+        replacement: `${root}packages/shared/src/secure-upstream-fetch.ts`
+      },
+      {
+        find: "@koed/core",
+        replacement: `${root}packages/core/src/index.ts`
+      },
+      {
+        find: "@koed/db",
+        replacement: `${root}packages/db/src/index.ts`
+      },
+      {
+        find: "@koed/mcp-server/codex-transcript-parser",
+        replacement: `${root}packages/mcp-server/src/codex-transcript-parser.ts`
+      },
+      {
+        find: "@koed/mcp-server",
+        replacement: `${root}packages/mcp-server/src/index.ts`
+      },
+      {
+        find: "@koed/shared",
+        replacement: `${root}packages/shared/src/index.ts`
+      }
+    ]
   },
   test: {
     globals: true,

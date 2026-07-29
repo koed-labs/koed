@@ -51,7 +51,12 @@ export type DesktopProject = DesktopProjectGroup & {
   isWorktree: boolean;
 };
 
-export type DesktopView = "projects" | "project" | "session" | "settings";
+export type DesktopView =
+  | "projects"
+  | "project"
+  | "session"
+  | "chat"
+  | "settings";
 
 export const ACTIVE_PROJECT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 

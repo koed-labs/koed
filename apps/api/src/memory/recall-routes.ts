@@ -2,6 +2,7 @@ import { answerMemory, searchMemory } from "@koed/core";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import { searchMemorySchema } from "./recall-schemas.js";
+import { rejectUnavailableTeamSharedMemorySurface } from "./team-shared-memory-surface.js";
 
 export const registerRecallRoutes = (
   app: FastifyInstance,
@@ -33,6 +34,10 @@ export const registerRecallRoutes = (
             }
           )
         : await authenticateApiToken(request);
+      rejectUnavailableTeamSharedMemorySurface(
+        input.team_workspace_id,
+        "evidence"
+      );
       const result = await searchMemory({
         repository: repo,
         requesterContext: { userId: user.id },
@@ -40,8 +45,7 @@ export const registerRecallRoutes = (
         scope: input.retrieval_scope,
         searchDomain: input.search_domain,
         sessionId: input.session_id,
-        workspaceId: input.workspace_id,
-        teamWorkspaceId: input.team_workspace_id,
+        projectId: input.project_id,
         limit: input.limit,
         recentDays: input.recent_days,
         sourceAfter: input.source_after?.toISOString(),
@@ -90,6 +94,10 @@ export const registerRecallRoutes = (
             }
           )
         : await authenticate(request);
+      rejectUnavailableTeamSharedMemorySurface(
+        input.team_workspace_id,
+        "evidence"
+      );
       const result = await answerMemory({
         repository: repo,
         requesterContext: { userId: user.id },
@@ -97,8 +105,7 @@ export const registerRecallRoutes = (
         scope: input.retrieval_scope,
         searchDomain: input.search_domain,
         sessionId: input.session_id,
-        workspaceId: input.workspace_id,
-        teamWorkspaceId: input.team_workspace_id,
+        projectId: input.project_id,
         limit: input.limit,
         recentDays: input.recent_days,
         sourceAfter: input.source_after?.toISOString(),

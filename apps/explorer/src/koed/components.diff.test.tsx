@@ -88,7 +88,7 @@ function makePatchEvent(sourceText = patchText): GraphEvent {
 
   return {
     actor: "tool",
-    captureMethod: "hook",
+    captureMethod: "transcript",
     contentPreview: details
       ? `Tool call: apply_patch`
       : "Tool call: apply_patch",
@@ -124,7 +124,6 @@ function makePatchEvent(sourceText = patchText): GraphEvent {
     createdAt: new Date().toISOString(),
     capturedAt: new Date().toISOString(),
     visibility: "personal",
-    workspaceId: "/Users/jedd/repos/dotfiles",
     threadId: "thread-1",
     threadName: "thread-1",
     sourceEventTime: new Date().toISOString(),

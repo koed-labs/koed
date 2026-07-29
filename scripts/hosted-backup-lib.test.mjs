@@ -15,6 +15,91 @@ import {
 
 const fixedNow = new Date("2026-07-03T10:00:00.000Z");
 const backupEncryptionKey = Buffer.alloc(32, 21).toString("base64");
+const digest = (character) => character.repeat(64);
+
+const collaborationTransportSummary = {
+  version: 1,
+  state: "non_empty",
+  families: {
+    threads: { count: 2, sha256: digest("1") },
+    messages: { count: 3, sha256: digest("2") },
+    encryptedCompanions: { count: 11, sha256: digest("3") },
+    outbox: { count: 5, sha256: digest("4") }
+  },
+  keyReferences: { count: 1, sha256: digest("5") },
+  relationships: {
+    brokenMessageThreadLinks: 0,
+    brokenCompanionSourceLinks: 0,
+    brokenOutboxThreadLinks: 0,
+    brokenOutboxMessageLinks: 0,
+    brokenOutboxResourceLinks: 0,
+    brokenCompanionAuthorizationBindings: 0
+  }
+};
+
+const emptyCollaborationTransportSummary = {
+  version: 1,
+  state: "empty",
+  families: {
+    threads: { count: 0, sha256: digest("a") },
+    messages: { count: 0, sha256: digest("a") },
+    encryptedCompanions: { count: 0, sha256: digest("a") },
+    outbox: { count: 0, sha256: digest("a") }
+  },
+  keyReferences: { count: 0, sha256: digest("a") },
+  relationships: {
+    brokenMessageThreadLinks: 0,
+    brokenCompanionSourceLinks: 0,
+    brokenOutboxThreadLinks: 0,
+    brokenOutboxMessageLinks: 0,
+    brokenOutboxResourceLinks: 0,
+    brokenCompanionAuthorizationBindings: 0
+  }
+};
+
+const collaborationProbeForBackup = (backup) => ({
+  threadCount: 1,
+  messageCount: 1,
+  outboxCount: 2,
+  companions: backup.manifest.collaborationRestoreSentinel.companions.map(
+    (companion) => ({
+      id: companion.id,
+      ownerUserId: backup.manifest.collaborationRestoreSentinel.ownerUserId,
+      sourceTable: companion.sourceTable,
+      sourceId: companion.sourceId,
+      sourceColumn: companion.sourceColumn,
+      plaintextContentType: companion.plaintextContentType,
+      envelope: companion.envelope
+    })
+  )
+});
+
+const postgresScriptForCall = (args, options = {}) => {
+  const fileArgIndex = args.indexOf("--file");
+  const scriptPath =
+    options.stdinFile ?? (fileArgIndex >= 0 ? args[fileArgIndex + 1] : null);
+  return scriptPath ? fs.readFileSync(scriptPath, "utf8") : "";
+};
+
+const withCollaborationTransportSummaries = (
+  run,
+  summaries = [collaborationTransportSummary],
+  onSummary = () => undefined
+) => {
+  let summaryIndex = 0;
+  return async (command, args, options = {}) => {
+    const isPsql =
+      path.basename(command).includes("psql") || args.includes("psql");
+    const script = isPsql ? postgresScriptForCall(args, options) : "";
+    if (script.includes("collaboration transport summary")) {
+      const summary = summaries[Math.min(summaryIndex, summaries.length - 1)];
+      summaryIndex += 1;
+      onSummary({ command, args, options, script, summary, summaryIndex });
+      return { stdout: `${JSON.stringify(summary)}\n`, stderr: "" };
+    }
+    return run(command, args, options);
+  };
+};
 
 test("parseHostedBackupArgs parses create, verify, and restore-smoke", () => {
   assert.deepEqual(
@@ -106,6 +191,7 @@ test("createHostedBackup writes dump manifest and redacted status", async () => 
   const dir = await mkdtemp(path.join(os.tmpdir(), "koed-backup-test-"));
   const statusPath = path.join(dir, "status.json");
   const calls = [];
+  const operations = [];
   const result = await createHostedBackup({
     now: fixedNow,
     env: {
@@ -118,14 +204,33 @@ test("createHostedBackup writes dump manifest and redacted status", async () => 
       outputDir: dir,
       statusPath
     },
-    run: async (command, args) => {
-      calls.push({ command, args });
-      const fileIndex = args.indexOf("--file") + 1;
-      fs.writeFileSync(args[fileIndex], "backup-bytes");
-      return { stdout: "", stderr: "" };
-    }
+    run: withCollaborationTransportSummaries(
+      async (command, args) => {
+        operations.push("pg_dump");
+        calls.push({ command, args });
+        const fileIndex = args.indexOf("--file") + 1;
+        fs.writeFileSync(args[fileIndex], "backup-bytes");
+        return { stdout: "", stderr: "" };
+      },
+      [collaborationTransportSummary],
+      ({ script }) => {
+        operations.push("summary");
+        assert.match(script, /from collaboration_threads/);
+        assert.match(script, /from collaboration_messages/);
+        assert.match(script, /from encrypted_field_payloads/);
+        assert.match(script, /from collaboration_outbox/);
+        assert.match(script, /payload\.provider_mode/);
+        assert.match(script, /broken_companion_authorization_bindings/);
+        assert.doesNotMatch(script, /decrypt/i);
+        assert.doesNotMatch(
+          script,
+          /\b(insert|update|delete|truncate|alter|drop|create)\b/i
+        );
+      }
+    )
   });
 
+  assert.deepEqual(operations, ["summary", "pg_dump", "summary"]);
   assert.equal(calls[0].command, "pg_dump_test");
   assert.deepEqual(calls[0].args.slice(0, 5), [
     "--format=custom",
@@ -145,7 +250,33 @@ test("createHostedBackup writes dump manifest and redacted status", async () => 
     result.manifest.encryption.envelope.keyId.startsWith("local_test_key:"),
     true
   );
+  assert.equal(result.manifest.schemaVersion, 4);
+  assert.deepEqual(
+    result.manifest.collaborationTransportSummary,
+    collaborationTransportSummary
+  );
+  assert.equal(result.manifest.collaborationRestoreSentinel.version, 1);
+  assert.equal(
+    result.manifest.collaborationRestoreSentinel.companions.length,
+    5
+  );
+  assert.equal(result.manifest.collaborationRestoreSentinel.outbox.length, 2);
+  assert.equal(
+    result.manifest.collaborationRestoreSentinel.companions.every(
+      (companion) =>
+        companion.envelope.keyId ===
+          result.manifest.encryption.envelope.keyId &&
+        companion.envelope.ciphertext.length > 0 &&
+        companion.plaintext === undefined
+    ),
+    true
+  );
   assert.equal(JSON.stringify(result.manifest).includes("backup-bytes"), false);
+  assert.equal(JSON.stringify(result.manifest).includes("restoreProof"), false);
+  assert.equal(
+    JSON.stringify(result.manifest).includes("hosted_restore_smoke"),
+    false
+  );
   assert.equal(fs.existsSync(result.backupFile.replace(/\.enc$/, "")), false);
   assert.equal(fs.existsSync(result.manifestPath), true);
   const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
@@ -156,6 +287,12 @@ test("createHostedBackup writes dump manifest and redacted status", async () => 
   assert.equal(status.encryptionProviderMode, "local_test_key");
   assert.equal(status.lastSuccessfulAt, fixedNow.toISOString());
   assert.equal(JSON.stringify(status).includes("secret"), false);
+  assert.equal(
+    JSON.stringify(status).includes(
+      result.manifest.collaborationRestoreSentinel.ownerUserId
+    ),
+    false
+  );
 });
 
 test("hosted backup uses Docker Compose Postgres tools for local Compose databases", async () => {
@@ -171,6 +308,7 @@ test("hosted backup uses Docker Compose Postgres tools for local Compose databas
     API_DATA_ENCRYPTION_KEY: backupEncryptionKey
   };
   const calls = [];
+  let backup;
   const run = async (command, args, options = {}) => {
     calls.push({ command, args, options });
     if (command === "docker" && args.includes("ps")) {
@@ -210,20 +348,42 @@ test("hosted backup uses Docker Compose Postgres tools for local Compose databas
       );
       return { stdout: "", stderr: "" };
     }
+    if (
+      command === "docker" &&
+      args.includes("exec") &&
+      args.includes("psql")
+    ) {
+      const script = postgresScriptForCall(args, options);
+      if (script.includes("restore sentinel seed")) {
+        assert.match(script, /insert into collaboration_threads/);
+        assert.match(script, /insert into collaboration_messages/);
+        assert.match(script, /insert into encrypted_field_payloads/);
+        assert.match(script, /insert into collaboration_outbox/);
+        return { stdout: "", stderr: "" };
+      }
+      if (script.includes("restore sentinel probe")) {
+        assert.match(script, /thread\.personal_owner_user_id/);
+        return {
+          stdout: `${JSON.stringify(collaborationProbeForBackup(backup))}\n`,
+          stderr: ""
+        };
+      }
+    }
     throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
   };
+  const runWithSummaries = withCollaborationTransportSummaries(run);
 
-  const backup = await createHostedBackup({
+  backup = await createHostedBackup({
     now: fixedNow,
     env,
     options: { command: "create", outputDir: dir },
-    run
+    run: runWithSummaries
   });
   const verified = await verifyHostedBackup({
     now: fixedNow,
     env,
     options: { command: "verify", backupFile: backup.backupFile },
-    run
+    run: runWithSummaries
   });
   const restored = await restoreSmokeHostedBackup({
     now: fixedNow,
@@ -234,11 +394,12 @@ test("hosted backup uses Docker Compose Postgres tools for local Compose databas
       targetDatabaseUrl: restoreUrl,
       confirmRestoreSmokeTarget: "koed_restore"
     },
-    run
+    run: runWithSummaries
   });
 
   assert.equal(verified.ok, true);
   assert.equal(restored.status.restoreSmoke, "passed");
+  assert.equal(restored.status.collaborationTransportIntegrity, "passed");
   assert.equal(
     calls.some(
       (call) => call.command === "docker" && call.args.includes("pg_dump")
@@ -308,13 +469,13 @@ test("createHostedBackup supports KMS-backed archive encryption", async () => {
       now: fixedNow,
       env,
       options: { command: "create", outputDir: dir },
-      run: async (_command, args) => {
+      run: withCollaborationTransportSummaries(async (_command, args) => {
         fs.writeFileSync(
           args[args.indexOf("--file") + 1],
           "sensitive archive bytes"
         );
         return { stdout: "", stderr: "" };
-      }
+      })
     });
     const verified = await verifyHostedBackup({
       now: fixedNow,
@@ -346,7 +507,15 @@ test("createHostedBackup supports KMS-backed archive encryption", async () => {
     assert.equal(verified.ok, true);
     assert.deepEqual(
       kmsCalls.map((call) => new URL(call.url).pathname),
-      ["/kms/wrap", "/kms/unwrap"]
+      [
+        "/kms/wrap",
+        "/kms/wrap",
+        "/kms/wrap",
+        "/kms/wrap",
+        "/kms/wrap",
+        "/kms/wrap",
+        "/kms/unwrap"
+      ]
     );
     assert.equal(
       JSON.stringify(backup.manifest).includes("kms-secret-token"),
@@ -375,10 +544,10 @@ test("createHostedBackup removes plaintext dump when encryption fails", async ()
           MANAGED_KMS_AUTH_TOKEN: "kms-secret-token"
         },
         options: { command: "create", outputDir: dir },
-        run: async (_command, args) => {
+        run: withCollaborationTransportSummaries(async (_command, args) => {
           fs.writeFileSync(args[args.indexOf("--file") + 1], "backup");
           return { stdout: "", stderr: "" };
-        }
+        })
       }),
       /backup KMS wrap failed/
     );
@@ -404,14 +573,73 @@ test("createHostedBackup keeps plaintext mode explicit for local checks", async 
       outputDir: dir,
       allowPlaintext: true
     },
-    run: async (_command, args) => {
+    run: withCollaborationTransportSummaries(async (_command, args) => {
       fs.writeFileSync(args[args.indexOf("--file") + 1], "backup-bytes");
       return { stdout: "", stderr: "" };
-    }
+    })
   });
 
   assert.equal(result.manifest.encrypted, false);
   assert.equal(path.basename(result.backupFile), "koed-20260703T100000Z.dump");
+});
+
+test("createHostedBackup fails closed when collaboration data changes during pg_dump", async () => {
+  const dir = await mkdtemp(
+    path.join(os.tmpdir(), "koed-backup-collaboration-change-")
+  );
+  const changedSummary = structuredClone(collaborationTransportSummary);
+  changedSummary.families.messages.sha256 = digest("6");
+  let dumpRan = false;
+  await assert.rejects(
+    createHostedBackup({
+      now: fixedNow,
+      env: {
+        DATABASE_URL: "postgres://koed:secret@localhost:5432/koed",
+        PG_DUMP_BIN: "pg_dump_test"
+      },
+      options: {
+        command: "create",
+        outputDir: dir,
+        allowPlaintext: true
+      },
+      run: withCollaborationTransportSummaries(
+        async (_command, args) => {
+          dumpRan = true;
+          fs.writeFileSync(args[args.indexOf("--file") + 1], "unstable-backup");
+          return { stdout: "", stderr: "" };
+        },
+        [collaborationTransportSummary, changedSummary]
+      )
+    }),
+    /Collaboration data changed while pg_dump was running/
+  );
+  assert.equal(dumpRan, true);
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test("createHostedBackup fails closed on broken collaboration authorization bindings", async () => {
+  const dir = await mkdtemp(
+    path.join(os.tmpdir(), "koed-backup-collaboration-links-")
+  );
+  const brokenSummary = structuredClone(collaborationTransportSummary);
+  brokenSummary.relationships.brokenCompanionAuthorizationBindings = 1;
+  let dumpRan = false;
+  await assert.rejects(
+    createHostedBackup({
+      now: fixedNow,
+      env: {
+        DATABASE_URL: "postgres://koed:secret@localhost:5432/koed",
+        PG_DUMP_BIN: "pg_dump_test"
+      },
+      options: { command: "create", outputDir: dir, allowPlaintext: true },
+      run: withCollaborationTransportSummaries(async () => {
+        dumpRan = true;
+        return { stdout: "", stderr: "" };
+      }, [brokenSummary])
+    }),
+    /summary contains broken encrypted or outbox links/
+  );
+  assert.equal(dumpRan, false);
 });
 
 test("verifyHostedBackup checks pg_restore list and writes status", async () => {
@@ -425,10 +653,10 @@ test("verifyHostedBackup checks pg_restore list and writes status", async () => 
       API_DATA_ENCRYPTION_KEY: backupEncryptionKey
     },
     options: { command: "create", outputDir: dir },
-    run: async (_command, args) => {
+    run: withCollaborationTransportSummaries(async (_command, args) => {
       fs.writeFileSync(args[args.indexOf("--file") + 1], "backup");
       return { stdout: "", stderr: "" };
-    }
+    })
   });
   const calls = [];
   const result = await verifyHostedBackup({
@@ -466,16 +694,17 @@ test("restoreSmokeHostedBackup restores into an explicit target database", async
       API_DATA_ENCRYPTION_KEY: backupEncryptionKey
     },
     options: { command: "create", outputDir: dir },
-    run: async (_command, args) => {
+    run: withCollaborationTransportSummaries(async (_command, args) => {
       fs.writeFileSync(args[args.indexOf("--file") + 1], "backup");
       return { stdout: "", stderr: "" };
-    }
+    })
   });
   const calls = [];
   const result = await restoreSmokeHostedBackup({
     now: fixedNow,
     env: {
       PG_RESTORE_BIN: "pg_restore_test",
+      PSQL_BIN: "psql_test",
       API_DATA_ENCRYPTION_KEY: backupEncryptionKey
     },
     options: {
@@ -484,26 +713,153 @@ test("restoreSmokeHostedBackup restores into an explicit target database", async
       targetDatabaseUrl: "postgres://restore:secret@localhost/koed_restore",
       confirmRestoreSmokeTarget: "koed_restore"
     },
-    run: async (command, args) => {
-      calls.push({ command, args });
-      assert.equal(fs.readFileSync(args.at(-1), "utf8"), "backup");
-      return { stdout: "", stderr: "" };
-    }
+    run: withCollaborationTransportSummaries(
+      async (command, args, runOptions = {}) => {
+        calls.push({ command, args, runOptions });
+        if (command === "pg_restore_test") {
+          assert.equal(fs.readFileSync(args.at(-1), "utf8"), "backup");
+          return { stdout: "", stderr: "" };
+        }
+        assert.equal(command, "psql_test");
+        const script = postgresScriptForCall(args, runOptions);
+        if (script.includes("restore sentinel seed")) {
+          assert.equal(script.includes("super-secret"), false);
+          assert.equal(script.includes("restoreProof"), false);
+          assert.equal(script.includes("hosted_restore_smoke"), false);
+          assert.match(script, /insert into collaboration_threads/);
+          assert.match(script, /insert into collaboration_messages/);
+          assert.match(script, /insert into encrypted_field_payloads/);
+          assert.match(script, /insert into collaboration_outbox/);
+          return { stdout: "", stderr: "" };
+        }
+        assert.match(script, /thread\.personal_owner_user_id/);
+        return {
+          stdout: `${JSON.stringify(collaborationProbeForBackup(backup))}\n`,
+          stderr: ""
+        };
+      }
+    )
   });
 
-  assert.equal(calls[0].command, "pg_restore_test");
-  assert.deepEqual(calls[0].args, [
+  const restoreCall = calls.find((call) => call.command === "pg_restore_test");
+  assert.deepEqual(restoreCall.args, [
     "--clean",
     "--if-exists",
     "--no-owner",
     "--no-acl",
     "--dbname",
     "postgres://restore:secret@localhost/koed_restore",
-    calls[0].args.at(-1)
+    restoreCall.args.at(-1)
   ]);
+  assert.equal(calls.filter((call) => call.command === "psql_test").length, 2);
   assert.equal(result.status.restoreSmoke, "passed");
+  assert.equal(result.status.collaborationTransportIntegrity, "passed");
+  assert.equal(result.status.collaborationTransportSourceState, "non_empty");
+  assert.equal(result.status.collaborationSyntheticIntegrity, "passed");
+  assert.equal(result.status.collaborationSentinelVersion, 1);
   assert.equal(result.status.encrypted, true);
   assert.equal(result.status.targetDatabaseUrl.includes("secret"), false);
+});
+
+test("restoreSmokeHostedBackup handles an empty collaboration source explicitly", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "koed-backup-empty-"));
+  const backup = await createHostedBackup({
+    now: fixedNow,
+    env: {
+      DATABASE_URL: "postgres://koed:secret@localhost:5432/koed",
+      PG_DUMP_BIN: "pg_dump_test",
+      API_DATA_ENCRYPTION_KEY: backupEncryptionKey
+    },
+    options: { command: "create", outputDir: dir },
+    run: withCollaborationTransportSummaries(
+      async (_command, args) => {
+        fs.writeFileSync(args[args.indexOf("--file") + 1], "empty-backup");
+        return { stdout: "", stderr: "" };
+      },
+      [emptyCollaborationTransportSummary]
+    )
+  });
+  const result = await restoreSmokeHostedBackup({
+    now: fixedNow,
+    env: {
+      PG_RESTORE_BIN: "pg_restore_test",
+      PSQL_BIN: "psql_test",
+      API_DATA_ENCRYPTION_KEY: backupEncryptionKey
+    },
+    options: {
+      command: "restore-smoke",
+      backupFile: backup.backupFile,
+      targetDatabaseUrl: "postgres://restore:secret@localhost/koed_restore",
+      confirmRestoreSmokeTarget: "koed_restore"
+    },
+    run: withCollaborationTransportSummaries(
+      async (command, args, runOptions = {}) => {
+        if (command === "pg_restore_test") {
+          return { stdout: "", stderr: "" };
+        }
+        const script = postgresScriptForCall(args, runOptions);
+        return script.includes("restore sentinel probe")
+          ? {
+              stdout: `${JSON.stringify(collaborationProbeForBackup(backup))}\n`,
+              stderr: ""
+            }
+          : { stdout: "", stderr: "" };
+      },
+      [emptyCollaborationTransportSummary]
+    )
+  });
+
+  assert.equal(result.status.collaborationTransportIntegrity, "passed");
+  assert.equal(result.status.collaborationTransportSourceState, "empty");
+  assert.equal(result.status.collaborationSyntheticIntegrity, "passed");
+});
+
+test("restoreSmokeHostedBackup fails closed when restored collaboration transport differs", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "koed-backup-mismatch-"));
+  const backup = await createHostedBackup({
+    now: fixedNow,
+    env: {
+      DATABASE_URL: "postgres://koed:secret@localhost:5432/koed",
+      PG_DUMP_BIN: "pg_dump_test"
+    },
+    options: { command: "create", outputDir: dir, allowPlaintext: true },
+    run: withCollaborationTransportSummaries(async (_command, args) => {
+      fs.writeFileSync(args[args.indexOf("--file") + 1], "plain-backup");
+      return { stdout: "", stderr: "" };
+    })
+  });
+  const restoredSummary = structuredClone(collaborationTransportSummary);
+  restoredSummary.families.messages.count -= 1;
+  restoredSummary.families.messages.sha256 = digest("7");
+  let syntheticSeedRan = false;
+
+  await assert.rejects(
+    restoreSmokeHostedBackup({
+      now: fixedNow,
+      env: { PG_RESTORE_BIN: "pg_restore_test", PSQL_BIN: "psql_test" },
+      options: {
+        command: "restore-smoke",
+        backupFile: backup.backupFile,
+        targetDatabaseUrl: "postgres://restore:secret@localhost/koed_restore",
+        confirmRestoreSmokeTarget: "koed_restore",
+        allowPlaintext: true
+      },
+      run: withCollaborationTransportSummaries(
+        async (command, args, runOptions = {}) => {
+          if (command === "pg_restore_test") {
+            return { stdout: "", stderr: "" };
+          }
+          syntheticSeedRan ||= postgresScriptForCall(args, runOptions).includes(
+            "restore sentinel seed"
+          );
+          return { stdout: "", stderr: "" };
+        },
+        [restoredSummary]
+      )
+    }),
+    /Restored collaboration data does not match the source backup summary/
+  );
+  assert.equal(syntheticSeedRan, false);
 });
 
 test("restoreSmokeHostedBackup refuses destructive restore without explicit scratch confirmation", async () => {
@@ -551,12 +907,13 @@ test("restoreSmokeHostedBackup fails closed when encrypted archive key is unavai
       API_DATA_ENCRYPTION_KEY: backupEncryptionKey
     },
     options: { command: "create", outputDir: dir },
-    run: async (_command, args) => {
+    run: withCollaborationTransportSummaries(async (_command, args) => {
       fs.writeFileSync(args[args.indexOf("--file") + 1], "backup");
       return { stdout: "", stderr: "" };
-    }
+    })
   });
 
+  const calls = [];
   await assert.rejects(
     restoreSmokeHostedBackup({
       now: fixedNow,
@@ -568,10 +925,74 @@ test("restoreSmokeHostedBackup fails closed when encrypted archive key is unavai
         confirmRestoreSmokeTarget: "koed_restore",
         allowPlaintext: true
       },
-      run: async () => ({ stdout: "", stderr: "" })
+      run: async (...args) => {
+        calls.push(args);
+        return { stdout: "", stderr: "" };
+      }
     }),
     /envelope encryption provider is required/
   );
+  assert.equal(calls.length, 0);
+});
+
+test("restoreSmokeHostedBackup fails closed when a collaboration key reference is not retained", async () => {
+  const dir = await mkdtemp(
+    path.join(os.tmpdir(), "koed-backup-collaboration-keyless-")
+  );
+  const backup = await createHostedBackup({
+    now: fixedNow,
+    env: {
+      DATABASE_URL: "postgres://koed:secret@localhost:5432/koed",
+      PG_DUMP_BIN: "pg_dump_test",
+      API_DATA_ENCRYPTION_KEY: backupEncryptionKey
+    },
+    options: { command: "create", outputDir: dir },
+    run: withCollaborationTransportSummaries(async (_command, args) => {
+      fs.writeFileSync(args[args.indexOf("--file") + 1], "backup");
+      return { stdout: "", stderr: "" };
+    })
+  });
+  backup.manifest.collaborationRestoreSentinel.companions[0].envelope.keyId =
+    "local_test_key:missing-retained-key";
+  fs.writeFileSync(
+    backup.manifestPath,
+    `${JSON.stringify(backup.manifest, null, 2)}\n`
+  );
+
+  const calls = [];
+  await assert.rejects(
+    restoreSmokeHostedBackup({
+      now: fixedNow,
+      env: {
+        PG_RESTORE_BIN: "pg_restore_test",
+        PSQL_BIN: "psql_test",
+        API_DATA_ENCRYPTION_KEY: backupEncryptionKey
+      },
+      options: {
+        command: "restore-smoke",
+        backupFile: backup.backupFile,
+        targetDatabaseUrl: "postgres://restore:secret@localhost/koed_restore",
+        confirmRestoreSmokeTarget: "koed_restore"
+      },
+      run: withCollaborationTransportSummaries(
+        async (command, args, runOptions = {}) => {
+          calls.push(command);
+          if (command === "pg_restore_test") {
+            return { stdout: "", stderr: "" };
+          }
+          const script = postgresScriptForCall(args, runOptions);
+          return script.includes("restore sentinel probe")
+            ? {
+                stdout: `${JSON.stringify(collaborationProbeForBackup(backup))}\n`,
+                stderr: ""
+              }
+            : { stdout: "", stderr: "" };
+        }
+      )
+    }),
+    /key reference does not match the backup provider key/
+  );
+  assert.deepEqual(calls, ["pg_restore_test", "psql_test", "psql_test"]);
 });
 
 test("runHostedBackupCommand writes redacted failure status for restore errors", async () => {
@@ -585,10 +1006,10 @@ test("runHostedBackupCommand writes redacted failure status for restore errors",
       API_DATA_ENCRYPTION_KEY: backupEncryptionKey
     },
     options: { command: "create", outputDir: dir },
-    run: async (_command, args) => {
+    run: withCollaborationTransportSummaries(async (_command, args) => {
       fs.writeFileSync(args[args.indexOf("--file") + 1], "backup");
       return { stdout: "", stderr: "" };
-    }
+    })
   });
 
   fs.writeFileSync(

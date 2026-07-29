@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { createEncryptedJsonPackage } from "@koed/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
+import { rejectUnavailableTeamSharedMemorySurface } from "./team-shared-memory-surface.js";
 import {
   clusterIdParamsSchema,
   clusterMemoriesQuerySchema,
@@ -139,12 +140,16 @@ export const registerGraphRoutes = (
       const repo = requireRepository();
       const query = graphNodesQuerySchema.parse(request.query);
       const user = await authenticateGraphRead(request, query.teamWorkspaceId);
+      rejectUnavailableTeamSharedMemorySurface(query.teamWorkspaceId, "graph");
+      const personalQuery = { ...query };
+      delete personalQuery.teamWorkspaceId;
+      const { ids, ...listQuery } = personalQuery;
       return {
         nodes: await repo.listLcmGraphNodes(
           { userId: user.id },
           {
-            ...query,
-            nodeIds: query.ids
+            ...listQuery,
+            nodeIds: ids
           }
         )
       };
@@ -159,12 +164,12 @@ export const registerGraphRoutes = (
       const params = nodeIdParamsSchema.parse(request.params);
       const query = graphEventDetailQuerySchema.parse(request.query);
       const user = await authenticateGraphRead(request, query.teamWorkspaceId);
+      rejectUnavailableTeamSharedMemorySurface(query.teamWorkspaceId, "graph");
       const node = await repo.getLcmGraphNode(
         { userId: user.id },
         params.nodeId,
         {
-          includeInvalidated: query.includeInvalidated,
-          teamWorkspaceId: query.teamWorkspaceId
+          includeInvalidated: query.includeInvalidated
         }
       );
       return node
@@ -182,8 +187,14 @@ export const registerGraphRoutes = (
       const repo = requireRepository();
       const query = graphEventsQuerySchema.parse(request.query);
       const user = await authenticateGraphRead(request, query.teamWorkspaceId);
+      rejectUnavailableTeamSharedMemorySurface(query.teamWorkspaceId, "graph");
+      const personalQuery = { ...query };
+      delete personalQuery.teamWorkspaceId;
       return {
-        events: await repo.listLcmGraphEvents({ userId: user.id }, query)
+        events: await repo.listLcmGraphEvents(
+          { userId: user.id },
+          personalQuery
+        )
       };
     }
   );
@@ -195,13 +206,11 @@ export const registerGraphRoutes = (
       const repo = requireRepository();
       const query = graphQuerySchema.parse(request.query);
       const user = await authenticateGraphRead(request, query.teamWorkspaceId);
-      if (query.teamWorkspaceId) {
-        return graphThreadIndexResponseSchema.parse({
-          projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
-        });
-      }
+      rejectUnavailableTeamSharedMemorySurface(query.teamWorkspaceId, "graph");
+      const personalQuery = { ...query };
+      delete personalQuery.teamWorkspaceId;
       const cacheKey = `koed:graph:threads:${user.id}:${hashCacheKey(
-        JSON.stringify(query)
+        JSON.stringify(personalQuery)
       )}`;
       const cached = await cacheProvider.getJson<{ projects: unknown }>(
         cacheKey
@@ -210,7 +219,10 @@ export const registerGraphRoutes = (
         return cached;
       }
       const response = graphThreadIndexResponseSchema.parse({
-        projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
+        projects: await repo.listLcmGraphThreads(
+          { userId: user.id },
+          personalQuery
+        )
       });
       await cacheProvider.setJson(cacheKey, response, graphCacheTtlSeconds);
       return response;
@@ -225,10 +237,13 @@ export const registerGraphRoutes = (
       const params = graphEventParamsSchema.parse(request.params);
       const query = graphEventDetailQuerySchema.parse(request.query);
       const user = await authenticateGraphRead(request, query.teamWorkspaceId);
+      rejectUnavailableTeamSharedMemorySurface(query.teamWorkspaceId, "graph");
+      const personalQuery = { ...query };
+      delete personalQuery.teamWorkspaceId;
       const event = await repo.getLcmGraphEvent(
         { userId: user.id },
         params.eventId,
-        query
+        personalQuery
       );
       return event
         ? { event }
@@ -485,6 +500,10 @@ export const registerGraphRoutes = (
             "team_workspace_read"
           )
         : await authenticateApiToken(request);
+      rejectUnavailableTeamSharedMemorySurface(
+        query.team_workspace_id,
+        "expansion"
+      );
       const expanded = await repo.expandMemoryNode(
         params.nodeId,
         {
@@ -493,8 +512,7 @@ export const registerGraphRoutes = (
         {
           searchDomain: query.search_domain,
           sessionId: query.session_id,
-          workspaceId: query.workspace_id,
-          teamWorkspaceId: query.team_workspace_id,
+          projectId: query.project_id,
           recentDays: query.recent_days,
           sourceAfter: query.source_after?.toISOString(),
           sourceBefore: query.source_before?.toISOString()

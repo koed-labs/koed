@@ -15,10 +15,16 @@ import {
   vi
 } from "vitest";
 import type pg from "pg";
-import { createMemoryEngine, estimateTokens } from "@koed/core";
+import {
+  createMemoryEngine,
+  estimateTokens,
+  type MemoryEngineRepository,
+  type SearchMemoryInput
+} from "@koed/core";
 import {
   createLocalWorkQueueRepository,
   createEncryptedPayloadRepository,
+  createCapturedSessionRepository,
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations,
@@ -33,9 +39,11 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
+  crossIdentitySyncPackageRequestHash,
   decryptEnvelopeToUtf8,
   rawConversationTransportChunkGroupId,
   type CapturedSessionSyncPackageV1,
+  type CapturedSessionSyncUploadPackageManifest,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type ManagedKmsKeyring
@@ -67,6 +75,59 @@ const originalPlaintextLexicalSearchEnabled =
 
 const describeDb = runDbTests ? describe : describe.skip;
 
+type HasTeamWorkspaceId<T> = "teamWorkspaceId" extends keyof NonNullable<T>
+  ? true
+  : false;
+
+it("omits Team Workspace scope from generic Personal Memory interfaces", () => {
+  const genericInputs: [
+    HasTeamWorkspaceId<SearchMemoryInput>,
+    HasTeamWorkspaceId<
+      Parameters<MemoryEngineRepository["expandMemoryNode"]>[2]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["listLcmGraphNodes"]>[1]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["getLcmGraphNode"]>[2]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["listLcmGraphEvents"]>[1]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["listLcmGraphThreads"]>[1]
+    >,
+    HasTeamWorkspaceId<
+      Parameters<MemorySourceRepository["getLcmGraphEvent"]>[2]
+    >
+  ] = [false, false, false, false, false, false, false];
+
+  expect(genericInputs).toEqual([
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ]);
+});
+
+const testSyncPackageUploadManifest = (input?: {
+  packageDigest?: string;
+  summaryRevisionHash?: string | null;
+  recordCount?: number;
+}): CapturedSessionSyncUploadPackageManifest => ({
+  objectClass: "sync_package",
+  format: CAPTURED_SESSION_SYNC_FORMAT,
+  formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+  packageDigest: input?.packageDigest ?? "0".repeat(64),
+  summaryRevisionHash: input?.summaryRevisionHash ?? null,
+  recipientKeyId: "test-recipient-key",
+  recipientKeyVersion: 1,
+  recordCount: input?.recordCount ?? 0
+});
+
 const codexCanonicalConversationItemKey = (input: {
   externalThreadId: string;
   externalTurnId: string;
@@ -94,7 +155,7 @@ describeDb("memory repository visibility", () => {
     engine: ReturnType<typeof createMemoryEngine>,
     userId: string,
     input: {
-      workspaceId: string;
+      projectId: string;
       content: string;
       sessionId?: string;
       actor?: "user" | "assistant" | "agent" | "subagent" | "tool" | "system";
@@ -104,7 +165,7 @@ describeDb("memory repository visibility", () => {
   ) =>
     engine.capturePersonalEvent({
       requesterContext: { userId },
-      workspaceId: input.workspaceId,
+      projectId: input.projectId,
       sessionId: input.sessionId,
       actor: input.actor ?? "user",
       eventType: "user_prompt",
@@ -252,6 +313,614 @@ describeDb("memory repository visibility", () => {
     }
   });
 
+  const inviteExistingTeamMember = async (input: {
+    repository?: MemorySourceRepository;
+    actorUserId: string;
+    teamId: string;
+    user: { id: string };
+    role?: "owner" | "admin" | "member";
+    defaultWorkspaceAccess?: "read" | "write";
+  }) => {
+    const repository = input.repository ?? repo;
+    const workspaces = await repository.listTeamWorkspaces(
+      { userId: input.actorUserId },
+      { teamId: input.teamId, includeArchived: true, limit: 200 }
+    );
+    const defaultWorkspace = workspaces
+      ?.slice()
+      .sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id)
+      )[0];
+    if (!defaultWorkspace) {
+      throw new Error("Team default Workspace is unavailable to invite actor");
+    }
+    const userRows = await pool.query<{ email: string }>(
+      "select email from users where id = $1",
+      [input.user.id]
+    );
+    const email = userRows.rows[0]?.email;
+    if (!email) {
+      throw new Error("Existing invite User is unavailable");
+    }
+
+    const tokenHash = `team-invite-${randomUUID()}-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`backend-origin:${randomUUID()}`)
+      .digest("hex");
+    const invite = await repository.createTeamInvite(
+      { userId: input.actorUserId },
+      {
+        teamId: input.teamId,
+        defaultTeamWorkspaceId: defaultWorkspace.id,
+        defaultWorkspaceAccess: input.defaultWorkspaceAccess ?? "read",
+        email,
+        role: input.role ?? "member",
+        backendOriginHash,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    if (!invite) {
+      throw new Error("Team invite creation was denied");
+    }
+
+    const accepted = await repository.acceptTeamInvite({
+      tokenHash,
+      userId: input.user.id,
+      expectedVersion: invite.version,
+      expectedBackendOriginHash: backendOriginHash
+    });
+    if (!accepted) {
+      throw new Error("Existing User could not accept Team invite");
+    }
+    return accepted;
+  };
+
+  const insertValidSharedMemoryGrant = async (input: {
+    ownerUserId: string;
+    sessionId: string;
+    teamId: string;
+    teamWorkspaceId: string;
+    revoked?: boolean;
+    revocationReason?: string;
+  }): Promise<{
+    id: string;
+    logicalMemoryId: string;
+    replicaId: string;
+    consentId: string;
+  }> => {
+    const client = await pool.connect();
+    const hash = () => randomBytes(32).toString("hex");
+    try {
+      await client.query("begin");
+      const session = await client.query<{ owner_user_id: string }>(
+        `select owner_user_id
+           from sessions
+          where id = $1 and owner_user_id = $2 and visibility = 'personal'
+          for update`,
+        [input.sessionId, input.ownerUserId]
+      );
+      if (!session.rows[0]) {
+        throw new Error("Shared Memory fixture session is unavailable");
+      }
+
+      let logicalMemory = (
+        await client.query<{
+          id: string;
+          owner_principal_id: string;
+          origin_deployment_identity_id: string;
+          source_revision: string;
+        }>(
+          `select id, owner_principal_id, origin_deployment_identity_id,
+                  greatest(latest_source_revision, 0)::text as source_revision
+             from logical_memories
+            where owner_user_id = $1 and local_session_id = $2
+            for update`,
+          [input.ownerUserId, input.sessionId]
+        )
+      ).rows[0];
+      if (!logicalMemory) {
+        const sourceDeployment = await client.query<{ id: string }>(
+          `insert into deployment_identities (
+             protocol_deployment_id, locality, profile, display_name
+           ) values ($1, 'remote', 'team_self_hosted', $2)
+           returning id`,
+          [randomUUID(), `Repository test source ${randomUUID()}`]
+        );
+        logicalMemory = (
+          await client.query<{
+            id: string;
+            owner_principal_id: string;
+            origin_deployment_identity_id: string;
+            source_revision: string;
+          }>(
+            `insert into logical_memories (
+               owner_user_id, owner_principal_id,
+               origin_deployment_identity_id, source_boundary,
+               origin_source_id, local_session_id, logical_key,
+               latest_source_revision
+             ) values (
+               $1, $1, $2, 'captured_session', $3::uuid::text, $3::uuid, $4, 1
+             )
+             returning id, owner_principal_id, origin_deployment_identity_id,
+                       latest_source_revision::text as source_revision`,
+            [
+              input.ownerUserId,
+              sourceDeployment.rows[0]!.id,
+              input.sessionId,
+              `repository-test-session:${input.sessionId}`
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let replica = (
+        await client.query<{ id: string }>(
+          `select id
+             from memory_replicas
+            where logical_memory_id = $1
+              and owner_principal_id = $2
+              and replica_role = 'target'
+              and lifecycle = 'active'
+              and encryption_scope = 'owner_private_replica'
+              and disabled_at is null
+            order by case when freshness_status = 'fresh' then 0 else 1 end, id
+            limit 1
+            for update`,
+          [logicalMemory.id, logicalMemory.owner_principal_id]
+        )
+      ).rows[0];
+      if (!replica) {
+        const targetDeployment = await client.query<{ id: string }>(
+          `insert into deployment_identities (
+             protocol_deployment_id, locality, profile, display_name
+           ) values ($1, 'remote', 'team_self_hosted', $2)
+           returning id`,
+          [randomUUID(), `Repository test target ${randomUUID()}`]
+        );
+        replica = (
+          await client.query<{ id: string }>(
+            `insert into memory_replicas (
+               logical_memory_id, deployment_identity_id, owner_user_id,
+               owner_principal_id, replica_role, source_boundary,
+               local_session_id, latest_revision, lifecycle, encryption_scope,
+               freshness_status, representation_policy_revision,
+               content_policy_version
+             ) values (
+               $1, $2, $3, $4, 'target', 'captured_session', $5, $6,
+               'active', 'owner_private_replica', 'fresh', 1, 1
+             ) returning id`,
+            [
+              logicalMemory.id,
+              targetDeployment.rows[0]!.id,
+              input.ownerUserId,
+              logicalMemory.owner_principal_id,
+              input.sessionId,
+              logicalMemory.source_revision
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let ownerPolicy = (
+        await client.query<{ policy_id: string; version: number }>(
+          `select policy_id, version
+             from source_owner_representation_policies
+            where logical_memory_id = $1
+              and source_owner_principal_id = $2
+              and superseded_at is null
+            for update`,
+          [logicalMemory.id, logicalMemory.owner_principal_id]
+        )
+      ).rows[0];
+      if (!ownerPolicy) {
+        ownerPolicy = (
+          await client.query<{ policy_id: string; version: number }>(
+            `insert into source_owner_representation_policies (
+               policy_id, logical_memory_id, source_owner_principal_id,
+               version, allowed_representations, policy_hash,
+               created_by_user_id, effective_at
+             ) values (
+               $1, $2, $3, 1,
+               array['memory_events']::shared_memory_representation[],
+               $4, $5, now()
+             ) returning policy_id, version`,
+            [
+              randomUUID(),
+              logicalMemory.id,
+              logicalMemory.owner_principal_id,
+              hash(),
+              input.ownerUserId
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let teamPolicy = (
+        await client.query<{ policy_id: string; version: number }>(
+          `select policy_id, version
+             from team_representation_policies
+            where team_id = $1 and superseded_at is null
+            for update`,
+          [input.teamId]
+        )
+      ).rows[0];
+      if (!teamPolicy) {
+        teamPolicy = (
+          await client.query<{ policy_id: string; version: number }>(
+            `insert into team_representation_policies (
+               policy_id, team_id, version, allowed_representations,
+               policy_hash, created_by_user_id, effective_at
+             ) values (
+               $1, $2, 1,
+               array['memory_events']::shared_memory_representation[],
+               $3, $4, now()
+             ) returning policy_id, version`,
+            [randomUUID(), input.teamId, hash(), input.ownerUserId]
+          )
+        ).rows[0]!;
+      }
+
+      let workspacePolicy = (
+        await client.query<{ policy_id: string; version: number }>(
+          `select policy_id, version
+             from workspace_representation_policies
+            where team_id = $1 and team_workspace_id = $2
+              and superseded_at is null
+            for update`,
+          [input.teamId, input.teamWorkspaceId]
+        )
+      ).rows[0];
+      if (!workspacePolicy) {
+        workspacePolicy = (
+          await client.query<{ policy_id: string; version: number }>(
+            `insert into workspace_representation_policies (
+               policy_id, team_id, team_workspace_id, version,
+               allowed_representations, policy_hash, created_by_user_id,
+               effective_at
+             ) values (
+               $1, $2, $3, 1,
+               array['memory_events']::shared_memory_representation[],
+               $4, $5, now()
+             ) returning policy_id, version`,
+            [
+              randomUUID(),
+              input.teamId,
+              input.teamWorkspaceId,
+              hash(),
+              input.ownerUserId
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      let provenance = (
+        await client.query<{
+          sync_relationship_id: string;
+          source_deployment_identity_id: string;
+          remote_user_identity_id: string;
+          device_credential_id: string;
+        }>(
+          `select id as sync_relationship_id,
+                  remote_deployment_identity_id as source_deployment_identity_id,
+                  remote_user_identity_id, device_credential_id
+             from cross_identity_sync_relationships
+            where logical_memory_id = $1
+              and local_replica_id = $2
+              and local_user_id = $3
+              and side = 'target'
+              and revoked_at is null
+            limit 1
+            for update`,
+          [logicalMemory.id, replica.id, input.ownerUserId]
+        )
+      ).rows[0];
+      if (!provenance) {
+        const remoteIdentity = await client.query<{ id: string }>(
+          `insert into sync_external_user_identities (
+             deployment_identity_id, external_subject_id
+           ) values ($1, $2)
+           returning id`,
+          [
+            logicalMemory.origin_deployment_identity_id,
+            `repository-test-subject-${randomUUID()}`
+          ]
+        );
+        let deviceCredential = (
+          await client.query<{ id: string }>(
+            `select id
+               from device_credentials
+              where owner_user_id = $1
+                and revoked_at is null
+                and (expires_at is null or expires_at > now())
+                and 'sync' = any(operation_families)
+              order by created_at
+              limit 1
+              for update`,
+            [input.ownerUserId]
+          )
+        ).rows[0];
+        if (!deviceCredential) {
+          deviceCredential = (
+            await client.query<{ id: string }>(
+              `insert into device_credentials (
+                 owner_user_id, credential_key_id, upstream_backend_id,
+                 device_instance_id, verifier_kind, verifier_hash,
+                 operation_families
+               ) values (
+                 $1, $2, $3, $4, 'secret_hash', $5, array['sync']::text[]
+               ) returning id`,
+              [
+                input.ownerUserId,
+                `repository-test-${randomUUID()}`,
+                `repository-test-backend-${randomUUID()}`,
+                `repository-test-device-${randomUUID()}`,
+                hash()
+              ]
+            )
+          ).rows[0]!;
+        }
+        provenance = (
+          await client.query<{
+            sync_relationship_id: string;
+            source_deployment_identity_id: string;
+            remote_user_identity_id: string;
+            device_credential_id: string;
+          }>(
+            `insert into cross_identity_sync_relationships (
+               logical_memory_id, side, local_replica_id, local_user_id,
+               device_credential_id, remote_deployment_identity_id,
+               remote_user_identity_id, remote_replica_id, source_boundary,
+               sync_mode, state, idempotency_key, creation_request_hash,
+               source_cursor, target_processing_cursor, package_sequence,
+               last_synced_at
+             ) values (
+               $1, 'target', $2, $3, $4, $5, $6, $7, 'captured_session',
+               'live', 'ready', $8, $9, $10, $10, 0, now()
+             ) returning id as sync_relationship_id,
+                         remote_deployment_identity_id as source_deployment_identity_id,
+                         remote_user_identity_id, device_credential_id`,
+            [
+              logicalMemory.id,
+              replica.id,
+              input.ownerUserId,
+              deviceCredential.id,
+              logicalMemory.origin_deployment_identity_id,
+              remoteIdentity.rows[0]!.id,
+              randomUUID(),
+              `repository-test-sync-${randomUUID()}`,
+              hash(),
+              logicalMemory.source_revision
+            ]
+          )
+        ).rows[0]!;
+      }
+
+      const sourceHash = hash();
+      const redactedContentHash = hash();
+      const representationPolicyHash = hash();
+      const contentPolicyHash = hash();
+      const classifierHash = hash();
+      const sourceArtifactId = randomUUID();
+      await client.query(
+        `insert into shared_source_artifacts (
+           id, logical_memory_id, remote_replica_id, sync_relationship_id,
+           owner_user_id, owner_principal_id, team_id, team_workspace_id,
+           representation, source_revision, source_cursor, package_sequence,
+           source_hash, manifest_hash, artifact_hash, redacted_content_hash,
+           source_owner_policy_id, source_owner_policy_version,
+           team_policy_id, team_policy_version, workspace_policy_id,
+           workspace_policy_version, representation_policy_revision,
+           representation_policy_hash, content_policy_version,
+           content_policy_hash, classifier_version, classifier_hash,
+           source_deployment_identity_id, remote_user_identity_id,
+           device_credential_id, device_provenance_hash
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events',
+           $9, $9, 0, $10, $11, $12, $13, $14, $15, $16, $17,
+           $18, $19, 1, $20, 1, $21, 1, $22, $23, $24, $25, $26
+         )`,
+        [
+          sourceArtifactId,
+          logicalMemory.id,
+          replica.id,
+          provenance.sync_relationship_id,
+          input.ownerUserId,
+          logicalMemory.owner_principal_id,
+          input.teamId,
+          input.teamWorkspaceId,
+          logicalMemory.source_revision,
+          sourceHash,
+          hash(),
+          hash(),
+          redactedContentHash,
+          ownerPolicy.policy_id,
+          ownerPolicy.version,
+          teamPolicy.policy_id,
+          teamPolicy.version,
+          workspacePolicy.policy_id,
+          workspacePolicy.version,
+          representationPolicyHash,
+          contentPolicyHash,
+          classifierHash,
+          provenance.source_deployment_identity_id,
+          provenance.remote_user_identity_id,
+          provenance.device_credential_id,
+          hash()
+        ]
+      );
+      const previewId = randomUUID();
+      const previewHash = hash();
+      await client.query(
+        `insert into shared_source_previews (
+           id, source_artifact_id, logical_memory_id, remote_replica_id,
+           owner_user_id, owner_principal_id, team_id, team_workspace_id,
+           representation, preview_revision, preview_hash, source_revision,
+           source_hash, redacted_content_hash
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events', 1,
+           $9, $10, $11, $12
+         )`,
+        [
+          previewId,
+          sourceArtifactId,
+          logicalMemory.id,
+          replica.id,
+          input.ownerUserId,
+          logicalMemory.owner_principal_id,
+          input.teamId,
+          input.teamWorkspaceId,
+          previewHash,
+          logicalMemory.source_revision,
+          sourceHash,
+          redactedContentHash
+        ]
+      );
+
+      const consentId = randomUUID();
+      await client.query(
+        `insert into source_owner_representation_consents (
+           id, logical_memory_id, remote_replica_id,
+           source_owner_principal_id, team_id, team_workspace_id,
+           source_owner_policy_id, source_owner_policy_version,
+           team_policy_id, team_policy_version, workspace_policy_id,
+           workspace_policy_version, mode, state, consent_version,
+           allowed_representations, selected_representation, preview_id,
+           preview_revision, preview_hash, source_revision,
+           maximum_authorized_source_revision,
+           source_hash, representation_policy_revision,
+           representation_policy_hash, content_policy_version,
+           content_policy_hash, classifier_version, classifier_hash,
+           redacted_content_hash, activated_at
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+           'continuous', 'active', 1,
+           array['memory_events']::shared_memory_representation[],
+           'memory_events', $13, 1, $14, $15, null, $16, 1, $17, 1,
+           $18, 1, $19, $20, now()
+         )`,
+        [
+          consentId,
+          logicalMemory.id,
+          replica.id,
+          logicalMemory.owner_principal_id,
+          input.teamId,
+          input.teamWorkspaceId,
+          ownerPolicy.policy_id,
+          ownerPolicy.version,
+          teamPolicy.policy_id,
+          teamPolicy.version,
+          workspacePolicy.policy_id,
+          workspacePolicy.version,
+          previewId,
+          previewHash,
+          logicalMemory.source_revision,
+          sourceHash,
+          representationPolicyHash,
+          contentPolicyHash,
+          classifierHash,
+          redactedContentHash
+        ]
+      );
+
+      const grant = await client.query<{ id: string }>(
+        `insert into team_session_share_grants (
+           logical_grant_id, logical_memory_id, remote_replica_id,
+           owner_user_id, owner_principal_id, session_id, team_id,
+           team_workspace_id, consent_id, source_owner_policy_id,
+           source_owner_policy_version, team_policy_id, team_policy_version,
+           workspace_policy_id, workspace_policy_version,
+           owner_allowed_representations, active_representation,
+           representation_policy_revision, content_policy_version,
+           classifier_version, source_revision, grant_version, lifecycle,
+           creator_authority, granted_by_user_id, revoked_at,
+           revoked_by_user_id, revocation_reason
+         ) values (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+           $14, $15,
+           array['memory_events']::shared_memory_representation[],
+           'memory_events', 1, 1, 1, $16, 1, $17,
+           'repository_test_fixture', $4,
+           case when $18::boolean then now() else null end,
+           case when $18::boolean then $4::uuid else null end,
+           case when $18::boolean then $19::text else null end
+         ) returning id`,
+        [
+          randomUUID(),
+          logicalMemory.id,
+          replica.id,
+          input.ownerUserId,
+          logicalMemory.owner_principal_id,
+          input.sessionId,
+          input.teamId,
+          input.teamWorkspaceId,
+          consentId,
+          ownerPolicy.policy_id,
+          ownerPolicy.version,
+          teamPolicy.policy_id,
+          teamPolicy.version,
+          workspacePolicy.policy_id,
+          workspacePolicy.version,
+          logicalMemory.source_revision,
+          input.revoked ? "revoked" : "active",
+          input.revoked ?? false,
+          input.revocationReason ?? "repository_test_revoked"
+        ]
+      );
+      await client.query("commit");
+      return {
+        id: grant.rows[0]!.id,
+        logicalMemoryId: logicalMemory.id,
+        replicaId: replica.id,
+        consentId
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+
+  const installRejectingTrigger = async (input: {
+    table:
+      | "team_workspace_access_grants"
+      | "team_invites"
+      | "collaboration_outbox";
+    operation: "insert" | "update";
+    predicate: string;
+  }) => {
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `repository_test_reject_${suffix}`;
+    const triggerName = `repository_test_reject_${suffix}`;
+    await pool.query(`
+      create function ${functionName}() returns trigger
+      language plpgsql
+      as $$
+      begin
+        if ${input.predicate} then
+          raise exception 'repository test failure injection';
+        end if;
+        return new;
+      end
+      $$
+    `);
+    await pool.query(`
+      create trigger ${triggerName}
+      before ${input.operation} on ${input.table}
+      for each row execute function ${functionName}()
+    `);
+
+    return async () => {
+      await pool.query(
+        `drop trigger if exists ${triggerName} on ${input.table}`
+      );
+      await pool.query(`drop function if exists ${functionName}()`);
+    };
+  };
+
   beforeAll(async () => {
     process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "5";
     process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD = "6000";
@@ -260,6 +929,109 @@ describeDb("memory repository visibility", () => {
     pool = createDbPool({ connectionString: databaseUrl });
     repo = createMemorySourceRepository(pool);
     await runDbMigrations(pool);
+  });
+
+  it("runs Personal Device relay cleanup against PostgreSQL", async () => {
+    const result = await repo.cleanupPdsRelay(new Date());
+    expect(typeof result.expired).toBe("number");
+    expect(typeof result.deleted).toBe("number");
+  });
+
+  it("claims an empty encrypted conversation-source restore queue", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 31).toString("base64")
+      )
+    });
+
+    await expect(
+      encryptedRepo.claimConversationSourceRestoreJobs({
+        workerId: randomUUID(),
+        leaseMs: 180_000,
+        limit: 4
+      })
+    ).resolves.toEqual(expect.any(Array));
+  });
+
+  it("queues registration before ordinary captured source replication", async () => {
+    const owner = await repo.createUser({
+      email: `source-registration-${randomUUID()}@example.com`
+    });
+    const externalSessionId = `source-registration-${randomUUID()}`;
+    const sourceCreatedAt = new Date().toISOString();
+    await repo.upsertPersonalSourceReplicationPolicy(
+      { userId: owner.id },
+      {
+        enabled: true,
+        targetUpstreamId: "remote-personal",
+        mode: "hosted_personal",
+        effectiveFrom: new Date(Date.now() - 1_000).toISOString()
+      }
+    );
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const sourceGenerationId = randomUUID();
+    const artifact = await repo.ensureConversationSourceArtifact(
+      { userId: owner.id },
+      {
+        sessionId: session.id,
+        logicalSourceId: randomUUID(),
+        sourceGenerationId,
+        replicaRole: "origin_local",
+        sourceKind: "codex",
+        sourceRuntime: "codex",
+        externalSessionId,
+        sourceFingerprint: createHash("sha256")
+          .update(externalSessionId)
+          .digest("hex"),
+        artifactFormat: "jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v1",
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        currentSourceLength: 0,
+        sourceCreatedAt,
+        storageProvider: "filesystem",
+        storagePrefix: `source-registration-${randomUUID()}`,
+        originDeploymentId: randomUUID(),
+        originDeviceId: randomUUID(),
+        originKeyId: randomUUID(),
+        originPublicKey: Buffer.alloc(32, 7).toString("base64url"),
+        redactedSourceLabel: "Codex session"
+      }
+    );
+
+    const rows = await pool.query<{
+      operation_kind: string;
+      target_upstream_id: string;
+      mode: string;
+      source_generation_id: string;
+    }>(
+      `select outbox.operation_kind, outbox.target_upstream_id, outbox.mode,
+              artifact.source_generation_id
+         from conversation_source_replication_outbox outbox
+         join conversation_source_artifacts artifact
+           on artifact.id = outbox.artifact_id
+        where outbox.artifact_id = $1`,
+      [artifact.id]
+    );
+
+    expect(rows.rows).toEqual([
+      {
+        operation_kind: "registration",
+        target_upstream_id: "remote-personal",
+        mode: "hosted_personal",
+        source_generation_id: sourceGenerationId
+      }
+    ]);
   });
 
   it("binds local sync deployment to verified protocol identity without replacement", async () => {
@@ -295,6 +1067,799 @@ describeDb("memory repository visibility", () => {
       id: local.id,
       protocolDeploymentId: verifiedDeploymentId
     });
+  });
+
+  it("releases blocked managed commands only for the exact source and target", async () => {
+    const owner = await repo.createUser({
+      email: `managed-blocked-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await repo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "managed-blocked-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [claimed] = await repo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId: "managed-blocked-runner",
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(claimed?.id).toBe(managed.command.id);
+    const sourceGenerationId = randomUUID();
+    expect(
+      await repo.blockManagedConversationCommand({
+        commandId: claimed!.id,
+        leaseToken: claimed!.leaseToken!,
+        sourceGenerationId,
+        readiness: "registered",
+        errorCode: "ManagedConversationSourceReplicaPendingError"
+      })
+    ).toBe(true);
+    expect(
+      await repo.releaseManagedConversationCommandsForSourceGeneration({
+        ownerUserId: owner.id,
+        sourceGenerationId,
+        targetDeploymentId: deploymentId,
+        targetDeviceId: randomUUID()
+      })
+    ).toBe(0);
+    expect(
+      await repo.releaseManagedConversationCommandsForSourceGeneration({
+        ownerUserId: owner.id,
+        sourceGenerationId: randomUUID(),
+        targetDeploymentId: deploymentId,
+        targetDeviceId: deviceId
+      })
+    ).toBe(0);
+    expect(
+      await repo.releaseManagedConversationCommandsForSourceGeneration({
+        ownerUserId: owner.id,
+        sourceGenerationId,
+        targetDeploymentId: deploymentId,
+        targetDeviceId: deviceId,
+        readiness: "finalized"
+      })
+    ).toBe(0);
+    expect(
+      await repo.releaseManagedConversationCommandsForSourceGeneration({
+        ownerUserId: owner.id,
+        sourceGenerationId,
+        targetDeploymentId: deploymentId,
+        targetDeviceId: deviceId,
+        readiness: "registered"
+      })
+    ).toBe(1);
+    const [reclaimed] = await repo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId: "managed-blocked-runner",
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(reclaimed?.id).toBe(managed.command.id);
+  });
+
+  it("keeps a managed start unclaimable until its exact runner binding is ready", async () => {
+    const owner = await repo.createUser({
+      email: `managed-runtime-ready-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await repo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "managed-runtime-ready-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID(),
+        deferUntilRuntimeBinding: true
+      }
+    );
+
+    expect(managed.command).toMatchObject({
+      state: "blocked",
+      blockedOnKind: "runtime_binding",
+      blockedOnId: managed.execution.id
+    });
+    await expect(
+      repo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId: "managed-runtime-ready-runner",
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      })
+    ).resolves.toEqual([]);
+    await expect(
+      repo.releaseManagedConversationStartForRuntimeBinding({
+        ownerUserId: owner.id,
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId: randomUUID()
+      })
+    ).resolves.toBe(false);
+    await expect(
+      repo.releaseManagedConversationStartForRuntimeBinding({
+        ownerUserId: owner.id,
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toBe(true);
+    await expect(
+      repo.releaseManagedConversationStartForRuntimeBinding({
+        ownerUserId: owner.id,
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toBe(true);
+    const [claimed] = await repo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId: "managed-runtime-ready-runner",
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(claimed?.id).toBe(managed.command.id);
+  });
+
+  it("marks an abandoned non-replayable prompt indeterminate without resubmitting it", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 37).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-abandoned-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-abandoned-runner";
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "managed-abandoned-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const running = await protectedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: start!.executionGeneration,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await protectedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    const prompt = await protectedRepo.enqueueManagedConversationPrompt(
+      { userId: owner.id },
+      {
+        executionId: running.id,
+        executionGeneration: running.executionGeneration,
+        idempotencyKey: randomUUID(),
+        prompt: "This must not be submitted twice."
+      }
+    );
+    const [claimed] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(claimed?.id).toBe(prompt.id);
+    await pool.query(
+      `update managed_conversation_commands
+          set lease_expires_at = now() - interval '1 second'
+        where id = $1`,
+      [prompt.id]
+    );
+    expect(
+      await protectedRepo.reconcileAbandonedManagedConversationCommands({
+        ownerUserId: owner.id,
+        deploymentId,
+        deviceId: randomUUID()
+      })
+    ).toBe(0);
+    expect(
+      await protectedRepo.reconcileAbandonedManagedConversationCommands({
+        ownerUserId: owner.id,
+        deploymentId,
+        deviceId
+      })
+    ).toBe(1);
+    await expect(
+      protectedRepo.getManagedConversationCommand(
+        { userId: owner.id },
+        prompt.id
+      )
+    ).resolves.toMatchObject({
+      state: "indeterminate",
+      lastErrorCode: "ManagedConversationRunnerInterruptedError"
+    });
+    await expect(
+      protectedRepo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      })
+    ).resolves.toEqual([]);
+  });
+
+  it("reacquires an expired managed execution lease only on its assigned device and generation", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 43).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-reacquire-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "managed-reacquire-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId: "original-runner",
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    await protectedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: start!.executionGeneration,
+        runnerId: "original-runner",
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await pool.query(
+      `update managed_conversation_executions
+          set runner_lease_expires_at = now() - interval '1 second'
+        where id = $1`,
+      [managed.execution.id]
+    );
+
+    await expect(
+      protectedRepo.acquireManagedConversationExecutionLease({
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId: randomUUID(),
+        runnerId: "recovered-runner",
+        leaseMs: 60_000
+      })
+    ).resolves.toBe(false);
+    await expect(
+      protectedRepo.acquireManagedConversationExecutionLease({
+        executionId: managed.execution.id,
+        executionGeneration: 2,
+        deploymentId,
+        deviceId,
+        runnerId: "recovered-runner",
+        leaseMs: 60_000
+      })
+    ).resolves.toBe(false);
+    await expect(
+      protectedRepo.acquireManagedConversationExecutionLease({
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId,
+        runnerId: "recovered-runner",
+        leaseMs: 60_000
+      })
+    ).resolves.toBe(true);
+    await expect(
+      protectedRepo.getManagedConversationExecution(
+        { userId: owner.id },
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({
+      runnerId: "recovered-runner"
+    });
+  });
+
+  it("atomically cancels unsettled lifecycle commands when a fork fails cleanly", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 47).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-fork-failure-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-fork-failure-runner";
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "managed-fork-failure-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    await protectedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: start!.executionGeneration,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await protectedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    await expect(
+      protectedRepo.releaseManagedConversationRunner({
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        runnerId
+      })
+    ).resolves.toBe(true);
+    const operationId = randomUUID();
+    const fork = await protectedRepo.requestManagedConversationFork(
+      { userId: owner.id },
+      {
+        parentExecutionId: managed.execution.id,
+        operationId,
+        sourceDeploymentId: deploymentId,
+        sourceDeviceId: deviceId,
+        targetDeploymentId: randomUUID(),
+        targetDeviceId: randomUUID(),
+        reason: "user_requested"
+      }
+    );
+    const [prepare] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(prepare?.commandKind).toBe("fork_prepare");
+
+    await protectedRepo.failManagedConversationFork(
+      { userId: owner.id },
+      {
+        forkId: fork.id,
+        expectedStateVersion: fork.stateVersion,
+        deviceId,
+        state: "failed",
+        failureCode: "ManagedConversationForkPreparationError"
+      }
+    );
+    const command = await pool.query<{
+      state: string;
+      lease_token: string | null;
+      last_error_code: string | null;
+    }>(
+      `select state, lease_token, last_error_code
+         from managed_conversation_commands
+        where owner_user_id = $1 and idempotency_key = $2`,
+      [owner.id, `fork:${operationId}:prepare`]
+    );
+    expect(command.rows).toEqual([
+      {
+        state: "canceled",
+        lease_token: null,
+        last_error_code: "ManagedConversationForkPreparationError"
+      }
+    ]);
+  });
+
+  it("starts handoff for an idle running execution on its durable source device", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 48).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-idle-handoff-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-idle-handoff-runner";
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "managed-idle-handoff-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    await protectedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: start!.executionGeneration,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await protectedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    await expect(
+      protectedRepo.releaseManagedConversationRunner({
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        runnerId
+      })
+    ).resolves.toBe(true);
+
+    await expect(
+      protectedRepo.requestManagedConversationHandoff(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          operationId: randomUUID(),
+          sourceDeploymentId: deploymentId,
+          sourceDeviceId: randomUUID(),
+          targetDeploymentId: randomUUID(),
+          targetDeviceId: randomUUID()
+        }
+      )
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "managed_conversation_handoff_source_not_writable"
+    });
+
+    const handoff = await protectedRepo.requestManagedConversationHandoff(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        operationId: randomUUID(),
+        sourceDeploymentId: deploymentId,
+        sourceDeviceId: deviceId,
+        targetDeploymentId: randomUUID(),
+        targetDeviceId: randomUUID()
+      }
+    );
+    expect(handoff).toMatchObject({
+      executionId: managed.execution.id,
+      sourceDeploymentId: deploymentId,
+      sourceDeviceId: deviceId,
+      state: "quiesce_requested"
+    });
+
+    const [quiesce] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(quiesce?.commandKind).toBe("quiesce");
+    expect(quiesce?.execution.runnerId).toBe(runnerId);
+  });
+
+  it("binds one immutable source generation to a running managed execution", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 41).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-source-generation-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-source-generation-runner";
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "managed-source-generation-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const running = await protectedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: start!.executionGeneration,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    const sourceGenerationId = randomUUID();
+    const bound = await protectedRepo.bindManagedConversationSourceGeneration(
+      { userId: owner.id },
+      {
+        executionId: running.id,
+        executionGeneration: running.executionGeneration,
+        runnerId,
+        sourceGenerationId
+      }
+    );
+    expect(bound.sourceGenerationId).toBe(sourceGenerationId);
+    expect(bound.stateVersion).toBe(running.stateVersion + 1);
+    await expect(
+      protectedRepo.bindManagedConversationSourceGeneration(
+        { userId: owner.id },
+        {
+          executionId: running.id,
+          executionGeneration: running.executionGeneration,
+          runnerId,
+          expectedSourceGenerationId: sourceGenerationId,
+          sourceGenerationId
+        }
+      )
+    ).resolves.toMatchObject({
+      sourceGenerationId,
+      stateVersion: bound.stateVersion
+    });
+    const replacementSourceGenerationId = randomUUID();
+    const replaced =
+      await protectedRepo.bindManagedConversationSourceGeneration(
+        { userId: owner.id },
+        {
+          executionId: running.id,
+          executionGeneration: running.executionGeneration,
+          runnerId,
+          expectedSourceGenerationId: sourceGenerationId,
+          sourceGenerationId: replacementSourceGenerationId
+        }
+      );
+    expect(replaced.sourceGenerationId).toBe(replacementSourceGenerationId);
+    expect(replaced.stateVersion).toBe(bound.stateVersion + 1);
+    await expect(
+      protectedRepo.bindManagedConversationSourceGeneration(
+        { userId: owner.id },
+        {
+          executionId: running.id,
+          executionGeneration: running.executionGeneration,
+          runnerId,
+          expectedSourceGenerationId: sourceGenerationId,
+          sourceGenerationId: randomUUID()
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("stores development workspaces as exact encrypted resumable chunks", async () => {
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 41).toString("base64")
+    );
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const owner = await protectedRepo.createUser({
+      email: `workspace-chunks-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        projectId: "workspace-chunks-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const snapshotId = randomUUID();
+    const operationId = randomUUID();
+    const sourceGenerationId = randomUUID();
+    await protectedRepo.beginDevelopmentWorkspaceSnapshot(
+      { userId: owner.id },
+      {
+        id: snapshotId,
+        executionId: managed.execution.id,
+        operationKind: "handoff",
+        operationId,
+        sourceGenerationId,
+        sourceDeploymentId: deploymentId,
+        sourceDeviceId: deviceId
+      }
+    );
+    const values = [
+      Buffer.from("first workspace chunk"),
+      Buffer.from("second")
+    ];
+    for (const [chunkIndex, bytes] of values.entries()) {
+      const plaintextDigest = createHash("sha256").update(bytes).digest("hex");
+      const envelope = await provider.encrypt({
+        plaintext: bytes,
+        scope: {
+          tenantId: owner.id,
+          objectClass: "development_workspace_snapshot_chunk"
+        },
+        provenance: {
+          rowFamily: "development_workspace_snapshot_chunks",
+          sourceId: `${snapshotId}:${chunkIndex}`
+        },
+        ciphertextLocation:
+          "development_workspace_snapshot_chunks.encryption_envelope",
+        aad: {
+          ownerUserId: owner.id,
+          operationId,
+          snapshotId,
+          chunkIndex,
+          chunkCount: values.length,
+          plaintextDigest
+        }
+      });
+      const ciphertext = Buffer.from(envelope.ciphertext, "base64url");
+      const stored = await protectedRepo.putDevelopmentWorkspaceSnapshotChunk(
+        { userId: owner.id },
+        {
+          snapshotId,
+          operationKind: "handoff",
+          operationId,
+          chunkIndex,
+          chunkCount: values.length,
+          plaintextDigest,
+          plaintextByteCount: bytes.byteLength,
+          ciphertextDigest: createHash("sha256")
+            .update(ciphertext)
+            .digest("hex"),
+          encryptedByteCount: ciphertext.byteLength,
+          encryptionEnvelope: envelope
+        }
+      );
+      expect(stored).toEqual({ stored: true, replayed: false });
+      await expect(
+        protectedRepo.putDevelopmentWorkspaceSnapshotChunk(
+          { userId: owner.id },
+          {
+            snapshotId,
+            operationKind: "handoff",
+            operationId,
+            chunkIndex,
+            chunkCount: values.length,
+            plaintextDigest,
+            plaintextByteCount: bytes.byteLength,
+            ciphertextDigest: createHash("sha256")
+              .update(ciphertext)
+              .digest("hex"),
+            encryptedByteCount: ciphertext.byteLength,
+            encryptionEnvelope: envelope
+          }
+        )
+      ).resolves.toEqual({ stored: true, replayed: true });
+      if (chunkIndex === 0) {
+        await expect(
+          protectedRepo.finalizeDevelopmentWorkspaceSnapshot(
+            { userId: owner.id },
+            {
+              snapshotId,
+              operationKind: "handoff",
+              operationId,
+              manifestDigest: "a".repeat(64),
+              sourceStateDigest: "b".repeat(64),
+              packageDigest: "c".repeat(64),
+              packageByteCount: values.reduce(
+                (total, value) => total + value.byteLength,
+                0
+              ),
+              chunkCount: values.length,
+              readinessEvidence: { integrity: "verified" }
+            }
+          )
+        ).rejects.toMatchObject({ statusCode: 409 });
+      }
+    }
+    const packageBytes = Buffer.concat(values);
+    const ready = await protectedRepo.finalizeDevelopmentWorkspaceSnapshot(
+      { userId: owner.id },
+      {
+        snapshotId,
+        operationKind: "handoff",
+        operationId,
+        manifestDigest: "a".repeat(64),
+        sourceStateDigest: "b".repeat(64),
+        packageDigest: createHash("sha256").update(packageBytes).digest("hex"),
+        packageByteCount: packageBytes.byteLength,
+        chunkCount: values.length,
+        readinessEvidence: { integrity: "verified" }
+      }
+    );
+    expect(ready).toMatchObject({
+      id: snapshotId,
+      state: "ready",
+      chunkCount: values.length,
+      packageByteCount: packageBytes.byteLength
+    });
+    const recovered: Buffer[] = [];
+    for (let chunkIndex = 0; chunkIndex < values.length; chunkIndex += 1) {
+      const chunk = await protectedRepo.getDevelopmentWorkspaceSnapshotChunk(
+        { userId: owner.id },
+        {
+          snapshotId,
+          operationKind: "handoff",
+          operationId,
+          chunkIndex
+        }
+      );
+      expect(chunk).not.toBeNull();
+      recovered.push(
+        Buffer.from(await provider.decrypt(chunk!.encryptionEnvelope))
+      );
+    }
+    expect(Buffer.concat(recovered)).toEqual(packageBytes);
   });
 
   it("requeues a completed deterministic local job", async () => {
@@ -388,12 +1953,16 @@ describeDb("memory repository visibility", () => {
           workflow_token_usage,
           memory_nodes,
           memory_events,
+          historical_import_sources,
+          historical_import_runs,
+          conversation_source_consumer_cursors,
+          conversation_source_segments,
+          conversation_source_artifacts,
           conversation_items,
           tool_events,
           messages,
           turns,
           sessions,
-          workspaces,
           user_sessions,
           users
         restart identity cascade
@@ -836,7 +2405,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         visibility: "personal",
-        workspaceId: "encrypted-backfill",
+        projectId: "encrypted-backfill",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -849,7 +2418,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         visibility: "personal",
-        workspaceId: "encrypted-backfill",
+        projectId: "encrypted-backfill",
         actor: "assistant",
         eventType: "captured",
         rawEventType: "agent_message",
@@ -933,7 +2502,7 @@ describeDb("memory repository visibility", () => {
     );
     expect(decrypted?.plaintext).toMatchObject({
       content: "First commercial Memory Event payload.",
-      workspaceId: "encrypted-backfill"
+      projectId: "encrypted-backfill"
     });
 
     await expect(
@@ -999,7 +2568,7 @@ describeDb("memory repository visibility", () => {
       { userId: failureOwner.id },
       {
         visibility: "personal",
-        workspaceId: "encrypted-backfill-failure",
+        projectId: "encrypted-backfill-failure",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -1012,7 +2581,7 @@ describeDb("memory repository visibility", () => {
       { userId: failureOwner.id },
       {
         visibility: "personal",
-        workspaceId: "encrypted-backfill-failure",
+        projectId: "encrypted-backfill-failure",
         actor: "assistant",
         eventType: "captured",
         rawEventType: "agent_message",
@@ -1142,7 +2711,7 @@ describeDb("memory repository visibility", () => {
         sourceColumn: "payload",
         plaintext: {
           content: "managed KMS rotated memory payload",
-          workspaceId: "encrypted-rewrap"
+          projectId: "encrypted-rewrap"
         },
         scope: {
           tenantId: owner.id,
@@ -1154,6 +2723,36 @@ describeDb("memory repository visibility", () => {
       providerMode: "managed_kms",
       keyVersion: 1
     });
+
+    const dryRunRewrap = vi.fn(rotatedProvider.rewrap!.bind(rotatedProvider));
+    const dryRun = await encryptedRepo.rewrapEncryptedFieldBatch(
+      { ...rotatedProvider, rewrap: dryRunRewrap },
+      {
+        ownerUserId: owner.id,
+        sourceTable: "memory_events",
+        sourceColumn: "payload",
+        batchSize: 10,
+        dryRun: true
+      }
+    );
+    expect(dryRun).toMatchObject({
+      processedRows: 1,
+      rewrappedRows: 0,
+      wouldRewrapRows: 1,
+      failedRows: 0,
+      done: true
+    });
+    expect(dryRunRewrap).not.toHaveBeenCalled();
+    const afterDryRun = await encryptedRepo.getAuthorizedEncryptedField(
+      { userId: owner.id },
+      {
+        sourceTable: "memory_events",
+        sourceId,
+        sourceColumn: "payload"
+      }
+    );
+    expect(afterDryRun?.envelope.keyVersion).toBe(1);
+    expect(afterDryRun?.envelope.reencryptedAt).toBeNull();
 
     const rewrap = await encryptedRepo.rewrapEncryptedFieldBatch(
       rotatedProvider,
@@ -1167,6 +2766,7 @@ describeDb("memory repository visibility", () => {
     expect(rewrap).toMatchObject({
       processedRows: 1,
       rewrappedRows: 1,
+      wouldRewrapRows: 0,
       failedRows: 0,
       done: true
     });
@@ -1234,7 +2834,7 @@ describeDb("memory repository visibility", () => {
         sourceColumn: "payload",
         plaintext: {
           content: `forced rewrap ${suffix}`,
-          workspaceId: "encrypted-force-rewrap"
+          projectId: "encrypted-force-rewrap"
         },
         scope: {
           tenantId: owner.id,
@@ -1302,7 +2902,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         visibility: "personal",
-        workspaceId: "encrypted-projection",
+        projectId: "encrypted-projection",
         actor: "assistant",
         eventType: "captured",
         rawEventType: "agent_message",
@@ -1342,7 +2942,7 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       plaintext: {
         content: "Projection-created Memory Event should have ciphertext.",
-        workspaceId: "encrypted-projection"
+        projectId: "encrypted-projection"
       }
     });
   });
@@ -1361,7 +2961,7 @@ describeDb("memory repository visibility", () => {
           { userId: owner.id },
           {
             visibility: "personal",
-            workspaceId: "managed-cloud-no-provider",
+            projectId: "managed-cloud-no-provider",
             actor: "assistant",
             eventType: "captured",
             rawEventType: "agent_turn",
@@ -1406,7 +3006,7 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           visibility: "personal",
-          workspaceId: "managed-cloud-encrypted-event",
+          projectId: "managed-cloud-encrypted-event",
           actor: "assistant",
           eventType: "captured",
           rawEventType: "agent_turn",
@@ -1461,7 +3061,7 @@ describeDb("memory repository visibility", () => {
       ).resolves.toMatchObject({
         plaintext: {
           content: sentinel,
-          workspaceId: "managed-cloud-encrypted-event"
+          projectId: "managed-cloud-encrypted-event"
         }
       });
 
@@ -1505,7 +3105,7 @@ describeDb("memory repository visibility", () => {
           { userId: owner.id },
           {
             visibility: "personal",
-            workspaceId,
+            projectId: workspaceId,
             actor: "user",
             eventType: "captured",
             rawEventType: "user_prompt",
@@ -1782,7 +3382,7 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           visibility: "personal",
-          workspaceId: "managed-cloud-embedding-source",
+          projectId: "managed-cloud-embedding-source",
           actor: "assistant",
           eventType: "captured",
           rawEventType: "agent_turn",
@@ -1888,7 +3488,7 @@ describeDb("memory repository visibility", () => {
               {
                 sourceKind: "codex",
                 sourceAdapterVersion: "codex-transcript-v1",
-                sourceTransport: "hook",
+                sourceTransport: "transcript",
                 sourceRecordType: "event_msg",
                 sourceEventType: "user_message",
                 rawJson: {
@@ -1935,7 +3535,7 @@ describeDb("memory repository visibility", () => {
         {
           externalSessionId: `managed-cloud-empty-raw-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "transcript"
         }
       );
       const [item] = await encryptedRepo.createConversationItems(
@@ -1952,7 +3552,6 @@ describeDb("memory repository visibility", () => {
               externalTurnId: "empty-raw-turn",
               sourceRecordType: "event_msg",
               sourceEventType: "task_started",
-              sourcePath: "/tmp/empty-raw-rollout.jsonl",
               sourceLineNumber: 0,
               sourceSequence: 0,
               rawJson: {
@@ -1970,13 +3569,11 @@ describeDb("memory repository visibility", () => {
 
       const stored = await pool.query<{
         raw_text: string | null;
-        source_path: string | null;
         encrypted_columns: string[];
       }>(
         `
           select
             raw_text,
-            source_path,
             metadata -> 'encryptedConversationItemColumns' as encrypted_columns
           from conversation_items
           where id = $1
@@ -1985,8 +3582,7 @@ describeDb("memory repository visibility", () => {
       );
       expect(stored.rows[0]).toMatchObject({
         raw_text: "",
-        source_path: "[koed encrypted conversation item]",
-        encrypted_columns: ["raw_json", "source_path", "metadata"]
+        encrypted_columns: ["raw_json", "metadata"]
       });
       const encryptedColumns = await pool.query<{ source_column: string }>(
         `
@@ -2023,7 +3619,6 @@ describeDb("memory repository visibility", () => {
           externalSessionId: externalThreadId,
           sourceRuntime: "codex",
           captureMethod: "api",
-          codexTranscriptPath: "/tmp/managed-cloud-provenance.jsonl",
           metadata: { managedConversation: true }
         }
       );
@@ -2099,7 +3694,6 @@ describeDb("memory repository visibility", () => {
               sourceTransport: "transcript",
               sourceRecordType: "event_msg",
               sourceEventType: "user_message",
-              sourcePath: "/tmp/managed-cloud-provenance.jsonl",
               sourceLineNumber: 3,
               sourceSequence: 3,
               eventTime: "2026-04-01T12:00:00.000Z",
@@ -2133,13 +3727,11 @@ describeDb("memory repository visibility", () => {
       expect(transcriptItem!.id).toBe(appServerItem!.id);
 
       const stored = await pool.query<{
-        source_path: string | null;
         encrypted_columns: string[];
         encrypted_source_path_count: number;
       }>(
         `
           select
-            ci.source_path,
             ci.metadata -> 'encryptedConversationItemColumns' as encrypted_columns,
             count(ep.id) filter (
               where ep.source_column = 'source_path'
@@ -2155,9 +3747,8 @@ describeDb("memory repository visibility", () => {
         [appServerItem!.id]
       );
       expect(stored.rows[0]).toMatchObject({
-        source_path: "[koed encrypted conversation item]",
-        encrypted_columns: ["raw_json", "raw_text", "source_path", "metadata"],
-        encrypted_source_path_count: 1
+        encrypted_columns: ["raw_json", "raw_text", "metadata"],
+        encrypted_source_path_count: 0
       });
       const decryptedMetadata = await createEncryptedPayloadRepository(
         pool
@@ -2232,7 +3823,6 @@ describeDb("memory repository visibility", () => {
               externalTurnId,
               sourceRecordType: "event_msg",
               sourceEventType: "task_complete",
-              sourcePath: "/tmp/managed-cloud-provenance.jsonl",
               sourceLineNumber: 4,
               sourceSequence: 4,
               eventTime: "2026-04-01T12:00:01.000Z",
@@ -2285,20 +3875,13 @@ describeDb("memory repository visibility", () => {
         email: `managed-cloud-raw-project-${randomUUID()}@example.com`
       });
       const workspaceId = randomUUID();
-      await pool.query(
-        `
-          insert into workspaces (id, owner_user_id, visibility, name)
-          values ($1, $2, 'personal', 'Managed Cloud Raw Projection')
-        `,
-        [workspaceId, owner.id]
-      );
       const session = await encryptedRepo.createCapturedSession(
         { userId: owner.id },
         {
-          workspaceId,
+          projectId: workspaceId,
           externalSessionId: `managed-cloud-raw-project-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "transcript"
         }
       );
       const sentinel =
@@ -2551,6 +4134,104 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("does not reproject canonical owner-private replica conversation items", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 65).toString("base64")
+      );
+      const ownerPrivateProvider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 66).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider,
+        ownerPrivateReplicaEnvelopeEncryptionProvider: ownerPrivateProvider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `owner-private-projection-${randomUUID()}@example.com`
+      });
+      const workspaceId = randomUUID();
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          projectId: workspaceId,
+          externalSessionId: `owner-private-projection-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "transcript"
+        }
+      );
+      const externalTurnId = "owner-private-turn";
+      const stableItemId = `turn:${externalTurnId}:user`;
+      const [item] = await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
+              externalSessionId: session.externalSessionId!,
+              externalThreadId: session.externalSessionId!,
+              externalTurnId,
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              sourceSequence: 1,
+              eventTime: "2026-07-19T12:00:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "user_message",
+                  message: "Canonical replica source must not be reprojected."
+                }
+              },
+              rawText: "Canonical replica source must not be reprojected.",
+              sourceHash: `owner-private-source-${randomUUID()}`,
+              idempotencyKey: `owner-private-source-${randomUUID()}`,
+              canonicalItemKey: codexCanonicalConversationItemKey({
+                externalThreadId: session.externalSessionId!,
+                externalTurnId,
+                stableItemId,
+                component: "message"
+              }),
+              canonicalStableItemId: stableItemId,
+              observationKind: "reconciliation",
+              observationComponent: "message",
+              projectionStatus: "pending",
+              metadata: { actor: "user" }
+            }
+          ]
+        }
+      );
+      await pool.query(
+        `update encrypted_field_payloads
+            set encryption_scope='owner_private_replica',
+                owner_principal_id=$2
+          where source_table='conversation_items'
+            and source_id=$1
+            and invalidated_at is null`,
+        [item!.id, randomUUID()]
+      );
+
+      const projection = await encryptedRepo.projectPendingConversationItems(
+        { userId: owner.id },
+        { conversationItemIds: [item!.id] }
+      );
+      expect(projection.rawItemsScanned).toBe(0);
+      const stored = await pool.query<{
+        projection_status: string;
+        projection_error: string | null;
+      }>(
+        `select projection_status,projection_error
+           from conversation_items
+          where id=$1`,
+        [item!.id]
+      );
+      expect(stored.rows).toEqual([
+        { projection_status: "pending", projection_error: null }
+      ]);
+    });
+  });
+
   it("keeps encrypted raw_json companions aligned with canonical duplicate winners", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
@@ -2567,14 +4248,22 @@ describeDb("memory repository visibility", () => {
         {
           externalSessionId: `managed-cloud-raw-canonical-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "api"
         }
       );
-      const transcriptSentinel =
-        "Paid managed cloud canonical transcript winner sentinel 5a7420.";
+      const canonicalSentinel =
+        "Paid managed cloud canonical app-server winner sentinel 5a7420.";
       const lowerPrioritySentinel =
-        "Paid managed cloud lower priority hook duplicate sentinel 3ef915.";
-      const idempotencyKey = `managed-cloud-raw-canonical-${randomUUID()}`;
+        "Paid managed cloud lower priority transcript observation sentinel 3ef915.";
+      const externalThreadId = session.externalSessionId!;
+      const externalTurnId = "managed-cloud-raw-canonical-turn";
+      const stableItemId = "managed-cloud-raw-canonical-user";
+      const canonicalItemKey = codexCanonicalConversationItemKey({
+        externalThreadId,
+        externalTurnId,
+        stableItemId,
+        component: "message"
+      });
       const [stored] = await encryptedRepo.createConversationItems(
         { userId: owner.id },
         {
@@ -2582,26 +4271,34 @@ describeDb("memory repository visibility", () => {
             {
               sessionId: session.id,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
-              externalSessionId: session.externalSessionId ?? undefined,
-              externalThreadId: session.externalSessionId ?? undefined,
-              externalTurnId: "managed-cloud-raw-canonical-turn",
-              sourceRecordType: "event_msg",
-              sourceEventType: "user_message",
+              sourceAdapterVersion: "codex-app-server-conversation-v1",
+              sourceTransport: "app_server",
+              externalSessionId: externalThreadId,
+              externalThreadId,
+              externalTurnId,
+              externalItemId: stableItemId,
+              sourceRecordType: "app_server_notification",
+              sourceEventType: "item/completed",
               sourceSequence: 1,
               eventTime: "2026-04-01T12:00:00.000Z",
               rawJson: {
-                type: "event_msg",
-                payload: {
-                  type: "user_message",
-                  role: "user",
-                  content: transcriptSentinel
+                method: "item/completed",
+                params: {
+                  item: {
+                    id: stableItemId,
+                    type: "userMessage",
+                    content: [{ type: "text", text: canonicalSentinel }]
+                  }
                 }
               },
-              rawText: transcriptSentinel,
-              sourceHash: `managed-cloud-raw-canonical-transcript-${randomUUID()}`,
-              idempotencyKey,
+              rawText: canonicalSentinel,
+              sourceHash: `managed-cloud-raw-canonical-app-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-raw-canonical-app-${randomUUID()}`,
+              canonicalItemKey,
+              canonicalStableItemId: stableItemId,
+              canonicalSourcePriority: 300,
+              observationKind: "lifecycle_completed",
+              observationComponent: "message",
               projectionStatus: "pending",
               metadata: { transcriptType: "user_message" }
             }
@@ -2616,22 +4313,32 @@ describeDb("memory repository visibility", () => {
             {
               sessionId: session.id,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-hook-v1",
-              sourceTransport: "hook",
-              externalSessionId: session.externalSessionId ?? undefined,
-              externalThreadId: session.externalSessionId ?? undefined,
-              externalTurnId: "managed-cloud-raw-canonical-turn",
-              sourceRecordType: "hook_payload",
-              sourceEventType: "Stop",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
+              externalSessionId: externalThreadId,
+              externalThreadId,
+              externalTurnId,
+              externalItemId: stableItemId,
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
               sourceSequence: 2,
               eventTime: "2026-04-01T12:00:01.000Z",
               rawJson: {
-                hook_event_name: "Stop",
-                message: lowerPrioritySentinel
+                type: "event_msg",
+                payload: {
+                  type: "user_message",
+                  message: lowerPrioritySentinel
+                }
               },
-              sourceHash: `managed-cloud-raw-canonical-hook-${randomUUID()}`,
-              idempotencyKey,
-              metadata: {}
+              rawText: lowerPrioritySentinel,
+              sourceHash: `managed-cloud-raw-canonical-transcript-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-raw-canonical-transcript-${randomUUID()}`,
+              canonicalItemKey,
+              canonicalStableItemId: stableItemId,
+              canonicalSourcePriority: 200,
+              observationKind: "reconciliation",
+              observationComponent: "message",
+              metadata: { transcriptType: "user_message" }
             }
           ]
         }
@@ -2699,7 +4406,7 @@ describeDb("memory repository visibility", () => {
         createdAt: row.envelope_created_at.toISOString(),
         reencryptedAt: row.envelope_reencrypted_at?.toISOString() ?? null
       });
-      expect(decrypted).toContain(transcriptSentinel);
+      expect(decrypted).toContain(canonicalSentinel);
       expect(decrypted).not.toContain(lowerPrioritySentinel);
     });
   });
@@ -2720,7 +4427,7 @@ describeDb("memory repository visibility", () => {
         {
           externalSessionId: `managed-cloud-tool-event-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "transcript"
         }
       );
       const callId = `managed-cloud-tool-call-${randomUUID()}`;
@@ -2734,7 +4441,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "managed-cloud-tool-turn",
@@ -2769,7 +4476,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "managed-cloud-tool-turn",
@@ -2803,16 +4510,22 @@ describeDb("memory repository visibility", () => {
             {
               sessionId: session.id,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-hook-v1",
-              sourceTransport: "hook",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "managed-cloud-tool-turn",
-              sourceRecordType: "hook_payload",
-              sourceEventType: "Stop",
+              sourceRecordType: "event_msg",
+              sourceEventType: "task_complete",
               sourceSequence: 3,
               eventTime: "2026-04-01T12:00:02.000Z",
-              rawJson: { hook_event_name: "Stop" },
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "task_complete",
+                  turn_id: "managed-cloud-tool-turn"
+                }
+              },
               sourceHash: `managed-cloud-tool-stop-${randomUUID()}`,
               idempotencyKey: `managed-cloud-tool-stop-${randomUUID()}`,
               metadata: {}
@@ -2876,7 +4589,7 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("seals paid managed-cloud agent turns from Stop source event type without plaintext raw_json", async () => {
+  it("seals paid managed-cloud agent turns from journal completion without plaintext raw_json", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 16).toString("base64")
@@ -2892,11 +4605,13 @@ describeDb("memory repository visibility", () => {
         {
           externalSessionId: `managed-cloud-stop-seal-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "transcript"
         }
       );
       const sentinel =
-        "Paid managed cloud Stop-sealed agent turn sentinel 0180ba.";
+        "Paid managed cloud journal-sealed agent turn sentinel 0180ba.";
+      const externalTurnId = "managed-cloud-stop-turn";
+      const terminalStableItemId = `turn:${externalTurnId}:completed`;
       await encryptedRepo.createConversationItems(
         { userId: owner.id },
         {
@@ -2905,10 +4620,10 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
-              externalTurnId: "managed-cloud-stop-turn",
+              externalTurnId,
               sourceRecordType: "event_msg",
               sourceEventType: "agent_message",
               sourceSequence: 1,
@@ -2925,22 +4640,40 @@ describeDb("memory repository visibility", () => {
             {
               sessionId: session.id,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-hook-v1",
-              sourceTransport: "hook",
+              sourceAdapterVersion: "codex-hook-signal-v1",
+              sourceTransport: "hook_signal",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
-              externalTurnId: "managed-cloud-stop-turn",
-              sourceRecordType: "hook_payload",
-              sourceEventType: "Stop",
+              externalTurnId,
+              externalItemId: terminalStableItemId,
+              canonicalStableItemId: terminalStableItemId,
+              canonicalItemKey: codexCanonicalConversationItemKey({
+                externalThreadId: session.externalSessionId!,
+                externalTurnId,
+                stableItemId: terminalStableItemId,
+                component: "control"
+              }),
+              observationKind: "control",
+              observationComponent: "control",
+              sourceRecordType: "hook_signal",
+              sourceEventType: "turn_completed",
               sourceSequence: 2,
               eventTime: "2026-04-01T12:00:01.000Z",
               rawJson: {
-                hook_event_name: "Stop",
-                turn_id: "managed-cloud-stop-turn"
+                type: "hook_signal",
+                payload: {
+                  type: "turn_completed",
+                  sourceFrontierOffset: 1_024,
+                  sourceFrontierLine: 2
+                }
               },
-              sourceHash: `managed-cloud-stop-hook-${randomUUID()}`,
-              idempotencyKey: `managed-cloud-stop-hook-${randomUUID()}`,
-              metadata: {}
+              sourceHash: `managed-cloud-stop-control-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-stop-control-${randomUUID()}`,
+              metadata: {
+                sourceEventTimeAccuracy: "source",
+                sourceFrontierOffset: 1_024,
+                sourceFrontierLine: 2
+              }
             }
           ]
         }
@@ -2953,7 +4686,8 @@ describeDb("memory repository visibility", () => {
         `,
         [session.id]
       );
-      expect(stored.rows[0]?.raw_json_text).not.toContain("hook_event_name");
+      expect(stored.rows[0]?.raw_json_text).not.toContain("task_complete");
+      expect(stored.rows[0]?.raw_json_text).not.toContain("turn_completed");
       expect(stored.rows[0]?.raw_json_text).not.toContain(sentinel);
 
       const projection = await encryptedRepo.projectPendingConversationItems(
@@ -2988,7 +4722,7 @@ describeDb("memory repository visibility", () => {
         {
           externalSessionId: `managed-cloud-chunk-project-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "transcript"
         }
       );
       const sentinel =
@@ -3005,7 +4739,7 @@ describeDb("memory repository visibility", () => {
       const transportChunkGroupId = rawConversationTransportChunkGroupId({
         sourceKind: "codex",
         sourceAdapterVersion: "codex-transcript-v1",
-        sourceTransport: "hook",
+        sourceTransport: "transcript",
         logicalSourceId,
         sourceItemHash,
         transportChunkCount: 2,
@@ -3021,7 +4755,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "managed-cloud-chunk-turn",
@@ -3049,7 +4783,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "managed-cloud-chunk-turn",
@@ -3320,6 +5054,32 @@ describeDb("memory repository visibility", () => {
     expect(authenticated?.credential.lastUsedAt).not.toBeNull();
     expect(authenticated?.credential.lastValidatedAt).not.toBeNull();
 
+    const credentialSubscriptionId = randomUUID();
+    await pool.query(
+      `insert into collaboration_stream_subscriptions (
+         id,
+         backend_identity_hash,
+         principal_id_hash,
+         device_credential_id,
+         client_instance_hash,
+         subscription_key_hash,
+         protocol_version,
+         scope,
+         personal_owner_user_id,
+         state,
+         expires_at
+       ) values ($1,$2,$3,$4,$5,$6,1,'personal',$7,'active',now()+interval '5 minutes')`,
+      [
+        credentialSubscriptionId,
+        "1".repeat(64),
+        "2".repeat(64),
+        replacementCredential!.id,
+        "3".repeat(64),
+        "4".repeat(64),
+        user.id
+      ]
+    );
+
     expect(
       await repo.revokeDeviceCredential(
         { userId: user.id },
@@ -3334,6 +5094,14 @@ describeDb("memory repository visibility", () => {
         "rotated"
       )
     ).toBe(false);
+    await expect(
+      pool.query(
+        "select state,revoked_at is not null as revoked from collaboration_stream_subscriptions where id=$1",
+        [credentialSubscriptionId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "revoked", revoked: true }]
+    });
     expect(
       await repo.getDeviceCredentialUser({
         credentialKeyId: replacementCredential!.credentialKeyId,
@@ -3465,21 +5233,46 @@ describeDb("memory repository visibility", () => {
       status: "enabled"
     });
 
+    const defaultWorkspace = (
+      await repo.listTeamWorkspaces(
+        { userId: owner.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((candidate) => candidate.name === "General");
+    expect(defaultWorkspace).toBeDefined();
     await expect(
-      repo.upsertTeamMember(
+      repo.createTeamInvite(
         { userId: outsider.id },
-        { teamId: team.id, userId: member.id, role: "member" }
+        {
+          teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
+          email: `unauthorized-member-${randomUUID()}@example.com`,
+          role: "member",
+          backendOriginHash: createHash("sha256")
+            .update(`unauthorized-origin:${randomUUID()}`)
+            .digest("hex"),
+          tokenHash: `unauthorized-${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 60_000)
+        }
       )
     ).resolves.toBeNull();
 
-    const adminMembership = await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: admin.id, role: "admin" }
-    );
-    const memberMembership = await repo.upsertTeamMember(
-      { userId: admin.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    const adminMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin"
+      })
+    ).membership;
+    const memberMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: admin.id,
+        teamId: team.id,
+        user: member
+      })
+    ).membership;
     expect(adminMembership).toMatchObject({ role: "admin", status: "enabled" });
     expect(memberMembership).toMatchObject({
       role: "member",
@@ -3489,19 +5282,23 @@ describeDb("memory repository visibility", () => {
     const memberAcceptedAt = memberMembership!.acceptedAt;
 
     await expect(
-      repo.upsertTeamMember(
+      repo.updateTeamMemberRole(
         { userId: admin.id },
-        { teamId: team.id, userId: member.id, role: "owner" }
+        {
+          teamId: team.id,
+          userId: member.id,
+          role: "owner",
+          expectedVersion: memberMembership.version
+        }
       )
     ).resolves.toBeNull();
     await expect(
-      repo.upsertTeamMember(
+      repo.disableTeamMember(
         { userId: admin.id },
         {
           teamId: team.id,
           userId: owner.id,
-          role: "member",
-          status: "disabled"
+          expectedVersion: ownerMembership!.version
         }
       )
     ).resolves.toBeNull();
@@ -3512,13 +5309,13 @@ describeDb("memory repository visibility", () => {
       status: "enabled"
     });
     await expect(
-      repo.upsertTeamMember(
+      repo.updateTeamMemberRole(
         { userId: owner.id },
         {
           teamId: team.id,
           userId: owner.id,
           role: "member",
-          status: "disabled"
+          expectedVersion: ownerMembership!.version
         }
       )
     ).resolves.toBeNull();
@@ -3590,7 +5387,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
     expect(readAccess).toMatchObject({
@@ -3602,6 +5400,31 @@ describeDb("memory repository visibility", () => {
       canManageWorkspace: false
     });
     await expect(
+      repo.listTeamWorkspaceContexts({ userId: member.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        {
+          teamId: team.id,
+          teamName: "Launch Team",
+          teamRole: "member",
+          teamWorkspaceId: defaultWorkspace!.id,
+          teamWorkspaceName: "General",
+          access: "read"
+        },
+        {
+          teamId: team.id,
+          teamName: "Launch Team",
+          teamRole: "member",
+          teamWorkspaceId: workspace!.id,
+          teamWorkspaceName: "Memory OS",
+          access: "read"
+        }
+      ])
+    );
+    await expect(
+      repo.listTeamWorkspaceContexts({ userId: outsider.id })
+    ).resolves.toEqual([]);
+    await expect(
       repo.getTeamEntitlementGate({ userId: owner.id }, team.id)
     ).resolves.toMatchObject({
       teamId: team.id,
@@ -3609,9 +5432,18 @@ describeDb("memory repository visibility", () => {
       allowsTeamAccess: true,
       deniedOperationFamilies: []
     });
+    const initialGate = await repo.getTeamEntitlementGate(
+      { userId: owner.id },
+      team.id
+    );
     const graceGate = await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "grace", reason: "payment_retry" }
+      {
+        teamId: team.id,
+        expectedVersion: initialGate!.version,
+        status: "grace",
+        reason: "payment_retry"
+      }
     );
     expect(graceGate).toMatchObject({
       status: "grace",
@@ -3628,7 +5460,12 @@ describeDb("memory repository visibility", () => {
     });
     const suspendedGate = await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "suspended", reason: "billing_suspended" }
+      {
+        teamId: team.id,
+        expectedVersion: graceGate!.version,
+        status: "suspended",
+        reason: "billing_suspended"
+      }
     );
     expect(suspendedGate).not.toBeNull();
     expect(suspendedGate).toMatchObject({
@@ -3661,7 +5498,12 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBeNull();
     const revokedGate = await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "revoked", reason: "license_revoked" }
+      {
+        teamId: team.id,
+        expectedVersion: suspendedGate!.version,
+        status: "revoked",
+        reason: "license_revoked"
+      }
     );
     expect(revokedGate).toMatchObject({
       status: "revoked",
@@ -3672,8 +5514,13 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
           email: `revoked-invite-${randomUUID()}@example.com`,
           role: "member",
+          backendOriginHash: createHash("sha256")
+            .update(`revoked-origin:${randomUUID()}`)
+            .digest("hex"),
           tokenHash: `token-${randomUUID()}`,
           expiresAt: new Date(Date.now() + 60_000)
         }
@@ -3681,7 +5528,12 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBeNull();
     await repo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "active", reason: "billing_restored" }
+      {
+        teamId: team.id,
+        expectedVersion: revokedGate!.version,
+        status: "active",
+        reason: "billing_restored"
+      }
     );
     await pool.query(
       `
@@ -3699,6 +5551,18 @@ describeDb("memory repository visibility", () => {
       canCreateShare: false,
       canManageWorkspace: false
     });
+    await expect(
+      repo.listTeamWorkspaceContexts({ userId: member.id })
+    ).resolves.toEqual([
+      {
+        teamId: team.id,
+        teamName: "Launch Team",
+        teamRole: "member",
+        teamWorkspaceId: defaultWorkspace!.id,
+        teamWorkspaceName: "General",
+        access: "read"
+      }
+    ]);
     await pool.query(
       `
         update team_workspace_access_grants
@@ -3714,7 +5578,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: outsider.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       )
     ).resolves.toBeNull();
@@ -3724,7 +5589,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: admin.id,
-        access: "disabled"
+        access: "disabled",
+        expectedVersion: null
       }
     );
     expect(disabledAdminAccess).toMatchObject({
@@ -3739,7 +5605,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: outsider.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       )
     ).resolves.toBeNull();
@@ -3749,7 +5616,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: admin.id,
-        access: "write"
+        access: "write",
+        expectedVersion: disabledAdminAccess!.version
       }
     );
     expect(writeAccess).toMatchObject({
@@ -3764,7 +5632,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "write"
+        access: "write",
+        expectedVersion: readAccess!.version
       }
     );
     expect(memberWriteAccess).toMatchObject({
@@ -3774,10 +5643,14 @@ describeDb("memory repository visibility", () => {
       canManageWorkspace: false
     });
 
-    await pool.query(
-      "update team_workspaces set archived_at = now() where id = $1",
-      [workspace!.id]
+    const archivedWorkspace = await repo.archiveTeamWorkspace(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        expectedVersion: workspace!.version
+      }
     );
+    expect(archivedWorkspace).toMatchObject({ lifecycle: "archived" });
     await expect(
       repo.getTeamWorkspaceAccess({ userId: owner.id }, workspace!.id)
     ).resolves.toMatchObject({
@@ -3787,35 +5660,14 @@ describeDb("memory repository visibility", () => {
       canRecall: false,
       canCreateShare: false
     });
-    await pool.query(
-      "update team_workspaces set archived_at = null where id = $1",
-      [workspace!.id]
+    const restoredWorkspace = await repo.restoreTeamWorkspace(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        expectedVersion: archivedWorkspace!.version
+      }
     );
-    await pool.query("update teams set archived_at = now() where id = $1", [
-      team.id
-    ]);
-    await expect(
-      repo.getTeamWorkspaceAccess({ userId: owner.id }, workspace!.id)
-    ).resolves.toMatchObject({
-      access: "disabled",
-      canManageTeam: false,
-      canManageWorkspace: false,
-      canRecall: false,
-      canCreateShare: false
-    });
-    await expect(
-      repo.setTeamWorkspaceAccess(
-        { userId: owner.id },
-        {
-          teamWorkspaceId: workspace!.id,
-          userId: member.id,
-          access: "read"
-        }
-      )
-    ).resolves.toBeNull();
-    await pool.query("update teams set archived_at = null where id = $1", [
-      team.id
-    ]);
+    expect(restoredWorkspace).toMatchObject({ lifecycle: "active" });
 
     await expect(
       repo.setTeamWorkspaceAccess(
@@ -3823,7 +5675,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: outsider.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       )
     ).resolves.toBeNull();
@@ -3831,13 +5684,12 @@ describeDb("memory repository visibility", () => {
       repo.getTeamWorkspaceAccess({ userId: outsider.id }, workspace!.id)
     ).resolves.toBeNull();
 
-    const disabledMember = await repo.upsertTeamMember(
+    const disabledMember = await repo.disableTeamMember(
       { userId: owner.id },
       {
         teamId: team.id,
         userId: member.id,
-        role: "member",
-        status: "disabled"
+        expectedVersion: memberMembership.version
       }
     );
     expect(disabledMember).toMatchObject({
@@ -3851,20 +5703,6 @@ describeDb("memory repository visibility", () => {
       access: "disabled",
       canRecall: false,
       canCreateShare: false
-    });
-    const reenabledMember = await repo.upsertTeamMember(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        userId: member.id,
-        role: "member",
-        status: "enabled"
-      }
-    );
-    expect(reenabledMember).toMatchObject({
-      status: "enabled",
-      acceptedAt: memberAcceptedAt,
-      disabledAt: null
     });
     await expect(
       repo.listTeamAuditEvents(
@@ -3884,14 +5722,20 @@ describeDb("memory repository visibility", () => {
       displayName: "Seat Admin"
     });
     const invitedEmail = `seat-invitee-${randomUUID()}@example.com`;
+    const invitee = await repo.createUser({
+      email: invitedEmail,
+      displayName: "Seat Invitee"
+    });
     const team = await repo.createTeam(
       { userId: owner.id },
       { name: "Seat Team" }
     );
 
-    await expect(
-      repo.getTeamBillingSeatState({ userId: owner.id }, team.id)
-    ).resolves.toMatchObject({
+    const initialBilling = await repo.getTeamBillingSeatState(
+      { userId: owner.id },
+      team.id
+    );
+    expect(initialBilling).toMatchObject({
       teamId: team.id,
       seatLimit: null,
       billableSeatCount: 1,
@@ -3899,22 +5743,39 @@ describeDb("memory repository visibility", () => {
       syncStatus: "synced"
     });
 
-    const adminMembership = await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: admin.id, role: "admin" }
-    );
+    const adminMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin"
+      })
+    ).membership;
     expect(adminMembership).toMatchObject({ status: "enabled" });
+
+    const billingAfterAdmin = await repo.getTeamBillingSeatState(
+      { userId: owner.id },
+      team.id
+    );
 
     await expect(
       repo.setTeamBillingSeatPolicy(
         { userId: admin.id },
-        { teamId: team.id, seatLimit: 1 }
+        {
+          teamId: team.id,
+          expectedVersion: billingAfterAdmin!.version,
+          seatLimit: 1
+        }
       )
     ).resolves.toBeNull();
 
     const overLimit = await repo.setTeamBillingSeatPolicy(
       { userId: owner.id },
-      { teamId: team.id, seatLimit: 1 }
+      {
+        teamId: team.id,
+        expectedVersion: billingAfterAdmin!.version,
+        seatLimit: 1
+      }
     );
     expect(overLimit).toMatchObject({
       seatLimit: 1,
@@ -3932,28 +5793,44 @@ describeDb("memory repository visibility", () => {
     });
 
     const inviteTokenHash = `seat-token-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`seat-origin:${randomUUID()}`)
+      .digest("hex");
+    const defaultWorkspace = (
+      await repo.listTeamWorkspaces(
+        { userId: owner.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((candidate) => candidate.name === "General");
     const invite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: invitedEmail,
         role: "member",
+        backendOriginHash,
         tokenHash: inviteTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
     );
     expect(invite).not.toBeNull();
     const accepted = await repo.acceptTeamInvite({
-      tokenHash: `missing-${randomUUID()}`
+      tokenHash: `missing-${randomUUID()}`,
+      userId: invitee.id,
+      expectedVersion: invite!.version,
+      expectedBackendOriginHash: backendOriginHash
     });
     expect(accepted).toBeNull();
     const acceptedInvite = await repo.acceptTeamInvite({
       tokenHash: inviteTokenHash,
-      email: invitedEmail,
-      displayName: "Seat Invitee"
+      userId: invitee.id,
+      expectedVersion: invite!.version,
+      expectedBackendOriginHash: backendOriginHash
     });
     expect(acceptedInvite).toMatchObject({
-      createdUser: true,
+      createdUser: false,
       membership: { status: "enabled", role: "member" }
     });
     await expect(
@@ -3968,13 +5845,21 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.disableTeamMember(
         { userId: owner.id },
-        { teamId: team.id, userId: acceptedInvite!.user.id }
+        {
+          teamId: team.id,
+          userId: acceptedInvite!.user.id,
+          expectedVersion: acceptedInvite!.membership.version
+        }
       )
     ).resolves.toMatchObject({ status: "disabled" });
     await expect(
       repo.disableTeamMember(
         { userId: owner.id },
-        { teamId: team.id, userId: admin.id }
+        {
+          teamId: team.id,
+          userId: admin.id,
+          expectedVersion: adminMembership.version
+        }
       )
     ).resolves.toMatchObject({ status: "disabled" });
     await expect(
@@ -4017,10 +5902,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Support Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Support Workspace" }
@@ -4030,30 +5916,27 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "support-overview-project",
+        projectId: "support-overview-project",
         externalSessionId: `support-overview-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
-    const grant = await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, sessionId: session.id }
-    );
-    await repo.revokeTeamSessionShareGrant(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        shareGrantId: grant!.id,
-        reason: "support_overview_test"
-      }
-    );
+    const grant = await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: session.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id,
+      revoked: true,
+      revocationReason: "support_overview_test"
+    });
     const challengeHash = `support-challenge-${randomUUID()}`;
     const verifierHash = `support-verifier-${randomUUID()}`;
     const credentialKeyId = `support-device-key-${randomUUID()}`;
@@ -4115,9 +5998,9 @@ describeDb("memory repository visibility", () => {
       },
       counts: {
         memberships: { enabled: 2, invited: 0, disabled: 0 },
-        workspaces: { active: 1, archived: 0 },
-        workspaceAccess: { read: 1, write: 1, disabled: 0 },
-        invites: { pending: 0, accepted: 0, revoked: 0, expired: 0 },
+        workspaces: { active: 2, archived: 0 },
+        workspaceAccess: { read: 2, write: 2, disabled: 0 },
+        invites: { pending: 0, accepted: 1, revoked: 0, expired: 0 },
         sessionShareGrants: {
           active: 0,
           revoked: 1,
@@ -4136,7 +6019,7 @@ describeDb("memory repository visibility", () => {
             lastSeenAt: null
           },
           deviceCredentials: {
-            active: 1,
+            active: 2,
             revoked: 0,
             expired: 0
           }
@@ -4150,7 +6033,7 @@ describeDb("memory repository visibility", () => {
     const overviewJson = JSON.stringify(overview);
     expect(overviewJson).not.toContain("support_overview_test");
     expect(overviewJson).not.toContain(session.id);
-    expect(overviewJson).not.toContain(grant!.id);
+    expect(overviewJson).not.toContain(grant.id);
     expect(overviewJson).not.toContain(credential!.credentialKeyId);
     expect(overviewJson).not.toContain(verifierHash);
     expect(overviewJson).not.toContain("Support overview desktop");
@@ -4174,190 +6057,145 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("creates, lists, and revokes Captured Session Share Grants through repository policy", async () => {
-    const owner = await repo.createUser({
-      email: `share-owner-${randomUUID()}@example.com`,
-      displayName: "Share Owner"
-    });
-    const member = await repo.createUser({
-      email: `share-member-${randomUUID()}@example.com`,
-      displayName: "Share Member"
-    });
-    const outsider = await repo.createUser({
-      email: `share-outsider-${randomUUID()}@example.com`,
-      displayName: "Share Outsider"
-    });
-    const team = await repo.createTeam(
-      { userId: owner.id },
-      { name: "Share Team" }
-    );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
-    const workspace = await repo.createTeamWorkspace(
-      { userId: owner.id },
-      { teamId: team.id, name: "Share Workspace" }
-    );
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "read"
-      }
-    );
-    const ownerSession = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        workspaceId: "share-project",
-        externalSessionId: `share-session-${randomUUID()}`,
-        sourceRuntime: "codex",
-        captureMethod: "hook"
-      }
-    );
-    const memberSession = await repo.createCapturedSession(
-      { userId: member.id },
-      {
-        workspaceId: "member-share-project",
-        externalSessionId: `member-share-session-${randomUUID()}`,
-        sourceRuntime: "codex",
-        captureMethod: "hook"
-      }
-    );
-
-    await expect(
-      repo.createTeamSessionShareGrant(
-        { userId: member.id },
-        { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
+  it("quarantines only the disconnected backend's source sync work", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
       )
-    ).resolves.toBeNull();
-    await expect(
-      repo.createTeamSessionShareGrant(
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-disconnect-${randomUUID()}@example.com`
+    });
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
+    const createSource = async (backendId: string) => {
+      const session = await encryptedRepo.createCapturedSession(
         { userId: owner.id },
-        { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
-      )
-    ).resolves.toBeNull();
-    await expect(
-      repo.listTeamSessionShareGrants(
-        { userId: outsider.id },
-        { teamWorkspaceId: workspace!.id }
-      )
-    ).resolves.toBeNull();
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "write"
-      }
-    );
-    const memberOwnedGrant = await repo.createTeamSessionShareGrant(
-      { userId: member.id },
-      { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
-    );
-    expect(memberOwnedGrant).toMatchObject({
-      ownerUserId: member.id,
-      sessionId: memberSession.id,
-      revokedAt: null
-    });
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "read"
-      }
-    );
-    const revokedBySourceOwner = await repo.revokeTeamSessionShareGrant(
-      { userId: member.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        shareGrantId: memberOwnedGrant!.id,
-        reason: "source_owner_exit"
-      }
-    );
-    expect(revokedBySourceOwner).toMatchObject({
-      id: memberOwnedGrant!.id,
-      revokedByUserId: member.id,
-      revocationReason: "source_owner_exit"
-    });
-
-    const created = await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, sessionId: ownerSession.id }
-    );
-    expect(created).toMatchObject({
-      ownerUserId: owner.id,
-      sessionId: ownerSession.id,
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      grantedByUserId: owner.id,
-      revokedAt: null,
-      retentionReason: "active_team_share"
-    });
-    expect(typeof created?.retainedByTeamAt).toBe("string");
-
-    const duplicate = await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, sessionId: ownerSession.id }
-    );
-    expect(duplicate?.id).toBe(created?.id);
-
-    await expect(
-      repo.listTeamSessionShareGrants(
-        { userId: member.id },
-        { teamWorkspaceId: workspace!.id }
-      )
-    ).resolves.toEqual([expect.objectContaining({ id: created!.id })]);
-
-    await expect(
-      repo.revokeTeamSessionShareGrant(
-        { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
-          shareGrantId: created!.id,
-          reason: "readers_cannot_revoke"
+          projectId: `sync-${backendId}`,
+          externalSessionId: `sync-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "transcript"
         }
-      )
-    ).resolves.toBeNull();
-
-    const revoked = await repo.revokeTeamSessionShareGrant(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        shareGrantId: created!.id,
-        reason: "owner_revoked"
-      }
-    );
-    expect(revoked).toMatchObject({
-      id: created!.id,
-      revokedByUserId: owner.id,
-      revocationReason: "owner_revoked"
-    });
+      );
+      const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
+        protocolDeploymentId: randomUUID(),
+        profile: "team_self_hosted",
+        baseUrl: `https://${backendId}.example.test`,
+        upstreamBackendId: backendId
+      });
+      const remoteUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+        deploymentIdentityId: remoteDeployment.id,
+        externalSubjectId: `remote-${backendId}`
+      });
+      await encryptedRepo.linkExternalSyncUser(
+        { userId: owner.id },
+        {
+          externalUserIdentityId: remoteUser.id,
+          proofKind: "device_enrollment",
+          proofReference: `credential-${backendId}-${randomUUID()}`
+        }
+      );
+      const relationshipId = randomUUID();
+      await encryptedRepo.createSourceSyncRelationship(
+        { userId: owner.id },
+        {
+          relationshipId,
+          logicalMemoryId: randomUUID(),
+          localReplicaId: randomUUID(),
+          sessionId: session.id,
+          localDeploymentIdentityId: localDeployment.id,
+          remoteDeploymentIdentityId: remoteDeployment.id,
+          remoteUserIdentityId: remoteUser.id,
+          remoteReplicaId: randomUUID(),
+          idempotencyKey: `sync-${backendId}`,
+          creationRequestHash: crossIdentitySyncDigest({ backendId }),
+          policyManifest: { sourceBoundary: "captured_session" },
+          consentManifest: { consented: true }
+        }
+      );
+      await encryptedRepo.activateSourceSyncRelationship({
+        relationshipId,
+        localUserId: owner.id
+      });
+      const uploadId = randomUUID();
+      await pool.query(
+        "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,1,0,1,2,2,1,$7)",
+        [
+          uploadId,
+          relationshipId,
+          randomUUID(),
+          "b".repeat(64),
+          JSON.stringify(
+            testSyncPackageUploadManifest({ packageDigest: "c".repeat(64) })
+          ),
+          "d".repeat(64),
+          `upload-${backendId}`
+        ]
+      );
+      return { relationshipId, uploadId };
+    };
+    const disconnected = await createSource("team-disconnected");
+    const retained = await createSource("team-retained");
 
     await expect(
-      repo.listTeamSessionShareGrants(
+      encryptedRepo.quarantineCrossIdentitySyncForUpstreamBackend(
         { userId: owner.id },
-        { teamWorkspaceId: workspace!.id }
+        "team-disconnected"
       )
-    ).resolves.toEqual([]);
-    const revokedGrants = await repo.listTeamSessionShareGrants(
-      { userId: owner.id },
-      { teamWorkspaceId: workspace!.id, includeRevoked: true }
-    );
-    expect(revokedGrants).toHaveLength(2);
-    const ownerRevokedGrant = revokedGrants?.find(
-      (grant) => grant.id === created!.id
-    );
-    expect(ownerRevokedGrant).toMatchObject({ id: created!.id });
-    expect(typeof ownerRevokedGrant?.revokedAt).toBe("string");
-
-    const auditEvents = await repo.listTeamAuditEvents(
-      { userId: owner.id },
-      { teamId: team.id, action: "team.session_share.created", limit: 10 }
-    );
-    expect(auditEvents).toHaveLength(2);
+    ).resolves.toEqual({
+      relationshipCount: 1,
+      outboxEntryCount: 1,
+      uploadSessionCount: 1
+    });
+    await expect(
+      pool.query(
+        "select state,state_before_pause,paused_at is not null as paused from cross_identity_sync_relationships where id=$1",
+        [disconnected.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "paused", state_before_pause: "created", paused: true }]
+    });
+    await expect(
+      pool.query(
+        "select state from sync_outbox_entries where sync_relationship_id=$1",
+        [disconnected.relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ state: "cancelled" }] });
+    await expect(
+      pool.query(
+        "select state,last_error_message from sync_package_upload_sessions where id=$1",
+        [disconnected.uploadId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "failed",
+          last_error_message: "UpstreamBackendDisconnected"
+        }
+      ]
+    });
+    await expect(
+      pool.query(
+        "select state,state_before_pause from cross_identity_sync_relationships where id=$1",
+        [retained.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "created", state_before_pause: null }]
+    });
+    await expect(
+      pool.query(
+        "select state from sync_outbox_entries where sync_relationship_id=$1",
+        [retained.relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ state: "pending" }] });
+    await expect(
+      pool.query("select state from sync_package_upload_sessions where id=$1", [
+        retained.uploadId
+      ])
+    ).resolves.toMatchObject({ rows: [{ state: "uploading" }] });
   });
 
   it("coalesces incremental Captured Session changes behind one source outbox signal", async () => {
@@ -4372,10 +6210,10 @@ describeDb("memory repository visibility", () => {
     const session = await encryptedRepo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "sync-project",
+        projectId: "sync-project",
         externalSessionId: `sync-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     await encryptedRepo.createMemoryEvent(
@@ -4386,7 +6224,7 @@ describeDb("memory repository visibility", () => {
         rawEventType: "user_turn",
         visibility: "personal",
         content: "Existing canonical memory",
-        workspaceId: "sync-project",
+        projectId: "sync-project",
         sessionId: session.id,
         idempotencyKey: `event-${randomUUID()}`
       }
@@ -4516,14 +6354,29 @@ describeDb("memory repository visibility", () => {
         localUserId: owner.id
       })
     ).resolves.toMatchObject({ state: "created" });
+    const capturedSessions = createCapturedSessionRepository(pool);
+    await expect(
+      capturedSessions.listCapturedSessionSummaries({ userId: owner.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          logicalMemoryId: ids.logicalMemoryId,
+          hasSynchronizedRevision: false,
+          syncState: "processing"
+        })
+      ])
+    );
     const incompleteUploadId = randomUUID();
     await pool.query(
-      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,'{}',$5,1,0,1,2,2,1,'interrupted-source-package')",
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,1,0,1,2,2,1,'interrupted-source-package')",
       [
         incompleteUploadId,
         ids.relationshipId,
         randomUUID(),
         "b".repeat(64),
+        JSON.stringify(
+          testSyncPackageUploadManifest({ packageDigest: "c".repeat(64) })
+        ),
         "c".repeat(64)
       ]
     );
@@ -4558,10 +6411,10 @@ describeDb("memory repository visibility", () => {
     const unrelatedSession = await encryptedRepo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "sync-project",
+        projectId: "sync-project",
         externalSessionId: `unrelated-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     await encryptedRepo.createMemoryEvent(
@@ -4572,7 +6425,7 @@ describeDb("memory repository visibility", () => {
         rawEventType: "user_turn",
         visibility: "personal",
         content: "Unrelated global cursor gap",
-        workspaceId: "sync-project",
+        projectId: "sync-project",
         sessionId: unrelatedSession.id,
         idempotencyKey: `event-${randomUUID()}`
       }
@@ -4586,7 +6439,7 @@ describeDb("memory repository visibility", () => {
         rawEventType: "agent_turn",
         visibility: "personal",
         content: "Incremental canonical memory",
-        workspaceId: "sync-project",
+        projectId: "sync-project",
         sessionId: session.id,
         idempotencyKey: `event-${randomUUID()}`
       }
@@ -4618,6 +6471,10 @@ describeDb("memory repository visibility", () => {
       }
     })();
     expect(delta?.changes).toHaveLength(2);
+    expect(delta?.changes.map((change) => change.event?.content)).toEqual([
+      "Existing canonical memory",
+      "Incremental canonical memory"
+    ]);
     expect(delta?.changes.map((change) => change.cursor)).toEqual(
       [...(delta?.changes ?? [])]
         .map((change) => change.cursor)
@@ -4705,6 +6562,24 @@ describeDb("memory repository visibility", () => {
       rows: [{ state: "pending", last_error_message: null }]
     });
     await pool.query(
+      "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class='RemoteSyncRequestRejectedError' where id=$1",
+      [ids.relationshipId]
+    );
+    await expect(
+      encryptedRepo.retryCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({ state: "created" });
+    await expect(
+      pool.query(
+        "select state,attempt_count,last_error_message from sync_outbox_entries where sync_relationship_id=$1",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "pending", attempt_count: 0, last_error_message: null }]
+    });
+    await pool.query(
       "update sync_outbox_entries set state='failed',attempt_count=max_attempts,last_error_message='RemoteSyncUnavailableError' where sync_relationship_id=$1",
       [ids.relationshipId]
     );
@@ -4730,14 +6605,54 @@ describeDb("memory repository visibility", () => {
       "update sync_outbox_entries set state='processing',attempt_count=1 where sync_relationship_id=$1",
       [ids.relationshipId]
     );
-    await encryptedRepo.acknowledgeSourceSyncPackage({
+    const acknowledgedPackageId = randomUUID();
+    await encryptedRepo.markSourceSyncProcessing({
       relationshipId: ids.relationshipId,
-      packageId: randomUUID(),
+      packageId: acknowledgedPackageId
+    });
+    const acknowledgement = {
+      relationshipId: ids.relationshipId,
+      packageId: acknowledgedPackageId,
       sourceCursor: delta!.changes[0]!.cursor,
       targetProcessingCursor: delta!.changes[1]!.cursor,
       packageSequence: 1,
+      summaryRevisionHash: null,
       staleAfterSeconds: 3_600
+    };
+    await encryptedRepo.acknowledgeSourceSyncPackage(acknowledgement);
+    await encryptedRepo.acknowledgeSourceSyncPackage(acknowledgement);
+    const personalMemoryEvents = await pool.query<{
+      family: string;
+      scope: string;
+      personal_owner_user_id: string;
+      logical_memory_id: string;
+      resource_type: string;
+      resource_id: string;
+      row_json: string;
+    }>(
+      `select family::text, scope::text, personal_owner_user_id,
+              logical_memory_id, resource_type, resource_id,
+              to_jsonb(collaboration_outbox)::text as row_json
+         from collaboration_outbox
+        where family = 'personal_memory_changed'
+          and resource_id = $1`,
+      [session.id]
+    );
+    expect(personalMemoryEvents.rows).toHaveLength(1);
+    expect(personalMemoryEvents.rows[0]).toMatchObject({
+      family: "personal_memory_changed",
+      scope: "personal",
+      personal_owner_user_id: owner.id,
+      logical_memory_id: ids.logicalMemoryId,
+      resource_type: "personal_memory_entry",
+      resource_id: session.id
     });
+    expect(personalMemoryEvents.rows[0]!.row_json).not.toContain(
+      "Existing canonical memory"
+    );
+    expect(personalMemoryEvents.rows[0]!.row_json).not.toContain(
+      "Incremental canonical memory"
+    );
     await expect(
       pool.query(
         "select source_cursor,target_processing_cursor from cross_identity_sync_relationships where id=$1",
@@ -4759,6 +6674,36 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       rows: [{ state: "pending", attempt_count: 0 }]
     });
+    await expect(
+      capturedSessions.listCapturedSessionSummaries({ userId: owner.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          logicalMemoryId: ids.logicalMemoryId,
+          hasSynchronizedRevision: true,
+          syncState: "ready"
+        })
+      ])
+    );
+    await pool.query(
+      "update cross_identity_sync_relationships set state='processing' where id=$1",
+      [ids.relationshipId]
+    );
+    await expect(
+      capturedSessions.listCapturedSessionSummaries({ userId: owner.id })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          logicalMemoryId: ids.logicalMemoryId,
+          hasSynchronizedRevision: true,
+          syncState: "processing"
+        })
+      ])
+    );
+    await pool.query(
+      "update cross_identity_sync_relationships set state='ready' where id=$1",
+      [ids.relationshipId]
+    );
     await expect(
       encryptedRepo.readCapturedSessionSyncDelta({
         relationshipId: ids.relationshipId
@@ -4816,12 +6761,205 @@ describeDb("memory repository visibility", () => {
         [ids.relationshipId]
       )
     ).resolves.toMatchObject({ rows: [{ state: "ready", fresh: true }] });
+
+    const nonOwner = await encryptedRepo.createUser({
+      email: `sync-non-owner-${randomUUID()}@example.com`
+    });
     await expect(
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: nonOwner.id },
+        ids.relationshipId
+      )
+    ).resolves.toBeNull();
+
+    await pool.query(
+      "update sync_outbox_entries set state='pending',available_at=now(),claim_token=null,lease_expires_at=null where sync_relationship_id=$1 and idempotency_key='changes'",
+      [ids.relationshipId]
+    );
+    const claimBeforePause = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(claimBeforePause).toMatchObject({ id: outboxEntry.id });
+    const concurrentPauses = await Promise.all([
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ]);
+    expect(concurrentPauses).toEqual([
+      expect.objectContaining({
+        state: "paused",
+        stateBeforePause: "ready"
+      }),
+      expect.objectContaining({
+        state: "paused",
+        stateBeforePause: "ready"
+      })
+    ]);
+    expect(concurrentPauses[0]?.pausedAt).toBe(concurrentPauses[1]?.pausedAt);
+    await expect(
+      encryptedRepo.completeSyncQueueEntry({
+        queue: "outbox",
+        id: claimBeforePause!.id,
+        claimToken: claimBeforePause!.claimToken!
+      })
+    ).resolves.toBe(false);
+    await expect(
+      encryptedRepo.claimSyncQueueEntry({ queue: "outbox", leaseMs: 30_000 })
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.readCapturedSessionSyncDelta({
+        relationshipId: ids.relationshipId
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query(
+        "select state,claim_token,lease_expires_at,processed_at from sync_outbox_entries where id=$1",
+        [outboxEntry.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "pending",
+          claim_token: null,
+          lease_expires_at: null,
+          processed_at: null
+        }
+      ]
+    });
+
+    await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "user",
+        rawEventType: "user_turn",
+        visibility: "personal",
+        content: "Durable work created while sync is paused",
+        projectId: "sync-project",
+        sessionId: session.id,
+        idempotencyKey: `event-${randomUUID()}`
+      }
+    );
+    const concurrentResumes = await Promise.all([
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ]);
+    expect(concurrentResumes).toEqual([
+      expect.objectContaining({
+        state: "ready",
+        pausedAt: null,
+        stateBeforePause: null
+      }),
+      expect.objectContaining({
+        state: "ready",
+        pausedAt: null,
+        stateBeforePause: null
+      })
+    ]);
+    const inFlightClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(inFlightClaim).toMatchObject({ id: outboxEntry.id });
+    const inFlightPackageId = randomUUID();
+    const pauseAcknowledgeRace = await Promise.allSettled([
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
+      encryptedRepo.acknowledgeSourceSyncPackage({
+        relationshipId: ids.relationshipId,
+        packageId: inFlightPackageId,
+        sourceCursor: delta!.changes[1]!.cursor,
+        targetProcessingCursor: delta!.changes[1]!.cursor,
+        packageSequence: 2,
+        summaryRevisionHash: null,
+        staleAfterSeconds: 3_600
+      })
+    ]);
+    const pauseResult = pauseAcknowledgeRace[0];
+    expect(pauseResult.status).toBe("fulfilled");
+    if (pauseResult.status === "fulfilled") {
+      expect(pauseResult.value?.state).toBe("paused");
+    }
+    expect(["fulfilled", "rejected"]).toContain(pauseAcknowledgeRace[1].status);
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({ state: "paused" });
+    await expect(
+      encryptedRepo.completeSyncQueueEntry({
+        queue: "outbox",
+        id: inFlightClaim!.id,
+        claimToken: inFlightClaim!.claimToken!
+      })
+    ).resolves.toBe(false);
+
+    await expect(
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({ state: "ready" });
+    const resumedClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(resumedClaim).toMatchObject({ id: outboxEntry.id });
+    await expect(
+      encryptedRepo.deferSyncQueueEntry({
+        queue: "outbox",
+        id: resumedClaim!.id,
+        claimToken: resumedClaim!.claimToken!,
+        delayMs: 250
+      })
+    ).resolves.toBe(true);
+
+    await encryptedRepo.pauseCrossIdentitySyncRelationship(
+      { userId: owner.id },
+      ids.relationshipId
+    );
+    const resumeRevocationRace = await Promise.all([
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      ),
       encryptedRepo.revokeCrossIdentitySyncRelationship(
         { userId: owner.id },
         { syncRelationshipId: ids.relationshipId }
       )
-    ).resolves.toMatchObject({ state: "revoked" });
+    ]);
+    expect(resumeRevocationRace[1]).toMatchObject({ state: "revoked" });
+    await expect(
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({
+      state: "revoked",
+      pausedAt: null,
+      stateBeforePause: null
+    });
     await expect(
       encryptedRepo.acknowledgeSourceSyncPackage({
         relationshipId: ids.relationshipId,
@@ -4829,6 +6967,7 @@ describeDb("memory repository visibility", () => {
         sourceCursor: delta!.changes[1]!.cursor,
         targetProcessingCursor: delta!.changes[1]!.cursor,
         packageSequence: 2,
+        summaryRevisionHash: null,
         staleAfterSeconds: 3_600
       })
     ).rejects.toThrow("can no longer acknowledge");
@@ -4939,11 +7078,280 @@ describeDb("memory repository visibility", () => {
     );
   });
 
-  it("applies target packages once and keeps the synchronized session read-only until ready", async () => {
+  it("prepares and acknowledges exact-session LCM representations through source sync", async () => {
     const encryptedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
         randomBytes(32).toString("base64")
       )
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-lcm-source-${randomUUID()}@example.com`
+    });
+    const session = await encryptedRepo.createCapturedSession(
+      { userId: owner.id },
+      {
+        projectId: "sync-lcm-project",
+        externalSessionId: `sync-lcm-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const unrelatedSession = await encryptedRepo.createCapturedSession(
+      { userId: owner.id },
+      {
+        projectId: "sync-lcm-project",
+        externalSessionId: `sync-lcm-unrelated-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const sourceEvent = await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "agent",
+        rawEventType: "agent_turn",
+        visibility: "personal",
+        content: "Exact-session Shared Memory LCM source",
+        projectId: "sync-lcm-project",
+        sessionId: session.id,
+        idempotencyKey: `sync-lcm-event-${randomUUID()}`
+      }
+    );
+    await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "agent",
+        rawEventType: "agent_turn",
+        visibility: "personal",
+        content: "Unrelated session must not enter the Shared Memory summary",
+        projectId: "sync-lcm-project",
+        sessionId: unrelatedSession.id,
+        idempotencyKey: `sync-lcm-unrelated-event-${randomUUID()}`
+      }
+    );
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
+    const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
+      protocolDeploymentId: randomUUID(),
+      profile: "team_self_hosted",
+      baseUrl: "https://team.example.com",
+      upstreamBackendId: "team"
+    });
+    const remoteUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+      deploymentIdentityId: remoteDeployment.id,
+      externalSubjectId: `remote-lcm-user-${randomUUID()}`
+    });
+    await encryptedRepo.linkExternalSyncUser(
+      { userId: owner.id },
+      {
+        externalUserIdentityId: remoteUser.id,
+        proofKind: "device_enrollment",
+        proofReference: `lcm-backend-${randomUUID()}`
+      }
+    );
+    const relationshipId = randomUUID();
+    await encryptedRepo.createSourceSyncRelationship(
+      { userId: owner.id },
+      {
+        relationshipId,
+        logicalMemoryId: randomUUID(),
+        localReplicaId: randomUUID(),
+        remoteReplicaId: randomUUID(),
+        sessionId: session.id,
+        localDeploymentIdentityId: localDeployment.id,
+        remoteDeploymentIdentityId: remoteDeployment.id,
+        remoteUserIdentityId: remoteUser.id,
+        idempotencyKey: `sync-lcm-source-${randomUUID()}`,
+        creationRequestHash: randomBytes(32).toString("hex"),
+        policyManifest: { sourceBoundary: "captured_session" },
+        consentManifest: { consented: true }
+      }
+    );
+    await encryptedRepo.activateSourceSyncRelationship({
+      relationshipId,
+      localUserId: owner.id
+    });
+
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBe("pending");
+    const compacted = await encryptedRepo.createLcmNodes(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        sessionId: session.id,
+        force: true,
+        requestedRepresentation: "lcm_leaves"
+      }
+    );
+    expect(compacted).toMatchObject({
+      leafNodeIds: [expect.any(String)],
+      rollupNodeId: null
+    });
+    const leafNodeId = compacted.leafNodeIds[0]!;
+    await expect(
+      pool.query(
+        `select memory_event_id from memory_node_sources
+         where memory_node_id=$1 order by source_order`,
+        [leafNodeId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ memory_event_id: sourceEvent.id }]
+    });
+    await encryptedRepo.updateLcmNodeSummary({
+      nodeId: leafNodeId,
+      summaryText: "The source established exact-session LCM sharing.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-semantic-summary-v1",
+      summaryTokenEstimate: 8,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Exact-session LCM sharing",
+        summary_text: "The source established exact-session LCM sharing."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBe("pending");
+    const leafDelta = await encryptedRepo.readCapturedSessionSyncDelta({
+      relationshipId
+    });
+    expect(leafDelta?.summaryNodes).toHaveLength(1);
+    const leafSummaryNode = leafDelta?.summaryNodes[0];
+    expect(leafSummaryNode?.originNodeId).toBe(leafNodeId);
+    expect(leafSummaryNode?.kind).toBe("leaf");
+    expect(Array.isArray(leafSummaryNode?.sourceOriginEventIds)).toBe(true);
+    expect(leafSummaryNode?.childOriginNodeIds).toEqual([]);
+    await encryptedRepo.acknowledgeSourceSyncPackage({
+      relationshipId,
+      packageId: randomUUID(),
+      sourceCursor: leafDelta!.toCursor,
+      targetProcessingCursor: leafDelta!.toCursor,
+      packageSequence: 1,
+      summaryRevisionHash: leafDelta!.summaryRevisionHash,
+      staleAfterSeconds: 3_600
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBe("ready");
+
+    const rolledUp = await encryptedRepo.createLcmNodes(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        sessionId: session.id,
+        force: true,
+        requestedRepresentation: "lcm_rollups"
+      }
+    );
+    expect(rolledUp.rollupNodeId).toEqual(expect.any(String));
+    await encryptedRepo.updateLcmNodeSummary({
+      nodeId: rolledUp.rollupNodeId!,
+      summaryText: "The exact-session leaf is available as a rollup.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-semantic-summary-v1",
+      summaryTokenEstimate: 9,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Exact-session rollup",
+        summary_text: "The exact-session leaf is available as a rollup."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    const rollupDelta = await encryptedRepo.readCapturedSessionSyncDelta({
+      relationshipId
+    });
+    expect(rollupDelta?.summaryNodes.map((node) => node.kind)).toEqual([
+      "leaf",
+      "rollup"
+    ]);
+    await encryptedRepo.acknowledgeSourceSyncPackage({
+      relationshipId,
+      packageId: randomUUID(),
+      sourceCursor: rollupDelta!.toCursor,
+      targetProcessingCursor: rollupDelta!.toCursor,
+      packageSequence: 2,
+      summaryRevisionHash: rollupDelta!.summaryRevisionHash,
+      staleAfterSeconds: 3_600
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_rollups"
+      })
+    ).resolves.toBe("ready");
+
+    await pool.query(
+      `update memory_nodes
+          set invalidated_at=now(),
+              invalidation_reason='test_policy_invalidation',
+              updated_at=now()
+        where owner_user_id=$1 and session_id=$2 and invalidated_at is null`,
+      [owner.id, session.id]
+    );
+    const emptySummaryDelta = await encryptedRepo.readCapturedSessionSyncDelta({
+      relationshipId
+    });
+    expect(emptySummaryDelta).toMatchObject({
+      changes: [],
+      summaryNodes: [],
+      summarySnapshotIncluded: true,
+      summaryRevisionHash: crossIdentitySyncDigest([])
+    });
+    await encryptedRepo.acknowledgeSourceSyncPackage({
+      relationshipId,
+      packageId: randomUUID(),
+      sourceCursor: emptySummaryDelta!.toCursor,
+      targetProcessingCursor: emptySummaryDelta!.toCursor,
+      packageSequence: 3,
+      summaryRevisionHash: emptySummaryDelta!.summaryRevisionHash,
+      staleAfterSeconds: 3_600
+    });
+    await expect(
+      encryptedRepo.getSharedMemoryLcmSyncState({
+        relationshipId,
+        ownerUserId: owner.id,
+        sessionId: session.id,
+        representation: "lcm_rollups"
+      })
+    ).resolves.toBe("pending");
+  });
+
+  it("applies target packages once and keeps the synchronized session read-only until ready", async () => {
+    const deploymentEncryptionProvider =
+      createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      );
+    const ownerPrivateReplicaEncryptionProvider =
+      createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      );
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: deploymentEncryptionProvider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        ownerPrivateReplicaEncryptionProvider
     });
     const completedRecordsBefore = (
       await encryptedRepo.getCrossIdentitySyncOperationalStatus()
@@ -4998,35 +7406,110 @@ describeDb("memory repository visibility", () => {
     const sourceReplicaId = randomUUID();
     const targetReplicaId = randomUUID();
     const originSessionId = randomUUID();
+    const targetRelationshipInput = {
+      relationshipId,
+      logicalMemoryId,
+      originSessionId,
+      localDeploymentIdentityId: localDeployment.id,
+      remoteDeploymentIdentityId: sourceDeployment.id,
+      remoteUserIdentityId: sourceUser.id,
+      remoteReplicaId: sourceReplicaId,
+      localReplicaId: targetReplicaId,
+      idempotencyKey: "sync-target-idempotency",
+      creationRequestHash: "b".repeat(64),
+      policyManifest: { sourceBoundary: "captured_session" as const },
+      consentManifest: { consented: true },
+      session: {
+        originSessionId,
+        externalSessionId: "plaintext-source-session-label",
+        sourceRuntime: "codex",
+        captureMethod: "transcript",
+        capturedAt: "2026-07-12T00:00:00.000Z",
+        title: "plaintext-synchronized-session-title",
+        sourceAdapterVersion: "1"
+      }
+    };
     const created = await encryptedRepo.createTargetSyncRelationship(
       {
         userId: owner.id,
         deviceCredentialId: syncCredential!.id
       },
+      targetRelationshipInput
+    );
+    expect(created?.relationship.side).toBe("target");
+    const targetSessionStorage = await pool.query<{
+      external_session_id: string | null;
+      metadata: Record<string, unknown>;
+    }>("select external_session_id,metadata from sessions where id=$1", [
+      created!.localReplica.localSessionId
+    ]);
+    expect(targetSessionStorage.rows).toEqual([
       {
-        relationshipId,
-        logicalMemoryId,
-        originSessionId,
-        localDeploymentIdentityId: localDeployment.id,
-        remoteDeploymentIdentityId: sourceDeployment.id,
-        remoteUserIdentityId: sourceUser.id,
-        remoteReplicaId: sourceReplicaId,
-        localReplicaId: targetReplicaId,
-        idempotencyKey: "sync-target-idempotency",
-        creationRequestHash: "b".repeat(64),
-        policyManifest: { sourceBoundary: "captured_session" },
-        consentManifest: { consented: true },
-        session: {
-          originSessionId,
-          externalSessionId: "source-thread",
-          sourceRuntime: "codex",
-          captureMethod: "hook",
-          capturedAt: "2026-07-12T00:00:00.000Z",
-          title: "Synchronized session",
-          sourceAdapterVersion: "1"
+        external_session_id: null,
+        metadata: {
+          syncReplica: true,
+          contentEncrypted: true
         }
       }
+    ]);
+    await pool.query(
+      `update sessions
+          set external_session_id='stale-plaintext-source-label',
+              metadata='{"syncReplica":true,"threadName":"stale-plaintext-title"}'::jsonb
+        where id=$1`,
+      [created!.localReplica.localSessionId]
     );
+    await encryptedRepo.createTargetSyncRelationship(
+      {
+        userId: owner.id,
+        deviceCredentialId: syncCredential!.id
+      },
+      targetRelationshipInput
+    );
+    const scrubbedTargetSessionStorage = await pool.query<{
+      external_session_id: string | null;
+      metadata: Record<string, unknown>;
+    }>("select external_session_id,metadata from sessions where id=$1", [
+      created!.localReplica.localSessionId
+    ]);
+    expect(scrubbedTargetSessionStorage.rows).toEqual(
+      targetSessionStorage.rows
+    );
+    const ownerPrivateRetentionPolicy = await pool.query<{
+      retention_seconds: string;
+      deletion_grace_seconds: string;
+      backup_retention_seconds: string;
+      created_by_user_id: string;
+    }>(
+      `select retention_seconds, deletion_grace_seconds,
+              backup_retention_seconds, created_by_user_id
+         from retention_policies
+        where scope='owner_private_replica'
+          and owner_private_replica_id=$1
+          and logical_memory_id=$2
+          and superseded_at is null`,
+      [targetReplicaId, logicalMemoryId]
+    );
+    expect(ownerPrivateRetentionPolicy.rows).toEqual([
+      {
+        retention_seconds: "0",
+        deletion_grace_seconds: "0",
+        backup_retention_seconds: "0",
+        created_by_user_id: owner.id
+      }
+    ]);
+    await expect(
+      encryptedRepo.pauseCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        relationshipId
+      )
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.resumeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        relationshipId
+      )
+    ).resolves.toBeNull();
     const unprovenRotationHash = randomBytes(32).toString("hex");
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: unprovenRotationHash,
@@ -5117,7 +7600,7 @@ describeDb("memory repository visibility", () => {
             originSessionId: switchedOriginSessionId,
             externalSessionId: "switched-source-thread",
             sourceRuntime: "codex",
-            captureMethod: "hook",
+            captureMethod: "transcript",
             capturedAt: "2026-07-12T00:00:00.000Z",
             title: "Switched source principal",
             sourceAdapterVersion: "1"
@@ -5157,7 +7640,9 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: randomUUID(),
           idempotencyKey: "wrong-device-credential",
           requestHash: "1".repeat(64),
-          packageManifest: {},
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "2".repeat(64)
+          }),
           packageChecksum: "2".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5201,7 +7686,7 @@ describeDb("memory repository visibility", () => {
             originSessionId: spoofedOriginSessionId,
             externalSessionId: "spoofed-source-thread",
             sourceRuntime: "codex",
-            captureMethod: "hook",
+            captureMethod: "transcript",
             capturedAt: "2026-07-12T00:00:00.000Z",
             title: "Spoofed synchronized session",
             sourceAdapterVersion: "1"
@@ -5218,7 +7703,9 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: randomUUID(),
           idempotencyKey: "wrong-relationship-side",
           requestHash: "1".repeat(64),
-          packageManifest: {},
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "2".repeat(64)
+          }),
           packageChecksum: "2".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5257,7 +7744,7 @@ describeDb("memory repository visibility", () => {
           rawEventType: "user_turn",
           visibility: "personal",
           content: "Must not mutate target",
-          workspaceId: "sync",
+          projectId: "sync",
           sessionId: targetSessionId
         }
       )
@@ -5265,24 +7752,91 @@ describeDb("memory repository visibility", () => {
 
     const packageId = randomUUID();
     const originEventId = randomUUID();
+    const originItemId = randomUUID();
+    const contributorBase = {
+      originItemId,
+      actor: "user",
+      kind: "user_message",
+      content: "Synchronized canonical source item",
+      toolName: null,
+      toolCallId: null,
+      sourceEventTime: "2026-07-12T00:00:01.000Z",
+      sourceSequence: 1,
+      sourceKind: "codex",
+      sourceAdapterVersion: "1",
+      sourceTransport: "sync",
+      sourceRecordType: "event_msg",
+      sourceEventType: "user_message",
+      rawJson: { content: "Synchronized canonical source item" },
+      rawText: "Synchronized canonical source item",
+      metadata: { actor: "user" },
+      logicalSourceId: originItemId,
+      transportChunkIndex: 0,
+      transportChunkCount: 1,
+      transportChunkText: null,
+      transportChunkEncoding: null,
+      projectionStatus: "projected" as const,
+      projectionVersion: "semantic-projection-v1",
+      projectionPolicyRevision: 1,
+      memoryExcludedAt: null,
+      memoryExclusionReason: null
+    };
+    const contributor = {
+      ...contributorBase,
+      revisionHash: crossIdentitySyncDigest(contributorBase)
+    };
     const event = {
       originEventId,
       revisionHash: "",
       eventType: "captured",
       actor: "user",
       content: "Synchronized canonical memory",
-      metadata: { includeInLcm: true },
+      metadata: {
+        includeInLcm: true,
+        semanticItemManifest: [{ sourceIds: [originItemId] }]
+      },
+      includeInEmbedding: true,
+      includeInLcm: true,
+      projectionPolicyKey: "repository-sync-test",
+      projectionPolicyRevision: 1,
       tokenCount: 4,
       sealReason: "user_turn",
       capturedAt: "2026-07-12T00:00:01.000Z",
       sourceEventTime: "2026-07-12T00:00:01.000Z",
       sourceSequence: 1,
-      contributors: []
+      contributors: [contributor]
     };
     event.revisionHash = crossIdentitySyncDigest({
       ...event,
       revisionHash: undefined
     });
+    const summaryNodeBase = {
+      originNodeId: randomUUID(),
+      kind: "leaf" as const,
+      depth: 0,
+      lcmAlgorithmVersion: "depth0-source-items-v1",
+      summaryText: "A concise synchronized semantic summary.",
+      summaryModel: "gpt-5.4-mini",
+      summaryPromptVersion: "lcm-semantic-summary-v1",
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Synchronized summary",
+        summary_text: "A concise synchronized semantic summary."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1",
+      sourceOriginEventIds: [originEventId],
+      childOriginNodeIds: [],
+      sourceHash: "f".repeat(64),
+      sourceEventCount: 1,
+      sourceTokenEstimate: 12,
+      summaryTokenEstimate: 7,
+      createdAt: "2026-07-12T00:00:01.000Z",
+      updatedAt: "2026-07-12T00:00:03.000Z"
+    };
+    const summaryNode = {
+      ...summaryNodeBase,
+      revisionHash: crossIdentitySyncDigest(summaryNodeBase)
+    };
     const syncPackage: CapturedSessionSyncPackageV1 = {
       format: CAPTURED_SESSION_SYNC_FORMAT,
       formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
@@ -5304,11 +7858,12 @@ describeDb("memory repository visibility", () => {
       policyDigest: crossIdentitySyncDigest({
         sourceBoundary: "captured_session"
       }),
+      summaryRevisionHash: crossIdentitySyncDigest([summaryNode]),
       session: {
         originSessionId,
         externalSessionId: "source-thread",
         sourceRuntime: "codex",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         capturedAt: "2026-07-12T00:00:00.000Z",
         title: "Synchronized session",
         sourceAdapterVersion: "1"
@@ -5321,17 +7876,31 @@ describeDb("memory repository visibility", () => {
           revisionHash: event.revisionHash,
           event
         }
-      ]
+      ],
+      summaryNodes: [summaryNode]
     };
     const uploadId = randomUUID();
     await pool.query(
-      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,$4,'{\"recordCount\":1}',$5,1,0,1,1,1,'target-apply')",
-      [uploadId, relationshipId, packageId, "d".repeat(64), "e".repeat(64)]
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,$4,$5::jsonb,$6,1,0,1,1,1,'target-apply')",
+      [
+        uploadId,
+        relationshipId,
+        packageId,
+        "d".repeat(64),
+        JSON.stringify(
+          testSyncPackageUploadManifest({
+            packageDigest: "e".repeat(64),
+            recordCount: 2,
+            summaryRevisionHash: syncPackage.summaryRevisionHash
+          })
+        ),
+        "e".repeat(64)
+      ]
     );
     expect(
       (await encryptedRepo.getCrossIdentitySyncOperationalStatus())
         .targetLagRecords - targetLagBefore
-    ).toBe(1);
+    ).toBe(2);
     await expect(
       encryptedRepo.getSyncPackageUploadSession(
         { userId: owner.id },
@@ -5352,43 +7921,89 @@ describeDb("memory repository visibility", () => {
       package: syncPackage
     });
     expect(applied.eventIds).toHaveLength(1);
+    expect(applied.summaryNodeIds).toHaveLength(1);
+    const importedContributor = await pool.query<{ id: string }>(
+      `select ci.id
+         from memory_event_sources mes
+         join conversation_items ci on ci.id=mes.conversation_item_id
+        where mes.memory_event_id=$1`,
+      [applied.eventIds[0]]
+    );
+    expect(importedContributor.rows).toHaveLength(1);
+    expect(importedContributor.rows[0]!.id).not.toBe(originItemId);
+    const importedEncryptionKeys = await pool.query<{
+      encryption_scope: string;
+      key_id: string;
+    }>(
+      `select distinct encryption_scope,key_id
+         from encrypted_field_payloads
+        where invalidated_at is null
+          and (
+            (source_table='memory_events' and source_id=$1)
+            or (source_table='memory_nodes' and source_id=$2)
+          )`,
+      [applied.eventIds[0], applied.summaryNodeIds[0]]
+    );
+    expect(importedEncryptionKeys.rows).toEqual([
+      {
+        encryption_scope: "owner_private_replica",
+        key_id: ownerPrivateReplicaEncryptionProvider.keyId
+      }
+    ]);
+    expect(ownerPrivateReplicaEncryptionProvider.keyId).not.toBe(
+      deploymentEncryptionProvider.keyId
+    );
+    const processingSources =
+      await encryptedRepo.listSourcesNeedingEmbeddings(10_000);
+    expect(
+      processingSources.some(
+        (source) =>
+          source.sourceId === applied.eventIds[0] ||
+          source.sourceId === applied.summaryNodeIds[0]
+      )
+    ).toBe(false);
     await expect(
       encryptedRepo.getEmbeddableSource("memory_event", applied.eventIds[0]!)
     ).resolves.toMatchObject({ text: "Synchronized canonical memory" });
-    const previousThreshold = process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
-    process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "1";
-    try {
-      const compacted = await encryptedRepo.createLcmNodes(
+    await expect(
+      encryptedRepo.getEmbeddableSource(
+        "memory_node",
+        applied.summaryNodeIds[0]!
+      )
+    ).resolves.toMatchObject({
+      text: "A concise synchronized semantic summary."
+    });
+    await expect(
+      encryptedRepo.expandMemoryNode(
+        applied.summaryNodeIds[0]!,
         { userId: owner.id },
-        { visibility: "personal" }
-      );
-      await expect(
-        encryptedRepo.listDerivedMemoryNodeIdsForSyncRelationship({
-          relationshipId,
-          ownerUserId: owner.id
+        { searchDomain: "global" }
+      )
+    ).resolves.toMatchObject({
+      sources: [
+        expect.objectContaining({
+          id: applied.eventIds[0],
+          content: "Synchronized canonical memory"
         })
-      ).resolves.toContain(compacted.leafNodeIds[0]);
-      await expect(
-        encryptedRepo.expandMemoryNode(
-          compacted.leafNodeIds[0]!,
-          { userId: owner.id },
-          { searchDomain: "global" }
-        )
-      ).resolves.toMatchObject({
-        sources: [
-          expect.objectContaining({
-            id: applied.eventIds[0],
-            content: "Synchronized canonical memory"
-          })
-        ]
-      });
-    } finally {
-      if (previousThreshold === undefined) {
-        delete process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
-      } else {
-        process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = previousThreshold;
-      }
-    }
+      ]
+    });
+    await expect(
+      encryptedRepo.createLcmNodes(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          sessionId: targetSessionId,
+          force: true,
+          requestedRepresentation: "lcm_rollups"
+        }
+      )
+    ).resolves.toEqual({ leafNodeIds: [], rollupNodeId: null });
+    await expect(
+      encryptedRepo.listLcmNodesNeedingSummaries(
+        { userId: owner.id },
+        { limit: 50 }
+      )
+    ).resolves.toEqual([]);
     expect(
       await pool.query("select sync_session_recall_ready($1) as ready", [
         targetSessionId
@@ -5401,10 +8016,12 @@ describeDb("memory repository visibility", () => {
     const member = await encryptedRepo.createUser({
       email: `sync-target-member-${randomUUID()}@example.com`
     });
-    await encryptedRepo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      repository: encryptedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await encryptedRepo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Synchronized readiness workspace" }
@@ -5414,16 +8031,10 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
-    await expect(
-      encryptedRepo.createTeamSessionShareGrant(
-        { userId: owner.id },
-        { teamWorkspaceId: workspace!.id, sessionId: targetSessionId }
-      )
-    ).resolves.toBeNull();
-
     const replay = await encryptedRepo.applyCapturedSessionSyncPackage({
       relationshipId,
       uploadSessionId: uploadId,
@@ -5431,7 +8042,9 @@ describeDb("memory repository visibility", () => {
     });
     expect(replay).toEqual({
       eventIds: applied.eventIds,
-      invalidatedEventIds: []
+      invalidatedEventIds: [],
+      summaryNodeIds: applied.summaryNodeIds,
+      invalidatedSummaryNodeIds: []
     });
     await encryptedRepo.markTargetSyncReady({
       relationshipId,
@@ -5439,6 +8052,101 @@ describeDb("memory repository visibility", () => {
       packageId,
       staleAfterSeconds: 3_600
     });
+    await pool.query(
+      `insert into sync_inbox_entries
+         (sync_relationship_id,upload_session_id,idempotency_key,request_hash,payload_manifest)
+       values ($1,$2,'superseded-package-race',$3,'{}'::jsonb)`,
+      [relationshipId, uploadId, "9".repeat(64)]
+    );
+    const supersededInboxClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "inbox",
+      leaseMs: 30_000
+    });
+    expect(supersededInboxClaim?.idempotencyKey).toBe(
+      "superseded-package-race"
+    );
+    await pool.query(
+      `update cross_identity_sync_relationships
+          set state='ready',package_sequence=2,target_processing_cursor=2
+        where id=$1`,
+      [relationshipId]
+    );
+    await expect(
+      encryptedRepo.failSyncQueueEntry({
+        queue: "inbox",
+        id: supersededInboxClaim!.id,
+        claimToken: supersededInboxClaim!.claimToken!,
+        errorClass: "SyncStateConflictError",
+        retryAfterMs: 250,
+        terminal: true
+      })
+    ).resolves.toBe(true);
+    await expect(
+      pool.query(
+        `select entry.state,entry.last_error_message,
+                relationship.state as relationship_state,
+                relationship.last_error_class
+           from sync_inbox_entries entry
+           join cross_identity_sync_relationships relationship
+             on relationship.id=entry.sync_relationship_id
+          where entry.id=$1`,
+        [supersededInboxClaim!.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "completed",
+          last_error_message: null,
+          relationship_state: "ready",
+          last_error_class: null
+        }
+      ]
+    });
+    await pool.query(
+      `insert into sync_inbox_entries
+         (sync_relationship_id,upload_session_id,idempotency_key,request_hash,payload_manifest)
+       values ($1,$2,'superseded-package-pending',$3,'{}'::jsonb)`,
+      [relationshipId, uploadId, "8".repeat(64)]
+    );
+    await expect(
+      encryptedRepo.claimSyncQueueEntry({
+        queue: "inbox",
+        leaseMs: 30_000
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query(
+        `select state,last_error_message
+           from sync_inbox_entries
+          where sync_relationship_id=$1
+            and idempotency_key='superseded-package-pending'`,
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "completed", last_error_message: null }]
+    });
+    await pool.query(
+      `update cross_identity_sync_relationships
+          set package_sequence=1,target_processing_cursor=1
+        where id=$1`,
+      [relationshipId]
+    );
+    await expect(
+      encryptedRepo.listSourcesNeedingEmbeddings(10_000)
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: "memory_event",
+          sourceId: applied.eventIds[0],
+          text: "Synchronized canonical memory"
+        }),
+        expect.objectContaining({
+          sourceType: "memory_node",
+          sourceId: applied.summaryNodeIds[0],
+          text: "A concise synchronized semantic summary."
+        })
+      ])
+    );
     await expect(
       encryptedRepo.acceptTargetSyncHeartbeat(
         { userId: owner.id, deviceCredentialId: rotatedCredential!.id },
@@ -5535,23 +8243,48 @@ describeDb("memory repository visibility", () => {
         targetSessionId
       ])
     ).toMatchObject({ rows: [{ ready: true }] });
-    await expect(
-      encryptedRepo.createTeamSessionShareGrant(
-        { userId: owner.id },
-        { teamWorkspaceId: workspace!.id, sessionId: targetSessionId }
-      )
-    ).resolves.toMatchObject({ sessionId: targetSessionId });
+    const synchronizedGrant = await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: targetSessionId,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id
+    });
+    await pool.query(
+      `insert into team_memory_representations (
+         share_grant_id,consent_id,source_preview_id,source_artifact_id,
+         team_id,team_workspace_id,logical_memory_id,representation,
+         source_revision,source_revision_hash,provenance_hash,
+         source_owner_policy_id,source_owner_policy_version,
+         team_policy_id,team_policy_version,workspace_policy_id,
+         workspace_policy_version,representation_policy_revision,
+         content_policy_version,classifier_version,state,available_at
+       )
+       select g.id,g.consent_id,consent.preview_id,preview.source_artifact_id,
+              g.team_id,g.team_workspace_id,g.logical_memory_id,
+              g.active_representation,g.source_revision,
+              preview.source_hash,$2,g.source_owner_policy_id,
+              g.source_owner_policy_version,g.team_policy_id,
+              g.team_policy_version,g.workspace_policy_id,
+              g.workspace_policy_version,g.representation_policy_revision,
+              g.content_policy_version,g.classifier_version,
+              'available',now()
+         from team_session_share_grants g
+         join source_owner_representation_consents consent
+           on consent.id=g.consent_id
+         join shared_source_previews preview on preview.id=consent.preview_id
+        where g.id=$1`,
+      [synchronizedGrant.id, randomBytes(32).toString("hex")]
+    );
     await expect(
       encryptedRepo.getLcmGraphEvent(
         { userId: member.id },
         applied.eventIds[0]!,
-        { teamWorkspaceId: workspace!.id, includeRaw: true }
+        {
+          ...{ teamWorkspaceId: workspace!.id },
+          includeRaw: true
+        }
       )
-    ).resolves.toMatchObject({
-      id: applied.eventIds[0],
-      contentPreview: "Synchronized canonical memory",
-      rawContent: "Synchronized canonical memory"
-    });
+    ).resolves.toBeNull();
     await expect(
       encryptedRepo.getLcmGraphEvent(
         { userId: member.id },
@@ -5602,7 +8335,11 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: packageId,
           idempotencyKey: "target-apply",
           requestHash: "d".repeat(64),
-          packageManifest: { recordCount: 1 },
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "e".repeat(64),
+            recordCount: 2,
+            summaryRevisionHash: syncPackage.summaryRevisionHash
+          }),
           packageChecksum: "e".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5729,7 +8466,11 @@ describeDb("memory repository visibility", () => {
           protocolPackageId: packageId,
           idempotencyKey: "target-apply",
           requestHash: "d".repeat(64),
-          packageManifest: { recordCount: 1 },
+          packageManifest: testSyncPackageUploadManifest({
+            packageDigest: "e".repeat(64),
+            recordCount: 2,
+            summaryRevisionHash: syncPackage.summaryRevisionHash
+          }),
           packageChecksum: "e".repeat(64),
           totalBytes: 1,
           expectedChunkCount: 1,
@@ -5749,7 +8490,197 @@ describeDb("memory repository visibility", () => {
     expect(
       (await encryptedRepo.getCrossIdentitySyncOperationalStatus())
         .completedRecordsLastHour - completedRecordsBefore
-    ).toBe(1);
+    ).toBe(2);
+    const replacementSummaryBase = {
+      ...summaryNodeBase,
+      summaryText: "A revised synchronized semantic summary.",
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Revised synchronized summary",
+        summary_text: "A revised synchronized semantic summary."
+      },
+      updatedAt: "2026-07-12T00:02:00.000Z"
+    };
+    const replacementSummaryNode = {
+      ...replacementSummaryBase,
+      revisionHash: crossIdentitySyncDigest(replacementSummaryBase)
+    };
+    const replacementContributorBase = {
+      ...contributorBase,
+      content: "Revised synchronized canonical source item",
+      rawJson: { content: "Revised synchronized canonical source item" },
+      rawText: "Revised synchronized canonical source item"
+    };
+    const replacementContributor = {
+      ...replacementContributorBase,
+      revisionHash: crossIdentitySyncDigest(replacementContributorBase)
+    };
+    const replacementEventBase = {
+      ...event,
+      revisionHash: undefined,
+      content: "Revised synchronized canonical memory",
+      contributors: [replacementContributor]
+    };
+    const replacementEvent = {
+      ...replacementEventBase,
+      revisionHash: crossIdentitySyncDigest(replacementEventBase)
+    };
+    const replacementSummaryPackage: CapturedSessionSyncPackageV1 = {
+      ...syncPackage,
+      packageId: randomUUID(),
+      packageSequence: 2,
+      fromCursor: 1,
+      toCursor: 2,
+      createdAt: "2026-07-12T00:02:01.000Z",
+      changes: [
+        {
+          cursor: 2,
+          operation: "upsert",
+          originEventId,
+          revisionHash: replacementEvent.revisionHash,
+          event: replacementEvent
+        }
+      ],
+      summaryNodes: [replacementSummaryNode],
+      summaryRevisionHash: crossIdentitySyncDigest([replacementSummaryNode])
+    };
+    const replacementSummaryUploadId = randomUUID();
+    await pool.query(
+      `insert into sync_package_upload_sessions (
+         id,sync_relationship_id,protocol_package_id,request_hash,
+         package_manifest,package_checksum,source_sequence,from_cursor,
+         to_cursor,total_bytes,expected_chunk_count,idempotency_key
+       ) values ($1,$2,$3,$4,$5::jsonb,$6,2,1,2,1,1,$7)`,
+      [
+        replacementSummaryUploadId,
+        relationshipId,
+        replacementSummaryPackage.packageId,
+        crossIdentitySyncPackageRequestHash(replacementSummaryPackage),
+        JSON.stringify(
+          testSyncPackageUploadManifest({
+            packageDigest: crossIdentitySyncDigest(replacementSummaryPackage),
+            recordCount: 2,
+            summaryRevisionHash: replacementSummaryPackage.summaryRevisionHash
+          })
+        ),
+        crossIdentitySyncDigest(replacementSummaryPackage),
+        `target-summary-replacement-${randomUUID()}`
+      ]
+    );
+    const replacementSummaryApplied =
+      await encryptedRepo.applyCapturedSessionSyncPackage({
+        relationshipId,
+        uploadSessionId: replacementSummaryUploadId,
+        package: replacementSummaryPackage
+      });
+    expect(replacementSummaryApplied).toMatchObject({
+      eventIds: [expect.any(String)],
+      invalidatedEventIds: applied.eventIds,
+      summaryNodeIds: [expect.any(String)],
+      invalidatedSummaryNodeIds: applied.summaryNodeIds
+    });
+    expect(replacementSummaryApplied.summaryNodeIds[0]).not.toBe(
+      applied.summaryNodeIds[0]
+    );
+    const replacementContributorRow = await pool.query<{
+      id: string;
+      source_hash: string;
+    }>(
+      `select ci.id,ci.source_hash
+         from memory_event_sources mes
+         join conversation_items ci on ci.id=mes.conversation_item_id
+        where mes.memory_event_id=$1`,
+      [replacementSummaryApplied.eventIds[0]]
+    );
+    expect(replacementContributorRow.rows).toEqual([
+      {
+        id: importedContributor.rows[0]!.id,
+        source_hash: replacementContributor.revisionHash
+      }
+    ]);
+    await expect(
+      encryptedRepo.getEmbeddableSource(
+        "memory_node",
+        replacementSummaryApplied.summaryNodeIds[0]!
+      )
+    ).resolves.toMatchObject({
+      text: "A revised synchronized semantic summary."
+    });
+    await expect(
+      pool.query(
+        `select invalidation_reason
+           from memory_nodes
+          where id=$1`,
+        [applied.summaryNodeIds[0]]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ invalidation_reason: "source_event_deleted" }]
+    });
+
+    const emptySummaryHash = crossIdentitySyncDigest([]);
+    const emptySummaryPackage: CapturedSessionSyncPackageV1 = {
+      ...syncPackage,
+      packageId: randomUUID(),
+      packageSequence: 3,
+      fromCursor: 2,
+      toCursor: 2,
+      createdAt: "2026-07-12T00:03:01.000Z",
+      changes: [],
+      summaryNodes: [],
+      summaryRevisionHash: emptySummaryHash
+    };
+    const emptySummaryUploadId = randomUUID();
+    await pool.query(
+      `insert into sync_package_upload_sessions (
+         id,sync_relationship_id,protocol_package_id,request_hash,
+         package_manifest,package_checksum,source_sequence,from_cursor,
+         to_cursor,total_bytes,expected_chunk_count,idempotency_key
+       ) values ($1,$2,$3,$4,$5::jsonb,$6,3,2,2,1,1,$7)`,
+      [
+        emptySummaryUploadId,
+        relationshipId,
+        emptySummaryPackage.packageId,
+        crossIdentitySyncPackageRequestHash(emptySummaryPackage),
+        JSON.stringify(
+          testSyncPackageUploadManifest({
+            packageDigest: crossIdentitySyncDigest(emptySummaryPackage),
+            summaryRevisionHash: emptySummaryHash
+          })
+        ),
+        crossIdentitySyncDigest(emptySummaryPackage),
+        `target-summary-removal-${randomUUID()}`
+      ]
+    );
+    const emptySummaryApplied =
+      await encryptedRepo.applyCapturedSessionSyncPackage({
+        relationshipId,
+        uploadSessionId: emptySummaryUploadId,
+        package: emptySummaryPackage
+      });
+    expect(emptySummaryApplied).toEqual({
+      eventIds: [],
+      invalidatedEventIds: [],
+      summaryNodeIds: [],
+      invalidatedSummaryNodeIds: replacementSummaryApplied.summaryNodeIds
+    });
+    await expect(
+      pool.query(
+        `select count(*)::int as count
+           from sync_summary_node_mappings
+          where sync_relationship_id=$1 and active=true`,
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await expect(
+      pool.query(
+        `select target_summary_revision_hash
+           from cross_identity_sync_relationships
+          where id=$1`,
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ target_summary_revision_hash: emptySummaryHash }]
+    });
     const replacementChallengeHash = randomBytes(32).toString("hex");
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: replacementChallengeHash,
@@ -5780,12 +8711,15 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({ id: relationshipId });
     const interruptedUploadId = randomUUID();
     await pool.query(
-      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,'{}',$5,2,1,2,1,1,'revocation-interrupt')",
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,4,1,2,1,1,'revocation-interrupt')",
       [
         interruptedUploadId,
         relationshipId,
         randomUUID(),
         "6".repeat(64),
+        JSON.stringify(
+          testSyncPackageUploadManifest({ packageDigest: "7".repeat(64) })
+        ),
         "7".repeat(64)
       ]
     );
@@ -5818,6 +8752,37 @@ describeDb("memory repository visibility", () => {
       rows: [{ state: "cancelled", claim_token: null, lease_expires_at: null }]
     });
     await expect(
+      pool.query(
+        `select state
+           from team_memory_representations
+          where share_grant_id=$1`,
+        [synchronizedGrant.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ state: "stale" }] });
+    await expect(
+      pool.query(
+        `select family,scope,team_id,team_workspace_id,share_grant_id,
+                logical_memory_id,resource_type,resource_id
+           from collaboration_outbox
+          where family='representation_changed'
+            and share_grant_id=$1`,
+        [synchronizedGrant.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          family: "representation_changed",
+          scope: "team",
+          team_id: team.id,
+          team_workspace_id: workspace!.id,
+          share_grant_id: synchronizedGrant.id,
+          logical_memory_id: synchronizedGrant.logicalMemoryId,
+          resource_type: "team_session_share_grant",
+          resource_id: synchronizedGrant.id
+        }
+      ]
+    });
+    await expect(
       encryptedRepo.revokeDeviceCredential(
         { userId: owner.id },
         replacementCredential!.id,
@@ -5836,13 +8801,15 @@ describeDb("memory repository visibility", () => {
       ])
     ).toMatchObject({ rows: [{ ready: true }] });
     await expect(
-      encryptedRepo.listTeamSessionShareGrants(
-        { userId: owner.id },
-        { teamWorkspaceId: workspace!.id }
+      pool.query(
+        `select session_id, revoked_at
+           from team_session_share_grants
+          where id = $1`,
+        [synchronizedGrant.id]
       )
-    ).resolves.toEqual([
-      expect.objectContaining({ sessionId: targetSessionId, revokedAt: null })
-    ]);
+    ).resolves.toMatchObject({
+      rows: [{ session_id: targetSessionId, revoked_at: null }]
+    });
   });
 
   it("retains Team session share grants through personal deletion and member exit", async () => {
@@ -5858,10 +8825,13 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Retention Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    const retainedMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: member
+      })
+    ).membership;
     const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Retained Workspace" }
@@ -5871,23 +8841,24 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "retention-project",
+        projectId: "retention-project",
         externalSessionId: `retained-session-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     const event = await repo.createMemoryEvent(
       { userId: owner.id },
       {
         visibility: "personal",
-        workspaceId: "retention-project",
+        projectId: "retention-project",
         sessionId: session.id,
         actor: "user",
         eventType: "captured",
@@ -5901,7 +8872,7 @@ describeDb("memory repository visibility", () => {
       {
         visibility: "personal",
         summaryText: "Retained Team decision summary.",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex",
         sourceHash: `retained-team-node-${randomUUID()}`
       }
@@ -5914,21 +8885,13 @@ describeDb("memory repository visibility", () => {
       [retainedNode.id, event.id]
     );
 
-    const grant = await pool.query<{ id: string }>(
-      `
-        insert into team_session_share_grants (
-          owner_user_id,
-          session_id,
-          team_id,
-          team_workspace_id,
-          granted_by_user_id
-        )
-        values ($1, $2, $3, $4, $5)
-        returning id
-      `,
-      [owner.id, session.id, team.id, workspace!.id, owner.id]
-    );
-    const grantId = grant.rows[0]!.id;
+    const grant = await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: session.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id
+    });
+    const grantId = grant.id;
 
     await pool.query(
       `
@@ -5974,65 +8937,42 @@ describeDb("memory repository visibility", () => {
       `,
       [owner.id, grantId]
     );
+    const legacyTeamScope = { teamWorkspaceId: workspace!.id };
     const retainedGraphEvents = await repo.listLcmGraphEvents(
       { userId: member.id },
       {
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         includeContent: true
       }
     );
-    expect(retainedGraphEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: event.id,
-          content: "The billing grace period decision stays with the workspace."
-        })
-      ])
-    );
+    expect(retainedGraphEvents).toEqual([]);
     const retainedThreads = await repo.listLcmGraphThreads(
       { userId: member.id },
-      { teamWorkspaceId: workspace!.id }
+      { ...legacyTeamScope, limit: 20 }
     );
-    expect(retainedThreads.flatMap((project) => project.threads)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ sessionId: session.id })
-      ])
-    );
+    expect(retainedThreads).toEqual([]);
     await expect(
       repo.getLcmGraphNode({ userId: member.id }, retainedNode.id, {
-        teamWorkspaceId: workspace!.id
+        ...legacyTeamScope,
+        includeInvalidated: false
       })
-    ).resolves.toMatchObject({
-      id: retainedNode.id,
-      sources: [expect.objectContaining({ id: event.id })]
-    });
+    ).resolves.toBeNull();
     await expect(
       repo.expandMemoryNode(
         retainedNode.id,
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id
+          ...legacyTeamScope,
+          searchDomain: "global"
         }
       )
-    ).resolves.toMatchObject({
-      nodeId: retainedNode.id,
-      sources: [expect.objectContaining({ id: event.id })]
-    });
-    await repo.upsertTeamMember(
+    ).rejects.toThrow("Memory node not found or not visible");
+    await repo.disableTeamMember(
       { userId: owner.id },
       {
         teamId: team.id,
         userId: member.id,
-        role: "member",
-        status: "disabled"
-      }
-    );
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: member.id,
-        access: "disabled"
+        expectedVersion: retainedMembership.version
       }
     );
     await pool.query(
@@ -6107,15 +9047,24 @@ describeDb("memory repository visibility", () => {
     ).rejects.toThrow();
   });
 
-  it("uses strict Team Workspace boundaries instead of requester personal rows", async () => {
+  it("keeps legacy Team Workspace properties from granting generic Personal Memory access", async () => {
     const owner = await repo.createUser({
       email: `team-boundary-owner-${randomUUID()}@example.com`,
       displayName: "Team Boundary Owner"
+    });
+    const member = await repo.createUser({
+      email: `team-boundary-member-${randomUUID()}@example.com`,
+      displayName: "Team Boundary Member"
     });
     const team = await repo.createTeam(
       { userId: owner.id },
       { name: "Boundary Team" }
     );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const electronWorkspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Electron Boundary" }
@@ -6124,9 +9073,18 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { teamId: team.id, name: "Cloud Boundary" }
     );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: electronWorkspace!.id,
+        userId: member.id,
+        access: "read",
+        expectedVersion: null
+      }
+    );
 
     const createNodeFromSession = async (input: {
-      workspaceId: string;
+      projectId: string;
       content: string;
       summaryText: string;
       grantWorkspaceId?: string;
@@ -6135,17 +9093,17 @@ describeDb("memory repository visibility", () => {
       const session = await repo.createCapturedSession(
         { userId: owner.id },
         {
-          workspaceId: input.workspaceId,
+          projectId: input.projectId,
           externalSessionId: `boundary-session-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "transcript"
         }
       );
       const event = await repo.createMemoryEvent(
         { userId: owner.id },
         {
           visibility: "personal",
-          workspaceId: input.workspaceId,
+          projectId: input.projectId,
           sessionId: session.id,
           actor: "user",
           eventType: "captured",
@@ -6160,7 +9118,7 @@ describeDb("memory repository visibility", () => {
           visibility: "personal",
           summaryText: input.summaryText,
           bodyText: input.content,
-          captureMethod: "hook",
+          captureMethod: "transcript",
           sourceRuntime: "codex",
           sourceHash: `boundary-node-${randomUUID()}`
         }
@@ -6173,63 +9131,39 @@ describeDb("memory repository visibility", () => {
         [node.id, event.id]
       );
       if (input.grantWorkspaceId) {
-        await pool.query(
-          `
-            insert into team_session_share_grants (
-              owner_user_id,
-              session_id,
-              team_id,
-              team_workspace_id,
-              granted_by_user_id,
-              revoked_at,
-              revoked_by_user_id,
-              revocation_reason
-            )
-            values (
-              $1,
-              $2,
-              $3,
-              $4,
-              $5,
-              case when $6::boolean then now() else null end,
-              case when $6::boolean then $5::uuid else null end,
-              case when $6::boolean then 'boundary_regression_revoked' else null end
-            )
-          `,
-          [
-            owner.id,
-            session.id,
-            team.id,
-            input.grantWorkspaceId,
-            owner.id,
-            input.revoked ?? false
-          ]
-        );
+        await insertValidSharedMemoryGrant({
+          ownerUserId: owner.id,
+          sessionId: session.id,
+          teamId: team.id,
+          teamWorkspaceId: input.grantWorkspaceId,
+          revoked: input.revoked,
+          revocationReason: "boundary_regression_revoked"
+        });
       }
       return { session, event, node };
     };
 
     const sharedElectron = await createNodeFromSession({
-      workspaceId: "electron-boundary-project",
+      projectId: "electron-boundary-project",
       content:
         "SharedElectronBoundaryUnique belongs in the Electron Team Workspace.",
       summaryText: "SharedElectronBoundaryUnique summary.",
       grantWorkspaceId: electronWorkspace!.id
     });
     const privateCloud = await createNodeFromSession({
-      workspaceId: "cloud-boundary-project",
+      projectId: "cloud-boundary-project",
       content: "PrivatePricingBoundaryUnique must remain personal-only.",
       summaryText: "PrivatePricingBoundaryUnique summary."
     });
     const cloudOnly = await createNodeFromSession({
-      workspaceId: "cloud-boundary-project",
+      projectId: "cloud-boundary-project",
       content:
         "CloudOnlyBoundaryUnique belongs only to the Cloud Team Workspace.",
       summaryText: "CloudOnlyBoundaryUnique summary.",
       grantWorkspaceId: cloudWorkspace!.id
     });
     const revokedElectron = await createNodeFromSession({
-      workspaceId: "electron-boundary-project",
+      projectId: "electron-boundary-project",
       content:
         "RevokedElectronBoundaryUnique was revoked from the Electron Team Workspace.",
       summaryText: "RevokedElectronBoundaryUnique summary.",
@@ -6244,7 +9178,7 @@ describeDb("memory repository visibility", () => {
           "BoundaryVisibleRollupUnique summarizes only active Electron sources.",
         bodyText:
           "BoundaryVisibleRollupUnique body includes SharedElectronBoundaryUnique.",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex",
         sourceHash: `boundary-visible-rollup-${randomUUID()}`
       }
@@ -6257,7 +9191,7 @@ describeDb("memory repository visibility", () => {
           "BoundaryHiddenMixedRollupUnique mixes active and revoked Electron sources.",
         bodyText:
           "BoundaryHiddenMixedRollupUnique body includes RevokedElectronBoundaryUnique.",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex",
         sourceHash: `boundary-hidden-mixed-rollup-${randomUUID()}`
       }
@@ -6297,97 +9231,66 @@ describeDb("memory repository visibility", () => {
       ]
     );
 
-    const electronActor = { userId: owner.id };
+    const electronActor = { userId: member.id };
+    const legacyTeamScope = { teamWorkspaceId: electronWorkspace!.id };
     const graphNodes = await repo.listLcmGraphNodes(electronActor, {
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       query: "BoundaryUnique",
       limit: 20
     });
-    expect(graphNodes.map((node) => node.id)).toContain(sharedElectron.node.id);
-    expect(graphNodes.map((node) => node.id)).not.toEqual(
-      expect.arrayContaining([
-        privateCloud.node.id,
-        cloudOnly.node.id,
-        revokedElectron.node.id
-      ])
-    );
+    expect(graphNodes).toEqual([]);
 
     const graphEvents = await repo.listLcmGraphEvents(electronActor, {
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       includeContent: true,
       query: "BoundaryUnique",
       limit: 20
     });
-    expect(graphEvents.map((event) => event.id)).toContain(
-      sharedElectron.event.id
-    );
-    expect(graphEvents.map((event) => event.id)).not.toEqual(
-      expect.arrayContaining([
-        privateCloud.event.id,
-        cloudOnly.event.id,
-        revokedElectron.event.id
-      ])
-    );
+    expect(graphEvents).toEqual([]);
 
     const graphThreads = await repo.listLcmGraphThreads(electronActor, {
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       query: "BoundaryUnique",
       limit: 20
     });
-    expect(graphThreads.flatMap((project) => project.threads)).toEqual([
-      expect.objectContaining({ sessionId: sharedElectron.session.id })
-    ]);
+    expect(graphThreads).toEqual([]);
 
     const lexical = await repo.searchMemoryNodes(electronActor, {
       query: "BoundaryUnique",
       scope: "personal",
-      teamWorkspaceId: electronWorkspace!.id,
+      ...legacyTeamScope,
       retrievalStage: "lexical_search",
       limit: 20
     });
-    expect(lexical.results.map((result) => result.nodeId)).toContain(
-      sharedElectron.node.id
-    );
-    expect(lexical.results.map((result) => result.nodeId)).not.toEqual(
-      expect.arrayContaining([
-        privateCloud.node.id,
-        cloudOnly.node.id,
-        revokedElectron.node.id,
-        hiddenMixedRollup.id
-      ])
-    );
-    const sharedLeafResult = lexical.results.find(
-      (result) => result.nodeId === sharedElectron.node.id
-    );
-    expect(sharedLeafResult?.parentNodeIds).toContain(visibleRollup.id);
-    expect(sharedLeafResult?.parentNodeIds).not.toContain(hiddenMixedRollup.id);
+    expect(lexical.results).toEqual([]);
 
     await expect(
       repo.expandMemoryNode(privateCloud.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
     ).rejects.toThrow("Memory node not found or not visible");
     await expect(
       repo.expandMemoryNode(cloudOnly.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
     ).rejects.toThrow("Memory node not found or not visible");
     await expect(
       repo.expandMemoryNode(revokedElectron.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
     ).rejects.toThrow("Memory node not found or not visible");
     await expect(
       repo.expandMemoryNode(sharedElectron.node.id, electronActor, {
-        teamWorkspaceId: electronWorkspace!.id
+        ...legacyTeamScope,
+        searchDomain: "global"
       })
-    ).resolves.toMatchObject({
-      nodeId: sharedElectron.node.id,
-      sources: [expect.objectContaining({ id: sharedElectron.event.id })]
-    });
+    ).rejects.toThrow("Memory node not found or not visible");
   });
 
-  it("resolves Team Workspace authorization and lifecycle gates before encrypted companion decrypt", async () => {
+  it("does not decrypt owner-private companions through legacy generic Team scope", async () => {
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 13).toString("base64")
     );
@@ -6415,14 +9318,12 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Encrypted Boundary Team" }
     );
-    await encryptedRepo.upsertTeamMember(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        userId: member.id,
-        role: "member"
-      }
-    );
+    await inviteExistingTeamMember({
+      repository: encryptedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await encryptedRepo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Encrypted Boundary Workspace" }
@@ -6432,7 +9333,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
 
@@ -6444,17 +9346,17 @@ describeDb("memory repository visibility", () => {
       const session = await encryptedRepo.createCapturedSession(
         { userId: owner.id },
         {
-          workspaceId: "encrypted-team-boundary",
+          projectId: "encrypted-team-boundary",
           externalSessionId: `encrypted-team-${randomUUID()}`,
           sourceRuntime: "codex",
-          captureMethod: "hook"
+          captureMethod: "transcript"
         }
       );
       const event = await encryptedRepo.createMemoryEvent(
         { userId: owner.id },
         {
           visibility: "personal",
-          workspaceId: "encrypted-team-boundary",
+          projectId: "encrypted-team-boundary",
           sessionId: session.id,
           actor: "user",
           eventType: "captured",
@@ -6470,7 +9372,7 @@ describeDb("memory repository visibility", () => {
           visibility: "personal",
           summaryText: `${input.label} encrypted Team summary sentinel.`,
           bodyText: `${input.label} encrypted Team payload sentinel.`,
-          captureMethod: "hook",
+          captureMethod: "transcript",
           sourceRuntime: "codex",
           sourceHash: `encrypted-team-node-${randomUUID()}`
         }
@@ -6483,38 +9385,14 @@ describeDb("memory repository visibility", () => {
         [node.id, event.id]
       );
       if (input.shared) {
-        await pool.query(
-          `
-            insert into team_session_share_grants (
-              owner_user_id,
-              session_id,
-              team_id,
-              team_workspace_id,
-              granted_by_user_id,
-              revoked_at,
-              revoked_by_user_id,
-              revocation_reason
-            )
-            values (
-              $1,
-              $2,
-              $3,
-              $4,
-              $5,
-              case when $6::boolean then now() else null end,
-              case when $6::boolean then $5::uuid else null end,
-              case when $6::boolean then 'encrypted_boundary_revoked' else null end
-            )
-          `,
-          [
-            owner.id,
-            session.id,
-            team.id,
-            workspace!.id,
-            owner.id,
-            input.revoked ?? false
-          ]
-        );
+        await insertValidSharedMemoryGrant({
+          ownerUserId: owner.id,
+          sessionId: session.id,
+          teamId: team.id,
+          teamWorkspaceId: workspace!.id,
+          revoked: input.revoked,
+          revocationReason: "encrypted_boundary_revoked"
+        });
       }
       return { session, event, node };
     };
@@ -6526,17 +9404,18 @@ describeDb("memory repository visibility", () => {
     const privateOnly = await createEncryptedNode({
       label: "PrivateEncryptedBoundaryUnique"
     });
-    const revoked = await createEncryptedNode({
+    await createEncryptedNode({
       label: "RevokedEncryptedBoundaryUnique",
       shared: true,
       revoked: true
     });
+    const legacyTeamScope = { teamWorkspaceId: workspace!.id };
     expect(decrypt).not.toHaveBeenCalled();
 
     const graphEvents = await encryptedRepo.listLcmGraphEvents(
       { userId: member.id },
       {
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         includeContent: true,
         query: "EncryptedBoundaryUnique",
         limit: 20
@@ -6545,7 +9424,7 @@ describeDb("memory repository visibility", () => {
     const graphNodes = await encryptedRepo.listLcmGraphNodes(
       { userId: member.id },
       {
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         query: "EncryptedBoundaryUnique",
         limit: 20
       }
@@ -6555,38 +9434,15 @@ describeDb("memory repository visibility", () => {
       {
         query: "EncryptedBoundaryUnique",
         scope: "personal",
-        teamWorkspaceId: workspace!.id,
+        ...legacyTeamScope,
         retrievalStage: "lexical_search",
         limit: 20
       }
     );
 
-    expect(graphEvents.map((event) => event.id)).toEqual([shared.event.id]);
-    expect(graphNodes.map((node) => node.id)).toEqual([shared.node.id]);
-    expect(
-      lexical.results
-        .filter((result) => result.sourceType === "memory_node")
-        .map((result) => result.sourceId)
-    ).toEqual([shared.node.id]);
-    expect(
-      lexical.results
-        .filter((result) => result.sourceType === "memory_event")
-        .map((result) => result.sourceId)
-    ).toEqual([shared.event.id]);
-    expect(lexical.results.map((result) => result.sourceId)).not.toEqual(
-      expect.arrayContaining([
-        privateOnly.node.id,
-        privateOnly.event.id,
-        revoked.node.id,
-        revoked.event.id
-      ])
-    );
-    expect(JSON.stringify(graphEvents)).not.toContain(
-      "PrivateEncryptedBoundaryUnique"
-    );
-    expect(JSON.stringify(graphNodes)).not.toContain(
-      "RevokedEncryptedBoundaryUnique"
-    );
+    expect(graphEvents).toEqual([]);
+    expect(graphNodes).toEqual([]);
+    expect(lexical.results).toEqual([]);
     expect(decrypt).not.toHaveBeenCalled();
 
     await expect(
@@ -6613,15 +9469,24 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBeNull();
     expect(decrypt).not.toHaveBeenCalled();
 
+    const encryptedBoundaryGate = await encryptedRepo.getTeamEntitlementGate(
+      { userId: owner.id },
+      team.id
+    );
     await encryptedRepo.setTeamEntitlementState(
       { userId: owner.id },
-      { teamId: team.id, status: "suspended", reason: "test_suspension" }
+      {
+        teamId: team.id,
+        expectedVersion: encryptedBoundaryGate!.version,
+        status: "suspended",
+        reason: "test_suspension"
+      }
     );
     await expect(
       encryptedRepo.listLcmGraphEvents(
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           query: "SharedEncryptedBoundaryUnique"
         }
@@ -6683,7 +9548,218 @@ describeDb("memory repository visibility", () => {
     expect(auditText).not.toContain("RevokedEncryptedBoundaryUnique");
   });
 
-  it("validates encrypted Team fixture boundaries before decrypt, queue, and audit exposure", async () => {
+  it("keeps every collaboration chat class outside Projection and Memory workflows", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 57).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `collaboration-boundary-owner-${randomUUID()}@example.com`
+    });
+    const member = await protectedRepo.createUser({
+      email: `collaboration-boundary-member-${randomUUID()}@example.com`
+    });
+    const secondMember = await protectedRepo.createUser({
+      email: `collaboration-boundary-second-member-${randomUUID()}@example.com`
+    });
+    const team = await protectedRepo.createTeam(
+      { userId: owner.id },
+      { name: "Collaboration Boundary Team" }
+    );
+    await inviteExistingTeamMember({
+      repository: protectedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member,
+      defaultWorkspaceAccess: "write"
+    });
+    await inviteExistingTeamMember({
+      repository: protectedRepo,
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: secondMember,
+      defaultWorkspaceAccess: "write"
+    });
+    const workspace = await protectedRepo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Collaboration Boundary Workspace" }
+    );
+    await protectedRepo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "write",
+        expectedVersion: null
+      }
+    );
+
+    const memorySurfaceCounts = async () =>
+      (
+        await pool.query<Record<string, string>>(`
+          select
+            (select count(*) from conversation_items)::text as conversation_items,
+            (select count(*) from conversation_item_observations)::text as conversation_item_observations,
+            (select count(*) from messages)::text as messages,
+            (select count(*) from tool_events)::text as tool_events,
+            (select count(*) from memory_events)::text as memory_events,
+            (select count(*) from memory_event_sources)::text as memory_event_sources,
+            (select count(*) from memory_nodes)::text as memory_nodes,
+            (select count(*) from memory_node_sources)::text as memory_node_sources,
+            (select count(*) from memory_node_children)::text as memory_node_children,
+            (select count(*) from memory_embeddings)::text as memory_embeddings,
+            (select count(*) from semantic_memory_rebuild_jobs)::text as semantic_memory_rebuild_jobs,
+            (select count(*) from memory_questions)::text as memory_questions,
+            (select count(*) from workflow_token_usage)::text as workflow_token_usage,
+            (select count(*) from workflow_token_usage_source_references)::text as workflow_token_usage_source_references,
+            (select count(*) from local_work_queue)::text as local_work_queue
+        `)
+      ).rows[0]!;
+
+    const before = await memorySurfaceCounts();
+    const threads = [];
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "notes_to_self",
+          idempotencyKey: `notes-${randomUUID()}`
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "personal_channel",
+          idempotencyKey: `personal-channel-${randomUUID()}`,
+          name: "Personal planning",
+          topic: "A private scratchpad topic"
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "workspace_channel",
+          idempotencyKey: `workspace-channel-${randomUUID()}`,
+          teamId: team.id,
+          teamWorkspaceId: workspace!.id,
+          name: "Team planning",
+          topic: "A Team collaboration topic"
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "dm",
+          idempotencyKey: `dm-${randomUUID()}`,
+          teamId: team.id,
+          participantUserIds: [member.id]
+        }
+      )
+    );
+    threads.push(
+      await protectedRepo.createThread(
+        { userId: owner.id },
+        {
+          kind: "group_dm",
+          idempotencyKey: `group-dm-${randomUUID()}`,
+          teamId: team.id,
+          participantUserIds: [member.id, secondMember.id]
+        }
+      )
+    );
+    expect(threads.every(Boolean)).toBe(true);
+    for (const [index, thread] of threads.entries()) {
+      await protectedRepo.sendMessage(
+        { userId: owner.id },
+        {
+          threadId: thread!.id,
+          idempotencyKey: `message-${index}-${randomUUID()}`,
+          bodyText: `Collaboration-only payload ${index}`,
+          metadata: { collaborationOnly: true },
+          provenance: { kind: "collaboration_test", id: `case-${index}` }
+        }
+      );
+    }
+    const personalSnapshot = await protectedRepo.getAuthorizedSnapshot(
+      { userId: owner.id },
+      { scope: "personal" }
+    );
+    if (!personalSnapshot) {
+      throw new Error("Expected an authorized Personal collaboration snapshot");
+    }
+    const personalThreadsValue = personalSnapshot.threads as unknown;
+    if (!Array.isArray(personalThreadsValue)) {
+      throw new TypeError(
+        "Personal collaboration snapshot threads must be an array"
+      );
+    }
+    const personalThreads: unknown[] = personalThreadsValue;
+    const personalNotesThreadId = threads[0]?.id as unknown;
+    const personalChannelThreadId = threads[1]?.id as unknown;
+    if (
+      typeof personalNotesThreadId !== "string" ||
+      typeof personalChannelThreadId !== "string"
+    ) {
+      throw new TypeError("Created collaboration threads must have string IDs");
+    }
+    const personalNotesThread = personalThreads.find(
+      (thread): thread is Record<string, unknown> =>
+        typeof thread === "object" &&
+        thread !== null &&
+        "id" in thread &&
+        thread.id === personalNotesThreadId
+    );
+    expect(personalNotesThread?.["kind"]).toBe("notes_to_self");
+    expect(personalNotesThread?.["latestSequence"]).toBe(1);
+    const personalChannelThread = personalThreads.find(
+      (thread): thread is Record<string, unknown> =>
+        typeof thread === "object" &&
+        thread !== null &&
+        "id" in thread &&
+        thread.id === personalChannelThreadId
+    );
+    expect(personalChannelThread?.["kind"]).toBe("personal_channel");
+    expect(personalChannelThread?.["name"]).toBe("Personal planning");
+    expect(personalChannelThread?.["topic"]).toBe("A private scratchpad topic");
+    expect(personalChannelThread?.["latestSequence"]).toBe(1);
+    const teamSnapshot = await protectedRepo.getAuthorizedSnapshot(
+      { userId: owner.id },
+      { scope: "team", teamId: team.id }
+    );
+    if (!teamSnapshot) {
+      throw new Error("Expected an authorized Team collaboration snapshot");
+    }
+    for (const thread of threads.slice(2)) {
+      expect(
+        teamSnapshot.threads.some(
+          (candidate) =>
+            candidate.id === thread!.id && candidate.latestSequence === 1
+        )
+      ).toBe(true);
+    }
+
+    expect(await memorySurfaceCounts()).toEqual(before);
+    const collaborationCounts = await pool.query<{
+      messages: string;
+      events: string;
+    }>(`
+        select
+          (select count(*) from collaboration_messages)::text as messages,
+          (select count(*) from collaboration_outbox)::text as events
+      `);
+    expect(collaborationCounts.rows).toHaveLength(1);
+    expect(collaborationCounts.rows[0]?.messages).toBe("5");
+    expect(collaborationCounts.rows[0]?.events).toMatch(/^[1-9][0-9]*$/);
+  });
+
+  it("keeps encrypted Team fixture grants outside generic Personal Memory reads", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 36).toString("base64")
@@ -6717,14 +9793,18 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         { name: "Encrypted Fixture Team" }
       );
-      await encryptedRepo.upsertTeamMember(
-        { userId: owner.id },
-        { teamId: team.id, userId: member.id, role: "member" }
-      );
-      await encryptedRepo.upsertTeamMember(
-        { userId: owner.id },
-        { teamId: team.id, userId: removedMember.id, role: "member" }
-      );
+      await inviteExistingTeamMember({
+        repository: encryptedRepo,
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: member
+      });
+      await inviteExistingTeamMember({
+        repository: encryptedRepo,
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: removedMember
+      });
       const workspace = await encryptedRepo.createTeamWorkspace(
         { userId: owner.id },
         { teamId: team.id, name: "Encrypted Fixture Workspace" }
@@ -6734,7 +9814,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: member.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       );
       await encryptedRepo.setTeamWorkspaceAccess(
@@ -6742,7 +9823,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: removedMember.id,
-          access: "disabled"
+          access: "disabled",
+          expectedVersion: null
         }
       );
 
@@ -6754,17 +9836,17 @@ describeDb("memory repository visibility", () => {
         const session = await encryptedRepo.createCapturedSession(
           { userId: owner.id },
           {
-            workspaceId: "encrypted-fixture",
+            projectId: "encrypted-fixture",
             externalSessionId: `encrypted-fixture-${randomUUID()}`,
             sourceRuntime: "codex",
-            captureMethod: "hook"
+            captureMethod: "transcript"
           }
         );
         const event = await encryptedRepo.createMemoryEvent(
           { userId: owner.id },
           {
             visibility: "personal",
-            workspaceId: "encrypted-fixture",
+            projectId: "encrypted-fixture",
             sessionId: session.id,
             actor: "user",
             eventType: "captured",
@@ -6786,7 +9868,7 @@ describeDb("memory repository visibility", () => {
             visibility: "personal",
             summaryText: `${input.label} fixture summary sentinel.`,
             bodyText: `${input.label} fixture body sentinel.`,
-            captureMethod: "hook",
+            captureMethod: "transcript",
             sourceRuntime: "codex",
             sourceHash: `encrypted-fixture-node-${randomUUID()}`
           }
@@ -6815,20 +9897,14 @@ describeDb("memory repository visibility", () => {
           )
         });
         if (input.shared) {
-          const grant = await encryptedRepo.createTeamSessionShareGrant(
-            { userId: owner.id },
-            { teamWorkspaceId: workspace!.id, sessionId: session.id }
-          );
-          if (input.revoked) {
-            await encryptedRepo.revokeTeamSessionShareGrant(
-              { userId: owner.id },
-              {
-                teamWorkspaceId: workspace!.id,
-                shareGrantId: grant!.id,
-                reason: `${input.label} revoked fixture sentinel`
-              }
-            );
-          }
+          await insertValidSharedMemoryGrant({
+            ownerUserId: owner.id,
+            sessionId: session.id,
+            teamId: team.id,
+            teamWorkspaceId: workspace!.id,
+            revoked: input.revoked,
+            revocationReason: `${input.label} revoked fixture sentinel`
+          });
         }
         return { session, event, node };
       };
@@ -6845,6 +9921,7 @@ describeDb("memory repository visibility", () => {
         shared: true,
         revoked: true
       });
+      const legacyTeamScope = { teamWorkspaceId: workspace!.id };
 
       await queueRepo.enqueue({
         queueName: "memory-embed",
@@ -6901,7 +9978,7 @@ describeDb("memory repository visibility", () => {
       const outsiderEvents = await encryptedRepo.listLcmGraphEvents(
         { userId: outsider.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           limit: 20
         }
@@ -6909,7 +9986,7 @@ describeDb("memory repository visibility", () => {
       const removedMemberNodes = await encryptedRepo.listLcmGraphNodes(
         { userId: removedMember.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           limit: 20
         }
       );
@@ -6920,43 +9997,33 @@ describeDb("memory repository visibility", () => {
       const memberEvents = await encryptedRepo.listLcmGraphEvents(
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           limit: 20
         }
       );
-      expect(memberEvents).toEqual([
-        expect.objectContaining({
-          id: shared.event.id,
-          content:
-            "SharedEncryptedFixtureUnique fixture memory payload sentinel."
-        })
-      ]);
-      expect(JSON.stringify(memberEvents)).not.toContain(
-        "PrivateEncryptedFixtureUnique"
-      );
-      expect(JSON.stringify(memberEvents)).not.toContain(
-        "RevokedEncryptedFixtureUnique"
-      );
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("cwd");
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("projectPath");
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("localProjectId");
-      expect(memberEvents[0]?.metadata).not.toHaveProperty("projectId");
-      expect(JSON.stringify(memberEvents)).not.toContain(
-        "/Users/owner/private-checkout"
-      );
-      expect(decrypt).toHaveBeenCalledTimes(1);
+      expect(memberEvents).toEqual([]);
+      expect(decrypt).not.toHaveBeenCalled();
 
       decrypt.mockClear();
+      const fixtureGate = await encryptedRepo.getTeamEntitlementGate(
+        { userId: owner.id },
+        team.id
+      );
       await encryptedRepo.setTeamEntitlementState(
         { userId: owner.id },
-        { teamId: team.id, status: "suspended", reason: "fixture_suspended" }
+        {
+          teamId: team.id,
+          expectedVersion: fixtureGate!.version,
+          status: "suspended",
+          reason: "fixture_suspended"
+        }
       );
       await expect(
         encryptedRepo.listLcmGraphEvents(
           { userId: member.id },
           {
-            teamWorkspaceId: workspace!.id,
+            ...legacyTeamScope,
             includeContent: true,
             limit: 20
           }
@@ -6966,7 +10033,7 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("decrypts paid managed-cloud redacted Memory Event payloads only after Team authorization", async () => {
+  it("does not decrypt managed-cloud owner-private events through generic Team scope", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 14).toString("base64")
@@ -6992,10 +10059,12 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         { name: "Redacted Team Boundary" }
       );
-      await encryptedRepo.upsertTeamMember(
-        { userId: owner.id },
-        { teamId: team.id, userId: member.id, role: "member" }
-      );
+      await inviteExistingTeamMember({
+        repository: encryptedRepo,
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: member
+      });
       const workspace = await encryptedRepo.createTeamWorkspace(
         { userId: owner.id },
         { teamId: team.id, name: "Redacted Boundary Workspace" }
@@ -7005,7 +10074,8 @@ describeDb("memory repository visibility", () => {
         {
           teamWorkspaceId: workspace!.id,
           userId: member.id,
-          access: "read"
+          access: "read",
+          expectedVersion: null
         }
       );
 
@@ -7017,17 +10087,17 @@ describeDb("memory repository visibility", () => {
         const session = await encryptedRepo.createCapturedSession(
           { userId: owner.id },
           {
-            workspaceId: "redacted-team-boundary",
+            projectId: "redacted-team-boundary",
             externalSessionId: `redacted-team-${randomUUID()}`,
             sourceRuntime: "codex",
-            captureMethod: "hook"
+            captureMethod: "transcript"
           }
         );
         const event = await encryptedRepo.createMemoryEvent(
           { userId: owner.id },
           {
             visibility: "personal",
-            workspaceId: "redacted-team-boundary",
+            projectId: "redacted-team-boundary",
             sessionId: session.id,
             actor: "user",
             eventType: "captured",
@@ -7038,38 +10108,14 @@ describeDb("memory repository visibility", () => {
           }
         );
         if (input.shared) {
-          await pool.query(
-            `
-              insert into team_session_share_grants (
-                owner_user_id,
-                session_id,
-                team_id,
-                team_workspace_id,
-                granted_by_user_id,
-                revoked_at,
-                revoked_by_user_id,
-                revocation_reason
-              )
-              values (
-                $1,
-                $2,
-                $3,
-                $4,
-                $5,
-                case when $6::boolean then now() else null end,
-                case when $6::boolean then $5::uuid else null end,
-                case when $6::boolean then 'redacted_boundary_revoked' else null end
-              )
-            `,
-            [
-              owner.id,
-              session.id,
-              team.id,
-              workspace!.id,
-              owner.id,
-              input.revoked ?? false
-            ]
-          );
+          await insertValidSharedMemoryGrant({
+            ownerUserId: owner.id,
+            sessionId: session.id,
+            teamId: team.id,
+            teamWorkspaceId: workspace!.id,
+            revoked: input.revoked,
+            revocationReason: "redacted_boundary_revoked"
+          });
         }
         return event;
       };
@@ -7086,6 +10132,7 @@ describeDb("memory repository visibility", () => {
         shared: true,
         revoked: true
       });
+      const legacyTeamScope = { teamWorkspaceId: workspace!.id };
 
       const storedPayloads = await pool.query<{ payloads: string }>(
         `
@@ -7103,36 +10150,33 @@ describeDb("memory repository visibility", () => {
       const graphEvents = await encryptedRepo.listLcmGraphEvents(
         { userId: member.id },
         {
-          teamWorkspaceId: workspace!.id,
+          ...legacyTeamScope,
           includeContent: true,
           limit: 20
         }
       );
-      expect(graphEvents).toEqual([
-        expect.objectContaining({
-          id: shared.id,
-          content:
-            "SharedRedactedBoundaryUnique paid cloud redacted payload sentinel."
-        })
-      ]);
-      expect(JSON.stringify(graphEvents)).not.toContain(
-        "PrivateRedactedBoundaryUnique"
-      );
-      expect(JSON.stringify(graphEvents)).not.toContain(
-        "RevokedRedactedBoundaryUnique"
-      );
-      expect(decrypt).toHaveBeenCalledTimes(1);
+      expect(graphEvents).toEqual([]);
+      expect(decrypt).not.toHaveBeenCalled();
 
       decrypt.mockClear();
+      const redactedGate = await encryptedRepo.getTeamEntitlementGate(
+        { userId: owner.id },
+        team.id
+      );
       await encryptedRepo.setTeamEntitlementState(
         { userId: owner.id },
-        { teamId: team.id, status: "suspended", reason: "test_suspension" }
+        {
+          teamId: team.id,
+          expectedVersion: redactedGate!.version,
+          status: "suspended",
+          reason: "test_suspension"
+        }
       );
       await expect(
         encryptedRepo.listLcmGraphEvents(
           { userId: member.id },
           {
-            teamWorkspaceId: workspace!.id,
+            ...legacyTeamScope,
             includeContent: true,
             limit: 20
           }
@@ -7142,7 +10186,7 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("filters Team-expanded supporting context to shared Workspace sessions", async () => {
+  it("keeps supporting context owner-private despite a legacy Team scope property", async () => {
     const owner = await repo.createUser({
       email: `supporting-context-owner-${randomUUID()}@example.com`
     });
@@ -7153,10 +10197,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Supporting Context Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Supporting Context Workspace" }
@@ -7166,26 +10211,27 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: workspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
 
     const sharedSession = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "supporting-context-shared-project",
+        projectId: "supporting-context-shared-project",
         externalSessionId: `supporting-context-shared-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     const privateSession = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "supporting-context-private-project",
+        projectId: "supporting-context-private-project",
         externalSessionId: `supporting-context-private-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
 
@@ -7197,7 +10243,7 @@ describeDb("memory repository visibility", () => {
             sessionId: sharedSession.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-app-server-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "shared-context-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
@@ -7218,7 +10264,7 @@ describeDb("memory repository visibility", () => {
             sessionId: privateSession.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "private-context-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
@@ -7242,13 +10288,13 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         visibility: "personal",
-        workspaceId: "supporting-context-shared-project",
+        projectId: "supporting-context-shared-project",
         sessionId: sharedSession.id,
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
         content: "Shared decision with supporting context.",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     await pool.query(
@@ -7268,7 +10314,7 @@ describeDb("memory repository visibility", () => {
       {
         visibility: "personal",
         summaryText: "Shared node with mixed supporting context.",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex",
         sourceHash: `shared-supporting-context-node-${randomUUID()}`
       }
@@ -7280,25 +10326,19 @@ describeDb("memory repository visibility", () => {
       `,
       [node.id, sharedEvent.id]
     );
-    await pool.query(
-      `
-        insert into team_session_share_grants (
-          owner_user_id,
-          session_id,
-          team_id,
-          team_workspace_id,
-          granted_by_user_id
-        )
-        values ($1, $2, $3, $4, $5)
-      `,
-      [owner.id, sharedSession.id, team.id, workspace!.id, owner.id]
-    );
+    await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: sharedSession.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id
+    });
+    const legacyTeamScope = { teamWorkspaceId: workspace!.id };
 
     const supportingTextFor = async (userId: string) => {
       const expanded = await repo.expandMemoryNode(
         node.id,
         { userId },
-        { teamWorkspaceId: workspace!.id }
+        { ...legacyTeamScope, searchDomain: "global" }
       );
       return expanded.sourceItems
         .flatMap((item) => item.supportingContext ?? [])
@@ -7306,19 +10346,15 @@ describeDb("memory repository visibility", () => {
         .join("\n");
     };
 
-    const memberSupportingText = await supportingTextFor(member.id);
-    expect(memberSupportingText).toContain(
-      "Shared IDE context visible to the Team Workspace."
-    );
-    expect(memberSupportingText).not.toContain(
-      "Private IDE context must not leak to the Team Workspace."
+    await expect(supportingTextFor(member.id)).rejects.toThrow(
+      "Memory node not found or not visible"
     );
 
     const ownerSupportingText = await supportingTextFor(owner.id);
     expect(ownerSupportingText).toContain(
       "Shared IDE context visible to the Team Workspace."
     );
-    expect(ownerSupportingText).not.toContain(
+    expect(ownerSupportingText).toContain(
       "Private IDE context must not leak to the Team Workspace."
     );
   });
@@ -7341,52 +10377,90 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Invite Team" }
     );
-    const workspace = await repo.createTeamWorkspace(
-      { userId: owner.id },
-      { teamId: team.id, name: "Launch Workspace" }
-    );
+    const defaultWorkspace = (
+      await repo.listTeamWorkspaces(
+        { userId: owner.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((candidate) => candidate.name === "General");
+    expect(defaultWorkspace).toBeDefined();
 
     const existingTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`invite-origin:${randomUUID()}`)
+      .digest("hex");
     const existingInvite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: existingUserEmail.toUpperCase(),
         role: "member",
+        backendOriginHash,
         tokenHash: existingTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
     );
     expect(existingInvite).toMatchObject({
       teamId: team.id,
+      defaultTeamWorkspaceId: defaultWorkspace!.id,
+      defaultWorkspaceAccess: "read",
       email: existingUserEmail,
+      normalizedEmail: existingUserEmail,
+      backendOriginHash,
       role: "member",
+      version: 1,
+      lifecycle: "pending",
       acceptedAt: null,
       revokedAt: null
     });
     await expect(
       repo.getTeamMembership({ userId: existingUser.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "member",
-      status: "invited"
-    });
+    ).resolves.toBeNull();
 
     await expect(
       repo.createTeamInvite(
         { userId: outsider.id },
         {
           teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
           email: `blocked-${randomUUID()}@example.com`,
           role: "member",
+          backendOriginHash,
           tokenHash: `blocked-${randomUUID()}-${randomUUID()}`,
           expiresAt: new Date(Date.now() + 60_000)
         }
       )
     ).resolves.toBeNull();
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: existingTokenHash,
+        userId: outsider.id,
+        expectedVersion: existingInvite!.version,
+        expectedBackendOriginHash: backendOriginHash
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: existingTokenHash,
+        userId: existingUser.id,
+        expectedVersion: existingInvite!.version,
+        expectedBackendOriginHash: createHash("sha256")
+          .update("wrong-backend-origin")
+          .digest("hex")
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamMembership({ userId: existingUser.id }, team.id)
+    ).resolves.toBeNull();
 
     const acceptedExisting = await repo.acceptTeamInvite({
       tokenHash: existingTokenHash,
-      userId: existingUser.id
+      userId: existingUser.id,
+      expectedVersion: existingInvite!.version,
+      expectedBackendOriginHash: backendOriginHash
     });
     expect(acceptedExisting).toMatchObject({
       createdUser: false,
@@ -7398,162 +10472,287 @@ describeDb("memory repository visibility", () => {
         teamId: team.id,
         userId: existingUser.id,
         role: "member",
-        status: "enabled"
+        status: "enabled",
+        version: 1
+      },
+      invite: {
+        lifecycle: "accepted",
+        version: 2
       }
     });
-    expect(acceptedExisting?.invite.acceptedAt).toEqual(expect.any(String));
     await expect(
       repo.acceptTeamInvite({
         tokenHash: existingTokenHash,
-        userId: existingUser.id
+        userId: existingUser.id,
+        expectedVersion: existingInvite!.version,
+        expectedBackendOriginHash: backendOriginHash
       })
     ).resolves.toBeNull();
 
-    await repo.createTeamInvite(
+    const promoted = await repo.updateTeamMemberRole(
       { userId: owner.id },
       {
         teamId: team.id,
-        email: existingUserEmail,
-        role: "member",
-        tokenHash: `reinvite-${randomUUID()}-${randomUUID()}`,
-        expiresAt: new Date(Date.now() + 60_000)
+        userId: existingUser.id,
+        role: "admin",
+        expectedVersion: acceptedExisting!.membership.version
       }
     );
-    await expect(
-      repo.getTeamMembership({ userId: existingUser.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "member",
-      status: "enabled"
-    });
+    expect(promoted).toMatchObject({ role: "admin", version: 2 });
 
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: existingUser.id, role: "admin" }
-    );
-    const lowerRoleInviteHash = `lower-role-${randomUUID()}-${randomUUID()}`;
-    await repo.createTeamInvite(
+    const lowerRoleTokenHash = `lower-role-${randomUUID()}-${randomUUID()}`;
+    const lowerRoleOriginHash = createHash("sha256")
+      .update(`lower-role-origin:${randomUUID()}`)
+      .digest("hex");
+    const lowerRoleInvite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: existingUserEmail,
         role: "member",
-        tokenHash: lowerRoleInviteHash,
+        backendOriginHash: lowerRoleOriginHash,
+        tokenHash: lowerRoleTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
+    );
+    const firstInvitePage = await repo.listTeamInvites(
+      { userId: owner.id },
+      { teamId: team.id, includeRevoked: false, limit: 1 }
+    );
+    expect(firstInvitePage?.invites).toHaveLength(1);
+    expect(firstInvitePage?.nextCursor).not.toBeNull();
+    const secondInvitePage = await repo.listTeamInvites(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        includeRevoked: false,
+        limit: 1,
+        cursor: firstInvitePage!.nextCursor!
+      }
+    );
+    expect(secondInvitePage?.invites).toHaveLength(1);
+    expect(secondInvitePage?.invites[0]?.id).not.toBe(
+      firstInvitePage?.invites[0]?.id
     );
     await expect(
       repo.acceptTeamInvite({
-        tokenHash: lowerRoleInviteHash,
-        userId: existingUser.id
+        tokenHash: lowerRoleTokenHash,
+        userId: existingUser.id,
+        expectedVersion: lowerRoleInvite!.version,
+        expectedBackendOriginHash: lowerRoleOriginHash
       })
     ).resolves.toMatchObject({
       membership: {
         teamId: team.id,
         userId: existingUser.id,
         role: "admin",
-        status: "enabled"
+        status: "enabled",
+        version: 3
       }
     });
 
-    const invitedOwnerEmail = `invited-owner-${randomUUID()}@example.com`;
-    const invitedOwner = await repo.createUser({
-      email: invitedOwnerEmail,
-      displayName: "Invited Owner"
+    const ownerCandidate = await repo.createUser({
+      email: `owner-candidate-${randomUUID()}@example.com`
     });
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        userId: invitedOwner.id,
-        role: "owner",
-        status: "invited"
-      }
-    );
     await expect(
       repo.createTeamInvite(
         { userId: existingUser.id },
         {
           teamId: team.id,
-          email: invitedOwnerEmail,
-          role: "member",
-          tokenHash: `owner-downgrade-${randomUUID()}-${randomUUID()}`,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "write",
+          email: (
+            await pool.query<{ email: string }>(
+              "select email from users where id = $1",
+              [ownerCandidate.id]
+            )
+          ).rows[0]!.email,
+          role: "owner",
+          backendOriginHash: createHash("sha256")
+            .update(`owner-origin:${randomUUID()}`)
+            .digest("hex"),
+          tokenHash: `owner-invite-${randomUUID()}`,
           expiresAt: new Date(Date.now() + 60_000)
         }
       )
     ).resolves.toBeNull();
-    await expect(
-      repo.getTeamMembership({ userId: invitedOwner.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "owner",
-      status: "invited"
-    });
 
-    await repo.setTeamWorkspaceAccess(
+    const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: existingUser.id,
-        access: "write"
-      }
+      { teamId: team.id, name: "Launch Workspace" }
     );
     await expect(
-      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
-    ).resolves.toMatchObject({
-      access: "write",
-      canRecall: true,
-      canCreateShare: true
-    });
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: existingUser.id,
-        access: "disabled"
-      }
+      repo.listTeamWorkspaces(
+        { userId: existingUser.id },
+        { teamId: team.id, limit: 20 }
+      )
+    ).resolves.not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
     );
-    await expect(
-      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
-    ).resolves.toMatchObject({
-      access: "disabled",
-      canRecall: false,
-      canCreateShare: false
-    });
-    await repo.setTeamWorkspaceAccess(
-      { userId: owner.id },
-      {
-        teamWorkspaceId: workspace!.id,
-        userId: existingUser.id,
-        access: "read"
-      }
+
+    const listener = await pool.connect();
+    let notificationTimer: ReturnType<typeof setTimeout> | undefined;
+    const onNotification = vi.fn();
+    try {
+      await listener.query("listen koed_collaboration_realtime");
+      const notification = new Promise<Record<string, unknown>>(
+        (resolve, reject) => {
+          notificationTimer = setTimeout(
+            () => reject(new Error("Realtime notification was not received")),
+            5_000
+          );
+          onNotification.mockImplementation(
+            (message: { channel: string; payload?: string }) => {
+              if (
+                message.channel !== "koed_collaboration_realtime" ||
+                !message.payload
+              ) {
+                return;
+              }
+              clearTimeout(notificationTimer);
+              resolve(JSON.parse(message.payload) as Record<string, unknown>);
+            }
+          );
+          listener.on("notification", onNotification);
+        }
+      );
+      const writeAccess = await repo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: existingUser.id,
+          access: "write",
+          expectedVersion: null
+        }
+      );
+      expect(writeAccess).toMatchObject({ access: "write", version: 1 });
+      await expect(notification).resolves.toMatchObject({
+        scope: "team",
+        personalOwnerUserId: null,
+        teamId: team.id,
+        family: "workspace_lifecycle_access"
+      });
+      const disabledAccess = await repo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: existingUser.id,
+          access: "disabled",
+          expectedVersion: writeAccess!.version
+        }
+      );
+      expect(disabledAccess).toMatchObject({
+        access: "disabled",
+        version: 2
+      });
+      const readAccess = await repo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: existingUser.id,
+          access: "read",
+          expectedVersion: disabledAccess!.version
+        }
+      );
+      expect(readAccess).toMatchObject({ access: "read", version: 3 });
+    } finally {
+      if (notificationTimer) clearTimeout(notificationTimer);
+      listener.removeListener("notification", onNotification);
+      await listener.query("unlisten koed_collaboration_realtime");
+      listener.release();
+    }
+    const workspaceAccessEvents = await pool.query<{ family: string }>(
+      `
+        select family
+        from collaboration_outbox
+        where team_id = $1
+          and team_workspace_id = $2
+          and resource_type = 'team_workspace_access'
+        order by cursor desc
+        limit 3
+      `,
+      [team.id, workspace!.id]
     );
-    await expect(
-      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
-    ).resolves.toMatchObject({
+    expect(workspaceAccessEvents.rows).toEqual([
+      { family: "workspace_lifecycle_access" },
+      { family: "workspace_lifecycle_access" },
+      { family: "workspace_lifecycle_access" }
+    ]);
+    const managementMembers = await repo.listTeamManagementMembers(
+      { userId: owner.id },
+      team.id
+    );
+    const managedMember = managementMembers?.find(
+      (member) => member.userId === existingUser.id
+    );
+    expect(managedMember?.workspaceAccess).toHaveLength(2);
+    expect(
+      managedMember?.workspaceAccess.find(
+        (access) => access.teamWorkspaceId === defaultWorkspace!.id
+      )
+    ).toMatchObject({
+      userId: existingUser.id,
       access: "read",
-      canRecall: true,
-      canCreateShare: false
+      version: 2
     });
+    expect(
+      managedMember?.workspaceAccess.find(
+        (access) => access.teamWorkspaceId === workspace!.id
+      )
+    ).toMatchObject({
+      userId: existingUser.id,
+      access: "read",
+      version: 3
+    });
+    await expect(
+      repo.listTeamManagementMembers({ userId: outsider.id }, team.id)
+    ).resolves.toBeNull();
 
-    const staleInviteHash = `stale-${randomUUID()}-${randomUUID()}`;
-    await repo.createTeamInvite(
+    const staleTokenHash = `stale-${randomUUID()}-${randomUUID()}`;
+    const staleOriginHash = createHash("sha256")
+      .update(`stale-origin:${randomUUID()}`)
+      .digest("hex");
+    const staleInvite = await repo.createTeamInvite(
       { userId: owner.id },
       {
         teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultWorkspaceAccess: "read",
         email: existingUserEmail,
         role: "member",
-        tokenHash: staleInviteHash,
+        backendOriginHash: staleOriginHash,
+        tokenHash: staleTokenHash,
         expiresAt: new Date(Date.now() + 60_000)
       }
     );
+    const currentMembership = await repo.getTeamMembership(
+      { userId: existingUser.id },
+      team.id
+    );
     const disabled = await repo.disableTeamMember(
       { userId: owner.id },
-      { teamId: team.id, userId: existingUser.id }
+      {
+        teamId: team.id,
+        userId: existingUser.id,
+        expectedVersion: currentMembership!.version
+      }
     );
     expect(disabled).toMatchObject({
       teamId: team.id,
       userId: existingUser.id,
+      role: "admin",
       status: "disabled"
     });
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: staleTokenHash,
+        userId: existingUser.id,
+        expectedVersion: staleInvite!.version,
+        expectedBackendOriginHash: staleOriginHash
+      })
+    ).resolves.toBeNull();
     await expect(
       repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
     ).resolves.toMatchObject({
@@ -7562,205 +10761,39 @@ describeDb("memory repository visibility", () => {
       canRecall: false,
       canCreateShare: false
     });
-    await expect(
-      repo.acceptTeamInvite({
-        tokenHash: staleInviteHash,
-        userId: existingUser.id
-      })
-    ).resolves.toBeNull();
-    await expect(
-      repo.getTeamMembership({ userId: existingUser.id }, team.id)
-    ).resolves.toMatchObject({
-      role: "admin",
-      status: "disabled"
-    });
-
-    const newUserEmail = `new-member-${randomUUID()}@example.com`;
-    const newUserTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
-    const newUserInvite = await repo.createTeamInvite(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        email: newUserEmail,
-        role: "admin",
-        tokenHash: newUserTokenHash,
-        expiresAt: new Date(Date.now() + 60_000)
-      }
-    );
-    expect(newUserInvite).toMatchObject({
-      email: newUserEmail,
-      role: "admin"
-    });
-
-    const acceptedNewUser = await repo.acceptTeamInvite({
-      tokenHash: newUserTokenHash,
-      email: newUserEmail,
-      displayName: "New Team Admin",
-      passwordHash: "hashed-password"
-    });
-    expect(acceptedNewUser).toMatchObject({
-      createdUser: true,
-      user: {
-        email: newUserEmail,
-        displayName: "New Team Admin",
-        passwordHash: "hashed-password"
-      },
-      membership: {
-        teamId: team.id,
-        role: "admin",
-        status: "enabled"
-      }
-    });
-
-    const concurrentEmail = `concurrent-member-${randomUUID()}@example.com`;
-    const concurrentHashA = `concurrent-a-${randomUUID()}-${randomUUID()}`;
-    const concurrentHashB = `concurrent-b-${randomUUID()}-${randomUUID()}`;
-    await repo.createTeamInvite(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        email: concurrentEmail,
-        role: "member",
-        tokenHash: concurrentHashA,
-        expiresAt: new Date(Date.now() + 60_000)
-      }
-    );
-    await repo.createTeamInvite(
-      { userId: owner.id },
-      {
-        teamId: team.id,
-        email: concurrentEmail,
-        role: "member",
-        tokenHash: concurrentHashB,
-        expiresAt: new Date(Date.now() + 60_000)
-      }
-    );
-    const concurrentAccepted = await Promise.all([
-      repo.acceptTeamInvite({
-        tokenHash: concurrentHashA,
-        email: concurrentEmail,
-        displayName: "Concurrent Member"
-      }),
-      repo.acceptTeamInvite({
-        tokenHash: concurrentHashB,
-        email: concurrentEmail,
-        displayName: "Concurrent Member"
-      })
-    ]);
-    expect(concurrentAccepted).toHaveLength(2);
-    expect(concurrentAccepted[0]?.user.id).toBe(concurrentAccepted[1]?.user.id);
-    expect(
-      concurrentAccepted.filter((accepted) => accepted?.createdUser).length
-    ).toBe(1);
-
-    await expect(
-      repo.disableTeamMember(
-        { userId: acceptedNewUser!.user.id },
-        { teamId: team.id, userId: owner.id }
-      )
-    ).resolves.toBeNull();
 
     const auditRows = await pool.query<{
       action: string;
       metadata: Record<string, unknown>;
-      audit_sequence: string;
     }>(
       `
-        select action, metadata, audit_sequence
+        select action, metadata
         from audit_events
-        where action like 'team.%'
+        where metadata ->> 'teamId' = $1
         order by created_at asc, audit_sequence asc
-      `
+      `,
+      [team.id]
     );
     expect(auditRows.rows.map((row) => row.action)).toEqual(
       expect.arrayContaining([
         "team.invite.created",
         "team.invite.accepted",
         "team.member.enabled",
+        "team.member.role_changed",
         "team.member.disabled",
         "team.workspace.created",
         "team.workspace_access.created",
         "team.workspace_access.removed"
       ])
     );
-    expect(
-      auditRows.rows.find(
-        (row) => row.action === "team.workspace_access.created"
-      )?.metadata
-    ).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id,
-      access: "write",
-      previousAccess: "disabled"
-    });
-    expect(
-      auditRows.rows.find(
-        (row) => row.action === "team.workspace_access.removed"
-      )?.metadata
-    ).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id,
-      access: "disabled",
-      previousAccess: "write"
-    });
-    const accessEvents = auditRows.rows.filter(
-      (row) =>
-        row.metadata.teamWorkspaceId === workspace!.id &&
-        row.metadata.userId === existingUser.id
-    );
-    expect(accessEvents.map((row) => row.action)).toEqual([
-      "team.workspace_access.created",
-      "team.workspace_access.removed",
-      "team.workspace_access.created"
-    ]);
-    expect(accessEvents.at(-1)?.metadata).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id,
-      access: "read",
-      previousAccess: "disabled"
-    });
-    const acceptedAuditIndex = auditRows.rows.findIndex(
-      (row) =>
-        row.action === "team.invite.accepted" &&
-        row.metadata.userId === acceptedNewUser!.user.id
-    );
-    const enabledAuditIndex = auditRows.rows.findIndex(
-      (row) =>
-        row.action === "team.member.enabled" &&
-        row.metadata.userId === acceptedNewUser!.user.id
-    );
-    expect(acceptedAuditIndex).toBeGreaterThanOrEqual(0);
-    expect(enabledAuditIndex).toBeGreaterThan(acceptedAuditIndex);
     for (const row of auditRows.rows) {
-      expect(JSON.stringify(row.metadata)).not.toContain(existingTokenHash);
-      expect(JSON.stringify(row.metadata)).not.toContain(newUserTokenHash);
-      expect(JSON.stringify(row.metadata)).not.toContain("hashed-password");
-      expect(JSON.stringify(row.metadata)).not.toContain("raw memory");
-      expect(JSON.stringify(row.metadata)).not.toContain("Launch Workspace");
+      const metadata = JSON.stringify(row.metadata);
+      expect(metadata).not.toContain(existingTokenHash);
+      expect(metadata).not.toContain(lowerRoleTokenHash);
+      expect(metadata).not.toContain(staleTokenHash);
+      expect(metadata).not.toContain(existingUserEmail);
+      expect(metadata).not.toContain("Launch Workspace");
     }
-    const teamAuditEvents = await repo.listTeamAuditEvents(
-      { userId: owner.id },
-      { teamId: team.id }
-    );
-    const removedAccessAudit = teamAuditEvents?.find(
-      (event) => event.action === "team.workspace_access.removed"
-    );
-    expect(
-      teamAuditEvents?.find((event) => event.action === "team.member.enabled")
-    ).toMatchObject({
-      action: "team.member.enabled"
-    });
-    expect(removedAccessAudit).toMatchObject({
-      action: "team.workspace_access.removed"
-    });
-    expect(removedAccessAudit?.metadata).toMatchObject({
-      teamId: team.id,
-      teamWorkspaceId: workspace!.id,
-      userId: existingUser.id
-    });
     await expect(
       repo.listTeamAuditEvents(
         { userId: owner.id },
@@ -7772,6 +10805,575 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.listTeamAuditEvents({ userId: existingUser.id }, { teamId: team.id })
     ).resolves.toBeNull();
+  });
+  it("rolls back invite acceptance when access or final consumption fails", async () => {
+    for (const failurePhase of ["access", "consume"] as const) {
+      const owner = await repo.createUser({
+        email: `rollback-owner-${failurePhase}-${randomUUID()}@example.com`
+      });
+      const member = await repo.createUser({
+        email: `rollback-member-${failurePhase}-${randomUUID()}@example.com`
+      });
+      const team = await repo.createTeam(
+        { userId: owner.id },
+        { name: `Rollback ${failurePhase} Team` }
+      );
+      const defaultWorkspace = (
+        await repo.listTeamWorkspaces(
+          { userId: owner.id },
+          { teamId: team.id, limit: 10 }
+        )
+      )?.find((candidate) => candidate.name === "General");
+      const email = (
+        await pool.query<{ email: string }>(
+          "select email from users where id = $1",
+          [member.id]
+        )
+      ).rows[0]!.email;
+      const tokenHash = `rollback-${failurePhase}-${randomUUID()}`;
+      const backendOriginHash = createHash("sha256")
+        .update(`rollback-origin-${failurePhase}:${randomUUID()}`)
+        .digest("hex");
+      const invite = await repo.createTeamInvite(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          defaultTeamWorkspaceId: defaultWorkspace!.id,
+          defaultWorkspaceAccess: "read",
+          email,
+          role: "member",
+          backendOriginHash,
+          tokenHash,
+          expiresAt: new Date(Date.now() + 60_000)
+        }
+      );
+      const outboxBefore = await pool.query<{ count: string }>(
+        "select count(*)::text as count from collaboration_outbox where team_id = $1",
+        [team.id]
+      );
+      const billingBefore = await repo.getTeamBillingSeatState(
+        { userId: owner.id },
+        team.id
+      );
+      const removeTrigger = await installRejectingTrigger(
+        failurePhase === "access"
+          ? {
+              table: "team_workspace_access_grants",
+              operation: "insert",
+              predicate: `new.user_id = '${member.id}'::uuid and new.team_workspace_id = '${defaultWorkspace!.id}'::uuid`
+            }
+          : {
+              table: "team_invites",
+              operation: "update",
+              predicate: `new.id = '${invite!.id}'::uuid and new.lifecycle = 'accepted'`
+            }
+      );
+      try {
+        await expect(
+          repo.acceptTeamInvite({
+            tokenHash,
+            userId: member.id,
+            expectedVersion: invite!.version,
+            expectedBackendOriginHash: backendOriginHash
+          })
+        ).rejects.toThrow();
+      } finally {
+        await removeTrigger();
+      }
+
+      await expect(
+        repo.getPendingTeamInviteByTokenHash(tokenHash)
+      ).resolves.toMatchObject({
+        id: invite!.id,
+        lifecycle: "pending",
+        version: invite!.version,
+        acceptedByUserId: null
+      });
+      await expect(
+        repo.getTeamMembership({ userId: member.id }, team.id)
+      ).resolves.toBeNull();
+      const partialRows = await pool.query<{
+        memberships: string;
+        access_grants: string;
+        accepted_audits: string;
+      }>(
+        `select
+           (select count(*) from team_memberships where team_id = $1 and user_id = $2)::text as memberships,
+           (select count(*) from team_workspace_access_grants where team_id = $1 and user_id = $2)::text as access_grants,
+           (select count(*) from audit_events where action = 'team.invite.accepted' and target_id = $3)::text as accepted_audits`,
+        [team.id, member.id, invite!.id]
+      );
+      expect(partialRows.rows[0]).toEqual({
+        memberships: "0",
+        access_grants: "0",
+        accepted_audits: "0"
+      });
+      await expect(
+        pool.query<{ count: string }>(
+          "select count(*)::text as count from collaboration_outbox where team_id = $1",
+          [team.id]
+        )
+      ).resolves.toMatchObject({ rows: outboxBefore.rows });
+      await expect(
+        repo.getTeamBillingSeatState({ userId: owner.id }, team.id)
+      ).resolves.toEqual(billingBefore);
+    }
+  });
+
+  it("accepts a Team invite only once under concurrency", async () => {
+    const owner = await repo.createUser({
+      email: `concurrent-invite-owner-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `concurrent-invite-member-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Concurrent Invite Team" }
+    );
+    const defaultWorkspace = (await repo.listTeamWorkspaces(
+      { userId: owner.id },
+      { teamId: team.id, limit: 10 }
+    ))![0]!;
+    const email = (
+      await pool.query<{ email: string }>(
+        "select email from users where id = $1",
+        [member.id]
+      )
+    ).rows[0]!.email;
+    const tokenHash = `concurrent-invite-${randomUUID()}`;
+    const backendOriginHash = createHash("sha256")
+      .update(`concurrent-invite-origin:${randomUUID()}`)
+      .digest("hex");
+    const invite = await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        defaultTeamWorkspaceId: defaultWorkspace.id,
+        defaultWorkspaceAccess: "read",
+        email,
+        role: "member",
+        backendOriginHash,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+
+    const attempts = await Promise.all([
+      repo.acceptTeamInvite({
+        tokenHash,
+        userId: member.id,
+        expectedVersion: invite!.version,
+        expectedBackendOriginHash: backendOriginHash
+      }),
+      repo.acceptTeamInvite({
+        tokenHash,
+        userId: member.id,
+        expectedVersion: invite!.version,
+        expectedBackendOriginHash: backendOriginHash
+      })
+    ]);
+    expect(attempts.filter((attempt) => attempt !== null)).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt === null)).toHaveLength(1);
+    const rows = await pool.query<{
+      memberships: string;
+      access_grants: string;
+      accepted_invites: string;
+    }>(
+      `select
+         (select count(*) from team_memberships where team_id = $1 and user_id = $2)::text as memberships,
+         (select count(*) from team_workspace_access_grants where team_id = $1 and user_id = $2)::text as access_grants,
+         (select count(*) from team_invites where id = $3 and lifecycle = 'accepted')::text as accepted_invites`,
+      [team.id, member.id, invite!.id]
+    );
+    expect(rows.rows[0]).toEqual({
+      memberships: "1",
+      access_grants: "1",
+      accepted_invites: "1"
+    });
+  });
+
+  it("lists only Workspaces with an explicit active grant, including for admins", async () => {
+    const owner = await repo.createUser({
+      email: `workspace-list-owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `workspace-list-admin-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Workspace Listing Team" }
+    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: admin,
+      role: "admin"
+    });
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Explicit Grant Workspace" }
+    );
+
+    const beforeGrant = await repo.listTeamWorkspaces(
+      { userId: admin.id },
+      { teamId: team.id, limit: 20 }
+    );
+    expect(beforeGrant).toEqual([expect.objectContaining({ name: "General" })]);
+    expect(beforeGrant).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
+    );
+
+    const grant = await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "read",
+        expectedVersion: null
+      }
+    );
+    await expect(
+      repo.listTeamWorkspaces(
+        { userId: admin.id },
+        { teamId: team.id, limit: 20 }
+      )
+    ).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
+    );
+
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "disabled",
+        expectedVersion: grant!.version
+      }
+    );
+    await expect(
+      repo.listTeamWorkspaces(
+        { userId: admin.id },
+        { teamId: team.id, limit: 20 }
+      )
+    ).resolves.not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
+    );
+  });
+
+  it("serializes billing and entitlement compare-and-swap races", async () => {
+    const entitlementOwner = await repo.createUser({
+      email: `entitlement-race-owner-${randomUUID()}@example.com`
+    });
+    const entitlementTeam = await repo.createTeam(
+      { userId: entitlementOwner.id },
+      { name: "Entitlement CAS Team" }
+    );
+    const entitlement = await repo.getTeamEntitlementGate(
+      { userId: entitlementOwner.id },
+      entitlementTeam.id
+    );
+    const entitlementRace = await Promise.allSettled([
+      repo.setTeamEntitlementState(
+        { userId: entitlementOwner.id },
+        {
+          teamId: entitlementTeam.id,
+          expectedVersion: entitlement!.version,
+          status: "grace",
+          reason: "cas_grace"
+        }
+      ),
+      repo.setTeamEntitlementState(
+        { userId: entitlementOwner.id },
+        {
+          teamId: entitlementTeam.id,
+          expectedVersion: entitlement!.version,
+          status: "suspended",
+          reason: "cas_suspended"
+        }
+      )
+    ]);
+    expect(
+      entitlementRace.filter((result) => result.status === "fulfilled")
+    ).toHaveLength(1);
+    expect(
+      entitlementRace.filter((result) => result.status === "rejected")
+    ).toHaveLength(1);
+    await expect(
+      repo.getTeamEntitlementGate(
+        { userId: entitlementOwner.id },
+        entitlementTeam.id
+      )
+    ).resolves.toMatchObject({ version: entitlement!.version + 1 });
+
+    const billingOwner = await repo.createUser({
+      email: `billing-race-owner-${randomUUID()}@example.com`
+    });
+    const billingTeam = await repo.createTeam(
+      { userId: billingOwner.id },
+      { name: "Billing CAS Team" }
+    );
+    const billing = await repo.getTeamBillingSeatState(
+      { userId: billingOwner.id },
+      billingTeam.id
+    );
+    const billingRace = await Promise.allSettled([
+      repo.setTeamBillingSeatPolicy(
+        { userId: billingOwner.id },
+        {
+          teamId: billingTeam.id,
+          expectedVersion: billing!.version,
+          seatLimit: 1
+        }
+      ),
+      repo.setTeamBillingSeatPolicy(
+        { userId: billingOwner.id },
+        {
+          teamId: billingTeam.id,
+          expectedVersion: billing!.version,
+          seatLimit: 2
+        }
+      )
+    ]);
+    expect(
+      billingRace.filter((result) => result.status === "fulfilled")
+    ).toHaveLength(1);
+    expect(
+      billingRace.filter((result) => result.status === "rejected")
+    ).toHaveLength(1);
+    await expect(
+      repo.getTeamBillingSeatState({ userId: billingOwner.id }, billingTeam.id)
+    ).resolves.toMatchObject({ version: billing!.version + 1 });
+  });
+
+  it("revalidates current Team roles before management mutations", async () => {
+    const owner = await repo.createUser({
+      email: `role-revalidation-owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `role-revalidation-admin-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `role-revalidation-member-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Role Revalidation Team" }
+    );
+    const adminMembership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin",
+        defaultWorkspaceAccess: "write"
+      })
+    ).membership;
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Role Revalidation Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "write",
+        expectedVersion: null
+      }
+    );
+    await inviteExistingTeamMember({
+      actorUserId: admin.id,
+      teamId: team.id,
+      user: member
+    });
+    const cachedAccess = await repo.getTeamWorkspaceAccess(
+      { userId: admin.id },
+      workspace!.id
+    );
+    expect(cachedAccess).toMatchObject({
+      role: "admin",
+      canManageWorkspace: true
+    });
+
+    await repo.updateTeamMemberRole(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        userId: admin.id,
+        role: "member",
+        expectedVersion: adminMembership.version
+      }
+    );
+    await expect(
+      repo.setTeamWorkspaceAccess(
+        { userId: admin.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: member.id,
+          access: "write",
+          expectedVersion: null
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: admin.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      role: "member",
+      canManageWorkspace: false
+    });
+  });
+
+  it("returns a bounded Team roster without management or credential fields", async () => {
+    const ownerEmail = `roster-owner-${randomUUID()}@example.com`;
+    const memberEmail = `roster-member-${randomUUID()}@example.com`;
+    const owner = await repo.createUser({
+      email: ownerEmail,
+      displayName: "Roster Owner",
+      passwordHash: "owner-password-hash"
+    });
+    const member = await repo.createUser({
+      email: memberEmail,
+      displayName: "Roster Member",
+      passwordHash: "member-password-hash"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Bounded Roster Team" }
+    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member,
+      role: "admin"
+    });
+    await pool.query("update users set avatar_reference = $1 where id = $2", [
+      "avatar://member-safe-reference",
+      member.id
+    ]);
+
+    const roster = await repo.listTeamRoster({ userId: member.id }, team.id);
+    expect(roster).toEqual(
+      expect.arrayContaining([
+        {
+          userId: owner.id,
+          displayName: "Roster Owner",
+          avatarReference: null,
+          status: "enabled",
+          presence: "unknown"
+        },
+        {
+          userId: member.id,
+          displayName: "Roster Member",
+          avatarReference: "avatar://member-safe-reference",
+          status: "enabled",
+          presence: "unknown"
+        }
+      ])
+    );
+    expect(roster).toHaveLength(2);
+    const rosterJson = JSON.stringify(roster);
+    expect(rosterJson).not.toContain(ownerEmail);
+    expect(rosterJson).not.toContain(memberEmail);
+    expect(rosterJson).not.toContain("password-hash");
+    expect(rosterJson).not.toContain('"role"');
+    expect(rosterJson).not.toContain('"version"');
+    expect(rosterJson).not.toContain('"acceptedAt"');
+  });
+
+  it("rolls back Team mutations when collaboration outbox insertion fails", async () => {
+    const owner = await repo.createUser({
+      email: `outbox-owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `outbox-admin-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Outbox Atomicity Team" }
+    );
+    const membership = (
+      await inviteExistingTeamMember({
+        actorUserId: owner.id,
+        teamId: team.id,
+        user: admin,
+        role: "admin"
+      })
+    ).membership;
+    const countsBefore = await pool.query<{
+      outbox: string;
+      audits: string;
+    }>(
+      `select
+         (select count(*) from collaboration_outbox where team_id = $1)::text as outbox,
+         (select count(*) from audit_events where action = 'team.member.role_changed' and metadata ->> 'teamId' = $1::text)::text as audits`,
+      [team.id]
+    );
+    const removeTrigger = await installRejectingTrigger({
+      table: "collaboration_outbox",
+      operation: "insert",
+      predicate: `new.resource_type = 'team_membership' and new.resource_id = '${membership.id}'`
+    });
+    try {
+      await expect(
+        repo.updateTeamMemberRole(
+          { userId: owner.id },
+          {
+            teamId: team.id,
+            userId: admin.id,
+            role: "member",
+            expectedVersion: membership.version
+          }
+        )
+      ).rejects.toThrow();
+    } finally {
+      await removeTrigger();
+    }
+
+    await expect(
+      repo.getTeamMembership({ userId: admin.id }, team.id)
+    ).resolves.toMatchObject({ role: "admin", version: membership.version });
+    await expect(
+      pool.query<{
+        outbox: string;
+        audits: string;
+      }>(
+        `select
+           (select count(*) from collaboration_outbox where team_id = $1)::text as outbox,
+           (select count(*) from audit_events where action = 'team.member.role_changed' and metadata ->> 'teamId' = $1::text)::text as audits`,
+        [team.id]
+      )
+    ).resolves.toMatchObject({ rows: countsBefore.rows });
+
+    await expect(
+      repo.updateTeamMemberRole(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          userId: admin.id,
+          role: "member",
+          expectedVersion: membership.version
+        }
+      )
+    ).resolves.toMatchObject({
+      role: "member",
+      version: membership.version + 1
+    });
+    const countsAfter = await pool.query<{
+      outbox: string;
+      audits: string;
+    }>(
+      `select
+         (select count(*) from collaboration_outbox where team_id = $1)::text as outbox,
+         (select count(*) from audit_events where action = 'team.member.role_changed' and metadata ->> 'teamId' = $1::text)::text as audits`,
+      [team.id]
+    );
+    expect(Number(countsAfter.rows[0]!.outbox)).toBe(
+      Number(countsBefore.rows[0]!.outbox) + 1
+    );
+    expect(Number(countsAfter.rows[0]!.audits)).toBe(
+      Number(countsBefore.rows[0]!.audits) + 1
+    );
   });
 
   it("rolls back API token lifecycle changes when audit insertion fails", async () => {
@@ -8128,10 +11730,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Analytics Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
 
     await repo.recordAuditEvent({
       actorUserId: owner.id,
@@ -8240,9 +11843,8 @@ describeDb("memory repository visibility", () => {
       {
         visibility: "personal",
         summaryText: "Alice private memory",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex",
-        codexTranscriptPath: "/tmp/codex/transcript.jsonl",
         idempotencyKey: `hook:${randomUUID()}`,
         sourceHash: randomUUID()
       }
@@ -8268,15 +11870,15 @@ describeDb("memory repository visibility", () => {
     const engine = createMemoryEngine(repo);
 
     const aliceEvent = await captureUserEvent(engine, alice.id, {
-      workspaceId: "workspace-personal-boundary",
+      projectId: "workspace-personal-boundary",
       content: "Alice-only source evidence."
     });
     const bobEvent = await captureUserEvent(engine, bob.id, {
-      workspaceId: "workspace-personal-boundary",
+      projectId: "workspace-personal-boundary",
       content: "Bob source evidence must not leak through Alice expansion."
     });
     const invalidatedAliceEvent = await captureUserEvent(engine, alice.id, {
-      workspaceId: "workspace-personal-boundary",
+      projectId: "workspace-personal-boundary",
       content: "Invalidated Alice evidence must not expand."
     });
     await repo.invalidateLcmGraphEvent(
@@ -8289,7 +11891,7 @@ describeDb("memory repository visibility", () => {
       {
         visibility: "personal",
         summaryText: "Alice-only memory node",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex"
       }
     );
@@ -8343,12 +11945,12 @@ describeDb("memory repository visibility", () => {
       {
         visibility: "personal",
         summaryText: "Sensitive node text must not enter audit metadata",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex"
       }
     );
     const event = await captureUserEvent(engine, alice.id, {
-      workspaceId: "audit-workspace",
+      projectId: "audit-workspace",
       content: "Sensitive event text must not enter audit metadata"
     });
 
@@ -8442,7 +12044,7 @@ describeDb("memory repository visibility", () => {
 
     for (let index = 1; index <= 10; index += 1) {
       await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-personal",
+        projectId: "workspace-personal",
         content: `Personal fact ${index}: Alice project codename is Aurora-${index}.`,
         metadata: { index }
       });
@@ -8508,7 +12110,7 @@ describeDb("memory repository visibility", () => {
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-query-instruction-${randomUUID()}`;
     const event = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       content: "Aurora retrieval target for query instruction testing."
     });
     const dimensions = 1024;
@@ -8548,7 +12150,7 @@ describeDb("memory repository visibility", () => {
       query,
       scope: "personal",
       searchDomain: "project",
-      workspaceId,
+      projectId: workspaceId,
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -8579,7 +12181,7 @@ describeDb("memory repository visibility", () => {
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-query-instruction-disabled-${randomUUID()}`;
     const event = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       content: "Plain query embedding target for disabled instruction testing."
     });
     const dimensions = 1024;
@@ -8619,7 +12221,7 @@ describeDb("memory repository visibility", () => {
       query,
       scope: "personal",
       searchDomain: "project",
-      workspaceId,
+      projectId: workspaceId,
       retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
@@ -8655,7 +12257,7 @@ describeDb("memory repository visibility", () => {
 
       for (let index = 1; index <= 3; index += 1) {
         await captureUserEvent(engine, alice.id, {
-          workspaceId: "workspace-lcm-boundary",
+          projectId: "workspace-lcm-boundary",
           content: content(index),
           metadata: { index }
         });
@@ -8735,7 +12337,7 @@ describeDb("memory repository visibility", () => {
       });
       const engine = createMemoryEngine(repo);
       const event = await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-lcm-token-text",
+        projectId: "workspace-lcm-token-text",
         content: "Small semantic source text.",
         metadata: {
           provenanceNoise: "metadata noise ".repeat(10_000)
@@ -8792,7 +12394,7 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const event = await captureUserEvent(engine, alice.id, {
-      workspaceId: "workspace-chunks",
+      projectId: "workspace-chunks",
       content: "Chunkable source text alpha beta gamma."
     });
     const source = await repo.getEmbeddableSource("memory_event", event.id);
@@ -8906,7 +12508,7 @@ describeDb("memory repository visibility", () => {
       email: `alice-atomic-embedding-${randomUUID()}@example.com`
     });
     const event = await captureUserEvent(createMemoryEngine(repo), alice.id, {
-      workspaceId: "workspace-atomic-embedding",
+      projectId: "workspace-atomic-embedding",
       content: "Atomic embedding replacement source text."
     });
     const source = await repo.getEmbeddableSource("memory_event", event.id);
@@ -9052,7 +12654,7 @@ describeDb("memory repository visibility", () => {
       });
       const engine = createMemoryEngine(repo);
       const event = await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-lcm-display",
+        projectId: "workspace-lcm-display",
         content: "Koed is being run in Docker for local testing."
       });
       const node = await repo.createMemoryNode(
@@ -9183,7 +12785,7 @@ describeDb("memory repository visibility", () => {
         }
       );
       const freshEvent = await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-rerank",
+        projectId: "workspace-rerank",
         content:
           "Fresh raw event says the favourite footballer is Paul McGrath."
       });
@@ -9257,7 +12859,7 @@ describeDb("memory repository visibility", () => {
 
     for (let index = 1; index <= 5; index += 1) {
       await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-node-source",
+        projectId: "workspace-node-source",
         content: `Node source fact ${index}: Paul McGrath was mentioned.`,
         metadata: { index }
       });
@@ -9286,7 +12888,7 @@ describeDb("memory repository visibility", () => {
 
     for (let index = 1; index <= 20; index += 1) {
       await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-rollup",
+        projectId: "workspace-rollup",
         content: `Rollup source ${index}`,
         metadata: { index }
       });
@@ -9324,7 +12926,7 @@ describeDb("memory repository visibility", () => {
     const recentEventIds: string[] = [];
     for (let index = 1; index <= 10; index += 1) {
       const event = await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-recent-rag",
+        projectId: "workspace-recent-rag",
         content:
           index <= 5
             ? `Old-only temporal evidence ${index}.`
@@ -9478,17 +13080,17 @@ describeDb("memory repository visibility", () => {
     const projectB = `workspace-project-b-${randomUUID()}`;
 
     const oldProjectA = await captureUserEvent(engine, alice.id, {
-      workspaceId: projectA,
+      projectId: projectA,
       content: "Boundary correlation project A old only.",
       metadata: { project: "a", age: "old" }
     });
     const recentProjectB = await captureUserEvent(engine, alice.id, {
-      workspaceId: projectB,
+      projectId: projectB,
       content: "Boundary correlation project B recent only.",
       metadata: { project: "b", age: "recent" }
     });
     const recentProjectA = await captureUserEvent(engine, alice.id, {
-      workspaceId: projectA,
+      projectId: projectA,
       content: "Boundary correlation project A recent valid.",
       metadata: { project: "a", age: "recent" }
     });
@@ -9544,7 +13146,7 @@ describeDb("memory repository visibility", () => {
       query: "boundary correlation project",
       scope: "personal",
       searchDomain: "project",
-      workspaceId: projectA,
+      projectId: projectA,
       recentDays: 30,
       limit: 10
     });
@@ -9559,7 +13161,7 @@ describeDb("memory repository visibility", () => {
     const expanded = await engine.expandMemoryNode(
       mixedNode.id,
       { userId: alice.id },
-      { searchDomain: "project", workspaceId: projectA, recentDays: 30 }
+      { searchDomain: "project", projectId: projectA, recentDays: 30 }
     );
     expect(expanded.sources).toHaveLength(0);
     expect(
@@ -9578,7 +13180,7 @@ describeDb("memory repository visibility", () => {
     const sessionA = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `session-a-${randomUUID()}`,
         idempotencyKey: `session-a-${randomUUID()}`
       }
@@ -9586,26 +13188,26 @@ describeDb("memory repository visibility", () => {
     const sessionB = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `session-b-${randomUUID()}`,
         idempotencyKey: `session-b-${randomUUID()}`
       }
     );
 
     const oldSessionA = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       sessionId: sessionA.id,
       content: "Boundary correlation session A old only.",
       metadata: { session: "a", age: "old" }
     });
     const recentSessionB = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       sessionId: sessionB.id,
       content: "Boundary correlation session B recent only.",
       metadata: { session: "b", age: "recent" }
     });
     const recentSessionA = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       sessionId: sessionA.id,
       content: "Boundary correlation session A recent valid.",
       metadata: { session: "a", age: "recent" }
@@ -9702,7 +13304,7 @@ describeDb("memory repository visibility", () => {
       "Only at the end did the keeper of the lamp reveal her name: Seraphina."
     ].join(" ");
     const event = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       content: story,
       metadata: { kind: "long-story-tail-name" }
     });
@@ -9713,7 +13315,7 @@ describeDb("memory repository visibility", () => {
       query: "Who was the keeper of the lamp named Seraphina?",
       scope: "personal",
       searchDomain: "project",
-      workspaceId,
+      projectId: workspaceId,
       retrievalStage: "score_scan",
       limit: 1
     });
@@ -9729,7 +13331,7 @@ describeDb("memory repository visibility", () => {
       query: "Seraphina",
       scope: "personal",
       searchDomain: "project",
-      workspaceId,
+      projectId: workspaceId,
       retrievalStage: "lexical_search",
       strictLimit: true,
       limit: 1
@@ -9746,7 +13348,7 @@ describeDb("memory repository visibility", () => {
         query: "Seraphina",
         scope: "personal",
         searchDomain: "project",
-        workspaceId,
+        projectId: workspaceId,
         retrievalStage: "lexical_search",
         strictLimit: true,
         limit: 2
@@ -9761,7 +13363,7 @@ describeDb("memory repository visibility", () => {
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-personal-deleted-${randomUUID()}`;
     const event = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       content: "The private launch codename is Violet Harbor."
     });
 
@@ -9775,7 +13377,7 @@ describeDb("memory repository visibility", () => {
       query: "Violet Harbor",
       scope: "personal",
       searchDomain: "project",
-      workspaceId,
+      projectId: workspaceId,
       retrievalStage: "lexical_search",
       limit: 5
     });
@@ -9798,18 +13400,18 @@ describeDb("memory repository visibility", () => {
       "Her name was Mara."
     ].join(" ");
     const storyEvent = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       actor: "agent",
       content: story,
       metadata: { kind: "story-source" }
     });
     await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       content: `This question failed before: "${query}"`,
       metadata: { kind: "question-echo" }
     });
     await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       actor: "tool",
       content: `Tool output from diagnostics repeated the prompt: ${query}`,
       metadata: { kind: "tool-echo" }
@@ -9820,7 +13422,7 @@ describeDb("memory repository visibility", () => {
       query,
       scope: "personal",
       searchDomain: "project",
-      workspaceId,
+      projectId: workspaceId,
       retrievalStage: "lexical_search",
       strictLimit: true,
       limit: 3
@@ -9842,12 +13444,12 @@ describeDb("memory repository visibility", () => {
     const inScopeWorkspaceId = `workspace-lexical-in-${randomUUID()}`;
     const outOfScopeWorkspaceId = `workspace-lexical-out-${randomUUID()}`;
     const inScopeEvent = await captureUserEvent(engine, alice.id, {
-      workspaceId: inScopeWorkspaceId,
+      projectId: inScopeWorkspaceId,
       content: "Project alpha visible banana context.",
       metadata: { kind: "in-scope-source" }
     });
     const outOfScopeEvent = await captureUserEvent(engine, alice.id, {
-      workspaceId: outOfScopeWorkspaceId,
+      projectId: outOfScopeWorkspaceId,
       content: "Project beta secret moonbase context.",
       metadata: { kind: "out-of-scope-source" }
     });
@@ -9877,7 +13479,7 @@ describeDb("memory repository visibility", () => {
       query: "secret moonbase",
       scope: "personal",
       searchDomain: "project",
-      workspaceId: inScopeWorkspaceId,
+      projectId: inScopeWorkspaceId,
       retrievalStage: "lexical_search",
       limit: 1
     });
@@ -9895,7 +13497,7 @@ describeDb("memory repository visibility", () => {
       query: "visible banana",
       scope: "personal",
       searchDomain: "project",
-      workspaceId: inScopeWorkspaceId,
+      projectId: inScopeWorkspaceId,
       retrievalStage: "lexical_search",
       limit: 5
     });
@@ -9913,7 +13515,7 @@ describeDb("memory repository visibility", () => {
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-fresh-event-${randomUUID()}`;
     const event = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       content:
         "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
       metadata: { kind: "fresh-unsummarized" }
@@ -9926,7 +13528,7 @@ describeDb("memory repository visibility", () => {
       query: "lamp keeper Seraphina",
       scope: "personal",
       searchDomain: "project",
-      workspaceId,
+      projectId: workspaceId,
       retrievalStage: "fresh_pending_search",
       strictLimit: true,
       limit: 1
@@ -9948,14 +13550,14 @@ describeDb("memory repository visibility", () => {
     const engine = createMemoryEngine(repo);
     const workspaceId = `workspace-non-tool-fallback-${randomUUID()}`;
     const agentEvent = await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       actor: "agent",
       content:
         "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
       metadata: { kind: "story-source" }
     });
     await captureUserEvent(engine, alice.id, {
-      workspaceId,
+      projectId: workspaceId,
       actor: "tool",
       content:
         "Tool output repeated diagnostics saying the lamp keeper is Seraphina.",
@@ -9973,7 +13575,7 @@ describeDb("memory repository visibility", () => {
         query: "lamp keeper Seraphina",
         scope: "personal",
         searchDomain: "project",
-        workspaceId,
+        projectId: workspaceId,
         retrievalStage: stage,
         strictLimit: true,
         limit: 1
@@ -9997,7 +13599,7 @@ describeDb("memory repository visibility", () => {
 
     for (let index = 1; index <= 12; index += 1) {
       const event = await captureUserEvent(engine, alice.id, {
-        workspaceId: "workspace-rollup-cap",
+        projectId: "workspace-rollup-cap",
         content: `Rollup cap source ${index}: scoped leaf detail ${index}.`,
         metadata: { index }
       });
@@ -10095,19 +13697,10 @@ describeDb("memory repository visibility", () => {
     const engine = createMemoryEngine(repo);
     const firstWorkspaceId = randomUUID();
     const secondWorkspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values
-          ($1, $3, 'personal', 'Session A'),
-          ($2, $3, 'personal', 'Session B')
-      `,
-      [firstWorkspaceId, secondWorkspaceId, alice.id]
-    );
     const firstSession = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId: firstWorkspaceId,
+        projectId: firstWorkspaceId,
         externalSessionId: `session-a-${randomUUID()}`,
         idempotencyKey: `session-a-${randomUUID()}`
       }
@@ -10115,7 +13708,7 @@ describeDb("memory repository visibility", () => {
     const secondSession = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId: secondWorkspaceId,
+        projectId: secondWorkspaceId,
         externalSessionId: `session-b-${randomUUID()}`,
         idempotencyKey: `session-b-${randomUUID()}`
       }
@@ -10124,7 +13717,7 @@ describeDb("memory repository visibility", () => {
     for (let index = 1; index <= 20; index += 1) {
       const session = index % 2 === 0 ? secondSession : firstSession;
       await captureUserEvent(engine, alice.id, {
-        workspaceId:
+        projectId:
           session.id === firstSession.id ? firstWorkspaceId : secondWorkspaceId,
         sessionId: session.id,
         content: `Session ${session.id} source ${index}`,
@@ -10172,17 +13765,10 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'LCM Metadata Include Project')
-      `,
-      [workspaceId, alice.id]
-    );
 
     for (let index = 1; index <= 6; index += 1) {
       await captureUserEvent(engine, alice.id, {
-        workspaceId,
+        projectId: workspaceId,
         content: `LCM include metadata source ${index}`,
         metadata: {
           includeInLcm:
@@ -10222,11 +13808,6 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = randomUUID();
-    await pool.query(
-      `insert into workspaces (id, owner_user_id, visibility, name)
-       values ($1, $2, 'personal', 'LCM Work Class Project')`,
-      [workspaceId, alice.id]
-    );
 
     const eventIdsByClass = new Map<string, string[]>();
     for (const workClass of [
@@ -10236,7 +13817,7 @@ describeDb("memory repository visibility", () => {
       const eventIds: string[] = [];
       for (let index = 0; index < 5; index += 1) {
         const event = await captureUserEvent(engine, alice.id, {
-          workspaceId,
+          projectId: workspaceId,
           content: `${workClass} source ${index}`
         });
         eventIds.push(event.id);
@@ -10376,17 +13957,10 @@ describeDb("memory repository visibility", () => {
     });
     const engine = createMemoryEngine(repo);
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Encrypted LCM Project')
-      `,
-      [workspaceId, alice.id]
-    );
 
     for (let index = 1; index <= 5; index += 1) {
       await captureUserEvent(engine, alice.id, {
-        workspaceId,
+        projectId: workspaceId,
         content: `Encrypted LCM source ${index}: retain falcon database shard detail.`
       });
     }
@@ -10460,7 +14034,7 @@ describeDb("memory repository visibility", () => {
         query: "falcon database shard",
         scope: "personal",
         searchDomain: "project",
-        workspaceId,
+        projectId: workspaceId,
         retrievalStage: "lexical_search"
       }
     );
@@ -10497,17 +14071,10 @@ describeDb("memory repository visibility", () => {
       email: `bob-question-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Question Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `question-session-${randomUUID()}`,
         idempotencyKey: `question-session-${randomUUID()}`
       }
@@ -10517,7 +14084,7 @@ describeDb("memory repository visibility", () => {
       {
         query: "What did we decide about memory questions?",
         searchDomain: "session",
-        workspaceId,
+        projectId: workspaceId,
         projectName: "Question Project",
         projectPath: "/tmp/question-project",
         sessionId: session.id,
@@ -11363,7 +14930,7 @@ describeDb("memory repository visibility", () => {
     const sourceHash = `source-hash-${randomUUID()}`;
     const idempotencyKey = `idempotency-${randomUUID()}`;
     const input = {
-      workspaceId: "workspace-duplicate-event",
+      projectId: "workspace-duplicate-event",
       actor: "user" as const,
       eventType: "captured" as const,
       rawEventType: "user_prompt",
@@ -11399,7 +14966,7 @@ describeDb("memory repository visibility", () => {
     const event = await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId: "workspace-standalone-thread",
+        projectId: "workspace-standalone-thread",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -11441,7 +15008,7 @@ describeDb("memory repository visibility", () => {
       {
         externalSessionId: `source-ai-client-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         metadata: { threadName: "Trusted source label" }
       }
     );
@@ -11586,20 +15153,13 @@ describeDb("memory repository visibility", () => {
     });
     const workspaceId = randomUUID();
     const transcriptType = `projection_policy_user_${randomUUID().replaceAll("-", "_")}`;
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Projection Policy Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `projection-policy-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         idempotencyKey: `projection-policy-session-${randomUUID()}`
       }
     );
@@ -11639,7 +15199,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "projection-policy-turn",
@@ -11659,7 +15219,7 @@ describeDb("memory repository visibility", () => {
               idempotencyKey: `projection-policy-raw-${randomUUID()}`,
               projectionStatus: "pending",
               metadata: {
-                workspaceId,
+                projectId: workspaceId,
                 transcriptType
               }
             }
@@ -11704,20 +15264,13 @@ describeDb("memory repository visibility", () => {
     });
     const workspaceId = randomUUID();
     const transcriptType = `policy_rebuild_user_${randomUUID().replaceAll("-", "_")}`;
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Projection Policy Rebuild')
-      `,
-      [workspaceId, owner.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `policy-rebuild-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     await pool.query(
@@ -11741,7 +15294,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "policy-rebuild-turn",
               sourceRecordType: "event_msg",
@@ -11761,7 +15314,7 @@ describeDb("memory repository visibility", () => {
               metadata: {
                 transcriptType,
                 projectionActor: "user",
-                workspaceId
+                projectId: workspaceId
               }
             }
           ]
@@ -12006,20 +15559,13 @@ describeDb("memory repository visibility", () => {
     });
     const workspaceId = randomUUID();
     const transcriptType = `projection_policy_lcm_user_${randomUUID().replaceAll("-", "_")}`;
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Projection Policy LCM Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `projection-policy-lcm-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         idempotencyKey: `projection-policy-lcm-session-${randomUUID()}`
       }
     );
@@ -12058,7 +15604,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: `projection-policy-lcm-turn-${index}`,
@@ -12078,7 +15624,7 @@ describeDb("memory repository visibility", () => {
             idempotencyKey: `projection-policy-lcm-${index}-${randomUUID()}`,
             projectionStatus: "pending" as const,
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType
             }
           }))
@@ -12143,20 +15689,13 @@ describeDb("memory repository visibility", () => {
       email: `alice-projection-policy-raw-only-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Raw-only Projection Policy Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `projection-policy-raw-only-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         idempotencyKey: `projection-policy-raw-only-session-${randomUUID()}`
       }
     );
@@ -12169,7 +15708,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "projection-policy-raw-only-turn",
@@ -12202,7 +15741,7 @@ describeDb("memory repository visibility", () => {
             idempotencyKey: `projection-policy-raw-only-${randomUUID()}`,
             projectionStatus: "pending",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "mcp_tool_call_end"
             }
           },
@@ -12210,7 +15749,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "projection-policy-raw-only-turn",
@@ -12243,7 +15782,7 @@ describeDb("memory repository visibility", () => {
             idempotencyKey: `projection-policy-missing-${randomUUID()}`,
             projectionStatus: "pending",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "unlisted_tool_result"
             }
           }
@@ -12288,26 +15827,19 @@ describeDb("memory repository visibility", () => {
     expect(memoryEvents.rows[0]?.count).toBe("0");
   });
 
-  it("does not project hook-only payload content into semantic memory", async () => {
+  it("does not project terminal control payload content into semantic memory", async () => {
     const alice = await repo.createUser({
       email: `alice-hook-control-only-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Hook Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
-        externalSessionId: `hook-control-only-${randomUUID()}`,
+        projectId: workspaceId,
+        externalSessionId: `terminal-control-only-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
-        idempotencyKey: `hook-control-only-session-${randomUUID()}`
+        captureMethod: "transcript",
+        idempotencyKey: `terminal-control-only-session-${randomUUID()}`
       }
     );
     await repo.createConversationItems(
@@ -12317,45 +15849,32 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
-            externalTurnId: "hook-turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "UserPromptSubmit",
+            externalTurnId: "terminal-control-turn-1",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 1,
             rawJson: {
-              hook_event_name: "UserPromptSubmit",
-              prompt: "Hook-only prompt should be retained."
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "terminal-control-turn-1",
+                ignored_text:
+                  "Terminal control content must not become semantic memory."
+              }
             },
-            rawText: "Hook-only prompt should be retained.",
-            sourceHash: `hook-prompt-${randomUUID()}`,
-            idempotencyKey: `hook-prompt-${randomUUID()}`,
+            rawText:
+              "Terminal control content must not become semantic memory.",
+            sourceHash: `terminal-control-${randomUUID()}`,
+            idempotencyKey: `terminal-control-${randomUUID()}`,
             projectionStatus: "pending",
-            metadata: { projectName: "Hook Project" }
-          },
-          {
-            sessionId: session.id,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalSessionId: session.externalSessionId ?? undefined,
-            externalThreadId: session.externalSessionId ?? undefined,
-            externalTurnId: "hook-turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
-            sourceSequence: 2,
-            rawJson: {
-              hook_event_name: "Stop",
-              last_assistant_message:
-                "Hook-only assistant reply should be retained."
-            },
-            rawText: "Hook-only assistant reply should be retained.",
-            sourceHash: `hook-stop-${randomUUID()}`,
-            idempotencyKey: `hook-stop-${randomUUID()}`,
-            projectionStatus: "pending",
-            metadata: { projectName: "Hook Project" }
+            metadata: {
+              projectName: "Terminal Control Project",
+              transcriptType: "task_complete"
+            }
           }
         ]
       }
@@ -12391,7 +15910,7 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(projection).toMatchObject({
-      rawItemsProjected: 2,
+      rawItemsProjected: 1,
       messagesCreated: 0,
       toolEventsCreated: 0,
       memoryEventsCreated: 0
@@ -12400,64 +15919,24 @@ describeDb("memory repository visibility", () => {
     expect(toolEvents.rows[0]?.count).toBe("0");
     expect(memoryEvents.rows[0]?.count).toBe("0");
     expect(statuses.rows).toEqual([
-      { source_event_type: "UserPromptSubmit", projection_status: "projected" },
-      { source_event_type: "Stop", projection_status: "projected" }
+      { source_event_type: "task_complete", projection_status: "projected" }
     ]);
   });
 
-  it("projects transcript prompt messages without using UserPromptSubmit hook content", async () => {
+  it("projects one journaled transcript prompt as the sole canonical message", async () => {
     const alice = await repo.createUser({
       email: `alice-live-prompt-dedupe-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Live Prompt Dedupe Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `live-prompt-dedupe-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "api",
         idempotencyKey: `live-prompt-dedupe-session-${randomUUID()}`
       }
-    );
-    await repo.createConversationItems(
-      { userId: alice.id },
-      {
-        items: [
-          {
-            sessionId: session.id,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalSessionId: session.externalSessionId ?? undefined,
-            externalThreadId: session.externalSessionId ?? undefined,
-            externalTurnId: "immediate-hook-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "UserPromptSubmit",
-            rawJson: {
-              hook_event_name: "UserPromptSubmit",
-              prompt: "Where should duplicate prompts render?"
-            },
-            rawText: "Where should duplicate prompts render?",
-            sourceHash: `live-prompt-hook-${randomUUID()}`,
-            idempotencyKey: `live-prompt-hook-${randomUUID()}`,
-            projectionStatus: "pending",
-            metadata: { projectName: "Live Prompt Dedupe Project" }
-          }
-        ]
-      }
-    );
-
-    await repo.projectPendingConversationItems(
-      { userId: alice.id },
-      { limit: 10 }
     );
 
     await repo.createConversationItems(
@@ -12468,7 +15947,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "immediate-hook-turn",
@@ -12556,28 +16035,20 @@ describeDb("memory repository visibility", () => {
       "Where should duplicate prompts render?"
     ]);
     expect(events[0]?.sourceSequence).toBe(12);
-    expect(rawRows.rows).toHaveLength(2);
+    expect(rawRows.rows).toHaveLength(1);
     const transcriptRawRow = rawRows.rows.find(
       (row) => row.source_record_type === "event_msg"
     );
     expect(transcriptRawRow?.canonical_key).toBeNull();
-    expect(rawRows.rows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          source_record_type: "hook_payload",
-          source_event_type: "UserPromptSubmit",
-          projection_status: "projected",
-          canonical_key: null
-        }),
-        expect.objectContaining({
-          source_record_type: "event_msg",
-          source_event_type: "user_message",
-          source_sequence: 12,
-          projection_status: "projected",
-          canonical_key: transcriptRawRow?.canonical_key
-        })
-      ])
-    );
+    expect(rawRows.rows).toEqual([
+      {
+        source_record_type: "event_msg",
+        source_event_type: "user_message",
+        source_sequence: 12,
+        projection_status: "projected",
+        canonical_key: transcriptRawRow?.canonical_key
+      }
+    ]);
     expect(memoryEvents.rows[0]?.count).toBe("1");
   });
 
@@ -12586,20 +16057,13 @@ describeDb("memory repository visibility", () => {
       email: `alice-lifecycle-canonical-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Lifecycle Canonical Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `lifecycle-canonical-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         idempotencyKey: `lifecycle-canonical-session-${randomUUID()}`
       }
     );
@@ -12612,7 +16076,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "lifecycle-turn",
@@ -12629,7 +16093,7 @@ describeDb("memory repository visibility", () => {
             idempotencyKey: `lifecycle-start-${randomUUID()}`,
             projectionStatus: "pending",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "task_started"
             }
           }
@@ -12654,20 +16118,13 @@ describeDb("memory repository visibility", () => {
       email: `alice-message-source-hash-conflict-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Message Source Hash Conflict Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `message-source-hash-conflict-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         idempotencyKey: `message-source-hash-conflict-session-${randomUUID()}`
       }
     );
@@ -12681,7 +16138,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "message-source-hash-turn",
@@ -12701,7 +16158,7 @@ describeDb("memory repository visibility", () => {
             idempotencyKey: `message-source-hash-raw-${randomUUID()}`,
             projectionStatus: "pending",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "user_message"
             }
           }
@@ -12718,7 +16175,7 @@ describeDb("memory repository visibility", () => {
         )
         values (
           $1, $2, 'personal', 'user', 'stale content',
-          'codex', 'hook', 'stale-transcript-item',
+          'codex', 'transcript', 'stale-transcript-item',
           $3, $4, '2026-04-01T12:00:00.000Z'
         )
       `,
@@ -12772,25 +16229,18 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("uses Stop hook payloads as seal signals without projecting assistant fallback content", async () => {
+  it("uses journaled task completion to seal without projecting control content", async () => {
     const alice = await repo.createUser({
       email: `alice-live-agent-dedupe-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Live Agent Dedupe Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `live-agent-dedupe-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "api",
         idempotencyKey: `live-agent-dedupe-session-${randomUUID()}`
       }
     );
@@ -12802,43 +16252,8 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalSessionId: session.externalSessionId ?? undefined,
-            externalThreadId: session.externalSessionId ?? undefined,
-            externalTurnId: "agent-turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
-            rawJson: {
-              hook_event_name: "Stop",
-              turn_id: "agent-turn-1",
-              last_assistant_message:
-                "Transcript assistant content should project."
-            },
-            rawText: "Transcript assistant content should project.",
-            sourceHash: `live-agent-hook-${randomUUID()}`,
-            idempotencyKey: `live-agent-hook-${randomUUID()}`,
-            projectionStatus: "pending",
-            metadata: { projectName: "Live Agent Dedupe Project" }
-          }
-        ]
-      }
-    );
-
-    const hookOnlyProjection = await repo.projectPendingConversationItems(
-      { userId: alice.id },
-      { limit: 10 }
-    );
-
-    await repo.createConversationItems(
-      { userId: alice.id },
-      {
-        items: [
-          {
-            sessionId: session.id,
-            sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "agent-turn-1",
@@ -12867,15 +16282,18 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "agent-turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 23,
-            rawJson: { hook_event_name: "Stop", turn_id: "agent-turn-1" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "agent-turn-1" }
+            },
             sourceHash: `live-agent-stop-${randomUUID()}`,
             idempotencyKey: `live-agent-stop-${randomUUID()}`,
             projectionStatus: "pending",
@@ -12931,10 +16349,6 @@ describeDb("memory repository visibility", () => {
       [session.id]
     );
 
-    expect(hookOnlyProjection).toMatchObject({
-      messagesCreated: 0,
-      memoryEventsCreated: 0
-    });
     expect(transcriptProjection).toMatchObject({
       messagesCreated: 1,
       memoryEventsCreated: 1
@@ -12948,15 +16362,9 @@ describeDb("memory repository visibility", () => {
         canonical_key: rawRows.rows[0]?.canonical_key
       },
       {
-        source_record_type: "hook_payload",
-        source_event_type: "Stop",
+        source_record_type: "event_msg",
+        source_event_type: "task_complete",
         source_sequence: 23,
-        canonical_key: null
-      },
-      {
-        source_record_type: "hook_payload",
-        source_event_type: "Stop",
-        source_sequence: null,
         canonical_key: null
       }
     ]);
@@ -12977,20 +16385,13 @@ describeDb("memory repository visibility", () => {
       email: `alice-projection-personal-delete-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Projection Personal Delete Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `projection-personal-delete-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     const [rawItem] = await repo.createConversationItems(
@@ -13000,17 +16401,20 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "deleted-turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "UserPromptSubmit",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
             sourceSequence: 1,
             rawJson: {
-              hook_event_name: "UserPromptSubmit",
-              prompt: "This deleted raw prompt must not be projected."
+              type: "event_msg",
+              payload: {
+                type: "user_message",
+                message: "This deleted raw prompt must not be projected."
+              }
             },
             rawText: "This deleted raw prompt must not be projected.",
             sourceHash: `deleted-raw-prompt-${randomUUID()}`,
@@ -13044,20 +16448,13 @@ describeDb("memory repository visibility", () => {
       email: `alice-source-chronology-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Source Chronology Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `source-chronology-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         idempotencyKey: `source-chronology-session-${randomUUID()}`
       }
     );
@@ -13069,7 +16466,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "source-chronology-turn",
@@ -13099,7 +16496,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "source-chronology-turn",
@@ -13194,20 +16591,13 @@ describeDb("memory repository visibility", () => {
       email: `alice-display-sources-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Display Source Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `display-source-${randomUUID()}`,
         sourceRuntime: "codex",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         idempotencyKey: `display-source-session-${randomUUID()}`
       }
     );
@@ -13219,7 +16609,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "display-source-turn",
@@ -13246,7 +16636,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "display-source-turn",
@@ -13281,7 +16671,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "display-source-turn",
@@ -13313,7 +16703,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "display-source-turn",
@@ -13332,7 +16722,6 @@ describeDb("memory repository visibility", () => {
             sourceHash: `display-source-agent-${randomUUID()}`,
             idempotencyKey: `display-source-agent-${randomUUID()}`,
             metadata: {
-              hookEventName: "Stop",
               transcriptType: "agent_message"
             }
           }
@@ -13423,7 +16812,7 @@ describeDb("memory repository visibility", () => {
       {
         visibility: "personal",
         summaryText: "Display reply node",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         sourceRuntime: "codex"
       }
     );
@@ -13706,29 +17095,22 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("does not project hook-only tool payloads into semantic memory or tool events", async () => {
+  it("does not project unknown transcript extensions into semantic memory or tool events", async () => {
     const previousStaleMs = process.env.MEMORY_AGENT_TURN_STALE_MS;
     process.env.MEMORY_AGENT_TURN_STALE_MS = "1";
     try {
       const alice = await repo.createUser({
-        email: `alice-hook-tool-fallback-${randomUUID()}@example.com`
+        email: `alice-transcript-extension-${randomUUID()}@example.com`
       });
       const workspaceId = randomUUID();
-      await pool.query(
-        `
-          insert into workspaces (id, owner_user_id, visibility, name)
-          values ($1, $2, 'personal', 'Hook Tool Project')
-        `,
-        [workspaceId, alice.id]
-      );
       const session = await repo.createCapturedSession(
         { userId: alice.id },
         {
-          workspaceId,
-          externalSessionId: `hook-tool-fallback-${randomUUID()}`,
+          projectId: workspaceId,
+          externalSessionId: `transcript-extension-${randomUUID()}`,
           sourceRuntime: "codex-cli",
-          captureMethod: "hook",
-          idempotencyKey: `hook-tool-fallback-session-${randomUUID()}`
+          captureMethod: "transcript",
+          idempotencyKey: `transcript-extension-session-${randomUUID()}`
         }
       );
       const staleEventTime = new Date(Date.now() - 60_000).toISOString();
@@ -13739,49 +17121,50 @@ describeDb("memory repository visibility", () => {
             {
               sessionId: session.id,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-hook-v1",
-              sourceTransport: "hook",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
-              externalTurnId: "hook-tool-turn-1",
-              sourceRecordType: "hook_payload",
-              sourceEventType: "PostToolUse",
+              externalTurnId: "transcript-extension-turn-1",
+              sourceRecordType: "event_msg",
+              sourceEventType: "provider_extension",
               sourceSequence: 1,
               eventTime: staleEventTime,
               rawJson: {
-                hook_event_name: "PostToolUse",
-                tool_use_id: "toolu-hook-1",
-                tool_name: "exec_command",
-                tool_input: { cmd: "git status --short" },
-                tool_response: "clean"
+                type: "event_msg",
+                payload: {
+                  type: "provider_extension",
+                  provider_private_data: "must remain raw-only"
+                }
               },
-              sourceHash: `hook-tool-${randomUUID()}`,
-              idempotencyKey: `hook-tool-${randomUUID()}`,
+              sourceHash: `transcript-extension-${randomUUID()}`,
+              idempotencyKey: `transcript-extension-${randomUUID()}`,
               projectionStatus: "pending",
-              metadata: { projectName: "Hook Tool Project" }
+              metadata: { projectName: "Transcript Extension Project" }
             },
             {
               sessionId: session.id,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-hook-v1",
-              sourceTransport: "hook",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
               externalSessionId: session.externalSessionId ?? undefined,
               externalThreadId: session.externalSessionId ?? undefined,
-              externalTurnId: "hook-tool-turn-2",
-              sourceRecordType: "hook_payload",
-              sourceEventType: "PostToolUse",
+              externalTurnId: "transcript-extension-turn-2",
+              sourceRecordType: "event_msg",
+              sourceEventType: "provider_extension",
               sourceSequence: 2,
               eventTime: staleEventTime,
               rawJson: {
-                hook_event_name: "PostToolUse",
-                tool_use_id: "toolu-hook-2",
-                tool_name: "exec_command",
-                tool_input: { cmd: "git status --branch" }
+                type: "event_msg",
+                payload: {
+                  type: "provider_extension",
+                  provider_private_data: "also raw-only"
+                }
               },
-              sourceHash: `hook-tool-missing-response-${randomUUID()}`,
-              idempotencyKey: `hook-tool-missing-response-${randomUUID()}`,
+              sourceHash: `transcript-extension-second-${randomUUID()}`,
+              idempotencyKey: `transcript-extension-second-${randomUUID()}`,
               projectionStatus: "pending",
-              metadata: { projectName: "Hook Tool Project" }
+              metadata: { projectName: "Transcript Extension Project" }
             }
           ]
         }
@@ -13854,17 +17237,10 @@ describeDb("memory repository visibility", () => {
       email: `alice-complete-turn-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Complete Turn Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `complete-turn-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `complete-turn-session-${randomUUID()}`
@@ -13940,15 +17316,18 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "turn-limit-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 4,
-            rawJson: { hook_event_name: "Stop", turn_id: "turn-limit-1" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "turn-limit-1" }
+            },
             sourceHash: `complete-stop-${randomUUID()}`,
             idempotencyKey: `complete-stop-${randomUUID()}`,
             projectionStatus: "pending"
@@ -14116,16 +17495,16 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("ignores later hook payload content after transcript-derived agent memory exists", async () => {
+  it("keeps completed transcript projection idempotent on a second pass", async () => {
     const alice = await repo.createUser({
-      email: `alice-projection-suppress-hook-control-only-${randomUUID()}@example.com`
+      email: `alice-projection-idempotent-transcript-${randomUUID()}@example.com`
     });
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        externalSessionId: `projection-suppress-hook-${randomUUID()}`,
+        externalSessionId: `projection-idempotent-transcript-${randomUUID()}`,
         sourceRuntime: "codex",
-        idempotencyKey: `projection-suppress-hook-session-${randomUUID()}`
+        idempotencyKey: `projection-idempotent-transcript-session-${randomUUID()}`
       }
     );
     await repo.createConversationItems(
@@ -14136,7 +17515,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "turn-with-transcript-memory",
@@ -14161,21 +17540,24 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "turn-with-transcript-memory",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 1,
             rawJson: {
-              hook_event_name: "Stop",
-              turn_id: "turn-with-transcript-memory"
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "turn-with-transcript-memory"
+              }
             },
             sourceHash: `projection-suppress-stop-${randomUUID()}`,
             idempotencyKey: `projection-suppress-stop-${randomUUID()}`,
-            metadata: { hookEventName: "Stop" }
+            metadata: { transcriptType: "task_complete" }
           }
         ]
       }
@@ -14186,37 +17568,7 @@ describeDb("memory repository visibility", () => {
       { limit: 10 }
     );
 
-    await repo.createConversationItems(
-      { userId: alice.id },
-      {
-        items: [
-          {
-            sessionId: session.id,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalSessionId: session.externalSessionId ?? undefined,
-            externalThreadId: session.externalSessionId ?? undefined,
-            externalTurnId: "turn-with-transcript-memory",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "PostToolUse",
-            sourceSequence: 2,
-            rawJson: {
-              hook_event_name: "PostToolUse",
-              tool_use_id: "toolu-suppressed-hook",
-              tool_name: "exec_command",
-              tool_input: { cmd: "git status --short" },
-              tool_response: "clean"
-            },
-            sourceHash: `projection-suppress-hook-tool-${randomUUID()}`,
-            idempotencyKey: `projection-suppress-hook-tool-${randomUUID()}`,
-            metadata: {}
-          }
-        ]
-      }
-    );
-
-    const hookProjection = await repo.projectPendingConversationItems(
+    const secondProjection = await repo.projectPendingConversationItems(
       { userId: alice.id },
       { limit: 10 }
     );
@@ -14260,25 +17612,24 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(transcriptProjection.memoryEventsCreated).toBe(1);
-    expect(hookProjection.memoryEventsCreated).toBe(0);
-    expect(hookProjection.toolEventsCreated).toBe(0);
+    expect(secondProjection.memoryEventsCreated).toBe(0);
+    expect(secondProjection.toolEventsCreated).toBe(0);
     expect(memoryEvents.rows).toEqual([
       {
         content:
           "Transcript-derived answer should be the only semantic bundle.",
-        seal_reason: "stop_hook",
+        seal_reason: "turn_completed",
         source_records: ["event_msg"]
       }
     ]);
     expect(toolEvents.rows[0]?.count).toBe("0");
     expect(statuses.rows).toEqual([
       { source_event_type: "agent_message", projection_status: "projected" },
-      { source_event_type: "Stop", projection_status: "projected" },
-      { source_event_type: "PostToolUse", projection_status: "projected" }
+      { source_event_type: "task_complete", projection_status: "projected" }
     ]);
   });
 
-  it("keeps Stop control records from creating cross-thread fallback memory", async () => {
+  it("rejects transcript completion assigned to a turn from another thread", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-boundary-hook-control-${randomUUID()}@example.com`
     });
@@ -14319,26 +17670,29 @@ describeDb("memory repository visibility", () => {
             sourceHash: `projection-boundary-transcript-${randomUUID()}`,
             idempotencyKey: `projection-boundary-transcript-${randomUUID()}`,
             metadata: {
-              workspaceId: workspaceA,
+              projectId: workspaceA,
               transcriptType: "agent_message"
             }
           },
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalThreadId: "boundary-thread-a",
             externalTurnId: "shared-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 1,
-            rawJson: { hook_event_name: "Stop", turn_id: "shared-turn" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "shared-turn" }
+            },
             sourceHash: `projection-boundary-stop-a-${randomUUID()}`,
             idempotencyKey: `projection-boundary-stop-a-${randomUUID()}`,
             metadata: {
-              workspaceId: workspaceA,
-              hookEventName: "Stop"
+              projectId: workspaceA,
+              transcriptType: "task_complete"
             }
           }
         ]
@@ -14362,23 +17716,27 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               turnId: transcriptItem.turnId,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-hook-v1",
-              sourceTransport: "hook",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
               externalThreadId: "boundary-thread-b",
               externalTurnId: "shared-turn",
-              sourceRecordType: "hook_payload",
-              sourceEventType: "Stop",
+              sourceRecordType: "event_msg",
+              sourceEventType: "task_complete",
               sourceSequence: 2,
               rawJson: {
-                hook_event_name: "Stop",
-                last_assistant_message: "Thread B hook content must be ignored."
+                type: "event_msg",
+                payload: {
+                  type: "task_complete",
+                  turn_id: "shared-turn",
+                  ignored_text: "Thread B control content must be ignored."
+                }
               },
-              rawText: "Thread B hook content must be ignored.",
+              rawText: "Thread B control content must be ignored.",
               sourceHash: `projection-boundary-stop-b-${randomUUID()}`,
               idempotencyKey: `projection-boundary-stop-b-${randomUUID()}`,
               metadata: {
-                workspaceId: workspaceB,
-                hookEventName: "Stop"
+                projectId: workspaceB,
+                transcriptType: "task_complete"
               }
             }
           ]
@@ -14386,21 +17744,21 @@ describeDb("memory repository visibility", () => {
       )
     ).rejects.toMatchObject({ code: "conversation_session_thread_mismatch" });
 
-    const afterRejectedHook = await repo.projectPendingConversationItems(
+    const afterRejectedCompletion = await repo.projectPendingConversationItems(
       { userId: alice.id },
       { limit: 10 }
     );
     const memoryEvents = await pool.query<{
       content: string;
       external_thread_id: string | null;
-      workspace_id: string | null;
+      project_id: string | null;
       seal_reason: string | null;
     }>(
       `
         select
           payload ->> 'content' as content,
           payload #>> '{metadata,externalThreadId}' as external_thread_id,
-          payload ->> 'workspaceId' as workspace_id,
+          payload ->> 'projectId' as project_id,
           seal_reason
         from memory_events
         where session_id = $1
@@ -14411,13 +17769,13 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(transcriptProjection.memoryEventsCreated).toBe(1);
-    expect(afterRejectedHook.memoryEventsCreated).toBe(0);
+    expect(afterRejectedCompletion.memoryEventsCreated).toBe(0);
     expect(memoryEvents.rows).toEqual([
       {
         content: "Thread A transcript memory.",
         external_thread_id: "boundary-thread-a",
-        workspace_id: "conversation-projection",
-        seal_reason: "stop_hook"
+        project_id: "conversation-projection",
+        seal_reason: "turn_completed"
       }
     ]);
   });
@@ -14427,17 +17785,10 @@ describeDb("memory repository visibility", () => {
       email: `alice-raw-conversation-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Raw Conversation Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: "codex-thread-1",
         sourceRuntime: "codex",
         idempotencyKey: `session-${randomUUID()}`
@@ -14505,7 +17856,7 @@ describeDb("memory repository visibility", () => {
     const projected = await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         sessionId: session.id,
         actor: "assistant",
         eventType: "captured",
@@ -14567,7 +17918,7 @@ describeDb("memory repository visibility", () => {
     const bobSession = await repo.createCapturedSession(
       { userId: bob.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `bob-codex-session-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `bob-session-${randomUUID()}`
@@ -14752,7 +18103,6 @@ describeDb("memory repository visibility", () => {
             sourceTransport: "transcript",
             sourceRecordType: "response_item",
             sourceEventType: "message",
-            sourcePath: "/tmp/canonical-thread.jsonl",
             sourceLineNumber: 4,
             sourceSequence: 8,
             eventTime: "2026-07-11T09:59:59.000Z",
@@ -15096,31 +18446,52 @@ describeDb("memory repository visibility", () => {
     expect(userRows[0]!.id).toBe(userRows[1]!.id);
   });
 
-  it("seals one agent-turn bundle from a canonical turn-completed control", async () => {
+  it("seals a replicated managed turn through its device-local runtime binding", async () => {
     const owner = await repo.createUser({
       email: `canonical-turn-seal-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Canonical Turn Seal')
-      `,
-      [workspaceId, owner.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `canonical-seal-thread-${randomUUID()}`,
-        sourceRuntime: "codex",
-        captureMethod: "api",
-        metadata: { workspaceId, managedConversation: true }
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        metadata: { projectId: workspaceId, managedConversation: true }
       }
+    );
+    await pool.query(
+      `
+        insert into managed_conversation_runtime_bindings (
+          execution_id,
+          owner_user_id,
+          deployment_id,
+          device_id,
+          execution_generation,
+          project_path,
+          local_session_id,
+          provider_thread_id,
+          transcript_path,
+          managed_home
+        )
+        values ($1, $2, $3, $4, 2, $5, $6, $7, $8, $9)
+      `,
+      [
+        randomUUID(),
+        owner.id,
+        randomUUID(),
+        randomUUID(),
+        "/tmp/managed-project",
+        session.id,
+        session.externalSessionId,
+        "/tmp/managed-transcript.jsonl",
+        "/tmp/managed-codex-home"
+      ]
     );
     const threadId = session.externalSessionId!;
     const turnId = "canonical-seal-turn";
-    const turnEventBaseTime = Date.now();
+    const turnEventBaseTime = Math.floor(Date.now() / 1_000) * 1_000;
     const controlSourceHash = `canonical-control-${randomUUID()}`;
     const controlIdempotencyKey = `canonical-control-observation-${randomUUID()}`;
     const controlCanonicalItemKey = codexCanonicalConversationItemKey({
@@ -15139,7 +18510,9 @@ describeDb("memory repository visibility", () => {
       externalTurnId: turnId,
       sourceRecordType: "app_server_notification",
       sourceEventType: "turn/completed",
-      sourceSequence: 0,
+      sourceSequence: 2,
+      // Codex terminal events can be rounded to the second even when the
+      // preceding item carries millisecond precision.
       eventTime: new Date(turnEventBaseTime).toISOString(),
       rawJson: {
         method: "turn/completed",
@@ -15155,7 +18528,7 @@ describeDb("memory repository visibility", () => {
       projectionStatus: "pending" as const,
       projectionVersion: "codex-app-server-conversation-v1",
       metadata: {
-        workspaceId,
+        projectId: workspaceId,
         transcriptType: "turn/completed",
         semanticControl: "turn_completed"
       }
@@ -15166,18 +18539,17 @@ describeDb("memory repository visibility", () => {
       sourceTransport: "transcript" as const,
       sourceRecordType: "event_msg",
       sourceEventType: "task_complete",
-      sourcePath: "/tmp/canonical-seal.jsonl",
       sourceLineNumber: 2,
       sourceSequence: 2,
       rawJson: {
-        timestamp: new Date(turnEventBaseTime + 1_000).toISOString(),
+        timestamp: new Date(turnEventBaseTime + 1_001).toISOString(),
         type: "event_msg",
         payload: { type: "task_complete", turn_id: turnId }
       },
       sourceHash: `canonical-control-transcript-${randomUUID()}`,
       idempotencyKey: `canonical-control-transcript-${randomUUID()}`,
       observationKind: "reconciliation" as const,
-      metadata: { workspaceId, transcriptType: "task_complete" }
+      metadata: { projectId: workspaceId, transcriptType: "task_complete" }
     });
     await repo.createConversationItems(
       { userId: owner.id },
@@ -15203,7 +18575,7 @@ describeDb("memory repository visibility", () => {
             observationKind: "control",
             observationComponent: "control",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "thread/start"
             }
           },
@@ -15246,7 +18618,7 @@ describeDb("memory repository visibility", () => {
             projectionStatus: "pending",
             projectionVersion: "codex-app-server-conversation-v1",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "agent_message"
             }
           }
@@ -15279,10 +18651,12 @@ describeDb("memory repository visibility", () => {
       [session.id]
     );
     expect(earlyProjection.memoryEventsCreated).toBe(0);
-    expect(earlyMessages.rows).toEqual([]);
+    expect(earlyMessages.rows).toEqual([
+      { content: "One canonical agent answer" }
+    ]);
     expect(earlyEvents.rows[0]?.count).toBe("0");
     expect(earlyStatuses.rows).toEqual([
-      { source_event_type: "item/completed", projection_status: "held" },
+      { source_event_type: "item/completed", projection_status: "pending" },
       { source_event_type: "thread/start", projection_status: "projected" }
     ]);
 
@@ -15356,8 +18730,164 @@ describeDb("memory repository visibility", () => {
       }
     ]);
     expect(release.conversationItemIds).toHaveLength(2);
-    expect(releasedProjection.messagesCreated).toBe(1);
+    expect(releasedProjection.messagesCreated).toBe(0);
     expect(releasedProjection.memoryEventsCreated).toBe(1);
+  });
+
+  it("does not hold late records for an already reconciled managed API turn", async () => {
+    const owner = await repo.createUser({
+      email: `late-managed-control-${randomUUID()}@example.com`
+    });
+    const projectId = randomUUID();
+    const threadId = `late-managed-thread-${randomUUID()}`;
+    const turnId = `late-managed-turn-${randomUUID()}`;
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        projectId,
+        externalSessionId: threadId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "api",
+        metadata: { projectId, managedConversation: true }
+      }
+    );
+    const terminalStableId = `turn:${turnId}:completed`;
+    const terminalCanonicalKey = codexCanonicalConversationItemKey({
+      externalThreadId: threadId,
+      externalTurnId: turnId,
+      stableItemId: terminalStableId,
+      component: "control"
+    });
+    await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-conversation-v1",
+            sourceTransport: "app_server",
+            externalSessionId: threadId,
+            externalThreadId: threadId,
+            externalTurnId: turnId,
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "turn/completed",
+            sourceSequence: 1,
+            rawJson: {
+              method: "turn/completed",
+              params: { threadId, turn: { id: turnId, status: "completed" } }
+            },
+            sourceHash: `late-managed-terminal-${randomUUID()}`,
+            idempotencyKey: `late-managed-terminal-${randomUUID()}`,
+            canonicalItemKey: terminalCanonicalKey,
+            canonicalStableItemId: terminalStableId,
+            observationKind: "control",
+            observationComponent: "control",
+            metadata: {
+              projectId,
+              transcriptType: "turn/completed",
+              semanticControl: "turn_completed"
+            }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            externalSessionId: threadId,
+            externalThreadId: threadId,
+            externalTurnId: turnId,
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
+            sourceLineNumber: 1,
+            sourceSequence: 2,
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: turnId }
+            },
+            sourceHash: `late-managed-terminal-transcript-${randomUUID()}`,
+            idempotencyKey: `late-managed-terminal-transcript-${randomUUID()}`,
+            canonicalItemKey: terminalCanonicalKey,
+            canonicalStableItemId: terminalStableId,
+            observationKind: "reconciliation",
+            observationComponent: "control",
+            metadata: { projectId, transcriptType: "task_complete" }
+          }
+        ]
+      }
+    );
+    await repo.releaseConversationProjectionHold(
+      { userId: owner.id },
+      { sessionId: session.id, externalTurnId: turnId }
+    );
+
+    const lateControl = await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-conversation-v1",
+            sourceTransport: "app_server",
+            externalSessionId: threadId,
+            externalThreadId: threadId,
+            externalTurnId: turnId,
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "thread/tokenUsage/updated",
+            sourceSequence: 3,
+            rawJson: {
+              method: "thread/tokenUsage/updated",
+              params: {
+                threadId,
+                turnId,
+                tokenUsage: {
+                  modelContextWindow: 258_400,
+                  total: { totalTokens: 42 }
+                }
+              }
+            },
+            sourceHash: `late-managed-control-${randomUUID()}`,
+            idempotencyKey: `late-managed-control-${randomUUID()}`,
+            canonicalItemKey: codexCanonicalConversationItemKey({
+              externalThreadId: threadId,
+              externalTurnId: turnId,
+              stableItemId: `turn:${turnId}:late-token-usage`,
+              component: "control"
+            }),
+            canonicalStableItemId: `turn:${turnId}:late-token-usage`,
+            observationKind: "control",
+            observationComponent: "control",
+            metadata: {
+              projectId,
+              transcriptType: "thread/tokenUsage/updated"
+            }
+          }
+        ]
+      }
+    );
+    const lateStatus = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items where id = $1",
+      [lateControl[0]!.id]
+    );
+    expect(lateStatus.rows).toEqual([{ projection_status: "pending" }]);
+
+    const lateProjection = await repo.projectPendingConversationItems(
+      { userId: owner.id },
+      { limit: 10, conversationItemIds: [lateControl[0]!.id] }
+    );
+    expect(lateProjection).toMatchObject({
+      memoryEventsCreated: 0,
+      rawItemsProjected: 2
+    });
+    const projectedLateStatus = await pool.query<{
+      projection_status: string;
+    }>("select projection_status from conversation_items where id = $1", [
+      lateControl[0]!.id
+    ]);
+    expect(projectedLateStatus.rows).toEqual([
+      { projection_status: "projected" }
+    ]);
   });
 
   it("enforces Capture Policy and Capture Pause at canonical raw ingestion", async () => {
@@ -15491,31 +19021,24 @@ describeDb("memory repository visibility", () => {
       email: `managed-jsonl-parity-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Managed JSONL Parity')
-      `,
-      [workspaceId, owner.id]
-    );
     const managedSession = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `managed-parity-${randomUUID()}`,
         sourceRuntime: "codex",
         captureMethod: "api",
-        metadata: { workspaceId, managedConversation: true }
+        metadata: { projectId: workspaceId, managedConversation: true }
       }
     );
     const externalSession = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `external-parity-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook",
-        metadata: { workspaceId }
+        captureMethod: "transcript",
+        metadata: { projectId: workspaceId }
       }
     );
     const callId = `parity-call-${randomUUID()}`;
@@ -15587,7 +19110,7 @@ describeDb("memory repository visibility", () => {
           component: item.component
         });
         const metadata = {
-          workspaceId,
+          projectId: workspaceId,
           transcriptType: item.transcriptType,
           ...item.metadata
         };
@@ -15634,7 +19157,6 @@ describeDb("memory repository visibility", () => {
             externalItemId,
             sourceRecordType: "response_item",
             sourceEventType: item.transcriptType,
-            sourcePath: "/tmp/managed-parity.jsonl",
             sourceLineNumber: index,
             sourceSequence: index,
             eventTime: new Date(baseTime + index).toISOString(),
@@ -15692,7 +19214,7 @@ describeDb("memory repository visibility", () => {
       projectionStatus: "pending" as const,
       projectionVersion: "codex-app-server-conversation-v1",
       metadata: {
-        workspaceId,
+        projectId: workspaceId,
         transcriptType: "turn/completed",
         semanticControl: "turn_completed"
       }
@@ -15703,7 +19225,6 @@ describeDb("memory repository visibility", () => {
       sourceTransport: "transcript",
       sourceRecordType: "event_msg",
       sourceEventType: "task_complete",
-      sourcePath: "/tmp/managed-parity.jsonl",
       sourceLineNumber: semanticItems.length,
       rawJson: {
         type: "event_msg",
@@ -15732,7 +19253,7 @@ describeDb("memory repository visibility", () => {
             sessionId: externalSession.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalSessionId: externalSession.externalSessionId ?? undefined,
             externalThreadId: externalSession.externalSessionId ?? undefined,
             externalTurnId,
@@ -15742,7 +19263,6 @@ describeDb("memory repository visibility", () => {
                 : `external-item-${index}`,
             sourceRecordType: "response_item",
             sourceEventType: item.transcriptType,
-            sourcePath: "/tmp/external-parity.jsonl",
             sourceLineNumber: index,
             sourceSequence: index,
             eventTime: new Date(baseTime + index).toISOString(),
@@ -15757,7 +19277,7 @@ describeDb("memory repository visibility", () => {
             projectionStatus: "pending" as const,
             projectionVersion: "codex-transcript-v1",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: item.transcriptType,
               ...item.metadata
             }
@@ -15765,21 +19285,27 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: externalSession.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalSessionId: externalSession.externalSessionId ?? undefined,
             externalThreadId: externalSession.externalSessionId ?? undefined,
             externalTurnId,
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: semanticItems.length,
             eventTime: new Date(baseTime + semanticItems.length).toISOString(),
-            rawJson: { hook_event_name: "Stop", turn_id: externalTurnId },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: externalTurnId }
+            },
             sourceHash: `external-stop-${randomUUID()}`,
             idempotencyKey: `external-stop-${randomUUID()}`,
             projectionStatus: "pending" as const,
-            projectionVersion: "codex-hook-v1",
-            metadata: { workspaceId, hookEventName: "Stop" }
+            projectionVersion: "codex-transcript-v1",
+            metadata: {
+              projectId: workspaceId,
+              transcriptType: "task_complete"
+            }
           }
         ]
       }
@@ -15865,7 +19391,7 @@ describeDb("memory repository visibility", () => {
       sealReason: undefined
     });
     expect(managed.sealReason).toBe("turn_completed");
-    expect(external.sealReason).toBe("stop_hook");
+    expect(external.sealReason).toBe("turn_completed");
 
     const managedCounts = await pool.query<{
       canonical_count: number;
@@ -15931,21 +19457,14 @@ describeDb("memory repository visibility", () => {
       email: `managed-jsonl-policy-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Managed JSONL Policy')
-      `,
-      [workspaceId, owner.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `managed-jsonl-policy-${randomUUID()}`,
         sourceRuntime: "codex",
         captureMethod: "api",
-        metadata: { workspaceId, managedConversation: true }
+        metadata: { projectId: workspaceId, managedConversation: true }
       }
     );
     const threadId = session.externalSessionId!;
@@ -15984,7 +19503,6 @@ describeDb("memory repository visibility", () => {
               canonicalStableItemId: planId,
               sourceRecordType: "response_item",
               sourceEventType: "plan",
-              sourcePath: "/tmp/managed-jsonl-policy.jsonl",
               sourceLineNumber: 1,
               sourceSequence: 1,
               eventTime: "2026-07-12T01:00:00.000Z",
@@ -15999,7 +19517,7 @@ describeDb("memory repository visibility", () => {
               observationKind: "reconciliation",
               observationComponent: "raw",
               metadata: {
-                workspaceId,
+                projectId: workspaceId,
                 transcriptType: "plan",
                 projectionActor: "agent"
               }
@@ -16027,7 +19545,7 @@ describeDb("memory repository visibility", () => {
               observationKind: "control",
               observationComponent: "control",
               metadata: {
-                workspaceId,
+                projectId: workspaceId,
                 transcriptType: "turn/completed",
                 semanticControl: "turn_completed"
               }
@@ -16044,7 +19562,6 @@ describeDb("memory repository visibility", () => {
               canonicalStableItemId: controlStableId,
               sourceRecordType: "event_msg",
               sourceEventType: "task_complete",
-              sourcePath: "/tmp/managed-jsonl-policy.jsonl",
               sourceLineNumber: 2,
               sourceSequence: 3,
               eventTime: "2026-07-12T01:00:01.000Z",
@@ -16058,7 +19575,7 @@ describeDb("memory repository visibility", () => {
               observationKind: "reconciliation",
               observationComponent: "control",
               metadata: {
-                workspaceId,
+                projectId: workspaceId,
                 transcriptType: "task_complete"
               }
             }
@@ -16098,7 +19615,7 @@ describeDb("memory repository visibility", () => {
       const unrelatedEvent = await repo.createMemoryEvent(
         { userId: owner.id },
         {
-          workspaceId,
+          projectId: workspaceId,
           sessionId: session.id,
           actor: "user",
           eventType: "captured",
@@ -16272,21 +19789,14 @@ describeDb("memory repository visibility", () => {
       email: `alice-raw-nul-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Raw NUL Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `nul-session-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `nul-session-${randomUUID()}`,
-        metadata: { workspaceId }
+        metadata: { projectId: workspaceId }
       }
     );
     const idempotencyKey = `nul-raw-${randomUUID()}`;
@@ -16303,7 +19813,6 @@ describeDb("memory repository visibility", () => {
             externalItemId: "nul-item",
             sourceRecordType: "app_server_notification",
             sourceEventType: "item/completed",
-            sourcePath: `/tmp/a${"\u0000"}b.jsonl`,
             sourceSequence: 0,
             rawJson: {
               method: "item/completed",
@@ -16320,7 +19829,7 @@ describeDb("memory repository visibility", () => {
             idempotencyKey,
             projectionStatus: "pending",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "agent_message",
               label: `metadata a${"\u0000"}b`,
               valid: "Cafe\u0301",
@@ -16332,16 +19841,22 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalTurnId: "nul-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 1,
-            rawJson: { hook_event_name: "Stop", turn_id: "nul-turn" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "nul-turn" }
+            },
             sourceHash: `nul-stop-${randomUUID()}`,
             idempotencyKey: `nul-stop-${randomUUID()}`,
-            metadata: { workspaceId, hookEventName: "Stop" }
+            metadata: {
+              projectId: workspaceId,
+              transcriptType: "task_complete"
+            }
           }
         ]
       }
@@ -16359,7 +19874,6 @@ describeDb("memory repository visibility", () => {
             externalItemId: "nul-item",
             sourceRecordType: "app_server_notification",
             sourceEventType: "item/completed",
-            sourcePath: `/tmp/a${"\u0000"}b.jsonl`,
             sourceSequence: 0,
             rawJson: {
               method: "item/completed",
@@ -16376,7 +19890,7 @@ describeDb("memory repository visibility", () => {
             idempotencyKey,
             projectionStatus: "pending",
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "agent_message",
               label: `metadata a${"\u0000"}b`,
               valid: "Cafe\u0301",
@@ -16434,7 +19948,6 @@ describeDb("memory repository visibility", () => {
       raw_json_text: string;
       raw_payload_text: string | null;
       raw_text: string | null;
-      source_path: string | null;
       metadata: Record<string, unknown>;
     }>(
       `
@@ -16442,7 +19955,6 @@ describeDb("memory repository visibility", () => {
           raw_json::text as raw_json_text,
           raw_json #>> '{params,item,text}' as raw_payload_text,
           raw_text,
-          source_path,
           metadata
         from conversation_items
         where id = $1
@@ -16473,14 +19985,13 @@ describeDb("memory repository visibility", () => {
       "The captured text is a�b�c."
     );
     expect(stored.rows[0]?.raw_text).toBe("Raw text 你好 🚀\nline a�b");
-    expect(stored.rows[0]?.source_path).toBe("/tmp/a�b.jsonl");
     expect(stored.rows[0]?.metadata).toMatchObject({
       transcriptType: "agent_message",
       valid: "Cafe\u0301",
       koedSanitization: {
         nulCharacters: {
           replacement: "U+FFFD",
-          replacementCount: 7
+          replacementCount: 6
         },
         malformedUtf16: {
           replacement: "U+FFFD",
@@ -16509,7 +20020,7 @@ describeDb("memory repository visibility", () => {
     expect(event.rows[0]?.content).toBe("Raw text 你好 🚀\nline a�b");
     expect(event.rows[0]?.content).not.toContain("\\u0000");
     expect(JSON.stringify(event.rows[0]?.metadata)).toContain(
-      '"replacementCount":7'
+      '"replacementCount":6'
     );
   });
 
@@ -16521,17 +20032,10 @@ describeDb("memory repository visibility", () => {
     const bob = await repo.createUser({
       email: `bob-source-link-${randomUUID()}@example.com`
     });
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Bob Source Link Project')
-      `,
-      [workspaceId, bob.id]
-    );
     const bobSession = await repo.createCapturedSession(
       { userId: bob.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `bob-source-link-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `bob-source-link-session-${randomUUID()}`
@@ -16544,9 +20048,9 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: bobSession.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            sourceRecordType: "hook_payload",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            sourceRecordType: "event_msg",
             rawJson: { owner: "bob" },
             sourceHash: `bob-private-raw-${randomUUID()}`,
             idempotencyKey: `bob-private-raw-${randomUUID()}`,
@@ -16559,7 +20063,7 @@ describeDb("memory repository visibility", () => {
     const projected = await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         actor: "assistant",
         eventType: "captured",
         rawEventType: "agent_message",
@@ -16586,17 +20090,10 @@ describeDb("memory repository visibility", () => {
     const bob = await repo.createUser({
       email: `bob-raw-scope-${randomUUID()}@example.com`
     });
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Raw Scope Project')
-      `,
-      [workspaceId, bob.id]
-    );
     const bobSession = await repo.createCapturedSession(
       { userId: bob.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `bob-raw-scope-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `bob-raw-scope-session-${randomUUID()}`
@@ -16679,17 +20176,10 @@ describeDb("memory repository visibility", () => {
     const bob = await repo.createUser({
       email: `bob-token-scope-${randomUUID()}@example.com`
     });
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Token Scope Project')
-      `,
-      [workspaceId, bob.id]
-    );
     const bobSession = await repo.createCapturedSession(
       { userId: bob.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `bob-token-scope-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `bob-token-scope-session-${randomUUID()}`
@@ -16765,7 +20255,7 @@ describeDb("memory repository visibility", () => {
     const bobEvent = await repo.createMemoryEvent(
       { userId: bob.id },
       {
-        workspaceId: "bob-workspace",
+        projectId: "bob-workspace",
         actor: "user",
         eventType: "captured",
         rawEventType: "message",
@@ -16781,7 +20271,7 @@ describeDb("memory repository visibility", () => {
           session_id, turn_id, owner_user_id, visibility, role, content,
           source_runtime, capture_method, source_event_time
         )
-        values ($1, $2, $3, 'personal', 'user', 'Bob private message', 'codex', 'hook', '2026-04-01T12:00:00.000Z')
+        values ($1, $2, $3, 'personal', 'user', 'Bob private message', 'codex', 'transcript', '2026-04-01T12:00:00.000Z')
         returning id
       `,
       [bobSession.id, bobRawItem!.turnId, bob.id]
@@ -16792,7 +20282,7 @@ describeDb("memory repository visibility", () => {
           session_id, turn_id, owner_user_id, visibility, tool_name,
           source_runtime, capture_method, source_event_time
         )
-        values ($1, $2, $3, 'personal', 'Bash', 'codex', 'hook', '2026-04-01T12:00:00.000Z')
+        values ($1, $2, $3, 'personal', 'Bash', 'codex', 'transcript', '2026-04-01T12:00:00.000Z')
         returning id
       `,
       [bobSession.id, bobRawItem!.turnId, bob.id]
@@ -17085,7 +20575,7 @@ describeDb("memory repository visibility", () => {
     const event = await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId: "alice-workspace",
+        projectId: "alice-workspace",
         actor: "user",
         eventType: "captured",
         rawEventType: "message",
@@ -17134,21 +20624,14 @@ describeDb("memory repository visibility", () => {
       email: `alice-reproject-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Reproject Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `reproject-session-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `reproject-session-${randomUUID()}`,
-        metadata: { workspaceId }
+        metadata: { projectId: workspaceId }
       }
     );
     await repo.createConversationItems(
@@ -17172,7 +20655,10 @@ describeDb("memory repository visibility", () => {
             },
             sourceHash: `raw-message-${randomUUID()}`,
             idempotencyKey: `raw-message-${randomUUID()}`,
-            metadata: { workspaceId, transcriptType: "agent_message" }
+            metadata: {
+              projectId: workspaceId,
+              transcriptType: "agent_message"
+            }
           },
           {
             sessionId: session.id,
@@ -17205,16 +20691,22 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalTurnId: "turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 2,
-            rawJson: { hook_event_name: "Stop", turn_id: "turn-1" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "turn-1" }
+            },
             sourceHash: `raw-stop-${randomUUID()}`,
             idempotencyKey: `raw-stop-${randomUUID()}`,
-            metadata: { workspaceId, hookEventName: "Stop" }
+            metadata: {
+              projectId: workspaceId,
+              transcriptType: "task_complete"
+            }
           },
           {
             sourceKind: "codex",
@@ -17335,22 +20827,15 @@ describeDb("memory repository visibility", () => {
       email: `alice-token-count-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Transcript Token Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `token-count-session-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         idempotencyKey: `token-count-session-${randomUUID()}`,
         metadata: {
-          workspaceId,
+          projectId: workspaceId,
           threadKind: "subagent",
           parentThreadId: "parent-thread",
           parentSessionId: "parent-session"
@@ -17365,11 +20850,10 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "token-count-turn",
             sourceRecordType: "token_count",
             sourceEventType: "token_count",
-            sourcePath: "/tmp/codex/transcript.jsonl",
             sourceSequence: 9,
             rawJson: {
               type: "token_count",
@@ -17449,7 +20933,6 @@ describeDb("memory repository visibility", () => {
       threadKind: "subagent",
       parentThreadId: "parent-thread",
       parentSessionId: "parent-session",
-      transcriptPath: "/tmp/codex/transcript.jsonl",
       sourceLineNumber: 9
     });
   });
@@ -17463,7 +20946,7 @@ describeDb("memory repository visibility", () => {
       {
         externalSessionId: `token-count-fallback-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     const [rawItem] = await repo.createConversationItems(
@@ -17474,7 +20957,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             sourceRecordType: "token_count",
             sourceEventType: "token_count",
             rawJson: {
@@ -17599,17 +21082,10 @@ describeDb("memory repository visibility", () => {
       email: `alice-stale-projection-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Stale Projection Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `stale-projection-session-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `stale-projection-session-${randomUUID()}`
@@ -17678,21 +21154,14 @@ describeDb("memory repository visibility", () => {
       email: `alice-projection-policy-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Projection Policy Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `projection-policy-session-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `projection-policy-session-${randomUUID()}`,
-        metadata: { workspaceId }
+        metadata: { projectId: workspaceId }
       }
     );
     const rows = [
@@ -17796,21 +21265,27 @@ describeDb("memory repository visibility", () => {
             rawText: row.text,
             sourceHash: row.sourceHash,
             idempotencyKey: row.sourceHash,
-            metadata: { workspaceId, transcriptType: row.transcriptType }
+            metadata: {
+              projectId: workspaceId,
+              transcriptType: row.transcriptType
+            }
           })),
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalTurnId: "turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: rows.length,
-            rawJson: { hook_event_name: "Stop", turn_id: "turn-1" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "turn-1" }
+            },
             sourceHash: `projection-policy-stop-${randomUUID()}`,
             idempotencyKey: `projection-policy-stop-${randomUUID()}`,
-            metadata: { workspaceId }
+            metadata: { projectId: workspaceId }
           }
         ]
       }
@@ -17917,20 +21392,13 @@ describeDb("memory repository visibility", () => {
       email: `provider-role-policy-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Provider Role Policy')
-      `,
-      [workspaceId, owner.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `provider-role-policy-${randomUUID()}`,
         sourceRuntime: "codex",
-        metadata: { workspaceId }
+        metadata: { projectId: workspaceId }
       }
     );
     const sourceHash = `provider-role-policy-${randomUUID()}`;
@@ -17949,6 +21417,7 @@ describeDb("memory repository visibility", () => {
             sourceRecordType: "response_item",
             sourceEventType: "message",
             sourceSequence: 0,
+            eventTime: "2026-04-01T12:00:00.000Z",
             rawJson: {
               type: "response_item",
               payload: {
@@ -17965,7 +21434,7 @@ describeDb("memory repository visibility", () => {
             rawText: "Provider developer instructions stay raw-only.",
             sourceHash,
             idempotencyKey: sourceHash,
-            metadata: { workspaceId }
+            metadata: { projectId: workspaceId }
           },
           {
             sessionId: session.id,
@@ -17976,6 +21445,7 @@ describeDb("memory repository visibility", () => {
             sourceRecordType: "response_item",
             sourceEventType: "message",
             sourceSequence: 1,
+            eventTime: "2026-04-01T12:00:01.000Z",
             rawJson: {
               type: "response_item",
               payload: {
@@ -17992,7 +21462,7 @@ describeDb("memory repository visibility", () => {
             rawText: "Injected application context stays raw-only.",
             sourceHash: contextSourceHash,
             idempotencyKey: contextSourceHash,
-            metadata: { workspaceId }
+            metadata: { projectId: workspaceId }
           },
           {
             sessionId: session.id,
@@ -18003,6 +21473,7 @@ describeDb("memory repository visibility", () => {
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
             sourceSequence: 2,
+            eventTime: "2026-04-01T12:00:02.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -18013,7 +21484,7 @@ describeDb("memory repository visibility", () => {
             rawText: "The authoritative user prompt is projected.",
             sourceHash: promptSourceHash,
             idempotencyKey: promptSourceHash,
-            metadata: { workspaceId }
+            metadata: { projectId: workspaceId }
           }
         ]
       }
@@ -18068,21 +21539,14 @@ describeDb("memory repository visibility", () => {
         email: `alice-ide-context-${randomUUID()}@example.com`
       });
       const workspaceId = randomUUID();
-      await pool.query(
-        `
-	          insert into workspaces (id, owner_user_id, visibility, name)
-	          values ($1, $2, 'personal', 'IDE Context Project')
-	        `,
-        [workspaceId, alice.id]
-      );
       const session = await repo.createCapturedSession(
         { userId: alice.id },
         {
-          workspaceId,
+          projectId: workspaceId,
           externalSessionId: `ide-context-session-${randomUUID()}`,
           sourceRuntime: "codex",
           idempotencyKey: `ide-context-session-${randomUUID()}`,
-          metadata: { workspaceId }
+          metadata: { projectId: workspaceId }
         }
       );
       const contextHash = `ide-context-${randomUUID()}`;
@@ -18098,7 +21562,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalTurnId: "turn-with-ide-context",
               sourceRecordType: "turn_start",
               sourceEventType: "turn_start",
@@ -18119,7 +21583,7 @@ describeDb("memory repository visibility", () => {
               sourceHash: contextHash,
               idempotencyKey: contextHash,
               metadata: {
-                workspaceId,
+                projectId: workspaceId,
                 transcriptType: "ide_context",
                 contextKind: "ide_client_context",
                 contextSource: "vscode_codex",
@@ -18130,7 +21594,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalTurnId: "turn-with-ide-context",
               sourceRecordType: "event_msg",
               sourceEventType: "user_message",
@@ -18154,13 +21618,16 @@ describeDb("memory repository visibility", () => {
                 "Please explain why the capture path used editor context.",
               sourceHash: userHash,
               idempotencyKey: userHash,
-              metadata: { workspaceId, transcriptType: "user_message" }
+              metadata: {
+                projectId: workspaceId,
+                transcriptType: "user_message"
+              }
             },
             {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalTurnId: "turn-with-ide-context",
               sourceRecordType: "event_msg",
               sourceEventType: "agent_message",
@@ -18178,13 +21645,16 @@ describeDb("memory repository visibility", () => {
                 "The editor context explained the selected capture path.",
               sourceHash: agentHash,
               idempotencyKey: agentHash,
-              metadata: { workspaceId, transcriptType: "agent_message" }
+              metadata: {
+                projectId: workspaceId,
+                transcriptType: "agent_message"
+              }
             },
             {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalTurnId: "turn-with-ide-context",
               sourceRecordType: "event_msg",
               sourceEventType: "user_message",
@@ -18202,7 +21672,10 @@ describeDb("memory repository visibility", () => {
                 "This normal prompt mentions additionalContext but is user-authored.",
               sourceHash: `ide-context-marker-prompt-${randomUUID()}`,
               idempotencyKey: `ide-context-marker-prompt-${randomUUID()}`,
-              metadata: { workspaceId, transcriptType: "user_message" }
+              metadata: {
+                projectId: workspaceId,
+                transcriptType: "user_message"
+              }
             }
           ]
         }
@@ -18235,7 +21708,7 @@ describeDb("memory repository visibility", () => {
           query: marker,
           scope: "personal",
           searchDomain: "project",
-          workspaceId,
+          projectId: workspaceId,
           retrievalStage: "lexical_search"
         }
       );
@@ -18352,7 +21825,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "turn-after-agent",
             sourceRecordType: "event_msg",
             sourceEventType: "agent_message",
@@ -18374,7 +21847,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "turn-after-agent",
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
@@ -18399,7 +21872,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "turn-after-agent",
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
@@ -18469,7 +21942,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "turn-pending-context",
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
@@ -18545,10 +22018,13 @@ describeDb("memory repository visibility", () => {
         sourceHash: `projection-interrupt-agent-after-${randomUUID()}`
       },
       {
-        sourceEventType: "Stop",
-        sourceRecordType: "hook_payload",
-        sourceTransport: "hook",
-        rawJson: { hook_event_name: "Stop", turn_id: "turn-with-interrupt" },
+        sourceEventType: "task_complete",
+        sourceRecordType: "event_msg",
+        sourceTransport: "transcript",
+        rawJson: {
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-with-interrupt" }
+        },
         sourceHash: `projection-interrupt-stop-${randomUUID()}`
       }
     ];
@@ -18559,8 +22035,8 @@ describeDb("memory repository visibility", () => {
           sessionId: session.id,
           sourceKind: "codex",
           sourceAdapterVersion:
-            item.sourceRecordType === "hook_payload"
-              ? "codex-hook-v1"
+            item.sourceTransport === "transcript"
+              ? "codex-transcript-v1"
               : "codex-app-server-v1",
           sourceTransport: item.sourceTransport ?? "app_server",
           externalTurnId: "turn-with-interrupt",
@@ -18707,13 +22183,16 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalTurnId: "tool-heavy-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: agentItems.length,
-            rawJson: { hook_event_name: "Stop", turn_id: "tool-heavy-turn" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "tool-heavy-turn" }
+            },
             sourceHash: `projection-tool-stop-${randomUUID()}`,
             idempotencyKey: `projection-tool-stop-${randomUUID()}`,
             metadata: {}
@@ -18780,8 +22259,8 @@ describeDb("memory repository visibility", () => {
         "The search confirms the projection entry point."
       ].join("\n")
     ]);
-    expect(events.rows[0]?.sealed_reason).toBe("stop_hook");
-    expect(events.rows[0]?.seal_reason).toBe("stop_hook");
+    expect(events.rows[0]?.sealed_reason).toBe("turn_completed");
+    expect(events.rows[0]?.seal_reason).toBe("turn_completed");
     expect(events.rows[0]?.token_count).toBe(
       estimateTokens(events.rows[0]?.content ?? "", {
         model: "gpt-5.4-mini"
@@ -18880,19 +22359,22 @@ describeDb("memory repository visibility", () => {
             {
               sessionId: session.id,
               sourceKind: "codex",
-              sourceAdapterVersion: "codex-hook-v1",
-              sourceTransport: "hook",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
               externalTurnId: "separator-token-turn",
-              sourceRecordType: "hook_payload",
-              sourceEventType: "Stop",
+              sourceRecordType: "event_msg",
+              sourceEventType: "task_complete",
               sourceSequence: agentItems.length,
               rawJson: {
-                hook_event_name: "Stop",
-                turn_id: "separator-token-turn"
+                type: "event_msg",
+                payload: {
+                  type: "task_complete",
+                  turn_id: "separator-token-turn"
+                }
               },
               sourceHash: `projection-separator-stop-${randomUUID()}`,
               idempotencyKey: `projection-separator-stop-${randomUUID()}`,
-              metadata: { hookEventName: "Stop" }
+              metadata: { transcriptType: "task_complete" }
             }
           ]
         }
@@ -18929,7 +22411,7 @@ describeDb("memory repository visibility", () => {
       ]);
       expect(events.rows.map((row) => row.sealed_reason)).toEqual([
         "token_limit",
-        "stop_hook"
+        "turn_completed"
       ]);
       expect(events.rows.every((row) => (row.token_count ?? 0) <= 29)).toBe(
         true
@@ -18948,7 +22430,7 @@ describeDb("memory repository visibility", () => {
     }
   });
 
-  it("seals same-scope transcript agent bundles when only a mismatched Stop hook control record is projected", async () => {
+  it("projects a full transcript turn when only its journaled completion is selected", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-stop-metadata-${randomUUID()}@example.com`
     });
@@ -18968,7 +22450,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "transcript-assigned-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "agent_message",
@@ -18978,22 +22460,19 @@ describeDb("memory repository visibility", () => {
               type: "event_msg",
               payload: {
                 type: "agent_message",
-                message: "Stop metadata should seal this bundle."
+                message: "Journal completion should seal this bundle."
               }
             },
-            rawText: "Stop metadata should seal this bundle.",
+            rawText: "Journal completion should seal this bundle.",
             sourceHash: `projection-stop-metadata-agent-${randomUUID()}`,
             idempotencyKey: `projection-stop-metadata-agent-${randomUUID()}`,
-            metadata: {
-              hookEventName: "UserPromptSubmit",
-              transcriptType: "agent_message"
-            }
+            metadata: { transcriptType: "agent_message" }
           },
           {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalTurnId: "transcript-assigned-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "token_count",
@@ -19017,42 +22496,45 @@ describeDb("memory repository visibility", () => {
             rawText: "",
             sourceHash: `projection-stop-metadata-token-${randomUUID()}`,
             idempotencyKey: `projection-stop-metadata-token-${randomUUID()}`,
-            metadata: { hookEventName: "UserPromptSubmit" }
+            metadata: { transcriptType: "token_count" }
           },
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalTurnId: "hook-payload-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            externalTurnId: "transcript-assigned-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 2,
             rawJson: {
-              hook_event_name: "Stop",
-              turn_id: "stop-metadata-turn"
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "transcript-assigned-turn"
+              }
             },
             sourceHash: `projection-stop-metadata-control-${randomUUID()}`,
             idempotencyKey: `projection-stop-metadata-control-${randomUUID()}`,
-            metadata: { hookEventName: "Stop" }
+            metadata: { transcriptType: "task_complete" }
           }
         ]
       }
     );
-    const stopControl = await pool.query<{ id: string }>(
+    const completionControl = await pool.query<{ id: string }>(
       `
         select id
         from conversation_items
         where session_id = $1
-          and source_adapter_version = 'codex-hook-v1'
-          and source_event_type = 'Stop'
+          and source_adapter_version = 'codex-transcript-v1'
+          and source_event_type = 'task_complete'
       `,
       [session.id]
     );
 
     const projection = await repo.projectPendingConversationItems(
       { userId: alice.id },
-      { conversationItemIds: [stopControl.rows[0]!.id], limit: 1 }
+      { conversationItemIds: [completionControl.rows[0]!.id], limit: 1 }
     );
     const events = await pool.query<{
       content: string;
@@ -19088,12 +22570,13 @@ describeDb("memory repository visibility", () => {
     expect(projection.tokenUsageRowsCreated).toBe(1);
     expect(events.rows).toEqual([
       {
-        content: "Stop metadata should seal this bundle.",
-        sealed_reason: "stop_hook",
-        seal_reason: "stop_hook",
-        token_count: estimateTokens("Stop metadata should seal this bundle.", {
-          model: "gpt-5.4-mini"
-        })
+        content: "Journal completion should seal this bundle.",
+        sealed_reason: "turn_completed",
+        seal_reason: "turn_completed",
+        token_count: estimateTokens(
+          "Journal completion should seal this bundle.",
+          { model: "gpt-5.4-mini" }
+        )
       }
     ]);
     expect(statuses.rows).toEqual([
@@ -19160,11 +22643,11 @@ describeDb("memory repository visibility", () => {
                 params: {
                   item: {
                     type: "agentMessage",
-                    text: "The system slept before the Stop hook arrived."
+                    text: "The system slept before the completion was journaled."
                   }
                 }
               },
-              rawText: "The system slept before the Stop hook arrived.",
+              rawText: "The system slept before the completion was journaled.",
               sourceHash: `projection-stale-agent-after-${randomUUID()}`,
               idempotencyKey: `projection-stale-agent-after-${randomUUID()}`,
               metadata: { transcriptType: "agent_message" }
@@ -19216,7 +22699,7 @@ describeDb("memory repository visibility", () => {
         [
           "I started a long-running check.",
           "",
-          "The system slept before the Stop hook arrived."
+          "The system slept before the completion was journaled."
         ].join("\n")
       );
       expect(events.rows[0]?.sealed_reason).toBe("catch_up_stale");
@@ -20183,7 +23666,7 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("keeps a Stop scope pending when its atomic unit exceeds hard caps", async () => {
+  it("keeps a completed turn pending when its atomic unit exceeds hard caps", async () => {
     const alice = await repo.createUser({
       email: `alice-stop-atomic-${randomUUID()}@example.com`
     });
@@ -20198,15 +23681,20 @@ describeDb("memory repository visibility", () => {
     const item = (turn: string, sequence: number, stop = false) => ({
       sessionId: session.id,
       sourceKind: "codex",
-      sourceAdapterVersion: stop ? "codex-hook-v1" : "codex-app-server-v1",
-      sourceTransport: stop ? "hook" : "app_server",
+      sourceAdapterVersion: stop
+        ? "codex-transcript-v1"
+        : "codex-app-server-v1",
+      sourceTransport: stop ? "transcript" : "app_server",
       externalThreadId: session.externalSessionId ?? undefined,
       externalTurnId: turn,
-      sourceRecordType: stop ? "hook_payload" : "app_server_notification",
-      sourceEventType: stop ? "Stop" : "item/completed",
+      sourceRecordType: stop ? "event_msg" : "app_server_notification",
+      sourceEventType: stop ? "task_complete" : "item/completed",
       sourceSequence: sequence,
       rawJson: stop
-        ? { hook_event_name: "Stop", turn_id: turn }
+        ? {
+            type: "event_msg",
+            payload: { type: "task_complete", turn_id: turn }
+          }
         : {
             method: "item/completed",
             params: { item: { type: "agentMessage", text: `Agent ${turn}` } }
@@ -20215,7 +23703,7 @@ describeDb("memory repository visibility", () => {
       sourceHash: `atomic-${sequence}-${randomUUID()}`,
       idempotencyKey: `atomic-${sequence}-${randomUUID()}`,
       metadata: stop
-        ? { hookEventName: "Stop" }
+        ? { transcriptType: "task_complete" }
         : { transcriptType: "agent_message" }
     });
     await repo.createConversationItems(
@@ -20285,17 +23773,17 @@ describeDb("memory repository visibility", () => {
       {
         sessionId: session.id,
         sourceKind: "codex",
-        sourceAdapterVersion: "codex-hook-v1",
+        sourceAdapterVersion: "codex-transcript-v1",
         sourceTransport: "historical_import",
         externalThreadId: session.externalSessionId ?? undefined,
         externalTurnId: `bounded-turn-${turnIndex}`,
-        sourceRecordType: "hook_payload",
-        sourceEventType: "Stop",
+        sourceRecordType: "event_msg",
+        sourceEventType: "task_complete",
         sourceSequence: turnIndex * 2 + 1,
-        rawJson: { hook_event_name: "Stop" },
+        rawJson: { type: "event_msg", payload: { type: "task_complete" } },
         sourceHash: `bounded-stop-${turnIndex}-${randomUUID()}`,
         idempotencyKey: `bounded-stop-${turnIndex}-${randomUUID()}`,
-        metadata: { hookEventName: "Stop" }
+        metadata: { transcriptType: "task_complete" }
       }
     ]);
     await repo.createConversationItems({ userId: alice.id }, { items });
@@ -20459,9 +23947,10 @@ describeDb("memory repository visibility", () => {
           {
             ...shared,
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
+            eventTime: "2026-04-01T12:00:00.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -20520,17 +24009,17 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "later-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 1,
-            rawJson: { hook_event_name: "Stop" },
+            rawJson: { type: "event_msg", payload: { type: "task_complete" } },
             sourceHash: `explicit-stop-${randomUUID()}`,
             idempotencyKey: `explicit-stop-${randomUUID()}`,
-            metadata: { hookEventName: "Stop" }
+            metadata: { transcriptType: "task_complete" }
           }
         ]
       }
@@ -20557,21 +24046,14 @@ describeDb("memory repository visibility", () => {
       email: `alice-transport-chunks-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Transport Chunk Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `transport-chunk-session-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `transport-chunk-session-${randomUUID()}`,
-        metadata: { workspaceId }
+        metadata: { projectId: workspaceId }
       }
     );
     const logicalSourceId = `transport-logical-${randomUUID()}`;
@@ -20620,7 +24102,7 @@ describeDb("memory repository visibility", () => {
             sourceHash: `${logicalSourceId}-chunk-${index}`,
             idempotencyKey: `${logicalSourceId}-chunk-${index}`,
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "agent_message",
               sourceItemHash: logicalSourceId,
               sourceChunkIndex: index,
@@ -20630,18 +24112,21 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalTurnId: "turn-transport",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 100 + chunks.length,
-            rawJson: { hook_event_name: "Stop", turn_id: "turn-transport" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "turn-transport" }
+            },
             sourceHash: `transport-stop-${randomUUID()}`,
             idempotencyKey: `transport-stop-${randomUUID()}`,
             metadata: {
-              workspaceId,
-              hookEventName: "Stop"
+              projectId: workspaceId,
+              transcriptType: "task_complete"
             }
           }
         ]
@@ -20700,7 +24185,7 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("ignores hook payload content when transcript sources are transport chunked", async () => {
+  it("projects chunked source content without adding terminal control content", async () => {
     const alice = await repo.createUser({
       email: `alice-transport-hook-control-${randomUUID()}@example.com`
     });
@@ -20711,7 +24196,7 @@ describeDb("memory repository visibility", () => {
         externalSessionId: "transport-hook-control-thread",
         sourceRuntime: "codex",
         idempotencyKey: `transport-hook-control-session-${randomUUID()}`,
-        metadata: { workspaceId }
+        metadata: { projectId: workspaceId }
       }
     );
     const logicalSourceId = `transport-hook-control-logical-${randomUUID()}`;
@@ -20760,7 +24245,7 @@ describeDb("memory repository visibility", () => {
             sourceHash: `${logicalSourceId}-chunk-${index}`,
             idempotencyKey: `${logicalSourceId}-chunk-${index}`,
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "agent_message",
               sourceItemHash: logicalSourceId,
               sourceChunkIndex: index,
@@ -20770,42 +24255,25 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalThreadId: "transport-hook-control-thread",
             externalTurnId: "transport-hook-control-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "PostToolUse",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: chunks.length,
             rawJson: {
-              hook_event_name: "PostToolUse",
-              tool_name: "exec_command",
-              tool_input: { cmd: "echo duplicate" },
-              tool_response: "duplicate hook content response"
-            },
-            sourceHash: `transport-hook-control-hook-${randomUUID()}`,
-            idempotencyKey: `transport-hook-control-hook-${randomUUID()}`,
-            metadata: { workspaceId }
-          },
-          {
-            sessionId: session.id,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalThreadId: "transport-hook-control-thread",
-            externalTurnId: "transport-hook-control-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
-            sourceSequence: chunks.length + 1,
-            rawJson: {
-              hook_event_name: "Stop",
-              turn_id: "transport-hook-control-turn"
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "transport-hook-control-turn"
+              }
             },
             sourceHash: `transport-hook-control-stop-${randomUUID()}`,
             idempotencyKey: `transport-hook-control-stop-${randomUUID()}`,
             metadata: {
-              workspaceId,
-              hookEventName: "Stop"
+              projectId: workspaceId,
+              transcriptType: "task_complete"
             }
           }
         ]
@@ -20859,7 +24327,7 @@ describeDb("memory repository visibility", () => {
     ]);
     expect(toolEvents.rows[0]?.count).toBe("0");
     expect(statuses.rows).toEqual([
-      { projection_status: "projected", count: "4" }
+      { projection_status: "projected", count: "3" }
     ]);
   });
 
@@ -20868,21 +24336,14 @@ describeDb("memory repository visibility", () => {
       email: `alice-nul-transport-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'NUL Transport Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `nul-transport-session-${randomUUID()}`,
         sourceRuntime: "codex",
         idempotencyKey: `nul-transport-session-${randomUUID()}`,
-        metadata: { workspaceId }
+        metadata: { projectId: workspaceId }
       }
     );
     const logicalSourceId = `nul-transport-logical-${randomUUID()}`;
@@ -20929,7 +24390,7 @@ describeDb("memory repository visibility", () => {
             sourceHash: `${logicalSourceId}-chunk-${index}`,
             idempotencyKey: `${logicalSourceId}-chunk-${index}`,
             metadata: {
-              workspaceId,
+              projectId: workspaceId,
               transcriptType: "agent_message",
               sourceItemHash: logicalSourceId,
               sourceChunkIndex: index,
@@ -20939,21 +24400,24 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalTurnId: "turn-nul-transport",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 120 + chunks.length,
             rawJson: {
-              hook_event_name: "Stop",
-              turn_id: "turn-nul-transport"
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "turn-nul-transport"
+              }
             },
             sourceHash: `nul-transport-stop-${randomUUID()}`,
             idempotencyKey: `nul-transport-stop-${randomUUID()}`,
             metadata: {
-              workspaceId,
-              hookEventName: "Stop"
+              projectId: workspaceId,
+              transcriptType: "task_complete"
             }
           }
         ]
@@ -20995,11 +24459,11 @@ describeDb("memory repository visibility", () => {
       email: `bob-project-assignment-${randomUUID()}@example.com`
     });
     const idempotencyKey = `project-assignment-${randomUUID()}`;
-    const capturedWorkspaceId = randomUUID();
+    const capturedProjectId = randomUUID();
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId: capturedWorkspaceId,
+        projectId: capturedProjectId,
         externalSessionId: `project-assignment-thread-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         idempotencyKey,
@@ -21046,7 +24510,7 @@ describeDb("memory repository visibility", () => {
     const redetected = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId: capturedWorkspaceId,
+        projectId: capturedProjectId,
         externalSessionId: session.externalSessionId ?? undefined,
         sourceRuntime: "codex-cli",
         idempotencyKey,
@@ -21061,16 +24525,16 @@ describeDb("memory repository visibility", () => {
     );
     const latestCapturedSession = await repo.getLatestCapturedSessionForProject(
       { userId: alice.id },
-      { workspaceId: capturedWorkspaceId }
+      { projectId: "project-detected-b" }
     );
     const organizationalLookup = await repo.getLatestCapturedSessionForProject(
       { userId: alice.id },
-      { workspaceId: "project-manual" }
+      { projectId: "project-manual" }
     );
     await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId: capturedWorkspaceId,
+        projectId: capturedProjectId,
         sessionId: session.id,
         actor: "user",
         eventType: "captured",
@@ -21095,7 +24559,6 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(session).toMatchObject({
-      workspaceId: capturedWorkspaceId,
       automaticProject: { id: "project-detected-a" },
       project: { id: "project-detected-a" },
       projectAssignmentSource: "detected"
@@ -21108,7 +24571,6 @@ describeDb("memory repository visibility", () => {
     });
     expect(bobSession.id).not.toBe(session.id);
     expect(moved).toMatchObject({
-      workspaceId: capturedWorkspaceId,
       projectOverride: { id: "project-manual" },
       project: { id: "project-manual" },
       projectAssignmentSource: "user_override",
@@ -21116,7 +24578,6 @@ describeDb("memory repository visibility", () => {
     });
     expect(forbiddenMove).toBeNull();
     expect(redetected).toMatchObject({
-      workspaceId: capturedWorkspaceId,
       automaticProject: { id: "project-detected-b" },
       projectOverride: { id: "project-manual" },
       project: { id: "project-manual" },
@@ -21124,7 +24585,7 @@ describeDb("memory repository visibility", () => {
       capturedProjectProvenance: capturedProvenance
     });
     expect(latestCapturedSession?.id).toBe(session.id);
-    expect(organizationalLookup).toBeNull();
+    expect(organizationalLookup?.id).toBe(session.id);
     expect(manualGraph[0]).toMatchObject({
       id: "project-manual",
       eventCount: 1,
@@ -21133,7 +24594,6 @@ describeDb("memory repository visibility", () => {
       ]
     });
     expect(reset).toMatchObject({
-      workspaceId: capturedWorkspaceId,
       projectOverride: null,
       project: { id: "project-detected-b" },
       projectAssignmentSource: "detected",
@@ -21198,6 +24658,14 @@ describeDb("memory repository visibility", () => {
         idempotencyKey
       }
     );
+    const cwdOnlyReplay = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: created.externalSessionId ?? undefined,
+        idempotencyKey,
+        cwd: "/work/project-a"
+      }
+    );
     const explicitNoSignalReplay = await repo.createCapturedSession(
       { userId: owner.id },
       {
@@ -21214,12 +24682,70 @@ describeDb("memory repository visibility", () => {
       projectAssignmentSource: "detected",
       capturedProjectProvenance: created.capturedProjectProvenance
     });
+    expect(cwdOnlyReplay).toMatchObject({
+      id: created.id,
+      automaticProject: {
+        id: "project-a",
+        name: "Project A",
+        path: "/work/project-a"
+      },
+      project: { id: "project-a" },
+      projectAssignmentSource: "detected",
+      capturedProjectProvenance: created.capturedProjectProvenance
+    });
     expect(explicitNoSignalReplay).toMatchObject({
       id: created.id,
       automaticProject: null,
       project: null,
       projectAssignmentSource: null,
       capturedProjectProvenance: created.capturedProjectProvenance
+    });
+  });
+
+  it("upgrades a cwd fallback when an explicit Personal Project identity arrives", async () => {
+    const owner = await repo.createUser({
+      email: `project-upgrade-owner-${randomUUID()}@example.com`
+    });
+    const idempotencyKey = `project-upgrade-${randomUUID()}`;
+    const externalSessionId = `project-upgrade-thread-${randomUUID()}`;
+    const fallback = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId,
+        idempotencyKey,
+        cwd: "/work/project-upgrade"
+      }
+    );
+    const upgraded = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId,
+        idempotencyKey,
+        cwd: "/work/project-upgrade",
+        detectedProjects: [
+          {
+            id: "lp_0123456789abcdef0123456789abcdef",
+            name: "Project Upgrade",
+            path: "/work/project-upgrade"
+          }
+        ]
+      }
+    );
+
+    expect(fallback).toMatchObject({
+      automaticProject: {
+        id: "/work/project-upgrade",
+        path: "/work/project-upgrade"
+      }
+    });
+    expect(upgraded).toMatchObject({
+      id: fallback.id,
+      automaticProject: {
+        id: "lp_0123456789abcdef0123456789abcdef",
+        name: "Project Upgrade",
+        path: "/work/project-upgrade"
+      },
+      projectAssignmentSource: "detected"
     });
   });
 
@@ -21234,10 +24760,11 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Project Assignment Team" }
     );
-    await repo.upsertTeamMember(
-      { userId: owner.id },
-      { teamId: team.id, userId: member.id, role: "member" }
-    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
     const teamWorkspace = await repo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Project Assignment Workspace" }
@@ -21247,7 +24774,8 @@ describeDb("memory repository visibility", () => {
       {
         teamWorkspaceId: teamWorkspace!.id,
         userId: member.id,
-        access: "read"
+        access: "read",
+        expectedVersion: null
       }
     );
 
@@ -21255,7 +24783,7 @@ describeDb("memory repository visibility", () => {
     const captured = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "source-project-a",
+        projectId: "source-project-a",
         externalSessionId: `project-assignment-thread-${randomUUID()}`,
         idempotencyKey,
         metadata: {
@@ -21274,7 +24802,7 @@ describeDb("memory repository visibility", () => {
     const event = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "source-project-a",
+        projectId: "source-project-a",
         sessionId: captured.id,
         actor: "user",
         eventType: "captured",
@@ -21288,10 +24816,12 @@ describeDb("memory repository visibility", () => {
         }
       }
     );
-    await repo.createTeamSessionShareGrant(
-      { userId: owner.id },
-      { teamWorkspaceId: teamWorkspace!.id, sessionId: captured.id }
-    );
+    await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: captured.id,
+      teamId: team.id,
+      teamWorkspaceId: teamWorkspace!.id
+    });
 
     const moved = await repo.moveCapturedSessionToProject(
       { userId: owner.id },
@@ -21301,7 +24831,7 @@ describeDb("memory repository visibility", () => {
     const redetected = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId: "source-project-c",
+        projectId: "source-project-c",
         externalSessionId: captured.externalSessionId ?? undefined,
         idempotencyKey,
         metadata: {
@@ -21328,7 +24858,7 @@ describeDb("memory repository visibility", () => {
     );
     const teamProjects = await repo.listLcmGraphThreads(
       { userId: member.id },
-      { teamWorkspaceId: teamWorkspace!.id, limit: 20 }
+      { ...{ teamWorkspaceId: teamWorkspace!.id }, limit: 20 }
     );
     const engine = createMemoryEngine(repo);
     const movedRecall = await engine.searchMemory({
@@ -21336,7 +24866,7 @@ describeDb("memory repository visibility", () => {
       query: "Mutable assignment lexical sentinel",
       scope: "personal",
       searchDomain: "project",
-      workspaceId: "project-b",
+      projectId: "project-b",
       retrievalStage: "lexical_search",
       strictLimit: true,
       limit: 1
@@ -21346,7 +24876,7 @@ describeDb("memory repository visibility", () => {
       query: "Mutable assignment lexical sentinel",
       scope: "personal",
       searchDomain: "project",
-      workspaceId: "project-a",
+      projectId: "project-a",
       retrievalStage: "lexical_search",
       strictLimit: false,
       limit: 1
@@ -21405,19 +24935,7 @@ describeDb("memory repository visibility", () => {
       expect.objectContaining({ sourceId: event.id })
     ]);
     expect(oldProjectRecall.results).toHaveLength(0);
-    expect(teamProjects).toEqual([
-      expect.objectContaining({
-        id: teamWorkspace!.id,
-        name: "Team Workspace",
-        path: null,
-        threads: [
-          expect.objectContaining({
-            projectAssignmentSource: null,
-            capturedProjectProvenance: {}
-          })
-        ]
-      })
-    ]);
+    expect(teamProjects).toEqual([]);
     expect(reset).toMatchObject({
       automaticProject: { id: "project-c" },
       projectOverride: null,
@@ -21474,25 +24992,28 @@ describeDb("memory repository visibility", () => {
             sourceHash: `canonical-project-raw-${randomUUID()}`,
             idempotencyKey: `canonical-project-raw-${randomUUID()}`,
             metadata: {
-              workspaceId: session.id,
+              projectId: session.id,
               transcriptType: "agent_message"
             }
           },
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "Stop",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
             sourceSequence: 1,
-            rawJson: { hook_event_name: "Stop", turn_id: "turn-1" },
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: "turn-1" }
+            },
             sourceHash: `canonical-project-stop-${randomUUID()}`,
             idempotencyKey: `canonical-project-stop-${randomUUID()}`,
-            metadata: { workspaceId: session.id }
+            metadata: { projectId: session.id }
           }
         ]
       }
@@ -21619,7 +25140,7 @@ describeDb("memory repository visibility", () => {
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `subagent-title-thread-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         idempotencyKey: `subagent-title-session-${randomUUID()}`,
@@ -21633,7 +25154,7 @@ describeDb("memory repository visibility", () => {
     await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         sessionId: session.id,
         actor: "agent",
         eventType: "captured",
@@ -21647,7 +25168,7 @@ describeDb("memory repository visibility", () => {
     await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         sessionId: session.id,
         actor: "subagent",
         eventType: "captured",
@@ -21707,6 +25228,53 @@ describeDb("memory repository visibility", () => {
     expect(row.rows[0]?.parent_session_id).toBe(parent.id);
   });
 
+  it("converges authenticated native fork lineage without accepting conflicts", async () => {
+    const alice = await repo.createUser({
+      email: `alice-native-fork-lineage-${randomUUID()}@example.com`
+    });
+    const externalSessionId = `fork-child-${randomUUID()}`;
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId,
+        sourceRuntime: "codex",
+        idempotencyKey: `fork-child-${randomUUID()}`
+      }
+    );
+    const converged = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        logicalSessionId: session.logicalSessionId,
+        externalSessionId,
+        forkedFromExternalThreadId: "fork-parent-provider-thread",
+        sourceRuntime: "codex",
+        idempotencyKey: `fork-child-replay-${randomUUID()}`
+      }
+    );
+    const row = await pool.query<{
+      forked_from_external_thread_id: string | null;
+    }>("select forked_from_external_thread_id from sessions where id = $1", [
+      session.id
+    ]);
+
+    expect(converged.id).toBe(session.id);
+    expect(row.rows[0]?.forked_from_external_thread_id).toBe(
+      "fork-parent-provider-thread"
+    );
+    await expect(
+      repo.createCapturedSession(
+        { userId: alice.id },
+        {
+          logicalSessionId: session.logicalSessionId,
+          externalSessionId,
+          forkedFromExternalThreadId: "different-parent-provider-thread",
+          sourceRuntime: "codex",
+          idempotencyKey: `fork-child-conflict-${randomUUID()}`
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
   it("fetches an exact LCM graph node when newer summaries mention the node id", async () => {
     const alice = await repo.createUser({
       email: `alice-exact-lcm-node-${randomUUID()}@example.com`
@@ -21739,17 +25307,10 @@ describeDb("memory repository visibility", () => {
       email: `alice-session-lcm-source-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Session Source Project')
-      `,
-      [workspaceId, alice.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `session-source-${randomUUID()}`,
         idempotencyKey: `session-source-${randomUUID()}`
       }
@@ -21757,7 +25318,7 @@ describeDb("memory repository visibility", () => {
     const event = await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         sessionId: session.id,
         actor: "agent",
         eventType: "captured",
@@ -21969,7 +25530,7 @@ describeDb("memory repository visibility", () => {
     const first = await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId: "workspace-duplicate-priority",
+        projectId: "workspace-duplicate-priority",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -21982,7 +25543,7 @@ describeDb("memory repository visibility", () => {
     await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId: "workspace-duplicate-priority",
+        projectId: "workspace-duplicate-priority",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -21996,7 +25557,7 @@ describeDb("memory repository visibility", () => {
     const mismatchedRetry = await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId: "workspace-duplicate-priority",
+        projectId: "workspace-duplicate-priority",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -22021,7 +25582,7 @@ describeDb("memory repository visibility", () => {
     await repo.createMemoryEvent(
       { userId: alice.id },
       {
-        workspaceId: "workspace-hidden-duplicate",
+        projectId: "workspace-hidden-duplicate",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -22035,7 +25596,7 @@ describeDb("memory repository visibility", () => {
       repo.createMemoryEvent(
         { userId: bob.id },
         {
-          workspaceId: "workspace-hidden-duplicate",
+          projectId: "workspace-hidden-duplicate",
           actor: "user",
           eventType: "captured",
           rawEventType: "user_prompt",
@@ -22062,7 +25623,7 @@ describeDb("memory repository visibility", () => {
         repo.createMemoryEvent(
           { userId: alice.id },
           {
-            workspaceId: "workspace-concurrent-duplicate",
+            projectId: "workspace-concurrent-duplicate",
             actor: "user",
             eventType: "captured",
             rawEventType: "user_prompt",
@@ -22136,9 +25697,9 @@ describeDb("memory repository visibility", () => {
       observationComponent: "message",
       sourceRecordType: "response_item",
       sourceEventType: "message",
-      sourcePath: "/tmp/canonical-chunk.jsonl",
       sourceLineNumber: 4,
       sourceSequence: 4 + index,
+      eventTime: "2026-04-01T12:00:00.000Z",
       rawJson: {
         transportChunk: true,
         sourceItemHash: stableItemId,
@@ -22284,9 +25845,11 @@ describeDb("memory repository visibility", () => {
         observationComponent: "message",
         sourceRecordType: "response_item",
         sourceEventType: "message",
-        sourcePath: "/tmp/chunk-group-isolation.jsonl",
         sourceLineNumber: sourceSequence,
         sourceSequence,
+        eventTime: new Date(
+          Date.parse("2026-04-01T12:00:00.000Z") + sourceSequence
+        ).toISOString(),
         rawJson: {
           transportChunk: true,
           transportChunkGroupId: source.groupId,
@@ -22596,7 +26159,6 @@ describeDb("memory repository visibility", () => {
       sourceRecordType: "response_item",
       sourceEventType: "function_call",
       sourceSequence: 2,
-      sourcePath: "/tmp/canonical-tool.jsonl",
       sourceLineNumber: 2,
       rawJson: {
         type: "response_item",
@@ -22647,7 +26209,6 @@ describeDb("memory repository visibility", () => {
       sourceRecordType: "event_msg",
       sourceEventType: "task_complete",
       sourceSequence: 3,
-      sourcePath: "/tmp/canonical-tool.jsonl",
       sourceLineNumber: 3,
       rawJson: {
         type: "event_msg",
@@ -22725,22 +26286,18 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("derives conversation workspace metadata from the Captured Session", async () => {
+  it("derives conversation Project metadata from the Captured Session", async () => {
     const owner = await repo.createUser({
       email: `conversation-workspace-authority-${randomUUID()}@example.com`
     });
-    const workspaceId = randomUUID();
-    await pool.query(
-      "insert into workspaces (id, owner_user_id, visibility, name) values ($1, $2, 'personal', 'Authoritative workspace')",
-      [workspaceId, owner.id]
-    );
+    const projectId = randomUUID();
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId,
         externalSessionId: `workspace-authority-thread-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     const [item] = await repo.createConversationItems(
@@ -22771,12 +26328,12 @@ describeDb("memory repository visibility", () => {
         ]
       }
     );
-    const stored = await pool.query<{ workspace_id: string | null }>(
-      "select metadata ->> 'workspaceId' as workspace_id from conversation_items where id = $1",
+    const stored = await pool.query<{ project_id: string | null }>(
+      "select metadata ->> 'projectId' as project_id from conversation_items where id = $1",
       [item!.id]
     );
 
-    expect(stored.rows[0]?.workspace_id).toBe(workspaceId);
+    expect(stored.rows[0]?.project_id).toBe(projectId);
   });
 
   it("treats raw provider roles as authoritative over transcriptType metadata", async () => {
@@ -22788,14 +26345,14 @@ describeDb("memory repository visibility", () => {
       {
         externalSessionId: `provider-role-thread-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     const base = {
       sessionId: session.id,
       sourceKind: "codex",
       sourceAdapterVersion: "codex-transcript-v1",
-      sourceTransport: "hook",
+      sourceTransport: "transcript",
       externalThreadId: session.externalSessionId ?? undefined,
       externalTurnId: "provider-role-turn",
       sourceRecordType: "response_item",
@@ -22889,17 +26446,13 @@ describeDb("memory repository visibility", () => {
     });
     const workspaceId = randomUUID();
     const transcriptType = `display_only_plan_${randomUUID().replaceAll("-", "_")}`;
-    await pool.query(
-      "insert into workspaces (id, owner_user_id, visibility, name) values ($1, $2, 'personal', 'Display only recall')",
-      [workspaceId, owner.id]
-    );
     const session = await repo.createCapturedSession(
       { userId: owner.id },
       {
-        workspaceId,
+        projectId: workspaceId,
         externalSessionId: `display-only-thread-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     await pool.query(
@@ -22923,7 +26476,7 @@ describeDb("memory repository visibility", () => {
               sessionId: session.id,
               sourceKind: "codex",
               sourceAdapterVersion: "codex-transcript-v1",
-              sourceTransport: "hook",
+              sourceTransport: "transcript",
               externalThreadId: session.externalSessionId ?? undefined,
               externalTurnId: "display-only-turn",
               sourceRecordType: "response_item",
@@ -22940,7 +26493,7 @@ describeDb("memory repository visibility", () => {
               rawText: "Display-only sentinel Indigo Parallax.",
               sourceHash: `display-only-${randomUUID()}`,
               idempotencyKey: `display-only-${randomUUID()}`,
-              metadata: { transcriptType, workspaceId }
+              metadata: { transcriptType, projectId: workspaceId }
             }
           ]
         }
@@ -22989,7 +26542,7 @@ describeDb("memory repository visibility", () => {
         query: "Indigo Parallax",
         scope: "personal",
         searchDomain: "project",
-        workspaceId,
+        projectId: workspaceId,
         retrievalStage: "lexical_search",
         limit: 10
       });
@@ -23031,7 +26584,7 @@ describeDb("memory repository visibility", () => {
       {
         externalSessionId: `policy-lock-thread-${randomUUID()}`,
         sourceRuntime: "codex-cli",
-        captureMethod: "hook"
+        captureMethod: "transcript"
       }
     );
     await pool.query(
@@ -23052,7 +26605,7 @@ describeDb("memory repository visibility", () => {
             sessionId: session.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "hook",
+            sourceTransport: "transcript",
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "policy-lock-turn",
             sourceRecordType: "response_item",
@@ -23292,7 +26845,7 @@ describeDb("memory repository visibility", () => {
         repo.createMemoryEvent(
           { userId: owner.id },
           {
-            workspaceId: "lcm-dispatch-project",
+            projectId: "lcm-dispatch-project",
             actor: "user",
             eventType: "captured",
             rawEventType: "user_turn",
@@ -23307,7 +26860,7 @@ describeDb("memory repository visibility", () => {
     await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "lcm-dispatch-project",
+        projectId: "lcm-dispatch-project",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_turn",
@@ -23411,6 +26964,7 @@ describeDb("memory repository visibility", () => {
             sourceTransport: "transcript",
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
+            eventTime: "2026-04-01T12:00:00.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -23570,6 +27124,9 @@ describeDb("memory repository visibility", () => {
               sourceTransport: "transcript",
               sourceRecordType: "event_msg",
               sourceEventType: "user_message",
+              eventTime: new Date(
+                Date.parse("2026-04-01T12:00:02.000Z") + index
+              ).toISOString(),
               rawJson: { type: "event_msg", payload: { content: claim } },
               rawText: claim,
               sourceHash: `curated-long-source-${index}-${randomUUID()}`,
@@ -23677,6 +27234,7 @@ describeDb("memory repository visibility", () => {
             sourceTransport: "transcript",
             sourceRecordType: "event_msg",
             sourceEventType: "agent_message",
+            eventTime: "2026-04-01T12:00:01.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -23696,7 +27254,7 @@ describeDb("memory repository visibility", () => {
     const agentEvent = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "curated-memory",
+        projectId: "curated-memory",
         actor: "agent",
         eventType: "captured",
         rawEventType: "agent_message",
@@ -24241,7 +27799,7 @@ describeDb("memory repository visibility", () => {
     const event = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "curated-source-lifecycle",
+        projectId: "curated-source-lifecycle",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -24309,7 +27867,7 @@ describeDb("memory repository visibility", () => {
       const recentDeletedEvent = await protectedRepo.createMemoryEvent(
         { userId: owner.id },
         {
-          workspaceId: "curated-protected-temporal",
+          projectId: "curated-protected-temporal",
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -24321,7 +27879,7 @@ describeDb("memory repository visibility", () => {
       const oldActiveEvent = await protectedRepo.createMemoryEvent(
         { userId: owner.id },
         {
-          workspaceId: "curated-protected-temporal",
+          projectId: "curated-protected-temporal",
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -24416,7 +27974,7 @@ describeDb("memory repository visibility", () => {
       const event = await encryptedRepo.createMemoryEvent(
         { userId: owner.id },
         {
-          workspaceId: "curated-encrypted",
+          projectId: "curated-encrypted",
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -24428,7 +27986,7 @@ describeDb("memory repository visibility", () => {
       await encryptedRepo.createMemoryEvent(
         { userId: owner.id },
         {
-          workspaceId: "curated-encrypted",
+          projectId: "curated-encrypted",
           actor: "agent",
           eventType: "captured",
           rawEventType: "agent_message",
@@ -24440,7 +27998,7 @@ describeDb("memory repository visibility", () => {
       await encryptedRepo.createMemoryEvent(
         { userId: owner.id },
         {
-          workspaceId: "curated-encrypted-other-workspace",
+          projectId: "curated-encrypted-other-workspace",
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",
@@ -24463,7 +28021,7 @@ describeDb("memory repository visibility", () => {
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
           {
-            workspaceId: "curated-encrypted",
+            projectId: "curated-encrypted",
             exactQuote: `Evidence for ${sentinel}`
           }
         )
@@ -24475,7 +28033,7 @@ describeDb("memory repository visibility", () => {
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
           {
-            workspaceId: "curated-encrypted-missing",
+            projectId: "curated-encrypted-missing",
             exactQuote: `Evidence for ${sentinel}`
           }
         )
@@ -24562,7 +28120,7 @@ describeDb("memory repository visibility", () => {
           {
             query: sentinel,
             searchDomain: "project",
-            workspaceId: "curated-encrypted"
+            projectId: "curated-encrypted"
           }
         )
       ).resolves.toMatchObject([{ id: processed.assertionId }]);
@@ -24630,7 +28188,7 @@ describeDb("memory repository visibility", () => {
     const semanticSource = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "curated-ranking",
+        projectId: "curated-ranking",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
@@ -24861,7 +28419,7 @@ describeDb("memory repository visibility", () => {
     const activeOutOfScope = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "curated-project-active",
+        projectId: "curated-project-active",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -24873,7 +28431,7 @@ describeDb("memory repository visibility", () => {
     const deletedInScope = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "curated-project-deleted",
+        projectId: "curated-project-deleted",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -24922,7 +28480,7 @@ describeDb("memory repository visibility", () => {
         {
           query: sentinel,
           searchDomain: "project",
-          workspaceId: "curated-project-deleted"
+          projectId: "curated-project-deleted"
         }
       )
     ).resolves.toEqual([]);
@@ -24932,7 +28490,7 @@ describeDb("memory repository visibility", () => {
         {
           query: sentinel,
           searchDomain: "project",
-          workspaceId: "curated-project-active"
+          projectId: "curated-project-active"
         }
       )
     ).resolves.toMatchObject([{ id: processed.assertionId }]);
@@ -25040,7 +28598,7 @@ describeDb("memory repository visibility", () => {
     const event = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "curated-event-time",
+        projectId: "curated-event-time",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -25135,7 +28693,7 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.resolveCuratedMemoryProposalEvidence(
         { userId: owner.id },
-        { workspaceId: "/same/project", exactQuote }
+        { projectId: "/same/project", exactQuote }
       )
     ).rejects.toMatchObject({ statusCode: 409 });
     await expect(
@@ -25156,7 +28714,7 @@ describeDb("memory repository visibility", () => {
     const event = await repo.createMemoryEvent(
       { userId: owner.id },
       {
-        workspaceId: "curated-export",
+        projectId: "curated-export",
         actor: "user",
         eventType: "captured",
         rawEventType: "user_message",
@@ -25188,6 +28746,79 @@ describeDb("memory repository visibility", () => {
     );
   });
 
+  it("seals a closed PDS replica agent bundle for local projection", async () => {
+    const owner = await repo.createUser({
+      email: `pds-projection-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `pds-projection-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `pds-projection-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "pds_relay",
+            sourceRecordType: "agent_message",
+            sourceEventType: "agent_message",
+            sourceSequence: 0,
+            eventTime: "2026-07-28T00:00:00.000Z",
+            rawJson: {
+              type: "agent_message",
+              role: "agent",
+              content: "PDS projection marker"
+            },
+            rawText: "PDS projection marker",
+            sourceHash: `pds-projection-agent-${randomUUID()}`,
+            idempotencyKey: `pds-projection-agent-${randomUUID()}`,
+            metadata: { transcriptType: "agent_message", sourceRole: "agent" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "pds_relay",
+            sourceRecordType: "pds_session_closed",
+            sourceEventType: "pds_session_closed",
+            sourceSequence: 1,
+            eventTime: "2026-07-28T00:00:01.000Z",
+            rawJson: {
+              type: "pds_session_closed",
+              role: "system",
+              content: ""
+            },
+            sourceHash: `pds-projection-terminal-${randomUUID()}`,
+            idempotencyKey: `pds-projection-terminal-${randomUUID()}`,
+            metadata: {
+              transcriptType: "pds_session_closed",
+              sourceRole: "system"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: owner.id },
+      { limit: 10 }
+    );
+    const events = await pool.query<{ content: string }>(
+      "select payload ->> 'content' as content from memory_events where session_id = $1",
+      [session.id]
+    );
+
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(events.rows).toEqual([{ content: "PDS projection marker" }]);
+  });
+
   it("exports every protected Curated Memory proposal beyond 500 rows", async () => {
     const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
     process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
@@ -25204,7 +28835,7 @@ describeDb("memory repository visibility", () => {
       const event = await protectedRepo.createMemoryEvent(
         { userId: owner.id },
         {
-          workspaceId: "curated-protected-export",
+          projectId: "curated-protected-export",
           actor: "user",
           eventType: "captured",
           rawEventType: "user_message",

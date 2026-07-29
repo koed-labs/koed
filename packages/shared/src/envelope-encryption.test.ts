@@ -8,6 +8,7 @@ import {
   createHttpManagedKmsKeyring,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
+  createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createRecipientPrivateKeyEnvelopeEncryptionProvider,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   createUnsupportedEnvelopeEncryptionProvider,
@@ -39,15 +40,17 @@ const base64 = (value: Uint8Array): string =>
 const createManagedTestKeyring = ({
   currentVersion,
   keys,
+  keyId = "managed-kms:fixture-tenant-key",
   fail = false,
   statusDetails = {}
 }: {
   currentVersion: number;
   keys: Record<number, Buffer>;
+  keyId?: string;
   fail?: boolean;
   statusDetails?: Record<string, string>;
 }): ManagedKmsKeyring => ({
-  keyId: "managed-kms:fixture-tenant-key",
+  keyId,
   keyVersion: currentVersion,
   wrapDek(input) {
     if (fail) {
@@ -94,7 +97,7 @@ const createManagedTestKeyring = ({
   status() {
     return {
       mode: "managed_kms",
-      keyId: "managed-kms:fixture-tenant-key",
+      keyId,
       keyVersion: currentVersion,
       status: fail ? "degraded" : "available",
       details: statusDetails
@@ -412,6 +415,122 @@ describe("createManagedKmsEnvelopeEncryptionProvider", () => {
     await expect(
       decryptEnvelopeToUtf8(rotatedProvider, rewrapped!)
     ).resolves.toBe("rotate me");
+  });
+
+  it("rotates and retires owner-private and Team envelope keys independently", async () => {
+    const ownerKeys: Record<number, Buffer> = {
+      1: randomBytes(32),
+      2: randomBytes(32)
+    };
+    const teamKeys: Record<number, Buffer> = {
+      1: randomBytes(32),
+      2: randomBytes(32)
+    };
+    const ownerV1 = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 1,
+        keys: ownerKeys,
+        keyId: "managed-kms:owner-private"
+      })
+    );
+    const teamV1 = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 1,
+        keys: teamKeys,
+        keyId: "managed-kms:team"
+      })
+    );
+    const ownerEnvelope = await ownerV1.encrypt({
+      plaintext: "owner-private replica",
+      scope: { tenantId: "owner-1", objectClass: "remote_replica" },
+      provenance: { rowFamily: "remote_replicas", sourceId: "replica-1" },
+      ciphertextLocation: "encrypted_field_payloads"
+    });
+    const teamEnvelopes = await Promise.all(
+      ["grant-a", "grant-b"].map((grantId) =>
+        Promise.resolve(
+          teamV1.encrypt({
+            plaintext: `Team representation ${grantId}`,
+            scope: {
+              tenantId: "team-1",
+              teamId: "team-1",
+              objectClass: "shared_memory_representation"
+            },
+            provenance: {
+              rowFamily: "shared_memory_representations",
+              sourceId: grantId
+            },
+            ciphertextLocation: "encrypted_field_payloads"
+          })
+        )
+      )
+    );
+
+    await expect(teamV1.decrypt(ownerEnvelope)).rejects.toThrow(
+      "Envelope key id mismatch"
+    );
+    await expect(ownerV1.decrypt(teamEnvelopes[0]!)).rejects.toThrow(
+      "Envelope key id mismatch"
+    );
+
+    const ownerV2 = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 2,
+        keys: ownerKeys,
+        keyId: "managed-kms:owner-private"
+      })
+    );
+    const teamV2 = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 2,
+        keys: teamKeys,
+        keyId: "managed-kms:team"
+      })
+    );
+    const rewrappedOwner = await ownerV2.rewrap?.(ownerEnvelope, {
+      now: new Date("2026-07-03T14:30:00.000Z")
+    });
+    const rewrappedTeam = await Promise.all(
+      teamEnvelopes.map((envelope) =>
+        Promise.resolve(
+          teamV2.rewrap!(envelope, {
+            now: new Date("2026-07-03T14:31:00.000Z")
+          })
+        )
+      )
+    );
+
+    expect(rewrappedOwner?.ciphertext).toBe(ownerEnvelope.ciphertext);
+    expect(rewrappedTeam.map(({ ciphertext }) => ciphertext)).toEqual(
+      teamEnvelopes.map(({ ciphertext }) => ciphertext)
+    );
+
+    delete ownerKeys[1];
+    await expect(ownerV2.decrypt(ownerEnvelope)).rejects.toThrow();
+    await expect(decryptEnvelopeToUtf8(ownerV2, rewrappedOwner!)).resolves.toBe(
+      "owner-private replica"
+    );
+    await expect(
+      Promise.all(
+        teamEnvelopes.map((envelope) =>
+          Promise.resolve(teamV2.decrypt(envelope))
+        )
+      )
+    ).resolves.toHaveLength(2);
+
+    delete teamKeys[1];
+    await expect(teamV2.decrypt(teamEnvelopes[0]!)).rejects.toThrow();
+    await expect(
+      Promise.all(
+        rewrappedTeam.map((envelope) => decryptEnvelopeToUtf8(teamV2, envelope))
+      )
+    ).resolves.toEqual([
+      "Team representation grant-a",
+      "Team representation grant-b"
+    ]);
+    await expect(decryptEnvelopeToUtf8(ownerV2, rewrappedOwner!)).resolves.toBe(
+      "owner-private replica"
+    );
   });
 
   it("fails closed for wrong KMS key material and provider outages", async () => {
@@ -797,6 +916,115 @@ describe("createEnvelopeEncryptionProviderFromEnvironment", () => {
         }
       })
     ).toThrow("MANAGED_KMS_KEY_ID");
+  });
+});
+
+describe("createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment", () => {
+  it("does not fall back to the Team/general provider family", () => {
+    const environment = {
+      API_ENVELOPE_ENCRYPTION_PROVIDER: "local_test_key",
+      API_DATA_ENCRYPTION_KEY: generatedRootKey(),
+      MANAGED_KMS_KEY_ID: "managed-kms:general",
+      MANAGED_KMS_KEY_VERSION: "1",
+      MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example/v1/",
+      MANAGED_KMS_AUTH_TOKEN: "general-token"
+    };
+
+    expect(
+      createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
+        environment
+      })
+    ).toBeUndefined();
+    expect(() =>
+      createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
+        environment,
+        required: true
+      })
+    ).toThrow("Owner-private replica envelope encryption provider is required");
+  });
+
+  it("creates a distinct local provider from the owner-private key", () => {
+    const general = createEnvelopeEncryptionProviderFromEnvironment({
+      environment: { API_DATA_ENCRYPTION_KEY: generatedRootKey() }
+    });
+    const ownerPrivate =
+      createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
+        environment: {
+          OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY: generatedRootKey()
+        }
+      });
+
+    expect(ownerPrivate?.mode).toBe("local_test_key");
+    expect(ownerPrivate?.keyId).not.toBe(general?.keyId);
+  });
+
+  it("uses only owner-private KMS fields for KMS, BYOK, and CMEK modes", async () => {
+    for (const mode of ["managed_kms", "byok", "cmek"] as const) {
+      const provider =
+        createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
+          environment: {
+            OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER: mode,
+            OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID: `owner-private:${mode}`,
+            OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION: "4",
+            OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL:
+              "https://owner-private-kms.koed.example/v1/",
+            OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN: "owner-token"
+          }
+        });
+
+      await expect(provider?.status?.()).resolves.toMatchObject({
+        mode,
+        keyId: `owner-private:${mode}`,
+        keyVersion: 4
+      });
+    }
+  });
+
+  it("fails closed when owner-private KMS config is incomplete", () => {
+    expect(() =>
+      createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
+        environment: {
+          OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+          MANAGED_KMS_KEY_ID: "managed-kms:general",
+          MANAGED_KMS_KEY_VERSION: "1",
+          MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example/v1/",
+          MANAGED_KMS_AUTH_TOKEN: "general-token"
+        }
+      })
+    ).toThrow("OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID");
+  });
+
+  it("rejects an owner-private local key for paid managed cloud", () => {
+    expect(() =>
+      validateEnvelopeEncryptionProviderEnvironment({
+        environment: {
+          KOED_DEPLOYMENT_PROFILE: "koed_managed_cloud",
+          KOED_MANAGED_CLOUD_RELEASE_STAGE: "paid",
+          API_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+          MANAGED_KMS_KEY_ID: "managed-kms:general",
+          MANAGED_KMS_KEY_VERSION: "1",
+          MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example/v1/",
+          MANAGED_KMS_AUTH_TOKEN: "general-token",
+          OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY: generatedRootKey()
+        }
+      })
+    ).toThrow("KMS-backed OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER");
+  });
+
+  it("requires an owner-private provider for paid managed cloud", () => {
+    expect(() =>
+      validateEnvelopeEncryptionProviderEnvironment({
+        environment: {
+          KOED_DEPLOYMENT_PROFILE: "koed_managed_cloud",
+          KOED_MANAGED_CLOUD_RELEASE_STAGE: "paid",
+          API_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+          MANAGED_KMS_KEY_ID: "managed-kms:general",
+          MANAGED_KMS_KEY_VERSION: "1",
+          MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example/v1/",
+          MANAGED_KMS_AUTH_TOKEN: "general-token"
+        }
+      })
+    ).toThrow("Owner-private replica envelope encryption provider is required");
   });
 });
 

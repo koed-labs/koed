@@ -30,23 +30,32 @@ export const curatedMemoryActiveEvidenceRowsSql = (
       ${prefix}_node_me.captured_at,
       ${prefix}_node_me.created_at
     ) as source_event_time,
-    ${prefix}_ci_session.metadata ->> 'workspaceId' as ci_workspace_id,
-    ${prefix}_ci_session.workspace_id::text as ci_stable_workspace_id,
-    ${prefix}_ci_session.cwd as ci_workspace_path,
     coalesce(
-      nullif(${prefix}_me.payload ->> 'workspaceId', ''),
-      ${prefix}_me_encrypted.scope ->> 'workspaceId',
-      ${prefix}_me_session.metadata ->> 'workspaceId',
-      ${prefix}_me_session.workspace_id::text
-    ) as me_workspace_id,
-    ${prefix}_me_session.cwd as me_workspace_path,
+      ${prefix}_ci_session.project_override_id,
+      ${prefix}_ci_session.automatic_project_id,
+      ${prefix}_ci_session.metadata ->> 'projectId'
+    ) as ci_project_id,
     coalesce(
-      nullif(${prefix}_node_me.payload ->> 'workspaceId', ''),
-      ${prefix}_node_me_encrypted.scope ->> 'workspaceId',
-      ${prefix}_node_session.metadata ->> 'workspaceId',
-      ${prefix}_node_session.workspace_id::text
-    ) as node_workspace_id,
-    ${prefix}_node_session.cwd as node_workspace_path
+      ${prefix}_ci_session.project_override_id,
+      ${prefix}_ci_session.automatic_project_id
+    ) as ci_stable_project_id,
+    ${prefix}_ci_session.cwd as ci_project_path,
+    coalesce(
+      nullif(${prefix}_me.payload ->> 'projectId', ''),
+      ${prefix}_me_encrypted.scope ->> 'projectId',
+      ${prefix}_me_session.metadata ->> 'projectId',
+      ${prefix}_me_session.project_override_id,
+      ${prefix}_me_session.automatic_project_id
+    ) as me_project_id,
+    ${prefix}_me_session.cwd as me_project_path,
+    coalesce(
+      nullif(${prefix}_node_me.payload ->> 'projectId', ''),
+      ${prefix}_node_me_encrypted.scope ->> 'projectId',
+      ${prefix}_node_session.metadata ->> 'projectId',
+      ${prefix}_node_session.project_override_id,
+      ${prefix}_node_session.automatic_project_id
+    ) as node_project_id,
+    ${prefix}_node_session.cwd as node_project_path
   from curated_memory_sources ${prefix}_cms
   left join conversation_items ${prefix}_ci
     on ${prefix}_ci.id = ${prefix}_cms.conversation_item_id

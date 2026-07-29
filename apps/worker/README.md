@@ -63,11 +63,10 @@ full Operator-facing environment reference, see `docs/configuration.md`.
 Important runtime dependencies:
 
 - Postgres via `DATABASE_URL`.
-- `WORK_QUEUE_BACKEND=bullmq` with Redis via `REDIS_URL`, or `WORK_QUEUE_BACKEND=local` with Postgres-backed `local_work_queue` jobs.
+- `WORK_QUEUE_BACKEND=bullmq` with Redis via `REDIS_URL`, or `WORK_QUEUE_BACKEND=local` with Postgres-backed `local_work_queue` jobs. The local backend holds one database advisory lock for the Worker runtime. A replacement Worker can therefore prove the previous process has exited and immediately requeue jobs interrupted by a crash or restart without waiting for their ordinary processing lease.
 - The Embedding Service URL, token, model key, and dimensions.
-- Raw Projection catch-up limits:
-  `MEMORY_RAW_PROJECTION_INTERVAL_MS`,
-  `MEMORY_RAW_PROJECTION_BATCH_LIMIT`, and
+- Event-driven raw Projection catch-up limits:
+  `MEMORY_RAW_PROJECTION_BATCH_LIMIT` and
   `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`.
 
 ## Related Documentation

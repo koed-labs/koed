@@ -32,14 +32,17 @@ deployment secret manager, not in database rows or client-visible config.
    version, and redacted health, but never the endpoint token or raw key
    material.
 6. Operator runs a bounded encrypted write/read smoke test and then
-   `pnpm hosted:encryption-rewrap --dry-run`.
+   `pnpm hosted:encryption-rewrap --dry-run`. Dry-run scans the same bounded
+   row families and filters as a real rewrap, reports `wouldRewrapRows`, and
+   does not call the KMS rewrap operation or update envelope metadata.
 
 ## Rotation
 
 Rotation changes `MANAGED_KMS_KEY_VERSION` to the new customer-controlled key
 version and then runs `pnpm hosted:encryption-rewrap` in bounded batches. Rewrap
 updates wrapped DEKs and envelope metadata without rewriting plaintext payload
-bytes.
+bytes. Run the command with `--dry-run` first and compare the reported row
+families and scope with the intended rotation before allowing writes.
 
 ## Revocation And Unavailable Keys
 

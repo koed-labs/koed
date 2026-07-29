@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { Button } from "../components/ui/button";
+import { Button, cn } from "@koed/ui";
 import {
   Sidebar,
   SidebarContent,
@@ -36,7 +36,6 @@ import {
   SidebarTrigger
 } from "../components/ui/sidebar";
 import { useTheme } from "../hooks/useTheme";
-import { cn } from "../lib/cn";
 import koedMarkUrl from "./assets/koed-mark.svg";
 import {
   askLocalMemoryQuestion,
@@ -57,6 +56,7 @@ import {
   formatDate
 } from "./components";
 import { DeviceEnrollmentApproval } from "./DeviceEnrollmentApproval";
+import { HighRiskActionApproval } from "./HighRiskActionApproval";
 import { koedDebug } from "./debug";
 import { nodeMap, threadSelectionKey, uniqueNodeIds } from "./graph";
 import {
@@ -145,6 +145,16 @@ function readManualWorkerConfig(): ManualMemoryQuestionWorkerConfig | null {
 
 export function KoedExplorerApp() {
   const params = new URLSearchParams(window.location.search);
+  const pathActionSelector = window.location.pathname.match(
+    /(?:^|\/)high-risk\/browser-activations\/([^/?#]+)/
+  )?.[1];
+  if (pathActionSelector) {
+    return (
+      <HighRiskActionApproval
+        selector={decodeURIComponent(pathActionSelector)}
+      />
+    );
+  }
   const pathEnrollmentChallengeId = window.location.pathname.match(
     /(?:^|\/)device-enrollment\/([^/?#]+)/
   )?.[1];

@@ -74,3 +74,11 @@ authentication, and reverse-proxy controls.
 Captured Memory data is stored plaintext at the application layer in Postgres in
 this self-hosted build. Protect database volumes, backups, exports, and
 administrator access accordingly.
+
+Personal Device Sync package retention is separate: PDS retained source/origin
+packages are application-envelope encrypted at rest and transport ciphertext is
+not plaintext Memory. PDS device signing/X25519 private material and group
+secrets must remain behind injected secure-runtime references. Never substitute
+an upstream credential, API Token, browser session, database value, or ordinary
+environment variable as group key. Redact PDS package IDs, fingerprints,
+nonces, ciphertext, paths, certificates, and key references from support data.

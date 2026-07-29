@@ -19,7 +19,7 @@ Scenarios:
   personal-recall          POST /v1/memory/search with an API Token
   team-workspace-recall    POST /v1/memory/answer with a browser session cookie and Team Workspace
   team-device-recall       POST /v1/memory/answer with a scoped Koed-Device credential and Team Workspace
-  local-edge-team-proxy    POST /v1/local-edge/upstream-operations for Team Workspace recall
+  local-edge-team-recall   POST /v1/local-edge/team-memory/answer for Team Workspace recall
   ops-status               GET /ops/status with a browser session cookie
   mixed                    Weighted public, capture, recall, graph, Team, local-edge, and ops traffic where credentials are available
 
@@ -39,7 +39,7 @@ const scenarioNames = new Set([
   "personal-recall",
   "team-workspace-recall",
   "team-device-recall",
-  "local-edge-team-proxy",
+  "local-edge-team-recall",
   "ops-status",
   "mixed"
 ]);
@@ -311,19 +311,15 @@ const scenarioOperationDefinitions = (options, runId) => {
     body: teamAnswerBody
   };
 
-  const localEdgeTeamProxyOperation = {
-    name: "local-edge-team-proxy",
+  const localEdgeTeamRecallOperation = {
+    name: "local-edge-team-recall",
     weight: 1,
     method: "POST",
-    path: "/v1/local-edge/upstream-operations",
+    path: "/v1/local-edge/team-memory/answer",
     headers: deviceJsonHeaders(options),
     body: (sequence) => ({
-      operation_family: "team_workspace_read",
       upstream_backend_id: options.upstreamBackendId,
-      requested_mode: "live_upstream_proxy",
-      method: "POST",
-      path: "/v1/memory/answer",
-      body: teamAnswerBody(sequence)
+      input: teamAnswerBody(sequence)
     })
   };
 
@@ -342,8 +338,8 @@ const scenarioOperationDefinitions = (options, runId) => {
   if (options.scenario === "team-device-recall") {
     return [teamDeviceRecallOperation];
   }
-  if (options.scenario === "local-edge-team-proxy") {
-    return [localEdgeTeamProxyOperation];
+  if (options.scenario === "local-edge-team-recall") {
+    return [localEdgeTeamRecallOperation];
   }
   if (options.scenario === "ops-status") {
     return [opsOperation];
@@ -362,7 +358,7 @@ const scenarioOperationDefinitions = (options, runId) => {
   if (options.deviceCredential && options.teamWorkspaceId) {
     mixed.push(teamDeviceRecallOperation);
     if (options.upstreamBackendId) {
-      mixed.push(localEdgeTeamProxyOperation);
+      mixed.push(localEdgeTeamRecallOperation);
     }
   }
   return mixed;
@@ -407,20 +403,20 @@ export const buildScenarioOperations = (options, runId = "test") => {
       );
     }
   }
-  if (options.scenario === "local-edge-team-proxy") {
+  if (options.scenario === "local-edge-team-recall") {
     if (!options.deviceCredential) {
       throw new Error(
-        "local-edge-team-proxy requires --device-credential or KOED_CAPACITY_DEVICE_CREDENTIAL."
+        "local-edge-team-recall requires --device-credential or KOED_CAPACITY_DEVICE_CREDENTIAL."
       );
     }
     if (!options.teamWorkspaceId) {
       throw new Error(
-        "local-edge-team-proxy requires --team-workspace-id or KOED_CAPACITY_TEAM_WORKSPACE_ID."
+        "local-edge-team-recall requires --team-workspace-id or KOED_CAPACITY_TEAM_WORKSPACE_ID."
       );
     }
     if (!options.upstreamBackendId) {
       throw new Error(
-        "local-edge-team-proxy requires --upstream-backend-id or KOED_CAPACITY_UPSTREAM_BACKEND_ID."
+        "local-edge-team-recall requires --upstream-backend-id or KOED_CAPACITY_UPSTREAM_BACKEND_ID."
       );
     }
   }

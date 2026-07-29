@@ -197,7 +197,7 @@ describe("local memory answer bridge", () => {
               query: "What did we decide?",
               retrievalScope: "personal",
               searchDomain: "project",
-              workspaceId: "project-1",
+              projectId: "project-1",
               localMemoryWorkerConfig: {
                 provider: "codex",
                 model: "gpt-5.4",
@@ -409,7 +409,7 @@ describe("local memory answer bridge", () => {
       question_id: questionId,
       query: "What did we decide?",
       search_domain: "project",
-      workspace_id: "project-1"
+      project_id: "project-1"
     });
 
     expect(result).toMatchObject({ ok: true, question: { id: questionId } });

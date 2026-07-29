@@ -509,14 +509,14 @@ const seedCase = async (
   embeddingProvider: SourceEmbeddingProvider
 ): Promise<{
   userId: string;
-  workspaceId: string;
+  projectId: string;
   sourceIdAliases: Map<string, string>;
 }> => {
   const user = await repo.createUser({
     email: `${benchmarkCase.id}-${randomUUID()}@eval.koed.local`,
     displayName: benchmarkCase.id
   });
-  const workspaceId = `eval://${benchmarkCase.id}`;
+  const projectId = `eval://${benchmarkCase.id}`;
   const seedEventIds = new Map<string, string>();
   const seedNodeIds = new Map<string, string>();
   const nodeSourceEvents = new Map<string, string[]>();
@@ -528,7 +528,7 @@ const seedCase = async (
       const event = await repo.createMemoryEvent(
         { userId: user.id },
         {
-          workspaceId,
+          projectId,
           actor: actorForSeed(seed),
           eventType: "captured",
           rawEventType: "eval_seed",
@@ -549,7 +549,7 @@ const seedCase = async (
     const backingEvent = await repo.createMemoryEvent(
       { userId: user.id },
       {
-        workspaceId,
+        projectId,
         actor: "agent",
         eventType: "captured",
         rawEventType: "eval_lcm_source",
@@ -670,7 +670,7 @@ const seedCase = async (
   }
 
   await embedPendingSources(repo, embeddingProvider);
-  return { userId: user.id, workspaceId, sourceIdAliases };
+  return { userId: user.id, projectId, sourceIdAliases };
 };
 
 interface EmbeddingSourceRepository {
@@ -760,7 +760,7 @@ const createWorkerRetrievalClient = (
               ? "global"
               : "project",
         sessionId: stringInput(input, "session_id"),
-        workspaceId: stringInput(input, "workspace_id"),
+        projectId: stringInput(input, "project_id"),
         limit: numberInput(input, "limit"),
         recentDays: numberInput(input, "recent_days"),
         sourceAfter: stringInput(input, "source_after"),
@@ -951,7 +951,7 @@ const runLiveRetrievalSuccessVariant = async (
                 recentDays: benchmarkCase.expected.temporal?.recentDays,
                 sourceAfter: benchmarkCase.expected.temporal?.sourceAfter,
                 sourceBefore: benchmarkCase.expected.temporal?.sourceBefore,
-                workspaceId: seeded.workspaceId,
+                projectId: seeded.projectId,
                 searchDomain: "global"
               }
             );

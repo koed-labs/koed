@@ -392,6 +392,14 @@ Target retries reuse an existing embedding only when its source hash, model,
 dimensions, version, vector rows, and complete chunk set match the current
 canonical source. Partial or stale embeddings are regenerated.
 
+Inbox work already covered by a strictly newer accepted package is completed
+as an idempotent no-op. This reconciliation happens before claim when possible
+and is repeated transactionally at failure time to cover races. An obsolete
+package cannot regress a newer ready relationship or its replica to `failed`.
+After a target package becomes ready, active continuous Share Grants advance
+through their existing exact consent and policy bindings; snapshot grants do
+not advance.
+
 Operational status exposes queue depth and age, retries, redacted failure
 class, ready/stale/failed/revoked counts, bytes and records completed in the
 last hour, and source/target record lag. It never exposes package content,

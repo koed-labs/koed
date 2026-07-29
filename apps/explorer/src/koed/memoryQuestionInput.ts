@@ -4,7 +4,7 @@ export interface MemoryQuestionInput {
   query: string;
   retrievalScope: RetrievalScope;
   searchDomain: SearchDomain;
-  workspaceId?: string;
+  projectId?: string;
   projectName?: string;
   projectPath?: string;
   sessionId?: string;
@@ -29,15 +29,14 @@ export function buildMemoryQuestionInput({
   searchDomain: SearchDomain;
   selectedThread: ThreadGroup | null | undefined;
 }): MemoryQuestionInput {
-  const workspaceId = selectedThread?.projectId;
+  const projectId = selectedThread?.projectId;
   const sessionId = selectedThreadSessionIdentifier(selectedThread);
   return {
     query,
     retrievalScope,
     searchDomain,
-    ...((searchDomain === "project" || searchDomain === "session") &&
-    workspaceId
-      ? { workspaceId }
+    ...((searchDomain === "project" || searchDomain === "session") && projectId
+      ? { projectId }
       : {}),
     ...(searchDomain === "session" && sessionId ? { sessionId } : {}),
     ...(selectedThread?.projectName

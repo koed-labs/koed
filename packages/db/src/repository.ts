@@ -22,8 +22,10 @@ import {
   type SemanticBundleSealReason
 } from "./conversation-semantic-projection.js";
 import { createConversationItemRepository } from "./conversation-item-repository.js";
+import { createConversationSourceJournalRepository } from "./conversation-source-journal-repository.js";
 import { createHistoricalImportRepository } from "./historical-import-repository.js";
 import { embeddingTableForDimensions } from "./embedding-coverage.js";
+import { createCollaborationRepository } from "./collaboration-repository.js";
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
 import { createCrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
 import {
@@ -36,10 +38,20 @@ import {
   upsertEncryptedFieldPayloadWithClient
 } from "./encrypted-payload-repository.js";
 import { createExternalAuthRepository } from "./external-auth-repository.js";
+import { createHighRiskActionRepository } from "./high-risk-action-repository.js";
 import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
+import { createManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
+import { createManagedConversationRepository } from "./managed-conversation-repository.js";
+import { createDevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
+import { createManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
+import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
+import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
+import { createPersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
+import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
+import { createSharedMemoryRepository } from "./shared-memory-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
 import {
   isGenericDevelopmentActivity,
@@ -56,7 +68,6 @@ import {
   codexIdePromptUserText,
   estimateTokens,
   normalizeStoredLcmSummary,
-  resolveTeamWorkspaceAuthorization,
   type LcmSourceItem
 } from "@koed/core";
 import type {
@@ -100,13 +111,13 @@ import type {
   SemanticMemoryRebuildResult,
   SourceAiClient,
   SourceRuntime,
-  TeamSessionShareGrantRecord,
   Visibility,
   ConversationProjectionBacklog
 } from "./types.js";
 
 export interface MemorySourceRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   encryptedMemoryQuestionSearchBatchSize?: number;
 }
 
@@ -150,7 +161,6 @@ type ConversationProjectionRawRow = {
   external_item_id: string | null;
   source_record_type: string;
   source_event_type: string | null;
-  source_path: string | null;
   source_sequence: number | null;
   event_time: Date | null;
   observed_at: Date;
@@ -170,7 +180,7 @@ type ConversationProjectionRawRow = {
     | "live_capture_projection"
     | "historical_import_backfill";
   metadata: Record<string, unknown> | null;
-  session_workspace_id: string | null;
+  session_project_id: string | null;
   session_cwd: string | null;
   session_metadata: Record<string, unknown> | null;
   selection_unit_id?: string;
@@ -189,7 +199,7 @@ type ConversationProjectionBoundary = {
   sessionIdentity: string;
   turnIdentity: string;
   threadIdentity: string;
-  workspaceIdentity: string;
+  projectIdentity: string;
   key: string;
   scopeKey: string;
 };
@@ -278,16 +288,6 @@ const mapLcmGraphNode = (row: {
   summaryCorrectedByUserId: row.summary_corrected_by_user_id ?? null
 });
 
-const redactLocalProjectMetadata = (
-  metadata: Record<string, unknown> | null
-): Record<string, unknown> => {
-  const redacted = { ...(metadata ?? {}) };
-  for (const key of ["cwd", "projectPath", "localProjectId", "projectId"]) {
-    delete redacted[key];
-  }
-  return redacted;
-};
-
 const mapLcmGraphEvent = (row: {
   id: string;
   owner_user_id?: string | null;
@@ -296,7 +296,6 @@ const mapLcmGraphEvent = (row: {
   source_runtime: SourceRuntime | null;
   capture_method: CaptureMethod;
   model: string | null;
-  workspace_id: string | null;
   project_id: string | null;
   project_name: string | null;
   project_path: string | null;
@@ -331,7 +330,6 @@ const mapLcmGraphEvent = (row: {
     sourceRuntime: row.source_runtime,
     captureMethod: row.capture_method,
     model: row.model,
-    workspaceId: row.workspace_id,
     projectId: row.project_id,
     projectName: row.project_name,
     projectPath: row.project_path,
@@ -647,29 +645,6 @@ const appServerTokenUsageFromRaw = (
   };
 };
 
-const compactProjectionValue = (value: unknown, maxLength: number): string => {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return truncateDisplayText(text ?? "", maxLength);
-};
-
-const hookToolContent = (
-  raw: Record<string, unknown> | null
-): string | null => {
-  const toolName = raw ? stringField(raw, "tool_name") : null;
-  if (!raw || !toolName) {
-    return null;
-  }
-  return joinProjectionTexts([
-    `Tool result: ${toolName}`,
-    raw.tool_input !== undefined
-      ? `Input:\n${compactProjectionValue(raw.tool_input, 800)}`
-      : "",
-    raw.tool_response !== undefined
-      ? `Output:\n${compactProjectionValue(raw.tool_response, 1200)}`
-      : ""
-  ]);
-};
-
 const transcriptTokenUsageFromRaw = (
   rawJson: unknown
 ): {
@@ -816,12 +791,6 @@ const conversationItemContent = (row: {
   if (projectionIsIdeClientContext(row)) {
     return additionalContextText(row.raw_json) ?? row.raw_text?.trim() ?? null;
   }
-  if (row.source_record_type === "hook_payload") {
-    const hookTool = hookToolContent(raw);
-    if (hookTool) {
-      return hookTool;
-    }
-  }
   if (projectionIsReasoningLabel(label)) {
     if (projectionIsRawReasoningLabel(label)) {
       return null;
@@ -901,30 +870,11 @@ const actorFromConversationItem = (row: {
   raw_json?: unknown;
 }): MemoryActor | null => {
   const metadata = row.metadata ?? {};
-  const raw = isRecord(row.raw_json) ? row.raw_json : null;
   const role = providerConversationRoleFromRaw(row.raw_json)?.toLowerCase();
   const transcriptType =
     stringField(metadata, "transcriptType") ??
     row.source_event_type ??
     row.source_record_type;
-  if (row.source_record_type === "hook_payload" && raw) {
-    if (typeof raw.prompt === "string" && raw.prompt.trim()) {
-      return stringField(metadata, "threadKind") === "subagent"
-        ? "agent"
-        : "user";
-    }
-    if (
-      typeof raw.last_assistant_message === "string" &&
-      raw.last_assistant_message.trim()
-    ) {
-      return stringField(metadata, "threadKind") === "subagent"
-        ? "subagent"
-        : "agent";
-    }
-    if (typeof raw.tool_name === "string" && raw.tool_name.trim()) {
-      return "tool";
-    }
-  }
   if (role === "developer" || role === "system") {
     return "system";
   }
@@ -1267,9 +1217,6 @@ const classifyConversationItemProjection = (
   ) {
     return { ...base, reason: "managed-thread-level-provenance" };
   }
-  if (row.source_record_type === "hook_payload") {
-    return { ...base, reason: "hook-control-record" };
-  }
   const lookupKeys = projectionRuleLookupKeysForConversationItem(row);
   const findRule = (sourceAdapterVersion: string) =>
     lookupKeys
@@ -1330,6 +1277,7 @@ const classifyConversationItemProjection = (
 
 const conversationItemTurnCompleteSealReason = (row: {
   source_adapter_version?: string;
+  source_transport?: string;
   source_event_type: string | null;
   source_record_type: string;
   raw_json: unknown;
@@ -1339,28 +1287,19 @@ const conversationItemTurnCompleteSealReason = (row: {
     (row.source_adapter_version === "codex-app-server-conversation-v1" &&
       row.source_event_type === "turn/completed") ||
     (row.source_adapter_version === "codex-transcript-v1" &&
-      ["task_complete", "turn_aborted"].includes(row.source_event_type ?? ""))
+      (["task_complete", "turn_aborted"].includes(
+        row.source_event_type ?? ""
+      ) ||
+        stringField(row.metadata ?? {}, "semanticControl") ===
+          "turn_completed")) ||
+    (row.source_adapter_version === "codex-hook-signal-v1" &&
+      row.source_event_type === "turn_completed") ||
+    (row.source_transport === "pds_relay" &&
+      row.source_event_type === "pds_session_closed")
   ) {
     return "turn_completed";
   }
-  if (row.source_record_type !== "hook_payload") {
-    return null;
-  }
-  if (/^(Stop|SubagentStop)$/i.test(row.source_event_type ?? "")) {
-    return "stop_hook";
-  }
-  const raw = isRecord(row.raw_json) ? row.raw_json : null;
-  const hookEventName = stringField(raw ?? {}, "hook_event_name");
-  if (/^(Stop|SubagentStop)$/i.test(hookEventName ?? "")) {
-    return "stop_hook";
-  }
-  const metadataHookEventName = stringField(
-    row.metadata ?? {},
-    "hookEventName"
-  );
-  return /^(Stop|SubagentStop)$/i.test(metadataHookEventName ?? "")
-    ? "stop_hook"
-    : null;
+  return null;
 };
 
 const projectionMaxTokens = (): number =>
@@ -1428,7 +1367,6 @@ const encryptedConversationItemSource = (row: {
   raw_json: unknown;
   raw_text?: string | null;
   transport_chunk_text?: string | null;
-  source_path?: string | null;
 }): {
   sourceTable: "conversation_items" | "conversation_item_observations";
   columns: Set<string>;
@@ -1473,12 +1411,6 @@ const encryptedConversationItemSource = (row: {
   ) {
     values.push("transport_chunk_text");
   }
-  if (
-    row.source_path === "[koed encrypted conversation item]" ||
-    row.source_path === "[koed encrypted conversation item observation]"
-  ) {
-    values.push("source_path");
-  }
   return { sourceTable, columns: new Set(values) };
 };
 
@@ -1487,12 +1419,7 @@ const decryptConversationItemColumn = async (
   provider: EnvelopeEncryptionProvider | undefined,
   row: ConversationProjectionRawRow,
   sourceTable: "conversation_items" | "conversation_item_observations",
-  sourceColumn:
-    | "raw_json"
-    | "raw_text"
-    | "transport_chunk_text"
-    | "source_path"
-    | "metadata"
+  sourceColumn: "raw_json" | "raw_text" | "transport_chunk_text" | "metadata"
 ): Promise<unknown> => {
   const plaintext = await decryptAuthorizedEncryptedFieldPayload(
     pool,
@@ -1554,15 +1481,6 @@ const hydrateConversationProjectionRow = async (
         "transport_chunk_text"
       )
     : row.transport_chunk_text;
-  const sourcePath = encryptedColumns.has("source_path")
-    ? await decryptConversationItemColumn(
-        pool,
-        provider,
-        row,
-        encryptedSource.sourceTable,
-        "source_path"
-      )
-    : row.source_path;
   const metadata = encryptedColumns.has("metadata")
     ? await decryptConversationItemColumn(
         pool,
@@ -1577,7 +1495,6 @@ const hydrateConversationProjectionRow = async (
     ...row,
     raw_json: rawJson,
     raw_text: typeof rawText === "string" ? rawText : row.raw_text,
-    source_path: typeof sourcePath === "string" ? sourcePath : row.source_path,
     metadata: isRecord(metadata) ? metadata : row.metadata,
     transport_chunk_text:
       typeof transportChunkText === "string"
@@ -1627,7 +1544,7 @@ const decodedConversationMetadata = (
     "canonicalConversationItemContentHash",
     "canonicalStableItemId",
     "includeInLcm",
-    "workspaceId",
+    "projectId",
     "storageSanitization",
     "koedSanitization",
     "transportChunkGroupId",
@@ -1684,7 +1601,7 @@ const loadLogicalConversationProjectionItem = async (
         ci.turn_id, cio.source_kind, cio.source_adapter_version,
         cio.source_transport, cio.external_session_id, cio.external_thread_id,
         cio.external_turn_id, cio.external_item_id, cio.source_record_type,
-        cio.source_event_type, cio.source_path, cio.source_sequence,
+        cio.source_event_type, cio.source_sequence,
         cio.event_time, cio.raw_json, cio.raw_text, ci.logical_source_id,
         cio.transport_chunk_index, cio.transport_chunk_count,
         cio.transport_chunk_text, cio.transport_chunk_encoding,
@@ -1692,7 +1609,12 @@ const loadLogicalConversationProjectionItem = async (
         ci.projection_policy_revision, ci.projection_work_class,
         cio.source_idempotency_key as idempotency_key,
         cio.metadata, cio.observed_at,
-        s.workspace_id as session_workspace_id,
+        coalesce(
+          s.project_override_id,
+          s.automatic_project_id,
+          s.metadata ->> 'projectId',
+          s.cwd
+        ) as session_project_id,
         s.cwd as session_cwd,
         s.metadata as session_metadata
       from conversation_item_observations cio
@@ -1736,14 +1658,19 @@ const loadLogicalConversationProjectionItem = async (
         ci.turn_id, ci.source_kind, ci.source_adapter_version,
         ci.source_transport, ci.external_session_id, ci.external_thread_id,
         ci.external_turn_id, ci.external_item_id, ci.source_record_type,
-        ci.source_event_type, ci.source_path, ci.source_sequence,
+        ci.source_event_type, ci.source_sequence,
         ci.event_time, ci.raw_json, ci.raw_text, ci.logical_source_id,
         ci.transport_chunk_index, ci.transport_chunk_count,
         ci.transport_chunk_text, ci.transport_chunk_encoding,
         ci.source_hash, ci.canonical_item_key, ci.canonical_source_priority,
         ci.projection_policy_revision, ci.idempotency_key,
         ci.projection_work_class, ci.metadata, ci.observed_at,
-        s.workspace_id as session_workspace_id,
+        coalesce(
+          s.project_override_id,
+          s.automatic_project_id,
+          s.metadata ->> 'projectId',
+          s.cwd
+        ) as session_project_id,
         s.cwd as session_cwd,
         s.metadata as session_metadata
       from conversation_items ci
@@ -1874,10 +1801,10 @@ const conversationProjectionBoundary = (
     row.session_id ?? row.external_session_id ?? "sessionless";
   const turnIdentity = row.turn_id ?? row.external_turn_id ?? "turnless";
   const threadIdentity = row.external_thread_id ?? "threadless";
-  const workspaceIdentity = canonicalWorkspaceId({
+  const projectIdentity = canonicalProjectId({
     metadata: row.metadata,
     sessionId: row.session_id,
-    sessionWorkspaceId: row.session_workspace_id,
+    sessionProjectId: row.session_project_id,
     sessionCwd: row.session_cwd
   });
   return {
@@ -1885,19 +1812,19 @@ const conversationProjectionBoundary = (
     sessionIdentity,
     turnIdentity,
     threadIdentity,
-    workspaceIdentity,
+    projectIdentity,
     key: [
       visibility,
       sessionIdentity,
       turnIdentity,
       threadIdentity,
-      workspaceIdentity
+      projectIdentity
     ].join(":"),
     scopeKey: [
       visibility,
       sessionIdentity,
       threadIdentity,
-      workspaceIdentity
+      projectIdentity
     ].join(":")
   };
 };
@@ -2216,7 +2143,7 @@ type MemoryEventPayload = MemoryEventRecord["metadata"] & {
   contentEncrypted?: boolean;
   metadata?: Record<string, unknown>;
   rawEventType?: string;
-  workspaceId?: string;
+  projectId?: string;
 };
 
 const redactMemoryEventPayloadForPlaintextStorage = (
@@ -2896,78 +2823,17 @@ const defaultRetrievalMetadata = (
   ...overrides
 });
 
-type TeamWorkspaceReadBoundary = {
-  teamWorkspaceId: string;
-  teamId: string;
-} | null;
-
-type TeamSessionShareGrantRow = {
-  id: string;
-  owner_user_id: string | null;
-  session_id: string | null;
-  team_id: string;
-  team_workspace_id: string;
-  granted_by_user_id: string | null;
-  created_at: Date | string;
-  updated_at: Date | string;
-  revoked_at: Date | string | null;
-  revoked_by_user_id: string | null;
-  revocation_reason: string | null;
-  personal_deleted_at: Date | string | null;
-  personal_deleted_by_user_id: string | null;
-  personal_deletion_reason: string | null;
-  retained_by_team_at: Date | string | null;
-  retention_reason: string;
-};
-
-const isoTimestamp = (value: Date | string): string =>
-  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-
-const nullableIsoTimestamp = (value: Date | string | null): string | null =>
-  value ? isoTimestamp(value) : null;
-
-const mapTeamSessionShareGrant = (
-  row: TeamSessionShareGrantRow
-): TeamSessionShareGrantRecord => ({
-  id: row.id,
-  ownerUserId: row.owner_user_id,
-  sessionId: row.session_id,
-  teamId: row.team_id,
-  teamWorkspaceId: row.team_workspace_id,
-  grantedByUserId: row.granted_by_user_id,
-  createdAt: isoTimestamp(row.created_at),
-  updatedAt: isoTimestamp(row.updated_at),
-  revokedAt: nullableIsoTimestamp(row.revoked_at),
-  revokedByUserId: row.revoked_by_user_id,
-  revocationReason: row.revocation_reason,
-  personalDeletedAt: nullableIsoTimestamp(row.personal_deleted_at),
-  personalDeletedByUserId: row.personal_deleted_by_user_id,
-  personalDeletionReason: row.personal_deletion_reason,
-  retainedByTeamAt: nullableIsoTimestamp(row.retained_by_team_at),
-  retentionReason: row.retention_reason
-});
-
-const emptySearchResult = (
-  overrides: Partial<RetrievalMetadata> = {}
-): {
-  results: MemorySearchResult[];
-  metadata: RetrievalMetadata;
-} => ({
-  results: [],
-  metadata: defaultRetrievalMetadata(overrides)
-});
-
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const canonicalWorkspaceId = (input: {
+const canonicalProjectId = (input: {
   metadata?: Record<string, unknown> | null;
   sessionId?: string | null;
-  sessionWorkspaceId?: string | null;
+  sessionProjectId?: string | null;
   sessionCwd?: string | null;
   fallback?: string;
 }): string => {
-  const explicit = stringField(input.metadata ?? {}, "workspaceId");
+  const explicit = stringField(input.metadata ?? {}, "projectId");
   if (
     explicit &&
     !(input.sessionId && explicit === input.sessionId) &&
@@ -2975,8 +2841,8 @@ const canonicalWorkspaceId = (input: {
   ) {
     return explicit;
   }
-  if (input.sessionWorkspaceId) {
-    return input.sessionWorkspaceId;
+  if (input.sessionProjectId) {
+    return input.sessionProjectId;
   }
   if (input.sessionCwd) {
     return input.sessionCwd;
@@ -2988,16 +2854,16 @@ const canonicalProjectMetadata = (input: {
   metadata?: Record<string, unknown> | null;
   sessionMetadata?: Record<string, unknown> | null;
   sessionId?: string | null;
-  sessionWorkspaceId?: string | null;
+  sessionProjectId?: string | null;
   sessionCwd?: string | null;
 }): Record<string, unknown> => {
   const sessionMetadata = input.sessionMetadata ?? {};
   const metadata = input.metadata ?? {};
-  const workspaceId = canonicalWorkspaceId(input);
+  const projectId = canonicalProjectId(input);
   const projectName =
     stringField(metadata, "projectName") ??
     stringField(sessionMetadata, "projectName") ??
-    input.sessionWorkspaceId ??
+    input.sessionProjectId ??
     input.sessionCwd;
   const projectPath =
     stringField(metadata, "projectPath") ??
@@ -3006,7 +2872,7 @@ const canonicalProjectMetadata = (input: {
   return {
     ...sessionMetadata,
     ...metadata,
-    workspaceId,
+    projectId,
     ...(projectName ? { projectName } : {}),
     ...(projectPath ? { projectPath } : {})
   };
@@ -3183,7 +3049,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
       actor?: MemoryActor;
       metadata?: Record<string, unknown>;
       rawEventType?: string;
-      workspaceId?: string;
+      projectId?: string;
     };
   }>(
     `
@@ -3217,14 +3083,19 @@ const rebuiltSemanticMemoryEventsFromSources = async (
           ci.turn_id, ci.source_kind, ci.source_adapter_version,
           ci.source_transport, ci.external_session_id, ci.external_thread_id,
           ci.external_turn_id, ci.external_item_id, ci.source_record_type,
-          ci.source_event_type, ci.source_path, ci.source_sequence,
+          ci.source_event_type, ci.source_sequence,
           ci.event_time, ci.raw_json, ci.raw_text, ci.logical_source_id,
           ci.transport_chunk_index, ci.transport_chunk_count,
           ci.transport_chunk_text, ci.transport_chunk_encoding,
           ci.source_hash, ci.canonical_item_key, ci.canonical_source_priority,
           ci.projection_policy_revision, ci.idempotency_key,
           ci.projection_work_class, ci.metadata, ci.observed_at,
-          s.workspace_id as session_workspace_id,
+          coalesce(
+            s.project_override_id,
+            s.automatic_project_id,
+            s.metadata ->> 'projectId',
+            s.cwd
+          ) as session_project_id,
           s.cwd as session_cwd,
           s.metadata as session_metadata,
           row_number() over (partition by ci.id order by mes.source_order asc) as source_rank
@@ -3242,13 +3113,13 @@ const rebuiltSemanticMemoryEventsFromSources = async (
         id, owner_user_id, visibility, session_id, turn_id, source_kind,
         source_adapter_version, source_transport, external_session_id,
         external_thread_id, external_turn_id, external_item_id,
-        source_record_type, source_event_type, source_path, source_sequence,
+        source_record_type, source_event_type, source_sequence,
         event_time, raw_json, raw_text, logical_source_id,
         transport_chunk_index, transport_chunk_count, transport_chunk_text,
         transport_chunk_encoding, source_hash, canonical_item_key,
         canonical_source_priority, projection_policy_revision,
         idempotency_key, projection_work_class, metadata,
-        observed_at, session_workspace_id, session_cwd, session_metadata
+        observed_at, session_project_id, session_cwd, session_metadata
       from ordered_sources
       where source_rank = 1
       order by source_order asc, source_sequence asc nulls last, observed_at asc, id asc
@@ -3306,7 +3177,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
         metadata: row.metadata,
         sessionMetadata: row.session_metadata,
         sessionId: row.session_id,
-        sessionWorkspaceId: row.session_workspace_id,
+        sessionProjectId: row.session_project_id,
         sessionCwd: row.session_cwd
       })
     });
@@ -3409,10 +3280,10 @@ const rebuiltSemanticMemoryEventsFromSources = async (
     const event = await input.createMemoryEvent(
       { userId: input.actorUserId },
       {
-        workspaceId: canonicalWorkspaceId({
+        projectId: canonicalProjectId({
           metadata: first.row.metadata,
           sessionId: first.row.session_id,
-          sessionWorkspaceId: first.row.session_workspace_id,
+          sessionProjectId: first.row.session_project_id,
           sessionCwd: first.row.session_cwd
         }),
         sessionId: first.row.session_id ?? undefined,
@@ -3449,7 +3320,6 @@ const rebuiltSemanticMemoryEventsFromSources = async (
         captureMethod: captureMethodForConversationItem({
           sourceTransport: first.row.source_transport
         }),
-        codexTranscriptPath: first.row.source_path ?? undefined,
         idempotencyKey: `projection:rebuild:${unitType}:${unitHash}`,
         sourceHash: `projection:rebuild:${unitType}:${contentHash}`,
         capturedAt: sourceCapturedAt?.toISOString(),
@@ -3588,7 +3458,7 @@ const invalidateSemanticMemoryForDisplayEvent = async (
         where mes.conversation_item_id = any($1::uuid[])
           and me.visibility = 'personal'
           and me.owner_user_id = $2
-          and me.invalidated_at is null and me.personal_deleted_at is null
+          and me.invalidated_at is null and pds_session_recall_ready(me.session_id) and me.personal_deleted_at is null
       )
       update memory_events me
       set
@@ -3615,9 +3485,6 @@ const invalidateSemanticMemoryForDisplayEvent = async (
 const captureMethodForConversationItem = (
   item: Pick<ConversationItemInput, "sourceTransport">
 ): CaptureMethod => {
-  if (item.sourceTransport === "hook") {
-    return "hook";
-  }
   if (item.sourceTransport === "mcp") {
     return "mcp";
   }
@@ -3730,14 +3597,14 @@ const mapMemoryEvent = (row: {
     content?: string;
     metadata?: Record<string, unknown>;
     rawEventType?: string;
-    workspaceId?: string;
+    projectId?: string;
   };
   token_count?: number | null;
   seal_reason?: string | null;
   created_at: Date;
 }): MemoryEventRecord => ({
   id: row.id,
-  workspaceId: row.payload.workspaceId ?? "",
+  projectId: row.payload.projectId ?? "",
   sessionId: row.session_id,
   turnId: row.turn_id,
   actor: row.payload.actor ?? "system",
@@ -3862,6 +3729,82 @@ export const createMemorySourceRepository = (
   const curatedMemoryRepository = createCuratedMemoryRepository(pool, {
     envelopeEncryptionProvider: options.envelopeEncryptionProvider
   });
+  const requireEnvelopeEncryptionProvider = (): EnvelopeEncryptionProvider => {
+    if (!options.envelopeEncryptionProvider) {
+      throw new Error(
+        "Envelope encryption provider is required for collaboration and Shared Memory"
+      );
+    }
+    return options.envelopeEncryptionProvider;
+  };
+  const requireOwnerPrivateReplicaEnvelopeEncryptionProvider =
+    (): EnvelopeEncryptionProvider => {
+      if (!options.ownerPrivateReplicaEnvelopeEncryptionProvider) {
+        throw new Error(
+          "A distinct owner-private replica envelope encryption provider is required for Shared Memory"
+        );
+      }
+      return options.ownerPrivateReplicaEnvelopeEncryptionProvider;
+    };
+  const hasMemoryEventEncryptionProvider =
+    Boolean(options.envelopeEncryptionProvider) ||
+    Boolean(options.ownerPrivateReplicaEnvelopeEncryptionProvider);
+  const resolveMemoryEventEncryptionProvider = async (
+    memoryEventId: string
+  ): Promise<EnvelopeEncryptionProvider> => {
+    const result = await pool.query<{ encryption_scope: string }>(
+      `select encryption_scope
+       from encrypted_field_payloads
+       where source_table='memory_events'
+         and source_id=$1
+         and source_column='payload'
+         and invalidated_at is null
+       limit 1`,
+      [memoryEventId]
+    );
+    if (result.rows[0]?.encryption_scope === "owner_private_replica") {
+      return requireOwnerPrivateReplicaEnvelopeEncryptionProvider();
+    }
+    return requireEnvelopeEncryptionProvider();
+  };
+  const resolveMemoryNodeEncryptionProvider = async (
+    memoryNodeId: string
+  ): Promise<EnvelopeEncryptionProvider> => {
+    const result = await pool.query<{ encryption_scope: string }>(
+      `select encryption_scope
+       from encrypted_field_payloads
+       where source_table='memory_nodes'
+         and source_id=$1
+         and source_column='summary_text'
+         and invalidated_at is null
+       limit 1`,
+      [memoryNodeId]
+    );
+    if (result.rows[0]?.encryption_scope === "owner_private_replica") {
+      return requireOwnerPrivateReplicaEnvelopeEncryptionProvider();
+    }
+    return requireEnvelopeEncryptionProvider();
+  };
+  const hydrateRepositoryMemoryNodeRow = async <
+    T extends HydratableMemoryNodeRow
+  >(
+    client: pg.Pool | pg.PoolClient,
+    row: T
+  ): Promise<T> =>
+    hydrateMemoryNodeRow(
+      client,
+      encryptedMemoryNodeColumns(row).size > 0
+        ? await resolveMemoryNodeEncryptionProvider(row.id)
+        : options.envelopeEncryptionProvider,
+      row
+    );
+  const hydrateRepositoryMemoryNodeRows = async <
+    T extends HydratableMemoryNodeRow
+  >(
+    client: pg.Pool | pg.PoolClient,
+    rows: T[]
+  ): Promise<T[]> =>
+    Promise.all(rows.map((row) => hydrateRepositoryMemoryNodeRow(client, row)));
 
   return {
     // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
@@ -3872,16 +3815,50 @@ export const createMemorySourceRepository = (
     ...createDeviceCredentialRepository(db),
     ...createExternalAuthRepository(db),
     ...createAuditRepository(db),
-    ...createTeamAccessRepository(db),
+    ...createTeamAccessRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createCollaborationRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () =>
+        Promise.resolve(requireEnvelopeEncryptionProvider()),
+      resolveOwnerPrivateReplicaEncryptionProvider: () =>
+        Promise.resolve(requireOwnerPrivateReplicaEnvelopeEncryptionProvider())
+    }),
+    ...createHighRiskActionRepository(db, {
+      pool,
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        options.ownerPrivateReplicaEnvelopeEncryptionProvider
+    }),
     ...createCapturedSessionRepository(pool),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       resolveCapturePolicy: settingsRepository.getEffectiveCapturePolicy
     }),
-    ...createHistoricalImportRepository(pool),
-    ...createCrossIdentitySyncRepository(pool, {
+    ...createConversationSourceJournalRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createDevelopmentWorkspaceSnapshotRepository(pool),
+    ...createManagedConversationForkRepository(pool),
+    ...createManagedConversationTransferRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createHistoricalImportRepository(pool),
+    ...createCrossIdentitySyncRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        options.ownerPrivateReplicaEnvelopeEncryptionProvider
+    }),
+    ...createPersonalDeviceSyncRepository(pool),
+    ...createPersonalDeviceSyncLocalRepository(pool),
+    ...createPersonalDeviceSyncLifecycleRepository(pool),
+    ...createPersonalDeviceSyncRelayRepository(pool),
     ...curatedMemoryRepository,
     ...encryptedPayloadRepository,
     ...createLocalEmbeddingStatusRepository(),
@@ -3903,243 +3880,6 @@ export const createMemorySourceRepository = (
     ...createWorkflowTokenUsageRepository(pool),
 
     health: () => checkDatabase(pool),
-
-    async createTeamSessionShareGrant(actor, input) {
-      const access = await this.getTeamWorkspaceAccess(
-        actor,
-        input.teamWorkspaceId
-      );
-      if (!access?.canCreateShare) {
-        return null;
-      }
-
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        const sessionRows = await client.query<{
-          id: string;
-          owner_user_id: string;
-        }>(
-          `
-          select id, owner_user_id
-          from sessions
-          where id = $1
-            and owner_user_id = $2
-            and visibility = 'personal'
-            and invalidated_at is null
-            and personal_deleted_at is null
-            and not exists (
-              select 1
-              from memory_replicas sync_replica
-              where sync_replica.local_session_id = sessions.id
-                and sync_replica.replica_role = 'target'
-                and not exists (
-                  select 1
-                  from cross_identity_sync_relationships sync_relationship
-                  where sync_relationship.local_replica_id = sync_replica.id
-                    and sync_relationship.side = 'target'
-                    and sync_relationship.state = 'ready'
-                    and sync_relationship.revoked_at is null
-                    and sync_replica.freshness_status = 'fresh'
-                )
-            )
-          limit 1
-          for update
-        `,
-          [input.sessionId, actor.userId]
-        );
-        const session = sessionRows.rows[0];
-        if (!session) {
-          await client.query("rollback");
-          return null;
-        }
-
-        await client.query(
-          "select pg_advisory_xact_lock(hashtextextended($1::text, 0))",
-          [`team-session-share:${session.id}:${access.teamWorkspaceId}`]
-        );
-
-        const grantRows = await client.query<
-          TeamSessionShareGrantRow & { created: boolean }
-        >(
-          `
-          with existing as (
-            select *
-            from team_session_share_grants
-            where session_id = $2
-              and team_workspace_id = $4
-              and revoked_at is null
-            limit 1
-          ),
-          inserted as (
-            insert into team_session_share_grants (
-              owner_user_id,
-              session_id,
-              team_id,
-              team_workspace_id,
-              granted_by_user_id
-            )
-            select $1, $2, $3, $4, $5
-            where not exists (select 1 from existing)
-            returning *, true as created
-          )
-          select * from inserted
-          union all
-          select existing.*, false as created
-          from existing
-        `,
-          [
-            session.owner_user_id,
-            session.id,
-            access.teamId,
-            access.teamWorkspaceId,
-            actor.userId
-          ]
-        );
-        const row = grantRows.rows[0];
-        if (!row) {
-          await client.query("rollback");
-          return null;
-        }
-
-        if (row.created) {
-          await recordAuditEventWithClient(client, {
-            actorUserId: actor.userId,
-            ownerUserId: session.owner_user_id,
-            visibility: "personal",
-            action: "team.session_share.created",
-            targetTable: "team_session_share_grants",
-            targetId: row.id,
-            metadata: {
-              teamId: access.teamId,
-              teamWorkspaceId: access.teamWorkspaceId,
-              sessionId: session.id
-            }
-          });
-        }
-
-        await client.query("commit");
-        return mapTeamSessionShareGrant(row);
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
-
-    async revokeTeamSessionShareGrant(actor, input) {
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        const existingRows = await client.query<TeamSessionShareGrantRow>(
-          `
-          select *
-          from team_session_share_grants
-          where id = $1
-            and team_workspace_id = $2
-            and revoked_at is null
-          limit 1
-          for update
-        `,
-          [input.shareGrantId, input.teamWorkspaceId]
-        );
-        const existing = existingRows.rows[0];
-        if (!existing) {
-          await client.query("rollback");
-          return null;
-        }
-
-        let canRevoke = existing.owner_user_id === actor.userId;
-        if (!canRevoke) {
-          const access = await this.getTeamWorkspaceAccess(
-            actor,
-            existing.team_workspace_id
-          );
-          canRevoke = access?.canCreateShare === true;
-        }
-        if (!canRevoke) {
-          await client.query("rollback");
-          return null;
-        }
-
-        const revokedRows = await client.query<TeamSessionShareGrantRow>(
-          `
-          update team_session_share_grants
-          set
-            revoked_at = now(),
-            revoked_by_user_id = $1,
-            revocation_reason = nullif(trim($4::text), ''),
-            updated_at = now()
-          where id = $2
-            and team_workspace_id = $3
-            and revoked_at is null
-          returning *
-        `,
-          [
-            actor.userId,
-            input.shareGrantId,
-            input.teamWorkspaceId,
-            input.reason ?? null
-          ]
-        );
-        const revoked = revokedRows.rows[0];
-        if (!revoked) {
-          await client.query("rollback");
-          return null;
-        }
-        await recordAuditEventWithClient(client, {
-          actorUserId: actor.userId,
-          ownerUserId: existing.owner_user_id,
-          visibility: "personal",
-          action: "team.session_share.revoked",
-          targetTable: "team_session_share_grants",
-          targetId: revoked.id,
-          metadata: {
-            teamId: revoked.team_id,
-            teamWorkspaceId: revoked.team_workspace_id,
-            sessionId: revoked.session_id
-          }
-        });
-
-        await client.query("commit");
-        return mapTeamSessionShareGrant(revoked);
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
-
-    async listTeamSessionShareGrants(actor, input) {
-      const access = await this.getTeamWorkspaceAccess(
-        actor,
-        input.teamWorkspaceId
-      );
-      if (!access?.canRecall) {
-        return null;
-      }
-      const limit = Math.min(Math.max(input.limit ?? 100, 1), 200);
-      const rows = await pool.query<TeamSessionShareGrantRow>(
-        `
-        select *
-        from team_session_share_grants
-        where team_workspace_id = $1
-          and team_id = $2
-          and ($3::boolean = true or revoked_at is null)
-        order by created_at desc, id desc
-        limit $4
-      `,
-        [
-          input.teamWorkspaceId,
-          access.teamId,
-          input.includeRevoked ?? false,
-          limit
-        ]
-      );
-      return rows.rows.map(mapTeamSessionShareGrant);
-    },
 
     async resetConversationProjection(actor, input) {
       const client = await pool.connect();
@@ -4412,7 +4152,7 @@ export const createMemorySourceRepository = (
             ci.turn_id, ci.source_kind, ci.source_adapter_version,
             ci.source_transport, ci.external_session_id, ci.external_thread_id,
             ci.external_turn_id, ci.external_item_id, ci.source_record_type,
-            ci.source_event_type, ci.source_path, ci.source_sequence,
+            ci.source_event_type, ci.source_sequence,
             ci.event_time, ci.raw_json, ci.raw_text, ci.logical_source_id,
             ci.transport_chunk_index, ci.transport_chunk_count,
             ci.transport_chunk_text, ci.transport_chunk_encoding,
@@ -4420,26 +4160,38 @@ export const createMemorySourceRepository = (
             ci.projection_work_class, ci.metadata,
             ci.canonical_source_priority, ci.projection_policy_revision,
             ci.observed_at,
-            s.workspace_id as session_workspace_id,
+            coalesce(
+              s.project_override_id,
+              s.automatic_project_id,
+              s.metadata ->> 'projectId',
+              s.cwd
+            ) as session_project_id,
             s.cwd as session_cwd,
             s.metadata as session_metadata,
             coalesce(ci.session_id::text, ci.external_session_id, 'sessionless') as boundary_session,
             coalesce(ci.turn_id::text, ci.external_turn_id, 'turnless') as boundary_turn,
             coalesce(ci.external_thread_id, 'threadless') as boundary_thread,
             coalesce(
-              case when ci.metadata ->> 'workspaceId' = ci.session_id::text then null else ci.metadata ->> 'workspaceId' end,
-              s.workspace_id::text,
+              case when ci.metadata ->> 'projectId' = ci.session_id::text then null else ci.metadata ->> 'projectId' end,
+              s.project_override_id,
+              s.automatic_project_id,
+              s.metadata ->> 'projectId',
               s.cwd,
               'unknown-project'
-            ) as boundary_workspace,
+            ) as boundary_project,
             coalesce(ci.event_time, ci.observed_at) as boundary_order_at,
             (
-              ci.source_record_type = 'hook_payload'
-              and (
-                lower(coalesce(ci.source_event_type, '')) in ('stop', 'subagentstop')
-                or lower(coalesce(ci.raw_json ->> 'hook_event_name', '')) in ('stop', 'subagentstop')
-                or lower(coalesce(ci.metadata ->> 'hookEventName', '')) in ('stop', 'subagentstop')
-              )
+              (ci.source_adapter_version = 'codex-app-server-conversation-v1'
+                and ci.source_event_type = 'turn/completed')
+              or
+              (ci.source_adapter_version = 'codex-transcript-v1'
+                and ci.source_event_type in ('task_complete', 'turn_aborted'))
+              or
+              (ci.source_adapter_version = 'codex-hook-signal-v1'
+                and ci.source_event_type = 'turn_completed')
+              or
+              (ci.source_transport = 'pds_relay'
+                and ci.source_event_type = 'pds_session_closed')
             ) as is_turn_complete_signal,
             (
               (ci.source_adapter_version = 'codex-app-server-conversation-v1'
@@ -4447,12 +4199,26 @@ export const createMemorySourceRepository = (
               or
               (ci.source_adapter_version = 'codex-transcript-v1'
                 and ci.source_event_type in ('task_complete', 'turn_aborted'))
+              or
+              (ci.source_adapter_version = 'codex-hook-signal-v1'
+                and ci.source_event_type = 'turn_completed')
+              or
+              (ci.source_transport = 'pds_relay'
+                and ci.source_event_type = 'pds_session_closed')
             ) as is_semantic_turn_complete_signal
           from conversation_items ci
           left join sessions s on s.id = ci.session_id
           where ci.projection_status in ('pending', 'error')
             and ci.memory_excluded_at is null
             and ci.personal_deleted_at is null
+            and not exists (
+              select 1
+              from encrypted_field_payloads encrypted_source
+              where encrypted_source.source_table = 'conversation_items'
+                and encrypted_source.source_id = ci.id
+                and encrypted_source.encryption_scope = 'owner_private_replica'
+                and encrypted_source.invalidated_at is null
+            )
             and (
               ci.session_id is null
               or (
@@ -4478,12 +4244,13 @@ export const createMemorySourceRepository = (
               )
             )
             and ci.owner_user_id = $1
+            and pds_session_recall_ready(ci.session_id)
         ), ordered_items as (
           select
             *,
             coalesce(sum(is_turn_complete_signal::integer) over (
               partition by boundary_session, boundary_thread,
-                boundary_workspace, projection_work_class
+                boundary_project, projection_work_class
               order by boundary_order_at asc, source_sequence asc nulls last, id asc
               rows between unbounded preceding and 1 preceding
             ), 0) as completed_scope_segment
@@ -4496,23 +4263,42 @@ export const createMemorySourceRepository = (
               and ($3::uuid[] is null or id = any($3::uuid[]))
             ) over (
               partition by boundary_session, boundary_thread,
-                boundary_workspace, projection_work_class,
+                boundary_project, projection_work_class, boundary_turn
+            ) as turn_has_selected_turn_complete_signal,
+            bool_or(
+              is_turn_complete_signal
+              and ($3::uuid[] is null or id = any($3::uuid[]))
+            ) over (
+              partition by boundary_session, boundary_thread,
+                boundary_project, projection_work_class,
                 completed_scope_segment
             ) as segment_has_selected_turn_complete_signal
           from ordered_items
         ), unit_items as (
           select
             *,
-            case when segment_has_selected_turn_complete_signal
-              then 'completed_scope'
+            case
+              when boundary_turn <> 'turnless'
+                and turn_has_selected_turn_complete_signal
+                then 'completed_turn'
+              when segment_has_selected_turn_complete_signal
+                then 'completed_scope'
               else 'turn'
             end as selection_unit_kind,
-            case when segment_has_selected_turn_complete_signal
+            case
+              when boundary_turn <> 'turnless'
+                and turn_has_selected_turn_complete_signal
+                then null
+              when segment_has_selected_turn_complete_signal
               then completed_scope_segment
               else null
             end as selection_unit_segment,
-            case when segment_has_selected_turn_complete_signal
-              then null
+            case
+              when boundary_turn <> 'turnless'
+                and turn_has_selected_turn_complete_signal
+                then boundary_turn
+              when segment_has_selected_turn_complete_signal
+                then null
               else boundary_turn
             end as selection_unit_turn
           from scoped_items
@@ -4523,7 +4309,7 @@ export const createMemorySourceRepository = (
             selection_unit_segment,
             selection_unit_turn,
             boundary_thread,
-            boundary_workspace,
+            boundary_project,
             projection_work_class,
             min(boundary_order_at) as oldest_at,
             min(id::text) as oldest_id,
@@ -4540,7 +4326,7 @@ export const createMemorySourceRepository = (
             selection_unit_segment,
             selection_unit_turn,
             boundary_thread,
-            boundary_workspace,
+            boundary_project,
             projection_work_class
           having $3::uuid[] is null or bool_or(id = any($3::uuid[]))
         ), ranked_units as (
@@ -4575,14 +4361,14 @@ export const createMemorySourceRepository = (
           pi.turn_id, pi.source_kind, pi.source_adapter_version,
           pi.source_transport, pi.external_session_id, pi.external_thread_id,
           pi.external_turn_id, pi.external_item_id, pi.source_record_type,
-          pi.source_event_type, pi.source_path, pi.source_sequence,
+          pi.source_event_type, pi.source_sequence,
           pi.event_time, pi.raw_json, pi.raw_text, pi.logical_source_id,
           pi.transport_chunk_index, pi.transport_chunk_count,
           pi.transport_chunk_text, pi.transport_chunk_encoding,
           pi.source_hash, pi.idempotency_key, pi.canonical_item_key,
           pi.projection_work_class, pi.metadata, pi.observed_at,
           pi.canonical_source_priority, pi.projection_policy_revision,
-          pi.session_workspace_id, pi.session_cwd, pi.session_metadata,
+          pi.session_project_id, pi.session_cwd, pi.session_metadata,
           au.oldest_id as selection_unit_id
         from unit_items pi
         join admitted_units au
@@ -4591,7 +4377,7 @@ export const createMemorySourceRepository = (
           and au.selection_unit_segment is not distinct from pi.selection_unit_segment
           and au.selection_unit_turn is not distinct from pi.selection_unit_turn
           and au.boundary_thread = pi.boundary_thread
-          and au.boundary_workspace = pi.boundary_workspace
+          and au.boundary_project = pi.boundary_project
           and au.projection_work_class = pi.projection_work_class
         where pi.transport_chunk_count = 1
           or pi.transport_chunk_index = 0
@@ -4805,7 +4591,7 @@ export const createMemorySourceRepository = (
               metadata: row.metadata,
               sessionMetadata: row.session_metadata,
               sessionId: row.session_id,
-              sessionWorkspaceId: row.session_workspace_id,
+              sessionProjectId: row.session_project_id,
               sessionCwd: row.session_cwd
             });
             const projectionPolicy = classifyConversationItemProjection(row, {
@@ -4961,10 +4747,10 @@ export const createMemorySourceRepository = (
             const event = await this.createMemoryEvent(
               { userId: actor.userId },
               {
-                workspaceId: canonicalWorkspaceId({
+                projectId: canonicalProjectId({
                   metadata: first.row.metadata,
                   sessionId: first.row.session_id,
-                  sessionWorkspaceId: first.row.session_workspace_id,
+                  sessionProjectId: first.row.session_project_id,
                   sessionCwd: first.row.session_cwd
                 }),
                 sessionId: first.row.session_id ?? undefined,
@@ -4997,7 +4783,6 @@ export const createMemorySourceRepository = (
                 captureMethod: captureMethodForConversationItem({
                   sourceTransport: first.row.source_transport
                 }),
-                codexTranscriptPath: first.row.source_path ?? undefined,
                 idempotencyKey: `projection:${unitType}:${unitHash}`,
                 sourceHash: `projection:${unitType}:${contentHash}`,
                 capturedAt: sourceCapturedAt?.toISOString(),
@@ -5259,7 +5044,8 @@ export const createMemorySourceRepository = (
             const projectionTranscriptItemId =
               projectionTranscriptItemIdFor(row);
             const requiresTranscriptSourceTime =
-              row.source_transport === "hook" && row.source_kind === "codex";
+              row.source_transport === "transcript" &&
+              row.source_kind === "codex";
             if (
               requiresTranscriptSourceTime &&
               (projectionPolicy.createMessage ||
@@ -5313,7 +5099,7 @@ export const createMemorySourceRepository = (
                     sourceKind: row.source_kind,
                     sourceAdapterVersion: row.source_adapter_version,
                     usageSource:
-                      row.source_transport === "hook"
+                      row.source_transport === "transcript"
                         ? "transcript"
                         : "app_server",
                     usageAccuracy:
@@ -5397,7 +5183,6 @@ export const createMemorySourceRepository = (
                         row.session_metadata ?? {},
                         "parentSessionId"
                       ),
-                    transcriptPath: row.source_path,
                     sourceLineNumber: row.source_sequence
                   },
                   idempotencyKey: providerTokenUsageIdempotencyKey({
@@ -5438,22 +5223,18 @@ export const createMemorySourceRepository = (
                   content_json = $7,
                   source_runtime = $8,
                   capture_method = $9,
-                  codex_transcript_path = coalesce(
-                    $10,
-                    messages.codex_transcript_path
-                  ),
                   transcript_item_id = coalesce(
-                    $11,
+                    $10,
                     messages.transcript_item_id
                   ),
-                  idempotency_key = coalesce($12, messages.idempotency_key),
-                  source_hash = coalesce($13, messages.source_hash),
-                  token_count = $14,
-                  source_event_time = $15,
-                  captured_at = least(messages.captured_at, $16),
-                  recall_eligible = $17,
-                  projection_policy_key = $18,
-                  projection_policy_revision = $19,
+                  idempotency_key = coalesce($11, messages.idempotency_key),
+                  source_hash = coalesce($12, messages.source_hash),
+                  token_count = $13,
+                  source_event_time = $14,
+                  captured_at = least(messages.captured_at, $15),
+                  recall_eligible = $16,
+                  projection_policy_key = $17,
+                  projection_policy_revision = $18,
                   invalidated_at = null,
                   invalidation_reason = null
                 where id = (
@@ -5462,19 +5243,19 @@ export const createMemorySourceRepository = (
                   where owner_user_id = $3
                     and visibility = $4::visibility_scope
                     and (
-                      ($12::text is not null and idempotency_key = $12)
-                      or ($13::text is not null and source_hash = $13)
+                      ($11::text is not null and idempotency_key = $11)
+                      or ($12::text is not null and source_hash = $12)
                       or (
-                        $11::text is not null
+                        $10::text is not null
                         and session_id = $1
-                        and transcript_item_id = $11
+                        and transcript_item_id = $10
                       )
                     )
                   order by
                     case
-                      when $12::text is not null and idempotency_key = $12 then 0
-                      when $13::text is not null and source_hash = $13 then 1
-                      when $11::text is not null and transcript_item_id = $11 then 2
+                      when $11::text is not null and idempotency_key = $11 then 0
+                      when $12::text is not null and source_hash = $12 then 1
+                      when $10::text is not null and transcript_item_id = $10 then 2
                       else 3
                     end,
                     created_at asc,
@@ -5487,15 +5268,15 @@ export const createMemorySourceRepository = (
                 insert into messages (
                   session_id, turn_id, owner_user_id, visibility,
                   role, content, content_json, source_runtime, capture_method,
-                  codex_transcript_path, transcript_item_id, idempotency_key,
+                  transcript_item_id, idempotency_key,
                   source_hash, token_count, source_event_time, captured_at,
                   recall_eligible, projection_policy_key,
                   projection_policy_revision
                 )
                 select
                   $1, $2, $3, $4, $5, $6, $7,
-                  $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                  $17, $18, $19
+                  $8, $9, $10, $11, $12, $13, $14, $15,
+                  $16, $17, $18
                 where not exists (select 1 from existing)
                 on conflict do nothing
                 returning id, true as inserted
@@ -5508,19 +5289,19 @@ export const createMemorySourceRepository = (
                   and owner_user_id = $3
                   and visibility = $4::visibility_scope
                   and (
-                    ($12::text is not null and idempotency_key = $12)
-                    or ($13::text is not null and source_hash = $13)
+                    ($11::text is not null and idempotency_key = $11)
+                    or ($12::text is not null and source_hash = $12)
                     or (
-                      $11::text is not null
+                      $10::text is not null
                       and session_id = $1
-                      and transcript_item_id = $11
+                      and transcript_item_id = $10
                     )
                   )
                 order by
                   case
-                    when $12::text is not null and idempotency_key = $12 then 0
-                    when $13::text is not null and source_hash = $13 then 1
-                    when $11::text is not null and transcript_item_id = $11 then 2
+                    when $11::text is not null and idempotency_key = $11 then 0
+                    when $12::text is not null and source_hash = $12 then 1
+                    when $10::text is not null and transcript_item_id = $10 then 2
                     else 3
                   end,
                   created_at asc,
@@ -5546,7 +5327,6 @@ export const createMemorySourceRepository = (
                   captureMethodForConversationItem({
                     sourceTransport: row.source_transport
                   }),
-                  row.source_path,
                   projectionTranscriptItemId,
                   `message:${logicalItem.sourceIdentity}`,
                   `message:${logicalItem.sourceHash}`,
@@ -5570,7 +5350,7 @@ export const createMemorySourceRepository = (
                       rowFamily: "message",
                       scope: {
                         tenantId: ownerUserId,
-                        workspaceId: row.session_workspace_id,
+                        projectId: row.session_project_id,
                         objectClass: "message"
                       },
                       aad: {
@@ -5591,7 +5371,7 @@ export const createMemorySourceRepository = (
                       rowFamily: "message",
                       scope: {
                         tenantId: ownerUserId,
-                        workspaceId: row.session_workspace_id,
+                        projectId: row.session_project_id,
                         objectClass: "message"
                       },
                       aad: {
@@ -5629,10 +5409,7 @@ export const createMemorySourceRepository = (
                 raw,
                 toolCall,
                 content,
-                {
-                  allowContentFallback:
-                    row.source_record_type !== "hook_payload"
-                }
+                { allowContentFallback: true }
               );
               const toolInputForStorage =
                 suppressPlaintextDisplayPayloads &&
@@ -5665,33 +5442,29 @@ export const createMemorySourceRepository = (
                   status = coalesce($8, tool_events.status),
                   source_runtime = $9,
                   capture_method = $10,
-                  codex_transcript_path = coalesce(
-                    $11,
-                    tool_events.codex_transcript_path
-                  ),
                   transcript_item_id = case
-                    when tool_events.transcript_item_id is null then $12
-                    when $12::text is null then tool_events.transcript_item_id
+                    when tool_events.transcript_item_id is null then $11
+                    when $11::text is null then tool_events.transcript_item_id
                     when tool_events.transcript_item_id ~ '^[0-9]+$'
-                      and $12::text ~ '^[0-9]+$'
+                      and $11::text ~ '^[0-9]+$'
                       then least(
                         tool_events.transcript_item_id::bigint,
-                        $12::bigint
+                        $11::bigint
                       )::text
                     else tool_events.transcript_item_id
                   end,
-                  idempotency_key = coalesce($13, tool_events.idempotency_key),
-                  source_hash = coalesce($14, tool_events.source_hash),
-                  source_event_time = least(tool_events.source_event_time, $15),
-                  captured_at = least(tool_events.captured_at, $16),
+                  idempotency_key = coalesce($12, tool_events.idempotency_key),
+                  source_hash = coalesce($13, tool_events.source_hash),
+                  source_event_time = least(tool_events.source_event_time, $14),
+                  captured_at = least(tool_events.captured_at, $15),
                   started_at = case
                     when $6::jsonb is not null
-                      then coalesce(tool_events.started_at, $15)
+                      then coalesce(tool_events.started_at, $14)
                     else tool_events.started_at
                   end,
                   completed_at = case
                     when $7::jsonb is not null
-                      then coalesce(tool_events.completed_at, $15)
+                      then coalesce(tool_events.completed_at, $14)
                     else tool_events.completed_at
                   end,
                   invalidated_at = null,
@@ -5702,18 +5475,18 @@ export const createMemorySourceRepository = (
                   where owner_user_id = $3
                     and visibility = $4::visibility_scope
                     and (
-                      ($13::text is not null and idempotency_key = $13)
-                      or ($14::text is not null and source_hash = $14)
+                      ($12::text is not null and idempotency_key = $12)
+                      or ($13::text is not null and source_hash = $13)
                       or (
-                        $12::text is not null
+                        $11::text is not null
                         and session_id = $1
-                        and transcript_item_id = $12
+                        and transcript_item_id = $11
                       )
                     )
                   order by
                     case
-                      when $13::text is not null and idempotency_key = $13 then 0
-                      when $14::text is not null and source_hash = $14 then 1
+                      when $12::text is not null and idempotency_key = $12 then 0
+                      when $13::text is not null and source_hash = $13 then 1
                       else 2
                     end,
                     created_at asc,
@@ -5726,15 +5499,15 @@ export const createMemorySourceRepository = (
                 insert into tool_events (
                   session_id, turn_id, owner_user_id, visibility,
                   tool_name, tool_input, tool_response, status, source_runtime,
-                  capture_method, codex_transcript_path, transcript_item_id,
+                  capture_method, transcript_item_id,
                   idempotency_key, source_hash, source_event_time, captured_at,
                   started_at, completed_at
                 )
                 select
                   $1, $2, $3, $4, $5, $6, $7,
-                  $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                  case when $6::jsonb is not null then $15 else null end,
-                  case when $7::jsonb is not null then $15 else null end
+                  $8, $9, $10, $11, $12, $13, $14, $15,
+                  case when $6::jsonb is not null then $14 else null end,
+                  case when $7::jsonb is not null then $14 else null end
                 where not exists (select 1 from existing)
                 on conflict do nothing
                 returning id, true as inserted
@@ -5747,18 +5520,18 @@ export const createMemorySourceRepository = (
                   and owner_user_id = $3
                   and visibility = $4::visibility_scope
                   and (
-                    ($13::text is not null and idempotency_key = $13)
-                    or ($14::text is not null and source_hash = $14)
+                    ($12::text is not null and idempotency_key = $12)
+                    or ($13::text is not null and source_hash = $13)
                     or (
-                      $12::text is not null
+                      $11::text is not null
                       and session_id = $1
-                      and transcript_item_id = $12
+                      and transcript_item_id = $11
                     )
                   )
                 order by
                   case
-                    when $13::text is not null and idempotency_key = $13 then 0
-                    when $14::text is not null and source_hash = $14 then 1
+                    when $12::text is not null and idempotency_key = $12 then 0
+                    when $13::text is not null and source_hash = $13 then 1
                     else 2
                   end,
                   created_at asc,
@@ -5790,7 +5563,6 @@ export const createMemorySourceRepository = (
                   captureMethodForConversationItem({
                     sourceTransport: row.source_transport
                   }),
-                  row.source_path,
                   projectionTranscriptItemId,
                   `tool:${toolEventIdentity}`,
                   `tool:${toolEventIdentity}`,
@@ -5811,7 +5583,7 @@ export const createMemorySourceRepository = (
                         rowFamily: "tool_event",
                         scope: {
                           tenantId: ownerUserId,
-                          workspaceId: row.session_workspace_id,
+                          projectId: row.session_project_id,
                           objectClass: "tool_event"
                         },
                         aad: {
@@ -5834,7 +5606,7 @@ export const createMemorySourceRepository = (
                         rowFamily: "tool_event",
                         scope: {
                           tenantId: ownerUserId,
-                          workspaceId: row.session_workspace_id,
+                          projectId: row.session_project_id,
                           objectClass: "tool_event"
                         },
                         aad: {
@@ -5852,6 +5624,9 @@ export const createMemorySourceRepository = (
             }
 
             if (turnCompleteSealReason) {
+              if (semanticItem && semanticUnitType === "agent_turn") {
+                await queueAgentSemanticItem(semanticItem);
+              }
               await flushAgentBundlesForScope(
                 boundary.scopeKey,
                 turnCompleteSealReason
@@ -5993,6 +5768,7 @@ export const createMemorySourceRepository = (
                 'normal_embedding_lcm'
               ) = $3)
               and me.invalidated_at is null
+            and pds_session_recall_ready(me.session_id)
               and me.personal_deleted_at is null
               and me.include_in_lcm = true
               and not exists (
@@ -6253,6 +6029,23 @@ export const createMemorySourceRepository = (
       return result.rows.map((row) => ({ userId: row.user_id }));
     },
 
+    async getNextSemanticMemoryRebuildDueAt() {
+      const result = await pool.query<{ due_at: Date | null }>(
+        `
+        select min(
+          case
+            when status in ('pending', 'error') then scheduled_after
+            when status = 'processing' then processing_lease_until
+            else null
+          end
+        ) as due_at
+        from semantic_memory_rebuild_jobs
+        where status in ('pending', 'error', 'processing')
+      `
+      );
+      return result.rows[0]?.due_at ?? null;
+    },
+
     async processDueSemanticMemoryRebuilds(actor, input = {}) {
       const limit = Math.min(Math.max(input.limit ?? 10, 1), 50);
       const leaseSeconds = Math.min(
@@ -6509,28 +6302,6 @@ export const createMemorySourceRepository = (
     },
 
     async listLcmGraphNodes(actor, input = {}) {
-      const teamWorkspaceAccess = input.teamWorkspaceId
-        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-        : null;
-      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-        requesterUserId: actor.userId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        access: teamWorkspaceAccess
-      });
-      if (
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        !teamWorkspaceAuthorization.authorized
-      ) {
-        return [];
-      }
-      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        teamWorkspaceAuthorization.authorized
-          ? {
-              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-              teamId: teamWorkspaceAuthorization.teamId
-            }
-          : null;
       const nodeIds = input.nodeIds?.filter(Boolean) ?? [];
       const limit = nodeIds.length
         ? Math.min(nodeIds.length, 500)
@@ -6545,32 +6316,23 @@ export const createMemorySourceRepository = (
           mn.summary_structured_json, mn.summary_structured_schema_version,
           mn.lcm_algorithm_version, mn.summary_corrected_at,
           mn.summary_corrected_by_user_id,
-          case
-            when $9::uuid is null then coalesce(
-              s.project_override_id,
-              s.automatic_project_id,
-              case when s.id is null then ev.payload ->> 'workspaceId' end,
-              'unassigned'
-            )
-            else $9::text
-          end as project_id,
-          case
-            when $9::uuid is null then coalesce(
-              s.project_override_name,
-              s.automatic_project_name,
-              case when s.id is null then ev.payload #>> '{metadata,projectName}' end,
-              'Unassigned'
-            )
-            else 'Team Workspace'
-          end as project_name,
-          case
-            when $9::uuid is null then coalesce(
-              s.project_override_path,
-              s.automatic_project_path,
-              case when s.id is null then ev.payload #>> '{metadata,projectPath}' end
-            )
-            else null::text
-          end as project_path,
+          coalesce(
+            s.project_override_id,
+            s.automatic_project_id,
+            case when s.id is null then ev.payload ->> 'projectId' end,
+            'unassigned'
+          ) as project_id,
+          coalesce(
+            s.project_override_name,
+            s.automatic_project_name,
+            case when s.id is null then ev.payload #>> '{metadata,projectName}' end,
+            'Unassigned'
+          ) as project_name,
+          coalesce(
+            s.project_override_path,
+            s.automatic_project_path,
+            case when s.id is null then ev.payload #>> '{metadata,projectPath}' end
+          ) as project_path,
           s.id::text as session_id,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
           coalesce(s.metadata ->> 'threadName', ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
@@ -6591,50 +6353,20 @@ export const createMemorySourceRepository = (
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
           and (
             $4::text is null
-            or (
-              $9::uuid is null
-              and (
-                coalesce(
-                  s.project_override_id,
-                  s.automatic_project_id,
-                  case when s.id is null then ev.payload ->> 'workspaceId' end,
-                  'unassigned'
-                ) = $4
-                or coalesce(s.project_override_path, s.automatic_project_path) = $4
-              )
-            )
-            or ($9::uuid is not null and $9::text = $4)
+            or coalesce(
+              s.project_override_id,
+              s.automatic_project_id,
+              case when s.id is null then ev.payload ->> 'projectId' end,
+              'unassigned'
+            ) = $4
+            or coalesce(s.project_override_path, s.automatic_project_path) = $4
           )
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
           and ($7::uuid[] is null or mn.id = any($7::uuid[]))
           and mn.visibility = 'personal'
-          and (
-            ($9::uuid is null and mn.owner_user_id = $1 and ($2::boolean = true or mn.personal_deleted_at is null))
-            or (
-              $9::uuid is not null
-              and exists (
-                select 1
-                from memory_node_sources auth_any_mns
-                where auth_any_mns.memory_node_id = mn.id
-              )
-              and not exists (
-                select 1
-                from memory_node_sources auth_mns
-                left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
-                left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
-                where auth_mns.memory_node_id = mn.id
-                  and not exists (
-                    select 1
-                    from team_session_share_grants auth_grant
-                    where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
-                      and auth_grant.team_workspace_id = $9::uuid
-                      and auth_grant.team_id = $10::uuid
-                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                  )
-              )
-            )
-          )
+          and mn.owner_user_id = $1
+          and ($2::boolean = true or mn.personal_deleted_at is null)
         group by mn.id, ev.id, s.id
         order by mn.updated_at desc, mn.created_at desc
         limit $8
@@ -6647,14 +6379,11 @@ export const createMemorySourceRepository = (
           input.threadId ?? null,
           input.query?.trim() || null,
           nodeIds.length ? nodeIds : null,
-          limit,
-          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-          teamWorkspaceBoundary?.teamId ?? null
+          limit
         ]
       );
-      const hydratedRows = await hydrateMemoryNodeRows(
+      const hydratedRows = await hydrateRepositoryMemoryNodeRows(
         pool,
-        options.envelopeEncryptionProvider,
         result.rows
       );
       return hydratedRows.map(mapLcmGraphNode);
@@ -6663,7 +6392,6 @@ export const createMemorySourceRepository = (
     async getLcmGraphNode(actor, nodeId, input = {}) {
       const nodes = await this.listLcmGraphNodes(actor, {
         includeInvalidated: input.includeInvalidated,
-        teamWorkspaceId: input.teamWorkspaceId,
         nodeIds: [nodeId],
         limit: 1
       });
@@ -6710,7 +6438,6 @@ export const createMemorySourceRepository = (
       ]);
       const visibleNodes = await this.listLcmGraphNodes(actor, {
         includeInvalidated: true,
-        teamWorkspaceId: input.teamWorkspaceId,
         limit: 500
       });
       const visibleNodeById = new Map(
@@ -6720,7 +6447,6 @@ export const createMemorySourceRepository = (
         Promise.all(
           sourceRows.rows.map((row) =>
             this.getLcmGraphEvent(actor, row.memory_event_id, {
-              teamWorkspaceId: input.teamWorkspaceId,
               includeInvalidated: true,
               includeRaw: false
             })
@@ -6734,11 +6460,7 @@ export const createMemorySourceRepository = (
         .map((row) => visibleNodeById.get(row.parent_memory_node_id))
         .filter((candidate): candidate is LcmGraphNode => Boolean(candidate));
       const hydratedFullNode = fullNode.rows[0]
-        ? await hydrateMemoryNodeRow(
-            pool,
-            options.envelopeEncryptionProvider,
-            fullNode.rows[0]
-          )
+        ? await hydrateRepositoryMemoryNodeRow(pool, fullNode.rows[0])
         : null;
       return {
         ...node,
@@ -6843,28 +6565,6 @@ export const createMemorySourceRepository = (
     },
 
     async listLcmGraphEvents(actor, input = {}) {
-      const teamWorkspaceAccess = input.teamWorkspaceId
-        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-        : null;
-      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-        requesterUserId: actor.userId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        access: teamWorkspaceAccess
-      });
-      if (
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        !teamWorkspaceAuthorization.authorized
-      ) {
-        return [];
-      }
-      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        teamWorkspaceAuthorization.authorized
-          ? {
-              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-              teamId: teamWorkspaceAuthorization.teamId
-            }
-          : null;
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
       const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
         `
@@ -6877,20 +6577,7 @@ export const createMemorySourceRepository = (
                 select me.id, me.source_sequence
                 from memory_events me
                 where me.visibility = 'personal'
-                  and (
-                    ($12::uuid is null and me.owner_user_id = $1)
-                    or (
-                      $12::uuid is not null
-                      and exists (
-                        select 1
-                        from team_session_share_grants cursor_grant
-                        where cursor_grant.session_id = me.session_id
-                          and cursor_grant.team_workspace_id = $12::uuid
-                          and cursor_grant.team_id = $13::uuid
-                      and cursor_grant.revoked_at is null and sync_session_recall_ready(cursor_grant.session_id)
-                      )
-                    )
-                  )
+                  and me.owner_user_id = $1
                 union all
                 select
                   msg.id,
@@ -6901,20 +6588,7 @@ export const createMemorySourceRepository = (
                   end as source_sequence
                 from messages msg
                 where msg.visibility = 'personal'
-                  and (
-                    ($12::uuid is null and msg.owner_user_id = $1)
-                    or (
-                      $12::uuid is not null
-                      and exists (
-                        select 1
-                        from team_session_share_grants cursor_grant
-                        where cursor_grant.session_id = msg.session_id
-                          and cursor_grant.team_workspace_id = $12::uuid
-                          and cursor_grant.team_id = $13::uuid
-                          and cursor_grant.revoked_at is null and sync_session_recall_ready(cursor_grant.session_id)
-                      )
-                    )
-                  )
+                  and msg.owner_user_id = $1
                 union all
                 select
                   te.id,
@@ -6925,20 +6599,7 @@ export const createMemorySourceRepository = (
                   end as source_sequence
                 from tool_events te
                 where te.visibility = 'personal'
-                  and (
-                    ($12::uuid is null and te.owner_user_id = $1)
-                    or (
-                      $12::uuid is not null
-                      and exists (
-                        select 1
-                        from team_session_share_grants cursor_grant
-                        where cursor_grant.session_id = te.session_id
-                          and cursor_grant.team_workspace_id = $12::uuid
-                          and cursor_grant.team_id = $13::uuid
-                          and cursor_grant.revoked_at is null and sync_session_recall_ready(cursor_grant.session_id)
-                      )
-                    )
-                  )
+                  and te.owner_user_id = $1
               ) cursor_event
               where cursor_event.id = $10::uuid
               limit 1
@@ -6965,40 +6626,23 @@ export const createMemorySourceRepository = (
             me.source_runtime,
             me.capture_method,
             s.model,
-            case
-              when $12::uuid is null then coalesce(
-                case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
-                s.workspace_id::text,
-                s.cwd
-              )
-              else $12::text
-            end as workspace_id,
-            case
-              when $12::uuid is null then coalesce(
-                s.project_override_id,
-                s.automatic_project_id,
-                case when s.id is null then me.payload ->> 'workspaceId' end,
-                'unassigned'
-              )
-              else $12::text
-            end as project_id,
-            case
-              when $12::uuid is null then coalesce(
-                s.project_override_name,
-                s.automatic_project_name,
-                case when s.id is null then me.payload #>> '{metadata,projectName}' end,
-                'Unassigned'
-              )
-              else 'Team Workspace'
-            end as project_name,
-            case
-              when $12::uuid is null then coalesce(
-                s.project_override_path,
-                s.automatic_project_path,
-                case when s.id is null then me.payload #>> '{metadata,projectPath}' end
-              )
-              else null::text
-            end as project_path,
+            coalesce(
+              s.project_override_id,
+              s.automatic_project_id,
+              case when s.id is null then me.payload ->> 'projectId' end,
+              'unassigned'
+            ) as project_id,
+            coalesce(
+              s.project_override_name,
+              s.automatic_project_name,
+              case when s.id is null then me.payload #>> '{metadata,projectName}' end,
+              'Unassigned'
+            ) as project_name,
+            coalesce(
+              s.project_override_path,
+              s.automatic_project_path,
+              case when s.id is null then me.payload #>> '{metadata,projectPath}' end
+            ) as project_path,
             s.id::text as session_id,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -7012,36 +6656,25 @@ export const createMemorySourceRepository = (
             me.invalidation_reason,
             me.payload ->> 'content' as content,
             jsonb_build_object('sourceTable', 'memory_events') ||
-              case
-                when $12::uuid is null then coalesce(me.payload -> 'metadata', '{}'::jsonb)
-                else coalesce(me.payload -> 'metadata', '{}'::jsonb)
-                  - 'projectPath' - 'cwd' - 'localProjectId' - 'projectId'
-              end as metadata
+              coalesce(me.payload -> 'metadata', '{}'::jsonb) as metadata
           from memory_events me
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
             and (
               $6::uuid is not null
-              or $12::uuid is not null
               or me.session_id is null
             )
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or (
-                $12::uuid is null
-                and (
-                  coalesce(
-                    s.project_override_id,
-                    s.automatic_project_id,
-                    case when s.id is null then me.payload ->> 'workspaceId' end,
-                    'unassigned'
-                  ) = $4
-                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
-                )
-              )
-              or ($12::uuid is not null and $12::text = $4)
+              or coalesce(
+                s.project_override_id,
+                s.automatic_project_id,
+                case when s.id is null then me.payload ->> 'projectId' end,
+                'unassigned'
+              ) = $4
+              or coalesce(s.project_override_path, s.automatic_project_path) = $4
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and ($6::uuid is null or me.id = $6)
@@ -7077,20 +6710,8 @@ export const createMemorySourceRepository = (
               )
             )
             and me.visibility = 'personal'
-            and (
-              ($12::uuid is null and me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
-              or (
-                $12::uuid is not null
-                and exists (
-                  select 1
-                  from team_session_share_grants auth_grant
-                  where auth_grant.session_id = me.session_id
-                    and auth_grant.team_workspace_id = $12::uuid
-                    and auth_grant.team_id = $13::uuid
-                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                )
-              )
-            )
+            and me.owner_user_id = $1
+            and ($2::boolean = true or me.personal_deleted_at is null)
           union all
           select
             msg.id,
@@ -7110,22 +6731,9 @@ export const createMemorySourceRepository = (
             msg.source_runtime,
             msg.capture_method,
             s.model,
-            case
-              when $12::uuid is null then coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd)
-              else $12::text
-            end as workspace_id,
-            case
-              when $12::uuid is null then coalesce(s.project_override_id, s.automatic_project_id, 'unassigned')
-              else $12::text
-            end as project_id,
-            case
-              when $12::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
-              else 'Team Workspace'
-            end as project_name,
-            case
-              when $12::uuid is null then coalesce(s.project_override_path, s.automatic_project_path)
-              else null::text
-            end as project_path,
+            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -7156,14 +6764,8 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or (
-                $12::uuid is null
-                and (
-                  coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
-                )
-              )
-              or ($12::uuid is not null and $12::text = $4)
+              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
+              or coalesce(s.project_override_path, s.automatic_project_path) = $4
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or msg.id = $6)
@@ -7229,20 +6831,7 @@ export const createMemorySourceRepository = (
               )
             )
             and msg.visibility = 'personal'
-            and (
-              ($12::uuid is null and msg.owner_user_id = $1)
-              or (
-                $12::uuid is not null
-                and exists (
-                  select 1
-                  from team_session_share_grants auth_grant
-                  where auth_grant.session_id = msg.session_id
-                    and auth_grant.team_workspace_id = $12::uuid
-                    and auth_grant.team_id = $13::uuid
-                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                )
-              )
-            )
+            and msg.owner_user_id = $1
           union all
           select
             te.id,
@@ -7255,22 +6844,9 @@ export const createMemorySourceRepository = (
             te.source_runtime,
             te.capture_method,
             s.model,
-            case
-              when $12::uuid is null then coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd)
-              else $12::text
-            end as workspace_id,
-            case
-              when $12::uuid is null then coalesce(s.project_override_id, s.automatic_project_id, 'unassigned')
-              else $12::text
-            end as project_id,
-            case
-              when $12::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
-              else 'Team Workspace'
-            end as project_name,
-            case
-              when $12::uuid is null then coalesce(s.project_override_path, s.automatic_project_path)
-              else null::text
-            end as project_path,
+            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -7322,14 +6898,8 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or (
-                $12::uuid is null
-                and (
-                  coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
-                )
-              )
-              or ($12::uuid is not null and $12::text = $4)
+              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
+              or coalesce(s.project_override_path, s.automatic_project_path) = $4
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or te.id = $6)
@@ -7401,20 +6971,7 @@ export const createMemorySourceRepository = (
               )
             )
             and te.visibility = 'personal'
-            and (
-              ($12::uuid is null and te.owner_user_id = $1)
-              or (
-                $12::uuid is not null
-                and exists (
-                  select 1
-                  from team_session_share_grants auth_grant
-                  where auth_grant.session_id = te.session_id
-                    and auth_grant.team_workspace_id = $12::uuid
-                    and auth_grant.team_id = $13::uuid
-                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                )
-              )
-            )
+            and te.owner_user_id = $1
         )
         select
           ve.*,
@@ -7441,9 +6998,7 @@ export const createMemorySourceRepository = (
           input.cursorTimestamp ?? null,
           input.cursorSourceSequence ?? null,
           input.cursorId ?? null,
-          limit,
-          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-          teamWorkspaceBoundary?.teamId ?? null
+          limit
         ]
       );
       const hydratedRows = await Promise.all(
@@ -7562,13 +7117,13 @@ export const createMemorySourceRepository = (
           if (
             row.metadata?.sourceTable !== "memory_events" ||
             (row.content && row.content !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
-            !options.envelopeEncryptionProvider
+            !hasMemoryEventEncryptionProvider
           ) {
             return row;
           }
           const payload = await decryptAuthorizedMemoryEventPayload(
             pool,
-            options.envelopeEncryptionProvider,
+            await resolveMemoryEventEncryptionProvider(row.id),
             {
               ownerUserId: row.owner_user_id ?? null,
               memoryEventId: row.id
@@ -7591,9 +7146,7 @@ export const createMemorySourceRepository = (
       return hydratedRows.map((row) =>
         mapLcmGraphEvent({
           ...row,
-          metadata: teamWorkspaceBoundary
-            ? redactLocalProjectMetadata(row.metadata)
-            : row.metadata,
+          metadata: row.metadata,
           includeContent: input.includeContent ?? false,
           includeRaw: input.includeRaw ?? false
         })
@@ -7601,28 +7154,6 @@ export const createMemorySourceRepository = (
     },
 
     async listLcmGraphThreads(actor, input = {}) {
-      const teamWorkspaceAccess = input.teamWorkspaceId
-        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-        : null;
-      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-        requesterUserId: actor.userId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        access: teamWorkspaceAccess
-      });
-      if (
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        !teamWorkspaceAuthorization.authorized
-      ) {
-        return [];
-      }
-      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        teamWorkspaceAuthorization.authorized
-          ? {
-              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-              teamId: teamWorkspaceAuthorization.teamId
-            }
-          : null;
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
       const offset = Math.max(input.offset ?? 0, 0);
       const result = await pool.query<
@@ -7633,41 +7164,29 @@ export const createMemorySourceRepository = (
           select
             me.id::text as id,
             'event' as row_kind,
+            coalesce(
+              s.project_override_id,
+              s.automatic_project_id,
+              case when s.id is null then me.payload ->> 'projectId' end,
+              'unassigned'
+            ) as project_id,
+            coalesce(
+              s.project_override_name,
+              s.automatic_project_name,
+              case when s.id is null then me.payload #>> '{metadata,projectName}' end,
+              'Unassigned'
+            ) as project_name,
+            coalesce(
+              s.project_override_path,
+              s.automatic_project_path,
+              case when s.id is null then me.payload #>> '{metadata,projectPath}' end
+            ) as project_path,
             case
-              when $9::uuid is null then coalesce(
-                s.project_override_id,
-                s.automatic_project_id,
-                case when s.id is null then me.payload ->> 'workspaceId' end,
-                'unassigned'
-              )
-              else $9::text
-            end as project_id,
-            case
-              when $9::uuid is null then coalesce(
-                s.project_override_name,
-                s.automatic_project_name,
-                case when s.id is null then me.payload #>> '{metadata,projectName}' end,
-                'Unassigned'
-              )
-              else 'Team Workspace'
-            end as project_name,
-            case
-              when $9::uuid is null then coalesce(
-                s.project_override_path,
-                s.automatic_project_path,
-                case when s.id is null then me.payload #>> '{metadata,projectPath}' end
-              )
-              else null::text
-            end as project_path,
-            case
-              when $9::uuid is null and s.project_override_id is not null then 'user_override'
-              when $9::uuid is null and s.automatic_project_id is not null then 'detected'
+              when s.project_override_id is not null then 'user_override'
+              when s.automatic_project_id is not null then 'detected'
               else null
             end as project_assignment_source,
-            case
-              when $9::uuid is null then coalesce(s.captured_project_provenance, '{}'::jsonb)
-              else '{}'::jsonb
-            end as captured_project_provenance,
+            coalesce(s.captured_project_provenance, '{}'::jsonb) as captured_project_provenance,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
@@ -7699,19 +7218,13 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or (
-                $9::uuid is null
-                and (
-                  coalesce(
-                    s.project_override_id,
-                    s.automatic_project_id,
-                    case when s.id is null then me.payload ->> 'workspaceId' end,
-                    'unassigned'
-                  ) = $4
-                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
-                )
-              )
-              or ($9::uuid is not null and $9::text = $4)
+              or coalesce(
+                s.project_override_id,
+                s.automatic_project_id,
+                case when s.id is null then me.payload ->> 'projectId' end,
+                'unassigned'
+              ) = $4
+              or coalesce(s.project_override_path, s.automatic_project_path) = $4
             )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and (
@@ -7719,51 +7232,24 @@ export const createMemorySourceRepository = (
               or me.payload ->> 'content' ilike '%' || $6 || '%'
               or me.id::text = $6
               or coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or case
-                when $9::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
-                else 'Team Workspace'
-              end ilike '%' || $6 || '%'
+              or coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') ilike '%' || $6 || '%'
             )
             and me.visibility = 'personal'
-            and (
-              ($9::uuid is null and me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
-              or (
-                $9::uuid is not null
-                and exists (
-                  select 1
-                  from team_session_share_grants auth_grant
-                  where auth_grant.session_id = me.session_id
-                    and auth_grant.team_workspace_id = $9::uuid
-                    and auth_grant.team_id = $10::uuid
-                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                )
-              )
-            )
+            and me.owner_user_id = $1
+            and ($2::boolean = true or me.personal_deleted_at is null)
           union all
           select
             s.id::text as id,
             'session' as row_kind,
+            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             case
-              when $9::uuid is null then coalesce(s.project_override_id, s.automatic_project_id, 'unassigned')
-              else $9::text
-            end as project_id,
-            case
-              when $9::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
-              else 'Team Workspace'
-            end as project_name,
-            case
-              when $9::uuid is null then coalesce(s.project_override_path, s.automatic_project_path)
-              else null::text
-            end as project_path,
-            case
-              when $9::uuid is null and s.project_override_id is not null then 'user_override'
-              when $9::uuid is null and s.automatic_project_id is not null then 'detected'
+              when s.project_override_id is not null then 'user_override'
+              when s.automatic_project_id is not null then 'detected'
               else null
             end as project_assignment_source,
-            case
-              when $9::uuid is null then s.captured_project_provenance
-              else '{}'::jsonb
-            end as captured_project_provenance,
+            s.captured_project_provenance as captured_project_provenance,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             s.id as session_id,
@@ -7785,40 +7271,18 @@ export const createMemorySourceRepository = (
             and ($3::visibility_scope is null or s.visibility = $3::visibility_scope)
             and (
               $4::text is null
-              or (
-                $9::uuid is null
-                and (
-                  coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
-                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
-                )
-              )
-              or ($9::uuid is not null and $9::text = $4)
+              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
+              or coalesce(s.project_override_path, s.automatic_project_path) = $4
             )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and (
               $6::text is null
               or s.id::text = $6
               or coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or case
-                when $9::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
-                else 'Team Workspace'
-              end ilike '%' || $6 || '%'
+              or coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') ilike '%' || $6 || '%'
             )
             and s.visibility = 'personal'
-            and (
-              ($9::uuid is null and s.owner_user_id = $1)
-              or (
-                $9::uuid is not null
-                and exists (
-                  select 1
-                  from team_session_share_grants auth_grant
-                  where auth_grant.session_id = s.id
-                    and auth_grant.team_workspace_id = $9::uuid
-                    and auth_grant.team_id = $10::uuid
-                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                )
-              )
-            )
+            and s.owner_user_id = $1
         ),
         ranked_threads as (
           select
@@ -7861,9 +7325,7 @@ export const createMemorySourceRepository = (
           input.threadId ?? null,
           input.query?.trim() || null,
           limit,
-          offset,
-          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-          teamWorkspaceBoundary?.teamId ?? null
+          offset
         ]
       );
 
@@ -7879,7 +7341,6 @@ export const createMemorySourceRepository = (
             threadId: row.thread_id,
             query: input.query,
             includeContent: true,
-            teamWorkspaceId: input.teamWorkspaceId,
             limit: 1
           });
           return {
@@ -7925,7 +7386,6 @@ export const createMemorySourceRepository = (
     async getLcmGraphEvent(actor, eventId, input = {}) {
       const events = await this.listLcmGraphEvents(actor, {
         eventId,
-        teamWorkspaceId: input.teamWorkspaceId,
         includeInvalidated: input.includeInvalidated,
         includeRaw: input.includeRaw,
         limit: 1
@@ -8156,7 +7616,9 @@ export const createMemorySourceRepository = (
           from memory_events me
           left join conversation_projection_processing_outbox processing
             on processing.event_id = me.id
-          where me.invalidated_at is null and me.personal_deleted_at is null
+          where me.invalidated_at is null
+            and pds_session_recall_ready(me.session_id)
+            and me.personal_deleted_at is null
         )
         select source_type, source_id, owner_user_id, visibility, source_hash,
           text, work_class, reconciliation_job_id
@@ -8222,6 +7684,35 @@ export const createMemorySourceRepository = (
               and max(me.source_chunk_index) = max(me.source_chunk_count) - 1
               and min(me.source_chunk_count) = max(me.source_chunk_count)
           )
+          and not exists (
+            select 1
+            from cross_identity_sync_relationships sync_relationship
+            where sync_relationship.side = 'target'
+              and sync_relationship.state in ('processing', 'partially_available')
+              and sync_relationship.revoked_at is null
+              and (
+                (
+                  s.source_type = 'memory_event'
+                  and exists (
+                    select 1
+                    from sync_event_mappings event_mapping
+                    where event_mapping.sync_relationship_id = sync_relationship.id
+                      and event_mapping.local_memory_event_id = s.source_id
+                      and event_mapping.active = true
+                  )
+                )
+                or (
+                  s.source_type = 'memory_node'
+                  and exists (
+                    select 1
+                    from sync_summary_node_mappings node_mapping
+                    where node_mapping.sync_relationship_id = sync_relationship.id
+                      and node_mapping.local_memory_node_id = s.source_id
+                      and node_mapping.active = true
+                  )
+                )
+              )
+          )
         order by
           case s.work_class
             when 'live_capture_projection' then 0
@@ -8252,14 +7743,17 @@ export const createMemorySourceRepository = (
             ) {
               return row;
             }
-            if (!options.envelopeEncryptionProvider) {
+            if (!hasMemoryEventEncryptionProvider) {
               throw new Error(
                 "Envelope encryption provider is required to embed encrypted Memory Nodes"
               );
             }
+            const nodeProvider = await resolveMemoryNodeEncryptionProvider(
+              row.source_id
+            );
             const summaryText = await decryptAuthorizedEncryptedFieldPayload(
               pool,
-              options.envelopeEncryptionProvider,
+              nodeProvider,
               {
                 ownerUserId: row.owner_user_id,
                 sourceTable: "memory_nodes",
@@ -8269,7 +7763,7 @@ export const createMemorySourceRepository = (
             );
             const bodyText = await decryptAuthorizedEncryptedFieldPayload(
               pool,
-              options.envelopeEncryptionProvider,
+              nodeProvider,
               {
                 ownerUserId: row.owner_user_id,
                 sourceTable: "memory_nodes",
@@ -8291,13 +7785,13 @@ export const createMemorySourceRepository = (
           if (
             row.source_type !== "memory_event" ||
             (row.text && row.text !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
-            !options.envelopeEncryptionProvider
+            !hasMemoryEventEncryptionProvider
           ) {
             return row;
           }
           const payload = await decryptAuthorizedMemoryEventPayload(
             pool,
-            options.envelopeEncryptionProvider,
+            await resolveMemoryEventEncryptionProvider(row.source_id),
             {
               ownerUserId: row.owner_user_id,
               memoryEventId: row.source_id
@@ -8373,7 +7867,7 @@ export const createMemorySourceRepository = (
               )
             end as text
           from memory_events me
-          where me.invalidated_at is null and me.personal_deleted_at is null
+          where me.invalidated_at is null and pds_session_recall_ready(me.session_id) and me.personal_deleted_at is null
         )
         select source_type, source_id, owner_user_id, visibility, source_hash, text
         from sources
@@ -8423,15 +7917,13 @@ export const createMemorySourceRepository = (
           ? {
               ...rawRow,
               text: await (async () => {
-                if (!options.envelopeEncryptionProvider) {
-                  throw new Error(
-                    "Envelope encryption provider is required to embed encrypted Memory Nodes"
-                  );
-                }
+                const nodeProvider = await resolveMemoryNodeEncryptionProvider(
+                  rawRow.source_id
+                );
                 const summaryText =
                   await decryptAuthorizedEncryptedFieldPayload(
                     pool,
-                    options.envelopeEncryptionProvider,
+                    nodeProvider,
                     {
                       ownerUserId: rawRow.owner_user_id,
                       sourceTable: "memory_nodes",
@@ -8441,7 +7933,7 @@ export const createMemorySourceRepository = (
                   );
                 const bodyText = await decryptAuthorizedEncryptedFieldPayload(
                   pool,
-                  options.envelopeEncryptionProvider,
+                  nodeProvider,
                   {
                     ownerUserId: rawRow.owner_user_id,
                     sourceTable: "memory_nodes",
@@ -8461,13 +7953,15 @@ export const createMemorySourceRepository = (
             }
           : rawRow?.source_type === "memory_event" &&
               (!rawRow.text || rawRow.text === ENCRYPTED_MEMORY_EVENT_TEXT) &&
-              options.envelopeEncryptionProvider
+              hasMemoryEventEncryptionProvider
             ? {
                 ...rawRow,
                 text: await (async () => {
                   const payload = await decryptAuthorizedMemoryEventPayload(
                     pool,
-                    options.envelopeEncryptionProvider,
+                    await resolveMemoryEventEncryptionProvider(
+                      rawRow.source_id
+                    ),
                     {
                       ownerUserId: rawRow.owner_user_id,
                       memoryEventId: rawRow.source_id
@@ -8561,7 +8055,9 @@ export const createMemorySourceRepository = (
       return mapLcmNodeForSummarization(
         pool,
         row,
-        options.envelopeEncryptionProvider
+        encryptedMemoryNodeColumns(row).size > 0
+          ? await resolveMemoryNodeEncryptionProvider(row.id)
+          : options.envelopeEncryptionProvider
       );
     },
 
@@ -8588,6 +8084,12 @@ export const createMemorySourceRepository = (
         where mn.invalidated_at is null and mn.personal_deleted_at is null
           and mn.kind in ('leaf', 'rollup')
           and mn.summary_model is null
+          and not exists (
+            select 1
+            from memory_replicas target_replica
+            where target_replica.local_session_id = mn.session_id
+              and target_replica.replica_role = 'target'
+          )
           and (
             mn.kind = 'leaf'
             or not exists (
@@ -8608,11 +8110,13 @@ export const createMemorySourceRepository = (
       );
 
       return Promise.all(
-        result.rows.map((row) =>
+        result.rows.map(async (row) =>
           mapLcmNodeForSummarization(
             pool,
             row,
-            options.envelopeEncryptionProvider
+            encryptedMemoryNodeColumns(row).size > 0
+              ? await resolveMemoryNodeEncryptionProvider(row.id)
+              : options.envelopeEncryptionProvider
           )
         )
       );
@@ -8651,7 +8155,9 @@ export const createMemorySourceRepository = (
         ? mapLcmNodeForSummarization(
             pool,
             row,
-            options.envelopeEncryptionProvider
+            encryptedMemoryNodeColumns(row).size > 0
+              ? await resolveMemoryNodeEncryptionProvider(row.id)
+              : options.envelopeEncryptionProvider
           )
         : null;
     },
@@ -8663,17 +8169,24 @@ export const createMemorySourceRepository = (
         const current = await client.query<{
           id: string;
           owner_user_id: string | null;
+          session_id: string | null;
           visibility: Visibility;
           kind: "leaf" | "rollup";
           summary_text: string;
           source_items_json: LcmSourceItem[] | null;
         }>(
           `
-          select id, owner_user_id, visibility, kind, summary_text, source_items_json
+          select id, owner_user_id, session_id, visibility, kind, summary_text, source_items_json
           from memory_nodes
           where id = $1
             and invalidated_at is null
             and kind in ('leaf', 'rollup')
+            and not exists (
+              select 1
+              from memory_replicas target_replica
+              where target_replica.local_session_id = memory_nodes.session_id
+                and target_replica.replica_role = 'target'
+            )
           for update
         `,
           [input.nodeId]
@@ -8683,9 +8196,8 @@ export const createMemorySourceRepository = (
           await client.query("commit");
           return;
         }
-        const hydratedCurrentNode = await hydrateMemoryNodeRow(
+        const hydratedCurrentNode = await hydrateRepositoryMemoryNodeRow(
           client,
-          options.envelopeEncryptionProvider,
           currentNode
         );
         const previousSummary = hydratedCurrentNode.summary_text;
@@ -8802,6 +8314,56 @@ export const createMemorySourceRepository = (
               hydratedCurrentNode.owner_user_id,
               hydratedCurrentNode.visibility,
               generatedTitle
+            ]
+          );
+        }
+
+        if (
+          hydratedCurrentNode.owner_user_id &&
+          hydratedCurrentNode.session_id
+        ) {
+          const summaryRevisionHash = sourceHash(
+            "memory_node",
+            input.nodeId,
+            JSON.stringify({
+              summaryText: input.summaryText,
+              summaryModel: input.summaryModel,
+              summaryPromptVersion: input.summaryPromptVersion,
+              summaryStructuredJson: input.summaryStructuredJson ?? null,
+              summaryStructuredSchemaVersion:
+                input.summaryStructuredSchemaVersion ?? null
+            })
+          );
+          await client.query(
+            `insert into sync_outbox_entries (
+               sync_relationship_id,
+               idempotency_key,
+               request_hash,
+               payload_manifest
+             )
+             select relationship.id,
+                    $3,
+                    $4,
+                    jsonb_build_object(
+                      'kind', 'summary_snapshot',
+                      'sessionId', $2::uuid,
+                      'originNodeId', $5::uuid
+                    )
+               from cross_identity_sync_relationships relationship
+               join memory_replicas replica
+                 on replica.id=relationship.local_replica_id
+                and replica.local_session_id=$2
+              where relationship.side='source'
+                and relationship.local_user_id=$1
+                and relationship.revoked_at is null
+                and relationship.state not in ('paused','failed','revoked','purge_pending')
+             on conflict (sync_relationship_id,idempotency_key) do nothing`,
+            [
+              hydratedCurrentNode.owner_user_id,
+              hydratedCurrentNode.session_id,
+              `summary:${input.nodeId}:${summaryRevisionHash}`,
+              summaryRevisionHash,
+              input.nodeId
             ]
           );
         }
@@ -9194,7 +8756,7 @@ export const createMemorySourceRepository = (
         content: input.content,
         metadata: input.metadata ?? {},
         rawEventType: input.rawEventType,
-        workspaceId: input.workspaceId
+        projectId: input.projectId
       };
       const suppressPlaintextPayload =
         managedCloudPlaintextMemoryPayloadsDisabled();
@@ -9279,9 +8841,9 @@ export const createMemorySourceRepository = (
             rowFamily: "memory_event",
             scope: {
               tenantId: ownerUserId,
-              workspaceId:
-                typeof plaintextPayload.workspaceId === "string"
-                  ? plaintextPayload.workspaceId
+              projectId:
+                typeof plaintextPayload.projectId === "string"
+                  ? plaintextPayload.projectId
                   : null,
               objectClass: "memory_event"
             },
@@ -9301,25 +8863,24 @@ export const createMemorySourceRepository = (
         set
           source_runtime = $5,
           capture_method = $6,
-          codex_transcript_path = coalesce($7, memory_events.codex_transcript_path),
-          session_id = coalesce($8, memory_events.session_id),
-          turn_id = coalesce($9, memory_events.turn_id),
-          source_hash = $11,
-          payload = $12,
-          include_in_embedding = $18,
-          include_in_lcm = $19,
-          projection_policy_key = $20,
-          projection_policy_revision = $21,
-          token_count = $13,
-          seal_reason = coalesce($14, memory_events.seal_reason),
-          captured_at = coalesce($15::timestamptz, now()),
-          source_event_time = coalesce($16, memory_events.source_event_time),
-          source_sequence = coalesce($17, memory_events.source_sequence),
+          session_id = coalesce($7, memory_events.session_id),
+          turn_id = coalesce($8, memory_events.turn_id),
+          source_hash = $10,
+          payload = $11,
+          include_in_embedding = $17,
+          include_in_lcm = $18,
+          projection_policy_key = $19,
+          projection_policy_revision = $20,
+          token_count = $12,
+          seal_reason = coalesce($13, memory_events.seal_reason),
+          captured_at = coalesce($14::timestamptz, now()),
+          source_event_time = coalesce($15, memory_events.source_event_time),
+          source_sequence = coalesce($16, memory_events.source_sequence),
           invalidated_at = null,
           invalidation_reason = null,
           updated_at = now()
-        where $10::text like 'projection:%'
-          and memory_events.idempotency_key = $10
+        where $9::text like 'projection:%'
+          and memory_events.idempotency_key = $9
           and memory_events.visibility = $3::visibility_scope
           and memory_events.owner_user_id = $2
         returning
@@ -9334,7 +8895,6 @@ export const createMemorySourceRepository = (
           event_type,
           source_runtime,
           capture_method,
-          codex_transcript_path,
           session_id,
           turn_id,
           idempotency_key,
@@ -9351,9 +8911,9 @@ export const createMemorySourceRepository = (
           source_sequence
         )
         select
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-          $18, $19, $20, $21, $13, $14,
-          coalesce($15::timestamptz, now()), $16, $17
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+          $17, $18, $19, $20, $12, $13,
+          coalesce($14::timestamptz, now()), $15, $16
         where not exists (select 1 from refreshed)
         on conflict do nothing
         returning
@@ -9371,7 +8931,6 @@ export const createMemorySourceRepository = (
         input.eventType,
         input.sourceRuntime ?? null,
         input.captureMethod ?? "mcp",
-        input.codexTranscriptPath ?? null,
         input.sessionId ?? null,
         input.turnId ?? null,
         input.idempotencyKey ?? null,
@@ -9481,7 +9040,7 @@ export const createMemorySourceRepository = (
             duplicateRow.payload.contentEncrypted === true
               ? ((await decryptAuthorizedMemoryEventPayload(
                   pool,
-                  options.envelopeEncryptionProvider,
+                  await resolveMemoryEventEncryptionProvider(duplicateRow.id),
                   {
                     ownerUserId: duplicateRow.owner_user_id,
                     memoryEventId: duplicateRow.id
@@ -9523,36 +9082,13 @@ export const createMemorySourceRepository = (
       if (searchDomain === "session" && !input.sessionId) {
         throw new Error("Session-scoped memory search requires sessionId");
       }
-      if (searchDomain === "project" && !input.workspaceId) {
-        throw new Error("Project-scoped memory search requires workspaceId");
+      if (searchDomain === "project" && !input.projectId) {
+        throw new Error("Project-scoped memory search requires projectId");
       }
-      const teamWorkspaceAccess = input.teamWorkspaceId
-        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-        : null;
-      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-        requesterUserId: actor.userId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        access: teamWorkspaceAccess
-      });
-      if (
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        !teamWorkspaceAuthorization.authorized
-      ) {
-        return emptySearchResult();
-      }
-      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        teamWorkspaceAuthorization.authorized
-          ? {
-              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-              teamId: teamWorkspaceAuthorization.teamId
-            }
-          : null;
       const requestedParentNodeIds = input.parentNodeIds?.filter(Boolean) ?? [];
       const visibleParentNodeIds = requestedParentNodeIds.length
         ? (
             await this.listLcmGraphNodes(actor, {
-              teamWorkspaceId: input.teamWorkspaceId,
               nodeIds: requestedParentNodeIds,
               limit: requestedParentNodeIds.length
             })
@@ -9840,11 +9376,7 @@ export const createMemorySourceRepository = (
       const runCuratedMemoryStage = async (): Promise<StageResult> => {
         const started = Date.now();
         const terms = lexicalTerms(input.query);
-        if (
-          terms.length === 0 ||
-          teamWorkspaceBoundary ||
-          !shouldRunCuratedMemoryStage
-        ) {
+        if (terms.length === 0 || !shouldRunCuratedMemoryStage) {
           return {
             name: "curated_memory_search",
             rows: [],
@@ -9861,7 +9393,7 @@ export const createMemorySourceRepository = (
               query: input.query,
               searchDomain,
               sessionId: input.sessionId,
-              workspaceId: input.workspaceId,
+              projectId: input.projectId,
               limit: curatedMemoryCandidateLimit,
               sourceAfter: sourceAfter?.toISOString(),
               sourceBefore: sourceBefore?.toISOString()
@@ -9932,32 +9464,7 @@ export const createMemorySourceRepository = (
                     and parent_node.personal_deleted_at is null
                   where parent.child_memory_node_id = mn.id
                     and parent_node.visibility = 'personal'
-                    and (
-                      ($13::uuid is null and parent_node.owner_user_id = $1)
-                      or (
-                        $13::uuid is not null
-                        and exists (
-                          select 1
-                          from memory_node_sources parent_any_mns
-                          where parent_any_mns.memory_node_id = parent_node.id
-                        )
-                        and not exists (
-                          select 1
-                          from memory_node_sources parent_mns
-                          left join memory_events parent_ev on parent_ev.id = parent_mns.memory_event_id and parent_ev.invalidated_at is null
-                          left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null and parent_msg.recall_eligible = true
-                          where parent_mns.memory_node_id = parent_node.id
-                            and not exists (
-                              select 1
-                              from team_session_share_grants parent_grant
-                              where parent_grant.session_id = coalesce(parent_ev.session_id, parent_msg.session_id)
-                                and parent_grant.team_workspace_id = $13::uuid
-                                and parent_grant.team_id = $14::uuid
-                      and parent_grant.revoked_at is null and sync_session_recall_ready(parent_grant.session_id)
-                            )
-                        )
-                      )
-                    )
+                    and parent_node.owner_user_id = $1
                 ),
                 array[]::text[]
               ) as parent_node_ids,
@@ -10011,14 +9518,8 @@ export const createMemorySourceRepository = (
                   coalesce(source_ev.id, source_msg.id) as source_id,
                   coalesce(source_ev.captured_at, source_msg.captured_at) as source_created_at,
                   coalesce(source_ev.payload ->> 'content', source_msg.content, '') as source_text,
-                  case
-                    when $13::uuid is null then coalesce(source_session.project_override_name, source_session.automatic_project_name, 'Unassigned')
-                    else 'Team Workspace'
-                  end as project_name,
-                  case
-                    when $13::uuid is null then coalesce(source_session.project_override_path, source_session.automatic_project_path)
-                    else null::text
-                  end as project_path
+                  coalesce(source_session.project_override_name, source_session.automatic_project_name, 'Unassigned') as project_name,
+                  coalesce(source_session.project_override_path, source_session.automatic_project_path) as project_path
                 from memory_node_sources source_mns
                 left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
                 left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null and source_msg.recall_eligible = true
@@ -10033,19 +9534,13 @@ export const createMemorySourceRepository = (
                     or (
                       $5::text = 'project'
                       and (
-                        (
-                          $13::uuid is null
-                          and (
-                            coalesce(
-                              source_session.project_override_id,
-                              source_session.automatic_project_id,
-                              case when source_session.id is null then source_ev.payload ->> 'workspaceId' end,
-                              'unassigned'
-                            ) = $7
-                            or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
-                          )
-                        )
-                        or $13::uuid is not null
+                        coalesce(
+                          source_session.project_override_id,
+                          source_session.automatic_project_id,
+                          case when source_session.id is null then source_ev.payload ->> 'projectId' end,
+                          'unassigned'
+                        ) = $7
+                        or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
                       )
                     )
                   )
@@ -10068,32 +9563,7 @@ export const createMemorySourceRepository = (
                 where ready_mns.memory_node_id = mn.id
                   and not sync_session_recall_ready(coalesce(ready_ev.session_id, ready_msg.session_id))
               )
-              and (
-                ($13::uuid is null and mn.owner_user_id = $1)
-                or (
-                  $13::uuid is not null
-                  and exists (
-                    select 1
-                    from memory_node_sources auth_any_mns
-                    where auth_any_mns.memory_node_id = mn.id
-                  )
-                  and not exists (
-                    select 1
-                    from memory_node_sources auth_mns
-                    left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
-                    left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null and auth_msg.recall_eligible = true
-                    where auth_mns.memory_node_id = mn.id
-                      and not exists (
-                        select 1
-                        from team_session_share_grants auth_grant
-                        where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
-                          and auth_grant.team_workspace_id = $13::uuid
-                          and auth_grant.team_id = $14::uuid
-                          and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                      )
-                  )
-                )
-              )
+              and mn.owner_user_id = $1
               and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
               and lower(
                 case
@@ -10131,22 +9601,11 @@ export const createMemorySourceRepository = (
             from memory_events me
             left join sessions me_session on me_session.id = me.session_id
             where me.invalidated_at is null
+            and pds_session_recall_ready(me.session_id)
               and me.visibility = 'personal'
               and sync_session_recall_ready(me.session_id)
-              and (
-                ($13::uuid is null and me.owner_user_id = $1 and me.personal_deleted_at is null)
-                or (
-                  $13::uuid is not null
-                  and exists (
-                    select 1
-                    from team_session_share_grants auth_grant
-                    where auth_grant.session_id = me.session_id
-                      and auth_grant.team_workspace_id = $13::uuid
-                      and auth_grant.team_id = $14::uuid
-                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                  )
-                )
-              )
+              and me.owner_user_id = $1
+              and me.personal_deleted_at is null
               and ($2::visibility_scope is null or me.visibility = $2::visibility_scope)
               and lower(coalesce(me.payload ->> 'content', '')) like any($3::text[])
               and (
@@ -10158,19 +9617,13 @@ export const createMemorySourceRepository = (
                 or (
                   $5::text = 'project'
                   and (
-                    (
-                      $13::uuid is null
-                      and (
-                        coalesce(
-                          me_session.project_override_id,
-                          me_session.automatic_project_id,
-                          case when me_session.id is null then me.payload ->> 'workspaceId' end,
-                          'unassigned'
-                        ) = $7
-                        or coalesce(me_session.project_override_path, me_session.automatic_project_path) = $7
-                      )
-                    )
-                    or $13::uuid is not null
+                    coalesce(
+                      me_session.project_override_id,
+                      me_session.automatic_project_id,
+                      case when me_session.id is null then me.payload ->> 'projectId' end,
+                      'unassigned'
+                    ) = $7
+                    or coalesce(me_session.project_override_path, me_session.automatic_project_path) = $7
                   )
                 )
               )
@@ -10203,20 +9656,7 @@ export const createMemorySourceRepository = (
               and msg.recall_eligible = true
               and msg.visibility = 'personal'
               and sync_session_recall_ready(msg.session_id)
-              and (
-                ($13::uuid is null and msg.owner_user_id = $1)
-                or (
-                  $13::uuid is not null
-                  and exists (
-                    select 1
-                    from team_session_share_grants auth_grant
-                    where auth_grant.session_id = msg.session_id
-                      and auth_grant.team_workspace_id = $13::uuid
-                      and auth_grant.team_id = $14::uuid
-                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                  )
-                )
-              )
+              and msg.owner_user_id = $1
               and ($2::visibility_scope is null or msg.visibility = $2::visibility_scope)
               and lower(msg.content) like any($3::text[])
               and (
@@ -10228,14 +9668,8 @@ export const createMemorySourceRepository = (
                 or (
                   $5::text = 'project'
                   and (
-                    (
-                      $13::uuid is null
-                      and (
-                        coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $7
-                        or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $7
-                      )
-                    )
-                    or $13::uuid is not null
+                    coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $7
+                    or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $7
                   )
                 )
               )
@@ -10296,14 +9730,12 @@ export const createMemorySourceRepository = (
             exact,
             searchDomain,
             input.sessionId ?? null,
-            input.workspaceId ?? null,
+            input.projectId ?? null,
             sourceAfter,
             sourceBefore,
             localEmbeddingModel(),
             localEmbeddingDimensions(),
-            lexicalCandidateLimit,
-            teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-            teamWorkspaceBoundary?.teamId ?? null
+            lexicalCandidateLimit
           ]
         );
         return {
@@ -10512,32 +9944,7 @@ export const createMemorySourceRepository = (
                         and parent_node.personal_deleted_at is null
                       where parent.child_memory_node_id = me.memory_node_id
                         and parent_node.visibility = 'personal'
-                        and (
-                          ($15::uuid is null and parent_node.owner_user_id = $1)
-                          or (
-                            $15::uuid is not null
-                            and exists (
-                              select 1
-                              from memory_node_sources parent_any_mns
-                              where parent_any_mns.memory_node_id = parent_node.id
-                            )
-                            and not exists (
-                              select 1
-                              from memory_node_sources parent_mns
-                              left join memory_events parent_ev on parent_ev.id = parent_mns.memory_event_id and parent_ev.invalidated_at is null
-                              left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null and parent_msg.recall_eligible = true
-                              where parent_mns.memory_node_id = parent_node.id
-                                and not exists (
-                                  select 1
-                                  from team_session_share_grants parent_grant
-                                  where parent_grant.session_id = coalesce(parent_ev.session_id, parent_msg.session_id)
-                                    and parent_grant.team_workspace_id = $15::uuid
-                                    and parent_grant.team_id = $16::uuid
-                                    and parent_grant.revoked_at is null and sync_session_recall_ready(parent_grant.session_id)
-                                )
-                            )
-                          )
-                        )
+                        and parent_node.owner_user_id = $1
                     ),
                     array[]::text[]
                   ) as parent_node_ids,
@@ -10565,19 +9972,13 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                (
-                                  $15::uuid is null
-                                  and (
-                                    coalesce(
-                                      boundary_session.project_override_id,
-                                      boundary_session.automatic_project_id,
-                                      case when boundary_session.id is null then boundary_ev.payload ->> 'workspaceId' end,
-                                      'unassigned'
-                                    ) = $10
-                                    or coalesce(boundary_session.project_override_path, boundary_session.automatic_project_path) = $10
-                                  )
-                                )
-                                or $15::uuid is not null
+                                coalesce(
+                                  boundary_session.project_override_id,
+                                  boundary_session.automatic_project_id,
+                                  case when boundary_session.id is null then boundary_ev.payload ->> 'projectId' end,
+                                  'unassigned'
+                                ) = $10
+                                or coalesce(boundary_session.project_override_path, boundary_session.automatic_project_path) = $10
                               )
                             )
                           )
@@ -10615,14 +10016,8 @@ export const createMemorySourceRepository = (
                           coalesce(time_ev.id, time_msg.id) as source_id,
                           coalesce(time_ev.captured_at, time_msg.captured_at) as source_created_at,
                           coalesce(time_ev.payload ->> 'content', time_msg.content, '') as source_text,
-                          case
-                            when $15::uuid is null then coalesce(time_session.project_override_name, time_session.automatic_project_name, 'Unassigned')
-                            else 'Team Workspace'
-                          end as project_name,
-                          case
-                            when $15::uuid is null then coalesce(time_session.project_override_path, time_session.automatic_project_path)
-                            else null::text
-                          end as project_path
+                          coalesce(time_session.project_override_name, time_session.automatic_project_name, 'Unassigned') as project_name,
+                          coalesce(time_session.project_override_path, time_session.automatic_project_path) as project_path
                         from memory_node_sources time_mns
                         left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null and time_msg.recall_eligible = true
@@ -10637,19 +10032,13 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                (
-                                  $15::uuid is null
-                                  and (
-                                    coalesce(
-                                      time_session.project_override_id,
-                                      time_session.automatic_project_id,
-                                      case when time_session.id is null then time_ev.payload ->> 'workspaceId' end,
-                                      'unassigned'
-                                    ) = $10
-                                    or coalesce(time_session.project_override_path, time_session.automatic_project_path) = $10
-                                  )
-                                )
-                                or $15::uuid is not null
+                                coalesce(
+                                  time_session.project_override_id,
+                                  time_session.automatic_project_id,
+                                  case when time_session.id is null then time_ev.payload ->> 'projectId' end,
+                                  'unassigned'
+                                ) = $10
+                                or coalesce(time_session.project_override_path, time_session.automatic_project_path) = $10
                               )
                             )
                           )
@@ -10674,32 +10063,7 @@ export const createMemorySourceRepository = (
                   case
                     when mn.summary_model is not null then mn.summary_text
                     when linked_mn.summary_model is not null
-                      and (
-                        ($15::uuid is null and me.owner_user_id = $1)
-                        or (
-                          $15::uuid is not null
-                          and exists (
-                            select 1
-                            from memory_node_sources rerank_any_mns
-                            where rerank_any_mns.memory_node_id = linked_mn.id
-                          )
-                          and not exists (
-                            select 1
-                            from memory_node_sources rerank_mns
-                            left join memory_events rerank_ev on rerank_ev.id = rerank_mns.memory_event_id and rerank_ev.invalidated_at is null
-                            left join messages rerank_msg on rerank_msg.id = rerank_mns.message_id and rerank_msg.invalidated_at is null and rerank_msg.recall_eligible = true
-                            where rerank_mns.memory_node_id = linked_mn.id
-                              and not exists (
-                                select 1
-                                from team_session_share_grants rerank_grant
-                                where rerank_grant.session_id = coalesce(rerank_ev.session_id, rerank_msg.session_id)
-                                  and rerank_grant.team_workspace_id = $15::uuid
-                                  and rerank_grant.team_id = $16::uuid
-                      and rerank_grant.revoked_at is null and sync_session_recall_ready(rerank_grant.session_id)
-                              )
-                          )
-                        )
-                      )
+                      and me.owner_user_id = $1
                     then linked_mn.summary_text
                     else null
                   end as rerank_text,
@@ -10751,20 +10115,7 @@ export const createMemorySourceRepository = (
                     or (
                       me.memory_event_id is not null
                       and ev.id is not null
-                      and (
-                        me.personal_deleted_at is null
-                        or (
-                          $15::uuid is not null
-                          and exists (
-                            select 1
-                            from team_session_share_grants auth_grant
-                            where auth_grant.session_id = ev.session_id
-                              and auth_grant.team_workspace_id = $15::uuid
-                              and auth_grant.team_id = $16::uuid
-                              and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                          )
-                        )
-                      )
+                      and me.personal_deleted_at is null
                     )
                     or (me.message_id is not null and msg.id is not null)
                   )
@@ -10782,59 +10133,7 @@ export const createMemorySourceRepository = (
                         and not sync_session_recall_ready(coalesce(ready_ev.session_id, ready_msg.session_id))
                     )
                   )
-                  and (
-                    ($15::uuid is null and me.owner_user_id = $1)
-                    or (
-                      $15::uuid is not null
-                      and (
-                        (
-                          me.memory_node_id is not null
-                          and exists (
-                            select 1
-                            from memory_node_sources auth_any_mns
-                            where auth_any_mns.memory_node_id = me.memory_node_id
-                          )
-                          and not exists (
-                            select 1
-                            from memory_node_sources auth_mns
-                            left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
-                            left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null and auth_msg.recall_eligible = true
-                            where auth_mns.memory_node_id = me.memory_node_id
-                              and not exists (
-                                select 1
-                                from team_session_share_grants auth_grant
-                                where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
-                                  and auth_grant.team_workspace_id = $15::uuid
-                                  and auth_grant.team_id = $16::uuid
-                                  and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                              )
-                          )
-                        )
-                        or (
-                          me.memory_event_id is not null
-                          and exists (
-                            select 1
-                            from team_session_share_grants auth_grant
-                            where auth_grant.session_id = ev.session_id
-                              and auth_grant.team_workspace_id = $15::uuid
-                              and auth_grant.team_id = $16::uuid
-                              and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                          )
-                        )
-                        or (
-                          me.message_id is not null
-                          and exists (
-                            select 1
-                            from team_session_share_grants auth_grant
-                            where auth_grant.session_id = msg.session_id
-                              and auth_grant.team_workspace_id = $15::uuid
-                              and auth_grant.team_id = $16::uuid
-                              and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                          )
-                        )
-                      )
-                    )
-                  )
+                  and me.owner_user_id = $1
                   and ($2::visibility_scope is null or me.visibility = $2::visibility_scope)
                   and (
                     $8::text = 'global'
@@ -10857,30 +10156,24 @@ export const createMemorySourceRepository = (
                       $8::text = 'project'
                       and (
                         (
-                          $15::uuid is null
+                          ev.id is not null
                           and (
-                            (
-                              ev.id is not null
-                              and (
-                                coalesce(
-                                  ev_session.project_override_id,
-                                  ev_session.automatic_project_id,
-                                  case when ev_session.id is null then ev.payload ->> 'workspaceId' end,
-                                  'unassigned'
-                                ) = $10
-                                or coalesce(ev_session.project_override_path, ev_session.automatic_project_path) = $10
-                              )
-                            )
-                            or (
-                              msg.id is not null
-                              and (
-                                coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $10
-                                or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $10
-                              )
-                            )
+                            coalesce(
+                              ev_session.project_override_id,
+                              ev_session.automatic_project_id,
+                              case when ev_session.id is null then ev.payload ->> 'projectId' end,
+                              'unassigned'
+                            ) = $10
+                            or coalesce(ev_session.project_override_path, ev_session.automatic_project_path) = $10
                           )
                         )
-                        or $15::uuid is not null
+                        or (
+                          msg.id is not null
+                          and (
+                            coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $10
+                            or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $10
+                          )
+                        )
                         or exists (
                           select 1
                           from memory_node_sources filter_mns
@@ -10889,19 +10182,13 @@ export const createMemorySourceRepository = (
                           left join sessions filter_session on filter_session.id = coalesce(filter_ev.session_id, filter_msg.session_id)
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (
-                              (
-                                $15::uuid is null
-                                and (
-                                  coalesce(
-                                    filter_session.project_override_id,
-                                    filter_session.automatic_project_id,
-                                    case when filter_session.id is null then filter_ev.payload ->> 'workspaceId' end,
-                                    'unassigned'
-                                  ) = $10
-                                  or coalesce(filter_session.project_override_path, filter_session.automatic_project_path) = $10
-                                )
-                              )
-                              or $15::uuid is not null
+                              coalesce(
+                                filter_session.project_override_id,
+                                filter_session.automatic_project_id,
+                                case when filter_session.id is null then filter_ev.payload ->> 'projectId' end,
+                                'unassigned'
+                              ) = $10
+                              or coalesce(filter_session.project_override_path, filter_session.automatic_project_path) = $10
                             )
                         )
                       )
@@ -10950,19 +10237,13 @@ export const createMemorySourceRepository = (
                           or (
                             $8::text = 'project'
                             and (
-                              (
-                                $15::uuid is null
-                                and (
-                                  coalesce(
-                                    source_session.project_override_id,
-                                    source_session.automatic_project_id,
-                                    case when source_session.id is null then source_ev.payload ->> 'workspaceId' end,
-                                    'unassigned'
-                                  ) = $10
-                                  or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $10
-                                )
-                              )
-                              or $15::uuid is not null
+                              coalesce(
+                                source_session.project_override_id,
+                                source_session.automatic_project_id,
+                                case when source_session.id is null then source_ev.payload ->> 'projectId' end,
+                                'unassigned'
+                              ) = $10
+                              or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $10
                             )
                           )
                         )
@@ -10993,32 +10274,7 @@ export const createMemorySourceRepository = (
                         where scoped_parent.child_memory_node_id = me.memory_node_id
                           and scoped_parent.parent_memory_node_id = any($14::uuid[])
                           and scoped_parent_node.visibility = 'personal'
-                          and (
-                            ($15::uuid is null and scoped_parent_node.owner_user_id = $1)
-                            or (
-                              $15::uuid is not null
-                              and exists (
-                                select 1
-                                from memory_node_sources scoped_parent_any_mns
-                                where scoped_parent_any_mns.memory_node_id = scoped_parent_node.id
-                              )
-                              and not exists (
-                                select 1
-                                from memory_node_sources scoped_parent_mns
-                                left join memory_events scoped_parent_ev on scoped_parent_ev.id = scoped_parent_mns.memory_event_id and scoped_parent_ev.invalidated_at is null
-                                left join messages scoped_parent_msg on scoped_parent_msg.id = scoped_parent_mns.message_id and scoped_parent_msg.invalidated_at is null and scoped_parent_msg.recall_eligible = true
-                                where scoped_parent_mns.memory_node_id = scoped_parent_node.id
-                                  and not exists (
-                                    select 1
-                                    from team_session_share_grants scoped_parent_grant
-                                    where scoped_parent_grant.session_id = coalesce(scoped_parent_ev.session_id, scoped_parent_msg.session_id)
-                                      and scoped_parent_grant.team_workspace_id = $15::uuid
-                                      and scoped_parent_grant.team_id = $16::uuid
-                      and scoped_parent_grant.revoked_at is null and sync_session_recall_ready(scoped_parent_grant.session_id)
-                                  )
-                              )
-                            )
-                          )
+                          and scoped_parent_node.owner_user_id = $1
                       )
                     )
                     or (
@@ -11072,13 +10328,11 @@ export const createMemorySourceRepository = (
                   localEmbeddingVersion(),
                   searchDomain,
                   input.sessionId ?? null,
-                  input.workspaceId ?? null,
+                  input.projectId ?? null,
                   stage,
                   sourceAfter,
                   sourceBefore,
-                  parentNodeIds,
-                  teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-                  teamWorkspaceBoundary?.teamId ?? null
+                  parentNodeIds
                 ]
               );
               const rows = await hydrateSearchRows(
@@ -11285,7 +10539,7 @@ export const createMemorySourceRepository = (
         );
         stageDiagnostics.push({
           name: curated.name,
-          ran: shouldRunCuratedMemoryStage && !teamWorkspaceBoundary,
+          ran: shouldRunCuratedMemoryStage,
           used: false,
           candidateCount: curated.rows.length,
           selectedCount: 0,
@@ -11585,12 +10839,20 @@ export const createMemorySourceRepository = (
           from memory_events me
           left join conversation_projection_processing_outbox processing
             on processing.event_id = me.id
-          where me.invalidated_at is null and me.personal_deleted_at is null
+          where me.invalidated_at is null
+            and pds_session_recall_ready(me.session_id)
+            and me.personal_deleted_at is null
             and me.visibility = $1
             and me.owner_user_id = $2
             and coalesce(processing.work_class, 'normal_embedding_lcm') = $3
             and ($5::uuid is null or me.session_id = $5::uuid)
             and me.include_in_lcm = true
+            and not exists (
+              select 1
+              from memory_replicas target_replica
+              where target_replica.local_session_id = me.session_id
+                and target_replica.replica_role = 'target'
+            )
             and not exists (
               select 1
               from memory_node_sources mns
@@ -11616,14 +10878,14 @@ export const createMemorySourceRepository = (
             if (
               (event.payload.content &&
                 event.payload.content !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
-              !options.envelopeEncryptionProvider ||
+              !hasMemoryEventEncryptionProvider ||
               event.payload.contentEncrypted !== true
             ) {
               return event;
             }
             const payload = await decryptAuthorizedMemoryEventPayload(
               pool,
-              options.envelopeEncryptionProvider,
+              await resolveMemoryEventEncryptionProvider(event.id),
               {
                 ownerUserId: event.owner_user_id,
                 memoryEventId: event.id
@@ -11639,13 +10901,14 @@ export const createMemorySourceRepository = (
           })
         );
         const freshTail = lcmFreshEventTail();
-        const events = input.finalize
-          ? hydratedEventRows
-          : freshTail > 0 && hydratedEventRows.length > freshTail
-            ? hydratedEventRows.slice(0, hydratedEventRows.length - freshTail)
-            : freshTail === 0
-              ? hydratedEventRows
-              : [];
+        const events =
+          input.finalize || input.force
+            ? hydratedEventRows
+            : freshTail > 0 && hydratedEventRows.length > freshTail
+              ? hydratedEventRows.slice(0, hydratedEventRows.length - freshTail)
+              : freshTail === 0
+                ? hydratedEventRows
+                : [];
         const eventThreshold = lcmLeafEventThreshold();
         const tokenThreshold = lcmLeafTokenThreshold();
         const tokenModel = lcmSummaryModel();
@@ -11692,6 +10955,7 @@ export const createMemorySourceRepository = (
             );
             if (
               input.finalize ||
+              input.force ||
               currentSpan.length >= eventThreshold ||
               remainingTokens >= tokenThreshold
             ) {
@@ -11731,6 +10995,7 @@ export const createMemorySourceRepository = (
             `
             insert into memory_nodes (
               owner_user_id,
+              session_id,
               created_by_user_id,
               visibility,
               kind,
@@ -11748,10 +11013,11 @@ export const createMemorySourceRepository = (
               source_hash,
               work_class
             )
-            values ($1, $2, $3, 'leaf', 0, $4, $4, 'mcp', 'depth0-source-items-v1', $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+            values ($1, $2, $3, $4, 'leaf', 0, $5, $5, 'mcp', 'depth0-source-items-v1', $6::jsonb, $7, $8, $9, $10, $11, $12, $13)
             on conflict (source_hash) where source_hash is not null
             do update set
               owner_user_id = excluded.owner_user_id,
+              session_id = excluded.session_id,
               created_by_user_id = excluded.created_by_user_id,
               visibility = excluded.visibility,
               summary_text = excluded.summary_text,
@@ -11770,6 +11036,7 @@ export const createMemorySourceRepository = (
           `,
             [
               ownerUserId,
+              span[0]!.session_id,
               actor.userId,
               input.visibility,
               summaryTextForStorage,
@@ -11858,12 +11125,13 @@ export const createMemorySourceRepository = (
         const unparented = await client.query<{
           id: string;
           owner_user_id: string | null;
+          session_id: string | null;
           depth: number;
           summary_text: string;
           source_items_json: LcmSourceItem[];
         }>(
           `
-          select mn.id, mn.owner_user_id, mn.depth, mn.summary_text, mn.source_items_json
+          select mn.id, mn.owner_user_id, mn.session_id, mn.depth, mn.summary_text, mn.source_items_json
           from memory_nodes mn
           left join memory_node_children mnc on mnc.child_memory_node_id = mn.id
           where mn.invalidated_at is null and mn.personal_deleted_at is null
@@ -11873,13 +11141,19 @@ export const createMemorySourceRepository = (
             and mn.visibility = $1
             and mn.owner_user_id = $2
             and mn.work_class = $3
+            and ($4::uuid is null or mn.session_id = $4)
+            and not exists (
+              select 1
+              from memory_replicas target_replica
+              where target_replica.local_session_id = mn.session_id
+                and target_replica.replica_role = 'target'
+            )
           order by mn.created_at asc, mn.id asc
         `,
-          [input.visibility, ownerUserId, workClass]
+          [input.visibility, ownerUserId, workClass, input.sessionId ?? null]
         );
-        const hydratedUnparentedRows = await hydrateMemoryNodeRows(
+        const hydratedUnparentedRows = await hydrateRepositoryMemoryNodeRows(
           client,
-          options.envelopeEncryptionProvider,
           unparented.rows
         );
         const unparentedBySession = new Map<string, typeof unparented.rows>();
@@ -11892,11 +11166,18 @@ export const createMemorySourceRepository = (
             unparentedBySession.set(key, [row]);
           }
         }
-        const children = [...unparentedBySession.values()].find(
-          (group) => group.length >= fanout
+        const children = [...unparentedBySession.values()].find((group) =>
+          input.force && input.requestedRepresentation === "lcm_rollups"
+            ? group.length > 0
+            : group.length >= fanout
         );
         if (children) {
-          const rollupChildren = children.slice(0, fanout);
+          const rollupChildren = children.slice(
+            0,
+            input.force && input.requestedRepresentation === "lcm_rollups"
+              ? Math.min(children.length, fanout)
+              : fanout
+          );
           const rollupSummary = rollupSummaryText(rollupChildren);
           const childSourceItems: LcmSourceItem[] = rollupChildren.map(
             (child, position) => ({
@@ -11925,6 +11206,7 @@ export const createMemorySourceRepository = (
             `
             insert into memory_nodes (
               owner_user_id,
+              session_id,
               created_by_user_id,
               visibility,
               kind,
@@ -11940,10 +11222,11 @@ export const createMemorySourceRepository = (
               source_hash,
               work_class
             )
-            values ($1, $2, $3, 'rollup', 1, $4, $4, 'mcp', 'depth1-child-rollup-v1', $5::jsonb, $6, $7, $8, $9, $10)
+            values ($1, $2, $3, $4, 'rollup', 1, $5, $5, 'mcp', 'depth1-child-rollup-v1', $6::jsonb, $7, $8, $9, $10, $11)
             on conflict (source_hash) where source_hash is not null
             do update set
               owner_user_id = excluded.owner_user_id,
+              session_id = excluded.session_id,
               created_by_user_id = excluded.created_by_user_id,
               visibility = excluded.visibility,
               summary_text = excluded.summary_text,
@@ -11960,6 +11243,7 @@ export const createMemorySourceRepository = (
           `,
             [
               ownerUserId,
+              rollupChildren[0]!.session_id,
               actor.userId,
               input.visibility,
               rollupSummaryForStorage,
@@ -12071,8 +11355,8 @@ export const createMemorySourceRepository = (
       if (searchDomain === "session" && !input.sessionId) {
         throw new Error("Session-scoped memory expansion requires sessionId");
       }
-      if (searchDomain === "project" && !input.workspaceId) {
-        throw new Error("Project-scoped memory expansion requires workspaceId");
+      if (searchDomain === "project" && !input.projectId) {
+        throw new Error("Project-scoped memory expansion requires projectId");
       }
       const now = new Date();
       const sourceAfter = input.recentDays
@@ -12100,28 +11384,6 @@ export const createMemorySourceRepository = (
       if (sourceAfter && sourceBefore && sourceAfter >= sourceBefore) {
         throw new Error("sourceAfter must be earlier than sourceBefore");
       }
-      const teamWorkspaceAccess = input.teamWorkspaceId
-        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-        : null;
-      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-        requesterUserId: actor.userId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        access: teamWorkspaceAccess
-      });
-      if (
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        !teamWorkspaceAuthorization.authorized
-      ) {
-        throw new Error("Memory node not found or not visible");
-      }
-      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-        teamWorkspaceAuthorization.mode === "team_workspace" &&
-        teamWorkspaceAuthorization.authorized
-          ? {
-              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-              teamId: teamWorkspaceAuthorization.teamId
-            }
-          : null;
       const visibleNode = await pool.query<{
         id: string;
         owner_user_id: string | null;
@@ -12134,46 +11396,14 @@ export const createMemorySourceRepository = (
         where mn.id = $2
           and mn.invalidated_at is null
           and mn.visibility = 'personal'
-          and (
-            ($3::uuid is null and mn.owner_user_id = $1 and mn.personal_deleted_at is null)
-            or (
-              $3::uuid is not null
-              and exists (
-                select 1
-                from memory_node_sources auth_any_mns
-                where auth_any_mns.memory_node_id = mn.id
-              )
-              and not exists (
-                select 1
-                from memory_node_sources auth_mns
-                left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
-                left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
-                where auth_mns.memory_node_id = mn.id
-                  and not exists (
-                    select 1
-                    from team_session_share_grants auth_grant
-                    where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
-                      and auth_grant.team_workspace_id = $3::uuid
-                      and auth_grant.team_id = $4::uuid
-                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-                  )
-              )
-            )
-          )
+          and mn.owner_user_id = $1
+          and mn.personal_deleted_at is null
         limit 1
       `,
-        [
-          actor.userId,
-          nodeId,
-          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-          teamWorkspaceBoundary?.teamId ?? null
-        ]
+        [actor.userId, nodeId]
       );
       const node = visibleNode.rows[0];
       if (!node) {
-        if (teamWorkspaceBoundary) {
-          throw new Error("Memory node not found or not visible");
-        }
         const curated =
           await curatedMemoryRepository.expandCuratedMemoryRetrieval(
             actor,
@@ -12184,11 +11414,7 @@ export const createMemorySourceRepository = (
         }
         throw new Error("Memory node not found or not visible");
       }
-      const hydratedNode = await hydrateMemoryNodeRow(
-        pool,
-        options.envelopeEncryptionProvider,
-        node
-      );
+      const hydratedNode = await hydrateRepositoryMemoryNodeRow(pool, node);
 
       const sources = await pool.query<{
         id: string;
@@ -12203,7 +11429,7 @@ export const createMemorySourceRepository = (
           contentEncrypted?: boolean;
           metadata?: Record<string, unknown>;
           rawEventType?: string;
-          workspaceId?: string;
+          projectId?: string;
         };
         created_at: Date;
         captured_at: Date;
@@ -12215,21 +11441,10 @@ export const createMemorySourceRepository = (
         left join sessions source_session on source_session.id = me.session_id
         where mns.memory_node_id = $1
           and me.invalidated_at is null
+            and pds_session_recall_ready(me.session_id)
           and me.visibility = 'personal'
-          and (
-            ($8::uuid is null and me.owner_user_id = $2 and me.personal_deleted_at is null)
-            or (
-              $8::uuid is not null
-              and exists (
-                select 1
-                from team_session_share_grants auth_grant
-                where auth_grant.session_id = me.session_id
-                  and auth_grant.team_workspace_id = $8::uuid
-                  and auth_grant.team_id = $9::uuid
-                  and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-              )
-            )
-          )
+          and me.owner_user_id = $2
+          and me.personal_deleted_at is null
           and ($3::timestamptz is null or me.captured_at >= $3::timestamptz)
           and ($4::timestamptz is null or me.captured_at < $4::timestamptz)
           and (
@@ -12238,19 +11453,13 @@ export const createMemorySourceRepository = (
             or (
               $5::text = 'project'
               and (
-                (
-                  $8::uuid is null
-                  and (
-                    coalesce(
-                      source_session.project_override_id,
-                      source_session.automatic_project_id,
-                      case when source_session.id is null then me.payload ->> 'workspaceId' end,
-                      'unassigned'
-                    ) = $7
-                    or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
-                  )
-                )
-                or $8::uuid is not null
+                coalesce(
+                  source_session.project_override_id,
+                  source_session.automatic_project_id,
+                  case when source_session.id is null then me.payload ->> 'projectId' end,
+                  'unassigned'
+                ) = $7
+                or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
               )
             )
           )
@@ -12263,9 +11472,7 @@ export const createMemorySourceRepository = (
           sourceBefore,
           searchDomain,
           input.sessionId ?? null,
-          input.workspaceId ?? null,
-          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-          teamWorkspaceBoundary?.teamId ?? null
+          input.projectId ?? null
         ]
       );
       const hydratedSources = await Promise.all(
@@ -12273,14 +11480,14 @@ export const createMemorySourceRepository = (
           if (
             (source.payload.content &&
               source.payload.content !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
-            !options.envelopeEncryptionProvider ||
+            !hasMemoryEventEncryptionProvider ||
             source.payload.contentEncrypted !== true
           ) {
             return source;
           }
           const payload = await decryptAuthorizedMemoryEventPayload(
             pool,
-            options.envelopeEncryptionProvider,
+            await resolveMemoryEventEncryptionProvider(source.id),
             {
               ownerUserId: source.owner_user_id,
               memoryEventId: source.id
@@ -12323,28 +11530,13 @@ export const createMemorySourceRepository = (
 	              where mes.memory_event_id = any($1::uuid[])
 	                and mes.source_role = $2
 	                and ci.visibility = 'personal'
-	                and (
-	                  ($4::uuid is null and ci.owner_user_id = $3)
-	                  or (
-	                    $4::uuid is not null
-	                    and exists (
-	                      select 1
-	                      from team_session_share_grants auth_grant
-	                      where auth_grant.session_id = ci.session_id
-	                        and auth_grant.team_workspace_id = $4::uuid
-	                        and auth_grant.team_id = $5::uuid
-	                        and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
-	                    )
-	                  )
-	                )
+	                and ci.owner_user_id = $3
 	              order by mes.memory_event_id, mes.source_order asc, ci.id asc
 	            `,
               [
                 hydratedSources.map((source) => source.id),
                 SUPPORTING_CONTEXT_SOURCE_ROLE,
-                actor.userId,
-                teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-                teamWorkspaceBoundary?.teamId ?? null
+                actor.userId
               ]
             )
           : { rows: [] };
@@ -12473,8 +11665,8 @@ export const createMemorySourceRepository = (
           );
         }
         return (
-          typeof input.workspaceId === "string" &&
-          payload.workspaceId === input.workspaceId
+          typeof input.projectId === "string" &&
+          payload.projectId === input.projectId
         );
       };
       const filteredNodeSourceItems = nodeSourceItems.filter(

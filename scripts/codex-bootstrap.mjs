@@ -196,9 +196,6 @@ const runCommand = ({
 const resolveBootstrapPaths = (environment) => ({
   codexConfigPath: resolve(
     environment.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
-  ),
-  hookConfigPath: resolve(
-    environment.MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed/config.json`
   )
 });
 
@@ -218,7 +215,6 @@ export const runCodexBootstrap = async ({
     console.log(`API URL: ${result.args.apiUrl}`);
     console.log(`Token owner: ${result.tokenResult.owner.email}`);
     console.log(`Codex config: ${result.paths.codexConfigPath}`);
-    console.log(`Capture hook config: ${result.paths.hookConfigPath}`);
     console.log(
       `Capture verification: ${result.args.skipVerify ? "skipped" : "passed"}`
     );

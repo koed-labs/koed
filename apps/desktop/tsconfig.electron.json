@@ -5,11 +5,15 @@
     "declarationMap": false,
     "outDir": "dist-electron",
     "rootDir": "src",
+    "paths": {
+      "@koed/shared": ["packages/shared/dist/index.d.ts"]
+    },
     "types": ["node"]
   },
   "include": [
     "src/main.ts",
     "src/preload.cts",
+    "src/pds-*.ts",
     "src/ipc/**/*.ts",
     "src/koed-server/**/*.ts",
     "src/window/**/*.ts"

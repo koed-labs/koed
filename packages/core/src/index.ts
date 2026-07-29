@@ -428,7 +428,7 @@ export interface RequesterContext {
 
 export interface PersonalEventInput {
   requesterContext: RequesterContext;
-  workspaceId: string;
+  projectId: string;
   sessionId?: string;
   turnId?: string;
   actor: MemoryActor;
@@ -437,8 +437,7 @@ export interface PersonalEventInput {
   metadata?: Record<string, unknown>;
   visibility?: Visibility;
   sourceRuntime?: "codex" | "codex-cli";
-  captureMethod?: "hook" | "mcp" | "web" | "api";
-  codexTranscriptPath?: string;
+  captureMethod?: "transcript" | "mcp" | "web" | "api";
   idempotencyKey?: string;
   sourceHash?: string;
   capturedAt?: string;
@@ -452,8 +451,7 @@ export interface SearchMemoryInput {
   scope: MemoryScope;
   searchDomain?: MemorySearchDomain;
   sessionId?: string;
-  workspaceId?: string;
-  teamWorkspaceId?: string;
+  projectId?: string;
   limit?: number;
   recentDays?: number;
   sourceAfter?: string;
@@ -485,11 +483,13 @@ export interface ScheduleCompactionInput {
   workClass?: MemoryWorkClass;
   sessionId?: string;
   finalize?: boolean;
+  force?: boolean;
+  requestedRepresentation?: "lcm_leaves" | "lcm_rollups";
 }
 
 export interface MemoryEventRecord {
   id: string;
-  workspaceId: string;
+  projectId: string;
   sessionId: string | null;
   turnId: string | null;
   actor: MemoryActor;
@@ -583,7 +583,7 @@ export interface MemoryEngineRepository {
   createMemoryEvent(
     actor: RequesterContext,
     input: {
-      workspaceId: string;
+      projectId: string;
       sessionId?: string;
       turnId?: string;
       actor: MemoryActor;
@@ -593,8 +593,7 @@ export interface MemoryEngineRepository {
       metadata?: Record<string, unknown>;
       visibility: Visibility;
       sourceRuntime?: "codex" | "codex-cli";
-      captureMethod?: "hook" | "mcp" | "web" | "api";
-      codexTranscriptPath?: string;
+      captureMethod?: "transcript" | "mcp" | "web" | "api";
       idempotencyKey?: string;
       sourceHash?: string;
       capturedAt?: string;
@@ -611,8 +610,7 @@ export interface MemoryEngineRepository {
       query: string;
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
-      workspaceId?: string;
-      teamWorkspaceId?: string;
+      projectId?: string;
       limit?: number;
       recentDays?: number;
       sourceAfter?: string;
@@ -632,6 +630,8 @@ export interface MemoryEngineRepository {
       workClass?: MemoryWorkClass;
       sessionId?: string;
       finalize?: boolean;
+      force?: boolean;
+      requestedRepresentation?: "lcm_leaves" | "lcm_rollups";
     }
   ): Promise<CompactionResult>;
   expandMemoryNode(
@@ -640,8 +640,7 @@ export interface MemoryEngineRepository {
     input?: {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
-      workspaceId?: string;
-      teamWorkspaceId?: string;
+      projectId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
@@ -667,7 +666,6 @@ export const capturePersonalEvent = async (
     visibility: event.visibility ?? "personal",
     sourceRuntime: event.sourceRuntime,
     captureMethod: event.captureMethod,
-    codexTranscriptPath: event.codexTranscriptPath,
     idempotencyKey: event.idempotencyKey,
     sourceHash: event.sourceHash,
     capturedAt: event.capturedAt,
@@ -732,8 +730,7 @@ export const expandMemoryNode = async (
     repository: MemoryEngineRepository;
     searchDomain?: MemorySearchDomain;
     sessionId?: string;
-    workspaceId?: string;
-    teamWorkspaceId?: string;
+    projectId?: string;
     recentDays?: number;
     sourceAfter?: string;
     sourceBefore?: string;
@@ -743,8 +740,7 @@ export const expandMemoryNode = async (
   return repository.expandMemoryNode(nodeId, actor, {
     searchDomain: requesterContext.searchDomain,
     sessionId: requesterContext.sessionId,
-    workspaceId: requesterContext.workspaceId,
-    teamWorkspaceId: requesterContext.teamWorkspaceId,
+    projectId: requesterContext.projectId,
     recentDays: requesterContext.recentDays,
     sourceAfter: requesterContext.sourceAfter,
     sourceBefore: requesterContext.sourceBefore
@@ -771,8 +767,7 @@ export const createMemoryEngine = (repository: MemoryEngineRepository) => ({
     input: {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
-      workspaceId?: string;
-      teamWorkspaceId?: string;
+      projectId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;

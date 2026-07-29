@@ -5,6 +5,8 @@ dist
 **/dist
 **/target
 apps/desktop/src-tauri/resources/koed-node
+apps/desktop/.koed-runtime
+apps/desktop/release
 coverage
 .git
 .playwright-cli

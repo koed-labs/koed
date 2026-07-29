@@ -1,8 +1,11 @@
 export const retainedCompatibilityKeys = new Set([
   "API_DATA_ENCRYPTION_KEY",
   "API_TOKEN_PEPPER",
+  "API_COLLABORATION_LOCAL_BROKER_SECRET",
+  "API_COLLABORATION_REALTIME_CURSOR_SECRET",
   "EMBEDDING_SERVICE_TOKEN",
-  "MEMORY_API_TOKEN"
+  "MEMORY_API_TOKEN",
+  "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"
 ]);
 
 export const splitEnvLine = (line) => {
@@ -57,7 +60,7 @@ export const renderSetupEnv = ({ example, existing, generatedValues }) => {
   const currentValues = parseEnv(existing);
   const exampleValues = parseEnv(example);
 
-  return example
+  const renderedExample = example
     .split(/\r?\n/)
     .map((line) => {
       const entry = splitEnvLine(line);
@@ -71,4 +74,17 @@ export const renderSetupEnv = ({ example, existing, generatedValues }) => {
         : line;
     })
     .join("\n");
+  const retainedOverrides = [...currentValues.entries()].filter(
+    ([key]) => !exampleValues.has(key)
+  );
+  if (retainedOverrides.length === 0) {
+    return renderedExample;
+  }
+  return [
+    renderedExample.trimEnd(),
+    "",
+    "# Operator overrides retained from the existing environment.",
+    ...retainedOverrides.map(([key, value]) => `${key}=${value}`),
+    ""
+  ].join("\n");
 };

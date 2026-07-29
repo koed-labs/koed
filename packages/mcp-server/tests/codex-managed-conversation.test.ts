@@ -9,7 +9,7 @@ import {
   prepareManagedCodexHome,
   removeManagedCodexHome
 } from "../src/codex-app-server-runner.js";
-import type { MemoryApiClient } from "../src/index.js";
+import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
 import {
   CodexManagedConversationSession,
   KOED_MANAGED_CONVERSATION_ENV
@@ -33,6 +33,7 @@ const protocolRequestMethods = [
   "initialize",
   "thread/start",
   "thread/resume",
+  "thread/fork",
   "turn/start",
   "turn/interrupt"
 ];
@@ -176,9 +177,11 @@ if (process.argv.includes("generate-json-schema")) {
   write("v2/ReasoningTextDeltaNotification.json", { required: ["contentIndex", "delta", "itemId", "threadId", "turnId"] });
   write("v2/ThreadStartResponse.json", { required: ["thread"], definitions: { Thread: { required: ["id", "sessionId"] } } });
   write("v2/ThreadResumeResponse.json", { required: ["thread"], definitions: { Thread: { required: ["id", "sessionId"] } } });
+  write("v2/ThreadForkResponse.json", { required: ["thread"], definitions: { Thread: { required: ["id", "sessionId"], properties: { id: string, sessionId: string, forkedFromId: { type: ["string", "null"] } } } } });
   write("v2/TurnStartResponse.json", { required: ["turn"], definitions: { Turn: { required: ["id"] } } });
   write("v2/ThreadStartParams.json", { properties: { historyMode: {} } });
   write("v2/ThreadResumeParams.json", { required: ["threadId"] });
+  write("v2/ThreadForkParams.json", { required: ["threadId"], properties: { path: {}, deferGoalContinuation: {}, excludeTurns: {} } });
   write("v2/TurnStartParams.json", { required: ["input", "threadId"], properties: { clientUserMessageId: {} } });
   write("v2/TurnInterruptParams.json", { required: ["threadId", "turnId"] });
   process.exit(0);
@@ -278,6 +281,14 @@ reader.on("line", (line) => {
     send({ id: message.id, result: { thread: { id: message.params.threadId, sessionId: "session-tree-1", path: transcriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
     return;
   }
+  if (message.method === "thread/fork") {
+    const forkedThreadId = "managed-thread-fork-1";
+    if (fs.existsSync(message.params.path)) fs.copyFileSync(message.params.path, childTranscriptPath);
+    else fs.writeFileSync(childTranscriptPath, "");
+    send({ method: "thread/started", params: { thread: { id: forkedThreadId, sessionId: "session-tree-fork-1", forkedFromId: message.params.threadId, path: childTranscriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
+    send({ id: message.id, result: { thread: { id: forkedThreadId, sessionId: "session-tree-fork-1", forkedFromId: message.params.threadId, path: childTranscriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
+    return;
+  }
   if (message.method === "turn/start") {
     if (activeTurn) process.exit(9);
     const index = turnIndex++;
@@ -304,7 +315,7 @@ reader.on("line", (line) => {
     if (options.hangTurnStartResponse) return;
     send({ id: message.id, result: { turn: { id: turnId, status: "inProgress" } } });
     append([
-      { timestamp: iso(base - 1000), type: "session_meta", payload: { id: threadId, cwd: turn.cwd } },
+      { timestamp: iso(base - 1000), type: "session_meta", payload: { id: threadId, cwd: turn.cwd, timestamp: iso(base - 1000) } },
       { timestamp: iso(base), type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
       { timestamp: iso(base + 100), type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: turn.prompt }] } },
       { timestamp: iso(base + 150), type: "event_msg", payload: { type: "user_message", client_id: turn.clientUserMessageId, message: turn.prompt } },
@@ -328,7 +339,7 @@ reader.on("line", (line) => {
     for (let child = 0; child < (options.childNotificationCount ?? 0); child += 1) {
       if (child === 0) {
         fs.writeFileSync(childTranscriptPath, [
-          { timestamp: iso(turn.base + 210), type: "session_meta", payload: { id: "child-thread-1", cwd: turn.cwd, parentThreadId: threadId } },
+          { timestamp: iso(turn.base + 210), type: "session_meta", payload: { id: "child-thread-1", cwd: turn.cwd, parentThreadId: threadId, timestamp: iso(turn.base + 210) } },
           { timestamp: iso(turn.base + 220), type: "event_msg", payload: { type: "task_started", turn_id: "child-turn-1" } },
           { timestamp: iso(turn.base + 250), type: "response_item", payload: { id: "child-message-0", type: "message", role: "assistant", content: [{ type: "output_text", text: "child-only" }] } },
           { timestamp: iso(turn.base + 300), type: "event_msg", payload: { type: "task_complete", turn_id: "child-turn-1" } }
@@ -365,11 +376,52 @@ reader.on("line", (line) => {
   return scriptPath;
 };
 
+interface FakeSourceArtifact {
+  id: string;
+  sessionId: string;
+  externalSessionId: string;
+  sourceFingerprint: string;
+  journalStartOffset: number;
+  journalStartLine: number;
+  liveStartOffset: number;
+  liveStartLine: number;
+  providerCursorOffset: number;
+  providerCursorLine: number;
+  currentSourceLength: number;
+  sourceModifiedAt: string | null;
+}
+
+interface FakeSourceSegment {
+  id: string;
+  artifactId: string;
+  segmentIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  sourceStartLine: number;
+  sourceEndLine: number;
+  plaintextDigest: string;
+  plaintextSize: number;
+  bytesBase64: string;
+}
+
+interface FakeSourceCursor {
+  artifactId: string;
+  consumerKind: "canonical_live";
+  segmentIndex: number;
+  sourceOffset: number;
+  sourceLine: number;
+  lastVerifiedDigest: string | null;
+  parserState: Record<string, unknown>;
+}
+
 class FakeMemoryClient {
   readonly operations: Array<Record<string, unknown>> = [];
   readonly canonicalIds = new Map<string, string>();
   readonly observations: Array<Record<string, unknown>> = [];
   readonly observationKeys = new Set<string>();
+  readonly sourceArtifacts = new Map<string, FakeSourceArtifact>();
+  readonly sourceSegments = new Map<string, FakeSourceSegment[]>();
+  readonly sourceCursors = new Map<string, FakeSourceCursor>();
   persistAttempts = 0;
   private persistFailuresRemaining = 0;
   private appServerPersistenceUnavailable = false;
@@ -407,6 +459,151 @@ class FakeMemoryClient {
             : `koed-session:${String(input.externalSessionId)}`
       }
     };
+  }
+
+  async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+    const externalSessionId = String(input.externalSessionId);
+    const existing = this.sourceArtifacts.get(externalSessionId);
+    if (existing) {
+      existing.currentSourceLength = Math.max(
+        existing.currentSourceLength,
+        Number(input.currentSourceLength)
+      );
+      existing.sourceModifiedAt =
+        typeof input.sourceModifiedAt === "string"
+          ? input.sourceModifiedAt
+          : existing.sourceModifiedAt;
+      return { artifact: existing };
+    }
+    const artifact: FakeSourceArtifact = {
+      id: `artifact-${this.sourceArtifacts.size + 1}`,
+      sessionId:
+        externalSessionId === "managed-thread-1"
+          ? this.sessionId
+          : `koed-session:${externalSessionId}`,
+      externalSessionId,
+      sourceFingerprint: String(input.sourceFingerprint),
+      journalStartOffset: Number(input.journalStartOffset),
+      journalStartLine: Number(input.journalStartLine),
+      liveStartOffset: Number(input.liveStartOffset),
+      liveStartLine: Number(input.liveStartLine),
+      providerCursorOffset: Number(input.journalStartOffset),
+      providerCursorLine: Number(input.journalStartLine),
+      currentSourceLength: Number(input.currentSourceLength),
+      sourceModifiedAt:
+        typeof input.sourceModifiedAt === "string"
+          ? input.sourceModifiedAt
+          : null
+    };
+    this.sourceArtifacts.set(externalSessionId, artifact);
+    this.sourceSegments.set(artifact.id, []);
+    this.operations.push({ kind: "source_artifact", artifactId: artifact.id });
+    return { artifact };
+  }
+
+  async lookupConversationSourceArtifact(input: { externalSessionId: string }) {
+    const artifact = this.sourceArtifacts.get(input.externalSessionId);
+    if (!artifact) {
+      throw new MemoryApiError("not found", { status: 404 });
+    }
+    return { artifact };
+  }
+
+  async appendConversationSourceSegment(
+    artifactId: string,
+    input: Record<string, unknown>
+  ) {
+    const artifact = [...this.sourceArtifacts.values()].find(
+      (candidate) => candidate.id === artifactId
+    );
+    if (!artifact) throw new Error("missing fake source artifact");
+    if (
+      artifact.providerCursorOffset !== Number(input.expectedProviderOffset) ||
+      artifact.providerCursorLine !== Number(input.expectedProviderLine)
+    ) {
+      throw new MemoryApiError("cursor conflict", { status: 409 });
+    }
+    const segments = this.sourceSegments.get(artifactId)!;
+    const segment: FakeSourceSegment = {
+      id: `segment-${artifactId}-${segments.length + 1}`,
+      artifactId,
+      segmentIndex: segments.length + 1,
+      sourceStartOffset: artifact.providerCursorOffset,
+      sourceEndOffset: Number(input.sourceEndOffset),
+      sourceStartLine: artifact.providerCursorLine,
+      sourceEndLine: Number(input.sourceEndLine),
+      plaintextDigest: String(input.plaintextDigest),
+      plaintextSize: Number(input.plaintextSize),
+      bytesBase64: String(input.bytesBase64)
+    };
+    segments.push(segment);
+    artifact.providerCursorOffset = segment.sourceEndOffset;
+    artifact.providerCursorLine = segment.sourceEndLine;
+    artifact.currentSourceLength = Number(input.currentSourceLength);
+    this.operations.push({ kind: "source_segment", segmentId: segment.id });
+    return { artifact, segment };
+  }
+
+  async listConversationSourceSegments(
+    artifactId: string,
+    input: { afterOffset: number; limit?: number }
+  ) {
+    return {
+      segments: this.sourceSegments
+        .get(artifactId)!
+        .filter((segment) => segment.sourceEndOffset > input.afterOffset)
+        .slice(0, input.limit ?? 20)
+        .map(({ bytesBase64, ...segment }) => {
+          void bytesBase64;
+          return segment;
+        })
+    };
+  }
+
+  async getConversationSourceSegmentContent(
+    artifactId: string,
+    segmentId: string
+  ) {
+    const segment = this.sourceSegments
+      .get(artifactId)!
+      .find((candidate) => candidate.id === segmentId);
+    if (!segment) throw new Error("missing fake source segment");
+    const { bytesBase64, ...safeSegment } = segment;
+    return { segment: safeSegment, bytesBase64 };
+  }
+
+  async getConversationSourceCursor(artifactId: string) {
+    return { cursor: this.sourceCursors.get(artifactId) ?? null };
+  }
+
+  async advanceConversationSourceCursor(
+    artifactId: string,
+    input: Record<string, unknown>
+  ) {
+    const artifact = [...this.sourceArtifacts.values()].find(
+      (candidate) => candidate.id === artifactId
+    );
+    if (!artifact) throw new Error("missing fake source artifact");
+    const existing = this.sourceCursors.get(artifactId);
+    const expectedOffset = existing?.sourceOffset ?? artifact.liveStartOffset;
+    if (expectedOffset !== Number(input.expectedSourceOffset)) {
+      throw new MemoryApiError("cursor conflict", { status: 409 });
+    }
+    const cursor: FakeSourceCursor = {
+      artifactId,
+      consumerKind: "canonical_live",
+      segmentIndex: Number(input.segmentIndex),
+      sourceOffset: Number(input.sourceOffset),
+      sourceLine: Number(input.sourceLine),
+      lastVerifiedDigest:
+        typeof input.lastVerifiedDigest === "string"
+          ? input.lastVerifiedDigest
+          : null,
+      parserState: (input.parserState ?? {}) as Record<string, unknown>
+    };
+    this.sourceCursors.set(artifactId, cursor);
+    this.operations.push({ kind: "source_cursor", cursor });
+    return { cursor };
   }
 
   async createConversationItems(input: {
@@ -651,7 +848,7 @@ describe("Codex managed conversation coordinator", () => {
       path.join(os.tmpdir(), "koed-managed-conversation-")
     );
     const transcriptPath = path.join(directory, "rollout.jsonl");
-    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    expect(fs.existsSync(transcriptPath)).toBe(false);
     const memoryClient = new FakeMemoryClient();
     const session = new CodexManagedConversationSession(
       configFor(
@@ -794,9 +991,14 @@ describe("Codex managed conversation coordinator", () => {
       if (managedHome) {
         expect(fs.existsSync(managedHome)).toBe(true);
         expect(
-          fs.statSync(path.join(managedHome, "koed-ingestion-state.json"))
-            .mode & 0o777
-        ).toBe(0o600);
+          fs.existsSync(path.join(managedHome, "koed-ingestion-state.json"))
+        ).toBe(false);
+        const artifact = memoryClient.sourceArtifacts.get("managed-thread-1");
+        expect(
+          artifact
+            ? memoryClient.sourceCursors.get(artifact.id)?.sourceOffset
+            : undefined
+        ).toBe(fs.statSync(transcriptPath).size);
       }
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -1237,7 +1439,7 @@ describe("Codex managed conversation coordinator", () => {
       );
       expect(
         fs.existsSync(path.join(started.codexHome, "koed-ingestion-state.json"))
-      ).toBe(true);
+      ).toBe(false);
 
       destroyManagedCodexHome(started.codexHome, config.appServer.env);
       expect(fs.existsSync(started.codexHome)).toBe(false);
@@ -1642,6 +1844,15 @@ describe("Codex managed conversation coordinator", () => {
         transcriptPath,
         [
           {
+            timestamp: "2026-07-11T11:59:59.000Z",
+            type: "session_meta",
+            payload: {
+              id: "managed-thread-1",
+              cwd: directory,
+              timestamp: "2026-07-11T11:59:59.000Z"
+            }
+          },
+          {
             timestamp: "2026-07-11T12:00:00.000Z",
             type: "event_msg",
             payload: { type: "task_started", turn_id: "close-turn" }
@@ -1701,6 +1912,15 @@ describe("Codex managed conversation coordinator", () => {
     fs.writeFileSync(
       transcriptPath,
       [
+        {
+          timestamp: "2026-07-11T09:59:59.000Z",
+          type: "session_meta",
+          payload: {
+            id: "managed-thread-1",
+            cwd: directory,
+            timestamp: "2026-07-11T09:59:59.000Z"
+          }
+        },
         {
           timestamp: "2026-07-11T10:00:00.000Z",
           type: "event_msg",
@@ -1768,6 +1988,76 @@ describe("Codex managed conversation coordinator", () => {
     }
   });
 
+  it("creates an explicit native fork with durable parent lineage", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-fork-")
+    );
+    const childTranscriptPath = path.join(directory, "fork-rollout.jsonl");
+    const memoryClient = new FakeMemoryClient();
+    const appServerBinary = writeManagedFakeAppServer(
+      directory,
+      childTranscriptPath
+    );
+    const base = configFor(memoryClient, appServerBinary, directory);
+    const managedHome = prepareManagedCodexHome(base.appServer.env);
+    const sourceTranscriptPath = path.join(
+      managedHome,
+      "sessions",
+      "parent-rollout.jsonl"
+    );
+    fs.mkdirSync(path.dirname(sourceTranscriptPath), {
+      recursive: true,
+      mode: 0o700
+    });
+    fs.writeFileSync(
+      sourceTranscriptPath,
+      `${JSON.stringify({
+        timestamp: "2026-07-11T10:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "managed-thread-1", cwd: directory }
+      })}\n`,
+      { mode: 0o600 }
+    );
+    const session = new CodexManagedConversationSession({
+      ...base,
+      fork: {
+        parentThreadId: "managed-thread-1",
+        sourceTranscriptPath,
+        codexHome: managedHome
+      }
+    });
+
+    try {
+      await expect(session.start()).resolves.toMatchObject({
+        thread: {
+          id: "managed-thread-fork-1",
+          forkedFromId: "managed-thread-1",
+          path: `${childTranscriptPath}.child.jsonl`
+        }
+      });
+      const created = memoryClient.operations.find(
+        (operation) => operation.kind === "create_session"
+      );
+      expect(created).toMatchObject({
+        input: {
+          externalSessionId: "managed-thread-fork-1",
+          metadata: { forked_from_id: "managed-thread-1" }
+        }
+      });
+      const sourceArtifact = memoryClient.sourceArtifacts.get(
+        "managed-thread-fork-1"
+      );
+      expect(sourceArtifact).toMatchObject({
+        externalSessionId: "managed-thread-fork-1"
+      });
+      expect(typeof sourceArtifact?.providerCursorOffset).toBe("number");
+    } finally {
+      await session.closeAndWait().catch(() => undefined);
+      removeManagedCodexHome(managedHome, base.appServer.env);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("persists a durable transcript checkpoint across coordinator restarts", async () => {
     const directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-managed-checkpoint-")
@@ -1787,16 +2077,13 @@ describe("Codex managed conversation coordinator", () => {
       const started = await first.start();
       await first.runTurn("Checkpoint prompt", 2_000);
       await first.closeAndWait();
-      const checkpointPath = path.join(
-        started.codexHome,
-        "koed-ingestion-state.json"
-      );
-      const checkpoint = JSON.parse(
-        fs.readFileSync(checkpointPath, "utf8")
-      ) as { transcriptOffsets: Record<string, { offset: number }> };
-      expect(Object.values(checkpoint.transcriptOffsets)[0]?.offset).toBe(
-        fs.statSync(transcriptPath).size
-      );
+      const artifact = memoryClient.sourceArtifacts.get(started.thread.id);
+      expect(artifact).toBeDefined();
+      expect(
+        artifact
+          ? memoryClient.sourceCursors.get(artifact.id)?.sourceOffset
+          : undefined
+      ).toBe(fs.statSync(transcriptPath).size);
       const transcriptObservationCount = memoryClient.observations.filter(
         (item) => item.sourceTransport === "transcript"
       ).length;
@@ -1834,6 +2121,15 @@ describe("Codex managed conversation coordinator", () => {
     fs.writeFileSync(
       transcriptPath,
       [
+        {
+          timestamp: "2026-07-11T12:59:59.000Z",
+          type: "session_meta",
+          payload: {
+            id: "managed-thread-1",
+            cwd: directory,
+            timestamp: "2026-07-11T12:59:59.000Z"
+          }
+        },
         {
           timestamp: "2026-07-11T13:00:00.000Z",
           type: "event_msg",
@@ -2035,6 +2331,15 @@ describe("Codex managed conversation coordinator", () => {
         transcriptPath,
         [
           {
+            timestamp: "2026-07-11T13:59:59.000Z",
+            type: "session_meta",
+            payload: {
+              id: "managed-thread-1",
+              cwd: directory,
+              timestamp: "2026-07-11T13:59:59.000Z"
+            }
+          },
+          {
             timestamp: "2026-07-11T14:00:00.000Z",
             type: "event_msg",
             payload: { type: "task_started", turn_id: "held-turn" }
@@ -2108,6 +2413,15 @@ describe("Codex managed conversation coordinator", () => {
     fs.writeFileSync(
       transcriptPath,
       [
+        {
+          timestamp: "2026-07-11T10:59:59.000Z",
+          type: "session_meta",
+          payload: {
+            id: "managed-thread-1",
+            cwd: directory,
+            timestamp: "2026-07-11T10:59:59.000Z"
+          }
+        },
         {
           timestamp: "2026-07-11T11:00:00.000Z",
           type: "event_msg",

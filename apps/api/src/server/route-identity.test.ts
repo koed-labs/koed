@@ -134,18 +134,29 @@ describe("route identity contract", () => {
       security: [{ deviceCredential: [] }],
       "x-koed-identity": "device_credential"
     });
+    expect(
+      openApiPaths["/v1/local-edge/device-credentials/current"]?.delete
+    ).toMatchObject({
+      security: [{ deviceCredential: [] }],
+      "x-koed-identity": "device_credential"
+    });
     expect(openApiSecuritySchemes.deviceCredential).toMatchObject({
       type: "apiKey",
       in: "header",
       name: "Authorization",
       description: expect.stringContaining("Koed-Device")
     });
-    expect(
-      openApiPaths["/v1/local-edge/upstream-operations"]?.post
-    ).toMatchObject({
-      security: [{ bearerApiToken: [] }, { deviceCredential: [] }],
-      "x-koed-identity": "api_token_or_device_credential"
-    });
+    for (const path of [
+      "/v1/local-edge/team-memory/search",
+      "/v1/local-edge/team-memory/answer",
+      "/v1/local-edge/team-memory/expand"
+    ]) {
+      expect(openApiPaths[path]).toBeUndefined();
+      expect(routeIdentityFor("POST", path)).toMatchObject({
+        identity: "local_edge_client_credential",
+        status: "not_implemented"
+      });
+    }
     expect(
       routeIdentityContracts.filter(
         (contract) => contract.identity === "upstream_credential"
@@ -170,6 +181,27 @@ describe("route identity contract", () => {
       openApiPaths["/v1/local-edge/upstream-credential-operations"]
     ).toBeUndefined();
     expect(openApiPaths["/v1/internal/jobs"]).toBeUndefined();
+  });
+
+  it("keeps every managed runner route behind a device credential", () => {
+    const runnerRoutes = implementedRouteIdentityContracts.filter((contract) =>
+      contract.path.startsWith("/v1/managed-conversation-runner/")
+    );
+
+    expect(runnerRoutes).toHaveLength(45);
+    for (const contract of runnerRoutes) {
+      expect(contract).toMatchObject({
+        identity: "device_credential",
+        teamAuthority: "none"
+      });
+      expect(
+        openApiPaths[contract.path]?.[contract.method.toLowerCase()]
+      ).toMatchObject({
+        security: [{ deviceCredential: [] }],
+        "x-koed-identity": "device_credential",
+        "x-koed-team-authority": "none"
+      });
+    }
   });
 
   it("pins public, session, API-token, and mixed route security in OpenAPI", () => {
@@ -247,20 +279,30 @@ describe("route identity contract", () => {
       "x-koed-team-authority": "none"
     });
     expect(
-      openApiPaths["/v1/historical-import-sources/{sourceId}/live-cursor"]?.post
+      openApiPaths["/v1/conversation-source-artifacts"]?.post
     ).toMatchObject({
       security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
       "x-koed-identity": "session_or_api_token",
       "x-koed-team-authority": "none",
       "x-koed-deployment-modes": ["developer", "local_personal"]
     });
+    expect(
+      openApiPaths[
+        "/v1/conversation-source-artifacts/{artifactId}/segments/{segmentId}/content"
+      ]?.get
+    ).toMatchObject({
+      security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
+      "x-koed-identity": "session_or_api_token",
+      "x-koed-team-authority": "none",
+      "x-koed-deployment-modes": ["developer", "local_personal"]
+    });
+    expect(
+      openApiPaths["/v1/historical-import-sources/{sourceId}/live-cursor"]
+    ).toBeUndefined();
     expect(openApiPaths["/v1/memory/answer"]?.post).toMatchObject({
-      security: [
-        { sessionCookie: [] },
-        { bearerApiToken: [] },
-        { deviceCredential: [] }
-      ],
-      "x-koed-identity": "conditional_team_session_or_device"
+      security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
+      "x-koed-identity": "session_or_api_token",
+      "x-koed-team-authority": "none"
     });
     expect(openApiPaths["/self-host/status"]?.get).toMatchObject({
       security: [{}, { sessionCookie: [] }],
@@ -308,29 +350,46 @@ describe("route identity contract", () => {
     );
   });
 
-  it("documents Team authority as request-time session-bound checks", () => {
+  it("documents PDS relay proof-only routes", () => {
+    expect(
+      routeIdentityFor("POST", "/v1/personal-device-sync/relay/transports")
+    ).toMatchObject({ identity: "pds_relay_proof", status: "implemented" });
+    expect(
+      openApiPaths["/v1/personal-device-sync/relay/transports"]?.post
+    ).toMatchObject({
+      security: [{ pdsRelayProof: [] }],
+      "x-koed-identity": "pds_relay_proof"
+    });
+    expect(openApiSecuritySchemes.pdsRelayProof).toMatchObject({
+      type: "apiKey",
+      in: "header",
+      name: "X-PDS-Relay-Proof"
+    });
+  });
+
+  it("documents Team authority and scoped device credential access", () => {
     expect(
       routeIdentityFor("POST", "/v1/teams/{teamId}/invites")
     ).toMatchObject({
-      identity: "session",
+      identity: "session_or_device_credential",
       teamAuthority: "request_time_team_admin"
     });
     expect(
       routeIdentityFor("PUT", "/v1/teams/{teamId}/entitlement")
     ).toMatchObject({
-      identity: "session",
+      identity: "session_or_device_credential",
       teamAuthority: "request_time_team_admin"
     });
     expect(
       routeIdentityFor("GET", "/v1/teams/{teamId}/billing-seats")
     ).toMatchObject({
-      identity: "session",
+      identity: "session_or_device_credential",
       teamAuthority: "request_time_team_admin"
     });
     expect(
       routeIdentityFor("GET", "/v1/teams/{teamId}/support/overview")
     ).toMatchObject({
-      identity: "session",
+      identity: "session_or_device_credential",
       domain: "operations",
       teamAuthority: "request_time_team_admin"
     });
@@ -351,39 +410,239 @@ describe("route identity contract", () => {
     expect(
       routeIdentityFor("PUT", "/v1/teams/{teamId}/billing-seats/policy")
     ).toMatchObject({
-      identity: "session",
+      identity: "session_or_device_credential",
       teamAuthority: "request_time_team_admin"
     });
     expect(
       routeIdentityFor("PUT", "/v1/team-workspaces/{teamWorkspaceId}/access")
     ).toMatchObject({
-      identity: "session",
+      identity: "session_or_device_credential",
       teamAuthority: "request_time_team_workspace"
     });
+    expect(routeIdentityFor("GET", "/v1/team-context")).toMatchObject({
+      identity: "session_or_device_credential",
+      teamAuthority: "request_time_team_workspace"
+    });
+    expect(
+      routeIdentityFor(
+        "GET",
+        "/v1/team-workspaces/{teamWorkspaceId}/session-share-grants"
+      )
+    ).toBeUndefined();
     expect(
       routeIdentityFor(
         "POST",
         "/v1/team-workspaces/{teamWorkspaceId}/session-share-grants"
       )
-    ).toMatchObject({
-      identity: "session",
-      teamAuthority: "request_time_team_workspace"
-    });
+    ).toBeUndefined();
+    expect(
+      routeIdentityFor(
+        "DELETE",
+        "/v1/team-workspaces/{teamWorkspaceId}/session-share-grants/{shareGrantId}"
+      )
+    ).toBeUndefined();
     expect(routeIdentityFor("POST", "/v1/memory/search")).toMatchObject({
-      identity: "conditional_team_session_or_device",
-      description:
-        "Personal recall search uses API Token; Team Workspace recall requires session or scoped device credential."
+      identity: "api_token",
+      domain: "personal_memory",
+      teamAuthority: "none"
     });
     expect(routeIdentityFor("POST", "/v1/memory/answer")).toMatchObject({
-      identity: "conditional_team_session_or_device",
-      teamAuthority: "request_time_team_workspace"
+      identity: "session_or_api_token",
+      domain: "personal_memory",
+      teamAuthority: "none"
     });
     expect(
       routeIdentityFor("GET", "/v1/memory/nodes/{nodeId}/expand")
     ).toMatchObject({
-      identity: "conditional_team_session_or_device",
-      teamAuthority: "request_time_team_workspace"
+      identity: "api_token",
+      domain: "personal_memory",
+      teamAuthority: "none"
     });
+    for (const path of [
+      "/v1/memory/graph/nodes",
+      "/v1/memory/graph/nodes/{nodeId}",
+      "/v1/memory/graph/events",
+      "/v1/memory/graph/threads",
+      "/v1/memory/graph/events/{eventId}",
+      "/v1/memory/graph/stream"
+    ]) {
+      expect(routeIdentityFor("GET", path)).toMatchObject({
+        identity: "session_or_api_token",
+        domain: "personal_memory",
+        teamAuthority: "none"
+      });
+    }
+  });
+
+  it("exports the full current Team collaboration and administration route inventory", () => {
+    const routeFamilies = {
+      collaboration: [
+        "GET /v1/collaboration/teams/{teamId}/participants",
+        "GET /v1/collaboration/teams/{teamId}/threads",
+        "GET /v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
+        "POST /v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",
+        "GET /v1/collaboration/teams/{teamId}/direct-messages",
+        "POST /v1/collaboration/teams/{teamId}/direct-messages",
+        "POST /v1/collaboration/teams/{teamId}/group-direct-messages",
+        "POST /v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/shared-sessions/{sharedLogicalMemoryId}/discussion",
+        "GET /v1/collaboration/teams/{teamId}/threads/{threadId}",
+        "PATCH /v1/collaboration/teams/{teamId}/threads/{threadId}/name",
+        "PATCH /v1/collaboration/teams/{teamId}/threads/{threadId}/topic",
+        "POST /v1/collaboration/teams/{teamId}/threads/{threadId}/archive",
+        "POST /v1/collaboration/teams/{teamId}/threads/{threadId}/restore",
+        "GET /v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
+        "POST /v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
+        "PUT /v1/collaboration/teams/{teamId}/threads/{threadId}/read-state",
+        "POST /v1/collaboration/realtime/snapshot",
+        "POST /v1/collaboration/realtime/ack",
+        "GET /v1/collaboration/realtime/stream",
+        "POST /v1/local-edge/collaboration/command",
+        "POST /v1/local-edge/collaboration/realtime/subscriptions",
+        "POST /v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/ack",
+        "GET /v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}/stream",
+        "DELETE /v1/local-edge/collaboration/realtime/backends/{backendId}/subscriptions",
+        "DELETE /v1/local-edge/collaboration/realtime/subscriptions/{subscriptionId}"
+      ],
+      shared_memory: [
+        "PUT /v1/shared-memory/source-owner-policies/{logicalMemoryId}",
+        "PUT /v1/shared-memory/teams/{teamId}/policy",
+        "PUT /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/policy",
+        "POST /v1/shared-memory/previews",
+        "POST /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/consents",
+        "POST /v1/shared-memory/share-grants",
+        "PUT /v1/shared-memory/share-grants/{shareGrantId}/representation",
+        "PUT /v1/shared-memory/share-grants/{shareGrantId}/representations/{representation}",
+        "POST /v1/shared-memory/share-grants/{shareGrantId}/revoke",
+        "GET /v1/shared-memory/logical-memories/{logicalMemoryId}/share-grants",
+        "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants",
+        "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}",
+        "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items",
+        "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items/{sourceId}"
+      ],
+      team_memory: [
+        "GET /v1/teams",
+        "POST /v1/teams",
+        "GET /v1/team-context",
+        "GET /v1/teams/{teamId}/membership",
+        "GET /v1/teams/{teamId}/members",
+        "GET /v1/teams/{teamId}/members/manage",
+        "PATCH /v1/teams/{teamId}/members/{userId}/role",
+        "POST /v1/teams/{teamId}/members/{userId}/disable",
+        "POST /v1/teams/{teamId}/leave",
+        "GET /v1/teams/{teamId}/invites",
+        "POST /v1/teams/{teamId}/invites",
+        "DELETE /v1/teams/{teamId}/invites/{inviteId}",
+        "POST /v1/team-invites/accept",
+        "GET /v1/teams/{teamId}/audit-events",
+        "GET /v1/teams/{teamId}/entitlement",
+        "PUT /v1/teams/{teamId}/entitlement",
+        "GET /v1/teams/{teamId}/billing-seats",
+        "GET /v1/teams/{teamId}/support/overview",
+        "PUT /v1/teams/{teamId}/billing-seats/policy",
+        "GET /v1/teams/{teamId}/workspaces",
+        "POST /v1/teams/{teamId}/workspaces",
+        "POST /v1/team-workspaces",
+        "GET /v1/team-workspaces/{teamWorkspaceId}/context",
+        "GET /v1/team-workspaces/{teamWorkspaceId}/access",
+        "POST /v1/team-workspaces/{teamWorkspaceId}/archive",
+        "POST /v1/team-workspaces/{teamWorkspaceId}/restore",
+        "PUT /v1/team-workspaces/{teamWorkspaceId}/access"
+      ],
+      high_risk: [
+        "POST /v1/high-risk/action-grants",
+        "GET /v1/high-risk/action-grants/{clientRequestId}",
+        "GET /v1/high-risk/action-grants/{clientRequestId}/await",
+        "DELETE /v1/high-risk/action-grants/{clientRequestId}",
+        "GET /v1/high-risk/browser-activations/{selector}",
+        "POST /v1/high-risk/browser-activations/{selector}/decision"
+      ],
+      retention: [
+        "POST /v1/retention/teams/{teamId}/deletion-request",
+        "POST /v1/retention/owner-private-replicas/{ownerPrivateReplicaId}/purge-request",
+        "POST /v1/retention/users/me/erasure-request",
+        "POST /v1/retention/legal-holds",
+        "POST /v1/retention/legal-holds/{holdId}/release-request",
+        "POST /v1/retention/legal-holds/{holdId}/release-confirmation"
+      ]
+    } as const;
+
+    for (const [domain, expectedRoutes] of Object.entries(routeFamilies)) {
+      const contracts = implementedRouteIdentityContracts.filter(
+        (contract) =>
+          contract.domain === domain ||
+          (domain === "team_memory" &&
+            contract.path === "/v1/teams/{teamId}/support/overview")
+      );
+      expect(
+        contracts.map(({ method, path }) => `${method} ${path}`).sort()
+      ).toEqual([...expectedRoutes].sort());
+      for (const contract of contracts) {
+        const operation =
+          openApiPaths[contract.path]?.[contract.method.toLowerCase()];
+        expect(operation).toMatchObject({
+          "x-koed-identity": contract.identity,
+          "x-koed-domain": contract.domain,
+          "x-koed-deployment-modes": contract.deploymentModes
+        });
+      }
+    }
+
+    const localCollaboration = implementedRouteIdentityContracts.filter(
+      (contract) => contract.path.startsWith("/v1/local-edge/collaboration/")
+    );
+    expect(localCollaboration).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identity: "local_edge_client_credential",
+          teamAuthority: "future_request_time",
+          deploymentModes: ["developer", "local_personal"]
+        })
+      ])
+    );
+    expect(
+      localCollaboration.every(
+        (contract) => contract.identity === "local_edge_client_credential"
+      )
+    ).toBe(true);
+
+    for (const path of [
+      "/v1/teams/{teamId}/entitlement",
+      "/v1/shared-memory/previews",
+      "/v1/retention/legal-holds"
+    ]) {
+      expect(
+        implementedRouteIdentityContracts.find(
+          (contract) => contract.path === path
+        )?.identity
+      ).toBe("session_or_device_credential");
+    }
+  });
+
+  it("keeps removed Team compatibility routes out of contracts and OpenAPI", () => {
+    const legacyRoutes = [
+      "GET /v1/team-chat/threads",
+      "GET /v1/team-chat/members",
+      "POST /v1/team-chat/threads",
+      "GET /v1/team-chat/threads/{threadId}/messages",
+      "POST /v1/team-chat/threads/{threadId}/messages",
+      "PUT /v1/team-chat/threads/{threadId}/read",
+      "GET /v1/team-chat/events",
+      "GET /v1/team-chat/stream",
+      "POST /v1/teams/{teamId}/members",
+      "GET /v1/team-workspaces/{teamWorkspaceId}/session-share-grants",
+      "POST /v1/team-workspaces/{teamWorkspaceId}/session-share-grants",
+      "DELETE /v1/team-workspaces/{teamWorkspaceId}/session-share-grants/{shareGrantId}",
+      "POST /v1/local-edge/upstream-operations"
+    ] as const;
+
+    for (const key of legacyRoutes) {
+      const [method, path] = key.split(" ") as [
+        Parameters<typeof routeIdentityFor>[0],
+        string
+      ];
+      expect(routeIdentityFor(method, path)).toBeUndefined();
+      expect(openApiPaths[path]?.[method.toLowerCase()]).toBeUndefined();
+    }
   });
 
   it("exports deployment-mode applicability through OpenAPI", () => {
@@ -444,18 +703,18 @@ describe("route identity contract", () => {
     });
     expect(
       openApiPaths["/v1/team-workspaces/{teamWorkspaceId}/session-share-grants"]
-        ?.post
-    ).toMatchObject({
-      "x-koed-deployment-modes": [
-        "private_vps",
-        "team_self_hosted",
-        "koed_managed_cloud"
-      ]
-    });
+    ).toBeUndefined();
     expect(
-      openApiPaths["/v1/local-edge/upstream-operations"]?.post
-    ).toMatchObject({
-      "x-koed-deployment-modes": ["developer", "local_personal"]
-    });
+      openApiPaths[
+        "/v1/team-workspaces/{teamWorkspaceId}/session-share-grants/{shareGrantId}"
+      ]
+    ).toBeUndefined();
+    for (const path of [
+      "/v1/local-edge/team-memory/search",
+      "/v1/local-edge/team-memory/answer",
+      "/v1/local-edge/team-memory/expand"
+    ]) {
+      expect(openApiPaths[path]).toBeUndefined();
+    }
   });
 });

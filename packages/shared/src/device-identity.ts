@@ -1,4 +1,13 @@
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  createPrivateKey,
+  createPublicKey,
+  hkdfSync,
+  randomBytes,
+  randomUUID,
+  sign
+} from "node:crypto";
 import {
   closeSync,
   constants,
@@ -68,6 +77,14 @@ export interface HostProofReadResult {
     | "unsafe_permissions"
     | "unsafe_storage";
   value?: string;
+}
+
+export interface DeviceBoundSourceSigner {
+  deploymentId: string;
+  deviceInstanceId: string;
+  keyId: string;
+  publicKey: string;
+  sign(payload: Uint8Array): string;
 }
 
 /**
@@ -591,6 +608,98 @@ export const inspectDeviceIdentityAtKoedHome = (input: {
     proofStore,
     platform: input.platform
   });
+};
+
+const ed25519Pkcs8SeedPrefix = Buffer.from(
+  "302e020100300506032b657004220420",
+  "hex"
+);
+
+/**
+ * Derives a generation-scoped source signing key from the verified host proof.
+ * The proof and private key never enter KOED_HOME or the returned object.
+ */
+export const createDeviceBoundSourceSigner = (input: {
+  koedHome: string;
+  sourceGenerationId: string;
+  originKeyId: string;
+  environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+}): DeviceBoundSourceSigner => {
+  if (
+    !uuidPattern.test(input.sourceGenerationId) ||
+    !uuidPattern.test(input.originKeyId)
+  ) {
+    throw new Error("Source generation signing identity is malformed.");
+  }
+  const statePath = deviceIdentityStatePathFor(input.koedHome);
+  const proofStore = createPlatformHostProofStore(input);
+  const identity = inspectDeviceIdentity({
+    statePath,
+    proofStore,
+    platform: input.platform
+  });
+  if (
+    identity.health !== "healthy" ||
+    !identity.deploymentId ||
+    !identity.deviceInstanceId
+  ) {
+    throw new Error(
+      "A verified device identity is required for source replication."
+    );
+  }
+  const state = parseDeviceIdentityState(JSON.parse(readNoFollow(statePath)));
+  if (!state) {
+    throw new Error("Device identity state is malformed.");
+  }
+  const stored = proofStore.read(state.proof.reference);
+  const parsed =
+    stored.state === "present" && stored.value
+      ? parseProof(stored.value)
+      : null;
+  if (
+    !parsed ||
+    parsed.deploymentId !== identity.deploymentId ||
+    parsed.deviceInstanceId !== identity.deviceInstanceId
+  ) {
+    throw new Error("Verified device proof could not be opened.");
+  }
+  const seed = Buffer.from(
+    hkdfSync(
+      "sha256",
+      Buffer.from(parsed.proof, "base64url"),
+      Buffer.from(`${input.sourceGenerationId}:${input.originKeyId}`, "utf8"),
+      Buffer.from(
+        "koed/conversation-source-replication/v1/origin-signing",
+        "utf8"
+      ),
+      32
+    )
+  );
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([ed25519Pkcs8SeedPrefix, seed]),
+    format: "der",
+    type: "pkcs8"
+  });
+  seed.fill(0);
+  const publicJwk = createPublicKey(privateKey).export({
+    format: "jwk"
+  }) as JsonWebKey;
+  if (
+    publicJwk.kty !== "OKP" ||
+    publicJwk.crv !== "Ed25519" ||
+    typeof publicJwk.x !== "string"
+  ) {
+    throw new Error("Source signing public key export failed.");
+  }
+  const publicKey = publicJwk.x;
+  return {
+    deploymentId: identity.deploymentId,
+    deviceInstanceId: identity.deviceInstanceId,
+    keyId: input.originKeyId,
+    publicKey,
+    sign: (payload) => sign(null, payload, privateKey).toString("base64url")
+  };
 };
 
 export const serializeHostProof = (input: {

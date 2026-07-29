@@ -31,7 +31,7 @@ export interface ChunkCandidate {
 
 export interface LlamaEmbeddingClient {
   isRunning(): boolean;
-  stop(): void;
+  stop(): Promise<void>;
   tokenize(text: string): Promise<TokenPiece[]>;
   detokenize(tokenIds: number[]): Promise<string>;
   embed(texts: string[]): Promise<{
@@ -91,11 +91,15 @@ export class EmbeddingRuntime {
     return this.rerankerLoadPromise;
   }
 
-  shutdownRuntime(): void {
-    this.rerankerServer?.stop();
+  async shutdownRuntime(): Promise<void> {
+    const rerankerServer = this.rerankerServer;
     this.rerankerServer = null;
-    this.embeddingServer?.stop();
+    const embeddingServer = this.embeddingServer;
     this.embeddingServer = null;
+    await Promise.all([
+      rerankerServer?.stop() ?? Promise.resolve(),
+      embeddingServer?.stop() ?? Promise.resolve()
+    ]);
   }
 
   isModelLoaded(): boolean {
@@ -400,7 +404,7 @@ export class EmbeddingRuntime {
 
   private async loadEmbeddingModelOnce(): Promise<void> {
     if (this.embeddingServer !== null) {
-      this.embeddingServer.stop();
+      await this.embeddingServer.stop();
       this.embeddingServer = null;
     }
     this.logger.info("embedding model load started", {

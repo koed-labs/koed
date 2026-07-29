@@ -180,8 +180,9 @@ export const createSettingsRepository = (db: KoedDb) => ({
           .select({
             id: sessions.id,
             externalSessionId: sessions.externalSessionId,
-            workspaceId: sessions.workspaceId,
-            cwd: sessions.cwd
+            cwd: sessions.cwd,
+            automaticProjectId: sessions.automaticProjectId,
+            projectOverrideId: sessions.projectOverrideId
           })
           .from(sessions)
           .where(
@@ -201,7 +202,11 @@ export const createSettingsRepository = (db: KoedDb) => ({
         : [input.threadId]
     ).filter((value): value is string => Boolean(value));
     const projectId =
-      input.projectId ?? session?.cwd ?? session?.workspaceId ?? null;
+      input.projectId ??
+      session?.projectOverrideId ??
+      session?.automaticProjectId ??
+      session?.cwd ??
+      null;
 
     const policyConditions = [
       eq(capturePolicies.targetType, "global"),
