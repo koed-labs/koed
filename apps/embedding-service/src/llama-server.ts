@@ -74,6 +74,48 @@ export const llamaServerEnvironment = (
   };
 };
 
+export const llamaServerArgs = (options: LlamaServerOptions): string[] => {
+  const args = [
+    "--model",
+    options.modelPath,
+    "--ctx-size",
+    String(options.nCtx),
+    "--threads",
+    String(options.nThreads),
+    "--threads-batch",
+    String(options.nThreads),
+    "--batch-size",
+    String(options.nBatch),
+    "--ubatch-size",
+    String(options.nUbatch),
+    "--parallel",
+    String(options.parallel),
+    "--poll",
+    "0",
+    "--poll-batch",
+    "0",
+    "--n-gpu-layers",
+    "0",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(options.port),
+    "--pooling",
+    options.pooling,
+    "--log-disable"
+  ];
+  if (!options.promptCacheEnabled) {
+    args.push("--no-cache-prompt", "--cache-ram", "0");
+  }
+  if (options.embedding) {
+    args.push("--embedding");
+  }
+  if (options.reranking) {
+    args.push("--reranking");
+  }
+  return args;
+};
+
 export const tokenPieceText = (piece: unknown): string => {
   if (typeof piece === "string") {
     return piece;
@@ -171,47 +213,7 @@ export class LlamaServerClient {
     if (this.isRunning()) {
       return;
     }
-    const args = [
-      "--model",
-      this.options.modelPath,
-      "--ctx-size",
-      String(this.options.nCtx),
-      "--threads",
-      String(this.options.nThreads),
-      "--threads-batch",
-      String(this.options.nThreads),
-      "--batch-size",
-      String(this.options.nBatch),
-      "--ubatch-size",
-      String(this.options.nUbatch),
-      "--parallel",
-      String(this.options.parallel),
-      "--poll",
-      "0",
-      "--poll-batch",
-      "0",
-      "--n-gpu-layers",
-      "0",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(this.options.port),
-      "--pooling",
-      this.options.pooling,
-      "--log-disable"
-    ];
-    if (!this.options.promptCacheEnabled) {
-      args.push("--no-cache-prompt", "--cache-ram", "0");
-    }
-    if (this.options.embedding) {
-      args.push("--embedding");
-    }
-    if (this.options.reranking) {
-      args.push("--reranking");
-    }
-    if (this.options.embedding && !this.options.reranking) {
-      args.push("--embd-normalize", "2");
-    }
+    const args = llamaServerArgs(this.options);
 
     this.logger.info("llama-server process starting", {
       event: event("embedding.llama_server.starting"),

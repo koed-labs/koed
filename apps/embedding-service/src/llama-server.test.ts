@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   extractRerankScores,
   LlamaServerClient,
+  llamaServerArgs,
   llamaServerEnvironment,
   tokenPieceText
 } from "./llama-server.js";
@@ -37,6 +38,28 @@ describe("llama-server adapter helpers", () => {
         LLAMA_ARG_UI: "false"
       })
     );
+  });
+
+  it("uses arguments supported by the pinned and current llama-server builds", () => {
+    const config = testConfig();
+    const args = llamaServerArgs({
+      name: "embedding",
+      modelPath: config.modelPath!,
+      port: config.embeddingServerPort,
+      pooling: "last",
+      embedding: true,
+      reranking: false,
+      nCtx: config.llamaNCtx,
+      nThreads: config.llamaNThreads,
+      nBatch: config.llamaNBatch,
+      nUbatch: config.llamaNUbatch,
+      parallel: config.llamaParallel,
+      promptCacheEnabled: false
+    });
+
+    expect(args).toContain("--embedding");
+    expect(args).not.toContain("--no-ui");
+    expect(args).not.toContain("--embd-normalize");
   });
 
   it("extracts rerank scores in original document order", () => {
