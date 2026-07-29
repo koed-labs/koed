@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import type {
   AuthorizedCollaborationSnapshotRecord,
   CollaborationOutboxEventRecord,
-  CollaborationRealtimeMaterializationRepository,
   CollaborationRepository,
   CollaborationSubscriptionRecord,
   DbPool
@@ -22,6 +21,7 @@ import {
   type CollaborationRealtimeBrokerOptions,
   type CollaborationRealtimeBrokerService
 } from "./collaboration-realtime-broker.js";
+import type { PersonalRealtimeMaterializationRepository } from "../collaboration/realtime.js";
 
 const teamA = "11111111-1111-4111-8111-111111111111";
 const teamB = "22222222-2222-4222-8222-222222222222";
@@ -872,7 +872,7 @@ const createHarness = async (
     requireCollaborationRepository: () =>
       repository as unknown as CollaborationRepository,
     requireCollaborationMaterializationRepository: () =>
-      repository as unknown as CollaborationRealtimeMaterializationRepository,
+      repository as unknown as PersonalRealtimeMaterializationRepository,
     resolveActiveLocalUser: async (userId) =>
       !activeLocalOwner
         ? null

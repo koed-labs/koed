@@ -3480,6 +3480,10 @@ const createFakeRepository = () => {
         visibility: "personal",
         externalSessionId:
           existing?.externalSessionId ?? input.externalSessionId ?? null,
+        forkedFromExternalThreadId:
+          existing?.forkedFromExternalThreadId ??
+          input.forkedFromExternalThreadId ??
+          null,
         sourceRuntime:
           existing?.sourceRuntime ?? input.sourceRuntime ?? "codex",
         captureMethod: existing?.captureMethod ?? input.captureMethod ?? "mcp",

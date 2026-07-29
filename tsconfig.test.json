@@ -25,6 +25,7 @@
   "exclude": [
     "**/dist/**",
     "**/node_modules/**",
+    "apps/desktop/release/**",
     "apps/explorer/src/**/*.test.ts",
     "apps/explorer/src/**/*.test.tsx"
   ]

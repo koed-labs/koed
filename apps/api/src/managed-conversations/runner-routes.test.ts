@@ -19,6 +19,7 @@ const ids = {
   fork: randomUUID(),
   snapshot: randomUUID(),
   otherSnapshot: randomUUID(),
+  other: randomUUID(),
   sourceGeneration: randomUUID()
 };
 const recipientKeyId = randomUUID();

@@ -107,6 +107,9 @@ describe("portable Personal artifacts", () => {
   it("rejects payload mutation, signature mutation, unknown fields, and class mismatch", () => {
     const { keys, record } = fixture();
     const payloadMutation = structuredClone(record);
+    if (payloadMutation.payload.artifactClass !== "memory_event/v1") {
+      throw new Error("Expected Memory Event fixture");
+    }
     payloadMutation.payload.items[0]!.content = "Changed";
     expect(() => validatePdsArtifactRecord(payloadMutation)).toThrow(
       "content hash"

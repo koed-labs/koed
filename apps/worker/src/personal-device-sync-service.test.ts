@@ -30,7 +30,9 @@ describe("Personal Device Sync service", () => {
       claimPdsInbox: vi.fn().mockResolvedValue([]),
       getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
     } as unknown as MemorySourceRepository;
-    let relayWake: (() => void) | null = null;
+    let relayWake: () => void = () => {
+      throw new Error("Relay wake was not registered");
+    };
     const secureRuntime = {
       heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
       pollLifecycle: vi.fn().mockResolvedValue(undefined),
@@ -42,6 +44,7 @@ describe("Personal Device Sync service", () => {
           })
       ),
       publish: vi.fn(),
+      outboundState: vi.fn(),
       materialize: vi.fn()
     } as PdsWorkerSecureRuntime;
     const service = createPdsLocalSyncService({
@@ -65,7 +68,7 @@ describe("Personal Device Sync service", () => {
       expect(secureRuntime.heartbeatGroups).toHaveBeenCalledTimes(2)
     );
 
-    relayWake?.();
+    relayWake();
     await vi.waitFor(() =>
       expect(secureRuntime.heartbeatGroups).toHaveBeenCalledTimes(3)
     );
@@ -100,6 +103,7 @@ describe("Personal Device Sync service", () => {
       pollLifecycle: vi.fn().mockResolvedValue(undefined),
       poll: vi.fn().mockResolvedValue([]),
       publish: vi.fn(),
+      outboundState: vi.fn(),
       materialize: vi.fn()
     } as PdsWorkerSecureRuntime;
     const service = createPdsLocalSyncService({

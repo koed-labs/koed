@@ -9,7 +9,8 @@ import {
   generateConversationSourceReplicationOriginKeyPair,
   signConversationSourceClosureManifest,
   signConversationSourceReplicationManifest,
-  type ConversationSourceOriginKeyPair
+  type ConversationSourceOriginKeyPair,
+  type ConversationSourcePriorGenerationClosure
 } from "@koed/shared";
 import {
   createDbPool,
@@ -449,7 +450,8 @@ describeDb("journal-backed historical import repository", () => {
               sourceRootDigest: calculateConversationSourceRootDigest([]),
               sourceCreatedAt: successor.artifact.sourceCreatedAt,
               closedAt: successorClosedAt,
-              priorGenerationClosure: successor.artifact.priorGenerationClosure
+              priorGenerationClosure: successor.artifact
+                .priorGenerationClosure as ConversationSourcePriorGenerationClosure | null
             },
             successorKeys.privateKey
           )

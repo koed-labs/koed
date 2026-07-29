@@ -18,7 +18,7 @@ describe("Managed Conversation authority client", () => {
       state: "running",
       sourceGenerationId: "00000000-0000-4000-8000-000000000002"
     };
-    const fetch = vi.fn(
+    const fetch = vi.fn<typeof globalThis.fetch>(
       async () =>
         new Response(JSON.stringify({ execution }), {
           status: 200,
@@ -58,7 +58,7 @@ describe("Managed Conversation authority client", () => {
 
   it("loads only executions assigned by the remote runner authority", async () => {
     const execution = { id: "execution-1", state: "running" };
-    const fetch = vi.fn(
+    const fetch = vi.fn<typeof globalThis.fetch>(
       async () =>
         new Response(JSON.stringify({ executions: [execution] }), {
           status: 200,
@@ -86,7 +86,7 @@ describe("Managed Conversation authority client", () => {
 
   it("acquires a recovered execution lease without forwarding local identity", async () => {
     const executionId = "00000000-0000-4000-8000-000000000001";
-    const fetch = vi.fn(
+    const fetch = vi.fn<typeof globalThis.fetch>(
       async () =>
         new Response(JSON.stringify({ acquired: true }), {
           status: 200,
@@ -122,7 +122,7 @@ describe("Managed Conversation authority client", () => {
   });
 
   it("checks exact source readiness at the execution authority", async () => {
-    const fetch = vi.fn(
+    const fetch = vi.fn<typeof globalThis.fetch>(
       async () =>
         new Response(JSON.stringify({ ready: true }), {
           status: 200,
@@ -151,7 +151,7 @@ describe("Managed Conversation authority client", () => {
   });
 
   it("derives claim authority from the credential instead of sending local identity fields", async () => {
-    const fetch = vi.fn(
+    const fetch = vi.fn<typeof globalThis.fetch>(
       async () =>
         new Response(JSON.stringify({ commands: [] }), {
           status: 200,
@@ -188,7 +188,7 @@ describe("Managed Conversation authority client", () => {
   });
 
   it("keeps handoff path identity out of strict request bodies", async () => {
-    const fetch = vi.fn(async (request: RequestInfo | URL) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
       const path = new URL(String(request)).pathname;
       return new Response(
         JSON.stringify(
@@ -260,7 +260,7 @@ describe("Managed Conversation authority client", () => {
   });
 
   it("preserves bounded authority conflict codes for deterministic recovery", async () => {
-    const fetch = vi.fn(
+    const fetch = vi.fn<typeof globalThis.fetch>(
       async () =>
         new Response(
           JSON.stringify({
@@ -303,7 +303,7 @@ describe("Managed Conversation authority client", () => {
   });
 
   it("keeps fork path identity out of strict request bodies", async () => {
-    const fetch = vi.fn(async (request: RequestInfo | URL) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
       const path = new URL(String(request)).pathname;
       return new Response(
         JSON.stringify(

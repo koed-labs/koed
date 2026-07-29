@@ -70,7 +70,10 @@ const serviceOptions = (repository: MemorySourceRepository) => ({
   historicalImport: batchConfig,
   logger: logger() as ReturnType<typeof logger> &
     Parameters<typeof createRawProjectionService>[0]["logger"],
-  repository
+  repository,
+  wakePool: undefined as
+    | Parameters<typeof createRawProjectionService>[0]["wakePool"]
+    | undefined
 });
 
 const withProjectionDefaults = (repository: Record<string, unknown>) =>

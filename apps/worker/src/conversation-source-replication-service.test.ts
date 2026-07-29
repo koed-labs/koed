@@ -7,6 +7,7 @@ import type {
 } from "@koed/db";
 import {
   calculateConversationSourceReplicationContentDigest,
+  calculateConversationSourceReplicationManifestDigest,
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   createLocalTestKeyEnvelopeEncryptionProvider,
   generateConversationSourceReplicationOriginKeyPair,
@@ -128,10 +129,26 @@ describe("conversation source replication materialization", () => {
       sourceStartLine: 0,
       sourceEndLine: records.length,
       plaintextDigest,
+      ciphertextDigest: null,
+      plaintextSize: bytes.byteLength,
+      storedSize: Buffer.byteLength(JSON.stringify(encryptionEnvelope), "utf8"),
+      storageKey: `${logicalSourceId}/${sourceGenerationId}/0`,
+      storageProvider: "envelope_db",
       contentDigest:
         calculateConversationSourceReplicationContentDigest(signedManifest),
-      encryptionEnvelope
-    } as ConversationSourceSegmentRecord;
+      encryptionEnvelope: encryptionEnvelope as unknown as Record<
+        string,
+        unknown
+      >,
+      signedManifest: { ...signedManifest.manifest },
+      originSignature: signedManifest.signature,
+      manifestDigest: calculateConversationSourceReplicationManifestDigest(
+        signedManifest.manifest
+      ),
+      previousContentDigest: null,
+      createdAt: timestamp,
+      sealedAt: timestamp
+    } satisfies ConversationSourceSegmentRecord;
     const createConversationItems = vi.fn().mockResolvedValue([]);
     const createCapturedSession = vi.fn().mockResolvedValue({
       id: sessionId

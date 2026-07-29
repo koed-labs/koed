@@ -52,7 +52,7 @@ describe("llama-server adapter helpers", () => {
   });
 
   it("waits for the llama-server child to exit during shutdown", async () => {
-    const child = Object.assign(new EventEmitter(), {
+    const childState = Object.assign(new EventEmitter(), {
       exitCode: null as number | null,
       signalCode: null as NodeJS.Signals | null,
       stdout: null,
@@ -60,20 +60,21 @@ describe("llama-server adapter helpers", () => {
       kill: vi.fn((signal: NodeJS.Signals) => {
         if (signal === "SIGTERM") {
           setTimeout(() => {
-            child.signalCode = signal;
-            child.emit("exit", null, signal);
+            childState.signalCode = signal;
+            childState.emit("exit", null, signal);
           }, 10);
         }
         return true;
       })
-    }) as unknown as ChildProcess;
+    });
+    const child = childState as unknown as ChildProcess;
     const config = testConfig();
     const client = new LlamaServerClient(
       config,
       testLogger(),
       {
         name: "embedding",
-        modelPath: config.modelPath,
+        modelPath: config.modelPath!,
         port: config.embeddingServerPort,
         pooling: "last",
         embedding: true,
@@ -90,7 +91,7 @@ describe("llama-server adapter helpers", () => {
           status: 200,
           headers: { "content-type": "application/json" }
         }),
-      () => child
+      (() => child) as typeof import("node:child_process").spawn
     );
 
     await client.start();

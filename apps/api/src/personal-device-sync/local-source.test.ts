@@ -7,6 +7,7 @@ const source = {
   sessionId: "session",
   logicalSessionId: "logical-session",
   externalSessionId: "source-session",
+  forkedFromExternalThreadId: null,
   sourceAdapter: "codex",
   sourceAdapterVersion: "v1",
   sourceCreatedAt: "2026-07-15T00:00:00.000Z",

@@ -56,7 +56,7 @@ const parseRequest = (value: unknown, token: string): Request | null => {
 const socketPathFor = (koedHome: string, token: string): string =>
   process.platform === "win32"
     ? `\\\\.\\pipe\\koed-pds-${token.slice(0, 24)}`
-    : resolve(koedHome, "run", `pds-secret-${token.slice(0, 24)}.sock`);
+    : resolve(koedHome, "run", `p-${token.slice(0, 12)}.sock`);
 
 const ensurePrivateRunDirectory = (koedHome: string): string => {
   const directory = resolve(koedHome, "run");

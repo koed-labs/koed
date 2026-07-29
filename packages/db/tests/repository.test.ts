@@ -83,6 +83,14 @@ const originalKoedManagedCloudReleaseStage =
 const originalPlaintextLexicalSearchEnabled =
   process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
 
+const testEmbeddingCompatibility = {
+  modelArtifactHash: "a".repeat(64),
+  tokenizer: "qwen3-embedding-0.6b-gguf",
+  inputTransform: "qwen3-retrieval-document-v1",
+  pooling: "last",
+  normalization: "l2"
+} as const;
+
 const describeDb = runDbTests ? describe : describe.skip;
 
 type HasTeamWorkspaceId<T> = "teamWorkspaceId" extends keyof NonNullable<T>
@@ -273,6 +281,7 @@ describeDb("memory repository visibility", () => {
     const sources = await repo.listSourcesNeedingEmbeddings(500);
     for (const source of sources) {
       await repo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
         source,
         model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
         dimensions,
@@ -3487,6 +3496,7 @@ describeDb("memory repository visibility", () => {
       );
 
       await encryptedRepo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
         source: {
           sourceType: "memory_event",
           sourceId: event.id,
@@ -9972,6 +9982,7 @@ describeDb("memory repository visibility", () => {
           [node.id, event.id]
         );
         await encryptedRepo.upsertSourceEmbedding({
+          ...testEmbeddingCompatibility,
           source: {
             sourceType: "memory_event",
             sourceId: event.id,
@@ -12209,6 +12220,7 @@ describeDb("memory repository visibility", () => {
       index === 0 ? 1 : 0
     );
     await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
       source: {
         sourceType: "memory_event",
         sourceId: event.id,
@@ -12280,6 +12292,7 @@ describeDb("memory repository visibility", () => {
       index === 0 ? 1 : 0
     );
     await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
       source: {
         sourceType: "memory_event",
         sourceId: event.id,
@@ -12502,6 +12515,7 @@ describeDb("memory repository visibility", () => {
     const version = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
 
     await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
       source: source!,
       model,
       dimensions,
@@ -12524,6 +12538,7 @@ describeDb("memory repository visibility", () => {
       })
     ).resolves.toBeNull();
     await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
       source: source!,
       model,
       dimensions,
@@ -12613,6 +12628,7 @@ describeDb("memory repository visibility", () => {
         index === activeIndex ? 1 : 0
       );
     await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
       source: source!,
       model,
       dimensions,
@@ -12624,6 +12640,7 @@ describeDb("memory repository visibility", () => {
     });
 
     const replaced = await repo.replaceSourceEmbeddings({
+      ...testEmbeddingCompatibility,
       source: source!,
       model,
       dimensions,
@@ -12644,6 +12661,7 @@ describeDb("memory repository visibility", () => {
       ]
     });
     const replay = await repo.replaceSourceEmbeddings({
+      ...testEmbeddingCompatibility,
       source: source!,
       model,
       dimensions,
@@ -12665,6 +12683,7 @@ describeDb("memory repository visibility", () => {
     });
     await expect(
       repo.replaceSourceEmbeddings({
+        ...testEmbeddingCompatibility,
         source: source!,
         model,
         dimensions,
@@ -12765,6 +12784,7 @@ describeDb("memory repository visibility", () => {
       expect(source).not.toBeNull();
 
       await repo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
         source: source!,
         model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
         dimensions,
@@ -12893,6 +12913,7 @@ describeDb("memory repository visibility", () => {
       const model = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
       const version = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
       await repo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
         source: nodeSource!,
         model,
         dimensions,
@@ -12900,6 +12921,7 @@ describeDb("memory repository visibility", () => {
         vector: queryVector
       });
       await repo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
         source: eventSource!,
         model,
         dimensions,
@@ -17104,6 +17126,7 @@ describeDb("memory repository visibility", () => {
       throw new Error("Expected rebuilt Memory Event to be embeddable");
     }
     const storedEmbedding = await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
       source: replacementSource,
       model: "test-model",
       dimensions: 384,
@@ -26612,6 +26635,7 @@ describeDb("memory repository visibility", () => {
       );
       await expect(
         repo.upsertSourceEmbedding({
+          ...testEmbeddingCompatibility,
           source: {
             sourceType: "message",
             sourceId: message.rows[0]!.id,
@@ -28311,6 +28335,7 @@ describeDb("memory repository visibility", () => {
       index === 0 ? 1 : 0
     );
     await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
       source: {
         sourceType: "memory_node",
         sourceId: node.id,

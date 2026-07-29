@@ -14,7 +14,10 @@ import {
 } from "./secure-runtime.js";
 
 const rawPair = (type: "ed25519" | "x25519") => {
-  const pair = generateKeyPairSync(type);
+  const pair =
+    type === "ed25519"
+      ? generateKeyPairSync("ed25519")
+      : generateKeyPairSync("x25519");
   const publicJwk = pair.publicKey.export({ format: "jwk" });
   const privateJwk = pair.privateKey.export({ format: "jwk" });
   if (typeof publicJwk.x !== "string" || typeof privateJwk.d !== "string") {

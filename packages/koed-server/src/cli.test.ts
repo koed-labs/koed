@@ -791,6 +791,7 @@ describe("JSON command output", () => {
             baseUrl: "https://team.example.test",
             profile: "private_vps",
             routePolicy: {
+              personalCollaboration: "disabled",
               personalMemoryRead: "disabled",
               teamWorkspaceRead: "disabled",
               shareGrantManagement: "disabled",
@@ -853,6 +854,7 @@ describe("JSON command output", () => {
               baseUrl: "https://team.example.test",
               profile: "private_vps",
               routePolicy: {
+                personalCollaboration: "disabled",
                 personalMemoryRead: "disabled",
                 teamWorkspaceRead: "disabled",
                 shareGrantManagement: "disabled",
@@ -907,6 +909,7 @@ describe("JSON command output", () => {
             baseUrl: "https://team.example.test",
             profile: "private_vps",
             routePolicy: {
+              personalCollaboration: "disabled",
               personalMemoryRead: "disabled",
               teamWorkspaceRead: "disabled",
               shareGrantManagement: "disabled",
@@ -1001,6 +1004,7 @@ describe("JSON command output", () => {
               baseUrl: "https://team.example.test",
               profile: "private_vps",
               routePolicy: {
+                personalCollaboration: "disabled",
                 personalMemoryRead: "disabled",
                 teamWorkspaceRead: "enabled",
                 shareGrantManagement: "enabled",

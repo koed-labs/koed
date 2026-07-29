@@ -222,7 +222,9 @@ describe("Personal Sync control client", () => {
             deploymentId: "local-deployment",
             deviceInstanceId: "local-device"
           },
-          putSecret: (_reference, secret) => storedSecrets.push(secret)
+          putSecret: (_reference, secret) => {
+            storedSecrets.push(secret);
+          }
         }
       );
       expect(requested).toMatchObject({
@@ -306,7 +308,9 @@ describe("Personal Sync control client", () => {
             deploymentId: "joining-deployment",
             deviceInstanceId: "joining-device"
           },
-          putSecret: (reference, value) => stored.set(reference, value),
+          putSecret: (reference, value) => {
+            stored.set(reference, value);
+          },
           getSecret: (reference) => stored.get(reference) ?? null
         }
       );
@@ -370,7 +374,9 @@ describe("Personal Sync control client", () => {
               deploymentId: "joining-deployment",
               deviceInstanceId: "joining-device"
             },
-            putSecret: (reference, value) => stored.set(reference, value),
+            putSecret: (reference, value) => {
+              stored.set(reference, value);
+            },
             getSecret: (reference) => stored.get(reference) ?? null
           }
         );
@@ -588,7 +594,9 @@ describe("Personal Sync control client", () => {
             deploymentId: "local-deployment",
             deviceInstanceId: "local-device"
           },
-          putSecret: (reference, value) => stored.push({ reference, value })
+          putSecret: (reference, value) => {
+            stored.push({ reference, value });
+          }
         }
       );
       expect(result).toMatchObject({
@@ -664,7 +672,9 @@ describe("Personal Sync control client", () => {
           },
           {
             getSecret: () => stored.at(-1)?.value ?? null,
-            putSecret: (reference, value) => stored.push({ reference, value })
+            putSecret: (reference, value) => {
+              stored.push({ reference, value });
+            }
           }
         )
       ).resolves.toMatchObject({
@@ -745,7 +755,9 @@ describe("Personal Sync control client", () => {
               deploymentId: "local-deployment",
               deviceInstanceId: "local-device"
             },
-            putSecret: (_reference, value) => stored.push(value)
+            putSecret: (_reference, value) => {
+              stored.push(value);
+            }
           }
         )
       ).rejects.toThrow("genesis rejected");

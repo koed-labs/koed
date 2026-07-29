@@ -15,7 +15,7 @@ describeDb("Personal Device Sync local reconciliation", () => {
   let pool: pg.Pool;
 
   beforeAll(async () => {
-    pool = createDbPool(databaseUrl);
+    pool = createDbPool({ connectionString: databaseUrl });
     await runDbMigrations(pool);
   });
 

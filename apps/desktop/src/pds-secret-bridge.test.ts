@@ -71,6 +71,9 @@ describe("PDS Desktop secret bridge", () => {
     const socketPath = bridge.environment.PDS_DESKTOP_SECRET_BRIDGE_SOCKET!;
     const token = bridge.environment.PDS_DESKTOP_SECRET_BRIDGE_TOKEN!;
     try {
+      if (process.platform !== "win32") {
+        expect(Buffer.byteLength(socketPath)).toBeLessThanOrEqual(103);
+      }
       await expect(
         request({
           socketPath,

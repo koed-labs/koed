@@ -14,7 +14,10 @@ const readFixture = (value: unknown) =>
     backendId,
     {
       existsSync: () => true,
-      readFileSync: () => JSON.stringify(value)
+      readFileSync: (() =>
+        JSON.stringify(
+          value
+        )) as unknown as typeof import("node:fs").readFileSync
     }
   );
 
