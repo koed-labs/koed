@@ -9,11 +9,11 @@ import {
   renameSync,
   watch,
   writeFileSync,
-  type Dir,
+  type Dirent,
   type FSWatcher,
   type Stats
 } from "node:fs";
-import { lstat, opendir, stat } from "node:fs/promises";
+import { lstat, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
@@ -242,7 +242,7 @@ const activate = (
 
 class BoundedTranscriptDiscovery {
   private directories: string[] = [];
-  private current?: { path: string; handle: Dir };
+  private current?: { path: string; entries: Dirent[]; index: number };
 
   constructor(private readonly config: CodexTranscriptWatcherConfig) {}
 
@@ -257,22 +257,18 @@ class BoundedTranscriptDiscovery {
       files.length < this.config.maxFilesPerScan
     ) {
       if (!this.current && !(await this.openNextDirectory())) break;
-      let child;
-      try {
-        child = await this.current!.handle.read();
-      } catch {
-        await this.closeCurrent();
-        continue;
-      }
+      const child = this.current!.entries[this.current!.index++];
       if (!child) {
-        await this.closeCurrent();
+        this.current = undefined;
         continue;
       }
       entries += 1;
       if (child.isSymbolicLink()) continue;
       const childPath = path.join(this.current!.path, child.name);
-      if (child.isDirectory()) this.directories.push(childPath);
-      else if (child.isFile() && TRANSCRIPT_PATTERN.test(child.name)) {
+      if (child.isDirectory()) {
+        this.directories.push(childPath);
+        this.directories.sort((left, right) => right.localeCompare(left));
+      } else if (child.isFile() && TRANSCRIPT_PATTERN.test(child.name)) {
         files.push(childPath);
       }
     }
@@ -282,27 +278,23 @@ class BoundedTranscriptDiscovery {
     };
   }
 
-  async close(): Promise<void> {
-    await this.closeCurrent();
+  close(): void {
+    this.current = undefined;
   }
 
   private async openNextDirectory(): Promise<boolean> {
     while (this.directories.length > 0) {
       const directory = this.directories.shift()!;
       try {
-        this.current = { path: directory, handle: await opendir(directory) };
+        const entries = await readdir(directory, { withFileTypes: true });
+        entries.sort((left, right) => right.name.localeCompare(left.name));
+        this.current = { path: directory, entries, index: 0 };
         return true;
       } catch {
         // Missing/inaccessible supported roots are retried next full cycle.
       }
     }
     return false;
-  }
-
-  private async closeCurrent(): Promise<void> {
-    const current = this.current;
-    this.current = undefined;
-    if (current) await current.handle.close().catch(() => undefined);
   }
 }
 
@@ -313,7 +305,7 @@ export const discoverCodexTranscripts = async (
   try {
     return (await discovery.scan()).files;
   } finally {
-    await discovery.close();
+    discovery.close();
   }
 };
 
@@ -427,6 +419,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private readonly baselineFileFrontiers: Map<string, number | null>;
   private readonly discovery: BoundedTranscriptDiscovery;
   private readonly watchers: FSWatcher[] = [];
+  private readonly hintedTranscriptPaths = new Set<string>();
   private readonly processing = new Set<string>();
   private readonly identities = new Map<
     string,
@@ -513,7 +506,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     for (const watcher of this.watchers) watcher.close();
     await this.scanPromise;
-    await this.discovery.close();
+    this.discovery.close();
     this.metrics.state = "stopped";
     this.writeStatus();
   }
@@ -522,7 +515,12 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     for (const root of this.config.roots) {
       if (!existsSync(root)) continue;
       try {
-        this.watchers.push(watch(root, { recursive: true }, () => this.wake()));
+        this.watchers.push(
+          watch(root, { recursive: true }, (_eventType, filename) => {
+            this.rememberFilesystemHint(root, filename);
+            this.wake();
+          })
+        );
       } catch {
         try {
           this.watchers.push(watch(root, () => this.wake()));
@@ -552,11 +550,13 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.metrics.lastScanAt = new Date().toISOString();
     const failuresBefore = this.failureCount;
     try {
+      await this.serviceFilesystemHints();
       await this.serviceKnownSources();
       const discovery = await this.discovery.scan();
       this.metrics.filesDiscovered += discovery.files.length;
       for (const transcriptPath of discovery.files) {
         if (this.stopped) break;
+        await this.serviceFilesystemHints();
         await this.processPathOnce(transcriptPath);
       }
       if (this.activatedAt === null && discovery.cycleComplete) {
@@ -574,10 +574,38 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     }
   }
 
+  private rememberFilesystemHint(
+    root: string,
+    filename: string | Buffer | null
+  ): void {
+    if (filename === null) return;
+    const candidate = path.resolve(root, filename.toString());
+    const relative = path.relative(root, candidate);
+    if (
+      relative === "" ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative) ||
+      !TRANSCRIPT_PATTERN.test(path.basename(candidate))
+    ) {
+      return;
+    }
+    this.hintedTranscriptPaths.add(candidate);
+  }
+
+  private async serviceFilesystemHints(): Promise<void> {
+    const transcriptPaths = [...this.hintedTranscriptPaths];
+    this.hintedTranscriptPaths.clear();
+    for (const transcriptPath of transcriptPaths) {
+      if (this.stopped || !existsSync(transcriptPath)) continue;
+      await this.processPathOnce(transcriptPath);
+    }
+  }
+
   private async serviceKnownSources(): Promise<void> {
     const observations = [...this.sourcePaths.values()];
     for (const observation of observations) {
       if (this.stopped || !existsSync(observation.transcriptPath)) continue;
+      await this.serviceFilesystemHints();
       if (
         observation.canonicalCursorOffset >= observation.providerCursorOffset
       ) {

@@ -18,6 +18,7 @@ import {
   createKoedServerManager,
   desktopCodexSetupCommand,
   personalMemoryChangeFromSseFrame,
+  setupStartupReady,
   setupServicesHealthy
 } from "./manager.js";
 
@@ -35,6 +36,18 @@ const childProcess = (): FakeChildProcess => {
   };
   return child;
 };
+
+const healthyLocalServiceStatus = () => ({
+  ok: true,
+  state: "healthy",
+  api: { state: "healthy" },
+  database: { state: "healthy" },
+  redis: { state: "healthy" },
+  workerQueues: { state: "healthy" },
+  embeddingService: { state: "healthy" },
+  explorer: { state: "healthy" },
+  apiToken: { state: "healthy" }
+});
 
 const waitFor = async (predicate: () => boolean): Promise<void> => {
   const deadline = Date.now() + 1_000;
@@ -70,6 +83,34 @@ describe("Koed server desktop manager", () => {
         workerQueues: { state: "healthy" },
         embeddingService: { state: "healthy" },
         explorer: { state: "healthy" }
+      })
+    ).toBe(false);
+  });
+
+  it("waits for every local service and the Desktop credential before setup advances", () => {
+    const starting = {
+      api: { state: "healthy" },
+      database: { state: "healthy" },
+      redis: { state: "healthy" },
+      workerQueues: { state: "starting" },
+      embeddingService: { state: "healthy" },
+      explorer: { state: "starting" },
+      apiToken: { state: "healthy" }
+    };
+    expect(setupStartupReady(starting)).toBe(false);
+    expect(
+      setupStartupReady({
+        ...starting,
+        workerQueues: { state: "healthy" },
+        explorer: { state: "healthy" }
+      })
+    ).toBe(true);
+    expect(
+      setupStartupReady({
+        ...starting,
+        workerQueues: { state: "healthy" },
+        explorer: { state: "healthy" },
+        apiToken: { state: "not_configured" }
       })
     ).toBe(false);
   });
@@ -1781,12 +1822,7 @@ describe("Koed server desktop manager", () => {
                   api: { state: "needs_attention" },
                   apiToken: { state: "needs_attention" }
                 }
-              : {
-                  ok: true,
-                  state: "healthy",
-                  api: { state: "healthy" },
-                  apiToken: { state: "healthy" }
-                }
+              : healthyLocalServiceStatus()
           ),
           ""
         );
@@ -1940,12 +1976,7 @@ describe("Koed server desktop manager", () => {
                   api: { state: "needs_attention" },
                   apiToken: { state: "needs_attention" }
                 }
-              : {
-                  ok: true,
-                  state: "healthy",
-                  api: { state: "healthy" },
-                  apiToken: { state: "healthy" }
-                }
+              : healthyLocalServiceStatus()
           ),
           ""
         );
@@ -2023,12 +2054,7 @@ describe("Koed server desktop manager", () => {
                   api: { state: "needs_attention" },
                   apiToken: { state: "needs_attention" }
                 }
-              : {
-                  ok: true,
-                  state: "healthy",
-                  api: { state: "healthy" },
-                  apiToken: { state: "healthy" }
-                }
+              : healthyLocalServiceStatus()
           ),
           ""
         );

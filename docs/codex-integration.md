@@ -92,7 +92,16 @@ binary path when needed; the default is correct for normal Codex installs.
 
 The Transcript Watcher owns automatic-capture correctness for externally managed Codex Conversations. `koed-server` supervises the `@koed/mcp-server` command `watch-codex-transcripts` after its startup readiness check when a local API Token is available; the watcher keeps retrying through bounded rescans if the API is still recovering. It stops the watcher before the API. Developer and local-personal runtime modes enable it by default; external runtime mode requires `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` explicitly.
 
-By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when `CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default with a platform path-delimited list of explicit transcript roots. It combines filesystem notification hints with bounded 15-second rescans, so unsupported or missed notifications do not create permanent gaps.
+By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when
+`CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default
+with a platform path-delimited list of explicit transcript roots. Filesystem
+notifications enqueue the exact changed transcript ahead of other work.
+Supported Capture Hook signals coalesce additional wakeups without carrying
+content. Known active transcripts are serviced before bounded discovery, and
+discovery traverses timestamped Codex paths newest-first. The watcher does not
+poll: a missed filesystem notification is recovered by the next Hook signal,
+source event, explicit verification, or process restart through the same
+idempotent source cursor.
 
 The TypeScript Supported Capture Hook is only a low-latency signal. It receives
 no API credentials and reads only bounded source-routing and lifecycle fields

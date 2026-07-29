@@ -284,6 +284,33 @@ describe("upstream backend registry", () => {
     expect(listUpstreamBackends(paths).backends).toHaveLength(1);
   });
 
+  it("rejects a backend update that would duplicate another normalized URL", () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "primary-team",
+      url: "https://primary.example.test",
+      profile: "team-self-hosted"
+    });
+    registerUpstreamBackend(paths, {
+      id: "secondary-team",
+      url: "https://secondary.example.test",
+      profile: "team-self-hosted"
+    });
+    setActiveUpstreamBackend(paths, "primary-team");
+    const before = readFileSync(paths.upstreamBackendsPath, "utf8");
+
+    expect(() =>
+      registerUpstreamBackend(paths, {
+        id: "primary-team",
+        url: "https://secondary.example.test/",
+        profile: "team-self-hosted"
+      })
+    ).toThrow("Upstream URL is already registered as secondary-team.");
+    expect(readFileSync(paths.upstreamBackendsPath, "utf8")).toBe(before);
+    expect(getActiveUpstreamBackend(paths)?.id).toBe("primary-team");
+    expect(listUpstreamBackends(paths).backends).toHaveLength(2);
+  });
+
   it("resets credentials, capabilities, and routes when the upstream trust boundary changes", async () => {
     const paths = tempPaths();
     registerUpstreamBackend(paths, {
@@ -590,6 +617,32 @@ describe("upstream backend registry", () => {
         url: "https://cloud.example.test"
       })
     ).toThrow("Upstream backend registry is malformed");
+    expect(collectUpstreamRegistryStatus(paths)).toMatchObject({
+      registered: 0,
+      parseError: "Upstream backend registry is malformed.",
+      backends: []
+    });
+  });
+
+  it("fails closed when persisted backends duplicate an id or normalized URL", () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "first-team",
+      url: "https://first.example.test"
+    });
+    registerUpstreamBackend(paths, {
+      id: "second-team",
+      url: "https://second.example.test"
+    });
+    const registry = JSON.parse(
+      readFileSync(paths.upstreamBackendsPath, "utf8")
+    ) as UpstreamBackendRegistry;
+    registry.backends[1]!.baseUrl = "https://first.example.test/";
+    writeFileSync(paths.upstreamBackendsPath, JSON.stringify(registry));
+
+    expect(() => listUpstreamBackends(paths)).toThrow(
+      "Upstream backend registry is malformed"
+    );
     expect(collectUpstreamRegistryStatus(paths)).toMatchObject({
       registered: 0,
       parseError: "Upstream backend registry is malformed.",

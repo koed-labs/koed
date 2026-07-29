@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryApiError } from "../src/index.js";
 import {
   completeTranscriptBoundary,
+  discoverCodexTranscripts,
   startCodexTranscriptWatcher,
   type CodexTranscriptWatcherClient,
   type CodexTranscriptWatcherConfig
@@ -358,6 +359,20 @@ const transcriptPath = (root: string, name = "rollout-test.jsonl"): string => {
 };
 
 describe("Codex Transcript Watcher source journal", () => {
+  it("discovers the newest timestamped transcript first", async () => {
+    const root = temporaryDirectory();
+    const oldTranscript = transcriptPath(root, "rollout-2026-01-01.jsonl");
+    const newTranscript = transcriptPath(root, "rollout-2026-01-02.jsonl");
+    writeFileSync(oldTranscript, line(sessionRecord("old")));
+    writeFileSync(newTranscript, line(sessionRecord("new")));
+
+    const discovered = await discoverCodexTranscripts(
+      watcherConfig(root, { maxFilesPerScan: 1 })
+    );
+
+    expect(discovered).toEqual([newTranscript]);
+  });
+
   it("reads one final byte for a complete large transcript boundary", () => {
     const root = temporaryDirectory();
     const transcript = transcriptPath(root);
@@ -835,6 +850,47 @@ describe("Codex Transcript Watcher source journal", () => {
     watcher.wake();
 
     await waitFor(() => client.itemBatches.flat().length === 1);
+  });
+
+  it("prioritizes a newly created transcript from its filesystem event", async () => {
+    const root = temporaryDirectory();
+    mkdirSync(path.join(root, "codex", "sessions"), { recursive: true });
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      watcherConfig(root, {
+        debounceMs: 5,
+        maxEntriesPerScan: 1,
+        maxFilesPerScan: 1
+      })
+    );
+    await watcher.scanNow();
+
+    for (let index = 0; index < 20; index += 1) {
+      writeFileSync(
+        transcriptPath(root, `rollout-baseline-${index}.jsonl`),
+        line(
+          sessionRecord(
+            `baseline-${index}`,
+            "/tmp/project",
+            "2025-01-01T00:00:00.000Z"
+          )
+        )
+      );
+    }
+    const transcript = transcriptPath(root, "rollout-live.jsonl");
+    writeFileSync(
+      transcript,
+      line(sessionRecord("filesystem-live")) +
+        line(userRecord("prioritize this live session"))
+    );
+
+    await waitFor(() => client.artifacts.has("filesystem-live"), 2_000);
+    expect(
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "prioritize this live session")
+    ).toBe(true);
   });
 
   it("does not follow transcript symlinks outside configured roots", async () => {

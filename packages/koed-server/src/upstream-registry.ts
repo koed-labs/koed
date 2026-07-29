@@ -263,6 +263,13 @@ const readRegistry = (
     const backends = Array.isArray(parsed.backends)
       ? parsed.backends.map((backend) => normalizeBackendRecord(backend, now))
       : [];
+    if (
+      new Set(backends.map((backend) => backend.id)).size !== backends.length ||
+      new Set(backends.map((backend) => backend.baseUrl)).size !==
+        backends.length
+    ) {
+      throw new Error("Upstream backend registry entries must be unique.");
+    }
     const activeBackendId =
       typeof parsed.activeBackendId === "string"
         ? validateBackendId(parsed.activeBackendId)
@@ -492,11 +499,24 @@ export const registerUpstreamBackend = (
     );
   }
   const registry = readRegistry(paths, resolvedDeps);
-  const existingIndex = registry.backends.findIndex(
-    (backend) =>
-      (requestedId !== null && backend.id === requestedId) ||
-      backend.baseUrl === baseUrl
+  const existingIdIndex =
+    requestedId === null
+      ? -1
+      : registry.backends.findIndex((backend) => backend.id === requestedId);
+  const existingUrlIndex = registry.backends.findIndex(
+    (backend) => backend.baseUrl === baseUrl
   );
+  if (
+    existingIdIndex >= 0 &&
+    existingUrlIndex >= 0 &&
+    existingIdIndex !== existingUrlIndex
+  ) {
+    throw new Error(
+      `Upstream URL is already registered as ${registry.backends[existingUrlIndex]!.id}.`
+    );
+  }
+  const existingIndex =
+    existingIdIndex >= 0 ? existingIdIndex : existingUrlIndex;
   const existing = registry.backends[existingIndex];
   const id = requestedId ?? existing?.id ?? stableBackendId(baseUrl);
   const nextProfile = profile ?? existing?.profile ?? null;

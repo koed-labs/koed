@@ -794,6 +794,9 @@ export const setupServicesHealthy = (value: unknown): boolean => {
   ].every(componentHealthy);
 };
 
+export const setupStartupReady = (value: unknown): boolean =>
+  setupServicesHealthy(value) && hasHealthyDesktopCredential(value);
+
 export const desktopCodexSetupCommand = (
   status: unknown
 ): ["repair", "codex"] | ["setup", "codex"] =>
@@ -1165,7 +1168,7 @@ export const createKoedServerManager = ({
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
       latest = await runJson(["status"], 10_000);
-      if (hasHealthyApi(latest) && hasHealthyDesktopCredential(latest)) {
+      if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         await provisionExplorerCredential();
         return latest;
