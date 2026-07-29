@@ -1255,8 +1255,10 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
       secret: RuntimeSecret
     ) => PdsWorkerSecureRuntime | null;
   }
-): PdsWorkerSecureRuntime => {
+): PdsWorkerSecureRuntime | null => {
   const environment = input.environment ?? process.env;
+  const provider = environment.PDS_SECRET_PROVIDER?.trim();
+  if (provider !== "headless" && provider !== "desktop_bridge") return null;
   const resolveSecret = input.resolveSecret ?? resolvePdsProviderRuntimeSecret;
   const createRuntime = input.createRuntime ?? createPdsWorkerRuntimeFromSecret;
   let runtimeFingerprint: string | null = null;

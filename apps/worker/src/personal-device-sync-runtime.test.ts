@@ -130,11 +130,13 @@ describe("PDS session materialization", () => {
     const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
       repository: {} as MemorySourceRepository,
       envelopeEncryptionProvider: {} as never,
-      environment: {},
+      environment: { PDS_SECRET_PROVIDER: "desktop_bridge" },
       resolveSecret: () => (available ? secret : null),
       createRuntime
     });
 
+    expect(runtime).not.toBeNull();
+    if (!runtime) throw new Error("Expected a configured PDS runtime");
     expect(await runtime.heartbeatGroups?.()).toEqual(["group-a"]);
     secret.authority.head = "head-b";
     await runtime.poll();
@@ -150,6 +152,18 @@ describe("PDS session materialization", () => {
     await expect(runtime.poll()).rejects.toThrow(
       "PdsSecureRuntimeUnavailableError"
     );
+  });
+
+  it("does not start a reloadable runtime without an explicit provider", () => {
+    expect(
+      createReloadablePdsWorkerRuntimeFromEnvironment({
+        repository: {} as MemorySourceRepository,
+        envelopeEncryptionProvider: {} as never,
+        environment: {},
+        resolveSecret: vi.fn(),
+        createRuntime: vi.fn()
+      })
+    ).toBeNull();
   });
 
   it("accepts the bounded Desktop secret bridge provider contract", () => {
