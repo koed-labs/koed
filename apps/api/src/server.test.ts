@@ -15377,7 +15377,9 @@ describe("account and access flows", () => {
         method: "GET",
         url: "/v1/personal-device-sync/groups",
         headers: {
-          authorization: desktop.authorization.replace(/.$/, "A")
+          authorization: `${desktop.authorization.slice(0, -1)}${
+            desktop.authorization.endsWith("A") ? "B" : "A"
+          }`
         }
       });
       expect(invalid.statusCode).toBe(401);
