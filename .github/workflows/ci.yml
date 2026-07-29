@@ -83,6 +83,9 @@ jobs:
       - name: Run DB migration acceptance matrix
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+          KOED_CI_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          PG_DUMP_BIN: .github/scripts/pg-dump-service.sh
+          PG_RESTORE_BIN: .github/scripts/pg-restore-service.sh
         run: pnpm db:migrate:acceptance
 
       - name: Lint
