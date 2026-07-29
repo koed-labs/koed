@@ -26,8 +26,6 @@ import {
   collaborationThreadSchema,
   fetchBoundedJsonObject,
   isLoopbackHostname,
-  isPersonalCollaborationSelection,
-  isTeamCollaborationSelection,
   readLocalEdgeClientCredentialAuthorization,
   resolveCollaborationActionGrantSecret,
   RemoteRequestTimeoutError,
@@ -58,6 +56,14 @@ import {
   collaborationActionGrantControlCommandNames,
   type CollaborationActionGrantControl
 } from "./collaboration-action-grant-control.js";
+import {
+  collaborationCommandScope,
+  desktopCollaborationOperationFamily,
+  personalCollaborationOperationFor,
+  teamCollaborationOperationFor,
+  teamCollaborationResultMatchesCommand,
+  type CollaborationUpstreamOperation
+} from "./collaboration-command-registry.js";
 import {
   isCollaborationSharedMemoryControlCommand,
   type CollaborationSharedMemoryControl
@@ -188,89 +194,12 @@ type PersonalCommand = Extract<
 function isPersonalCommand(
   command: CollaborationRendererCommand
 ): command is PersonalCommand {
-  switch (command.command) {
-    case "collaboration.load":
-      return true;
-    case "collaboration.select":
-      return isPersonalCollaborationSelection(command.input.selection);
-    case "collaboration.create_notes_to_self":
-    case "collaboration.create_personal_channel":
-      return true;
-    case "collaboration.rename_thread":
-    case "collaboration.update_thread_topic":
-    case "collaboration.archive_thread":
-    case "collaboration.restore_thread":
-    case "collaboration.send_message":
-    case "collaboration.retry_message":
-    case "collaboration.mark_read":
-    case "collaboration.load_message_page":
-      return command.input.thread.scope === "personal";
-    case "collaboration.subscribe":
-      return command.input.scope.scope === "personal";
-    default:
-      return false;
-  }
+  return collaborationCommandScope(command) === "personal";
 }
 
 function isTeamCommand(command: CollaborationRendererCommand): boolean {
-  if (
-    collaborationActionGrantControlCommandNames.some(
-      (name) => name === command.command
-    ) ||
-    isCollaborationTeamControlCommand(command)
-  ) {
-    return true;
-  }
-  switch (command.command) {
-    case "collaboration.select":
-      return isTeamCollaborationSelection(command.input.selection);
-    case "collaboration.create_workspace_channel":
-    case "collaboration.start_direct_message":
-    case "collaboration.start_group_direct_message":
-      return true;
-    case "collaboration.rename_thread":
-    case "collaboration.update_thread_topic":
-    case "collaboration.archive_thread":
-    case "collaboration.restore_thread":
-    case "collaboration.send_message":
-    case "collaboration.retry_message":
-    case "collaboration.mark_read":
-    case "collaboration.load_message_page":
-      return command.input.thread.scope === "team";
-    case "collaboration.subscribe":
-      return command.input.scope.scope === "team";
-    case "collaboration.load_shared_source_page":
-    case "collaboration.list_owned_shared_memory_grants":
-    case "collaboration.prepare_shared_memory_source":
-    case "collaboration.pause_shared_memory_sync":
-    case "collaboration.resume_shared_memory_sync":
-    case "collaboration.revoke_shared_memory_sync":
-    case "collaboration.preview_shared_memory":
-    case "collaboration.load_shared_memory_preview_page":
-    case "collaboration.consent_shared_memory":
-    case "collaboration.share_memory":
-    case "collaboration.revoke_shared_memory":
-    case "collaboration.change_shared_memory_representation":
-      return true;
-    default:
-      return false;
-  }
+  return collaborationCommandScope(command) === "team";
 }
-
-const desktopOperationFamily = (
-  command: CollaborationRendererCommand
-): "personal_collaboration_read" | "personal_collaboration_write" =>
-  command.command === "collaboration.load" ||
-  command.command === "collaboration.select" ||
-  command.command === "collaboration.load_message_page" ||
-  command.command === "collaboration.subscribe" ||
-  command.command === "collaboration.load_shared_source_page" ||
-  command.command === "collaboration.list_owned_shared_memory_grants" ||
-  command.command === "collaboration.load_shared_memory_preview_page" ||
-  command.command === "collaboration.await_action_grant" ||
-  command.command === "collaboration.list_invitations"
-    ? "personal_collaboration_read"
-    : "personal_collaboration_write";
 
 type SupportedCommand = Extract<
   CollaborationRendererCommand,
@@ -286,19 +215,6 @@ type SupportedCommand = Extract<
   | { command: "collaboration.mark_read" }
   | { command: "collaboration.load_message_page" }
 >;
-
-interface UpstreamOperation {
-  operationFamily:
-    | "personal_collaboration_read"
-    | "personal_collaboration_write"
-    | "team_chat_read"
-    | "team_chat_write";
-  method: "GET" | "POST" | "PUT" | "PATCH";
-  path: string;
-  body: Record<string, unknown>;
-  resultKey: "thread" | "message" | "readState";
-  idempotencyKey?: string;
-}
 
 interface PersonalRemoteContext {
   backend: LocalEdgeUpstreamBackend;
@@ -1110,211 +1026,6 @@ const personalMessagePage = async (input: {
   };
 };
 
-const teamThreadPath = (thread: {
-  scope: "team";
-  teamId: string;
-  threadId: string;
-}): string =>
-  `/v1/collaboration/teams/${encodeURIComponent(thread.teamId)}/threads/${encodeURIComponent(thread.threadId)}`;
-
-const personalThreadPath = (threadId: string): string =>
-  `/v1/collaboration/personal/threads/${encodeURIComponent(threadId)}`;
-
-const personalOperationFor = (
-  command: PersonalCommand
-):
-  | (UpstreamOperation & {
-      operationFamily:
-        | "personal_collaboration_read"
-        | "personal_collaboration_write";
-    })
-  | null => {
-  switch (command.command) {
-    case "collaboration.create_notes_to_self":
-      return {
-        operationFamily: "personal_collaboration_write",
-        method: "POST",
-        path: "/v1/collaboration/personal/notes-to-self",
-        body: {},
-        resultKey: "thread",
-        idempotencyKey: command.requestId
-      };
-    case "collaboration.create_personal_channel":
-      return {
-        operationFamily: "personal_collaboration_write",
-        method: "POST",
-        path: "/v1/collaboration/personal/channels",
-        body: { name: command.input.name, topic: command.input.topic },
-        resultKey: "thread",
-        idempotencyKey: command.requestId
-      };
-    case "collaboration.rename_thread":
-      if (command.input.thread.scope !== "personal") return null;
-      return {
-        operationFamily: "personal_collaboration_write",
-        method: "PATCH",
-        path: `${personalThreadPath(command.input.thread.threadId)}/name`,
-        body: {
-          name: command.input.name,
-          expectedVersion: command.input.expectedVersion
-        },
-        resultKey: "thread"
-      };
-    case "collaboration.update_thread_topic":
-      if (command.input.thread.scope !== "personal") return null;
-      return {
-        operationFamily: "personal_collaboration_write",
-        method: "PATCH",
-        path: `${personalThreadPath(command.input.thread.threadId)}/topic`,
-        body: {
-          topic: command.input.topic,
-          expectedVersion: command.input.expectedVersion
-        },
-        resultKey: "thread"
-      };
-    case "collaboration.archive_thread":
-    case "collaboration.restore_thread":
-      if (command.input.thread.scope !== "personal") return null;
-      return {
-        operationFamily: "personal_collaboration_write",
-        method: "POST",
-        path: `${personalThreadPath(command.input.thread.threadId)}/${
-          command.command === "collaboration.archive_thread"
-            ? "archive"
-            : "restore"
-        }`,
-        body: { expectedVersion: command.input.expectedVersion },
-        resultKey: "thread"
-      };
-    case "collaboration.send_message":
-    case "collaboration.retry_message":
-      if (command.input.thread.scope !== "personal") return null;
-      return {
-        operationFamily: "personal_collaboration_write",
-        method: "POST",
-        path: `${personalThreadPath(command.input.thread.threadId)}/messages`,
-        body: { bodyText: command.input.body },
-        resultKey: "message",
-        idempotencyKey: command.input.clientMessageId
-      };
-    case "collaboration.mark_read":
-      if (command.input.thread.scope !== "personal") return null;
-      return {
-        operationFamily: "personal_collaboration_read",
-        method: "PUT",
-        path: `${personalThreadPath(command.input.thread.threadId)}/read-state`,
-        body: { messageId: command.input.messageId },
-        resultKey: "readState"
-      };
-    default:
-      return null;
-  }
-};
-
-const operationFor = (
-  command: CollaborationRendererCommand
-): UpstreamOperation | null => {
-  switch (command.command) {
-    case "collaboration.create_workspace_channel":
-      return {
-        operationFamily: "team_chat_write",
-        method: "POST",
-        path: `/v1/collaboration/teams/${encodeURIComponent(command.input.teamId)}/workspaces/${encodeURIComponent(command.input.workspaceId)}/channels`,
-        body: { name: command.input.name, topic: command.input.topic },
-        resultKey: "thread",
-        idempotencyKey: command.requestId
-      };
-    case "collaboration.start_direct_message":
-      return {
-        operationFamily: "team_chat_write",
-        method: "POST",
-        path: `/v1/collaboration/teams/${encodeURIComponent(command.input.teamId)}/direct-messages`,
-        body: { participantUserId: command.input.participantUserId },
-        resultKey: "thread",
-        idempotencyKey: command.requestId
-      };
-    case "collaboration.start_group_direct_message":
-      return {
-        operationFamily: "team_chat_write",
-        method: "POST",
-        path: `/v1/collaboration/teams/${encodeURIComponent(command.input.teamId)}/group-direct-messages`,
-        body: { participantUserIds: command.input.participantUserIds },
-        resultKey: "thread",
-        idempotencyKey: command.requestId
-      };
-    case "collaboration.rename_thread":
-      if (command.input.thread.scope !== "team") return null;
-      return {
-        operationFamily: "team_chat_write",
-        method: "PATCH",
-        path: `${teamThreadPath(command.input.thread)}/name`,
-        body: {
-          name: command.input.name,
-          expectedVersion: command.input.expectedVersion
-        },
-        resultKey: "thread"
-      };
-    case "collaboration.update_thread_topic":
-      if (command.input.thread.scope !== "team") return null;
-      return {
-        operationFamily: "team_chat_write",
-        method: "PATCH",
-        path: `${teamThreadPath(command.input.thread)}/topic`,
-        body: {
-          topic: command.input.topic,
-          expectedVersion: command.input.expectedVersion
-        },
-        resultKey: "thread"
-      };
-    case "collaboration.archive_thread":
-    case "collaboration.restore_thread": {
-      if (command.input.thread.scope !== "team") return null;
-      const action =
-        command.command === "collaboration.archive_thread"
-          ? "archive"
-          : "restore";
-      return {
-        operationFamily: "team_chat_write",
-        method: "POST",
-        path: `${teamThreadPath(command.input.thread)}/${action}`,
-        body: { expectedVersion: command.input.expectedVersion },
-        resultKey: "thread"
-      };
-    }
-    case "collaboration.send_message":
-    case "collaboration.retry_message":
-      if (command.input.thread.scope !== "team") return null;
-      return {
-        operationFamily: "team_chat_write",
-        method: "POST",
-        path: `${teamThreadPath(command.input.thread)}/messages`,
-        body: { bodyText: command.input.body },
-        resultKey: "message",
-        idempotencyKey: command.input.clientMessageId
-      };
-    case "collaboration.mark_read":
-      if (command.input.thread.scope !== "team") return null;
-      return {
-        operationFamily: "team_chat_read",
-        method: "PUT",
-        path: `${teamThreadPath(command.input.thread)}/read-state`,
-        body: { messageId: command.input.messageId },
-        resultKey: "readState"
-      };
-    case "collaboration.load_message_page":
-      if (command.input.thread.scope !== "team") return null;
-      return {
-        operationFamily: "team_chat_read",
-        method: "GET",
-        path: `${teamThreadPath(command.input.thread)}/messages`,
-        body: {},
-        resultKey: "message"
-      };
-    default:
-      return null;
-  }
-};
-
 const supportsCollaborationCommands = (
   backend: LocalEdgeUpstreamBackend
 ): boolean => {
@@ -1462,7 +1173,7 @@ const targetReadStateFrom = (value: unknown): unknown => {
 
 const targetResultValue = (
   command: SupportedCommand,
-  operation: UpstreamOperation,
+  operation: CollaborationUpstreamOperation,
   value: unknown
 ): unknown => {
   if (operation.resultKey === "thread") return targetThreadFrom(value, command);
@@ -1470,105 +1181,9 @@ const targetResultValue = (
   return targetReadStateFrom(value);
 };
 
-const resultMatchesCommand = (
-  command: SupportedCommand,
-  value: unknown
-): boolean => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const result = value as Record<string, unknown>;
-  switch (command.command) {
-    case "collaboration.create_workspace_channel":
-      return (
-        result.kind === "workspace_channel" &&
-        result.teamId === command.input.teamId &&
-        result.workspaceId === command.input.workspaceId &&
-        result.name === command.input.name &&
-        result.topic === command.input.topic
-      );
-    case "collaboration.start_direct_message":
-      return (
-        result.kind === "dm" &&
-        result.teamId === command.input.teamId &&
-        Array.isArray(result.participants) &&
-        result.participants.some(
-          (participant) =>
-            participant !== null &&
-            typeof participant === "object" &&
-            (participant as { id?: unknown }).id ===
-              command.input.participantUserId
-        )
-      );
-    case "collaboration.start_group_direct_message": {
-      if (
-        result.kind !== "group_dm" ||
-        result.teamId !== command.input.teamId ||
-        !Array.isArray(result.participants)
-      ) {
-        return false;
-      }
-      const participantIds = new Set(
-        result.participants.map((participant) =>
-          participant !== null && typeof participant === "object"
-            ? (participant as { id?: unknown }).id
-            : null
-        )
-      );
-      return (
-        result.participants.length ===
-          command.input.participantUserIds.length + 1 &&
-        command.input.participantUserIds.every((id) => participantIds.has(id))
-      );
-    }
-    case "collaboration.rename_thread":
-      return (
-        command.input.thread.scope === "team" &&
-        result.id === command.input.thread.threadId &&
-        result.teamId === command.input.thread.teamId &&
-        result.name === command.input.name
-      );
-    case "collaboration.update_thread_topic":
-      return (
-        command.input.thread.scope === "team" &&
-        result.id === command.input.thread.threadId &&
-        result.teamId === command.input.thread.teamId &&
-        result.topic === command.input.topic
-      );
-    case "collaboration.archive_thread":
-      return (
-        command.input.thread.scope === "team" &&
-        result.id === command.input.thread.threadId &&
-        result.teamId === command.input.thread.teamId &&
-        result.lifecycle === "archived"
-      );
-    case "collaboration.restore_thread":
-      return (
-        command.input.thread.scope === "team" &&
-        result.id === command.input.thread.threadId &&
-        result.teamId === command.input.thread.teamId &&
-        result.lifecycle === "active"
-      );
-    case "collaboration.send_message":
-    case "collaboration.retry_message":
-      return (
-        command.input.thread.scope === "team" &&
-        result.threadId === command.input.thread.threadId &&
-        result.teamId === command.input.thread.teamId &&
-        result.body === command.input.body
-      );
-    case "collaboration.mark_read":
-      return (
-        command.input.thread.scope === "team" &&
-        result.threadId === command.input.thread.threadId &&
-        result.messageId === command.input.messageId
-      );
-    case "collaboration.load_message_page":
-      return false;
-  }
-};
-
 const successResult = (
   command: SupportedCommand,
-  operation: UpstreamOperation,
+  operation: CollaborationUpstreamOperation,
   payload: Record<string, unknown>
 ): CollaborationCommandResult | null => {
   const value = targetResultValue(
@@ -1576,7 +1191,7 @@ const successResult = (
     operation,
     payload[operation.resultKey]
   );
-  if (!resultMatchesCommand(command, value)) return null;
+  if (!teamCollaborationResultMatchesCommand(command, value)) return null;
   const parsed = collaborationCommandResultSchema.safeParse({
     contractVersion: COLLABORATION_CONTRACT_VERSION,
     requestId: command.requestId,
@@ -2905,7 +2520,7 @@ const dispatchRemotePersonalCommand = async (input: {
   context: PersonalRemoteContext;
   user: ActiveLocalUser;
 }): Promise<CollaborationCommandResult> => {
-  const operation = personalOperationFor(input.command);
+  const operation = personalCollaborationOperationFor(input.command);
   if (!operation) {
     return failureResult(input.command, safeError("not_available"));
   }
@@ -3505,7 +3120,7 @@ export const registerCollaborationCommandRoute = (
       }
       assertLocalTrust(request, options.corsOrigins);
       const input = collaborationCommandRequestSchema.parse(request.body);
-      const desktopFamily = desktopOperationFamily(input.command);
+      const desktopFamily = desktopCollaborationOperationFamily(input.command);
       await (desktopFamily === "personal_collaboration_read"
         ? options.readPreHandler?.(request, reply)
         : options.writePreHandler?.(request, reply));
@@ -4017,7 +3632,7 @@ export const registerCollaborationCommandRoute = (
           failureResult(input.command, safeError("temporarily_unavailable"))
         );
       }
-      const operation = operationFor(input.command);
+      const operation = teamCollaborationOperationFor(input.command);
       if (!operation) {
         if (input.command.command === "collaboration.select") {
           const context = await resolveTeamReadContext(
