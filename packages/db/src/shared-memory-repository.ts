@@ -145,6 +145,20 @@ export interface SharedMemoryRedactedSourceItemDto {
   content: Record<string, unknown>;
 }
 
+type SharedMemoryEventOrder = {
+  occurredAt: string | null;
+  sourceCursor: number;
+  eventId: string;
+};
+
+export const compareSharedMemoryEventOrder = (
+  left: SharedMemoryEventOrder,
+  right: SharedMemoryEventOrder
+): number =>
+  (left.occurredAt ?? "").localeCompare(right.occurredAt ?? "") ||
+  left.sourceCursor - right.sourceCursor ||
+  left.eventId.localeCompare(right.eventId);
+
 export interface SharedMemoryPreviewDto {
   representation: SharedMemoryRepresentation;
   logicalMemoryId: string;
@@ -3335,9 +3349,7 @@ export const createSharedMemoryRepository = (
       }
     );
     const orderedMappedEvents = [...mappedEvents.values()].sort(
-      (left, right) =>
-        left.sourceCursor - right.sourceCursor ||
-        left.eventId.localeCompare(right.eventId)
+      compareSharedMemoryEventOrder
     );
     let items: SharedMemoryRedactedSourceItemDto[];
     let manifest: SharedSourceArtifactV1["manifest"];
