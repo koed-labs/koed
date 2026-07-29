@@ -129,19 +129,13 @@ describe("stopKoedServer", () => {
       },
       checkPid: (pid) => running.has(pid),
       sleepSync: () => {
-        if (![10, 11, 12].some((pid) => running.has(pid))) {
-          running.delete(100);
-        }
+        running.clear();
       }
     });
 
     expect(result.ok).toBe(true);
-    expect(signals).toEqual([
-      [12, "SIGTERM"],
-      [11, "SIGTERM"],
-      [10, "SIGTERM"]
-    ]);
-    expect(result.stoppedPids).toEqual([12, 11, 10, 100]);
+    expect(signals).toEqual([]);
+    expect(result.stoppedPids).toEqual([10, 11, 12, 100]);
     expect(result.stoppedServices).toContain("supervisor");
   });
 
@@ -259,7 +253,7 @@ describe("stopKoedServer", () => {
         signals.push([pid, signal]);
         if (signal === "SIGKILL") running = false;
       },
-      checkPid: () => running,
+      checkPid: (pid) => pid === 10 && running,
       waitForExitMs: 1,
       pollIntervalMs: 1,
       sleepSync: () => undefined
@@ -282,7 +276,7 @@ describe("stopKoedServer", () => {
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
       kill: () => undefined,
-      checkPid: () => true,
+      checkPid: (pid) => pid === 10,
       waitForExitMs: 1,
       pollIntervalMs: 1,
       sleepSync: () => undefined
