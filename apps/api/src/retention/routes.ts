@@ -6,8 +6,11 @@ import {
   type RetentionLifecycleRepository,
   type UserSessionContext
 } from "@koed/db";
+import {
+  highRiskActionGrantCanonicalHash,
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
+} from "@koed/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { createHash } from "node:crypto";
 
 import type { AuthHelpers } from "../auth/session.js";
 import type { RateLimitHandler } from "../infra/rate-limit.js";
@@ -58,41 +61,30 @@ const rejectApiToken = (request: FastifyRequest): void => {
   }
 };
 
-const canonicalizeJson = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalizeJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, canonicalizeJson(item)])
-    );
-  }
-  return value;
-};
-
-const hashCanonical = (domain: string, value: unknown): string =>
-  createHash("sha256")
-    .update(`${domain}\n${JSON.stringify(canonicalizeJson(value))}`)
-    .digest("hex");
-
 export const retentionAdminScopeHash = (input: {
   action: string;
   teamId: string | null;
   targetId: string | null;
 }): string =>
-  hashCanonical("koed:high-risk:retention-admin-scope:v1", {
-    operationFamily: "admin",
-    action: input.action,
-    teamId: input.teamId,
-    targetId: input.targetId
-  });
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.retentionAdminScope,
+    {
+      operationFamily: "admin",
+      action: input.action,
+      teamId: input.teamId,
+      targetId: input.targetId
+    }
+  );
 
 export const retentionAdminRequestHash = (input: {
   method: string;
   path: string;
   body: unknown;
-}): string => hashCanonical("koed:high-risk:retention-admin-request:v1", input);
+}): string =>
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.retentionAdminRequest,
+    input
+  );
 
 const actionGrantHeader = (request: FastifyRequest): string | null => {
   const value = request.headers["x-koed-action-grant"];

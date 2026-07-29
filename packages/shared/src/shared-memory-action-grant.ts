@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto";
+import {
+  highRiskActionGrantCanonicalHash,
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
+} from "./high-risk-action-grant-hash.js";
 
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
@@ -20,41 +23,30 @@ export interface SharedMemoryActionGrantBinding {
   requestHash: string;
 }
 
-const canonicalizeJson = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalizeJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, canonicalizeJson(item)])
-    );
-  }
-  return value;
-};
-
-const hashCanonical = (domain: string, value: unknown): string =>
-  createHash("sha256")
-    .update(`${domain}\n${JSON.stringify(canonicalizeJson(value))}`)
-    .digest("hex");
-
 export const sharedMemoryGrantManagementScopeHash = (input: {
   action: string;
   teamId: string | null;
   targetId: string | null;
 }): string =>
-  hashCanonical("koed:high-risk:shared-memory-scope:v1", {
-    operationFamily: "share_grant_management",
-    action: input.action,
-    teamId: input.teamId,
-    targetId: input.targetId
-  });
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.sharedMemoryScope,
+    {
+      operationFamily: "share_grant_management",
+      action: input.action,
+      teamId: input.teamId,
+      targetId: input.targetId
+    }
+  );
 
 export const sharedMemoryGrantManagementRequestHash = (input: {
   method: string;
   path: string;
   body: unknown;
-}): string => hashCanonical("koed:high-risk:shared-memory-request:v1", input);
+}): string =>
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.sharedMemoryRequest,
+    input
+  );
 
 const authorityBody = (referenceId: string) => ({
   action: SHARED_MEMORY_AUTHORITY_ACTION,

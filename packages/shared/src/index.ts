@@ -366,6 +366,11 @@ export {
   highRiskActionGrantCommitmentHash
 } from "./high-risk-action-grant-commitment.js";
 export {
+  highRiskActionGrantCanonicalHash,
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
+} from "./high-risk-action-grant-hash.js";
+export type { HighRiskActionGrantHashDomain } from "./high-risk-action-grant-hash.js";
+export {
   deriveLocalProjectId,
   hmacProjectValue,
   isPortableGitRemote,

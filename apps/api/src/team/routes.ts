@@ -1,4 +1,8 @@
 import {
+  highRiskActionGrantCanonicalHash,
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
+} from "@koed/shared";
+import {
   defaultFreshAuthenticationMaxAgeMs,
   type DeviceCredentialAuthContext,
   type MemorySourceRepository,
@@ -51,41 +55,30 @@ const isStaleVersionError = (error: unknown): boolean =>
     error.code === "STALE_VERSION"
   );
 
-const canonicalizeJson = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalizeJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, canonicalizeJson(item)])
-    );
-  }
-  return value;
-};
-
-const hashCanonical = (domain: string, value: unknown): string =>
-  createHash("sha256")
-    .update(`${domain}\n${JSON.stringify(canonicalizeJson(value))}`)
-    .digest("hex");
-
 export const teamAdminScopeHash = (input: {
   action: string;
   teamId: string | null;
   targetId: string | null;
 }): string =>
-  hashCanonical("koed:high-risk:team-admin-scope:v1", {
-    operationFamily: "admin",
-    action: input.action,
-    teamId: input.teamId,
-    targetId: input.targetId
-  });
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
+    {
+      operationFamily: "admin",
+      action: input.action,
+      teamId: input.teamId,
+      targetId: input.targetId
+    }
+  );
 
 export const teamAdminRequestHash = (input: {
   method: string;
   path: string;
   body: unknown;
-}): string => hashCanonical("koed:high-risk:team-admin-request:v1", input);
+}): string =>
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+    input
+  );
 
 const backendOriginHash = (protocolDeploymentId: string): string =>
   createHash("sha256")

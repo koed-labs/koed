@@ -4,6 +4,8 @@ import {
   calculateConversationSourceDiscoveryRequestHash,
   calculateConversationSourceDiscoveryScopeHash,
   collaborationActionGrantIntentSchema,
+  highRiskActionGrantCanonicalHash,
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
   sharedMemoryConsentActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRepresentationActionGrantBinding,
@@ -11,7 +13,6 @@ import {
   sharedMemoryShareActionGrantBinding,
   type CollaborationActionGrantIntent
 } from "@koed/shared";
-import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import {
@@ -374,41 +375,26 @@ export interface HighRiskResolvedActionGrantOperation extends HighRiskActionGran
   requestHash: string;
 }
 
-const canonicalizeJson = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalizeJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, canonicalizeJson(item)])
-    );
-  }
-  return value;
-};
-
-const hashCanonical = (domain: string, value: unknown): string =>
-  createHash("sha256")
-    .update(`${domain}\n${JSON.stringify(canonicalizeJson(value))}`)
-    .digest("hex");
-
 export const managedConversationTransferScopeHash = (input: {
   action: "managed_conversation.handoff" | "managed_conversation.fork";
   executionId: string;
 }): string =>
-  hashCanonical("koed:high-risk:managed-conversation-transfer-scope:v1", {
-    operationFamily: "managed_execution",
-    action: input.action,
-    executionId: input.executionId
-  });
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.managedConversationTransferScope,
+    {
+      operationFamily: "managed_execution",
+      action: input.action,
+      executionId: input.executionId
+    }
+  );
 
 export const managedConversationTransferRequestHash = (input: {
   method: "POST";
   path: string;
   body: Record<string, unknown>;
 }): string =>
-  hashCanonical(
-    "koed:high-risk:managed-conversation-transfer-request:v1",
+  highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.managedConversationTransferRequest,
     input
   );
 
