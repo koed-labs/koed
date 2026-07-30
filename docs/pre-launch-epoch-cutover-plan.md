@@ -1,6 +1,6 @@
 # Pre-launch Epoch Cutover and Validation Plan
 
-Status: implementation plan for [ADR 0013](adr/0013-pre-launch-schema-reset-and-processing-epochs.md). This document specifies work; it does not perform reset, migration, rename, or rebuild.
+Status: implementation plan for [ADR 0023](adr/0023-pre-launch-schema-reset-and-processing-epochs.md). This document specifies work; it does not perform reset, migration, rename, or rebuild.
 
 ## Cutover gates
 
@@ -34,7 +34,7 @@ Activation evidence records release commit, migration revision, generation-set r
 - Teams, Membership, Workspaces, Workspace Access, Share Grants, Capture Policy/Pause, and audit state.
 - Captured Sessions, canonical conversation items/observations, source identities/hashes/order/timestamps, historical import checkpoints, sync lineage, and durable source packages.
 - accepted Curated Memory assertions, review decisions, provenance, and evidence roles. Before derived invalidation, export each evidence pointer with its stable canonical source identity/closure/hash and old derived ID so it can be rebound exactly;
-- PDS governance state from KOE-348 / PR #319 only after that work merges and is revalidated against `main`. Frozen `koed/pds/v1` signed manifests and package bytes remain unchanged.
+- PDS governance state: Personal Device Group/User subjects, members, signed statements, Key Bundles, membership certificates, Personal Sync Policy, Remote Account Links, freeze/quarantine state, audit, and high-water state. Preserve the fixed V1 Authority/Relay operational-host topology and consolidated `0020_zippy_apocalypse` migration baseline. Frozen `koed/pds/v1` signed manifests and package bytes remain unchanged.
 
 ### Invalidate and rebuild
 

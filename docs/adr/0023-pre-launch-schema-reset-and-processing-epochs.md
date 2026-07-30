@@ -8,6 +8,9 @@ Related decisions:
 - [0003 Drizzle Schema And Hybrid DB Repositories](0003-drizzle-schema-and-hybrid-db-repositories.md)
 - [0004 Team Memory Uses User-Owned Share Grants And Workspaces](0004-team-memory-workspaces.md)
 - [0012 Symmetric Replicated Personal Memory Across Devices](0012-symmetric-replicated-personal-memory.md)
+- [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](0013-team-collaboration-authority.md)
+- [0020 Portable Personal Derived Artifact Replication](0020-portable-personal-derived-artifact-replication.md)
+- [0021 Portable Semantic Work Ownership](0021-portable-semantic-work-ownership.md)
 
 Supporting plans:
 
@@ -88,7 +91,7 @@ Koed keeps separate ownership and upgrade rules for:
 - processing compatibility identities and generation sets;
 - cryptographic epochs such as PDS `current_epoch`.
 
-No global application version replaces those namespaces. PDS governance state from KOE-348 / PR #319 remains separate, proposed, and must be revalidated against resulting `main` after merge. This PR does not change PR #319's scope.
+No global application version replaces those namespaces. PDS governance is separate canonical security, identity, consent, and lifecycle control, not processing state. The frozen `koed/pds/v1` signed manifests and package bytes remain unchanged. V1 uses its implemented fixed operational Authority/Relay host topology; its consolidated persistence baseline is Drizzle migration `0020_zippy_apocalypse`. PDS cryptographic epochs such as `current_epoch` are not Processing epochs.
 
 ### Deterministic compatibility identities
 
