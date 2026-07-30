@@ -230,13 +230,30 @@ PDS_E2E_BROWSER_COOKIE='<session-cookie>' \
 pnpm pds-pairing:e2e
 ```
 
+For the required two-database enrollment/recovery gate, run two isolated
+`local_personal` APIs and additionally provide the joining API and its own local
+authentication:
+
+```bash
+PDS_E2E_CONTROL_URL=http://127.0.0.1:<device-a-api-port> \
+PDS_E2E_BROWSER_COOKIE='<device-a-session-cookie>' \
+PDS_E2E_JOINING_CONTROL_URL=http://127.0.0.1:<device-b-api-port> \
+PDS_E2E_JOINING_BROWSER_COOKIE='<device-b-session-cookie>' \
+pnpm pds-pairing:e2e
+```
+
+The command rejects identical API origins. It verifies that the signed joining
+state is independently reconciled and retained by Device B before its protected
+runtime is rebound to Device B's local User.
+
 An explicitly disposable API with public test registration may use
 `PDS_E2E_ALLOW_REGISTER=1` instead of a supplied cookie. Never enable that
 switch against a real User deployment. The command proves real Authority API
 genesis, encrypted LAN exchange, signed active-device approval, epoch-2
 activation on two isolated device identities, source refresh, relay binding,
-and one-time invitation invalidation. It emits no credentials. Desktop
-validation then needs to prove only the QR/link handoff and rendered states.
+optional second-database local reconciliation, and one-time invitation
+invalidation. It emits no credentials. Desktop validation then proves the
+QR/link handoff, source-package data plane, and rendered states.
 
 Run `pnpm pds-fixture:validate` for deterministic shared-protocol crypto
 vectors plus control/recovery lifecycle tests. Fixture matrix explicitly labels

@@ -28,6 +28,12 @@ origin-signed derived artifacts may be imported to avoid repeating Projection
 or embedding work. Relay outage never stops local capture or Recall of already
 materialized Memory.
 
+The same-network V1 profile uses one fixed Authority/Relay-hosting
+installation. This is an operational availability hub, not a plaintext Memory,
+Projection, embedding, or Recall authority. Its outage pauses enrollment,
+governance, and package transfer. V1 has no direct/multiple relay endpoint
+selection and no Authority transfer or rotation ceremony.
+
 PDS is not PostgreSQL replication, Team replication, a Personal Hub, or
 Directed Hosted Cross-Identity Sync. Directed Hosted Cross-Identity Sync remains
 a separate one-way protocol between distinct identities/deployments. Its
@@ -807,8 +813,9 @@ content.
 
 ## 11. Explicit non-V1
 
-Not V1: direct peer transport, historical import/backfill, open/edited Sessions,
-partial replication, mixed-version compatibility, LCM Summary replication,
+Not V1: direct or multiple relay transport endpoints, Authority
+transfer/rotation, historical import/backfill, open/edited Sessions, partial
+replication, mixed-version compatibility, LCM Summary replication,
 Project-wide/global packages, automatic conflict resolution, device-authorized
 Team actions, any Operator/support recovery bypass, server key escrow,
 post-closure source mutation, or any change to Directed Hosted Cross-Identity

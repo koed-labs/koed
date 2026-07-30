@@ -17,10 +17,17 @@ import {
 import { startPersonalDevicePairingServer } from "../apps/desktop/dist-electron/personal-device-pairing-server.js";
 import { resolveKoedServerPaths } from "../packages/koed-server/dist/paths.js";
 import { runPersonalSyncCommand } from "../packages/koed-server/dist/personal-sync.js";
+import { reconcileJoiningDeviceDatabase } from "./personal-device-pairing-e2e-lib.mjs";
 
 const controlUrl = process.env.PDS_E2E_CONTROL_URL?.trim();
+const joiningControlUrl =
+  process.env.PDS_E2E_JOINING_CONTROL_URL?.trim() ?? null;
 let browserCookie = process.env.PDS_E2E_BROWSER_COOKIE?.trim();
+const joiningBrowserCookie =
+  process.env.PDS_E2E_JOINING_BROWSER_COOKIE?.trim() ?? null;
 const desktopAuthorization = process.env.PDS_E2E_DESKTOP_AUTHORIZATION?.trim();
+const joiningDesktopAuthorization =
+  process.env.PDS_E2E_JOINING_DESKTOP_AUTHORIZATION?.trim() ?? null;
 if (!controlUrl) {
   throw new Error("PDS_E2E_CONTROL_URL is required.");
 }
@@ -56,6 +63,15 @@ if (
 if (!desktopAuthorization && !browserCookie) {
   throw new Error(
     "PDS_E2E_DESKTOP_AUTHORIZATION or PDS_E2E_BROWSER_COOKIE is required unless PDS_E2E_ALLOW_REGISTER=1."
+  );
+}
+if (
+  joiningControlUrl &&
+  !joiningDesktopAuthorization &&
+  !joiningBrowserCookie
+) {
+  throw new Error(
+    "PDS_E2E_JOINING_DESKTOP_AUTHORIZATION or PDS_E2E_JOINING_BROWSER_COOKIE is required for two-database validation."
   );
 }
 const root = mkdtempSync(resolve(tmpdir(), "koed-pds-pairing-e2e-"));
@@ -348,6 +364,46 @@ try {
       }
     }
   );
+  let joiningDatabase = null;
+  if (joiningControlUrl) {
+    const localGroupReconciliation = completion.localGroupReconciliation;
+    if (
+      !localGroupReconciliation ||
+      typeof localGroupReconciliation !== "object" ||
+      Array.isArray(localGroupReconciliation)
+    ) {
+      throw new Error(
+        "Joining-device completion omitted local group reconciliation."
+      );
+    }
+    joiningDatabase = await reconcileJoiningDeviceDatabase({
+      authorityControlUrl: controlUrl,
+      joiningControlUrl,
+      desktopAuthorization: joiningDesktopAuthorization,
+      browserCookie: joiningBrowserCookie,
+      groupId,
+      localGroupReconciliation,
+      fetch
+    });
+    await command(
+      "b",
+      [
+        "join",
+        "bind-local-user",
+        "--group-id",
+        groupId,
+        "--user-id",
+        joiningDatabase.localUserId,
+        "--challenge-id",
+        invitation.challenge_id
+      ],
+      {
+        environment: {
+          PDS_CONTROL_URL: joiningControlUrl
+        }
+      }
+    );
+  }
   const closed = await exchange(pairing.url, { operation: "complete" });
   if (closed.completed !== true) {
     throw new Error("Pairing invitation did not close.");
@@ -401,6 +457,14 @@ try {
         epoch: runtimeA.groupSecrets.currentEpoch,
         sourceState: approval.state,
         joiningState: completion.state,
+        joiningDatabase:
+          joiningDatabase === null
+            ? { state: "single-control-database" }
+            : {
+                state: "reconciled",
+                distinctControlOrigin: true,
+                localUserId: joiningDatabase.localUserId
+              },
         sourceRefreshState: refreshed.state,
         invitationInvalidated: true,
         secretsEmitted: false

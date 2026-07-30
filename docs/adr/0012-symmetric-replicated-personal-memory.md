@@ -78,7 +78,8 @@ The V1 replication model is a relay-assisted, source-owned replicated log of
 immutable Captured Session packages and explicitly allowlisted portable
 Personal artifacts:
 
-- No personal device is the permanent Personal Memory authority.
+- No personal device is the permanent plaintext or source-of-truth Personal
+  Memory authority.
 - Every associated device remains a normal local `koed-server` and can capture,
   project, embed, inspect, and recall Personal Memory locally.
 - V1 replicates closed Captured Sessions. Each Session has one origin
@@ -98,6 +99,11 @@ Personal artifacts:
   recall authority, Team authority, or source of truth.
 - Relay transfer is required in V1. Direct peer transfer is non-V1 and requires
   a later protocol decision; it cannot become an implicit relay fallback.
+- The same-network V1 deployment has one fixed Authority/Relay-hosting
+  installation. That installation is an operational availability hub for
+  enrollment, governance, and package transfer even though every admitted
+  device is a symmetric data-plane replica. V1 does not transfer or rotate the
+  Authority private key.
 - Personal multi-device association does not create or modify Team Membership,
   Workspace Access, Share Grants, Team retention, or Project-to-Team Workspace
   mappings.
@@ -580,19 +586,21 @@ and becomes a concentrated plaintext target, while symmetric replication gives
 every selected device a decryptable replica and therefore expands endpoint
 exposure. Neither model removes trust; they place it differently.
 
-The Hub design is not selected: symmetric replication avoids privileged personal
-device and is accepted as stronger long-term product property despite added
-implementation and operational cost.
+The Personal Memory Hub design is not selected: no device owns canonical
+plaintext Memory or aggregate Recall. The V1 same-network transport still has a
+fixed operational Authority/Relay host. Removing that availability dependency
+requires a later protocol decision covering direct or multiple relay endpoints,
+Authority transfer/rotation, recovery-kit evolution, and split-brain handling.
 
 ## Consequences
 
 Benefits:
 
-- no permanent privileged personal device;
+- no permanent plaintext Memory authority or aggregate Recall device;
 - local capture and recall remain available on every device;
-- replacement devices can recover already replicated closed Sessions without
-  transferring Hub authority while an authorized replica or retained relay copy
-  remains available;
+- replacement devices can recover retained closed Sessions through the valid
+  recovery flow while the fixed Authority/Relay host and an authorized replica
+  or retained relay copy remain available;
 - replicas can converge after offline work;
 - transport deployment is separable from Memory ownership;
 - Project matching can span trusted devices without affecting Team security.
@@ -605,6 +613,8 @@ Costs:
 - more upgrade and current-version coordination cases;
 - greater storage and bandwidth use;
 - more complex stale/partial/error UX;
+- enrollment, governance, and package transfer pause while the fixed V1
+  Authority/Relay host is unavailable;
 - wider security and two-node/N-device test matrix.
 
 The complexity is materially greater than a Personal Hub. It remains bounded by
@@ -626,7 +636,8 @@ This decision does not add:
 - Project-wide or global Personal Memory package boundaries;
 - selective partial replication in V1;
 - relay plaintext processing;
-- consensus or leader election between personal devices.
+- consensus or leader election between personal devices;
+- direct or multiple relay endpoints and Authority transfer/rotation.
 
 ## Required Follow-Up Work
 

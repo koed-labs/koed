@@ -40,12 +40,16 @@ Desktop accepts the link through explicit paste or the registered
 device on the Authority-hosting installation must explicitly approve the
 signed joining-device request before any membership transition occurs.
 
-This control-plane placement does not make that installation a Personal Memory
-hub. Every admitted device remains a symmetric source and replica in the data
-plane. A joined replica does not advertise an invitation action that its local
-Authority key cannot countersign; the User creates the next invitation on the
-same Authority-hosting installation. Moving or recovering that Authority role
-is an explicit recovery operation, never implicit key copying between devices.
+This control-plane placement does not make that installation a plaintext
+Personal Memory authority or aggregate Recall host. Every admitted device
+remains a symmetric source and replica in the data plane. It does make the
+installation an operational availability hub in V1: enrollment, governance,
+and package transfer pause when its Authority/Relay route is unavailable. A
+joined replica does not advertise an invitation action that its local Authority
+key cannot countersign; the User creates the next invitation on the same
+Authority-hosting installation. V1 has no Authority transfer or rotation
+ceremony. Moving that role requires a later protocol decision and cannot be
+approximated by copying the Authority key between devices.
 
 The invitation link has this shape:
 
@@ -145,15 +149,19 @@ must not restart API, Worker, Explorer, capture, or Recall services.
 - The local Authority/Relay route must be reachable for enrollment and later
   replication. Its outage pauses transfer but does not stop local capture or
   Recall.
+- Loss of the Authority-hosting installation strands V1 enrollment, governance,
+  and new package transfer until a later supported Authority recovery/transfer
+  protocol exists. Replicas retain local use of already materialized Memory.
 - A joined replica remains symmetric for capture and replication but does not
   host the group's enrollment gateway. It directs the User to create another
   invitation on the Authority-hosting installation.
 - Idle synchronization uses database notifications and one authenticated held
   relay wake request. Persisted retry due-times use exact one-shot timers;
   continuous interval polling is forbidden.
-- Direct peer mesh transport, mDNS discovery, public-address pairing, and
-  Bluetooth proximity are not silently inferred. Each would require a separate
-  protocol decision.
+- Direct peer mesh transport, multiple relay endpoints, Authority
+  transfer/rotation, mDNS discovery, public-address pairing, and Bluetooth
+  proximity are not silently inferred. Each requires a separate protocol
+  decision.
 - Retrying the exact signed joining request reuses the locally protected
   pending keys and request. A different request cannot replace it. This makes
   response loss recoverable without creating a second logical device.

@@ -16,10 +16,10 @@ Workspace, local profiles, and database that can all be discarded.
 Run both topologies from fully fresh local profiles. They establish different
 properties and neither is a substitute for the other.
 
-| Topology                        | Authority and transport                                                                                                                                                                                                             | Required proof                                                                                                                                                                                                                      |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Local-only Personal Device Sync | A PDS relay carries encrypted immutable closed Captured Session packages and compatible portable artifact packages between two devices in one Personal Device Group. Neither device has a configured remote `koed-server` upstream. | A closed source session materializes once on the second device; compatible Memory Event, embedding, and LCM artifacts are reused without copying device-local execution state, with local derivation as the compatibility fallback. |
-| Remote Personal/Team backend    | Each local edge connects and enrolls with one remote `koed-server`; the backend provides the Personal/Team authority and source-replication target.                                                                                 | Personal source replication, Team authorization, Share Grant visibility, and realtime collaboration work with the remote service unavailable only for its remote-dependent features.                                                |
+| Topology                        | Authority and transport                                                                                                                                                                                                                                          | Required proof                                                                                                                                                                                                                      |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local-only Personal Device Sync | Device A's fixed V1 Authority/Relay host carries encrypted immutable closed Captured Session packages and compatible portable artifact packages between two devices in one Personal Device Group. Neither device has a configured remote `koed-server` upstream. | A closed source session materializes once on the second device; compatible Memory Event, embedding, and LCM artifacts are reused without copying device-local execution state, with local derivation as the compatibility fallback. |
+| Remote Personal/Team backend    | Each local edge connects and enrolls with one remote `koed-server`; the backend provides the Personal/Team authority and source-replication target.                                                                                                              | Personal source replication, Team authorization, Share Grant visibility, and realtime collaboration work with the remote service unavailable only for its remote-dependent features.                                                |
 
 PDS V1 deliberately transfers only eligible future **closed** Captured Sessions.
 It does not transfer open sessions, mutable Personal notes/channels, renderer
@@ -340,20 +340,26 @@ Run this before the remote Team flow. Keep both devices disconnected from any
 hosted Personal Memory or Team backend for the whole case. PDS V1 is
 relay-required, so this topology still uses the configured opaque PDS
 Authority/Relay service; that service is not a Personal Memory authority, does
-not project or embed source data, and does not make either device a hub.
+not project or embed source data, and does not own aggregate Recall. The
+Authority-hosting installation is nevertheless a fixed operational hub in V1:
+its outage pauses enrollment, governance, and package transfer.
 
 1. Run the deterministic and real API-first gates before Electron:
    `pnpm pds-fixture:validate` with its PostgreSQL stage enabled, then
-   `pnpm pds-pairing:e2e` against the disposable local-personal API. Do not
-   continue if either skips required storage coverage or fails.
+   `pnpm pds-pairing:e2e` against two disposable local-personal APIs and two
+   distinct databases using the joining-control variables documented in
+   [Running Koed](running-koed.md#same-network-desktop-pairing). Do not continue
+   if either skips required storage coverage, uses the same API origin/database,
+   or fails.
 2. Create or recover one Personal Device Group through the supported device
    enrollment flow. Keep Device A as the local Authority-hosting installation.
    From Device A's **Devices** modal, issue the QR/link; on Device B, use
    **Join with link**; compare the short code; approve on A.
    Confirm both devices become active group members and each holds only its own
    local device secrets. Confirm Device B does not offer an invitation action
-   that would require Device A's Authority key. This does not make Device A a
-   Personal Memory hub; both devices remain symmetric data-plane replicas.
+   that would require Device A's Authority key. Device A is the fixed
+   operational Authority/Relay hub in V1, while both devices remain symmetric
+   data-plane replicas with local capture and Recall.
    Progress must use the held pairing exchange without periodic refresh or
    arbitrary sleep-based timing.
 3. On device A, capture a unique User prompt, tool call/result, and completed
