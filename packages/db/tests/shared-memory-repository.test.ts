@@ -2535,10 +2535,14 @@ describeDb("Shared Memory repository", () => {
     }
     expect(ownerDecryptSpy).toHaveBeenCalledTimes(ownerDecryptsBeforeReads);
     const stored = await pool.query<{
+      id: string;
+      share_grant_id: string;
       stored: string;
       ciphertext: string;
+      aad: Record<string, string>;
     }>(
-      `select row_to_json(c)::text as stored, c.ciphertext
+      `select c.id, c.share_grant_id, row_to_json(c)::text as stored,
+              c.ciphertext, c.aad
        from team_memory_representation_chunks c
        where c.share_grant_id = any($1::uuid[])`,
       [grants.map((grant) => grant.shareGrantId)]
@@ -2548,7 +2552,20 @@ describeDb("Shared Memory repository", () => {
       expect(row.stored).not.toContain("timeline-");
       expect(row.ciphertext).not.toContain("source summary");
       expect(row.ciphertext).not.toContain("assistant source");
+      expect(row.aad.chunkFormatVersion).toBe("1");
     }
+
+    await pool.query(
+      `update team_memory_representation_chunks
+          set aad=jsonb_set(aad, '{chunkFormatVersion}', '"2"'::jsonb)
+        where id=$1`,
+      [stored.rows[0]!.id]
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: stored.rows[0]!.share_grant_id
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
   });
 
   it("preserves exact rollup fidelity and policy provenance through owner-private sync and Team materialization", async () => {

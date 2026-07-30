@@ -1737,6 +1737,8 @@ const envelopeProvenance = (
   sourceId: representationId
 });
 
+const SHARED_MEMORY_CHUNK_FORMAT_VERSION = 1;
+
 const envelopeAad = (input: {
   representationId: string;
   shareGrantId: string;
@@ -1754,6 +1756,7 @@ const envelopeAad = (input: {
   redactedContentHash: string;
   provenanceHash: string;
 }): Record<string, string | number> => ({
+  chunkFormatVersion: SHARED_MEMORY_CHUNK_FORMAT_VERSION,
   representationId: input.representationId,
   shareGrantId: input.shareGrantId,
   teamId: input.teamId,

@@ -390,6 +390,13 @@ The supported Team representations are `memory_events`, `lcm_leaves`, and
   instructions, credentials, and unsupported protocol items fail closed. Tool
   inputs and results cross the Team boundary only after eligibility checks and
   secret redaction.
+- Encrypted representation chunks declare their authenticated-data format
+  version. Version 1 authenticates each chunk's item offset, item count, and
+  total item count so a cold read can decrypt only the newest bounded page.
+  Readers fail closed when the version or paging metadata does not match the
+  supported format. A future format change requires an explicit data reset or
+  migration that decrypts and re-encrypts affected chunks; readers must not
+  infer compatibility.
 
 ### Companion Discussion
 
