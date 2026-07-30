@@ -141,6 +141,17 @@ const authorizationPublicKey = (
   return member.signingPublicKey;
 };
 
+const assertPersistedAuthoritySigner = (
+  group: PersonalDeviceGroupRecord,
+  signer: PdsAuthoritySigner
+): void => {
+  if (
+    group.authorityKeyId !== signer.keyId ||
+    group.authorityPublicKey !== signer.publicKey
+  )
+    unavailable();
+};
+
 const counterSignStatement = (
   statement: PdsGroupStatement,
   signer: PdsAuthoritySigner
@@ -231,6 +242,7 @@ const issueMembershipCertificates = async (
   group: PersonalDeviceGroupRecord,
   signer: PdsAuthoritySigner
 ): Promise<void> => {
+  assertPersistedAuthoritySigner(group, signer);
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + 7 * 24 * 60 * 60 * 1_000);
   await Promise.all(
@@ -1021,11 +1033,7 @@ export const registerPersonalDeviceSyncRoutes = (
         params.groupId
       );
       if (!group) throw pdsError("Personal Device Group not found", 404);
-      if (
-        group.authorityKeyId !== signer.keyId ||
-        group.authorityPublicKey !== signer.publicKey
-      )
-        unavailable();
+      assertPersistedAuthoritySigner(group, signer);
       if (group.state !== "active")
         throw pdsError("PDS governance is frozen", 409);
       if (group.pendingEpoch !== null)
@@ -1109,9 +1117,6 @@ export const registerPersonalDeviceSyncRoutes = (
       let enrollmentChallenge:
         | {
             challengeId: string;
-            groupId: string;
-            browserSubjectId: string;
-            browserDeploymentId: string;
             challenge: string;
           }
         | undefined;
@@ -1149,9 +1154,6 @@ export const registerPersonalDeviceSyncRoutes = (
           );
           enrollmentChallenge = {
             challengeId: input.proof.challenge_id,
-            groupId: group.groupId,
-            browserSubjectId: user.id,
-            browserDeploymentId: browserDeploymentId(context),
             challenge: input.proof.challenge
           };
         }
@@ -1293,6 +1295,7 @@ export const registerPersonalDeviceSyncRoutes = (
       const group = await repo().getPersonalDeviceGroup(user.id, groupId);
       if (!group || group.state !== "active" || group.pendingEpoch !== null)
         throw pdsError("PDS lifecycle is unavailable", 409);
+      assertPersistedAuthoritySigner(group, signer);
       const record = parseCanonicalPdsJson(input.record) as Record<
         string,
         unknown
@@ -1321,7 +1324,7 @@ export const registerPersonalDeviceSyncRoutes = (
       const expectedSnapshot = group.members
         .filter((member) => member.status === "active")
         .map((member) => member.deviceId)
-        .sort();
+        .sort(comparePdsCanonicalIds);
       if (JSON.stringify(activeSnapshot) !== JSON.stringify(expectedSnapshot))
         throw pdsError("PDS tombstone active snapshot is stale", 409);
       const finalRecord = {
@@ -1432,6 +1435,7 @@ export const registerPersonalDeviceSyncRoutes = (
       const group = await repo().getPersonalDeviceGroup(user.id, groupId);
       if (!group || group.state !== "active" || group.pendingEpoch !== null)
         throw pdsError("PDS lifecycle is unavailable", 409);
+      assertPersistedAuthoritySigner(group, signer);
       const record = parseCanonicalPdsJson(input.record) as Record<
         string,
         unknown
@@ -1541,6 +1545,7 @@ export const registerPersonalDeviceSyncRoutes = (
       const input = pdsEpochAckSchema.parse(request.body);
       const group = await repo().getPersonalDeviceGroup(user.id, groupId);
       if (!group) throw pdsError("Personal Device Group not found", 404);
+      assertPersistedAuthoritySigner(group, signer);
       if (
         !group.pendingEpoch ||
         !group.pendingStatementSequence ||
@@ -1626,6 +1631,7 @@ export const registerPersonalDeviceSyncRoutes = (
       const group = await repo().getPersonalDeviceGroup(user.id, groupId);
       if (!group || group.state !== "active" || group.pendingEpoch !== null)
         throw pdsError("PDS membership certificate is unavailable", 409);
+      assertPersistedAuthoritySigner(group, signer);
       await issueMembershipCertificates(context, user.id, group, signer);
       return { group: publicGroup(group), refreshed: true };
     }

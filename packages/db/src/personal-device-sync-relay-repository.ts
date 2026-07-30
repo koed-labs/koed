@@ -3,6 +3,7 @@ import pg from "pg";
 import {
   PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
   canonicalizePdsJson,
+  comparePdsCanonicalIds,
   decodePdsBase64url,
   certificateIsPdsValid,
   parseCanonicalPdsJson,
@@ -172,14 +173,14 @@ const assertCurrentRelayAuth = async (
   }
   const recipients = await client.query(
     `select device_id from personal_device_group_members
-     where group_id=$1 and status='active' order by device_id for share`,
+     where group_id=$1 and status='active' for share`,
     [group.id]
   );
   return {
     ...input,
-    recipientDeviceIds: recipients.rows.map(
-      (entry) => row<{ device_id: string }>(entry).device_id
-    )
+    recipientDeviceIds: recipients.rows
+      .map((entry) => row<{ device_id: string }>(entry).device_id)
+      .sort(comparePdsCanonicalIds)
   };
 };
 
@@ -313,7 +314,7 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
       }
       const recipients = await client.query(
         `select device_id from personal_device_group_members
-         where group_id=$1 and status='active' order by device_id for share`,
+         where group_id=$1 and status='active' for share`,
         [group.id]
       );
       await client.query("commit");
@@ -325,9 +326,9 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         deviceId: member.device_id as string,
         signingKeyId: member.signing_key_id as string,
         signingPublicKey: member.signing_public_key as string,
-        recipientDeviceIds: recipients.rows.map(
-          (entry) => row<{ device_id: string }>(entry).device_id
-        ),
+        recipientDeviceIds: recipients.rows
+          .map((entry) => row<{ device_id: string }>(entry).device_id)
+          .sort(comparePdsCanonicalIds),
         certificate,
         allowStaleHead: input.allowStaleHead === true
       };

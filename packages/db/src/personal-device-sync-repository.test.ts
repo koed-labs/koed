@@ -97,6 +97,33 @@ describe("Personal Device Sync repository authority reads", () => {
     );
   });
 
+  it("refuses same-epoch certificates from a stale authority head", async () => {
+    const query = vi.fn(async (text: string) => {
+      if (text.includes("from personal_device_groups"))
+        return { rowCount: 1, rows: [groupRow()] };
+      if (text.includes("from personal_device_group_members"))
+        return { rowCount: 0, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
+    const pool = {
+      connect: vi.fn(async () => ({ query, release: vi.fn() }))
+    } as unknown as pg.Pool;
+
+    await expect(
+      createPersonalDeviceSyncRepository(
+        pool
+      ).getPersonalDeviceMembershipCertificate({
+        userId: "user",
+        groupId: "group",
+        deviceId: "device"
+      })
+    ).resolves.toBeNull();
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("c.statement_sequence=$3"),
+      ["group-db", "1", "1", "head", "authority", "device"]
+    );
+  });
+
   it("serves recovery bundle without active device but blocks frozen governance", async () => {
     const activeQuery = vi.fn(async (text: string) => {
       if (text.includes("from personal_device_groups"))
