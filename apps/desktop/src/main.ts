@@ -55,6 +55,7 @@ import {
   type DesktopThemePreference
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
+import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
 import { createPersonalDevicePairingInbox } from "./personal-device-pairing-inbox.js";
 
@@ -338,8 +339,10 @@ const bootstrap = async () => {
       };
     }
   });
-  await server.resume();
-  await createWindow();
+  await startDesktopWindowAndRuntime({
+    createWindow,
+    resumeRuntime: () => server.resume()
+  });
 };
 
 if (ownsDesktopInstance) {
