@@ -208,7 +208,7 @@ const requiredOperationFamiliesForEvent = (
     case "team_membership_access":
       return ["admin"];
     case "team_presence_changed":
-      return ["team_chat_read"];
+      return ["team_workspace_read"];
     case "workspace_lifecycle_access":
       return ["team_workspace_read"];
     case "thread_lifecycle":

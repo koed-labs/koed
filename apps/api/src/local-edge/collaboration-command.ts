@@ -3248,7 +3248,8 @@ export const registerCollaborationCommandRoute = (
           );
         };
         const composePersonalSnapshot = async (
-          personalSnapshot: Record<string, unknown>
+          personalSnapshot: Record<string, unknown>,
+          forceRemoteNavigation = false
         ): Promise<CollaborationSnapshot | null> => {
           let remote: ConnectedRemoteTeamNavigation | null = null;
           let unavailableBackendId: string | null = null;
@@ -3266,7 +3267,7 @@ export const registerCollaborationCommandRoute = (
                 remote = await loadCachedRemoteTeamNavigation({
                   credential,
                   context,
-                  force: false
+                  force: forceRemoteNavigation
                 });
                 unavailableBackendId = null;
               }
@@ -3320,7 +3321,10 @@ export const registerCollaborationCommandRoute = (
             }
             personalSnapshot = remotePersonalSnapshot;
           }
-          const snapshot = await composePersonalSnapshot(personalSnapshot);
+          const snapshot = await composePersonalSnapshot(
+            personalSnapshot,
+            command.input.forceRemoteNavigation === true
+          );
           return snapshot
             ? (personalSuccessResult(command, { snapshot }) ??
                 failureResult(command, safeError("internal_error")))

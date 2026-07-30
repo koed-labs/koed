@@ -1670,7 +1670,7 @@ describe("CollaborationApp", () => {
     vi.setSystemTime(new Date(at));
     const selected = viewFor(baseSnapshot(), {
       kind: "team_people",
-      teamId: ids.team
+      teamId: ids.teamTwo
     });
     await render(createClient(selected));
 
@@ -1692,6 +1692,68 @@ describe("CollaborationApp", () => {
       await vi.advanceTimersByTimeAsync(90 * 60 * 1000);
     });
     expect(document.body.querySelector('[title="Inactive"]')).not.toBeNull();
+    expect(
+      document.body.querySelector(".collab-person-identity > span")?.textContent
+    ).toContain("offline");
+  });
+
+  it("renders pushed activity against the current clock", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.parse(at) + 3 * 60 * 60 * 1000));
+    const client = createClient(
+      viewFor(baseSnapshot(), {
+        kind: "team_people",
+        teamId: ids.teamTwo
+      })
+    );
+    await render(client);
+    expect(document.body.querySelector('[title="Inactive"]')).not.toBeNull();
+
+    const current = requireCurrent(client);
+    const activityAt = new Date(Date.now()).toISOString();
+    const updatePeople = (
+      people: CollaborationSnapshot["navigation"]["teams"][number]["people"]
+    ) =>
+      people.map((person) => ({
+        ...person,
+        presence: "available" as const,
+        teamPresence: {
+          ...person.teamPresence,
+          activityLevel: "active" as const,
+          lastActivityAt: activityAt,
+          nextTransitionAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+        }
+      }));
+    await act(async () =>
+      client.emit({
+        ...current,
+        navigation: {
+          ...current.navigation,
+          teams: current.navigation.teams.map((team) =>
+            team.id === ids.teamTwo
+              ? { ...team, people: updatePeople(team.people) }
+              : team
+          )
+        },
+        view:
+          current.view.kind === "team_people"
+            ? { ...current.view, people: updatePeople(current.view.people) }
+            : current.view
+      })
+    );
+
+    expect(document.body.querySelector('[title="Active"]')).not.toBeNull();
+  });
+
+  it("reports foreground activity when an already-focused view mounts", async () => {
+    const client = await render();
+
+    await vi.waitFor(() =>
+      expect(client.reportTeamActivity).toHaveBeenCalledWith([
+        ids.team,
+        ids.teamTwo
+      ])
+    );
   });
 
   it("shows safe denied and conflict states without exposing internal errors", async () => {

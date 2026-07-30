@@ -2797,7 +2797,9 @@ export const createCollaborationRendererClient = (
       attempt += 1
     ) {
       try {
-        const result = await command("collaboration.load", {});
+        const result = await command("collaboration.load", {
+          forceRemoteNavigation: true
+        });
         if (!result.ok || result.command !== "collaboration.load") {
           throw new Error("Unexpected collaboration result.");
         }
@@ -2959,20 +2961,23 @@ export const createCollaborationRendererClient = (
     return select(selectionForThread(thread));
   };
 
-  const loadAuthoritativeSnapshot =
-    async (): Promise<CollaborationSnapshot> => {
-      pendingSharedSessionRecovery = null;
-      const result = await command("collaboration.load", {});
-      if (!result.ok || result.command !== "collaboration.load") {
-        throw new Error("Unexpected collaboration result.");
-      }
-      await applyCommandSnapshot(result.data.snapshot);
-      await subscribeScope({ scope: "personal" });
-      return requireSnapshot();
-    };
+  const loadSnapshot = async (
+    forceRemoteNavigation = false
+  ): Promise<CollaborationSnapshot> => {
+    pendingSharedSessionRecovery = null;
+    const result = await command("collaboration.load", {
+      forceRemoteNavigation
+    });
+    if (!result.ok || result.command !== "collaboration.load") {
+      throw new Error("Unexpected collaboration result.");
+    }
+    await applyCommandSnapshot(result.data.snapshot);
+    await subscribeScope({ scope: "personal" });
+    return requireSnapshot();
+  };
 
   return {
-    load: loadAuthoritativeSnapshot,
+    load: loadSnapshot,
     current: () => snapshot,
     currentRemoteUrl: () => connectedRemoteUrl,
     currentSelection: () =>
@@ -3358,7 +3363,7 @@ export const createCollaborationRendererClient = (
           error.code === "conflict"
         ) {
           try {
-            await loadAuthoritativeSnapshot();
+            await loadSnapshot(true);
           } catch {
             // Preserve the original optimistic-write conflict for the caller.
           }

@@ -1875,26 +1875,46 @@ describe("collaboration realtime protocol", () => {
       presenceVersion: 2,
       lastHumanActivityAt: iso
     }));
+    const device = createDeviceAuth(fixture, {
+      active: true,
+      operationFamilies: new Set(["team_workspace_read"])
+    });
     const app = await buildTestServer(fixture, {
+      auth: device.auth,
       heartbeatMs: 20,
       teamPresenceRepository: { getTeamRosterMember }
     });
+    const headers = deviceHeaders();
     const [firstClientSnapshot, secondClientSnapshot] = await Promise.all([
-      createTeamSnapshot(app, fixture.ids.alice, fixture.ids.teamA),
-      createTeamSnapshot(app, fixture.ids.alice, fixture.ids.teamA)
+      createTeamSnapshot(
+        app,
+        fixture.ids.alice,
+        fixture.ids.teamA,
+        undefined,
+        headers
+      ),
+      createTeamSnapshot(
+        app,
+        fixture.ids.alice,
+        fixture.ids.teamA,
+        undefined,
+        headers
+      )
     ]);
     const [aliceBody, bobBody] = await Promise.all([
       readStreamUntil(app, {
         userId: fixture.ids.alice,
         teamId: fixture.ids.teamA,
         cursor: firstClientSnapshot.cursor,
-        eventName: "collaboration_event"
+        eventName: "collaboration_event",
+        headers
       }),
       readStreamUntil(app, {
         userId: fixture.ids.alice,
         teamId: fixture.ids.teamA,
         cursor: secondClientSnapshot.cursor,
-        eventName: "collaboration_event"
+        eventName: "collaboration_event",
+        headers
       })
     ]);
 

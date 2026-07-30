@@ -12,6 +12,7 @@ import {
   type SharedMemorySourceItem,
   type SharedMemorySourcePage,
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  coarsePresenceFromTeamPresence,
   deriveTeamPresenceSnapshot
 } from "@koed/shared/collaboration";
 import {
@@ -424,6 +425,7 @@ export function PeopleView({
   const [inviteOpen, setInviteOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [presenceNow, setPresenceNow] = useState(() => Date.now());
+  const effectivePresenceNow = Math.max(presenceNow, Date.now());
   const [createdInvitation, setCreatedInvitation] = useState<{
     invitation: CollaborationInvitation;
     invitationUrl: string | null;
@@ -457,12 +459,12 @@ export function PeopleView({
               lastActivityAt: person.teamPresence.lastActivityAt,
               preferenceVersion: person.teamPresence.preferenceVersion
             },
-            presenceNow
+            effectivePresenceNow
           ).nextTransitionAt
       )
       .filter((value): value is string => Boolean(value))
       .map(Date.parse)
-      .filter((value) => Number.isFinite(value) && value > presenceNow)
+      .filter((value) => Number.isFinite(value) && value > effectivePresenceNow)
       .sort((left, right) => left - right)[0];
     if (!nextTransition) return;
     const now = Date.now();
@@ -471,11 +473,9 @@ export function PeopleView({
       Math.max(1, nextTransition - now)
     );
     return () => window.clearTimeout(timer);
-  }, [view.people, presenceNow]);
+  }, [effectivePresenceNow, view.people]);
 
-  const activityLevelAt = (
-    person: CollaborationTeamPerson
-  ): "active" | "recently_active" | "idle" | "inactive" | null => {
+  const presenceAt = (person: CollaborationTeamPerson) => {
     return deriveTeamPresenceSnapshot(
       {
         mode: person.teamPresence.mode,
@@ -483,8 +483,14 @@ export function PeopleView({
         lastActivityAt: person.teamPresence.lastActivityAt,
         preferenceVersion: person.teamPresence.preferenceVersion
       },
-      presenceNow
-    ).activityLevel;
+      effectivePresenceNow
+    );
+  };
+
+  const activityLevelAt = (
+    person: CollaborationTeamPerson
+  ): "active" | "recently_active" | "idle" | "inactive" | null => {
+    return presenceAt(person).activityLevel;
   };
 
   const presenceLabel = (person: CollaborationTeamPerson): string => {
@@ -878,7 +884,8 @@ export function PeopleView({
                         {person.displayName}
                       </strong>
                       <span>
-                        {management?.email ?? person.presence}
+                        {management?.email ??
+                          coarsePresenceFromTeamPresence(presenceAt(person))}
                         {isCurrent ? " · You" : ""}
                       </span>
                     </div>
@@ -3178,6 +3185,9 @@ export function CollaborationRoutes({
     window.addEventListener("keydown", report, { capture: true });
     window.addEventListener("focus", report);
     document.addEventListener("visibilitychange", onVisibility);
+    if (document.visibilityState === "visible" && document.hasFocus()) {
+      report();
+    }
     return () => {
       window.removeEventListener("pointerdown", report, { capture: true });
       window.removeEventListener("keydown", report, { capture: true });

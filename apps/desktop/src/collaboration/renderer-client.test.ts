@@ -2240,6 +2240,11 @@ describe("collaboration renderer client", () => {
         ([command]) => command.command === "collaboration.load"
       )
     ).toHaveLength(2);
+    expect(
+      mock.command.mock.calls.filter(
+        ([command]) => command.command === "collaboration.load"
+      )[1]?.[0].input
+    ).toEqual({ forceRemoteNavigation: true });
     client.dispose();
   });
 

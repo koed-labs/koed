@@ -2503,9 +2503,18 @@ describe("local-edge collaboration command route", () => {
     expect((await load()).statusCode).toBe(200);
     expect(navigationReads()).toBe(1);
 
+    const authoritative = await injectPersonalCommand(harness.app, {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load",
+      input: { forceRemoteNavigation: true }
+    } as CollaborationRendererCommand);
+    expect(authoritative.statusCode).toBe(200);
+    expect(navigationReads()).toBe(2);
+
     harness.invalidateRemoteNavigation();
     expect((await load()).statusCode).toBe(200);
-    expect(navigationReads()).toBe(2);
+    expect(navigationReads()).toBe(3);
   });
 
   it("does not advertise remote Team navigation when Team collaboration is disabled", async () => {

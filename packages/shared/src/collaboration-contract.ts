@@ -5,6 +5,7 @@ import {
 } from "./team-presence.js";
 export {
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  coarsePresenceFromTeamPresence,
   deriveTeamPresenceSnapshot
 } from "./team-presence.js";
 import { assertSecureHttpTransport } from "./http-transport-security.js";
@@ -1920,7 +1921,9 @@ const expectedVersionInputShape = { expectedVersion: positiveVersionSchema };
 
 export const collaborationRendererCommandSchema = z
   .discriminatedUnion("command", [
-    command("collaboration.load", {}),
+    command("collaboration.load", {
+      forceRemoteNavigation: z.boolean().optional()
+    }),
     command("collaboration.select", {
       selection: collaborationSelectionSchema
     }),
