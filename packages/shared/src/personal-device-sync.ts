@@ -455,9 +455,15 @@ const validateBody = (kind: string, bodyValue: unknown): void => {
   }
   exact(
     body,
-    ["sourceFingerprint", "selectedClosureHash", "resolution"],
+    [
+      "resolutionHash",
+      "sourceFingerprint",
+      "selectedClosureHash",
+      "resolution"
+    ],
     "conflict resolution body"
   );
+  decodePdsBase64url(body.resolutionHash, 32);
   decodePdsBase64url(body.sourceFingerprint, 32);
   if (body.selectedClosureHash !== null)
     decodePdsBase64url(body.selectedClosureHash, 32);

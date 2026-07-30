@@ -515,6 +515,12 @@ exactly one selected candidate; `distinct` requires
 `selectedClosureHash: null`. Sources without trustworthy stable native ID remain
 distinct.
 
+The accompanying `resolve-conflict` group statement body has exactly
+`resolutionHash`, `sourceFingerprint`, `selectedClosureHash`, and `resolution`.
+`resolutionHash` is the finalized conflict-resolution record hash. Receivers
+verify this exact record commitment, the semantic fields, and that the record's
+`statementHash` equals the statement's `previousHash` before applying it.
+
 ## 6. Encryption and recipient envelopes
 
 Transport uses TLS and PDS end-to-end encryption. Each serving transport
@@ -719,6 +725,11 @@ manifest's authenticated value but never derives it or holds `K_tombstone`.
 Authority persists token, logical ID, finalized tombstone hash, and tombstone
 sequence as signed authority floor. It stores no Memory plaintext, raw source
 ID, fingerprint, or key.
+
+The accompanying `tombstone` group statement body commits the finalized
+`tombstoneHash` and exact `deletionFloorToken`. Receivers also verify that the
+tombstone draft's `statementHash` equals the statement's `previousHash`; a
+valid record and valid statement cannot be recombined across lifecycle actions.
 
 V1 deletion is irreversible for that exact `logicalMemoryId`/floor token until
 irreversible group purge. Receiver fetches and verifies signed Authority floors

@@ -1446,11 +1446,13 @@ export const registerPersonalDeviceSyncRoutes = (
       });
       const statement = parsedStatement(input.statement);
       const statementBody = body(statement);
+      const resolutionHash = pdsFinalizedTwoStageRecordHash(finalRecord);
       if (
         statement.draft.kind !== "resolve-conflict" ||
         statement.draft.previousHash !== group.headHash ||
         statement.draft.sequence !==
           (BigInt(group.headSequence) + 1n).toString() ||
+        statementBody.resolutionHash !== resolutionHash ||
         statementBody.sourceFingerprint !== draftRecord.sourceFingerprint ||
         statementBody.selectedClosureHash !== draftRecord.selectedClosureHash ||
         statementBody.resolution !== draftRecord.resolution
@@ -1471,7 +1473,7 @@ export const registerPersonalDeviceSyncRoutes = (
         userId: user.id,
         groupId,
         sourceFingerprint: draftRecord.sourceFingerprint as string,
-        resolutionHash: pdsFinalizedTwoStageRecordHash(finalRecord),
+        resolutionHash,
         statementHash: pdsFinalizedStatementHash(finalizedStatement),
         expectedHeadHash: group.headHash,
         sequence: statement.draft.sequence as string,

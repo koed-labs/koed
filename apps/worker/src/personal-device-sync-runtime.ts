@@ -17,6 +17,7 @@ import {
   pdsEd25519PrivateKey,
   pdsArtifactCompatibilityHash,
   pdsFinalizedStatementHash,
+  pdsFinalizedTwoStageRecordHash,
   pdsSessionPackageDigest,
   signPdsRecord,
   resolveSupportedEmbeddingModelConfig,
@@ -208,6 +209,45 @@ export const resolvePdsLifecycleAuthorizationPublicKey = (
     );
   if (!certificate) throw new TypeError("PdsCryptoAuthorityError");
   return certificate.deviceSigningPublicKey as string;
+};
+
+export const validatePdsLifecycleStatementBinding = (
+  kind: "tombstone" | "resolve-conflict",
+  lifecycleRecord: Record<string, unknown>,
+  statement: Record<string, unknown>
+): void => {
+  const lifecycleDraft = record(
+    lifecycleRecord.draft,
+    "lifecycle record draft"
+  );
+  const statementDraft = record(statement.draft, "lifecycle statement draft");
+  const statementBody = record(statementDraft.body, "lifecycle statement body");
+  if (
+    lifecycleDraft.statementHash !== statementDraft.previousHash ||
+    statementDraft.kind !== kind
+  ) {
+    throw new TypeError("PdsCryptoAuthorityError");
+  }
+  const lifecycleHash = pdsFinalizedTwoStageRecordHash(
+    lifecycleRecord as never
+  );
+  if (kind === "tombstone") {
+    if (
+      statementBody.tombstoneHash !== lifecycleHash ||
+      statementBody.deletionFloorToken !== lifecycleDraft.deletionFloorToken
+    ) {
+      throw new TypeError("PdsCryptoAuthorityError");
+    }
+    return;
+  }
+  if (
+    statementBody.resolutionHash !== lifecycleHash ||
+    statementBody.sourceFingerprint !== lifecycleDraft.sourceFingerprint ||
+    statementBody.selectedClosureHash !== lifecycleDraft.selectedClosureHash ||
+    statementBody.resolution !== lifecycleDraft.resolution
+  ) {
+    throw new TypeError("PdsCryptoAuthorityError");
+  }
 };
 
 type PdsRuntimeFactoryInput = {
@@ -906,6 +946,11 @@ const createPdsWorkerRuntimeFromSecret = (
             authorityPublicKey: secret.authority.publicKey,
             expectedGroupId: secret.groupId
           });
+          validatePdsLifecycleStatementBinding(
+            control.kind,
+            tombstone,
+            statement
+          );
         }
         await input.repository.applyPdsDeletionFloors({
           userId: secret.userId,

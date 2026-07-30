@@ -3,6 +3,7 @@ import type { MemorySourceRepository } from "@koed/db";
 import type { PdsSessionManifest } from "@koed/shared";
 import {
   canonicalizePdsJson,
+  pdsFinalizedTwoStageRecordHash,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
 import {
@@ -10,7 +11,8 @@ import {
   materializePdsSession,
   resolvePdsEmbeddingCapability,
   resolvePdsLifecycleAuthorizationPublicKey,
-  resolvePdsProviderRuntimeSecret
+  resolvePdsProviderRuntimeSecret,
+  validatePdsLifecycleStatementBinding
 } from "./personal-device-sync-runtime.js";
 
 describe("PDS semantic capability", () => {
@@ -100,6 +102,94 @@ describe("PDS session materialization", () => {
     ).toBe("recovery-public");
     expect(() =>
       resolvePdsLifecycleAuthorizationPublicKey(secret, "unknown-signing")
+    ).toThrow("PdsCryptoAuthorityError");
+  });
+
+  it("binds a lifecycle record to the exact committed statement", () => {
+    const lifecycleRecord = {
+      draft: {
+        statementHash: "prior-head",
+        deletionFloorToken: "floor"
+      },
+      authorization: { signerKeyId: "device", signature: "signature" },
+      authority: { keyId: "authority", signature: "signature" }
+    };
+    const lifecycleHash = pdsFinalizedTwoStageRecordHash(
+      lifecycleRecord as never
+    );
+    const statement = {
+      draft: {
+        kind: "tombstone",
+        previousHash: "prior-head",
+        body: {
+          tombstoneHash: lifecycleHash,
+          deletionFloorToken: "floor"
+        }
+      }
+    };
+
+    expect(() =>
+      validatePdsLifecycleStatementBinding(
+        "tombstone",
+        lifecycleRecord,
+        statement
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePdsLifecycleStatementBinding("tombstone", lifecycleRecord, {
+        draft: {
+          ...statement.draft,
+          body: {
+            ...statement.draft.body,
+            tombstoneHash: "another-valid-record"
+          }
+        }
+      })
+    ).toThrow("PdsCryptoAuthorityError");
+  });
+
+  it("binds conflict resolution to its exact finalized control", () => {
+    const lifecycleRecord = {
+      draft: {
+        statementHash: "prior-head",
+        sourceFingerprint: "fingerprint",
+        selectedClosureHash: "selected",
+        resolution: "select"
+      },
+      authorization: { signerKeyId: "device", signature: "signature" },
+      authority: { keyId: "authority", signature: "signature" }
+    };
+    const statement = {
+      draft: {
+        kind: "resolve-conflict",
+        previousHash: "prior-head",
+        body: {
+          resolutionHash: pdsFinalizedTwoStageRecordHash(
+            lifecycleRecord as never
+          ),
+          sourceFingerprint: "fingerprint",
+          selectedClosureHash: "selected",
+          resolution: "select"
+        }
+      }
+    };
+
+    expect(() =>
+      validatePdsLifecycleStatementBinding(
+        "resolve-conflict",
+        lifecycleRecord,
+        statement
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePdsLifecycleStatementBinding(
+        "resolve-conflict",
+        {
+          ...lifecycleRecord,
+          draft: { ...lifecycleRecord.draft, issuedAt: "later" }
+        },
+        statement
+      )
     ).toThrow("PdsCryptoAuthorityError");
   });
 
