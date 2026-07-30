@@ -428,7 +428,7 @@ describe("PDS origin-signed session package", () => {
     ).toThrow("certificate");
     const attackerKeyId = structuredClone(productionFixture.runtime);
     const attackerCertificate = JSON.parse(
-      attackerKeyId.servingCertificate
+      Buffer.from(attackerKeyId.servingCertificate).toString("utf8")
     ) as {
       authoritySignature: { keyId: string; signature: string };
       [key: string]: unknown;
