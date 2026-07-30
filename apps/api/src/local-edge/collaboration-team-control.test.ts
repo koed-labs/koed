@@ -21,6 +21,14 @@ import {
 import type { LocalEdgeUpstreamBackend } from "./upstream-routing.js";
 
 const iso = "2026-07-17T00:00:00.000Z";
+const teamPresence = {
+  mode: "auto" as const,
+  manualStatus: "available" as const,
+  activityLevel: "active" as const,
+  lastActivityAt: iso,
+  nextTransitionAt: "2026-07-17T00:05:00.001Z",
+  preferenceVersion: 1
+};
 const grantSecret = `hrg_${"g".repeat(43)}`;
 const deviceAuthorization = "Koed-Device device-key:device-secret";
 
@@ -171,6 +179,7 @@ const snapshot = (
                     id: ids.principal,
                     displayName: "Remote User",
                     presence: "available" as const,
+                    teamPresence,
                     membershipState: "enabled" as const
                   }
                 ],
@@ -218,6 +227,7 @@ const snapshot = (
                 id: ids.principal,
                 displayName: "Remote User",
                 presence: "available" as const,
+                teamPresence,
                 membershipState: "enabled" as const
               }
             ]

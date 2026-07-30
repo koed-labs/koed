@@ -60,6 +60,18 @@ const person = (personId = ids.user, displayName = "Mark") => ({
   membershipState: "enabled" as const
 });
 
+const teamPerson = (personId = ids.user, displayName = "Mark") => ({
+  ...person(personId, displayName),
+  teamPresence: {
+    mode: "auto" as const,
+    manualStatus: "available" as const,
+    activityLevel: "active" as const,
+    lastActivityAt: timestamp,
+    nextTransitionAt: "2026-07-17T08:35:00.001Z",
+    preferenceVersion: 1
+  }
+});
+
 const participant = (personId = ids.user, displayName = "Mark") => {
   const value = person(personId, displayName);
   return {
@@ -152,7 +164,7 @@ const fixture = (options?: {
           role: "owner",
           lifecycle: "active",
           unreadCount: 0,
-          people: [person(ids.remoteUser), person(ids.other, "Alex")],
+          people: [teamPerson(ids.remoteUser), teamPerson(ids.other, "Alex")],
           directMessages: [],
           version: 1,
           workspaces: [
@@ -1964,6 +1976,65 @@ describe("collaboration renderer client", () => {
     await waitFor(() =>
       expect(client.current()?.navigation.personal.memory).toEqual([entry])
     );
+    client.dispose();
+  });
+
+  it("replaces a pushed Team person in place without reordering the roster", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    await client.select({ kind: "team_people", teamId: ids.team });
+    const updatedPerson = {
+      ...teamPerson(ids.remoteUser),
+      presence: "away" as const,
+      teamPresence: {
+        mode: "manual" as const,
+        manualStatus: "do_not_disturb" as const,
+        activityLevel: null,
+        lastActivityAt: null,
+        nextTransitionAt: null,
+        preferenceVersion: 2
+      }
+    };
+
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "update",
+      subscriptionId: ids.teamSubscription,
+      deliveryId: delivery(4),
+      eventId: id(31),
+      occurredAt: timestamp,
+      family: "team_presence_changed",
+      resource: {
+        scope: "team",
+        teamId: ids.team,
+        workspaceId: null,
+        threadId: null,
+        messageId: null,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: {
+        type: "team_person_upserted",
+        teamId: ids.team,
+        person: updatedPerson
+      }
+    });
+
+    await waitFor(() =>
+      expect(
+        client
+          .current()
+          ?.navigation.teams[0]?.people.map((candidate) => candidate.id)
+      ).toEqual([ids.remoteUser, ids.other])
+    );
+    expect(
+      client.current()?.navigation.teams[0]?.people[0]?.teamPresence
+    ).toMatchObject({
+      mode: "manual",
+      manualStatus: "do_not_disturb",
+      preferenceVersion: 2
+    });
     client.dispose();
   });
 

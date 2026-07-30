@@ -46,7 +46,18 @@ const fullSnapshot = (selectedTeam: boolean): CollaborationSnapshot => {
     presence: "available" as const,
     membershipState: "enabled" as const
   };
-  const teamPerson = { ...person, id: teamPrincipalId };
+  const teamPrincipal = { ...person, id: teamPrincipalId };
+  const teamPerson = {
+    ...teamPrincipal,
+    teamPresence: {
+      mode: "auto" as const,
+      manualStatus: "available" as const,
+      activityLevel: "active" as const,
+      lastActivityAt: timestamp,
+      nextTransitionAt: "2026-07-17T01:05:00.001Z",
+      preferenceVersion: 1
+    }
+  };
   const baseThread = {
     name: null,
     topic: null,
@@ -111,7 +122,7 @@ const fullSnapshot = (selectedTeam: boolean): CollaborationSnapshot => {
     limits: COLLABORATION_DEFAULT_LIMITS,
     navigation: {
       personalOwner: person,
-      teamPrincipal: teamPerson,
+      teamPrincipal,
       personal: { memory: [], notesToSelf: notes, channels: [] },
       teams: [
         {

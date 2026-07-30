@@ -207,6 +207,8 @@ type SupportedCommand = Extract<
   | { command: "collaboration.create_workspace_channel" }
   | { command: "collaboration.start_direct_message" }
   | { command: "collaboration.start_group_direct_message" }
+  | { command: "collaboration.set_team_presence" }
+  | { command: "collaboration.report_team_activity" }
   | { command: "collaboration.rename_thread" }
   | { command: "collaboration.update_thread_topic" }
   | { command: "collaboration.archive_thread" }
@@ -428,12 +430,26 @@ const remoteMembershipSchema = z
   })
   .passthrough();
 
+const remoteTeamPresenceSchema = z
+  .object({
+    mode: z.enum(["auto", "manual"]),
+    manualStatus: z.enum(["available", "do_not_disturb", "out_of_office"]),
+    activityLevel: z
+      .enum(["active", "recently_active", "idle", "inactive"])
+      .nullable(),
+    lastActivityAt: z.string().datetime().nullable(),
+    nextTransitionAt: z.string().datetime().nullable(),
+    preferenceVersion: z.number().int().safe().positive()
+  })
+  .strict();
+
 const remoteRosterMemberSchema = z
   .object({
     userId: z.uuid(),
     displayName: z.string().nullable(),
     status: z.literal("enabled"),
-    presence: z.literal("unknown").optional()
+    presence: z.enum(["available", "away", "offline"]),
+    teamPresence: remoteTeamPresenceSchema
   })
   .passthrough();
 
@@ -456,6 +472,8 @@ const remoteManagementMemberSchema = z
     version: z.number().int().safe().positive(),
     email: z.email(),
     displayName: z.string().nullable(),
+    presence: z.enum(["available", "away", "offline"]),
+    teamPresence: remoteTeamPresenceSchema,
     workspaceAccess: z.array(remoteManagementWorkspaceAccessSchema).max(250)
   })
   .passthrough();
@@ -1201,6 +1219,14 @@ const targetResultValue = (
 ): unknown => {
   if (operation.resultKey === "thread") return targetThreadFrom(value, command);
   if (operation.resultKey === "message") return targetMessageFrom(value);
+  if (operation.resultKey === "person") {
+    const person = remoteRosterMemberSchema.safeParse(value);
+    return person.success ? remotePersonFrom(person.data) : null;
+  }
+  if (operation.resultKey === "acceptedTeamIds") {
+    const accepted = z.array(z.uuid()).max(50).safeParse(value);
+    return accepted.success ? accepted.data : null;
+  }
   return targetReadStateFrom(value);
 };
 
@@ -1284,7 +1310,8 @@ const remotePersonFrom = (
 ): Record<string, unknown> => ({
   id: value.userId,
   displayName: displayNameFrom(value, "Team member"),
-  presence: "offline",
+  presence: value.presence,
+  teamPresence: value.teamPresence,
   membershipState: "enabled"
 });
 
@@ -1293,7 +1320,8 @@ const remoteManagedPersonFrom = (
 ): Record<string, unknown> => ({
   id: value.userId,
   displayName: displayNameFrom(value, "Team member"),
-  presence: "offline",
+  presence: value.presence,
+  teamPresence: value.teamPresence,
   membershipState: value.status === "enabled" ? "enabled" : "disabled",
   management: {
     membershipId: value.id,

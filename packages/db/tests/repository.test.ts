@@ -11695,14 +11695,20 @@ describeDb("memory repository visibility", () => {
           displayName: "Roster Owner",
           avatarReference: null,
           status: "enabled",
-          presence: "unknown"
+          presenceMode: "auto",
+          manualPresenceStatus: "available",
+          presenceVersion: 1,
+          lastHumanActivityAt: null
         },
         {
           userId: member.id,
           displayName: "Roster Member",
           avatarReference: "avatar://member-safe-reference",
           status: "enabled",
-          presence: "unknown"
+          presenceMode: "auto",
+          manualPresenceStatus: "available",
+          presenceVersion: 1,
+          lastHumanActivityAt: null
         }
       ])
     );
@@ -11714,6 +11720,87 @@ describeDb("memory repository visibility", () => {
     expect(rosterJson).not.toContain('"role"');
     expect(rosterJson).not.toContain('"version"');
     expect(rosterJson).not.toContain('"acceptedAt"');
+  });
+
+  it("versions presence preferences, throttles human activity, and emits one event per change", async () => {
+    const owner = await repo.createUser({
+      email: `presence-owner-${randomUUID()}@example.com`,
+      displayName: "Presence Owner"
+    });
+    const outsider = await repo.createUser({
+      email: `presence-outsider-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Presence Team" }
+    );
+
+    await expect(
+      repo.setTeamPresence(
+        { userId: outsider.id },
+        {
+          teamId: team.id,
+          mode: "manual",
+          manualPresenceStatus: "do_not_disturb",
+          expectedVersion: 1
+        }
+      )
+    ).resolves.toBeNull();
+
+    const updated = await repo.setTeamPresence(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        mode: "manual",
+        manualPresenceStatus: "do_not_disturb",
+        expectedVersion: 1
+      }
+    );
+    expect(updated).toMatchObject({
+      userId: owner.id,
+      presenceMode: "manual",
+      manualPresenceStatus: "do_not_disturb",
+      presenceVersion: 2
+    });
+    await expect(
+      repo.setTeamPresence(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          mode: "manual",
+          manualPresenceStatus: "out_of_office",
+          expectedVersion: 1
+        }
+      )
+    ).resolves.toBeNull();
+
+    await expect(
+      repo.recordTeamHumanActivity({ userId: owner.id }, [team.id, team.id])
+    ).resolves.toEqual([team.id]);
+    await expect(
+      repo.recordTeamHumanActivity({ userId: owner.id }, [team.id])
+    ).resolves.toEqual([]);
+    await expect(
+      repo.recordTeamHumanActivity({ userId: outsider.id }, [team.id])
+    ).resolves.toEqual([]);
+
+    const roster = await repo.listTeamRoster({ userId: owner.id }, team.id);
+    expect(roster).toHaveLength(1);
+    expect(roster?.[0]).toMatchObject({
+      userId: owner.id,
+      presenceMode: "manual",
+      manualPresenceStatus: "do_not_disturb",
+      presenceVersion: 2
+    });
+    expect(typeof roster?.[0]?.lastHumanActivityAt).toBe("string");
+    const events = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from collaboration_outbox
+        where team_id = $1
+          and family = 'team_presence_changed'`,
+      [team.id]
+    );
+    expect(events.rows[0]?.count).toBe("2");
   });
 
   it("rolls back Team mutations when collaboration outbox insertion fails", async () => {

@@ -509,6 +509,14 @@ describe("collaboration renderer commands", () => {
       collaborationTeamPersonSchema.parse({
         ...participant(),
         presence: "available",
+        teamPresence: {
+          mode: "auto",
+          manualStatus: "available",
+          activityLevel: "active",
+          lastActivityAt: "2026-01-01T00:00:00.000Z",
+          nextTransitionAt: "2026-01-01T00:05:00.001Z",
+          preferenceVersion: 1
+        },
         management: {
           membershipId: ids.membership,
           email: "OWNER@EXAMPLE.TEST",
@@ -1185,6 +1193,17 @@ describe("collaboration snapshots and DTOs", () => {
       ...participant(ids.otherUser, "Bob"),
       presence: "available" as const
     };
+    const remoteTeamPerson = {
+      ...remotePrincipal,
+      teamPresence: {
+        mode: "auto" as const,
+        manualStatus: "available" as const,
+        activityLevel: "active" as const,
+        lastActivityAt: "2026-01-01T00:00:00.000Z",
+        nextTransitionAt: "2026-01-01T00:05:00.001Z",
+        preferenceVersion: 1
+      }
+    };
     const withTeam = {
       ...snapshot(),
       navigation: {
@@ -1197,7 +1216,7 @@ describe("collaboration snapshots and DTOs", () => {
             role: "member" as const,
             lifecycle: "active" as const,
             unreadCount: 0,
-            people: [remotePrincipal],
+            people: [remoteTeamPerson],
             directMessages: [],
             workspaces: [],
             version: 1

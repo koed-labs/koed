@@ -22,6 +22,7 @@ import {
   type CollaborationSelection,
   type CollaborationSnapshot,
   type CollaborationSubscription,
+  type CollaborationTeamPerson,
   type CollaborationThread,
   type CollaborationThreadReference,
   type CollaborationWorkspace,
@@ -198,6 +199,13 @@ export interface CollaborationRendererClient {
     access: "disabled" | "read" | "write";
     expectedVersion: number | null;
   }): Promise<CollaborationWorkspaceAccess>;
+  setTeamPresence(input: {
+    teamId: string;
+    mode: "auto" | "manual";
+    manualStatus: "available" | "do_not_disturb" | "out_of_office";
+    expectedVersion: number;
+  }): Promise<CollaborationTeamPerson>;
+  reportTeamActivity(teamIds: string[]): Promise<string[]>;
   createPersonalChannel(input: {
     name: string;
     topic: string | null;
@@ -2131,6 +2139,40 @@ export const createCollaborationRendererClient = (
     );
   };
 
+  const applyTeamPersonUpdate = (
+    current: CollaborationSnapshot,
+    teamId: string,
+    person: CollaborationTeamPerson
+  ): CollaborationSnapshot => {
+    const upsertPerson = (people: CollaborationTeamPerson[]) => {
+      const existingIndex = people.findIndex(
+        (candidate) => candidate.id === person.id
+      );
+      if (existingIndex === -1) return [...people, person];
+      return people.map((candidate, index) =>
+        index === existingIndex ? person : candidate
+      );
+    };
+    return {
+      ...current,
+      navigation: {
+        ...current.navigation,
+        teams: current.navigation.teams.map((team) =>
+          team.id !== teamId
+            ? team
+            : { ...team, people: upsertPerson(team.people) }
+        )
+      },
+      view:
+        current.view.kind === "team_people" && current.view.teamId === teamId
+          ? {
+              ...current.view,
+              people: upsertPerson(current.view.people)
+            }
+          : current.view
+    };
+  };
+
   const applyUpdate = async (
     event: Extract<CollaborationRendererEvent, { type: "update" }>
   ) => {
@@ -2188,6 +2230,9 @@ export const createCollaborationRendererClient = (
         break;
       case "message_receipts_updated":
         next = applyMessageReceipts(next, update.threadId, update.receipts);
+        break;
+      case "team_person_upserted":
+        next = applyTeamPersonUpdate(next, update.teamId, update.person);
         break;
       case "shared_session_upserted": {
         clearSharedSessionSelectionView(update.session.id);
@@ -3274,6 +3319,31 @@ export const createCollaborationRendererClient = (
         { kind: "command" }
       );
       return result.data.access;
+    },
+    async setTeamPresence(input) {
+      const result = await command("collaboration.set_team_presence", input);
+      if (!result.ok || result.command !== "collaboration.set_team_presence") {
+        throw new Error("Unexpected collaboration result.");
+      }
+      if (snapshot) {
+        await publish(
+          applyTeamPersonUpdate(snapshot, input.teamId, result.data.person),
+          { kind: "command" }
+        );
+      }
+      return result.data.person;
+    },
+    async reportTeamActivity(teamIds) {
+      const result = await command("collaboration.report_team_activity", {
+        teamIds
+      });
+      if (
+        !result.ok ||
+        result.command !== "collaboration.report_team_activity"
+      ) {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.acceptedTeamIds;
     },
     async createPersonalChannel(input) {
       const result = await command(

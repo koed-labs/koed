@@ -26,6 +26,7 @@ import {
   COLLABORATION_RENDERER_MAX_PENDING_BYTES,
   COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
   collaborationRendererEventSchema,
+  collaborationTeamPersonSchema,
   collaborationThreadSchema,
   COLLABORATION_NAME_MAX_CODE_POINTS,
   personalMemoryEntrySchema,
@@ -41,6 +42,7 @@ import {
   collaborationRealtimeSnapshotSchema,
   collaborationRealtimeStreamQuerySchema
 } from "./schemas.js";
+import { publicTeamRosterMember } from "../team/presence.js";
 
 const protocolVersion = collaborationRealtimeProtocolVersion;
 const cursorPrefix = "crt1.";
@@ -163,6 +165,10 @@ export interface CollaborationRealtimeServiceOptions {
     SharedMemoryRepository,
     "readGrantRepresentation"
   > | null;
+  teamPresenceRepository?: Pick<
+    import("@koed/db").MemorySourceRepository,
+    "listTeamRoster"
+  > | null;
   pool: ListenPool | null;
   corsOrigins: Set<string>;
   backendIdentity: string;
@@ -201,6 +207,8 @@ const requiredOperationFamiliesForEvent = (
     case "team_lifecycle":
     case "team_membership_access":
       return ["admin"];
+    case "team_presence_changed":
+      return ["team_chat_read"];
     case "workspace_lifecycle_access":
       return ["team_workspace_read"];
     case "thread_lifecycle":
@@ -882,6 +890,39 @@ const materializeEvent = async (
           receipts
         };
       }
+      break;
+    }
+    case "team_presence_changed": {
+      if (
+        !options.teamPresenceRepository ||
+        event.scope !== "team" ||
+        !event.teamId ||
+        event.resourceType !== "team_member_presence"
+      ) {
+        return { action: "requires_snapshot" };
+      }
+      const roster = await options.teamPresenceRepository.listTeamRoster(
+        client.actor,
+        event.teamId
+      );
+      const member = roster?.find(
+        (candidate) => candidate.userId === event.resourceId
+      );
+      if (!member) return { action: "skip" };
+      const publicMember = publicTeamRosterMember(member);
+      const person = collaborationTeamPersonSchema.safeParse({
+        id: member.userId,
+        displayName: member.displayName?.trim() || "Team member",
+        presence: publicMember.presence,
+        teamPresence: publicMember.teamPresence,
+        membershipState: "enabled"
+      });
+      if (!person.success) return { action: "requires_snapshot" };
+      update = {
+        type: "team_person_upserted",
+        teamId: event.teamId,
+        person: person.data
+      };
       break;
     }
     case "thread_lifecycle":

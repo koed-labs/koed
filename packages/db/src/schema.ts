@@ -184,6 +184,7 @@ export const collaborationLifecycle = pgEnum("collaboration_lifecycle", [
 export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "team_lifecycle",
   "team_membership_access",
+  "team_presence_changed",
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
@@ -629,6 +630,14 @@ export const teamMemberships = pgTable(
     role: teamRole("role").notNull(),
     status: teamMembershipStatus("status").notNull().default("enabled"),
     version: integer("version").notNull().default(1),
+    presenceMode: text("presence_mode").notNull().default("auto"),
+    manualPresenceStatus: text("manual_presence_status")
+      .notNull()
+      .default("available"),
+    presenceVersion: integer("presence_version").notNull().default(1),
+    lastHumanActivityAt: timestamp("last_human_activity_at", {
+      withTimezone: true
+    }),
     createdAt: now(),
     updatedAt: updatedNow(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
@@ -639,7 +648,19 @@ export const teamMemberships = pgTable(
     unique("team_memberships_team_user_unique").on(table.teamId, table.userId),
     index("team_memberships_user_idx").on(table.userId, table.status),
     index("team_memberships_team_idx").on(table.teamId, table.role),
-    check("team_memberships_version_check", sql`${table.version} > 0`)
+    check("team_memberships_version_check", sql`${table.version} > 0`),
+    check(
+      "team_memberships_presence_mode_check",
+      sql`${table.presenceMode} in ('auto', 'manual')`
+    ),
+    check(
+      "team_memberships_manual_presence_status_check",
+      sql`${table.manualPresenceStatus} in ('available', 'do_not_disturb', 'out_of_office')`
+    ),
+    check(
+      "team_memberships_presence_version_check",
+      sql`${table.presenceVersion} > 0`
+    )
   ]
 );
 

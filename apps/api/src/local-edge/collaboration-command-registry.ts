@@ -24,7 +24,7 @@ export interface CollaborationUpstreamOperation {
   method: "GET" | "POST" | "PUT" | "PATCH";
   path: string;
   body: Record<string, unknown>;
-  resultKey: "thread" | "message" | "readState";
+  resultKey: "thread" | "message" | "readState" | "person" | "acceptedTeamIds";
   idempotencyKey?: string;
 }
 
@@ -377,6 +377,42 @@ export const collaborationCommandRegistry = {
       );
     }
   },
+  "collaboration.set_team_presence": {
+    scope: "team",
+    desktopOperationFamily: write,
+    teamOperation: (command) => ({
+      operationFamily: "team_chat_write",
+      method: "PUT",
+      path: `/v1/teams/${encodeURIComponent(command.input.teamId)}/presence/me`,
+      body: {
+        mode: command.input.mode,
+        manualStatus: command.input.manualStatus,
+        expectedVersion: command.input.expectedVersion
+      },
+      resultKey: "person"
+    }),
+    matchesTeamResult: (command, result) => {
+      const teamPresence = result.teamPresence;
+      return (
+        teamPresence !== null &&
+        typeof teamPresence === "object" &&
+        (teamPresence as { mode?: unknown }).mode === command.input.mode &&
+        (teamPresence as { manualStatus?: unknown }).manualStatus ===
+          command.input.manualStatus
+      );
+    }
+  },
+  "collaboration.report_team_activity": {
+    scope: "team",
+    desktopOperationFamily: write,
+    teamOperation: (command) => ({
+      operationFamily: "team_chat_write",
+      method: "POST",
+      path: "/v1/teams/presence/activity",
+      body: { teamIds: command.input.teamIds },
+      resultKey: "acceptedTeamIds"
+    })
+  },
   "collaboration.rename_thread": {
     scope: personalThreadScope,
     desktopOperationFamily: write,
@@ -633,6 +669,15 @@ export const teamCollaborationResultMatchesCommand = (
   command: CollaborationRendererCommand,
   value: unknown
 ): boolean => {
+  if (command.command === "collaboration.report_team_activity") {
+    return (
+      Array.isArray(value) &&
+      value.every(
+        (teamId) =>
+          typeof teamId === "string" && command.input.teamIds.includes(teamId)
+      )
+    );
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const matcher = descriptorFor(command).matchesTeamResult;
   return matcher ? matcher(command, value as Record<string, unknown>) : false;

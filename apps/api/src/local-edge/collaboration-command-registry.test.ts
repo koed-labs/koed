@@ -169,6 +169,17 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     scope: "team",
     desktop: write
   },
+  "collaboration.set_team_presence": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
+  "collaboration.report_team_activity": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true
+  },
   "collaboration.subscribe": { scope: "dynamic", desktop: read },
   "collaboration.unsubscribe": { scope: "unsupported", desktop: write },
   "collaboration.acknowledge_delivery": {

@@ -58,6 +58,7 @@ export type CollaborationLifecycle =
 export type CollaborationEventFamily =
   | "team_lifecycle"
   | "team_membership_access"
+  | "team_presence_changed"
   | "workspace_lifecycle_access"
   | "thread_lifecycle"
   | "message_created"

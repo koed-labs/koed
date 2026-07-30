@@ -711,6 +711,14 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
     [interactionIds.betaChannel, []],
     [interactionIds.betaDiscussion, []]
   ]);
+  const presencePreferences = new Map<
+    string,
+    {
+      mode: "auto" | "manual";
+      manualStatus: "available" | "do_not_disturb" | "out_of_office";
+      preferenceVersion: number;
+    }
+  >();
 
   const managedPerson = (
     personActor: StatefulActor,
@@ -721,8 +729,36 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       team === "alpha"
         ? interactionIds.alphaWorkspace
         : interactionIds.betaWorkspace;
+    const presenceKey = `${team}:${personActor}`;
+    const preference = presencePreferences.get(presenceKey) ?? {
+      mode: personActor === "alice" ? ("auto" as const) : ("manual" as const),
+      manualStatus:
+        personActor === "alice"
+          ? ("available" as const)
+          : ("out_of_office" as const),
+      preferenceVersion: personActor === "alice" ? 1 : 2
+    };
+    presencePreferences.set(presenceKey, preference);
     return {
       ...person,
+      teamPresence:
+        preference.mode === "auto"
+          ? {
+              mode: "auto" as const,
+              manualStatus: preference.manualStatus,
+              activityLevel: "active" as const,
+              lastActivityAt: new Date(Date.now() - 60_000).toISOString(),
+              nextTransitionAt: new Date(Date.now() + 4 * 60_000).toISOString(),
+              preferenceVersion: preference.preferenceVersion
+            }
+          : {
+              mode: "manual" as const,
+              manualStatus: preference.manualStatus,
+              activityLevel: null,
+              lastActivityAt: null,
+              nextTransitionAt: null,
+              preferenceVersion: preference.preferenceVersion
+            },
       management: {
         membershipId: uuid(
           (team === "alpha" ? 400 : 410) + (personActor === "alice" ? 1 : 2)
@@ -1054,6 +1090,19 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           return failure(parsed);
         acceptedInvitations.add(parsed.input.invitation);
         return result(parsed, { snapshot: snapshot() });
+      case "collaboration.set_team_presence": {
+        const team =
+          parsed.input.teamId === interactionIds.alphaTeam ? "alpha" : "beta";
+        const preferenceKey = `${team}:${actor}`;
+        presencePreferences.set(preferenceKey, {
+          mode: parsed.input.mode,
+          manualStatus: parsed.input.manualStatus,
+          preferenceVersion: parsed.input.expectedVersion + 1
+        });
+        return result(parsed, { person: managedPerson(actor, team) });
+      }
+      case "collaboration.report_team_activity":
+        return result(parsed, { acceptedTeamIds: parsed.input.teamIds });
       case "collaboration.send_message": {
         messageSequence += 1;
         const teamId =

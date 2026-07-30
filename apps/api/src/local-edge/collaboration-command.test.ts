@@ -1145,6 +1145,18 @@ const parseResult = (body: string): unknown => parseResultAs<unknown>(body);
 const parseCommand = (command: unknown): CollaborationRendererCommand =>
   collaborationCommandValidator.parse(command) as CollaborationRendererCommand;
 
+const remotePresence = {
+  presence: "available" as const,
+  teamPresence: {
+    mode: "auto" as const,
+    manualStatus: "available" as const,
+    activityLevel: "active" as const,
+    lastActivityAt: "2026-07-01T00:00:00.000Z",
+    nextTransitionAt: "2026-07-01T00:05:00.001Z",
+    preferenceVersion: 1
+  }
+};
+
 const remoteNavigationPayload = (input?: {
   threads?: unknown[];
   workspaces?: unknown[];
@@ -1169,13 +1181,13 @@ const remoteNavigationPayload = (input?: {
           userId: ids.remotePrincipal,
           displayName: "Remote Alice",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         },
         {
           userId: ids.participant,
           displayName: "Bob",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         }
       ],
       threads: input?.threads ?? [
@@ -1248,13 +1260,13 @@ const remoteCompositionResponse = (call: FetchCall): Response => {
           userId: ids.remotePrincipal,
           displayName: "Remote Alice",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         },
         {
           userId: ids.participant,
           displayName: "Bob",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         }
       ]
     });
@@ -2764,6 +2776,7 @@ describe("local-edge collaboration command route", () => {
               version: 1,
               email: "remote-alice@example.test",
               displayName: "Remote Alice",
+              ...remotePresence,
               workspaceAccess: [
                 {
                   teamWorkspaceId: ids.workspace,

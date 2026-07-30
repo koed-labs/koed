@@ -7,6 +7,23 @@ export {
   resolveTeamCollaborationEnabled,
   teamCollaborationFeatureEnvironmentName
 } from "./team-collaboration-feature.js";
+export {
+  coarsePresenceFromTeamPresence,
+  deriveTeamPresenceSnapshot,
+  TEAM_ACTIVITY_ACTIVE_MS,
+  TEAM_ACTIVITY_IDLE_MS,
+  TEAM_ACTIVITY_RECENT_MS,
+  TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  teamActivityLevels,
+  teamManualStatuses,
+  teamPresenceModes
+} from "./team-presence.js";
+export type {
+  TeamActivityLevel,
+  TeamManualStatus,
+  TeamPresenceMode,
+  TeamPresenceSnapshot
+} from "./team-presence.js";
 
 export {
   assertConversationSourceReplicationJsonlSegment,

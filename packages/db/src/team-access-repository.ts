@@ -1,7 +1,10 @@
 import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import {
+  TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  type EnvelopeEncryptionProvider
+} from "@koed/shared";
 import {
   auditEventValues,
   auditLimit,
@@ -586,6 +589,7 @@ export const createTeamAccessRepository = (
       family:
         | "team_lifecycle"
         | "team_membership_access"
+        | "team_presence_changed"
         | "workspace_lifecycle_access"
         | "thread_lifecycle"
         | "access_revoked";
@@ -1338,7 +1342,11 @@ export const createTeamAccessRepository = (
         .select({
           userId: teamMemberships.userId,
           displayName: users.displayName,
-          avatarReference: users.avatarReference
+          avatarReference: users.avatarReference,
+          presenceMode: teamMemberships.presenceMode,
+          manualPresenceStatus: teamMemberships.manualPresenceStatus,
+          presenceVersion: teamMemberships.presenceVersion,
+          lastHumanActivityAt: teamMemberships.lastHumanActivityAt
         })
         .from(teamMemberships)
         .innerJoin(users, eq(users.id, teamMemberships.userId))
@@ -1358,8 +1366,122 @@ export const createTeamAccessRepository = (
         displayName: row.displayName,
         avatarReference: row.avatarReference,
         status: "enabled",
-        presence: "unknown"
+        presenceMode: row.presenceMode as "auto" | "manual",
+        manualPresenceStatus: row.manualPresenceStatus as
+          | "available"
+          | "do_not_disturb"
+          | "out_of_office",
+        presenceVersion: row.presenceVersion,
+        lastHumanActivityAt: nullableTimestampIso(row.lastHumanActivityAt)
       }));
+    },
+
+    async setTeamPresence(
+      actor: ActorContext,
+      input: {
+        teamId: string;
+        mode: "auto" | "manual";
+        manualPresenceStatus: "available" | "do_not_disturb" | "out_of_office";
+        expectedVersion: number;
+      }
+    ): Promise<TeamRosterMemberRecord | null> {
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(teamMemberships)
+          .set({
+            presenceMode: input.mode,
+            manualPresenceStatus: input.manualPresenceStatus,
+            presenceVersion: sql`${teamMemberships.presenceVersion} + 1`,
+            updatedAt: sql`now()`
+          })
+          .where(
+            and(
+              eq(teamMemberships.teamId, input.teamId),
+              eq(teamMemberships.userId, actor.userId),
+              eq(teamMemberships.status, "enabled"),
+              isNull(teamMemberships.disabledAt),
+              eq(teamMemberships.presenceVersion, input.expectedVersion)
+            )
+          )
+          .returning({
+            userId: teamMemberships.userId,
+            presenceMode: teamMemberships.presenceMode,
+            manualPresenceStatus: teamMemberships.manualPresenceStatus,
+            presenceVersion: teamMemberships.presenceVersion,
+            lastHumanActivityAt: teamMemberships.lastHumanActivityAt
+          });
+        if (!updated) return null;
+        const [user] = await tx
+          .select({
+            displayName: users.displayName,
+            avatarReference: users.avatarReference
+          })
+          .from(users)
+          .where(eq(users.id, actor.userId))
+          .limit(1);
+        if (!user) throw new Error("Team member user was not found");
+        await appendCollaborationOutboxEvent(tx, {
+          family: "team_presence_changed",
+          teamId: input.teamId,
+          resourceType: "team_member_presence",
+          resourceId: actor.userId,
+          actorUserId: actor.userId
+        });
+        return {
+          userId: updated.userId,
+          displayName: user.displayName,
+          avatarReference: user.avatarReference,
+          status: "enabled",
+          presenceMode: updated.presenceMode as "auto" | "manual",
+          manualPresenceStatus: updated.manualPresenceStatus as
+            | "available"
+            | "do_not_disturb"
+            | "out_of_office",
+          presenceVersion: updated.presenceVersion,
+          lastHumanActivityAt: nullableTimestampIso(updated.lastHumanActivityAt)
+        };
+      });
+    },
+
+    async recordTeamHumanActivity(
+      actor: ActorContext,
+      teamIds: string[]
+    ): Promise<string[]> {
+      const accepted: string[] = [];
+      const cutoff = new Date(Date.now() - TEAM_ACTIVITY_WRITE_THROTTLE_MS);
+      for (const teamId of [...new Set(teamIds)]) {
+        const changed = await db.transaction(async (tx) => {
+          const [updated] = await tx
+            .update(teamMemberships)
+            .set({
+              lastHumanActivityAt: sql`now()`
+            })
+            .where(
+              and(
+                eq(teamMemberships.teamId, teamId),
+                eq(teamMemberships.userId, actor.userId),
+                eq(teamMemberships.status, "enabled"),
+                isNull(teamMemberships.disabledAt),
+                or(
+                  isNull(teamMemberships.lastHumanActivityAt),
+                  lt(teamMemberships.lastHumanActivityAt, cutoff)
+                )
+              )
+            )
+            .returning({ userId: teamMemberships.userId });
+          if (!updated) return false;
+          await appendCollaborationOutboxEvent(tx, {
+            family: "team_presence_changed",
+            teamId,
+            resourceType: "team_member_presence",
+            resourceId: actor.userId,
+            actorUserId: actor.userId
+          });
+          return true;
+        });
+        if (changed) accepted.push(teamId);
+      }
+      return accepted;
     },
 
     async listTeamManagementMembers(
@@ -1374,7 +1496,8 @@ export const createTeamAccessRepository = (
         .select({
           membership: teamMemberships,
           email: users.email,
-          displayName: users.displayName
+          displayName: users.displayName,
+          avatarReference: users.avatarReference
         })
         .from(teamMemberships)
         .innerJoin(users, eq(users.id, teamMemberships.userId))
@@ -1421,6 +1544,16 @@ export const createTeamAccessRepository = (
         ...mapMembershipRecord(row.membership),
         email: row.email,
         displayName: row.displayName,
+        avatarReference: row.avatarReference,
+        presenceMode: row.membership.presenceMode as "auto" | "manual",
+        manualPresenceStatus: row.membership.manualPresenceStatus as
+          | "available"
+          | "do_not_disturb"
+          | "out_of_office",
+        presenceVersion: row.membership.presenceVersion,
+        lastHumanActivityAt: nullableTimestampIso(
+          row.membership.lastHumanActivityAt
+        ),
         workspaceAccess: accessByUser.get(row.membership.userId) ?? []
       }));
     },

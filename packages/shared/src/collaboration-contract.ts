@@ -1,7 +1,11 @@
 import { z } from "zod";
+export {
+  TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  deriveTeamPresenceSnapshot
+} from "./team-presence.js";
 import { assertSecureHttpTransport } from "./http-transport-security.js";
 
-export const COLLABORATION_CONTRACT_VERSION = 2;
+export const COLLABORATION_CONTRACT_VERSION = 3;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -530,7 +534,21 @@ const collaborationPersonManagementSchema = z
   .strict();
 
 export const collaborationTeamPersonSchema = collaborationPersonSchema
-  .extend({ management: collaborationPersonManagementSchema.optional() })
+  .extend({
+    teamPresence: z
+      .object({
+        mode: z.enum(["auto", "manual"]),
+        manualStatus: z.enum(["available", "do_not_disturb", "out_of_office"]),
+        activityLevel: z
+          .enum(["active", "recently_active", "idle", "inactive"])
+          .nullable(),
+        lastActivityAt: collaborationTimestampSchema.nullable(),
+        nextTransitionAt: collaborationTimestampSchema.nullable(),
+        preferenceVersion: positiveVersionSchema
+      })
+      .strict(),
+    management: collaborationPersonManagementSchema.optional()
+  })
   .strict()
   .superRefine((person, context) => {
     if (
@@ -1906,6 +1924,15 @@ export const collaborationRendererCommandSchema = z
         COLLABORATION_MAX_DM_PARTICIPANTS - 1
       )
     }),
+    command("collaboration.set_team_presence", {
+      teamId: z.uuid(),
+      mode: z.enum(["auto", "manual"]),
+      manualStatus: z.enum(["available", "do_not_disturb", "out_of_office"]),
+      expectedVersion: positiveVersionSchema
+    }),
+    command("collaboration.report_team_activity", {
+      teamIds: distinctUuidArray(1, 50)
+    }),
     command("collaboration.rename_thread", {
       thread: collaborationThreadReferenceSchema,
       name: collaborationNameSchema,
@@ -2230,6 +2257,8 @@ const commandNameSchema = z.enum([
   "collaboration.archive_workspace",
   "collaboration.restore_workspace",
   "collaboration.set_workspace_access",
+  "collaboration.set_team_presence",
+  "collaboration.report_team_activity",
   "collaboration.list_owned_shared_memory_grants",
   "collaboration.prepare_shared_memory_source",
   "collaboration.pause_shared_memory_sync",
@@ -2373,6 +2402,14 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ access: collaborationWorkspaceAccessSchema }).strict()
   ),
   successResult(
+    "collaboration.set_team_presence",
+    z.object({ person: collaborationTeamPersonSchema }).strict()
+  ),
+  successResult(
+    "collaboration.report_team_activity",
+    z.object({ acceptedTeamIds: z.array(z.uuid()).max(50) }).strict()
+  ),
+  successResult(
     "collaboration.list_owned_shared_memory_grants",
     z.object({ grants: z.array(sharedMemoryGrantSchema).max(250) }).strict()
   ),
@@ -2497,6 +2534,13 @@ const rendererUpdateSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("team_person_upserted"),
+      teamId: z.uuid(),
+      person: collaborationTeamPersonSchema
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("shared_session_upserted"),
       session: sharedMemorySessionSchema
     })
@@ -2553,6 +2597,7 @@ const rendererUpdateSchema = z.discriminatedUnion("type", [
 export const collaborationRealtimeEventFamilySchema = z.enum([
   "team_lifecycle",
   "team_membership_access",
+  "team_presence_changed",
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
@@ -2687,6 +2732,7 @@ const realtimeUpdateDeliverySchema = z
     > = {
       team_lifecycle: new Set(["navigation_snapshot"]),
       team_membership_access: new Set(["navigation_snapshot"]),
+      team_presence_changed: new Set(["team_person_upserted"]),
       workspace_lifecycle_access: new Set(["navigation_snapshot"]),
       thread_lifecycle: new Set([
         "thread_upserted",

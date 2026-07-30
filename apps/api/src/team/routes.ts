@@ -37,6 +37,10 @@ import {
   teamWorkspaceIdParamsSchema,
   updateTeamMemberRoleSchema
 } from "./schemas.js";
+import {
+  publicTeamManagementMember,
+  publicTeamRosterMember
+} from "./presence.js";
 
 const forbidden = (message: string) =>
   Object.assign(new Error(message), { statusCode: 403 });
@@ -462,7 +466,7 @@ export const registerTeamRoutes = (
           return {
             team,
             membership,
-            members,
+            members: members.map((member) => publicTeamRosterMember(member)),
             threads: snapshot.threads,
             highWaterCursor: snapshot.highWaterCursor,
             workspaces
@@ -551,7 +555,9 @@ export const registerTeamRoutes = (
         teamId
       );
       if (!members) throw forbidden("Team roster cannot be viewed");
-      return { members };
+      return {
+        members: members.map((member) => publicTeamRosterMember(member))
+      };
     }
   );
 
@@ -566,7 +572,67 @@ export const registerTeamRoutes = (
         teamId
       );
       if (!members) throw forbidden("Team member details cannot be viewed");
-      return { members };
+      return {
+        members: members.map((member) => publicTeamManagementMember(member))
+      };
+    }
+  );
+
+  app.put(
+    "/v1/teams/:teamId/presence/me",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const user = await authenticateTeamNavigationRead(request);
+      const { teamId } = teamIdParamsSchema.parse(request.params);
+      const input = z
+        .object({
+          mode: z.enum(["auto", "manual"]),
+          manualStatus: z.enum([
+            "available",
+            "do_not_disturb",
+            "out_of_office"
+          ]),
+          expectedVersion: z.number().int().positive()
+        })
+        .strict()
+        .parse(request.body);
+      const repository = requireRepository();
+      const membership = await repository.getTeamMembership(
+        { userId: user.id },
+        teamId
+      );
+      if (!membership) throw forbidden("Team presence cannot be changed");
+      const member = await repository.setTeamPresence(
+        { userId: user.id },
+        {
+          teamId,
+          mode: input.mode,
+          manualPresenceStatus: input.manualStatus,
+          expectedVersion: input.expectedVersion
+        }
+      );
+      if (!member) throw conflict("Presence changed on another device");
+      return { person: publicTeamRosterMember(member) };
+    }
+  );
+
+  app.post(
+    "/v1/teams/presence/activity",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const user = await authenticateTeamNavigationRead(request);
+      const input = z
+        .object({
+          teamIds: z.array(z.uuid()).min(1).max(50)
+        })
+        .strict()
+        .parse(request.body);
+      return {
+        acceptedTeamIds: await requireRepository().recordTeamHumanActivity(
+          { userId: user.id },
+          input.teamIds
+        )
+      };
     }
   );
 
