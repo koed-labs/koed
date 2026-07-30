@@ -328,6 +328,8 @@ export interface CollaborationRendererClient {
 
 const AUTHORITATIVE_SNAPSHOT_RECOVERY_MAX_ATTEMPTS = 5;
 const AUTHORITATIVE_SNAPSHOT_RECOVERY_BASE_DELAY_MS = 250;
+const DELIVERY_RECEIPT_RETRY_BASE_DELAY_MS = 250;
+const DELIVERY_RECEIPT_RETRY_MAX_DELAY_MS = 30_000;
 const SHARED_SESSION_RECOVERY_TTL_MS = 5 * 60 * 1_000;
 const SELECTION_VIEW_CACHE_LIMIT = 32;
 const SELECTION_VIEW_CACHE_RETENTION_MS = 15 * 60 * 1_000;
@@ -1327,6 +1329,17 @@ export const createCollaborationRendererClient = (
   let snapshot: CollaborationSnapshot | null = null;
   let disposed = false;
   let connectedRemoteUrl: string | null = null;
+  const appliedReceiptVersions = new Map<string, number>();
+  const pendingDeliveryReceipts = new Map<
+    string,
+    {
+      attempt: number;
+      messageId: string;
+      sequence: number;
+      thread: CollaborationThreadReference;
+      timer: ReturnType<typeof setTimeout> | null;
+    }
+  >();
   const listeners = new Set<CollaborationClientListener>();
   const actionGrantProjections = new CollaborationActionGrantProjectionStore();
   const selectionViews = new CollaborationSelectionViewCache(
@@ -1445,6 +1458,36 @@ export const createCollaborationRendererClient = (
     seenDeliveryOrder.length = 0;
   };
 
+  const applyAuthoritativeReadState = (
+    current: CollaborationSnapshot,
+    readState: CollaborationReadState
+  ): CollaborationSnapshot => {
+    const appliedVersion = appliedReceiptVersions.get(readState.threadId) ?? 0;
+    if (readState.version < appliedVersion) return current;
+    appliedReceiptVersions.set(readState.threadId, readState.version);
+    return applyReadState(current, readState);
+  };
+
+  const clearPendingTeamDeliveryReceipts = (teamId?: string) => {
+    for (const [threadId, pending] of pendingDeliveryReceipts) {
+      if (
+        pending.thread.scope !== "team" ||
+        (teamId && pending.thread.teamId !== teamId)
+      ) {
+        continue;
+      }
+      if (pending.timer) clearTimeout(pending.timer);
+      pendingDeliveryReceipts.delete(threadId);
+    }
+  };
+
+  const clearPendingDeliveryReceipts = () => {
+    for (const pending of pendingDeliveryReceipts.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+    }
+    pendingDeliveryReceipts.clear();
+  };
+
   const publishTrusted = async (
     next: CollaborationSnapshot,
     update: CollaborationClientUpdate,
@@ -1487,6 +1530,7 @@ export const createCollaborationRendererClient = (
     if (!snapshot) return;
     clearTeamSelectionViews(teamId);
     clearTeamDeliveryHistory();
+    clearPendingTeamDeliveryReceipts(teamId);
     const selectedTeamId = teamIdForSelection(snapshot.selection);
     const shouldHydratePersonal = selectedTeamId === teamId;
     const next = {
@@ -1511,6 +1555,7 @@ export const createCollaborationRendererClient = (
     if (!snapshot) return;
     clearTeamSelectionViews();
     clearTeamDeliveryHistory();
+    clearPendingTeamDeliveryReceipts();
     const selectedTeamId = teamIdForSelection(snapshot.selection);
     const shouldHydratePersonal = selectedTeamId !== null;
     const next = {
@@ -1574,6 +1619,75 @@ export const createCollaborationRendererClient = (
         input
       })
     );
+
+  const deliverPendingReceipt = async (threadId: string): Promise<void> => {
+    const pending = pendingDeliveryReceipts.get(threadId);
+    if (!pending || disposed) return;
+    pending.timer = null;
+    try {
+      const result = await command("collaboration.mark_delivered", {
+        thread: pending.thread,
+        messageId: pending.messageId
+      });
+      if (
+        !result.ok ||
+        result.command !== "collaboration.mark_delivered" ||
+        pendingDeliveryReceipts.get(threadId) !== pending
+      ) {
+        return;
+      }
+      pendingDeliveryReceipts.delete(threadId);
+      await publish(
+        applyAuthoritativeReadState(requireSnapshot(), result.data.readState),
+        { kind: "command" }
+      );
+    } catch (error) {
+      if (
+        disposed ||
+        pendingDeliveryReceipts.get(threadId) !== pending ||
+        (error instanceof CollaborationClientError && !error.retryable)
+      ) {
+        pendingDeliveryReceipts.delete(threadId);
+        return;
+      }
+      pending.attempt += 1;
+      const retryAfterMs =
+        error instanceof CollaborationClientError ? error.retryAfterMs : null;
+      const delay = Math.min(
+        Math.max(
+          retryAfterMs ??
+            DELIVERY_RECEIPT_RETRY_BASE_DELAY_MS *
+              2 ** Math.min(pending.attempt - 1, 7),
+          DELIVERY_RECEIPT_RETRY_BASE_DELAY_MS
+        ),
+        DELIVERY_RECEIPT_RETRY_MAX_DELAY_MS
+      );
+      pending.timer = setTimeout(() => {
+        void deliverPendingReceipt(threadId);
+      }, delay);
+    }
+  };
+
+  const scheduleDeliveryReceipt = (message: CollaborationMessage) => {
+    const current = pendingDeliveryReceipts.get(message.threadId);
+    if (current && current.sequence >= message.sequence) return;
+    if (current?.timer) clearTimeout(current.timer);
+    pendingDeliveryReceipts.set(message.threadId, {
+      attempt: 0,
+      messageId: message.id,
+      sequence: message.sequence,
+      thread:
+        message.scope === "personal"
+          ? { scope: "personal", threadId: message.threadId }
+          : {
+              scope: "team",
+              teamId: message.teamId!,
+              threadId: message.threadId
+            },
+      timer: null
+    });
+    void deliverPendingReceipt(message.threadId);
+  };
 
   const unsubscribeSubscriptionId = async (subscriptionId: string) => {
     const request = collaborationRendererCommandSchema.parse({
@@ -2070,7 +2184,7 @@ export const createCollaborationRendererClient = (
         break;
       }
       case "receipt_state_updated":
-        next = applyReadState(next, update.readState);
+        next = applyAuthoritativeReadState(next, update.readState);
         break;
       case "message_receipts_updated":
         next = applyMessageReceipts(next, update.threadId, update.receipts);
@@ -2256,20 +2370,7 @@ export const createCollaborationRendererClient = (
           : [])
       ]);
       if (!currentPrincipalIds.has(update.message.sender.id)) {
-        void command("collaboration.mark_delivered", {
-          thread:
-            update.message.scope === "personal"
-              ? {
-                  scope: "personal",
-                  threadId: update.message.threadId
-                }
-              : {
-                  scope: "team",
-                  teamId: update.message.teamId!,
-                  threadId: update.message.threadId
-                },
-          messageId: update.message.id
-        }).catch(() => undefined);
+        scheduleDeliveryReceipt(update.message);
       }
     }
     if (
@@ -3323,9 +3424,10 @@ export const createCollaborationRendererClient = (
       if (!result.ok || result.command !== "collaboration.mark_read") {
         throw new Error("Unexpected collaboration result.");
       }
-      await publish(applyReadState(requireSnapshot(), result.data.readState), {
-        kind: "command"
-      });
+      await publish(
+        applyAuthoritativeReadState(requireSnapshot(), result.data.readState),
+        { kind: "command" }
+      );
       return requireSnapshot();
     },
     async markDelivered(input) {
@@ -3333,9 +3435,10 @@ export const createCollaborationRendererClient = (
       if (!result.ok || result.command !== "collaboration.mark_delivered") {
         throw new Error("Unexpected collaboration result.");
       }
-      await publish(applyReadState(requireSnapshot(), result.data.readState), {
-        kind: "command"
-      });
+      await publish(
+        applyAuthoritativeReadState(requireSnapshot(), result.data.readState),
+        { kind: "command" }
+      );
       return requireSnapshot();
     },
     async loadMessagePage(input) {
@@ -3593,6 +3696,8 @@ export const createCollaborationRendererClient = (
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearPendingDeliveryReceipts();
+      appliedReceiptVersions.clear();
       eventQueue.dispose();
       removeBridgeListener();
       listeners.clear();

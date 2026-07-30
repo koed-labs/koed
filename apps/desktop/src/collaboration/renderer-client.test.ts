@@ -639,6 +639,7 @@ const success = (
           readAt:
             command.command === "collaboration.mark_read" ? timestamp : null,
           unreadCount: command.command === "collaboration.mark_read" ? 0 : 1,
+          version: command.command === "collaboration.mark_read" ? 2 : 1,
           updatedAt: timestamp
         }
       };
@@ -1774,6 +1775,156 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
+  it("retries a transient background delivery receipt until it succeeds", async () => {
+    const mock = createBridge();
+    let deliveryAttempts = 0;
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.mark_delivered") {
+        deliveryAttempts += 1;
+        if (deliveryAttempts === 1) {
+          return collaborationCommandResultSchema.parse({
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: command.requestId,
+            command: command.command,
+            ok: false,
+            error: {
+              code: "temporarily_unavailable",
+              userMessage:
+                collaborationSafeErrorMessages.temporarily_unavailable,
+              retryable: true,
+              retryAfterMs: 1
+            }
+          });
+        }
+      }
+      return success(command, fixture(), new Map());
+    });
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "update",
+      subscriptionId: ids.subscription,
+      deliveryId: delivery(91),
+      eventId: id(91),
+      occurredAt: timestamp,
+      family: "message_created",
+      resource: {
+        scope: "personal",
+        teamId: null,
+        workspaceId: null,
+        threadId: ids.notes,
+        messageId: ids.message,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: {
+        type: "message_created",
+        message: {
+          id: ids.message,
+          threadId: ids.notes,
+          scope: "personal",
+          teamId: null,
+          sequence: 1,
+          sender: participant(ids.other, "Alice"),
+          senderKind: "user",
+          body: "Retry delivery.",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          editedAt: null,
+          deletedAt: null,
+          delivery: "sent",
+          recipientStatus: null,
+          failure: null
+        }
+      }
+    });
+
+    await waitFor(() => expect(deliveryAttempts).toBe(2));
+    client.dispose();
+  });
+
+  it("does not let an older receipt response regress newer read state", async () => {
+    const mock = createBridge();
+    let resolveDelivered:
+      | ((result: CollaborationCommandResult) => void)
+      | null = null;
+    let resolveRead: ((result: CollaborationCommandResult) => void) | null =
+      null;
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.mark_delivered") {
+        return new Promise<CollaborationCommandResult>((resolve) => {
+          resolveDelivered = resolve;
+        });
+      }
+      if (command.command === "collaboration.mark_read") {
+        return new Promise<CollaborationCommandResult>((resolve) => {
+          resolveRead = resolve;
+        });
+      }
+      return success(command, fixture(), new Map());
+    });
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+
+    const delivered = client.markDelivered({
+      thread: { scope: "personal", threadId: ids.notes },
+      messageId: ids.message
+    });
+    const read = client.markRead({
+      thread: { scope: "personal", threadId: ids.notes },
+      messageId: ids.message
+    });
+    await waitFor(() => {
+      expect(resolveDelivered).not.toBeNull();
+      expect(resolveRead).not.toBeNull();
+    });
+    const commandResult = (
+      command: "collaboration.mark_delivered" | "collaboration.mark_read",
+      version: number,
+      sequence: number,
+      unreadCount: number
+    ) =>
+      collaborationCommandResultSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: mock.command.mock.calls.find(
+          ([candidate]) => candidate.command === command
+        )![0].requestId,
+        command,
+        ok: true,
+        data: {
+          readState: {
+            threadId: ids.notes,
+            deliveredMessageId: ids.message,
+            deliveredSequence: 1,
+            deliveredAt: timestamp,
+            messageId: sequence > 0 ? ids.message : null,
+            sequence,
+            readAt: sequence > 0 ? timestamp : null,
+            unreadCount,
+            version,
+            updatedAt: timestamp
+          }
+        }
+      });
+
+    resolveRead!(commandResult("collaboration.mark_read", 2, 1, 0));
+    await read;
+    resolveDelivered!(commandResult("collaboration.mark_delivered", 1, 0, 1));
+    await delivered;
+
+    const current = client.current();
+    expect(current?.view.kind).toBe("thread");
+    expect(
+      current?.view.kind === "thread" && current.view.thread
+    ).toMatchObject({
+      lastReadSequence: 1,
+      unreadCount: 0
+    });
+    client.dispose();
+  });
+
   it("applies a realtime Personal Memory sync-state upsert to navigation", async () => {
     const mock = createBridge();
     const client = createCollaborationRendererClient(mock.bridge);
@@ -2245,6 +2396,7 @@ describe("collaboration renderer client", () => {
           messageId: ids.message,
           readAt: timestamp,
           unreadCount: 0,
+          version: 2,
           updatedAt: timestamp
         }
       }

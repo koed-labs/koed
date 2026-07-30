@@ -97,7 +97,7 @@ const event = (input: {
   return {
     id: randomUUID(),
     cursor: input.cursor,
-    protocolVersion: 1,
+    protocolVersion: 2,
     family: input.family ?? "message_created",
     scope: input.scope,
     personalOwnerUserId: input.scope === "personal" ? randomUUID() : null,
@@ -186,7 +186,7 @@ const createRepositoryFixture = () => {
   ): StoredSubscription => ({
     id: randomUUID(),
     binding,
-    protocolVersion: 1,
+    protocolVersion: 2,
     scope: scope.scope,
     personalOwnerUserId: scope.scope === "personal" ? ids.alice : null,
     teamId: scope.scope === "team" ? scope.teamId : null,
@@ -1880,7 +1880,7 @@ describe("collaboration realtime protocol", () => {
       eventName: "control"
     });
     expect(eventData(stream, "control")).toEqual({
-      protocolVersion: 1,
+      protocolVersion: 2,
       subscription: { id: snapshot.subscription.id },
       reason: "requires_snapshot"
     });
@@ -1912,7 +1912,7 @@ describe("collaboration realtime protocol", () => {
     });
 
     expect(eventData(body, "control")).toEqual({
-      protocolVersion: 1,
+      protocolVersion: 2,
       subscription: { id: snapshot.subscription.id },
       reason: "requires_snapshot"
     });
@@ -2136,7 +2136,7 @@ describe("collaboration realtime protocol", () => {
       fixture.events.slice(0, 3).map(({ id }) => id)
     );
     expect(eventData(firstBody, "control")).toEqual({
-      protocolVersion: 1,
+      protocolVersion: 2,
       subscription: { id: snapshot.subscription.id },
       reason: "backpressure"
     });
@@ -2367,7 +2367,7 @@ describe("collaboration realtime protocol", () => {
 
       expect(Date.now() - revokedAt).toBeLessThan(250);
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 1,
+        protocolVersion: 2,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });
@@ -2418,7 +2418,7 @@ describe("collaboration realtime protocol", () => {
       const body = await stream.readUntil("access_revoked", 500);
 
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 1,
+        protocolVersion: 2,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });
@@ -2524,7 +2524,7 @@ describe("collaboration realtime protocol", () => {
       const body = await stream.readUntil("control", 500);
 
       expect(eventData(body, "control")).toEqual({
-        protocolVersion: 1,
+        protocolVersion: 2,
         subscription: { id: snapshot.subscription.id },
         reason: "requires_snapshot"
       });
@@ -2599,7 +2599,7 @@ describe("collaboration realtime protocol", () => {
       const body = await stream.readUntil("access_revoked", 500);
 
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 1,
+        protocolVersion: 2,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });
@@ -2688,7 +2688,7 @@ describe("collaboration realtime protocol", () => {
       await new Promise((resolve) => setTimeout(resolve, 15));
 
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 1,
+        protocolVersion: 2,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });

@@ -560,8 +560,8 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
       if (
         !message ||
         typeof message !== "object" ||
-        message.protocolVersion !== 1 ||
-        message.contractVersion !== 1 ||
+        message.protocolVersion !== 2 ||
+        message.contractVersion !== 2 ||
         message.sessionToken !== sessionToken
       ) {
         finish(new Error("Packaged collaboration broker IPC was invalid."));
@@ -569,14 +569,14 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
       }
       if (message.type === "ready") {
         child.send({
-          protocolVersion: 1,
-          contractVersion: 1,
+          protocolVersion: 2,
+          contractVersion: 2,
           sessionToken,
           type: "command",
           envelopeId: commandEnvelopeId,
           ownerId: "packaged-smoke-renderer",
           command: {
-            contractVersion: 1,
+            contractVersion: 2,
             requestId,
             command: "collaboration.load",
             input: {}
@@ -605,8 +605,8 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
         }
         commandCompleted = true;
         child.send({
-          protocolVersion: 1,
-          contractVersion: 1,
+          protocolVersion: 2,
+          contractVersion: 2,
           sessionToken,
           type: "shutdown",
           envelopeId: shutdownEnvelopeId

@@ -156,7 +156,7 @@ describe("local edge upstream routing", () => {
     ).toBe(true);
   });
 
-  it("requires capability schema 6, memory.collaboration, and realtime protocol 1", () => {
+  it("requires capability schema 6, memory.collaboration, and the current realtime protocol", () => {
     const supported = backend({
       capabilities: {
         state: "validated",
@@ -168,7 +168,7 @@ describe("local edge upstream routing", () => {
             "memory.collaboration": { availability: "partial" }
           },
           protocols: {
-            collaborationRealtime: { version: 1, transport: "sse" }
+            collaborationRealtime: { version: 2, transport: "sse" }
           }
         }
       }
@@ -190,7 +190,7 @@ describe("local edge upstream routing", () => {
           ...supported.capabilities,
           payload: {
             ...supported.capabilities?.payload,
-            protocols: { collaborationRealtime: { version: 2 } }
+            protocols: { collaborationRealtime: { version: 1 } }
           }
         }
       })

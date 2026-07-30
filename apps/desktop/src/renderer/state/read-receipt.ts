@@ -15,6 +15,7 @@ export class ReadReceiptController {
   readonly #markRead: (messageId: string) => Promise<void>;
   #acknowledgedId: string | null = null;
   #candidateId: string | null = null;
+  #disposed = false;
   #inFlightId: string | null = null;
   #latestInput: ReadReceiptInput | null = null;
   #retryCount = 0;
@@ -29,6 +30,7 @@ export class ReadReceiptController {
   }
 
   update(input: ReadReceiptInput): void {
+    if (this.#disposed) return;
     this.#latestInput = input;
     const candidate = this.#eligibleCandidate(input);
 
@@ -50,6 +52,7 @@ export class ReadReceiptController {
   }
 
   #schedule(messageId: string, delayMs: number): void {
+    if (this.#disposed) return;
     this.#candidateId = messageId;
     this.#timer = setTimeout(() => {
       this.#timer = null;
@@ -59,10 +62,12 @@ export class ReadReceiptController {
       this.#inFlightId = scheduledMessageId;
       void this.#markRead(scheduledMessageId)
         .then(() => {
+          if (this.#disposed) return;
           this.#acknowledgedId = scheduledMessageId;
           this.#retryCount = 0;
         })
         .catch(() => {
+          if (this.#disposed) return;
           const stillEligible =
             this.#latestInput &&
             this.#eligibleCandidate(this.#latestInput) === scheduledMessageId;
@@ -92,7 +97,11 @@ export class ReadReceiptController {
   }
 
   dispose(): void {
+    this.#disposed = true;
     this.#cancelTimer();
+    this.#candidateId = null;
+    this.#inFlightId = null;
+    this.#latestInput = null;
   }
 
   #cancelTimer(): void {

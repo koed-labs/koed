@@ -87,4 +87,27 @@ describe("ReadReceiptController", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(markRead).toHaveBeenCalledTimes(1);
   });
+
+  it("does not retry an in-flight acknowledgement after disposal", async () => {
+    vi.useFakeTimers();
+    let rejectRead: (error: Error) => void = () => undefined;
+    const markRead = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectRead = reject;
+        })
+    );
+    const controller = new ReadReceiptController({ dwellMs: 10, markRead });
+    controller.update(eligible);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(markRead).toHaveBeenCalledTimes(1);
+
+    controller.dispose();
+    rejectRead(new Error("offline"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(markRead).toHaveBeenCalledTimes(1);
+  });
 });

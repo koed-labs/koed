@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { assertSecureHttpTransport } from "./http-transport-security.js";
 
-export const COLLABORATION_CONTRACT_VERSION = 1;
+export const COLLABORATION_CONTRACT_VERSION = 2;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -802,6 +802,7 @@ export const collaborationReadStateSchema = z
     sequence: nonNegativeSequenceSchema,
     readAt: collaborationTimestampSchema.nullable(),
     unreadCount: nonNegativeSequenceSchema,
+    version: positiveVersionSchema,
     updatedAt: collaborationTimestampSchema
   })
   .strict()

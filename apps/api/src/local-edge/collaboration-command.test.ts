@@ -271,6 +271,7 @@ const readState = {
   sequence: 1,
   readAt: iso,
   unreadCount: 0,
+  version: 1,
   updatedAt: iso
 };
 
@@ -856,7 +857,7 @@ const createPersonalRepository = (): CommandRepository => {
       actor.userId === ids.actor && input.scope === "personal"
         ? {
             id: ids.request,
-            protocolVersion: 1,
+            protocolVersion: 2,
             scope: "personal",
             personalOwnerUserId: ids.actor,
             teamId: null,
@@ -3753,6 +3754,7 @@ describe("local-edge collaboration command route", () => {
       senderPrincipalId: ids.participant,
       senderUserId: ids.participant,
       senderDisplayName: null,
+      audienceVersion: 1,
       recipientStatus: "sent",
       bodyText: "hello",
       metadata: {},

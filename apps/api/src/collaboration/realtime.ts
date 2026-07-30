@@ -95,7 +95,7 @@ type RealtimeSubscriptionBinding = {
 type CursorPayload = {
   kind: "koed_collaboration_realtime_cursor";
   version: 1;
-  protocolVersion: 1;
+  protocolVersion: typeof protocolVersion;
   backendIdentityHash: string;
   principalIdHash: string;
   clientInstanceHash: string;
@@ -675,6 +675,7 @@ const rendererReceiptStateFromRecord = (
     sequence: readState.lastReadSequence,
     readAt: readState.lastReadAt,
     unreadCount: readState.unreadCount,
+    version: readState.version,
     updatedAt: readState.updatedAt
   }
 });

@@ -212,7 +212,7 @@ const collaborationGrant = (
 });
 
 const commandBase = (command: string) => ({
-  contractVersion: 1 as const,
+  contractVersion: 2 as const,
   requestId: randomUUID(),
   command
 });

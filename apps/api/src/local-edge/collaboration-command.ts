@@ -327,6 +327,7 @@ const canonicalMessageSchema = z
     senderPrincipalId: z.string().nullable(),
     senderUserId: z.uuid(),
     senderDisplayName: z.string().nullable(),
+    audienceVersion: z.number().int().safe().positive(),
     recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
     bodyText: z.string(),
     metadata: z.record(z.string(), z.unknown()),
@@ -799,6 +800,7 @@ const personalReadStateFromRecord = (
     sequence: readState.lastReadSequence,
     readAt: readState.lastReadAt,
     unreadCount: readState.unreadCount,
+    version: readState.version,
     updatedAt: readState.updatedAt
   });
   return parsed.success ? parsed.data : null;
@@ -1187,6 +1189,7 @@ const targetReadStateFrom = (value: unknown): unknown => {
     sequence: canonical.data.lastReadSequence,
     readAt: canonical.data.lastReadAt,
     unreadCount: canonical.data.unreadCount,
+    version: canonical.data.version,
     updatedAt: canonical.data.updatedAt
   };
 };

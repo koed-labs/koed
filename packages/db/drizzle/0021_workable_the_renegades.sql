@@ -31,42 +31,6 @@ ALTER TABLE "collaboration_receipt_states" ADD COLUMN "last_delivered_sequence" 
 ALTER TABLE "collaboration_receipt_states" ADD COLUMN "last_delivered_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "collaboration_receipt_states" ADD COLUMN "last_read_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "collaboration_threads" ADD COLUMN "audience_version" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
-WITH audience_members AS (
-	SELECT thread.id AS thread_id, thread.personal_owner_user_id AS user_id
-	FROM collaboration_threads thread
-	WHERE thread.scope = 'personal'
-	  AND thread.personal_owner_user_id IS NOT NULL
-	UNION
-	SELECT participant.thread_id, participant.user_id
-	FROM collaboration_participants participant
-	JOIN collaboration_threads thread ON thread.id = participant.thread_id
-	JOIN team_memberships membership
-	  ON membership.team_id = participant.team_id
-	 AND membership.user_id = participant.user_id
-	JOIN users participant_user ON participant_user.id = participant.user_id
-	WHERE thread.kind IN ('dm', 'group_dm')
-	  AND membership.status = 'enabled'
-	  AND membership.disabled_at IS NULL
-	  AND participant_user.disabled_at IS NULL
-	  AND participant_user.deleted_at IS NULL
-	UNION
-	SELECT thread.id, access.user_id
-	FROM collaboration_threads thread
-	JOIN team_workspace_access_grants access
-	  ON access.team_workspace_id = thread.team_workspace_id
-	 AND access.team_id = thread.team_id
-	JOIN team_memberships membership
-	  ON membership.team_id = access.team_id
-	 AND membership.user_id = access.user_id
-	JOIN users member_user ON member_user.id = access.user_id
-	WHERE thread.kind IN ('workspace_channel', 'shared_session_discussion')
-	  AND access.access IN ('read', 'write')
-	  AND access.disabled_at IS NULL
-	  AND membership.status = 'enabled'
-	  AND membership.disabled_at IS NULL
-	  AND member_user.disabled_at IS NULL
-	  AND member_user.deleted_at IS NULL
-)
 INSERT INTO collaboration_thread_audiences (
 	thread_id,
 	version,
@@ -77,66 +41,12 @@ SELECT
 	1,
 	encode(
 		digest(
-			E'koed:collaboration:audience-members:v1\n'
-			|| '['
-			|| coalesce(
-				string_agg(
-					to_json(member.user_id::text)::text,
-					',' ORDER BY member.user_id::text
-				) FILTER (WHERE member.user_id IS NOT NULL),
-				''
-			)
-			|| ']',
+			E'koed:collaboration:audience-members:v1\n[]',
 			'sha256'
 		),
 		'hex'
 	)
-FROM collaboration_threads thread
-LEFT JOIN audience_members member ON member.thread_id = thread.id
-GROUP BY thread.id;--> statement-breakpoint
-WITH audience_members AS (
-	SELECT thread.id AS thread_id, thread.personal_owner_user_id AS user_id
-	FROM collaboration_threads thread
-	WHERE thread.scope = 'personal'
-	  AND thread.personal_owner_user_id IS NOT NULL
-	UNION
-	SELECT participant.thread_id, participant.user_id
-	FROM collaboration_participants participant
-	JOIN collaboration_threads thread ON thread.id = participant.thread_id
-	JOIN team_memberships membership
-	  ON membership.team_id = participant.team_id
-	 AND membership.user_id = participant.user_id
-	JOIN users participant_user ON participant_user.id = participant.user_id
-	WHERE thread.kind IN ('dm', 'group_dm')
-	  AND membership.status = 'enabled'
-	  AND membership.disabled_at IS NULL
-	  AND participant_user.disabled_at IS NULL
-	  AND participant_user.deleted_at IS NULL
-	UNION
-	SELECT thread.id, access.user_id
-	FROM collaboration_threads thread
-	JOIN team_workspace_access_grants access
-	  ON access.team_workspace_id = thread.team_workspace_id
-	 AND access.team_id = thread.team_id
-	JOIN team_memberships membership
-	  ON membership.team_id = access.team_id
-	 AND membership.user_id = access.user_id
-	JOIN users member_user ON member_user.id = access.user_id
-	WHERE thread.kind IN ('workspace_channel', 'shared_session_discussion')
-	  AND access.access IN ('read', 'write')
-	  AND access.disabled_at IS NULL
-	  AND membership.status = 'enabled'
-	  AND membership.disabled_at IS NULL
-	  AND member_user.disabled_at IS NULL
-	  AND member_user.deleted_at IS NULL
-)
-INSERT INTO collaboration_thread_audience_members (
-	thread_id,
-	audience_version,
-	user_id
-)
-SELECT thread_id, 1, user_id
-FROM audience_members;--> statement-breakpoint
+FROM collaboration_threads thread;--> statement-breakpoint
 UPDATE collaboration_receipt_states
 SET
 	last_delivered_message_id = last_read_message_id,

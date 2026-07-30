@@ -1841,7 +1841,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`client:${randomUUID()}`),
       subscriptionKeyHash: hash(`subscription:${randomUUID()}`),
-      protocolVersion: 1
+      protocolVersion: 2
     };
     const subscription = await repository.createSubscription(actor(userId), {
       ...binding,
@@ -1936,7 +1936,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`watermark-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`watermark-subscription:${randomUUID()}`),
-      protocolVersion: 1
+      protocolVersion: 2
     };
     const subscription = await repository.createSubscription(actor(userId), {
       ...binding,
@@ -2006,7 +2006,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`other-watermark-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`other-watermark-subscription:${randomUUID()}`),
-      protocolVersion: 1
+      protocolVersion: 2
     };
     const otherSubscription = await repository.createSubscription(
       actor(otherUserId),
@@ -2132,7 +2132,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`team-watermark-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`team-watermark-subscription:${randomUUID()}`),
-      protocolVersion: 1
+      protocolVersion: 2
     };
     const subscription = await repository.createSubscription(
       actor(fixture.ownerUserId),
@@ -2170,7 +2170,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`unrelated-team-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`unrelated-team-subscription:${randomUUID()}`),
-      protocolVersion: 1
+      protocolVersion: 2
     };
     const unrelatedSubscription = await repository.createSubscription(
       actor(unrelated.ownerUserId),

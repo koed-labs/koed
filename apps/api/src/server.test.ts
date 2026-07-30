@@ -5283,7 +5283,7 @@ describe("api health", () => {
       },
       protocols: {
         collaborationRealtime: {
-          version: 1,
+          version: 2,
           transport: "sse",
           snapshotEndpoint: "/v1/collaboration/realtime/snapshot",
           streamEndpoint: "/v1/collaboration/realtime/stream",

@@ -168,10 +168,10 @@ const commandSuccess = (
   });
 
 const brokerSnapshot = (scope: "personal" | "team", version = 1) => ({
-  protocolVersion: 1,
+  protocolVersion: 2,
   subscription: {
     id: subscriptionId,
-    protocolVersion: 1,
+    protocolVersion: 2,
     scope: scope === "team" ? { scope, teamId } : { scope },
     state: "awaiting_snapshot_ack",
     version,
@@ -463,7 +463,7 @@ describe("Desktop collaboration local transport", () => {
 
   it("uses the atomic Team broker snapshot, applies before ack, and binds every realtime request", async () => {
     const brokerEvent = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       deliveryId: "delivery_id_00000000000000000000000000000002",
       eventId: "703af56b-8e88-4945-b395-eeac7c68a4a6",
       type: "message_created",
@@ -497,10 +497,10 @@ describe("Desktop collaboration local transport", () => {
         }
         if (value.endsWith("/ack")) {
           return Response.json({
-            protocolVersion: 1,
+            protocolVersion: 2,
             subscription: {
               id: subscriptionId,
-              protocolVersion: 1,
+              protocolVersion: 2,
               scope: { scope: "team", teamId },
               state: "active",
               version: 1,
@@ -510,7 +510,7 @@ describe("Desktop collaboration local transport", () => {
         }
         if (value.includes("/stream?")) {
           return new Response(
-            `event: ready\ndata: ${JSON.stringify({ protocolVersion: 1, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\n: heartbeat\n\nevent: collaboration_event\ndata: ${JSON.stringify(brokerEvent)}\n\n`,
+            `event: ready\ndata: ${JSON.stringify({ protocolVersion: 2, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\n: heartbeat\n\nevent: collaboration_event\ndata: ${JSON.stringify(brokerEvent)}\n\n`,
             { headers: { "content-type": "text/event-stream" } }
           );
         }
@@ -704,10 +704,10 @@ describe("Desktop collaboration local transport", () => {
         }
         if (value.endsWith("/ack")) {
           return Response.json({
-            protocolVersion: 1,
+            protocolVersion: 2,
             subscription: {
               id: subscriptionId,
-              protocolVersion: 1,
+              protocolVersion: 2,
               scope: { scope: "team", teamId },
               state: "active",
               version: 1,
@@ -806,10 +806,10 @@ describe("Desktop collaboration local transport", () => {
         }
         if (value.endsWith("/ack")) {
           return Response.json({
-            protocolVersion: 1,
+            protocolVersion: 2,
             subscription: {
               id: subscriptionId,
-              protocolVersion: 1,
+              protocolVersion: 2,
               scope: { scope: "team", teamId },
               state: "active",
               version: 1,
@@ -824,7 +824,7 @@ describe("Desktop collaboration local transport", () => {
             authorization: rotatedConnection.authorization
           });
           return new Response(
-            `event: control\ndata: ${JSON.stringify({ protocolVersion: 1, subscription: { id: subscriptionId }, reason: "server_shutdown" })}\n\n`,
+            `event: control\ndata: ${JSON.stringify({ protocolVersion: 2, subscription: { id: subscriptionId }, reason: "server_shutdown" })}\n\n`,
             { headers: { "content-type": "text/event-stream" } }
           );
         }
@@ -913,10 +913,10 @@ describe("Desktop collaboration local transport", () => {
         }
         if (value.endsWith("/ack")) {
           return Response.json({
-            protocolVersion: 1,
+            protocolVersion: 2,
             subscription: {
               id: subscriptionId,
-              protocolVersion: 1,
+              protocolVersion: 2,
               scope: { scope: "personal" },
               state: "active",
               version: 1,
@@ -925,11 +925,11 @@ describe("Desktop collaboration local transport", () => {
           });
         }
         if (init?.method === "DELETE") {
-          return Response.json({ protocolVersion: 1, subscription: {} });
+          return Response.json({ protocolVersion: 2, subscription: {} });
         }
         if (value.includes("/stream?")) {
           return new Response(
-            `event: connection\ndata: ${JSON.stringify({ contractVersion: 1, type: "connection", connection: { state: "live", backendId: null, connectedAt: timestamp, retryAt: null, reconnectAttempt: 0, protocolVersion: 1 }, error: null })}\n\nevent: ready\ndata: ${JSON.stringify({ protocolVersion: 1, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\n`,
+            `event: connection\ndata: ${JSON.stringify({ contractVersion: 2, type: "connection", connection: { state: "live", backendId: null, connectedAt: timestamp, retryAt: null, reconnectAttempt: 0, protocolVersion: 2 }, error: null })}\n\nevent: ready\ndata: ${JSON.stringify({ protocolVersion: 2, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\n`,
             { headers: { "content-type": "text/event-stream" } }
           );
         }
@@ -1035,10 +1035,10 @@ describe("Desktop collaboration local transport", () => {
         }
         if (value.endsWith("/ack")) {
           return Response.json({
-            protocolVersion: 1,
+            protocolVersion: 2,
             subscription: {
               id: subscriptionId,
-              protocolVersion: 1,
+              protocolVersion: 2,
               scope: { scope: "team", teamId },
               state: "active",
               version: 1,
@@ -1053,7 +1053,7 @@ describe("Desktop collaboration local transport", () => {
                 streamController = controller;
                 controller.enqueue(
                   new TextEncoder().encode(
-                    `event: ready\ndata: ${JSON.stringify({ protocolVersion: 1, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\n`
+                    `event: ready\ndata: ${JSON.stringify({ protocolVersion: 2, subscription: { id: subscriptionId, state: "active", version: 1 } })}\n\n`
                   )
                 );
               }
@@ -1068,7 +1068,7 @@ describe("Desktop collaboration local transport", () => {
             // The intentional local abort may already have canceled the body.
           }
           await new Promise((resolve) => setTimeout(resolve, 0));
-          return Response.json({ protocolVersion: 1, subscription: {} });
+          return Response.json({ protocolVersion: 2, subscription: {} });
         }
         throw new Error(`Unexpected URL ${value}`);
       });
@@ -1171,10 +1171,10 @@ describe("Desktop collaboration local transport", () => {
         if (value.endsWith("/ack")) {
           await acknowledgementBlocked;
           return Response.json({
-            protocolVersion: 1,
+            protocolVersion: 2,
             subscription: {
               id: subscriptionId,
-              protocolVersion: 1,
+              protocolVersion: 2,
               scope: { scope: "team", teamId },
               state: "active",
               version: 2,
@@ -1183,7 +1183,7 @@ describe("Desktop collaboration local transport", () => {
           });
         }
         if (init?.method === "DELETE") {
-          return Response.json({ protocolVersion: 1, subscription: {} });
+          return Response.json({ protocolVersion: 2, subscription: {} });
         }
         if (value.includes("/stream?")) {
           return new Response(
@@ -1311,10 +1311,10 @@ describe("Desktop collaboration local transport", () => {
           const id = value.split("/").at(-2)!;
           const scope = scopes.get(id)!;
           return Response.json({
-            protocolVersion: 1,
+            protocolVersion: 2,
             subscription: {
               id,
-              protocolVersion: 1,
+              protocolVersion: 2,
               scope: scope === "team" ? { scope, teamId } : { scope },
               state: "active",
               version: 1,
@@ -1332,7 +1332,7 @@ describe("Desktop collaboration local transport", () => {
               start(controller) {
                 controller.enqueue(
                   new TextEncoder().encode(
-                    `event: ready\ndata: ${JSON.stringify({ protocolVersion: 1, subscription: { id: value.split("/").at(-2)!.split("?")[0]!, state: "active", version: 1 } })}\n\n`
+                    `event: ready\ndata: ${JSON.stringify({ protocolVersion: 2, subscription: { id: value.split("/").at(-2)!.split("?")[0]!, state: "active", version: 1 } })}\n\n`
                   )
                 );
               }
@@ -1341,7 +1341,7 @@ describe("Desktop collaboration local transport", () => {
           );
         }
         if (init?.method === "DELETE") {
-          return Response.json({ protocolVersion: 1, subscription: {} });
+          return Response.json({ protocolVersion: 2, subscription: {} });
         }
         throw new Error(`Unexpected URL ${value}`);
       });
