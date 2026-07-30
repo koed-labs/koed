@@ -80,6 +80,7 @@ type RuntimeSecret = {
     kemPrivateSeed: string;
   };
   authority: { keyId: string; publicKey: string; head: string };
+  recovery: { signingKeyId: string; signingPublicKey: string };
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
@@ -821,6 +822,7 @@ const runtimeSecret = async (
         "groupId",
         "device",
         "authority",
+        "recovery",
         "certificate",
         "recipientCertificates",
         "groupSecrets"
@@ -832,6 +834,7 @@ const runtimeSecret = async (
         "groupId",
         "device",
         "authority",
+        "recovery",
         "certificate",
         "recipientCertificates",
         "historicalOriginCertificates",
@@ -844,6 +847,7 @@ const runtimeSecret = async (
     value.version !== 1 ||
     !Object.values(value.device).every(strictString) ||
     !Object.values(value.authority).every(strictString) ||
+    !Object.values(value.recovery).every(strictString) ||
     !Object.values(value.groupSecrets).every(strictString) ||
     !Array.isArray(value.recipientCertificates) ||
     !value.recipientCertificates.every(strictString) ||
@@ -1382,6 +1386,10 @@ const bootstrapGroup = async (
         keyId: binding.authorityKeyId,
         publicKey: binding.authorityPublicKey,
         head: headHash
+      },
+      recovery: {
+        signingKeyId: recoverySigningKeyId,
+        signingPublicKey: recoverySigningKey.publicKey
       },
       groupSecrets
     },
@@ -2058,6 +2066,16 @@ const completeDeviceJoin = async (
         publicKey: pending.authorityPublicKey,
         head: ""
       },
+      recovery: {
+        signingKeyId: responseString(
+          object(activeGroup.recovery, "group.recovery"),
+          "signing_key_id"
+        ),
+        signingPublicKey: responseString(
+          object(activeGroup.recovery, "group.recovery"),
+          "signing_public_key"
+        )
+      },
       groupSecrets: {
         currentEpoch: pendingEpoch,
         contentKey: secrets.epochSecret,
@@ -2181,6 +2199,7 @@ const bindLocalRuntimeUser = async (
       groupId: runtime.groupId,
       device: runtime.device,
       authority: runtime.authority,
+      recovery: runtime.recovery,
       ...(runtime.historicalOriginCertificates
         ? {
             historicalOriginCertificates: runtime.historicalOriginCertificates

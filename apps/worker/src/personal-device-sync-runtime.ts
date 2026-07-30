@@ -48,6 +48,7 @@ type RuntimeSecret = {
     kemPrivateSeed: string;
   };
   authority: { keyId: string; publicKey: string; head: string };
+  recovery: { signingKeyId: string; signingPublicKey: string };
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
@@ -156,6 +157,11 @@ export const resolvePdsProviderRuntimeSecret = (
         (key) =>
           typeof (value.authority as Record<string, unknown>)[key] === "string"
       ) ||
+      !value.recovery ||
+      !["signingKeyId", "signingPublicKey"].every(
+        (key) =>
+          typeof (value.recovery as Record<string, unknown>)[key] === "string"
+      ) ||
       ![
         "currentEpoch",
         "contentKey",
@@ -181,6 +187,27 @@ const record = (value: unknown, label: string): Record<string, unknown> => {
     throw new TypeError(`PDS ${label} is invalid`);
   }
   return value as Record<string, unknown>;
+};
+
+export const resolvePdsLifecycleAuthorizationPublicKey = (
+  secret: RuntimeSecret,
+  signerKeyId: unknown
+): string => {
+  if (typeof signerKeyId !== "string") {
+    throw new TypeError("PdsCryptoAuthorityError");
+  }
+  if (signerKeyId === secret.recovery.signingKeyId) {
+    return secret.recovery.signingPublicKey;
+  }
+  const certificate = secret.recipientCertificates
+    .map((value) => record(parseCanonicalPdsJson(value), "certificate"))
+    .find(
+      (value) =>
+        value.deviceSigningKeyId === signerKeyId &&
+        typeof value.deviceSigningPublicKey === "string"
+    );
+  if (!certificate) throw new TypeError("PdsCryptoAuthorityError");
+  return certificate.deviceSigningPublicKey as string;
 };
 
 type PdsRuntimeFactoryInput = {
@@ -815,21 +842,13 @@ const createPdsWorkerRuntimeFromSecret = (
           headStatement.authorization,
           "authority head authorization"
         );
-        const headCertificate = secret.recipientCertificates
-          .map((value) => record(parseCanonicalPdsJson(value), "certificate"))
-          .find(
-            (value) =>
-              value.deviceSigningKeyId === headAuthorization.signerKeyId &&
-              typeof value.deviceSigningPublicKey === "string"
-          );
-        if (
-          !headCertificate ||
-          pdsFinalizedStatementHash(headStatement as never) !== head.hash
-        )
+        if (pdsFinalizedStatementHash(headStatement as never) !== head.hash)
           throw new TypeError("PdsCryptoAuthorityError");
         validatePdsGroupStatement(headStatement as never, {
-          authorizationPublicKey:
-            headCertificate.deviceSigningPublicKey as string,
+          authorizationPublicKey: resolvePdsLifecycleAuthorizationPublicKey(
+            secret,
+            headAuthorization.signerKeyId
+          ),
           authorityPublicKey: secret.authority.publicKey,
           expectedGroupId: secret.groupId,
           expectedSequence: head.sequence
@@ -868,17 +887,11 @@ const createPdsWorkerRuntimeFromSecret = (
             tombstone.authorization,
             "authorization"
           );
-          const certificate = secret.recipientCertificates
-            .map((value) => record(parseCanonicalPdsJson(value), "certificate"))
-            .find(
-              (value) =>
-                value.deviceSigningKeyId === authorization.signerKeyId &&
-                typeof value.deviceSigningPublicKey === "string"
-            );
-          if (!certificate) throw new TypeError("PdsCryptoAuthorityError");
           const validation = {
-            authorizationPublicKey:
-              certificate.deviceSigningPublicKey as string,
+            authorizationPublicKey: resolvePdsLifecycleAuthorizationPublicKey(
+              secret,
+              authorization.signerKeyId
+            ),
             authorityPublicKey: secret.authority.publicKey,
             expectedAuthorizationKeyId: authorization.signerKeyId as string,
             expectedGroupId: secret.groupId

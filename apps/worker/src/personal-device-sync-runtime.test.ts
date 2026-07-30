@@ -9,6 +9,7 @@ import {
   createReloadablePdsWorkerRuntimeFromEnvironment,
   materializePdsSession,
   resolvePdsEmbeddingCapability,
+  resolvePdsLifecycleAuthorizationPublicKey,
   resolvePdsProviderRuntimeSecret
 } from "./personal-device-sync-runtime.js";
 
@@ -85,6 +86,23 @@ describe("PDS semantic capability", () => {
 });
 
 describe("PDS session materialization", () => {
+  it("resolves recovery-root lifecycle authorization without a membership certificate", () => {
+    const secret = {
+      recovery: {
+        signingKeyId: "recovery-signing",
+        signingPublicKey: "recovery-public"
+      },
+      recipientCertificates: []
+    } as never;
+
+    expect(
+      resolvePdsLifecycleAuthorizationPublicKey(secret, "recovery-signing")
+    ).toBe("recovery-public");
+    expect(() =>
+      resolvePdsLifecycleAuthorizationPublicKey(secret, "unknown-signing")
+    ).toThrow("PdsCryptoAuthorityError");
+  });
+
   it("adopts a replaced secure runtime between reconciliation cycles", async () => {
     const runtimeA = {
       heartbeatGroups: vi.fn().mockResolvedValue(["group-a"]),
@@ -112,6 +130,10 @@ describe("PDS session materialization", () => {
         kemPrivateSeed: "kem-seed"
       },
       authority: { keyId: "authority", publicKey: "public", head: "head-a" },
+      recovery: {
+        signingKeyId: "recovery-signing",
+        signingPublicKey: "recovery-public"
+      },
       certificate: "certificate-a",
       recipientCertificates: [],
       groupSecrets: {
@@ -181,6 +203,10 @@ describe("PDS session materialization", () => {
         kemPrivateSeed: "kem-seed"
       },
       authority: { keyId: "authority", publicKey: "public", head: "head" },
+      recovery: {
+        signingKeyId: "recovery-signing",
+        signingPublicKey: "recovery-public"
+      },
       certificate: "certificate",
       recipientCertificates: [],
       groupSecrets: {
