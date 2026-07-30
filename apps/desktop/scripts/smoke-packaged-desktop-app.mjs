@@ -560,7 +560,7 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
       if (
         !message ||
         typeof message !== "object" ||
-        message.protocolVersion !== 2 ||
+        message.protocolVersion !== 1 ||
         message.contractVersion !== 2 ||
         message.sessionToken !== sessionToken
       ) {
@@ -569,7 +569,7 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
       }
       if (message.type === "ready") {
         child.send({
-          protocolVersion: 2,
+          protocolVersion: 1,
           contractVersion: 2,
           sessionToken,
           type: "command",
@@ -605,7 +605,7 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
         }
         commandCompleted = true;
         child.send({
-          protocolVersion: 2,
+          protocolVersion: 1,
           contractVersion: 2,
           sessionToken,
           type: "shutdown",

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import {
+  COLLABORATION_CONTRACT_VERSION,
+  type EnvelopeEncryptionProvider
+} from "@koed/shared";
 
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,
@@ -18,7 +21,6 @@ const THREAD_TOPIC_MARKER = "[koed encrypted collaboration topic]";
 const MESSAGE_BODY_MARKER = "[koed encrypted collaboration message]";
 const MESSAGE_METADATA_MARKER = "[koed encrypted collaboration metadata]";
 const MESSAGE_PROVENANCE_MARKER = "[koed encrypted collaboration provenance]";
-const COLLABORATION_PROTOCOL_VERSION = 1;
 const OUTBOX_REPLAY_DAYS = 30;
 const MAX_THREAD_NAME_CODE_POINTS = 80;
 const MAX_THREAD_TOPIC_BYTES = 1_024;
@@ -1448,7 +1450,7 @@ export const appendCollaborationOutboxEventWithClient = async (
       returning *
     `,
     [
-      COLLABORATION_PROTOCOL_VERSION,
+      COLLABORATION_CONTRACT_VERSION,
       input.family,
       input.scope,
       input.personalOwnerUserId,
@@ -1784,7 +1786,7 @@ const normalizeSubscriptionBinding = (
     input.protocolVersion,
     "protocolVersion"
   );
-  if (protocolVersion !== COLLABORATION_PROTOCOL_VERSION) {
+  if (protocolVersion !== COLLABORATION_CONTRACT_VERSION) {
     throw new TypeError("protocolVersion is unsupported");
   }
   const principalIdHash = requireSha256Hex(
