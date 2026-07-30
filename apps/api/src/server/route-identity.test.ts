@@ -493,6 +493,7 @@ describe("route identity contract", () => {
         "POST /v1/collaboration/teams/{teamId}/threads/{threadId}/restore",
         "GET /v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
         "POST /v1/collaboration/teams/{teamId}/threads/{threadId}/messages",
+        "PUT /v1/collaboration/teams/{teamId}/threads/{threadId}/delivery-state",
         "PUT /v1/collaboration/teams/{teamId}/threads/{threadId}/read-state",
         "POST /v1/collaboration/realtime/snapshot",
         "POST /v1/collaboration/realtime/ack",

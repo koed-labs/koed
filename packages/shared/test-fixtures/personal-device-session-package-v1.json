@@ -2,6 +2,7 @@
   "protocol": "koed/pds/v1",
   "runtime": {
     "authorityPublicKey": "1XvUHDYCIYh_YwlWWF8wvXEJtLz2iJy7mr1QEx00UTQ",
+    "authorityKeyId": "NfrQJKlg_v8N_3LZy24Ctg",
     "groupId": "NY7T0EqjZBBvSJmpWMJE4g",
     "authorityHead": "oqTouV-RZUWH2EDs98H9ZwvGChHxE44U-NE7uBl8VCg",
     "currentEpoch": "3",

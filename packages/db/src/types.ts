@@ -328,12 +328,20 @@ export interface TeamRosterMemberRecord {
   displayName: string | null;
   avatarReference: string | null;
   status: "enabled";
-  presence: "unknown";
+  presenceMode: "auto" | "manual";
+  manualPresenceStatus: "available" | "do_not_disturb" | "out_of_office";
+  presenceVersion: number;
+  lastHumanActivityAt: string | null;
 }
 
 export interface TeamManagementMemberRecord extends TeamMembershipRecord {
   email: string;
   displayName: string | null;
+  avatarReference: string | null;
+  presenceMode: "auto" | "manual";
+  manualPresenceStatus: "available" | "do_not_disturb" | "out_of_office";
+  presenceVersion: number;
+  lastHumanActivityAt: string | null;
   workspaceAccess: {
     teamWorkspaceId: string;
     userId: string;
@@ -1839,6 +1847,24 @@ export interface MemorySourceRepository
     actor: ActorContext,
     teamId: string
   ): Promise<TeamRosterMemberRecord[] | null>;
+  getTeamRosterMember(
+    actor: ActorContext,
+    teamId: string,
+    userId: string
+  ): Promise<TeamRosterMemberRecord | null>;
+  setTeamPresence(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      mode: "auto" | "manual";
+      manualPresenceStatus: "available" | "do_not_disturb" | "out_of_office";
+      expectedVersion: number;
+    }
+  ): Promise<TeamRosterMemberRecord | null>;
+  recordTeamHumanActivity(
+    actor: ActorContext,
+    teamIds: string[]
+  ): Promise<string[]>;
   listTeamManagementMembers(
     actor: ActorContext,
     teamId: string

@@ -1,9 +1,11 @@
 import releaseManifest from "@koed/koed/package.json" with { type: "json" };
+import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
 
 const koedReleaseVersion = releaseManifest.version;
 
 export const capabilitySchemaVersion = 6;
-export const collaborationRealtimeProtocolVersion = 1;
+export const collaborationRealtimeProtocolVersion =
+  COLLABORATION_CONTRACT_VERSION;
 
 export const deploymentProfiles = [
   "developer",

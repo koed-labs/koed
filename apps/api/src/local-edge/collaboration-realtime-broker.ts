@@ -234,7 +234,7 @@ const collaborationEventFamilySchema = z.enum([
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
-  "read_state_updated",
+  "receipt_state_updated",
   "share_grant_lifecycle",
   "representation_changed",
   "memory_event_available",

@@ -369,6 +369,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }
@@ -494,6 +495,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }
@@ -639,6 +641,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }
@@ -779,6 +782,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }
@@ -1395,7 +1399,7 @@ describe("desktop collaboration broker", () => {
       if (parsed.pathname.includes("/realtime/backends/")) {
         order.push("local-cleanup");
         return Response.json({
-          protocolVersion: 1,
+          protocolVersion: COLLABORATION_CONTRACT_VERSION,
           revokedSubscriptionCount: 1
         });
       }

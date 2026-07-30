@@ -133,6 +133,12 @@ _Avoid_: Health failure, pending count, summarization error
 Memory visible only to the owning user.
 _Avoid_: Private memory, individual memory
 
+**Team Presence**:
+A Team-scoped indication of a User's manually selected availability or coarse
+recent foreground activity. It does not describe agent, worker, sync, or
+background-service activity.
+_Avoid_: Agent status, read receipt, exact activity log
+
 **Project**:
 A local AI-client or code context such as a repository, working directory,
 filepath, ref, branch, or cwd.

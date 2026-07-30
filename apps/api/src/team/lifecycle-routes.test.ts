@@ -161,10 +161,24 @@ const createFixture = async (input?: {
         displayName: user.displayName,
         avatarReference: null,
         status: "enabled" as const,
-        presence: "unknown" as const
+        presenceMode: "auto" as const,
+        manualPresenceStatus: "available" as const,
+        presenceVersion: 1,
+        lastHumanActivityAt: null
       }
     ]),
     listTeamManagementMembers: vi.fn(async () => []),
+    setTeamPresence: vi.fn(async (_actor, input) => ({
+      userId: user.id,
+      displayName: user.displayName,
+      avatarReference: null,
+      status: "enabled" as const,
+      presenceMode: input.mode,
+      manualPresenceStatus: input.manualPresenceStatus,
+      presenceVersion: input.expectedVersion + 1,
+      lastHumanActivityAt: null
+    })),
+    recordTeamHumanActivity: vi.fn(async (_actor, teamIds) => teamIds),
     listTeamWorkspaceContexts: vi.fn(async () => []),
     updateTeamMemberRole: vi.fn(async () => membership()),
     disableTeamMember: vi.fn(async () => membership()),
@@ -350,6 +364,14 @@ describe("Team lifecycle routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       principal: { id: user.id },
+      teamPresenceStatusCatalogue: {
+        version: 1,
+        statuses: [
+          { key: "available", label: "Available" },
+          { key: "do_not_disturb", label: "Do not disturb" },
+          { key: "out_of_office", label: "Out of office" }
+        ]
+      },
       teams: [
         {
           team: { id: teamId },
@@ -565,12 +587,20 @@ describe("Team lifecycle routes", () => {
       displayName: "Visible Member",
       avatarReference: "avatar_123",
       status: "enabled" as const,
-      presence: "unknown" as const
+      presenceMode: "auto" as const,
+      manualPresenceStatus: "available" as const,
+      presenceVersion: 1,
+      lastHumanActivityAt: null
     };
     const managementMember = {
       ...membership(),
       email: "sensitive@example.test",
       displayName: "Visible Member",
+      avatarReference: "avatar_123",
+      presenceMode: "manual" as const,
+      manualPresenceStatus: "do_not_disturb" as const,
+      presenceVersion: 4,
+      lastHumanActivityAt: now(),
       workspaceAccess: []
     };
     const fixture = await createFixture({
@@ -591,7 +621,25 @@ describe("Team lifecycle routes", () => {
     await fixture.app.close();
 
     expect(roster.statusCode).toBe(200);
-    expect(roster.json()).toEqual({ members: [rosterMember] });
+    expect(roster.json()).toEqual({
+      members: [
+        {
+          userId: rosterMember.userId,
+          displayName: rosterMember.displayName,
+          avatarReference: rosterMember.avatarReference,
+          status: "enabled",
+          presence: "offline",
+          teamPresence: {
+            mode: "auto",
+            manualStatus: "available",
+            activityLevel: "inactive",
+            lastActivityAt: null,
+            nextTransitionAt: null,
+            preferenceVersion: 1
+          }
+        }
+      ]
+    });
     expect(
       Object.keys(roster.json<{ members: object[] }>().members[0]!)
     ).toEqual([
@@ -599,15 +647,154 @@ describe("Team lifecycle routes", () => {
       "displayName",
       "avatarReference",
       "status",
-      "presence"
+      "presence",
+      "teamPresence"
     ]);
     expect(JSON.stringify(roster.json())).not.toMatch(
-      /email|provider|device|disabledAt|role|version/
+      /email|provider|device|disabledAt|role/
     );
     expect(management.statusCode).toBe(200);
     expect(management.json()).toMatchObject({
-      members: [{ email: "sensitive@example.test", role: "owner" }]
+      members: [
+        {
+          email: "sensitive@example.test",
+          role: "owner",
+          presence: "away",
+          teamPresence: {
+            mode: "manual",
+            manualStatus: "do_not_disturb",
+            activityLevel: null,
+            lastActivityAt: null,
+            nextTransitionAt: null,
+            preferenceVersion: 4
+          }
+        }
+      ]
     });
+    expect(JSON.stringify(management.json())).not.toMatch(
+      /lastHumanActivityAt|presenceMode|manualPresenceStatus|presenceVersion/
+    );
+  });
+
+  it("changes only the current member's presence with optimistic concurrency", async () => {
+    const setTeamPresence = vi.fn(async (_actor, input) => ({
+      userId: user.id,
+      displayName: user.displayName,
+      avatarReference: null,
+      status: "enabled" as const,
+      presenceMode: input.mode,
+      manualPresenceStatus: input.manualPresenceStatus,
+      presenceVersion: input.expectedVersion + 1,
+      lastHumanActivityAt: now()
+    }));
+    const fixture = await createFixture({
+      repository: { setTeamPresence }
+    });
+
+    const response = await fixture.app.inject({
+      method: "PUT",
+      url: `/v1/teams/${teamId}/presence/me`,
+      payload: {
+        mode: "manual",
+        manualStatus: "out_of_office",
+        expectedVersion: 3
+      }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(setTeamPresence).toHaveBeenCalledWith(
+      { userId: user.id },
+      {
+        teamId,
+        mode: "manual",
+        manualPresenceStatus: "out_of_office",
+        expectedVersion: 3
+      }
+    );
+    expect(response.json()).toMatchObject({
+      person: {
+        userId: user.id,
+        presence: "away",
+        teamPresence: {
+          mode: "manual",
+          manualStatus: "out_of_office",
+          activityLevel: null,
+          lastActivityAt: null,
+          preferenceVersion: 4
+        }
+      }
+    });
+  });
+
+  it("keeps stale, unauthorized, and Personal API Token presence writes distinct", async () => {
+    const staleFixture = await createFixture({
+      repository: { setTeamPresence: vi.fn(async () => null) }
+    });
+    const stale = await staleFixture.app.inject({
+      method: "PUT",
+      url: `/v1/teams/${teamId}/presence/me`,
+      payload: {
+        mode: "manual",
+        manualStatus: "available",
+        expectedVersion: 1
+      }
+    });
+    await staleFixture.app.close();
+
+    const unauthorizedFixture = await createFixture({
+      repository: { getTeamMembership: vi.fn(async () => null) }
+    });
+    const unauthorized = await unauthorizedFixture.app.inject({
+      method: "PUT",
+      url: `/v1/teams/${teamId}/presence/me`,
+      payload: {
+        mode: "manual",
+        manualStatus: "available",
+        expectedVersion: 1
+      }
+    });
+    await unauthorizedFixture.app.close();
+
+    const tokenFixture = await createFixture();
+    const token = await tokenFixture.app.inject({
+      method: "PUT",
+      url: `/v1/teams/${teamId}/presence/me`,
+      headers: { authorization: "Bearer personal-token" },
+      payload: {
+        mode: "manual",
+        manualStatus: "available",
+        expectedVersion: 1
+      }
+    });
+    await tokenFixture.app.close();
+
+    expect(stale.statusCode).toBe(409);
+    expect(unauthorized.statusCode).toBe(403);
+    expect(token.statusCode).toBe(403);
+  });
+
+  it("accepts human activity only for authorized Team IDs without polling", async () => {
+    const acceptedTeamId = randomUUID();
+    const recordTeamHumanActivity = vi.fn(async () => [acceptedTeamId]);
+    const fixture = await createFixture({
+      repository: { recordTeamHumanActivity }
+    });
+    const unknownTeamId = randomUUID();
+
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/teams/presence/activity",
+      payload: { teamIds: [acceptedTeamId, unknownTeamId] }
+    });
+    await fixture.app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ acceptedTeamIds: [acceptedTeamId] });
+    expect(recordTeamHumanActivity).toHaveBeenCalledWith({ userId: user.id }, [
+      acceptedTeamId,
+      unknownTeamId
+    ]);
   });
 
   it("denies Personal API Tokens and exposes no raw member upsert route", async () => {

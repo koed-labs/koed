@@ -597,7 +597,10 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       emit(subscription, sharedEvent.data);
       return sharedEvent.data.type === "control" ? "terminal" : "continue";
     }
-    if (!isRecord(payload) || payload.protocolVersion !== 1) {
+    if (
+      !isRecord(payload) ||
+      payload.protocolVersion !== COLLABORATION_CONTRACT_VERSION
+    ) {
       throw new Error("Collaboration broker frame is invalid");
     }
     if (eventName === "ready") {

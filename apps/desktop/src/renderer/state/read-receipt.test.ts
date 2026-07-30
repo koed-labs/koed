@@ -58,7 +58,7 @@ describe("ReadReceiptController", () => {
     expect(markRead).not.toHaveBeenCalled();
   });
 
-  it("retries after a failed acknowledgement on a later eligible update", async () => {
+  it("retries a failed acknowledgement while the message remains eligible", async () => {
     vi.useFakeTimers();
     const markRead = vi
       .fn<(_: string) => Promise<void>>()
@@ -69,9 +69,45 @@ describe("ReadReceiptController", () => {
     await vi.advanceTimersByTimeAsync(10);
     await Promise.resolve();
     await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(250);
+    await Promise.resolve();
+    expect(markRead).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry after visibility or focus eligibility is lost", async () => {
+    vi.useFakeTimers();
+    const markRead = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const controller = new ReadReceiptController({ dwellMs: 10, markRead });
     controller.update(eligible);
     await vi.advanceTimersByTimeAsync(10);
     await Promise.resolve();
-    expect(markRead).toHaveBeenCalledTimes(2);
+    controller.update({ ...eligible, windowFocused: false });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(markRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an in-flight acknowledgement after disposal", async () => {
+    vi.useFakeTimers();
+    let rejectRead: (error: Error) => void = () => undefined;
+    const markRead = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectRead = reject;
+        })
+    );
+    const controller = new ReadReceiptController({ dwellMs: 10, markRead });
+    controller.update(eligible);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(markRead).toHaveBeenCalledTimes(1);
+
+    controller.dispose();
+    rejectRead(new Error("offline"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(markRead).toHaveBeenCalledTimes(1);
   });
 });

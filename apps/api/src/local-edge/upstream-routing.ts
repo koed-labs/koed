@@ -1,5 +1,6 @@
 import type { DeviceCredentialRecord } from "@koed/db";
 import {
+  COLLABORATION_CONTRACT_VERSION,
   assertSecureHttpTransport,
   readLocalEdgeUpstreamRegistry,
   upstreamAdvertisesCapability,
@@ -112,7 +113,7 @@ export const upstreamSupportsCollaborationRealtime = (
     backend.capabilities.payload?.capabilitySchemaVersion === 6 &&
     (availability === "available" || availability === "partial") &&
     backend.capabilities.payload?.protocols?.collaborationRealtime?.version ===
-      1
+      COLLABORATION_CONTRACT_VERSION
   );
 };
 

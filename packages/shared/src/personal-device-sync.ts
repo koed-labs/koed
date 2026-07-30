@@ -1665,6 +1665,7 @@ export const validatePdsPackageAck = (
 export const certificateIsPdsValid = (
   certificate: unknown,
   authorityPublicKey: string | Buffer,
+  expectedAuthorityKeyId: string,
   now = new Date()
 ): boolean => {
   try {
@@ -1722,6 +1723,7 @@ export const certificateIsPdsValid = (
       return false;
     const wrapper = own(record.authoritySignature);
     const signature = signatureWrapper(wrapper, "keyId");
+    if (wrapper.keyId !== expectedAuthorityKeyId) return false;
     const unsigned = { ...record };
     delete unsigned.authoritySignature;
     return verify(

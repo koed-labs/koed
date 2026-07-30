@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -60,6 +60,7 @@ describe("managed Conversation routes", () => {
     const deviceId = randomUUID();
     const projectId = "lp_new_project";
     const projectPath = mkdtempSync(resolve(tmpdir(), "koed-managed-project-"));
+    const canonicalProjectPath = realpathSync(projectPath);
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-managed-home-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });
     writeFileSync(
@@ -146,7 +147,10 @@ describe("managed Conversation routes", () => {
     expect(response.statusCode).toBe(202);
     expect(upsert).toHaveBeenCalledWith(
       { userId },
-      expect.objectContaining({ executionId, projectPath })
+      expect.objectContaining({
+        executionId,
+        projectPath: canonicalProjectPath
+      })
     );
   });
 

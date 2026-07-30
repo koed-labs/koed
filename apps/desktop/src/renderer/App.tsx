@@ -947,6 +947,15 @@ export function App({
         onToggleInspector={() =>
           setInspectorOpen((current) => Boolean(inspector) && !current)
         }
+        personalUnreadCount={
+          snapshot
+            ? snapshot.navigation.personal.notesToSelf.unreadCount +
+              snapshot.navigation.personal.channels.reduce(
+                (total, channel) => total + channel.unreadCount,
+                0
+              )
+            : 0
+        }
         scopeLine={<ScopeLine>{scopeLine}</ScopeLine>}
         teams={teamRail}
         routeFocusKey={JSON.stringify(route)}

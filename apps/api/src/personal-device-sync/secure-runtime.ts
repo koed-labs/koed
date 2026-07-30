@@ -217,6 +217,7 @@ const resolveHeadlessSecret = (
 const runtimeFor = (secret: PdsRuntimeSecret) =>
   createPdsSessionPackageRuntimeContext({
     authorityPublicKey: secret.authority.publicKey,
+    authorityKeyId: secret.authority.keyId,
     groupId: secret.groupId,
     authorityHead: secret.authority.head,
     currentEpoch: secret.groupSecrets.currentEpoch,
