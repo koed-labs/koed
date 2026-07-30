@@ -1,5 +1,11 @@
 import { randomBytes, randomUUID, verify } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,10 +21,18 @@ import { pdsEd25519PublicKey } from "./personal-device-sync.js";
 
 const roots: string[] = [];
 
-const fixture = () => {
+const fixture = (options: { symlinkedAncestor?: boolean } = {}) => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-source-signer-"));
   roots.push(root);
-  const koedHome = resolve(root, "home");
+  const storageRoot = resolve(root, "storage");
+  mkdirSync(storageRoot, { recursive: true, mode: 0o700 });
+  const homeRoot = options.symlinkedAncestor
+    ? resolve(root, "storage-alias")
+    : storageRoot;
+  if (options.symlinkedAncestor) {
+    symlinkSync(storageRoot, homeRoot, "dir");
+  }
+  const koedHome = resolve(homeRoot, "home");
   const proofDirectory = resolve(root, "proof");
   mkdirSync(resolve(koedHome, "config"), { recursive: true, mode: 0o700 });
   const deploymentId = randomUUID();
@@ -56,7 +70,7 @@ const fixture = () => {
       deploymentId,
       deviceInstanceId,
       proof,
-      canonicalKoedHome: koedHome
+      canonicalKoedHome: realpathSync(koedHome)
     })
   );
   return { koedHome, environment };
@@ -117,6 +131,19 @@ describe("device-bound conversation source signing", () => {
 
     expect(second.keyId).not.toBe(first.keyId);
     expect(second.publicKey).not.toBe(first.publicKey);
+  });
+
+  it("accepts a canonical home reached through a symlinked ancestor", () => {
+    const source = fixture({ symlinkedAncestor: true });
+
+    expect(() =>
+      createDeviceBoundSourceSigner({
+        ...source,
+        sourceGenerationId: randomUUID(),
+        originKeyId: randomUUID(),
+        platform: "linux"
+      })
+    ).not.toThrow();
   });
 
   it("fails closed when the host-bound proof is unavailable", () => {
