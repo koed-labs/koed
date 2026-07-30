@@ -2977,6 +2977,12 @@ ALTER TABLE "messages" ALTER COLUMN "capture_method" SET DATA TYPE text;--> stat
 ALTER TABLE "sessions" ALTER COLUMN "capture_method" SET DATA TYPE text;--> statement-breakpoint
 ALTER TABLE "tool_events" ALTER COLUMN "capture_method" SET DATA TYPE text;--> statement-breakpoint
 ALTER TABLE "turns" ALTER COLUMN "capture_method" SET DATA TYPE text;--> statement-breakpoint
+UPDATE "memory_events" SET "capture_method" = 'transcript' WHERE "capture_method" = 'hook';--> statement-breakpoint
+UPDATE "memory_nodes" SET "capture_method" = 'transcript' WHERE "capture_method" = 'hook';--> statement-breakpoint
+UPDATE "messages" SET "capture_method" = 'transcript' WHERE "capture_method" = 'hook';--> statement-breakpoint
+UPDATE "sessions" SET "capture_method" = 'transcript' WHERE "capture_method" = 'hook';--> statement-breakpoint
+UPDATE "tool_events" SET "capture_method" = 'transcript' WHERE "capture_method" = 'hook';--> statement-breakpoint
+UPDATE "turns" SET "capture_method" = 'transcript' WHERE "capture_method" = 'hook';--> statement-breakpoint
 DROP TYPE "public"."capture_method";--> statement-breakpoint
 CREATE TYPE "public"."capture_method" AS ENUM('transcript', 'mcp', 'web', 'api');--> statement-breakpoint
 ALTER TABLE "memory_events" ALTER COLUMN "capture_method" SET DATA TYPE "public"."capture_method" USING "capture_method"::"public"."capture_method";--> statement-breakpoint
