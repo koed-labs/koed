@@ -60,6 +60,31 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("allows a full status inspection to outlive the old ten-second budget", async () => {
+    let timeout: number | undefined;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, options, callback) => {
+        if (args[1] === "status") timeout = options.timeout;
+        callback(null, JSON.stringify(healthyLocalServiceStatus()), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.status!();
+
+    expect(timeout).toBe(30_000);
+  });
+
   it("treats local services as ready before later setup stages finish", () => {
     expect(
       setupServicesHealthy({

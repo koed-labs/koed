@@ -66,7 +66,7 @@ import {
   startUpstreamEnrollment
 } from "./upstream-enrollment.js";
 import {
-  ensureDeviceIdentity,
+  inspectDeviceIdentityStatus,
   rotateDeviceIdentity
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
@@ -144,7 +144,7 @@ Environment:
 export interface KoedServerCliDependencies {
   collectStatus?: typeof collectKoedServerStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
-  inspectDeviceIdentity?: typeof ensureDeviceIdentity;
+  inspectDeviceIdentity?: typeof inspectDeviceIdentityStatus;
   rotateDeviceIdentity?: typeof rotateDeviceIdentity;
   invalidateUpstreamEnrollmentReferences?: typeof invalidateUpstreamEnrollmentReferences;
   start?: typeof startKoedServer;
@@ -406,7 +406,7 @@ export const runKoedServerCli = async (
   {
     collectStatus = collectKoedServerStatus,
     collectDoctor = collectKoedServerDoctor,
-    inspectDeviceIdentity = ensureDeviceIdentity,
+    inspectDeviceIdentity = inspectDeviceIdentityStatus,
     rotateDeviceIdentity: rotateIdentity = rotateDeviceIdentity,
     invalidateUpstreamEnrollmentReferences:
       invalidateEnrollmentReferences = invalidateUpstreamEnrollmentReferences,

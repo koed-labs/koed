@@ -26,6 +26,7 @@ import { collectKoedServerStatus } from "./status.js";
 import {
   deviceIdentityLockTarget,
   ensureDeviceIdentity,
+  inspectDeviceIdentityStatus,
   rotateDeviceIdentity
 } from "./device-identity.js";
 
@@ -153,6 +154,7 @@ describe("clone-safe device identity", () => {
   it("reports redacted machine-readable identity status", async () => {
     const { paths, proofDirectory, proofStore } = fixture();
     await ensureDeviceIdentity(paths, { proofStore });
+    mkdirSync(`${deviceIdentityLockTarget(paths)}.lock`, { recursive: true });
     const state = readState(paths.koedHome);
     const rawProof = rawProofFrom(
       proofStore.read(state.proof.reference).value!
@@ -196,6 +198,22 @@ describe("clone-safe device identity", () => {
       readState(paths.koedHome).proof.fingerprint
     );
     expect(JSON.stringify(status.deviceIdentity)).not.toContain(paths.koedHome);
+    expect(readdirSync(paths.runDir)).toContain("device-identity.lock");
+  });
+
+  it("does not initialize identity during read-only status inspection", async () => {
+    const { paths, proofStore } = fixture();
+
+    const identity = await inspectDeviceIdentityStatus(paths, { proofStore });
+
+    expect(identity).toMatchObject({
+      health: "missing_state",
+      initialized: false,
+      remoteOperationsAllowed: false
+    });
+    expect(() =>
+      readFileSync(deviceIdentityStatePathFor(paths.koedHome), "utf8")
+    ).toThrow();
   });
 
   it("fails closed when copied KOED_HOME lacks host proof", async () => {

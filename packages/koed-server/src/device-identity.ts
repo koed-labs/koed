@@ -205,6 +205,19 @@ const inspect = (
   });
 
 /**
+ * Reports the current identity without acquiring the initialization/rotation
+ * lock. Status polling must remain read-only so a timed-out diagnostic process
+ * cannot leave a stale lock that aborts the managed service supervisor.
+ */
+export const inspectDeviceIdentityStatus = (
+  paths: KoedServerPaths,
+  deps: DeviceIdentityDependencies = {}
+): Promise<DeviceIdentityResult> => {
+  const resolved = dependencies(paths, deps);
+  return Promise.resolve(result(inspect(paths, resolved.proofStore)));
+};
+
+/**
  * First boot initializes only before this KOED_HOME has recorded identity
  * state. Later missing state is a repair condition, never regeneration.
  */

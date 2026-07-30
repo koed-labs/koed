@@ -20,7 +20,7 @@ import {
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
-import { ensureDeviceIdentity } from "./device-identity.js";
+import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
 import type {
   KoedServerComponentState,
@@ -699,7 +699,7 @@ const inspectDeviceIdentity = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv
 ): Promise<KoedServerStatus["deviceIdentity"]> => {
-  const identity = await ensureDeviceIdentity(paths, { environment });
+  const identity = await inspectDeviceIdentityStatus(paths, { environment });
   const component = identity.remoteOperationsAllowed
     ? healthy(identity.message)
     : needsAttention(identity.message, identity.action);

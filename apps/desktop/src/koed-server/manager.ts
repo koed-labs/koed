@@ -244,6 +244,8 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+const statusCommandTimeoutMs = 30_000;
+
 const waitForAbortOrDelay = (
   signal: AbortSignal,
   delayMs: number
@@ -1159,7 +1161,7 @@ export const createKoedServerManager = ({
   };
 
   const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
-    const current = await runJson(["status"], 10_000);
+    const current = await runJson(["status"], statusCommandTimeoutMs);
     scheduleEnrollmentReconciliation(current);
     return withPackageComponent(current);
   };
@@ -1167,7 +1169,7 @@ export const createKoedServerManager = ({
   const pollUntilReady = async (attemptLimit = 90) => {
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
-      latest = await runJson(["status"], 10_000);
+      latest = await runJson(["status"], statusCommandTimeoutMs);
       if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         await provisionExplorerCredential();
@@ -1219,7 +1221,7 @@ export const createKoedServerManager = ({
     if (refreshOrigin) retainedPersonalApiOrigin = null;
     const current = retainedPersonalApiOrigin
       ? null
-      : await runJson(["status"], 10_000);
+      : await runJson(["status"], statusCommandTimeoutMs);
     const apiOrigin =
       retainedPersonalApiOrigin ??
       (current ? localPersonalMemoryOrigin(current) : null);
@@ -1242,7 +1244,7 @@ export const createKoedServerManager = ({
   }> => {
     const current = retainedPersonalApiOrigin
       ? null
-      : await runJson(["status"], 10_000);
+      : await runJson(["status"], statusCommandTimeoutMs);
     const apiOrigin =
       retainedPersonalApiOrigin ??
       (current ? localPersonalMemoryOrigin(current) : null);
@@ -2343,7 +2345,7 @@ export const createKoedServerManager = ({
   };
 
   const requestDaemonStart = async () => {
-    const current = await runJson(["status"], 10_000);
+    const current = await runJson(["status"], statusCommandTimeoutMs);
     if (hasHealthyApi(current)) {
       retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
       await provisionExplorerCredential();
