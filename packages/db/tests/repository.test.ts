@@ -28,6 +28,7 @@ import {
   createCapturedSessionRepository,
   createDbPool,
   createMemorySourceRepository,
+  createPersonalDeviceSyncRepository,
   runDbMigrations,
   SyncStateConflictError,
   type ConversationItemInput,
@@ -37,6 +38,7 @@ import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
+  canonicalizePdsJson,
   createPdsArtifactRecord,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
@@ -1169,6 +1171,291 @@ describeDb("memory repository visibility", () => {
       id: local.id,
       protocolDeploymentId: verifiedDeploymentId
     });
+  });
+
+  it("serves final-device recovery material but freezes PDS delivery", async () => {
+    const user = await repo.createUser({
+      email: `pds-freeze-${randomUUID()}@example.com`,
+      displayName: "PDS freeze owner"
+    });
+    const pds = createPersonalDeviceSyncRepository(pool);
+    const group = await createPdsTestGroup({ userId: user.id });
+    const member = await pool.query<{ id: string }>(
+      "select id from personal_device_group_members where group_id=$1",
+      [group.groupDbId]
+    );
+    await pool.query(
+      `insert into personal_sync_policies
+       (group_id,enabled,future_closed_sessions_only,historical_backfill_enabled,updated_by_user_id)
+       values ($1,false,true,false,$2)`,
+      [group.groupDbId, user.id]
+    );
+    await pool.query(
+      `insert into personal_device_group_key_bundles
+       (group_id,bundle_hash,epoch,transition_kind,recipient_snapshot,canonical_bundle)
+       values ($1,$2,'1','genesis',$3,$4)`,
+      [
+        group.groupDbId,
+        `bundle-${randomUUID()}`,
+        group.deviceIds,
+        '{"bundle":"recovery"}'
+      ]
+    );
+    await pool.query(
+      `insert into personal_device_membership_certificates
+       (group_id,member_id,epoch,statement_sequence,statement_hash,authority_key_id,canonical_certificate,issued_at,expires_at)
+       values ($1,$2,'1','1',$3,$4,'{"certificate":"current"}',now(),now()+interval '1 hour')`,
+      [
+        group.groupDbId,
+        member.rows[0]!.id,
+        `head-${group.groupId.slice(6)}`,
+        `authority-${group.groupId.slice(6)}`
+      ]
+    );
+    await pool.query(
+      "update personal_device_group_members set status='revoked',revoked_at=now() where group_id=$1",
+      [group.groupDbId]
+    );
+    await expect(
+      pds.getPersonalDeviceKeyBundle({
+        userId: user.id,
+        groupId: group.groupId,
+        epoch: "1"
+      })
+    ).resolves.toBe('{"bundle":"recovery"}');
+    await pool.query(
+      "update personal_device_group_members set status='active',revoked_at=null where group_id=$1",
+      [group.groupDbId]
+    );
+    await expect(
+      pds.getPersonalDeviceMembershipCertificate({
+        userId: user.id,
+        groupId: group.groupId,
+        deviceId: group.deviceIds[0]!
+      })
+    ).resolves.toBe('{"certificate":"current"}');
+    await pds.freezePersonalDeviceGovernance({
+      userId: user.id,
+      groupId: group.groupId,
+      reason: "test_freeze"
+    });
+    await expect(
+      pds.getPersonalDeviceKeyBundle({
+        userId: user.id,
+        groupId: group.groupId,
+        epoch: "1"
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pds.getPersonalDeviceMembershipCertificate({
+        userId: user.id,
+        groupId: group.groupId,
+        deviceId: group.deviceIds[0]!
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("keeps PDS challenges atomic across genesis and membership failures", async () => {
+    const user = await repo.createUser({
+      email: `pds-atomic-${randomUUID()}@example.com`,
+      displayName: "PDS atomic owner"
+    });
+    const pds = createPersonalDeviceSyncRepository(pool);
+    const groupId = `group-${randomUUID()}`;
+    const deployment = `deployment-${randomUUID()}`;
+    const challenge = async (groupId?: string) => {
+      const secret = randomBytes(32).toString("base64url");
+      const created = await pds.createPersonalDeviceEnrollmentChallenge({
+        userId: user.id,
+        groupId,
+        browserSubjectId: user.id,
+        browserDeploymentId: deployment,
+        challengeHash: createHash("sha256")
+          .update(Buffer.from(secret, "base64url"))
+          .digest("base64url"),
+        expiresAt: new Date(Date.now() + 60_000)
+      });
+      return { ...created, secret };
+    };
+    const genesisChallenge = await challenge();
+    const genesisStatement = canonicalizePdsJson({
+      draft: {
+        protocol: "koed/pds/v1",
+        kind: "genesis",
+        groupId,
+        sequence: "1",
+        body: {}
+      }
+    });
+    const genesis = {
+      userId: user.id,
+      groupId,
+      subjectId: user.id,
+      subjectDeploymentId: deployment,
+      authorityKeyId: `authority-${randomUUID()}`,
+      authorityPublicKey: `authority-public-${randomUUID()}`,
+      recoverySigningKeyId: `recovery-signing-${randomUUID()}`,
+      recoverySigningPublicKey: `recovery-signing-public-${randomUUID()}`,
+      recoveryKemKeyId: `recovery-kem-${randomUUID()}`,
+      recoveryKemPublicKey: `recovery-kem-public-${randomUUID()}`,
+      recoveryKitHash: `recovery-kit-${randomUUID()}`,
+      initialEpoch: "1",
+      statementHash: `genesis-${randomUUID()}`,
+      statement: genesisStatement,
+      enrollmentChallenge: {
+        challengeId: genesisChallenge.id,
+        browserSubjectId: user.id,
+        browserDeploymentId: deployment,
+        challenge: genesisChallenge.secret
+      },
+      device: {
+        deviceId: `device-${randomUUID()}`,
+        signingKeyId: `signing-${randomUUID()}`,
+        signingPublicKey: `signing-public-${randomUUID()}`,
+        kemKeyId: `kem-${randomUUID()}`,
+        kemPublicKey: `kem-public-${randomUUID()}`,
+        operationFamilies: ["pds_relay"]
+      }
+    };
+    const [first, retry] = await Promise.all([
+      pds.createPersonalDeviceGroup(genesis),
+      pds.createPersonalDeviceGroup(genesis)
+    ]);
+    expect([first.outcome, retry.outcome].sort()).toEqual([
+      "created",
+      "idempotent"
+    ]);
+    expect(first.statement).toBe(genesisStatement);
+    expect(retry.statement).toBe(genesisStatement);
+
+    const conflictChallenge = await challenge();
+    const conflict = await pds.createPersonalDeviceGroup({
+      ...genesis,
+      statementHash: `conflict-${randomUUID()}`,
+      statement: canonicalizePdsJson({
+        draft: {
+          protocol: "koed/pds/v1",
+          kind: "genesis",
+          groupId,
+          sequence: "1",
+          body: { conflict: true }
+        }
+      }),
+      enrollmentChallenge: {
+        challengeId: conflictChallenge.id,
+        browserSubjectId: user.id,
+        browserDeploymentId: deployment,
+        challenge: conflictChallenge.secret
+      }
+    });
+    expect(conflict).toMatchObject({
+      outcome: "conflict",
+      statement: genesisStatement
+    });
+    await expect(
+      pool.query(
+        "select used_at from personal_device_enrollment_challenges where id=$1",
+        [conflictChallenge.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ used_at: null }] });
+
+    const group = first.group;
+    const addChallenge = await challenge(groupId);
+    const addedDevice = {
+      deviceId: `device-${randomUUID()}`,
+      signingKeyId: `signing-${randomUUID()}`,
+      signingPublicKey: `signing-public-${randomUUID()}`,
+      kemKeyId: `kem-${randomUUID()}`,
+      kemPublicKey: `kem-public-${randomUUID()}`,
+      operationFamilies: ["pds_relay"]
+    };
+    const transition = {
+      userId: user.id,
+      groupId,
+      expectedHeadHash: group.headHash,
+      sequence: "2",
+      nextEpoch: "2",
+      kind: "add-device" as const,
+      statementHash: `add-${randomUUID()}`,
+      statement: canonicalizePdsJson({
+        draft: {
+          protocol: "koed/pds/v1",
+          kind: "add-device",
+          groupId,
+          sequence: "2",
+          body: { previousEpoch: "1", nextEpoch: "2" }
+        }
+      }),
+      authorizationKeyId: genesis.device.signingKeyId,
+      browserSubjectId: user.id,
+      browserDeploymentId: deployment,
+      enrollmentChallenge: {
+        challengeId: addChallenge.id,
+        challenge: addChallenge.secret
+      },
+      addedDevice,
+      keyBundle: {
+        hash: `bundle-${randomUUID()}`,
+        canonical: "{}",
+        epoch: "2",
+        transitionKind: "add-device",
+        recipients: [
+          genesis.device.deviceId,
+          addedDevice.deviceId,
+          genesis.recoveryKemKeyId
+        ].sort()
+      }
+    };
+    await expect(
+      pds.commitPersonalDeviceTransition({
+        ...transition,
+        keyBundle: {
+          ...transition.keyBundle,
+          recipients: [genesis.device.deviceId]
+        }
+      })
+    ).rejects.toThrow("recipient snapshot is incomplete");
+    await expect(
+      pds.commitPersonalDeviceTransition(transition)
+    ).resolves.toMatchObject({ outcome: "accepted" });
+
+    const casChallenge = await challenge(groupId);
+    await expect(
+      pds.commitPersonalDeviceTransition({
+        ...transition,
+        expectedHeadHash: "stale-head",
+        enrollmentChallenge: {
+          challengeId: casChallenge.id,
+          challenge: casChallenge.secret
+        }
+      })
+    ).resolves.toMatchObject({ outcome: "conflict" });
+    await expect(
+      pool.query(
+        "select used_at from personal_device_enrollment_challenges where id=$1",
+        [casChallenge.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ used_at: null }] });
+
+    for (let sequence = 3; sequence <= 11; sequence += 1) {
+      await pool.query(
+        `insert into personal_device_group_statements
+          (group_id,sequence,previous_hash,statement_hash,kind,canonical_statement)
+         values ($1,$2,$3,$4,'test',$5)`,
+        [
+          group.id,
+          String(sequence),
+          `head-${sequence - 1}`,
+          `head-${sequence}`,
+          canonicalizePdsJson({ sequence: String(sequence) })
+        ]
+      );
+    }
+    expect(
+      (await pds.listPersonalDeviceGroupStatements(user.id, groupId)).map(
+        ({ sequence }) => sequence
+      )
+    ).toEqual(Array.from({ length: 11 }, (_, index) => String(index + 1)));
   });
 
   it("releases blocked managed commands only for the exact source and target", async () => {
