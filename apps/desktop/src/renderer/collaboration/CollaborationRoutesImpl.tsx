@@ -432,15 +432,27 @@ export function PeopleView({
 
   useEffect(() => {
     const nextTransition = view.people
-      .map((person) => person.teamPresence.nextTransitionAt)
+      .map(
+        (person) =>
+          deriveTeamPresenceSnapshot(
+            {
+              mode: person.teamPresence.mode,
+              manualStatus: person.teamPresence.manualStatus,
+              lastActivityAt: person.teamPresence.lastActivityAt,
+              preferenceVersion: person.teamPresence.preferenceVersion
+            },
+            presenceNow
+          ).nextTransitionAt
+      )
       .filter((value): value is string => Boolean(value))
       .map(Date.parse)
-      .filter((value) => Number.isFinite(value) && value > Date.now())
+      .filter((value) => Number.isFinite(value) && value > presenceNow)
       .sort((left, right) => left - right)[0];
     if (!nextTransition) return;
+    const now = Date.now();
     const timer = window.setTimeout(
       () => setPresenceNow(Date.now()),
-      Math.max(1, nextTransition - Date.now())
+      Math.max(1, nextTransition - now)
     );
     return () => window.clearTimeout(timer);
   }, [view.people, presenceNow]);

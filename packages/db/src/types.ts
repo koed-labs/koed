@@ -1847,6 +1847,11 @@ export interface MemorySourceRepository
     actor: ActorContext,
     teamId: string
   ): Promise<TeamRosterMemberRecord[] | null>;
+  getTeamRosterMember(
+    actor: ActorContext,
+    teamId: string,
+    userId: string
+  ): Promise<TeamRosterMemberRecord | null>;
   setTeamPresence(
     actor: ActorContext,
     input: {

@@ -1979,11 +1979,41 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
-  it("replaces a pushed Team person in place without reordering the roster", async () => {
-    const mock = createBridge();
+  it("merges a pushed Team person without dropping management metadata or reordering the roster", async () => {
+    const initial = fixture();
+    const management = {
+      membershipId: ids.membership,
+      email: "managed@example.test",
+      role: "owner" as const,
+      status: "enabled" as const,
+      version: 4,
+      workspaceAccess: [
+        {
+          workspaceId: ids.workspace,
+          userId: ids.remoteUser,
+          access: "write" as const,
+          version: 2
+        }
+      ]
+    };
+    const managedPeople = initial.navigation.teams[0]!.people.map((person) =>
+      person.id === ids.remoteUser ? { ...person, management } : person
+    );
+    const managedSnapshot = collaborationSnapshotSchema.parse({
+      ...initial,
+      navigation: {
+        ...initial.navigation,
+        teams: initial.navigation.teams.map((team) => ({
+          ...team,
+          people: managedPeople
+        }))
+      },
+      selection: { kind: "team_people", teamId: ids.team },
+      view: { kind: "team_people", teamId: ids.team, people: managedPeople }
+    });
+    const mock = createBridge(managedSnapshot);
     const client = createCollaborationRendererClient(mock.bridge);
     await client.load();
-    await client.select({ kind: "team_people", teamId: ids.team });
     const updatedPerson = {
       ...teamPerson(ids.remoteUser),
       presence: "away" as const,
@@ -2035,6 +2065,15 @@ describe("collaboration renderer client", () => {
       manualStatus: "do_not_disturb",
       preferenceVersion: 2
     });
+    expect(
+      client.current()?.navigation.teams[0]?.people[0]?.management
+    ).toEqual(management);
+    const current = client.current();
+    expect(
+      current?.view.kind === "team_people"
+        ? current.view.people[0]?.management
+        : null
+    ).toEqual(management);
     client.dispose();
   });
 

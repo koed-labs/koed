@@ -11672,6 +11672,9 @@ describeDb("memory repository visibility", () => {
       displayName: "Roster Member",
       passwordHash: "member-password-hash"
     });
+    const outsider = await repo.createUser({
+      email: `roster-outsider-${randomUUID()}@example.com`
+    });
     const team = await repo.createTeam(
       { userId: owner.id },
       { name: "Bounded Roster Team" }
@@ -11720,6 +11723,24 @@ describeDb("memory repository visibility", () => {
     expect(rosterJson).not.toContain('"role"');
     expect(rosterJson).not.toContain('"version"');
     expect(rosterJson).not.toContain('"acceptedAt"');
+    await expect(
+      repo.getTeamRosterMember({ userId: owner.id }, team.id, member.id)
+    ).resolves.toEqual({
+      userId: member.id,
+      displayName: "Roster Member",
+      avatarReference: "avatar://member-safe-reference",
+      status: "enabled",
+      presenceMode: "auto",
+      manualPresenceStatus: "available",
+      presenceVersion: 1,
+      lastHumanActivityAt: null
+    });
+    await expect(
+      repo.getTeamRosterMember({ userId: outsider.id }, team.id, member.id)
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamRosterMember({ userId: owner.id }, team.id, outsider.id)
+    ).resolves.toBeNull();
   });
 
   it("versions presence preferences, throttles human activity, and emits one event per change", async () => {
@@ -11784,6 +11805,15 @@ describeDb("memory repository visibility", () => {
       repo.recordTeamHumanActivity({ userId: outsider.id }, [team.id])
     ).resolves.toEqual([]);
 
+    const manualEvents = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from collaboration_outbox
+        where team_id = $1
+          and family = 'team_presence_changed'`,
+      [team.id]
+    );
+    expect(manualEvents.rows[0]?.count).toBe("1");
+
     const roster = await repo.listTeamRoster({ userId: owner.id }, team.id);
     expect(roster).toHaveLength(1);
     expect(roster?.[0]).toMatchObject({
@@ -11793,6 +11823,31 @@ describeDb("memory repository visibility", () => {
       presenceVersion: 2
     });
     expect(typeof roster?.[0]?.lastHumanActivityAt).toBe("string");
+
+    await expect(
+      repo.setTeamPresence(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          mode: "auto",
+          manualPresenceStatus: "do_not_disturb",
+          expectedVersion: 2
+        }
+      )
+    ).resolves.toMatchObject({
+      presenceMode: "auto",
+      presenceVersion: 3
+    });
+    await pool.query(
+      `update team_memberships
+          set last_human_activity_at = now() - interval '2 minutes'
+        where team_id = $1 and user_id = $2`,
+      [team.id, owner.id]
+    );
+    await expect(
+      repo.recordTeamHumanActivity({ userId: owner.id }, [team.id])
+    ).resolves.toEqual([team.id]);
+
     const events = await pool.query<{ count: string }>(
       `select count(*)::text as count
          from collaboration_outbox
@@ -11800,7 +11855,7 @@ describeDb("memory repository visibility", () => {
           and family = 'team_presence_changed'`,
       [team.id]
     );
-    expect(events.rows[0]?.count).toBe("2");
+    expect(events.rows[0]?.count).toBe("3");
   });
 
   it("rolls back Team mutations when collaboration outbox insertion fails", async () => {

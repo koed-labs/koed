@@ -1100,6 +1100,7 @@ describe("CollaborationApp", () => {
     container.remove();
     delete window.koedDesktop;
     vi.restoreAllMocks();
+    vi.useRealTimers();
     (
       globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = false;
@@ -1662,6 +1663,35 @@ describe("CollaborationApp", () => {
       manualStatus: "do_not_disturb",
       expectedVersion: 7
     });
+  });
+
+  it("advances automatic Team presence through every threshold without another server event", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(at));
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    await render(createClient(selected));
+
+    expect(document.body.querySelector('[title="Active"]')).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+    });
+    expect(
+      document.body.querySelector('[title="Recently active"]')
+    ).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
+    });
+    expect(document.body.querySelector('[title="Idle"]')).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(90 * 60 * 1000);
+    });
+    expect(document.body.querySelector('[title="Inactive"]')).not.toBeNull();
   });
 
   it("shows safe denied and conflict states without exposing internal errors", async () => {

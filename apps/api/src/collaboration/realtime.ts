@@ -167,7 +167,7 @@ export interface CollaborationRealtimeServiceOptions {
   > | null;
   teamPresenceRepository?: Pick<
     import("@koed/db").MemorySourceRepository,
-    "listTeamRoster"
+    "getTeamRosterMember"
   > | null;
   pool: ListenPool | null;
   corsOrigins: Set<string>;
@@ -901,12 +901,10 @@ const materializeEvent = async (
       ) {
         return { action: "requires_snapshot" };
       }
-      const roster = await options.teamPresenceRepository.listTeamRoster(
+      const member = await options.teamPresenceRepository.getTeamRosterMember(
         client.actor,
-        event.teamId
-      );
-      const member = roster?.find(
-        (candidate) => candidate.userId === event.resourceId
+        event.teamId,
+        event.resourceId
       );
       if (!member) return { action: "skip" };
       const publicMember = publicTeamRosterMember(member);

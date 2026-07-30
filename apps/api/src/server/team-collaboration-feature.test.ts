@@ -1,4 +1,5 @@
 import { createCipheriv, createHash } from "node:crypto";
+import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { buildCapabilitiesResponse } from "./capabilities.js";
@@ -22,7 +23,7 @@ describe("Team collaboration feature switch", () => {
         JSON.stringify({
           kind: "koed_collaboration_realtime_cursor",
           version: 1,
-          protocolVersion: 2,
+          protocolVersion: COLLABORATION_CONTRACT_VERSION,
           scope,
           teamId:
             scope === "team" ? "22222222-2222-4222-8222-222222222222" : null,
@@ -182,7 +183,7 @@ describe("Team collaboration feature switch", () => {
       url: "/v1/local-edge/collaboration/command",
       payload: {
         command: {
-          contractVersion: 2,
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: "11111111-1111-4111-8111-111111111111",
           command: "collaboration.load",
           input: {}
@@ -195,7 +196,7 @@ describe("Team collaboration feature switch", () => {
       payload: {
         upstream_backend_id: "backend-a",
         command: {
-          contractVersion: 2,
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: "22222222-2222-4222-8222-222222222222",
           command: "collaboration.subscribe",
           input: {

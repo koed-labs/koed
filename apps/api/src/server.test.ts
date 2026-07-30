@@ -55,6 +55,7 @@ import type {
 } from "@koed/db";
 import { createDbPool, createMemorySourceRepository } from "@koed/db";
 import {
+  COLLABORATION_CONTRACT_VERSION,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
   canonicalizePdsJson,
@@ -5291,7 +5292,7 @@ describe("api health", () => {
       },
       protocols: {
         collaborationRealtime: {
-          version: 2,
+          version: COLLABORATION_CONTRACT_VERSION,
           transport: "sse",
           snapshotEndpoint: "/v1/collaboration/realtime/snapshot",
           streamEndpoint: "/v1/collaboration/realtime/stream",

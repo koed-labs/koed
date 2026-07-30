@@ -392,7 +392,7 @@ class MemoryCollaborationRepository {
     if (actor.userId !== desktopOwnerUserId) return null;
     this.subscription = {
       id: "88888888-8888-4888-8888-888888888888",
-      protocolVersion: 2,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
       scope: "personal",
       personalOwnerUserId: desktopOwnerUserId,
       teamId: null,
@@ -555,10 +555,10 @@ interface HarnessOptions {
 }
 
 const snapshotResponse = (teamId: string) => ({
-  protocolVersion: 2,
+  protocolVersion: COLLABORATION_CONTRACT_VERSION,
   subscription: {
     id: remoteSubscriptionId,
-    protocolVersion: 2,
+    protocolVersion: COLLABORATION_CONTRACT_VERSION,
     scope: "team",
     personalOwnerUserId: null,
     teamId,
@@ -583,10 +583,10 @@ const snapshotResponse = (teamId: string) => ({
 });
 
 const personalSnapshotResponse = () => ({
-  protocolVersion: 2,
+  protocolVersion: COLLABORATION_CONTRACT_VERSION,
   subscription: {
     id: remoteSubscriptionId,
-    protocolVersion: 2,
+    protocolVersion: COLLABORATION_CONTRACT_VERSION,
     scope: "personal",
     personalOwnerUserId: remotePrincipalA,
     teamId: null,
@@ -644,7 +644,7 @@ const remoteEvent = (
     logicalMemoryId: string | null;
   }> = {}
 ) => ({
-  protocolVersion: 2,
+  protocolVersion: COLLABORATION_CONTRACT_VERSION,
   eventId,
   cursor,
   type: "message_created",
@@ -673,7 +673,7 @@ const personalOutboxEvent = (
 ): CollaborationOutboxEventRecord => ({
   id: eventId,
   cursor,
-  protocolVersion: 2,
+  protocolVersion: COLLABORATION_CONTRACT_VERSION,
   family: "personal_memory_changed",
   scope: "personal",
   personalOwnerUserId: desktopOwnerUserId,
@@ -696,7 +696,7 @@ const managedConversationOutboxEvent = (
 ): CollaborationOutboxEventRecord => ({
   id: eventId,
   cursor,
-  protocolVersion: 2,
+  protocolVersion: COLLABORATION_CONTRACT_VERSION,
   family: "managed_conversation_changed",
   scope: "personal",
   personalOwnerUserId: desktopOwnerUserId,
@@ -1141,10 +1141,10 @@ describe("local collaboration realtime broker", () => {
     const ack = await acknowledgePersonalSnapshot(harness, body);
     expect(ack.statusCode).toBe(200);
     expect(ack.json()).toEqual({
-      protocolVersion: 2,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
       subscription: {
         id: body.subscription.id,
-        protocolVersion: 2,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         scope: { scope: "personal" },
         state: "active",
         version: 1,
@@ -1384,7 +1384,7 @@ describe("local collaboration realtime broker", () => {
     if (!remoteController) throw new Error("remote stream did not open");
     harness.setRemotePrincipalStatus(401);
     const remoteFrame = `event: access_revoked\ndata: ${JSON.stringify({
-      protocolVersion: 2,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
       subscription: { id: remoteSubscriptionId },
       reason: "access_revoked"
     })}\n\n`;
@@ -1634,10 +1634,10 @@ describe("local collaboration realtime broker", () => {
     const ack = await acknowledgeSnapshot(harness, body);
     expect(ack.statusCode).toBe(200);
     expect(ack.json()).toEqual({
-      protocolVersion: 2,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
       subscription: {
         id: body.subscription.id,
-        protocolVersion: 2,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         scope: { scope: "team", teamId: teamA },
         state: "active",
         version: 2,
@@ -2011,7 +2011,7 @@ describe("local collaboration realtime broker", () => {
                   ? "access_revoked"
                   : "control",
               data: {
-                protocolVersion: 2,
+                protocolVersion: COLLABORATION_CONTRACT_VERSION,
                 subscription: { id: remoteSubscriptionId },
                 reason
               }
@@ -2057,7 +2057,7 @@ describe("local collaboration realtime broker", () => {
           {
             event: "access_revoked",
             data: {
-              protocolVersion: 2,
+              protocolVersion: COLLABORATION_CONTRACT_VERSION,
               subscription: { id: remoteSubscriptionId },
               reason: "access_revoked"
             }
@@ -2366,7 +2366,7 @@ describe("local collaboration realtime broker", () => {
           {
             event: "access_revoked",
             data: {
-              protocolVersion: 2,
+              protocolVersion: COLLABORATION_CONTRACT_VERSION,
               subscription: { id: remoteSubscriptionId },
               reason: "access_revoked"
             }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -212,7 +213,7 @@ const collaborationGrant = (
 });
 
 const commandBase = (command: string) => ({
-  contractVersion: 2 as const,
+  contractVersion: COLLABORATION_CONTRACT_VERSION,
   requestId: randomUUID(),
   command
 });

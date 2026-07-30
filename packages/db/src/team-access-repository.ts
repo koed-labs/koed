@@ -2,6 +2,7 @@ import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
+  COLLABORATION_CONTRACT_VERSION,
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
@@ -111,9 +112,40 @@ const normalizeTeamCreationIdempotencyKey = (value: string): string => {
 
 const defaultWorkspaceName = "General";
 const defaultChannelSystemKey = "workspace.general";
-const collaborationProtocolVersion = 1;
 const workspaceDescriptionMarker =
   "[koed encrypted team workspace description]";
+
+const teamRosterMemberSelection = {
+  userId: teamMemberships.userId,
+  displayName: users.displayName,
+  avatarReference: users.avatarReference,
+  presenceMode: teamMemberships.presenceMode,
+  manualPresenceStatus: teamMemberships.manualPresenceStatus,
+  presenceVersion: teamMemberships.presenceVersion,
+  lastHumanActivityAt: teamMemberships.lastHumanActivityAt
+};
+
+const mapTeamRosterMember = (row: {
+  userId: string;
+  displayName: string | null;
+  avatarReference: string | null;
+  presenceMode: string;
+  manualPresenceStatus: string;
+  presenceVersion: number;
+  lastHumanActivityAt: Date | string | null;
+}): TeamRosterMemberRecord => ({
+  userId: row.userId,
+  displayName: row.displayName,
+  avatarReference: row.avatarReference,
+  status: "enabled",
+  presenceMode: row.presenceMode as "auto" | "manual",
+  manualPresenceStatus: row.manualPresenceStatus as
+    | "available"
+    | "do_not_disturb"
+    | "out_of_office",
+  presenceVersion: row.presenceVersion,
+  lastHumanActivityAt: nullableTimestampIso(row.lastHumanActivityAt)
+});
 
 const staleVersion = (): never => {
   throw Object.assign(new Error("Stale version"), { code: "STALE_VERSION" });
@@ -604,7 +636,7 @@ export const createTeamAccessRepository = (
     const [event] = await tx
       .insert(collaborationOutbox)
       .values({
-        protocolVersion: collaborationProtocolVersion,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         family: input.family,
         scope: "team",
         personalOwnerUserId: null,
@@ -1339,15 +1371,7 @@ export const createTeamAccessRepository = (
         return null;
       }
       const rows = await db
-        .select({
-          userId: teamMemberships.userId,
-          displayName: users.displayName,
-          avatarReference: users.avatarReference,
-          presenceMode: teamMemberships.presenceMode,
-          manualPresenceStatus: teamMemberships.manualPresenceStatus,
-          presenceVersion: teamMemberships.presenceVersion,
-          lastHumanActivityAt: teamMemberships.lastHumanActivityAt
-        })
+        .select(teamRosterMemberSelection)
         .from(teamMemberships)
         .innerJoin(users, eq(users.id, teamMemberships.userId))
         .innerJoin(teams, eq(teams.id, teamMemberships.teamId))
@@ -1361,19 +1385,34 @@ export const createTeamAccessRepository = (
         )
         .orderBy(users.displayName, users.id);
 
-      return rows.map((row) => ({
-        userId: row.userId,
-        displayName: row.displayName,
-        avatarReference: row.avatarReference,
-        status: "enabled",
-        presenceMode: row.presenceMode as "auto" | "manual",
-        manualPresenceStatus: row.manualPresenceStatus as
-          | "available"
-          | "do_not_disturb"
-          | "out_of_office",
-        presenceVersion: row.presenceVersion,
-        lastHumanActivityAt: nullableTimestampIso(row.lastHumanActivityAt)
-      }));
+      return rows.map(mapTeamRosterMember);
+    },
+
+    async getTeamRosterMember(
+      actor: ActorContext,
+      teamId: string,
+      userId: string
+    ): Promise<TeamRosterMemberRecord | null> {
+      if (!(await this.getTeamMembership(actor, teamId))) {
+        return null;
+      }
+      const [row] = await db
+        .select(teamRosterMemberSelection)
+        .from(teamMemberships)
+        .innerJoin(users, eq(users.id, teamMemberships.userId))
+        .innerJoin(teams, eq(teams.id, teamMemberships.teamId))
+        .where(
+          and(
+            eq(teamMemberships.teamId, teamId),
+            eq(teamMemberships.userId, userId),
+            eq(teamMemberships.status, "enabled"),
+            isNull(teamMemberships.disabledAt),
+            eq(teams.lifecycle, "active")
+          )
+        )
+        .limit(1);
+
+      return row ? mapTeamRosterMember(row) : null;
     },
 
     async setTeamPresence(
@@ -1468,15 +1507,20 @@ export const createTeamAccessRepository = (
                 )
               )
             )
-            .returning({ userId: teamMemberships.userId });
+            .returning({
+              userId: teamMemberships.userId,
+              presenceMode: teamMemberships.presenceMode
+            });
           if (!updated) return false;
-          await appendCollaborationOutboxEvent(tx, {
-            family: "team_presence_changed",
-            teamId,
-            resourceType: "team_member_presence",
-            resourceId: actor.userId,
-            actorUserId: actor.userId
-          });
+          if (updated.presenceMode === "auto") {
+            await appendCollaborationOutboxEvent(tx, {
+              family: "team_presence_changed",
+              teamId,
+              resourceType: "team_member_presence",
+              resourceId: actor.userId,
+              actorUserId: actor.userId
+            });
+          }
           return true;
         });
         if (changed) accepted.push(teamId);

@@ -12,6 +12,7 @@ import {
   upstreamSupportsCollaborationRealtime,
   type LocalEdgeUpstreamBackend
 } from "./upstream-routing.js";
+import { collaborationRealtimeProtocolVersion } from "../server/capabilities.js";
 import {
   localEdgeTeamMemoryAnswerSchema,
   localEdgeTeamMemoryExpandSchema,
@@ -168,7 +169,10 @@ describe("local edge upstream routing", () => {
             "memory.collaboration": { availability: "partial" }
           },
           protocols: {
-            collaborationRealtime: { version: 2, transport: "sse" }
+            collaborationRealtime: {
+              version: collaborationRealtimeProtocolVersion,
+              transport: "sse"
+            }
           }
         }
       }

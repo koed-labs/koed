@@ -1399,7 +1399,7 @@ describe("desktop collaboration broker", () => {
       if (parsed.pathname.includes("/realtime/backends/")) {
         order.push("local-cleanup");
         return Response.json({
-          protocolVersion: 2,
+          protocolVersion: COLLABORATION_CONTRACT_VERSION,
           revokedSubscriptionCount: 1
         });
       }

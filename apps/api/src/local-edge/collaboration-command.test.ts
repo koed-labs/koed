@@ -857,7 +857,7 @@ const createPersonalRepository = (): CommandRepository => {
       actor.userId === ids.actor && input.scope === "personal"
         ? {
             id: ids.request,
-            protocolVersion: 2,
+            protocolVersion: COLLABORATION_CONTRACT_VERSION,
             scope: "personal",
             personalOwnerUserId: ids.actor,
             teamId: null,

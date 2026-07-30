@@ -2150,7 +2150,13 @@ export const createCollaborationRendererClient = (
       );
       if (existingIndex === -1) return [...people, person];
       return people.map((candidate, index) =>
-        index === existingIndex ? person : candidate
+        index === existingIndex
+          ? {
+              ...candidate,
+              ...person,
+              management: person.management ?? candidate.management
+            }
+          : candidate
       );
     };
     return {

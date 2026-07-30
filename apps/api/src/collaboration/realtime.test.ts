@@ -11,7 +11,10 @@ import type {
   DeviceCredentialAuthContext,
   SharedMemoryReadResult
 } from "@koed/db";
-import { collaborationRealtimeEventFamilySchema } from "@koed/shared";
+import {
+  COLLABORATION_CONTRACT_VERSION,
+  collaborationRealtimeEventFamilySchema
+} from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -50,14 +53,14 @@ const realtimeFamilyCases = [
   readonly [
     CollaborationOutboxEventRecord["family"],
     "control" | "collaboration_event" | "access_revoked",
-      (
-        | "thread_upserted"
-        | "message_created"
-        | "receipt_state_updated"
-        | "team_person_upserted"
-        | "shared_session_upserted"
-        | null
-      )
+    (
+      | "thread_upserted"
+      | "message_created"
+      | "receipt_state_updated"
+      | "team_person_upserted"
+      | "shared_session_upserted"
+      | null
+    )
   ]
 >;
 
@@ -99,7 +102,7 @@ const event = (input: {
   return {
     id: randomUUID(),
     cursor: input.cursor,
-    protocolVersion: 2,
+    protocolVersion: COLLABORATION_CONTRACT_VERSION,
     family: input.family ?? "message_created",
     scope: input.scope,
     personalOwnerUserId: input.scope === "personal" ? randomUUID() : null,
@@ -188,7 +191,7 @@ const createRepositoryFixture = () => {
   ): StoredSubscription => ({
     id: randomUUID(),
     binding,
-    protocolVersion: 2,
+    protocolVersion: COLLABORATION_CONTRACT_VERSION,
     scope: scope.scope,
     personalOwnerUserId: scope.scope === "personal" ? ids.alice : null,
     teamId: scope.scope === "team" ? scope.teamId : null,
@@ -1709,7 +1712,7 @@ describe("collaboration realtime protocol", () => {
         family === "team_presence_changed"
           ? "team_member_presence"
           : family === "receipt_state_updated"
-            ? "collaboration_read_state"
+            ? "collaboration_receipt_state"
             : family === "thread_lifecycle"
               ? "collaboration_thread"
               : family === "message_created" ||
@@ -1723,8 +1726,8 @@ describe("collaboration realtime protocol", () => {
                     : family === "workspace_lifecycle_access"
                       ? "team_workspace_access"
                       : family === "team_membership_access"
-                       ? "team_membership"
-                         : "team";
+                        ? "team_membership"
+                        : "team";
       fixture.events.splice(
         0,
         fixture.events.length,
@@ -1794,18 +1797,16 @@ describe("collaboration realtime protocol", () => {
         teamPresenceRepository:
           family === "team_presence_changed"
             ? {
-                listTeamRoster: vi.fn(async () => [
-                  {
-                    userId: fixture.ids.alice,
-                    displayName: "Alice",
-                    avatarReference: null,
-                    status: "enabled" as const,
-                    presenceMode: "auto" as const,
-                    manualPresenceStatus: "available" as const,
-                    presenceVersion: 1,
-                    lastHumanActivityAt: iso
-                  }
-                ])
+                getTeamRosterMember: vi.fn(async () => ({
+                  userId: fixture.ids.alice,
+                  displayName: "Alice",
+                  avatarReference: null,
+                  status: "enabled" as const,
+                  presenceMode: "auto" as const,
+                  manualPresenceStatus: "available" as const,
+                  presenceVersion: 1,
+                  lastHumanActivityAt: iso
+                }))
               }
             : null,
         sharedMemoryRepository: sharedFamily
@@ -1864,21 +1865,19 @@ describe("collaboration realtime protocol", () => {
         family: "team_presence_changed"
       })
     );
-    const listTeamRoster = vi.fn(async () => [
-      {
-        userId: fixture.ids.alice,
-        displayName: "Alice",
-        avatarReference: null,
-        status: "enabled" as const,
-        presenceMode: "manual" as const,
-        manualPresenceStatus: "do_not_disturb" as const,
-        presenceVersion: 2,
-        lastHumanActivityAt: iso
-      }
-    ]);
+    const getTeamRosterMember = vi.fn(async () => ({
+      userId: fixture.ids.alice,
+      displayName: "Alice",
+      avatarReference: null,
+      status: "enabled" as const,
+      presenceMode: "manual" as const,
+      manualPresenceStatus: "do_not_disturb" as const,
+      presenceVersion: 2,
+      lastHumanActivityAt: iso
+    }));
     const app = await buildTestServer(fixture, {
       heartbeatMs: 20,
-      teamPresenceRepository: { listTeamRoster }
+      teamPresenceRepository: { getTeamRosterMember }
     });
     const [firstClientSnapshot, secondClientSnapshot] = await Promise.all([
       createTeamSnapshot(app, fixture.ids.alice, fixture.ids.teamA),
@@ -1918,7 +1917,13 @@ describe("collaboration realtime protocol", () => {
         }
       });
     }
-    expect(listTeamRoster).toHaveBeenCalledTimes(2);
+    expect(getTeamRosterMember).toHaveBeenCalledTimes(2);
+    expect(getTeamRosterMember).toHaveBeenNthCalledWith(
+      1,
+      { userId: fixture.ids.alice },
+      fixture.ids.teamA,
+      fixture.ids.alice
+    );
     await app.close();
   });
 
@@ -1981,7 +1986,7 @@ describe("collaboration realtime protocol", () => {
       eventName: "control"
     });
     expect(eventData(stream, "control")).toEqual({
-      protocolVersion: 2,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
       subscription: { id: snapshot.subscription.id },
       reason: "requires_snapshot"
     });
@@ -2013,7 +2018,7 @@ describe("collaboration realtime protocol", () => {
     });
 
     expect(eventData(body, "control")).toEqual({
-      protocolVersion: 2,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
       subscription: { id: snapshot.subscription.id },
       reason: "requires_snapshot"
     });
@@ -2237,7 +2242,7 @@ describe("collaboration realtime protocol", () => {
       fixture.events.slice(0, 3).map(({ id }) => id)
     );
     expect(eventData(firstBody, "control")).toEqual({
-      protocolVersion: 2,
+      protocolVersion: COLLABORATION_CONTRACT_VERSION,
       subscription: { id: snapshot.subscription.id },
       reason: "backpressure"
     });
@@ -2468,7 +2473,7 @@ describe("collaboration realtime protocol", () => {
 
       expect(Date.now() - revokedAt).toBeLessThan(250);
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 2,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });
@@ -2519,7 +2524,7 @@ describe("collaboration realtime protocol", () => {
       const body = await stream.readUntil("access_revoked", 500);
 
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 2,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });
@@ -2625,7 +2630,7 @@ describe("collaboration realtime protocol", () => {
       const body = await stream.readUntil("control", 500);
 
       expect(eventData(body, "control")).toEqual({
-        protocolVersion: 2,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         subscription: { id: snapshot.subscription.id },
         reason: "requires_snapshot"
       });
@@ -2700,7 +2705,7 @@ describe("collaboration realtime protocol", () => {
       const body = await stream.readUntil("access_revoked", 500);
 
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 2,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });
@@ -2789,7 +2794,7 @@ describe("collaboration realtime protocol", () => {
       await new Promise((resolve) => setTimeout(resolve, 15));
 
       expect(eventData(body, "access_revoked")).toEqual({
-        protocolVersion: 2,
+        protocolVersion: COLLABORATION_CONTRACT_VERSION,
         subscription: { id: snapshot.subscription.id },
         reason: "access_revoked"
       });
