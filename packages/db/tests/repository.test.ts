@@ -1234,6 +1234,31 @@ describeDb("memory repository visibility", () => {
         deviceId: group.deviceIds[0]!
       })
     ).resolves.toBe('{"certificate":"current"}');
+    const repairedHeadHash = `head-repaired-${randomUUID()}`;
+    await pool.query(
+      "update personal_device_groups set head_sequence='2',head_hash=$1 where id=$2",
+      [repairedHeadHash, group.groupDbId]
+    );
+    await expect(
+      pds.getPersonalDeviceMembershipCertificate({
+        userId: user.id,
+        groupId: group.groupId,
+        deviceId: group.deviceIds[0]!
+      })
+    ).resolves.toBeNull();
+    await pool.query(
+      `update personal_device_membership_certificates
+       set statement_sequence='2',statement_hash=$1
+       where group_id=$2`,
+      [repairedHeadHash, group.groupDbId]
+    );
+    await expect(
+      pds.getPersonalDeviceMembershipCertificate({
+        userId: user.id,
+        groupId: group.groupId,
+        deviceId: group.deviceIds[0]!
+      })
+    ).resolves.toBe('{"certificate":"current"}');
     await pds.freezePersonalDeviceGovernance({
       userId: user.id,
       groupId: group.groupId,
