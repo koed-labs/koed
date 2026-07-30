@@ -28,6 +28,7 @@ const MAX_DM_PARTICIPANTS = 40;
 const MAX_PAGE_SIZE = 200;
 const MAX_REPLAY_SIZE = 500;
 const MAX_SNAPSHOT_THREADS = 5_000;
+const MAX_REALTIME_RECEIPT_UPDATES = 250;
 
 export type CollaborationScope = "personal" | "team";
 
@@ -58,7 +59,7 @@ export type CollaborationEventFamily =
   | "workspace_lifecycle_access"
   | "thread_lifecycle"
   | "message_created"
-  | "read_state_updated"
+  | "receipt_state_updated"
   | "share_grant_lifecycle"
   | "representation_changed"
   | "memory_event_available"
@@ -111,6 +112,7 @@ export interface CollaborationMessageRecord {
   id: string;
   threadId: string;
   threadSequence: number;
+  audienceVersion: number;
   scope: CollaborationScope;
   personalOwnerUserId: string | null;
   teamId: string | null;
@@ -119,6 +121,7 @@ export interface CollaborationMessageRecord {
   senderPrincipalId: string | null;
   senderUserId: string | null;
   senderDisplayName: string | null;
+  recipientStatus: "sent" | "delivered" | "read" | null;
   bodyText: string;
   metadata: Record<string, unknown>;
   provenance: CollaborationMessageProvenance;
@@ -133,11 +136,21 @@ export interface CollaborationMessagePageRecord {
   nextAfterSequence: number | null;
 }
 
+export interface CollaborationMessageReceiptRecord {
+  messageId: string;
+  recipientStatus: "sent" | "delivered" | "read";
+}
+
 export interface CollaborationReadStateRecord {
   threadId: string;
   userId: string;
+  lastDeliveredMessageId: string | null;
+  lastDeliveredSequence: number;
+  lastDeliveredAt: string | null;
   lastReadMessageId: string | null;
   lastReadSequence: number;
+  lastReadAt: string | null;
+  unreadCount: number;
   version: number;
   updatedAt: string;
 }
@@ -364,6 +377,10 @@ export interface CollaborationRepository {
     actor: ActorContext,
     input: { threadId: string; messageId: string }
   ): Promise<CollaborationReadStateRecord | null>;
+  advanceDeliveryState(
+    actor: ActorContext,
+    input: { threadId: string; messageId: string }
+  ): Promise<CollaborationReadStateRecord | null>;
   getAuthorizedSnapshot(
     actor: ActorContext,
     input:
@@ -419,10 +436,14 @@ export interface CollaborationRealtimeMaterializationRepository {
     actor: ActorContext,
     input: { threadId: string; messageId: string }
   ): Promise<CollaborationMessageRecord | null>;
-  getReadStateForRealtime(
+  getReceiptStateForRealtime(
     actor: ActorContext,
     input: { threadId: string }
   ): Promise<CollaborationReadStateRecord | null>;
+  listMessageReceiptsForRealtime(
+    actor: ActorContext,
+    input: { threadId: string; throughMessageId: string }
+  ): Promise<CollaborationMessageReceiptRecord[] | null>;
   getPersonalMemoryForRealtime(
     actor: ActorContext,
     input: { sessionId: string }
@@ -473,6 +494,7 @@ type AuthorizedThreadRow = {
   participant_key: string | null;
   created_by_user_id: string | null;
   version: number;
+  audience_version: number;
   next_sequence: string | number;
   lifecycle: CollaborationLifecycle;
   created_at: Date;
@@ -481,12 +503,14 @@ type AuthorizedThreadRow = {
   archived_at: Date | null;
   last_read_message_id: string | null;
   last_read_sequence: string | number;
+  unread_count: string | number;
 };
 
 type MessageRow = {
   id: string;
   thread_id: string;
   thread_sequence: string | number;
+  audience_version: number;
   scope: CollaborationScope;
   personal_owner_user_id: string | null;
   team_id: string | null;
@@ -495,6 +519,7 @@ type MessageRow = {
   sender_principal_id: string | null;
   sender_user_id: string | null;
   sender_display_name: string | null;
+  recipient_status: "sent" | "delivered" | "read" | null;
   request_hash: string | null;
   created_at: Date;
   updated_at: Date;
@@ -925,9 +950,16 @@ const authorizedThreadJoinsSql = `
     on current_workspace_policy.team_workspace_id = share_grant.team_workspace_id
    and current_workspace_policy.team_id = share_grant.team_id
    and current_workspace_policy.superseded_at is null
-  left join collaboration_read_states read_state
+  left join collaboration_receipt_states read_state
     on read_state.thread_id = ct.id
    and read_state.user_id = $1
+  left join lateral (
+    select count(*)::bigint as unread_count
+    from collaboration_messages unread_message
+    where unread_message.thread_id = ct.id
+      and unread_message.thread_sequence > coalesce(read_state.last_read_sequence, 0)
+      and unread_message.sender_principal_id is distinct from $1
+  ) unread_state on true
 `;
 
 const authorizedThreadPredicate = (required: "read" | "write"): string => `
@@ -996,6 +1028,7 @@ const selectThreadColumnsSql = `
   ct.participant_key,
   ct.created_by_user_id,
   ct.version,
+  ct.audience_version,
   ct.next_sequence,
   ct.lifecycle,
   ct.created_at,
@@ -1003,7 +1036,8 @@ const selectThreadColumnsSql = `
   ct.last_activity_at,
   ct.archived_at,
   read_state.last_read_message_id,
-  coalesce(read_state.last_read_sequence, 0) as last_read_sequence
+  coalesce(read_state.last_read_sequence, 0) as last_read_sequence,
+  coalesce(unread_state.unread_count, 0) as unread_count
 `;
 
 const getAuthorizedThreadRow = async (
@@ -1032,6 +1066,124 @@ const getAuthorizedThreadRow = async (
     [actor.userId, threadId]
   );
   return result.rows[0] ?? null;
+};
+
+const currentThreadAudienceMembers = async (
+  client: pg.PoolClient,
+  thread: AuthorizedThreadRow
+): Promise<string[]> => {
+  if (thread.scope === "personal") {
+    return thread.personal_owner_user_id ? [thread.personal_owner_user_id] : [];
+  }
+  if (thread.kind === "dm" || thread.kind === "group_dm") {
+    const result = await client.query<{ user_id: string }>(
+      `
+        select participant.user_id
+        from collaboration_participants participant
+        join team_memberships membership
+          on membership.team_id = participant.team_id
+         and membership.user_id = participant.user_id
+         and membership.status = 'enabled'
+         and membership.disabled_at is null
+        join users participant_user
+          on participant_user.id = participant.user_id
+         and participant_user.disabled_at is null
+         and participant_user.deleted_at is null
+        where participant.thread_id = $1
+        order by participant.user_id
+      `,
+      [thread.id]
+    );
+    return result.rows.map((row) => row.user_id);
+  }
+  const result = await client.query<{ user_id: string }>(
+    `
+      select access.user_id
+      from team_workspace_access_grants access
+      join team_memberships membership
+        on membership.team_id = access.team_id
+       and membership.user_id = access.user_id
+       and membership.status = 'enabled'
+       and membership.disabled_at is null
+      join users workspace_user
+        on workspace_user.id = access.user_id
+       and workspace_user.disabled_at is null
+       and workspace_user.deleted_at is null
+      where access.team_workspace_id = $1
+        and access.team_id = $2
+        and access.access in ('read', 'write')
+        and access.disabled_at is null
+      order by access.user_id
+    `,
+    [thread.team_workspace_id, thread.team_id]
+  );
+  return result.rows.map((row) => row.user_id);
+};
+
+const ensureCurrentThreadAudience = async (
+  client: pg.PoolClient,
+  thread: AuthorizedThreadRow
+): Promise<number> => {
+  const members = await currentThreadAudienceMembers(client, thread);
+  if (members.length === 0) {
+    throw new CollaborationStateConflictError(
+      "Collaboration thread has no authorized audience"
+    );
+  }
+  const memberSetHash = hashDomain("audience-members", canonicalJson(members));
+  const current = await client.query<{
+    member_set_hash: string;
+  }>(
+    `
+      select member_set_hash
+      from collaboration_thread_audiences
+      where thread_id = $1 and version = $2
+      limit 1
+    `,
+    [thread.id, thread.audience_version]
+  );
+  if (current.rows[0]?.member_set_hash === memberSetHash) {
+    return thread.audience_version;
+  }
+  const audienceVersion = current.rows[0]
+    ? thread.audience_version + 1
+    : thread.audience_version;
+  await client.query(
+    `
+      insert into collaboration_thread_audiences (
+        thread_id,
+        version,
+        member_set_hash
+      )
+      values ($1, $2, $3)
+    `,
+    [thread.id, audienceVersion, memberSetHash]
+  );
+  await client.query(
+    `
+      insert into collaboration_thread_audience_members (
+        thread_id,
+        audience_version,
+        user_id
+      )
+      select $1, $2, member.user_id
+      from unnest($3::uuid[]) as member(user_id)
+    `,
+    [thread.id, audienceVersion, members]
+  );
+  if (audienceVersion !== thread.audience_version) {
+    await client.query(
+      `
+        update collaboration_threads
+        set audience_version = $2,
+            updated_at = now()
+        where id = $1
+      `,
+      [thread.id, audienceVersion]
+    );
+    thread.audience_version = audienceVersion;
+  }
+  return audienceVersion;
 };
 
 const participantsForThreads = async (
@@ -1124,7 +1276,6 @@ const mapThreadRows = async (
     if (topic !== null && typeof topic !== "string") {
       throw new Error("Encrypted collaboration thread topic is unavailable");
     }
-    const latestSequence = Number(row.next_sequence) - 1;
     const lastReadSequence = Number(row.last_read_sequence);
     mapped.push({
       id: row.id,
@@ -1142,10 +1293,10 @@ const mapThreadRows = async (
       createdByUserId: row.created_by_user_id,
       version: row.version,
       lifecycle: row.lifecycle,
-      latestSequence,
+      latestSequence: Number(row.next_sequence) - 1,
       lastReadMessageId: row.last_read_message_id,
       lastReadSequence,
-      unreadCount: Math.max(latestSequence - lastReadSequence, 0),
+      unreadCount: Number(row.unread_count),
       participants: participants.get(row.id) ?? [],
       createdAt: row.created_at.toISOString(),
       updatedAt: row.updated_at.toISOString(),
@@ -1425,6 +1576,7 @@ const mapMessageRow = async (
     id: row.id,
     threadId: row.thread_id,
     threadSequence: Number(row.thread_sequence),
+    audienceVersion: row.audience_version,
     scope: row.scope,
     personalOwnerUserId: row.personal_owner_user_id,
     teamId: row.team_id,
@@ -1433,6 +1585,7 @@ const mapMessageRow = async (
     senderPrincipalId: row.sender_principal_id,
     senderUserId: row.sender_user_id,
     senderDisplayName: row.sender_display_name,
+    recipientStatus: row.recipient_status,
     bodyText,
     metadata: metadata as Record<string, unknown>,
     provenance: provenance as CollaborationMessageProvenance,
@@ -1445,6 +1598,7 @@ const selectMessageColumnsSql = `
   cm.id,
   cm.thread_id,
   cm.thread_sequence,
+  cm.audience_version,
   cm.scope,
   cm.personal_owner_user_id,
   cm.team_id,
@@ -1453,10 +1607,75 @@ const selectMessageColumnsSql = `
   cm.sender_principal_id,
   cm.sender_user_id,
   sender.display_name as sender_display_name,
+  null::text as recipient_status,
   cm.request_hash,
   cm.created_at,
   cm.updated_at
 `;
+
+const attachRecipientStatuses = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  rows: MessageRow[]
+): Promise<void> => {
+  const outgoingIds = rows
+    .filter((row) => row.sender_principal_id === actor.userId)
+    .map((row) => row.id);
+  if (outgoingIds.length === 0) return;
+  const result = await client.query<{
+    message_id: string;
+    recipient_count: string | number;
+    delivered_to_all: boolean;
+    read_by_all: boolean;
+  }>(
+    `
+      select
+        cm.id as message_id,
+        count(member.user_id)::bigint as recipient_count,
+        coalesce(
+          bool_and(
+            coalesce(receipt.last_delivered_sequence, 0) >= cm.thread_sequence
+          ),
+          false
+        ) as delivered_to_all,
+        coalesce(
+          bool_and(
+            coalesce(receipt.last_read_sequence, 0) >= cm.thread_sequence
+          ),
+          false
+        ) as read_by_all
+      from collaboration_messages cm
+      join collaboration_thread_audience_members member
+        on member.thread_id = cm.thread_id
+       and member.audience_version = cm.audience_version
+       and member.user_id <> cm.sender_principal_id
+      left join collaboration_receipt_states receipt
+        on receipt.thread_id = cm.thread_id
+       and receipt.user_id = member.user_id
+      where cm.id = any($1::uuid[])
+        and cm.sender_principal_id = $2
+      group by cm.id, cm.thread_sequence
+    `,
+    [outgoingIds, actor.userId]
+  );
+  const statuses = new Map(
+    result.rows.map((row) => [
+      row.message_id,
+      Number(row.recipient_count) === 0
+        ? null
+        : row.read_by_all
+          ? ("read" as const)
+          : row.delivered_to_all
+            ? ("delivered" as const)
+            : ("sent" as const)
+    ])
+  );
+  for (const row of rows) {
+    if (row.sender_principal_id === actor.userId) {
+      row.recipient_status = statuses.get(row.id) ?? null;
+    }
+  }
+};
 
 const authorizedEventExists = async (
   client: pg.Pool | pg.PoolClient,
@@ -2852,6 +3071,7 @@ const sendCollaborationMessage = async (
         "Message idempotency key was reused for different content"
       );
     }
+    await attachRecipientStatuses(client, actor, existing.rows);
     return mapMessageRow(client, actor, provider, existing.rows[0]);
   }
 
@@ -2859,6 +3079,7 @@ const sendCollaborationMessage = async (
   if (!Number.isSafeInteger(threadSequence) || threadSequence <= 0) {
     throw new Error("Collaboration thread sequence is exhausted");
   }
+  const audienceVersion = await ensureCurrentThreadAudience(client, thread);
   const messageId = uuidFromHash(
     `koed:collaboration:message:v1\n${thread.id}\n${actor.userId}\n${idempotencyKeyHash}`
   );
@@ -2878,6 +3099,7 @@ const sendCollaborationMessage = async (
         id,
         thread_id,
         thread_sequence,
+        audience_version,
         scope,
         personal_owner_user_id,
         team_id,
@@ -2894,14 +3116,15 @@ const sendCollaborationMessage = async (
         provenance_marker
       )
       values (
-        $1, $2, $3, $4, $5, $6, $7,
-        'user', $8, $8, $9, $10, $11, $12,
-        'encrypted', $13, $14
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        'user', $9, $9, $10, $11, $12, $13,
+        'encrypted', $14, $15
       )
       returning
         id,
         thread_id,
         thread_sequence,
+        audience_version,
         scope,
         personal_owner_user_id,
         team_id,
@@ -2910,6 +3133,7 @@ const sendCollaborationMessage = async (
         sender_principal_id,
         sender_user_id,
         null::text as sender_display_name,
+        null::text as recipient_status,
         request_hash,
         created_at,
         updated_at
@@ -2918,6 +3142,7 @@ const sendCollaborationMessage = async (
       messageId,
       thread.id,
       threadSequence,
+      audienceVersion,
       thread.scope,
       thread.personal_owner_user_id,
       thread.team_id,
@@ -2985,6 +3210,7 @@ const sendCollaborationMessage = async (
     [actor.userId]
   );
   inserted.rows[0]!.sender_display_name = sender.rows[0]?.display_name ?? null;
+  await attachRecipientStatuses(client, actor, inserted.rows);
   return mapMessageRow(client, actor, provider, inserted.rows[0]!);
 };
 
@@ -3033,6 +3259,7 @@ const listCollaborationMessages = async (
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
   if (!ascending) pageRows.reverse();
+  await attachRecipientStatuses(client, actor, pageRows);
   const messages = await Promise.all(
     pageRows.map((row) => mapMessageRow(client, actor, provider, row))
   );
@@ -3068,12 +3295,116 @@ const getCollaborationMessageForRealtime = async (
     `,
     [input.messageId, thread.id]
   );
-  return result.rows[0]
-    ? mapMessageRow(client, actor, provider, result.rows[0])
-    : null;
+  if (!result.rows[0]) return null;
+  await attachRecipientStatuses(client, actor, result.rows);
+  return mapMessageRow(client, actor, provider, result.rows[0]);
 };
 
-const getCollaborationReadStateForRealtime = async (
+const listCollaborationMessageReceiptsForRealtime = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  input: { threadId: string; throughMessageId: string }
+): Promise<CollaborationMessageReceiptRecord[] | null> => {
+  const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
+    required: "read",
+    includeArchived: true
+  });
+  if (!thread) return null;
+  const through = await client.query<{ thread_sequence: string | number }>(
+    `
+      select thread_sequence
+      from collaboration_messages
+      where thread_id = $1 and id = $2
+      limit 1
+    `,
+    [thread.id, input.throughMessageId]
+  );
+  const throughSequence = Number(through.rows[0]?.thread_sequence ?? 0);
+  if (throughSequence <= 0) return [];
+  const rows = await client.query<MessageRow>(
+    `
+      select ${selectMessageColumnsSql}
+      from collaboration_messages cm
+      left join users sender on sender.id = cm.sender_user_id
+      where cm.thread_id = $1
+        and cm.sender_principal_id = $2
+        and cm.thread_sequence <= $3
+      order by cm.thread_sequence desc
+      limit $4
+    `,
+    [thread.id, actor.userId, throughSequence, MAX_REALTIME_RECEIPT_UPDATES]
+  );
+  await attachRecipientStatuses(client, actor, rows.rows);
+  return rows.rows.flatMap((row) =>
+    row.recipient_status
+      ? [
+          {
+            messageId: row.id,
+            recipientStatus: row.recipient_status
+          }
+        ]
+      : []
+  );
+};
+
+type ReceiptStateRow = {
+  last_delivered_message_id: string | null;
+  last_delivered_sequence: string | number;
+  last_delivered_at: Date | null;
+  last_read_message_id: string | null;
+  last_read_sequence: string | number;
+  last_read_at: Date | null;
+  version: number;
+  updated_at: Date;
+};
+
+const unreadCountAfter = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  threadId: string,
+  sequence: number
+): Promise<number> => {
+  const result = await client.query<{ unread_count: string | number }>(
+    `
+      select count(*)::bigint as unread_count
+      from collaboration_messages
+      where thread_id = $1
+        and thread_sequence > $2
+        and sender_principal_id is distinct from $3
+    `,
+    [threadId, sequence, actor.userId]
+  );
+  return Number(result.rows[0]?.unread_count ?? 0);
+};
+
+const receiptStateRecord = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  threadId: string,
+  row: ReceiptStateRow | undefined
+): Promise<CollaborationReadStateRecord> => {
+  const lastReadSequence = Number(row?.last_read_sequence ?? 0);
+  return {
+    threadId,
+    userId: actor.userId,
+    lastDeliveredMessageId: row?.last_delivered_message_id ?? null,
+    lastDeliveredSequence: Number(row?.last_delivered_sequence ?? 0),
+    lastDeliveredAt: iso(row?.last_delivered_at ?? null),
+    lastReadMessageId: row?.last_read_message_id ?? null,
+    lastReadSequence,
+    lastReadAt: iso(row?.last_read_at ?? null),
+    unreadCount: await unreadCountAfter(
+      client,
+      actor,
+      threadId,
+      lastReadSequence
+    ),
+    version: row?.version ?? 1,
+    updatedAt: (row?.updated_at ?? new Date(0)).toISOString()
+  };
+};
+
+const getCollaborationReceiptStateForRealtime = async (
   client: pg.Pool | pg.PoolClient,
   actor: ActorContext,
   input: { threadId: string }
@@ -3083,38 +3414,35 @@ const getCollaborationReadStateForRealtime = async (
     includeArchived: true
   });
   if (!thread) return null;
-  const result = await client.query<{
-    last_read_message_id: string | null;
-    last_read_sequence: string | number;
-    version: number;
-    updated_at: Date;
-  }>(
+  const result = await client.query<ReceiptStateRow>(
     `
-      select last_read_message_id, last_read_sequence, version, updated_at
-      from collaboration_read_states
+      select
+        last_delivered_message_id,
+        last_delivered_sequence,
+        last_delivered_at,
+        last_read_message_id,
+        last_read_sequence,
+        last_read_at,
+        version,
+        updated_at
+      from collaboration_receipt_states
       where thread_id = $1
         and user_id = $2
       limit 1
     `,
     [thread.id, actor.userId]
   );
-  const row = result.rows[0];
-  return row
-    ? {
-        threadId: thread.id,
-        userId: actor.userId,
-        lastReadMessageId: row.last_read_message_id,
-        lastReadSequence: Number(row.last_read_sequence),
-        version: row.version,
-        updatedAt: row.updated_at.toISOString()
-      }
-    : null;
+  return receiptStateRecord(client, actor, thread.id, result.rows[0]);
 };
 
-const advanceCollaborationReadState = async (
+const advanceCollaborationReceiptState = async (
   client: pg.PoolClient,
   actor: ActorContext,
-  input: { threadId: string; messageId: string }
+  input: {
+    threadId: string;
+    messageId: string;
+    state: "delivered" | "read";
+  }
 ): Promise<CollaborationReadStateRecord | null> => {
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
     required: "read",
@@ -3138,70 +3466,114 @@ const advanceCollaborationReadState = async (
   const target = message.rows[0];
   if (!target) {
     throw new CollaborationStateConflictError(
-      "Read-state message does not belong to the authorized thread"
+      "Receipt-state message does not belong to the authorized thread"
     );
   }
   const targetSequence = Number(target.thread_sequence);
-  const current = await client.query<{
-    last_read_message_id: string | null;
-    last_read_sequence: string | number;
-    version: number;
-    updated_at: Date;
-  }>(
+  const current = await client.query<ReceiptStateRow>(
     `
-      select last_read_message_id, last_read_sequence, version, updated_at
-      from collaboration_read_states
+      select
+        last_delivered_message_id,
+        last_delivered_sequence,
+        last_delivered_at,
+        last_read_message_id,
+        last_read_sequence,
+        last_read_at,
+        version,
+        updated_at
+      from collaboration_receipt_states
       where thread_id = $1 and user_id = $2
       for update
     `,
     [thread.id, actor.userId]
   );
-  const currentSequence = Number(current.rows[0]?.last_read_sequence ?? 0);
+  const currentSequence = Number(
+    input.state === "read"
+      ? (current.rows[0]?.last_read_sequence ?? 0)
+      : (current.rows[0]?.last_delivered_sequence ?? 0)
+  );
   if (targetSequence <= currentSequence) {
-    const row = current.rows[0];
-    return row
-      ? {
-          threadId: thread.id,
-          userId: actor.userId,
-          lastReadMessageId: row.last_read_message_id,
-          lastReadSequence: currentSequence,
-          version: row.version,
-          updatedAt: row.updated_at.toISOString()
-        }
-      : null;
+    return receiptStateRecord(client, actor, thread.id, current.rows[0]);
   }
-  const updated = await client.query<{
-    last_read_message_id: string;
-    last_read_sequence: string | number;
-    version: number;
-    updated_at: Date;
-  }>(
+  const updated = await client.query<ReceiptStateRow>(
     `
-      insert into collaboration_read_states (
+      insert into collaboration_receipt_states (
         thread_id,
         user_id,
+        last_delivered_message_id,
+        last_delivered_sequence,
+        last_delivered_at,
         last_read_message_id,
-        last_read_sequence
+        last_read_sequence,
+        last_read_at
       )
-      values ($1, $2, $3, $4)
+      values (
+        $1,
+        $2,
+        $3::uuid,
+        $4::bigint,
+        now(),
+        case when $5::text = 'read' then $3::uuid else null end,
+        case when $5::text = 'read' then $4::bigint else 0::bigint end,
+        case when $5::text = 'read' then now() else null end
+      )
       on conflict (thread_id, user_id) do update
-        set last_read_message_id = excluded.last_read_message_id,
-            last_read_sequence = excluded.last_read_sequence,
-            version = collaboration_read_states.version + 1,
+        set last_delivered_message_id =
+              case
+                when collaboration_receipt_states.last_delivered_sequence < excluded.last_delivered_sequence
+                then excluded.last_delivered_message_id
+                else collaboration_receipt_states.last_delivered_message_id
+              end,
+            last_delivered_sequence =
+              greatest(
+                collaboration_receipt_states.last_delivered_sequence,
+                excluded.last_delivered_sequence
+              ),
+            last_delivered_at =
+              case
+                when collaboration_receipt_states.last_delivered_sequence < excluded.last_delivered_sequence
+                then excluded.last_delivered_at
+                else collaboration_receipt_states.last_delivered_at
+              end,
+            last_read_message_id =
+              case
+                when collaboration_receipt_states.last_read_sequence < excluded.last_read_sequence
+                then excluded.last_read_message_id
+                else collaboration_receipt_states.last_read_message_id
+              end,
+            last_read_sequence =
+              greatest(
+                collaboration_receipt_states.last_read_sequence,
+                excluded.last_read_sequence
+              ),
+            last_read_at =
+              case
+                when collaboration_receipt_states.last_read_sequence < excluded.last_read_sequence
+                then excluded.last_read_at
+                else collaboration_receipt_states.last_read_at
+              end,
+            version = collaboration_receipt_states.version + 1,
             updated_at = now()
-        where collaboration_read_states.last_read_sequence < excluded.last_read_sequence
-      returning last_read_message_id, last_read_sequence, version, updated_at
+      returning
+        last_delivered_message_id,
+        last_delivered_sequence,
+        last_delivered_at,
+        last_read_message_id,
+        last_read_sequence,
+        last_read_at,
+        version,
+        updated_at
     `,
-    [thread.id, actor.userId, target.id, targetSequence]
+    [thread.id, actor.userId, target.id, targetSequence, input.state]
   );
   const row = updated.rows[0];
   if (!row) {
     throw new CollaborationStateConflictError(
-      "Read state did not advance monotonically"
+      "Receipt state did not advance monotonically"
     );
   }
   await appendCollaborationOutboxEventWithClient(client, {
-    family: "read_state_updated",
+    family: "receipt_state_updated",
     scope: thread.scope,
     personalOwnerUserId: thread.personal_owner_user_id,
     teamId: thread.team_id,
@@ -3210,23 +3582,16 @@ const advanceCollaborationReadState = async (
     messageId: target.id,
     shareGrantId: thread.share_grant_id,
     logicalMemoryId: thread.shared_logical_memory_id,
-    resourceType: "collaboration_read_state",
+    resourceType: "collaboration_receipt_state",
     resourceId: uuidFromHash(
-      `koed:collaboration:read-state:v1\n${thread.id}\n${actor.userId}`
+      `koed:collaboration:receipt-state:v1\n${thread.id}\n${actor.userId}`
     ),
     actorPrincipalId: actor.userId,
     mutationId: uuidFromHash(
-      `koed:collaboration:read-state-event:v1\n${thread.id}\n${actor.userId}\n${targetSequence}`
+      `koed:collaboration:receipt-state-event:v1\n${thread.id}\n${actor.userId}\n${input.state}\n${targetSequence}`
     )
   });
-  return {
-    threadId: thread.id,
-    userId: actor.userId,
-    lastReadMessageId: row.last_read_message_id,
-    lastReadSequence: Number(row.last_read_sequence),
-    version: row.version,
-    updatedAt: row.updated_at.toISOString()
-  };
+  return receiptStateRecord(client, actor, thread.id, row);
 };
 
 const listAuthorizedOutboxRows = async (
@@ -3466,8 +3831,12 @@ export const createCollaborationRepository = (
       return authorizedEventExists(pool, actor, input);
     },
 
-    async getReadStateForRealtime(actor, input) {
-      return getCollaborationReadStateForRealtime(pool, actor, input);
+    async getReceiptStateForRealtime(actor, input) {
+      return getCollaborationReceiptStateForRealtime(pool, actor, input);
+    },
+
+    async listMessageReceiptsForRealtime(actor, input) {
+      return listCollaborationMessageReceiptsForRealtime(pool, actor, input);
     },
 
     async getPersonalMemoryForRealtime(actor, input) {
@@ -3476,7 +3845,19 @@ export const createCollaborationRepository = (
 
     async advanceReadState(actor, input) {
       return withTransaction(pool, (client) =>
-        advanceCollaborationReadState(client, actor, input)
+        advanceCollaborationReceiptState(client, actor, {
+          ...input,
+          state: "read"
+        })
+      );
+    },
+
+    async advanceDeliveryState(actor, input) {
+      return withTransaction(pool, (client) =>
+        advanceCollaborationReceiptState(client, actor, {
+          ...input,
+          state: "delivered"
+        })
       );
     },
 

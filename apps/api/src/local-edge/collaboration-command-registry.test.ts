@@ -114,6 +114,13 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     teamOperation: true,
     teamResultMatcher: true
   },
+  "collaboration.mark_delivered": {
+    scope: "dynamic",
+    desktop: write,
+    personalOperation: true,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
   "collaboration.load_message_page": {
     scope: "dynamic",
     desktop: read,
@@ -282,6 +289,20 @@ describe("collaboration command registry", () => {
       operationFamily: read,
       method: "PUT",
       path: `/v1/collaboration/personal/threads/${threadId}/read-state`,
+      body: { messageId },
+      resultKey: "readState"
+    });
+    const personalMarkDelivered = command("collaboration.mark_delivered", {
+      thread: { scope: "personal", threadId },
+      messageId
+    });
+    expect(desktopCollaborationOperationFamily(personalMarkDelivered)).toBe(
+      write
+    );
+    expect(personalCollaborationOperationFor(personalMarkDelivered)).toEqual({
+      operationFamily: read,
+      method: "PUT",
+      path: `/v1/collaboration/personal/threads/${threadId}/delivery-state`,
       body: { messageId },
       resultKey: "readState"
     });

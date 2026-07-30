@@ -59,6 +59,7 @@ export type AppShellProps = {
   onOpenDevices: () => void;
   onOpenPreferences: () => void;
   onToggleInspector: () => void;
+  personalUnreadCount: number;
   scopeLine: ReactNode;
   teams: readonly TeamRailItem[];
   routeFocusKey: string;
@@ -134,6 +135,7 @@ function Rail({
   onOpenCommandPalette,
   onOpenDevices,
   onOpenPreferences,
+  personalUnreadCount,
   teams
 }: Pick<
   AppShellProps,
@@ -146,6 +148,7 @@ function Rail({
   | "onOpenCommandPalette"
   | "onOpenDevices"
   | "onOpenPreferences"
+  | "personalUnreadCount"
   | "teams"
 >) {
   const activeTeamId =
@@ -188,6 +191,7 @@ function Rail({
         </RailButton>
         <RailButton
           active={activeScope === "personal"}
+          badge={personalUnreadCount}
           label="Personal"
           onClick={onActivatePersonal}
         >
@@ -299,6 +303,7 @@ export function AppShell({
   onOpenDevices,
   onOpenPreferences,
   onToggleInspector,
+  personalUnreadCount,
   scopeLine,
   teams,
   routeFocusKey
@@ -397,6 +402,7 @@ export function AppShell({
         onOpenCommandPalette={onOpenCommandPalette}
         onOpenDevices={onOpenDevices}
         onOpenPreferences={onOpenPreferences}
+        personalUnreadCount={personalUnreadCount}
         teams={teams}
       />
       <aside

@@ -1179,6 +1179,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "PUT",
+    "/v1/collaboration/teams/{teamId}/threads/{threadId}/delivery-state",
+    "session_or_device_credential",
+    "collaboration",
+    "Advance the authenticated User's Team collaboration delivery state.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
     "/v1/collaboration/teams/{teamId}/threads/{threadId}/read-state",
     "session_or_device_credential",
     "collaboration",

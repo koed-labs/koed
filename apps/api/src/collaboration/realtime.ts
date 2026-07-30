@@ -205,7 +205,7 @@ const requiredOperationFamiliesForEvent = (
       return ["team_workspace_read"];
     case "thread_lifecycle":
     case "message_created":
-    case "read_state_updated":
+    case "receipt_state_updated":
       return ["team_chat_read"];
     case "share_grant_lifecycle":
       return ["share_grant_management"];
@@ -656,19 +656,25 @@ const rendererMessageFromRecord = (
       editedAt: null,
       deletedAt: null,
       delivery: "sent",
+      recipientStatus: message.recipientStatus,
       failure: null
     }
   };
 };
 
-const rendererReadStateFromRecord = (
+const rendererReceiptStateFromRecord = (
   readState: CollaborationReadStateRecord
 ): RendererUpdate => ({
-  type: "read_state_updated",
+  type: "receipt_state_updated",
   readState: {
     threadId: readState.threadId,
+    deliveredMessageId: readState.lastDeliveredMessageId,
+    deliveredSequence: readState.lastDeliveredSequence,
+    deliveredAt: readState.lastDeliveredAt,
     messageId: readState.lastReadMessageId,
     sequence: readState.lastReadSequence,
+    readAt: readState.lastReadAt,
+    unreadCount: readState.unreadCount,
     updatedAt: readState.updatedAt
   }
 });
@@ -835,31 +841,46 @@ const materializeEvent = async (
       update = rendererMessageFromRecord(message, client.user);
       break;
     }
-    case "read_state_updated": {
-      if (event.actorPrincipalId !== client.actor.userId) {
-        return { action: "skip" };
-      }
+    case "receipt_state_updated": {
       if (
         !materializationRepository ||
         !event.threadId ||
-        event.resourceType !== "collaboration_read_state"
+        !event.messageId ||
+        event.resourceType !== "collaboration_receipt_state"
       ) {
         return { action: "requires_snapshot" };
       }
-      const readState = await materializationRepository.getReadStateForRealtime(
-        client.actor,
-        {
-          threadId: event.threadId
+      if (event.actorPrincipalId === client.actor.userId) {
+        const readState =
+          await materializationRepository.getReceiptStateForRealtime(
+            client.actor,
+            { threadId: event.threadId }
+          );
+        if (
+          !readState ||
+          readState.userId !== client.actor.userId ||
+          readState.threadId !== event.threadId
+        ) {
+          return { action: "requires_snapshot" };
         }
-      );
-      if (
-        !readState ||
-        readState.userId !== client.actor.userId ||
-        readState.threadId !== event.threadId
-      ) {
-        return { action: "requires_snapshot" };
+        update = rendererReceiptStateFromRecord(readState);
+      } else {
+        const receipts =
+          await materializationRepository.listMessageReceiptsForRealtime(
+            client.actor,
+            {
+              threadId: event.threadId,
+              throughMessageId: event.messageId
+            }
+          );
+        if (receipts === null) return { action: "requires_snapshot" };
+        if (receipts.length === 0) return { action: "skip" };
+        update = {
+          type: "message_receipts_updated",
+          threadId: event.threadId,
+          receipts
+        };
       }
-      update = rendererReadStateFromRecord(readState);
       break;
     }
     case "thread_lifecycle":
@@ -878,16 +899,16 @@ const materializeEvent = async (
         update = message
           ? rendererMessageFromRecord(message, client.user)
           : null;
-      } else if (event.resourceType === "collaboration_read_state") {
+      } else if (event.resourceType === "collaboration_receipt_state") {
         if (event.actorPrincipalId !== client.actor.userId) {
           return { action: "skip" };
         }
         const readState =
-          await materializationRepository?.getReadStateForRealtime(
+          await materializationRepository?.getReceiptStateForRealtime(
             client.actor,
             { threadId: event.threadId }
           );
-        update = readState ? rendererReadStateFromRecord(readState) : null;
+        update = readState ? rendererReceiptStateFromRecord(readState) : null;
       } else if (
         event.resourceType === "collaboration_thread" &&
         event.resourceId === event.threadId

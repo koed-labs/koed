@@ -187,6 +187,7 @@ type PersonalCommand = Extract<
   | { command: "collaboration.send_message" }
   | { command: "collaboration.retry_message" }
   | { command: "collaboration.mark_read" }
+  | { command: "collaboration.mark_delivered" }
   | { command: "collaboration.load_message_page" }
   | { command: "collaboration.subscribe" }
 >;
@@ -213,6 +214,7 @@ type SupportedCommand = Extract<
   | { command: "collaboration.send_message" }
   | { command: "collaboration.retry_message" }
   | { command: "collaboration.mark_read" }
+  | { command: "collaboration.mark_delivered" }
   | { command: "collaboration.load_message_page" }
 >;
 
@@ -325,6 +327,7 @@ const canonicalMessageSchema = z
     senderPrincipalId: z.string().nullable(),
     senderUserId: z.uuid(),
     senderDisplayName: z.string().nullable(),
+    recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
     bodyText: z.string(),
     metadata: z.record(z.string(), z.unknown()),
     provenance: z
@@ -343,8 +346,13 @@ const canonicalReadStateSchema = z
   .object({
     threadId: z.uuid(),
     userId: z.uuid(),
+    lastDeliveredMessageId: z.uuid().nullable(),
+    lastDeliveredSequence: z.number().int().safe().min(0),
+    lastDeliveredAt: z.string().nullable(),
     lastReadMessageId: z.uuid().nullable(),
     lastReadSequence: z.number().int().safe().min(0),
+    lastReadAt: z.string().nullable(),
+    unreadCount: z.number().int().safe().min(0),
     version: z.number().int().safe().positive(),
     updatedAt: z.string()
   })
@@ -768,6 +776,7 @@ const personalMessageFromRecord = (
     editedAt: null,
     deletedAt: null,
     delivery: "sent",
+    recipientStatus: message.recipientStatus,
     failure: null
   });
   return parsed.success ? parsed.data : null;
@@ -783,8 +792,13 @@ const personalReadStateFromRecord = (
   }
   const parsed = collaborationReadStateSchema.safeParse({
     threadId: readState.threadId,
+    deliveredMessageId: readState.lastDeliveredMessageId,
+    deliveredSequence: readState.lastDeliveredSequence,
+    deliveredAt: readState.lastDeliveredAt,
     messageId: readState.lastReadMessageId,
     sequence: readState.lastReadSequence,
+    readAt: readState.lastReadAt,
+    unreadCount: readState.unreadCount,
     updatedAt: readState.updatedAt
   });
   return parsed.success ? parsed.data : null;
@@ -1154,6 +1168,7 @@ const targetMessageFrom = (value: unknown): unknown => {
     editedAt: null,
     deletedAt: null,
     delivery: "sent",
+    recipientStatus: message.recipientStatus,
     failure: null
   };
 };
@@ -1165,8 +1180,13 @@ const targetReadStateFrom = (value: unknown): unknown => {
   if (!canonical.success) return null;
   return {
     threadId: canonical.data.threadId,
+    deliveredMessageId: canonical.data.lastDeliveredMessageId,
+    deliveredSequence: canonical.data.lastDeliveredSequence,
+    deliveredAt: canonical.data.lastDeliveredAt,
     messageId: canonical.data.lastReadMessageId,
     sequence: canonical.data.lastReadSequence,
+    readAt: canonical.data.lastReadAt,
+    unreadCount: canonical.data.unreadCount,
     updatedAt: canonical.data.updatedAt
   };
 };
@@ -2567,7 +2587,9 @@ const dispatchRemotePersonalCommand = async (input: {
     } else {
       const parsed = canonicalReadStateSchema.safeParse(payload.readState);
       value =
-        parsed.success && input.command.command === "collaboration.mark_read"
+        parsed.success &&
+        (input.command.command === "collaboration.mark_read" ||
+          input.command.command === "collaboration.mark_delivered")
           ? personalReadStateFromRecord(
               parsed.data as CollaborationReadStateRecord,
               input.context.principal.id,
@@ -2748,6 +2770,29 @@ const dispatchPersonalCommand = async (input: {
           existing.id
         );
         return mapped?.messageId === command.input.messageId
+          ? (personalSuccessResult(command, { readState: mapped }) ??
+              invalidResult())
+          : invalidResult();
+      }
+      case "collaboration.mark_delivered": {
+        const existing = await requirePersonalThreadRecord(
+          repository,
+          user.id,
+          command.input.thread.threadId,
+          true
+        );
+        if (!existing) return unavailable();
+        const readState = await repository.advanceDeliveryState(
+          { userId: user.id },
+          { threadId: existing.id, messageId: command.input.messageId }
+        );
+        if (!readState) return unavailable();
+        const mapped = personalReadStateFromRecord(
+          readState,
+          user.id,
+          existing.id
+        );
+        return mapped?.deliveredMessageId === command.input.messageId
           ? (personalSuccessResult(command, { readState: mapped }) ??
               invalidResult())
           : invalidResult();

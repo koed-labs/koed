@@ -44,6 +44,7 @@ describe("AppShell", () => {
       onOpenDevices: vi.fn(),
       onOpenPreferences: vi.fn(),
       onToggleInspector: vi.fn(),
+      personalUnreadCount: 3,
       scopeLine: <span>Personal · Private to you</span>,
       routeFocusKey: "/personal",
       teams: [
@@ -79,6 +80,9 @@ describe("AppShell", () => {
       ])
     );
     expect(container.textContent).toContain("4");
+    expect(
+      container.querySelector('[aria-label="Personal"] [aria-label="3 unread"]')
+    ).not.toBeNull();
     expect(container.textContent).toContain("Personal · Private to you");
   });
 

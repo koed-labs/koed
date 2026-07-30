@@ -1110,6 +1110,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     ]
   );
   const chunkAad = {
+    chunkFormatVersion: 1,
     representationId: memory.representationId,
     shareGrantId: memory.shareGrantId,
     teamId: fixtureTeam.id,
@@ -1119,6 +1120,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     representation: memory.representation,
     chunkIndex: 0,
     chunkCount: 1,
+    itemOffset: 0,
+    itemCount: 1,
+    totalItemCount: 1,
     ...binding,
     redactedContentHash,
     provenanceHash
@@ -1362,7 +1366,7 @@ export const resetFixture = async (client) => {
       [fixtureTeam.id, fixtureThreadIds]
     );
     await client.query(
-      `delete from collaboration_read_states
+      `delete from collaboration_receipt_states
        where thread_id in (select id from fixture_reset_threads)`
     );
     await client.query(
@@ -1383,6 +1387,14 @@ export const resetFixture = async (client) => {
     );
     await client.query(
       `delete from collaboration_messages
+       where thread_id in (select id from fixture_reset_threads)`
+    );
+    await client.query(
+      `delete from collaboration_thread_audience_members
+       where thread_id in (select id from fixture_reset_threads)`
+    );
+    await client.query(
+      `delete from collaboration_thread_audiences
        where thread_id in (select id from fixture_reset_threads)`
     );
     await client.query(
@@ -2672,13 +2684,23 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       [fixtureThreadIds]
     ],
     [
+      "collaboration_thread_audiences",
+      "select * from collaboration_thread_audiences where thread_id = any($1::uuid[])",
+      [fixtureThreadIds]
+    ],
+    [
+      "collaboration_thread_audience_members",
+      "select * from collaboration_thread_audience_members where thread_id = any($1::uuid[])",
+      [fixtureThreadIds]
+    ],
+    [
       "collaboration_messages",
       "select * from collaboration_messages where thread_id = any($1::uuid[])",
       [fixtureThreadIds]
     ],
     [
-      "collaboration_read_states",
-      "select * from collaboration_read_states where thread_id = any($1::uuid[])",
+      "collaboration_receipt_states",
+      "select * from collaboration_receipt_states where thread_id = any($1::uuid[])",
       [fixtureThreadIds]
     ],
     [

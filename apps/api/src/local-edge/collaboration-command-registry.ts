@@ -90,6 +90,7 @@ const threadScope = (
     | CommandFor<"collaboration.send_message">
     | CommandFor<"collaboration.retry_message">
     | CommandFor<"collaboration.mark_read">
+    | CommandFor<"collaboration.mark_delivered">
     | CommandFor<"collaboration.load_message_page">
 ): CollaborationCommandScope =>
   command.input.thread.scope === "personal" ? "personal" : "team";
@@ -450,6 +451,33 @@ export const collaborationCommandRegistry = {
       command.input.thread.scope === "team" &&
       result.threadId === command.input.thread.threadId &&
       result.messageId === command.input.messageId
+  },
+  "collaboration.mark_delivered": {
+    scope: threadScope,
+    desktopOperationFamily: write,
+    personalOperation: (command) => ({
+      operationFamily: read,
+      method: "PUT",
+      path: `${personalThreadPath(command.input.thread.threadId)}/delivery-state`,
+      body: { messageId: command.input.messageId },
+      resultKey: "readState"
+    }),
+    teamOperation: (command) => {
+      if (command.input.thread.scope !== "team") {
+        throw new TypeError("Team operation requires a Team thread");
+      }
+      return {
+        operationFamily: "team_chat_read",
+        method: "PUT",
+        path: `${teamThreadPath(command.input.thread)}/delivery-state`,
+        body: { messageId: command.input.messageId },
+        resultKey: "readState"
+      };
+    },
+    matchesTeamResult: (command, result) =>
+      command.input.thread.scope === "team" &&
+      result.threadId === command.input.thread.threadId &&
+      result.deliveredMessageId === command.input.messageId
   },
   "collaboration.load_message_page": {
     scope: threadScope,

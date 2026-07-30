@@ -312,6 +312,7 @@ const message = (
   editedAt: null,
   deletedAt: null,
   delivery,
+  recipientStatus: delivery === "sent" ? "sent" : null,
   failure:
     delivery === "failed"
       ? {
@@ -920,6 +921,7 @@ const createClient = (initial = baseSnapshot()): MockClient => {
     }),
     retryMessage: vi.fn(async (input) => client.sendMessage(input)),
     markRead: vi.fn(async () => current),
+    markDelivered: vi.fn(async () => current),
     loadMessagePage: vi.fn(async () => current),
     loadSharedSourcePage: vi.fn(async () => current),
     listOwnedSharedMemoryGrants: vi.fn(async () => []),
@@ -1910,6 +1912,53 @@ describe("CollaborationApp", () => {
         ?.getAttribute("data-rendered-count")
     ).toBe("100");
     expect(document.body.textContent).toContain("Long thread message 100");
+  });
+
+  it("renders sender receipts as sent, delivered to everyone, and read by everyone", async () => {
+    const messages = (["sent", "delivered", "read"] as const).map(
+      (recipientStatus, index) => ({
+        ...message(
+          uuid(1_200 + index),
+          ids.notes,
+          `Receipt ${recipientStatus}`,
+          mark
+        ),
+        sequence: index + 1,
+        recipientStatus
+      })
+    );
+    const selected = baseSnapshot();
+    const receiptNotes = { ...notes(), latestSequence: messages.length };
+    await render(
+      createClient(
+        collaborationSnapshotSchema.parse({
+          ...selected,
+          navigation: {
+            ...selected.navigation,
+            personal: {
+              ...selected.navigation.personal,
+              notesToSelf: receiptNotes
+            }
+          },
+          view: {
+            kind: "thread",
+            thread: receiptNotes,
+            messages: page(ids.notes, messages)
+          }
+        })
+      )
+    );
+
+    expect(document.querySelectorAll('[aria-label="Sent"]')).toHaveLength(1);
+    expect(
+      document.querySelectorAll('[aria-label="Delivered to everyone"]')
+    ).toHaveLength(1);
+    expect(
+      document.querySelectorAll('[aria-label="Read by everyone"]')
+    ).toHaveLength(1);
+    expect(
+      document.querySelector('.collab-recipient-status[data-status="read"]')
+    ).not.toBeNull();
   });
 
   it("replaces Team and Workspace content for suspended, deleting, revoked, and archived lifecycles", async () => {

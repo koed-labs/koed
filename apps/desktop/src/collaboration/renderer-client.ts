@@ -244,6 +244,10 @@ export interface CollaborationRendererClient {
     thread: CollaborationThreadReference;
     messageId: string;
   }): Promise<CollaborationSnapshot>;
+  markDelivered(input: {
+    thread: CollaborationThreadReference;
+    messageId: string;
+  }): Promise<CollaborationSnapshot>;
   loadMessagePage(input: {
     thread: CollaborationThreadReference;
     direction: "older" | "newer";
@@ -1045,11 +1049,57 @@ const applyReadState = (
 ): CollaborationSnapshot => {
   const next = mapThread(snapshot, readState.threadId, (thread) => ({
     ...thread,
-    unreadCount: 0,
+    unreadCount: readState.unreadCount,
     lastReadMessageId: readState.messageId,
     lastReadSequence: readState.sequence
   }));
-  return applyCompanionUnreadCount(next, readState.threadId, 0);
+  return applyCompanionUnreadCount(
+    next,
+    readState.threadId,
+    readState.unreadCount
+  );
+};
+
+const applyMessageReceipts = (
+  snapshot: CollaborationSnapshot,
+  threadId: string,
+  receipts: Array<{
+    messageId: string;
+    recipientStatus: "sent" | "delivered" | "read";
+  }>
+): CollaborationSnapshot => {
+  const byId = new Map(
+    receipts.map((receipt) => [receipt.messageId, receipt.recipientStatus])
+  );
+  const apply = (page: CollaborationMessagePage): CollaborationMessagePage => ({
+    ...page,
+    items: page.items.map((message) => {
+      const recipientStatus = byId.get(message.id);
+      return recipientStatus ? { ...message, recipientStatus } : message;
+    })
+  });
+  if (snapshot.view.kind === "thread" && snapshot.view.thread.id === threadId) {
+    return {
+      ...snapshot,
+      view: { ...snapshot.view, messages: apply(snapshot.view.messages) }
+    };
+  }
+  if (
+    snapshot.view.kind === "shared_session" &&
+    snapshot.view.companion.thread.id === threadId
+  ) {
+    return {
+      ...snapshot,
+      view: {
+        ...snapshot.view,
+        companion: {
+          ...snapshot.view.companion,
+          messages: apply(snapshot.view.companion.messages)
+        }
+      }
+    };
+  }
+  return snapshot;
 };
 
 const applyPersonalMemoryEntry = (
@@ -2019,8 +2069,11 @@ export const createCollaborationRendererClient = (
         }
         break;
       }
-      case "read_state_updated":
+      case "receipt_state_updated":
         next = applyReadState(next, update.readState);
+        break;
+      case "message_receipts_updated":
+        next = applyMessageReceipts(next, update.threadId, update.receipts);
         break;
       case "shared_session_upserted": {
         clearSharedSessionSelectionView(update.session.id);
@@ -2195,6 +2248,30 @@ export const createCollaborationRendererClient = (
       announcementId: announcement ? event.eventId : undefined,
       realtimeUpdate: update
     });
+    if (update.type === "message_created") {
+      const currentPrincipalIds = new Set([
+        next.navigation.personalOwner.id,
+        ...(next.navigation.teamPrincipal
+          ? [next.navigation.teamPrincipal.id]
+          : [])
+      ]);
+      if (!currentPrincipalIds.has(update.message.sender.id)) {
+        void command("collaboration.mark_delivered", {
+          thread:
+            update.message.scope === "personal"
+              ? {
+                  scope: "personal",
+                  threadId: update.message.threadId
+                }
+              : {
+                  scope: "team",
+                  teamId: update.message.teamId!,
+                  threadId: update.message.threadId
+                },
+          messageId: update.message.id
+        }).catch(() => undefined);
+      }
+    }
     if (
       update.type === "navigation_snapshot" ||
       update.type === "shared_session_upserted"
@@ -3244,6 +3321,16 @@ export const createCollaborationRendererClient = (
     async markRead(input) {
       const result = await command("collaboration.mark_read", input);
       if (!result.ok || result.command !== "collaboration.mark_read") {
+        throw new Error("Unexpected collaboration result.");
+      }
+      await publish(applyReadState(requireSnapshot(), result.data.readState), {
+        kind: "command"
+      });
+      return requireSnapshot();
+    },
+    async markDelivered(input) {
+      const result = await command("collaboration.mark_delivered", input);
+      if (!result.ok || result.command !== "collaboration.mark_delivered") {
         throw new Error("Unexpected collaboration result.");
       }
       await publish(applyReadState(requireSnapshot(), result.data.readState), {

@@ -630,6 +630,7 @@ const messageUpdate = (eventId: string, scope: "personal" | "team") => ({
     editedAt: null,
     deletedAt: null,
     delivery: "sent",
+    recipientStatus: null,
     failure: null
   }
 });

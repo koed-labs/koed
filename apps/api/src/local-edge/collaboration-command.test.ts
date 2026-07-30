@@ -114,6 +114,7 @@ const teamMessage = {
   editedAt: null,
   deletedAt: null,
   delivery: "sent" as const,
+  recipientStatus: "sent" as const,
   failure: null
 };
 
@@ -263,8 +264,13 @@ const groupDirectMessageThread = {
 
 const readState = {
   threadId: ids.thread,
+  deliveredMessageId: ids.message,
+  deliveredSequence: 1,
+  deliveredAt: iso,
   messageId: ids.message,
   sequence: 1,
+  readAt: iso,
+  unreadCount: 0,
   updatedAt: iso
 };
 
@@ -642,6 +648,7 @@ const personalMessageRecord = (
         : ids.clientMessage,
   threadId: ids.personalThread,
   threadSequence: sequence,
+  audienceVersion: 1,
   scope: "personal",
   personalOwnerUserId: ids.actor,
   teamId: null,
@@ -650,6 +657,7 @@ const personalMessageRecord = (
   senderPrincipalId: ids.actor,
   senderUserId: ids.actor,
   senderDisplayName: "Alice",
+  recipientStatus: "sent",
   bodyText: `message ${sequence}`,
   metadata: {},
   provenance: { kind: "user", id: ids.actor },
@@ -772,8 +780,29 @@ const createPersonalRepository = (): CommandRepository => {
         ? {
             threadId: input.threadId,
             userId: actor.userId,
+            lastDeliveredMessageId: input.messageId,
+            lastDeliveredSequence: 1,
+            lastDeliveredAt: iso,
             lastReadMessageId: input.messageId,
             lastReadSequence: 1,
+            lastReadAt: iso,
+            unreadCount: 0,
+            version: 1,
+            updatedAt: iso
+          }
+        : null,
+    advanceDeliveryState: async (actor, input) =>
+      ownedThread(actor, input.threadId)
+        ? {
+            threadId: input.threadId,
+            userId: actor.userId,
+            lastDeliveredMessageId: input.messageId,
+            lastDeliveredSequence: 1,
+            lastDeliveredAt: iso,
+            lastReadMessageId: null,
+            lastReadSequence: 0,
+            lastReadAt: null,
+            unreadCount: 1,
             version: 1,
             updatedAt: iso
           }
@@ -874,7 +903,10 @@ const resultPayloadFor = (
   ) {
     return { message: teamMessage };
   }
-  if (command.command === "collaboration.mark_read") {
+  if (
+    command.command === "collaboration.mark_read" ||
+    command.command === "collaboration.mark_delivered"
+  ) {
     return { readState };
   }
   if (command.command === "collaboration.start_direct_message") {
@@ -1425,6 +1457,20 @@ const supportedMappings: Array<{
     },
     method: "PUT",
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/read-state`,
+    body: { messageId: ids.message }
+  },
+  {
+    command: {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.mark_delivered",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        messageId: ids.message
+      }
+    },
+    method: "PUT",
+    path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/delivery-state`,
     body: { messageId: ids.message }
   },
   {
@@ -3707,6 +3753,7 @@ describe("local-edge collaboration command route", () => {
       senderPrincipalId: ids.participant,
       senderUserId: ids.participant,
       senderDisplayName: null,
+      recipientStatus: "sent",
       bodyText: "hello",
       metadata: {},
       provenance: { kind: "user", id: ids.participant },
@@ -3716,8 +3763,13 @@ describe("local-edge collaboration command route", () => {
     const canonicalReadState = {
       threadId: ids.thread,
       userId: ids.actor,
+      lastDeliveredMessageId: ids.message,
+      lastDeliveredSequence: 1,
+      lastDeliveredAt: iso,
       lastReadMessageId: ids.message,
       lastReadSequence: 1,
+      lastReadAt: iso,
+      unreadCount: 0,
       version: 1,
       updatedAt: iso
     };

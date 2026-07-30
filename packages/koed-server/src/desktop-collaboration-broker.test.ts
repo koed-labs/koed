@@ -369,6 +369,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }
@@ -494,6 +495,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }
@@ -639,6 +641,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }
@@ -779,6 +782,7 @@ describe("desktop collaboration broker", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           }

@@ -157,6 +157,8 @@ const collaborationFixture = (): CollaborationSnapshot => {
     scope: "personal" as const,
     ownerUserId: currentUser.id,
     kind: "notes_to_self" as const,
+    latestSequence: 2,
+    unreadCount: 2,
     participants: [participant(currentUser)]
   };
   const channel = {
@@ -179,7 +181,8 @@ const collaborationFixture = (): CollaborationSnapshot => {
     workspaceId: uuid(17),
     kind: "shared_session_discussion" as const,
     sharedLogicalMemoryId: uuid(20),
-    shareGrantId: uuid(21)
+    shareGrantId: uuid(21),
+    latestSequence: 2
   };
   const session = {
     id: uuid(21),
@@ -329,6 +332,24 @@ const collaborationFixture = (): CollaborationSnapshot => {
             editedAt: null,
             deletedAt: null,
             delivery: "sent",
+            recipientStatus: "sent",
+            failure: null
+          },
+          {
+            id: uuid(26),
+            threadId: discussion.id,
+            scope: "team",
+            teamId: uuid(16),
+            sequence: 2,
+            sender: participant(teamPrincipal),
+            senderKind: "user",
+            body: "Receipt state is visible without exposing per-recipient activity.",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            editedAt: null,
+            deletedAt: null,
+            delivery: "sent",
+            recipientStatus: "read",
             failure: null
           }
         ])
@@ -596,6 +617,7 @@ const interactionMessage = (
   editedAt: null,
   deletedAt: null,
   delivery: "sent" as const,
+  recipientStatus: "sent" as const,
   failure: null
 });
 

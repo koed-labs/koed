@@ -187,7 +187,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
-  "read_state_updated",
+  "receipt_state_updated",
   "share_grant_lifecycle",
   "representation_changed",
   "memory_event_available",
@@ -5744,6 +5744,7 @@ export const collaborationThreads = pgTable(
       onDelete: "set null"
     }),
     version: integer("version").notNull().default(1),
+    audienceVersion: integer("audience_version").notNull().default(1),
     nextSequence: bigint("next_sequence", { mode: "number" })
       .notNull()
       .default(1),
@@ -5914,6 +5915,10 @@ export const collaborationThreads = pgTable(
     ),
     check("collaboration_threads_version_check", sql`${table.version} > 0`),
     check(
+      "collaboration_threads_audience_version_check",
+      sql`${table.audienceVersion} > 0`
+    ),
+    check(
       "collaboration_threads_sequence_check",
       sql`${table.nextSequence} > 0`
     ),
@@ -6010,6 +6015,63 @@ export const collaborationParticipants = pgTable(
   ]
 );
 
+export const collaborationThreadAudiences = pgTable(
+  "collaboration_thread_audiences",
+  {
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => collaborationThreads.id, { onDelete: "restrict" }),
+    version: integer("version").notNull(),
+    memberSetHash: text("member_set_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({ columns: [table.threadId, table.version] }),
+    index("collaboration_thread_audiences_created_idx").on(
+      table.threadId,
+      table.createdAt.desc()
+    ),
+    check(
+      "collaboration_thread_audiences_values_check",
+      sql`${table.version} > 0 and length(${table.memberSetHash}) = 64`
+    )
+  ]
+);
+
+export const collaborationThreadAudienceMembers = pgTable(
+  "collaboration_thread_audience_members",
+  {
+    threadId: uuid("thread_id").notNull(),
+    audienceVersion: integer("audience_version").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.threadId, table.audienceVersion, table.userId]
+    }),
+    foreignKey({
+      columns: [table.threadId, table.audienceVersion],
+      foreignColumns: [
+        collaborationThreadAudiences.threadId,
+        collaborationThreadAudiences.version
+      ],
+      name: "collaboration_thread_audience_members_audience_fk"
+    }).onDelete("restrict"),
+    index("collaboration_thread_audience_members_user_idx").on(
+      table.userId,
+      table.threadId,
+      table.audienceVersion
+    ),
+    check(
+      "collaboration_thread_audience_members_version_check",
+      sql`${table.audienceVersion} > 0`
+    )
+  ]
+);
+
 export const collaborationMessages = pgTable(
   "collaboration_messages",
   {
@@ -6018,6 +6080,7 @@ export const collaborationMessages = pgTable(
       .notNull()
       .references(() => collaborationThreads.id, { onDelete: "restrict" }),
     threadSequence: bigint("thread_sequence", { mode: "number" }).notNull(),
+    audienceVersion: integer("audience_version").notNull(),
     scope: collaborationScope("scope").notNull(),
     personalOwnerUserId: uuid("personal_owner_user_id"),
     teamId: uuid("team_id"),
@@ -6045,6 +6108,14 @@ export const collaborationMessages = pgTable(
     retainUntil: timestamp("retain_until", { withTimezone: true })
   },
   (table) => [
+    foreignKey({
+      columns: [table.threadId, table.audienceVersion],
+      foreignColumns: [
+        collaborationThreadAudiences.threadId,
+        collaborationThreadAudiences.version
+      ],
+      name: "collaboration_messages_audience_fk"
+    }).onDelete("restrict"),
     foreignKey({
       columns: [table.threadId, table.scope],
       foreignColumns: [collaborationThreads.id, collaborationThreads.scope],
@@ -6098,7 +6169,7 @@ export const collaborationMessages = pgTable(
     ),
     check(
       "collaboration_messages_sequence_check",
-      sql`${table.threadSequence} > 0`
+      sql`${table.threadSequence} > 0 and ${table.audienceVersion} > 0`
     ),
     check(
       "collaboration_messages_marker_check",
@@ -6139,8 +6210,8 @@ export const collaborationMessages = pgTable(
   ]
 );
 
-export const collaborationReadStates = pgTable(
-  "collaboration_read_states",
+export const collaborationReceiptStates = pgTable(
+  "collaboration_receipt_states",
   {
     threadId: uuid("thread_id")
       .notNull()
@@ -6148,15 +6219,36 @@ export const collaborationReadStates = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    lastDeliveredMessageId: uuid("last_delivered_message_id"),
+    lastDeliveredSequence: bigint("last_delivered_sequence", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
+    lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true }),
     lastReadMessageId: uuid("last_read_message_id"),
     lastReadSequence: bigint("last_read_sequence", { mode: "number" })
       .notNull()
       .default(0),
+    lastReadAt: timestamp("last_read_at", { withTimezone: true }),
     version: integer("version").notNull().default(1),
     updatedAt: updatedNow()
   },
   (table) => [
     primaryKey({ columns: [table.threadId, table.userId] }),
+    foreignKey({
+      columns: [
+        table.threadId,
+        table.lastDeliveredMessageId,
+        table.lastDeliveredSequence
+      ],
+      foreignColumns: [
+        collaborationMessages.threadId,
+        collaborationMessages.id,
+        collaborationMessages.threadSequence
+      ],
+      name: "collaboration_receipt_states_delivered_message_fk"
+    }).onDelete("restrict"),
     foreignKey({
       columns: [
         table.threadId,
@@ -6168,18 +6260,22 @@ export const collaborationReadStates = pgTable(
         collaborationMessages.id,
         collaborationMessages.threadSequence
       ],
-      name: "collaboration_read_states_same_thread_message_fk"
+      name: "collaboration_receipt_states_read_message_fk"
     }).onDelete("restrict"),
-    index("collaboration_read_states_user_idx").on(
+    index("collaboration_receipt_states_user_idx").on(
       table.userId,
       table.updatedAt.desc()
     ),
     check(
-      "collaboration_read_states_cursor_check",
-      sql`${table.lastReadSequence} >= 0
+      "collaboration_receipt_states_cursor_check",
+      sql`${table.lastDeliveredSequence} >= 0
+        and ${table.lastReadSequence} >= 0
+        and ${table.lastDeliveredSequence} >= ${table.lastReadSequence}
         and ${table.version} > 0
+        and ((${table.lastDeliveredMessageId} is null and ${table.lastDeliveredSequence} = 0 and ${table.lastDeliveredAt} is null)
+          or (${table.lastDeliveredMessageId} is not null and ${table.lastDeliveredSequence} > 0 and ${table.lastDeliveredAt} is not null))
         and ((${table.lastReadMessageId} is null and ${table.lastReadSequence} = 0)
-          or (${table.lastReadMessageId} is not null and ${table.lastReadSequence} > 0))`
+          or (${table.lastReadMessageId} is not null and ${table.lastReadSequence} > 0 and ${table.lastReadAt} is not null))`
     )
   ]
 );

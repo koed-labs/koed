@@ -618,7 +618,28 @@ const success = (
           editedAt: null,
           deletedAt: null,
           delivery: "sent",
+          recipientStatus: "sent",
           failure: null
+        }
+      };
+      break;
+    case "collaboration.mark_read":
+    case "collaboration.mark_delivered":
+      data = {
+        readState: {
+          threadId: command.input.thread.threadId,
+          deliveredMessageId: command.input.messageId,
+          deliveredSequence: 1,
+          deliveredAt: timestamp,
+          messageId:
+            command.command === "collaboration.mark_read"
+              ? command.input.messageId
+              : null,
+          sequence: command.command === "collaboration.mark_read" ? 1 : 0,
+          readAt:
+            command.command === "collaboration.mark_read" ? timestamp : null,
+          unreadCount: command.command === "collaboration.mark_read" ? 0 : 1,
+          updatedAt: timestamp
         }
       };
       break;
@@ -865,6 +886,7 @@ describe("collaboration renderer client", () => {
       editedAt: null,
       deletedAt: null,
       delivery: "sent" as const,
+      recipientStatus: null,
       failure: null
     };
     const confirmation = collaborationRendererEventSchema.parse({
@@ -966,6 +988,7 @@ describe("collaboration renderer client", () => {
             editedAt: null,
             deletedAt: null,
             delivery: "failed",
+            recipientStatus: null,
             failure: {
               code: "temporarily_unavailable",
               userMessage: "Collaboration is temporarily unavailable.",
@@ -1703,6 +1726,7 @@ describe("collaboration renderer client", () => {
       editedAt: null,
       deletedAt: null,
       delivery: "sent" as const,
+      recipientStatus: null,
       failure: null
     };
     const realtime = (deliveryId: string): CollaborationRendererEvent => ({
@@ -1726,6 +1750,17 @@ describe("collaboration renderer client", () => {
     });
     mock.emit(realtime(delivery(1)));
     await waitFor(() => expect(order).toEqual(["apply", "ack"]));
+    await waitFor(() =>
+      expect(mock.command).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: "collaboration.mark_delivered",
+          input: {
+            thread: { scope: "personal", threadId: ids.notes },
+            messageId: ids.message
+          }
+        })
+      )
+    );
     mock.emit(realtime(delivery(2)));
     await waitFor(() => expect(order).toEqual(["apply", "ack", "ack"]));
     expect(announcements).toEqual([
@@ -1851,6 +1886,7 @@ describe("collaboration renderer client", () => {
           editedAt: null,
           deletedAt: null,
           delivery: "sent",
+          recipientStatus: null,
           failure: null
         }
       }
@@ -2145,6 +2181,7 @@ describe("collaboration renderer client", () => {
       editedAt: null,
       deletedAt: null,
       delivery: "sent" as const,
+      recipientStatus: null,
       failure: null
     };
     mock.emit({
@@ -2198,11 +2235,16 @@ describe("collaboration renderer client", () => {
         shareGrantId: ids.shareGrant
       },
       update: {
-        type: "read_state_updated",
+        type: "receipt_state_updated",
         readState: {
           threadId: ids.discussion,
+          deliveredMessageId: ids.message,
+          deliveredSequence: 1,
+          deliveredAt: timestamp,
           sequence: 1,
           messageId: ids.message,
+          readAt: timestamp,
+          unreadCount: 0,
           updatedAt: timestamp
         }
       }
@@ -2248,6 +2290,7 @@ describe("collaboration renderer client", () => {
       editedAt: null,
       deletedAt: null,
       delivery: "sent" as const,
+      recipientStatus: null,
       failure: null
     };
     const replay = (deliveryId: string): CollaborationRendererEvent => ({
@@ -2346,6 +2389,7 @@ describe("collaboration renderer client", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: "sent",
               failure: null
             }
           ]
@@ -2465,6 +2509,7 @@ describe("collaboration renderer client", () => {
                   editedAt: null,
                   deletedAt: null,
                   delivery: "sent",
+                  recipientStatus: null,
                   failure: null
                 }
               ]
@@ -2556,6 +2601,7 @@ describe("collaboration renderer client", () => {
                 editedAt: null,
                 deletedAt: null,
                 delivery: "queued",
+                recipientStatus: null,
                 failure: null
               }
             ]
@@ -2775,6 +2821,7 @@ describe("collaboration renderer client", () => {
                 editedAt: null,
                 deletedAt: null,
                 delivery: "sent",
+                recipientStatus: null,
                 failure: null
               }
             ]
@@ -2870,6 +2917,7 @@ describe("collaboration renderer client", () => {
           editedAt: null,
           deletedAt: null,
           delivery: "sent",
+          recipientStatus: null,
           failure: null
         }
       }
@@ -2908,6 +2956,7 @@ describe("collaboration renderer client", () => {
               editedAt: null,
               deletedAt: null,
               delivery: "sent",
+              recipientStatus: null,
               failure: null
             }
           ]

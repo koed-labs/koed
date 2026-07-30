@@ -11,6 +11,7 @@
   --collab-accent-soft: color-mix(in srgb, var(--primary) 14%, transparent);
   --collab-warning: var(--warning-foreground);
   --collab-danger: var(--destructive);
+  --collab-success: var(--success);
   --collab-focus: var(--ring);
   color: var(--collab-text);
   font-family:
@@ -497,6 +498,15 @@
 .collab-message-content footer svg {
   height: 12px;
   width: 12px;
+}
+
+.collab-recipient-status {
+  inline-size: 16px;
+  justify-content: center;
+}
+
+.collab-recipient-status[data-status="read"] {
+  color: var(--collab-success);
 }
 
 .collab-message.failed {

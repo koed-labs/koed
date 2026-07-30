@@ -690,6 +690,7 @@ export const collaborationMessageSchema = z
     editedAt: z.null(),
     deletedAt: z.null(),
     delivery: z.enum(["queued", "sent", "failed"]),
+    recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
     failure: collaborationSafeErrorSchema.nullable()
   })
   .strict()
@@ -709,6 +710,13 @@ export const collaborationMessageSchema = z
         code: "custom",
         path: ["failure"],
         message: "Only failed messages may carry a safe failure"
+      });
+    }
+    if (message.delivery !== "sent" && message.recipientStatus !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["recipientStatus"],
+        message: "Only sent messages may carry a recipient status"
       });
     }
   });
@@ -787,9 +795,56 @@ export const collaborationDurableSendSchema = z
 export const collaborationReadStateSchema = z
   .object({
     threadId: z.uuid(),
+    deliveredMessageId: z.uuid().nullable(),
+    deliveredSequence: nonNegativeSequenceSchema,
+    deliveredAt: collaborationTimestampSchema.nullable(),
     messageId: z.uuid().nullable(),
     sequence: nonNegativeSequenceSchema,
+    readAt: collaborationTimestampSchema.nullable(),
+    unreadCount: nonNegativeSequenceSchema,
     updatedAt: collaborationTimestampSchema
+  })
+  .strict()
+  .superRefine((state, context) => {
+    const deliveryIsEmpty =
+      state.deliveredMessageId === null &&
+      state.deliveredSequence === 0 &&
+      state.deliveredAt === null;
+    const deliveryIsComplete =
+      state.deliveredMessageId !== null &&
+      state.deliveredSequence > 0 &&
+      state.deliveredAt !== null;
+    if (!deliveryIsEmpty && !deliveryIsComplete) {
+      context.addIssue({
+        code: "custom",
+        path: ["deliveredMessageId"],
+        message: "Delivered receipt fields must be empty or complete"
+      });
+    }
+    const readIsEmpty =
+      state.messageId === null && state.sequence === 0 && state.readAt === null;
+    const readIsComplete =
+      state.messageId !== null && state.sequence > 0 && state.readAt !== null;
+    if (!readIsEmpty && !readIsComplete) {
+      context.addIssue({
+        code: "custom",
+        path: ["messageId"],
+        message: "Read receipt fields must be empty or complete"
+      });
+    }
+    if (state.deliveredSequence < state.sequence) {
+      context.addIssue({
+        code: "custom",
+        path: ["deliveredSequence"],
+        message: "Delivered sequence cannot trail the read sequence"
+      });
+    }
+  });
+
+export const collaborationMessageReceiptSchema = z
+  .object({
+    messageId: z.uuid(),
+    recipientStatus: z.enum(["sent", "delivered", "read"])
   })
   .strict();
 
@@ -1882,6 +1937,10 @@ export const collaborationRendererCommandSchema = z
       thread: collaborationThreadReferenceSchema,
       messageId: z.uuid()
     }),
+    command("collaboration.mark_delivered", {
+      thread: collaborationThreadReferenceSchema,
+      messageId: z.uuid()
+    }),
     command("collaboration.load_message_page", {
       thread: collaborationThreadReferenceSchema,
       direction: z.enum(["older", "newer"]),
@@ -2158,6 +2217,7 @@ const commandNameSchema = z.enum([
   "collaboration.send_message",
   "collaboration.retry_message",
   "collaboration.mark_read",
+  "collaboration.mark_delivered",
   "collaboration.load_message_page",
   "collaboration.load_shared_source_page",
   "collaboration.create_invitation",
@@ -2256,6 +2316,10 @@ export const collaborationCommandResultSchema = z.union([
   ),
   successResult(
     "collaboration.mark_read",
+    z.object({ readState: collaborationReadStateSchema }).strict()
+  ),
+  successResult(
+    "collaboration.mark_delivered",
     z.object({ readState: collaborationReadStateSchema }).strict()
   ),
   successResult(
@@ -2417,8 +2481,17 @@ const rendererUpdateSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
-      type: z.literal("read_state_updated"),
+      type: z.literal("receipt_state_updated"),
       readState: collaborationReadStateSchema
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("message_receipts_updated"),
+      threadId: z.uuid(),
+      receipts: z
+        .array(collaborationMessageReceiptSchema)
+        .max(COLLABORATION_RENDERED_ROW_MAX_COUNT)
     })
     .strict(),
   z
@@ -2482,7 +2555,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
-  "read_state_updated",
+  "receipt_state_updated",
   "share_grant_lifecycle",
   "representation_changed",
   "memory_event_available",
@@ -2620,7 +2693,10 @@ const realtimeUpdateDeliverySchema = z
         "shared_session_upserted"
       ]),
       message_created: new Set(["message_created"]),
-      read_state_updated: new Set(["read_state_updated"]),
+      receipt_state_updated: new Set([
+        "receipt_state_updated",
+        "message_receipts_updated"
+      ]),
       share_grant_lifecycle: new Set([
         "shared_session_upserted",
         "shared_session_removed"
@@ -2643,7 +2719,7 @@ const realtimeUpdateDeliverySchema = z
       ]),
       shared_session_discussion_activity: new Set([
         "message_created",
-        "read_state_updated",
+        "receipt_state_updated",
         "thread_upserted"
       ]),
       personal_memory_changed: new Set(["personal_memory_upserted"]),
@@ -2708,13 +2784,23 @@ const realtimeUpdateDeliverySchema = z
       });
     }
     if (
-      update.type === "read_state_updated" &&
+      update.type === "receipt_state_updated" &&
       update.readState.threadId !== resource.threadId
     ) {
       context.addIssue({
         code: "custom",
         path: ["update", "readState"],
         message: "Realtime read state must match its authorized thread"
+      });
+    }
+    if (
+      update.type === "message_receipts_updated" &&
+      update.threadId !== resource.threadId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["update", "threadId"],
+        message: "Realtime message receipts must match their authorized thread"
       });
     }
     if (

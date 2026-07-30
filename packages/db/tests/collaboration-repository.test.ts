@@ -616,12 +616,12 @@ describeDb("Collaboration repository", () => {
       lastReadSequence: 1
     });
     await expect(
-      repository.getReadStateForRealtime(actor(ownerUserId), {
+      repository.getReceiptStateForRealtime(actor(ownerUserId), {
         threadId: channel!.id
       })
     ).resolves.toEqual(read);
     await expect(
-      repository.getReadStateForRealtime(actor(outsiderUserId), {
+      repository.getReceiptStateForRealtime(actor(outsiderUserId), {
         threadId: channel!.id
       })
     ).resolves.toBeNull();
@@ -1446,20 +1446,20 @@ describeDb("Collaboration repository", () => {
     }>(
       `select
          (select count(*)::text
-            from collaboration_read_states
+            from collaboration_receipt_states
            where thread_id=$1 and user_id=$2) as state_rows,
          (select last_read_message_id::text
-            from collaboration_read_states
+            from collaboration_receipt_states
            where thread_id=$1 and user_id=$2) as last_read_message_id,
          (select last_read_sequence::text
-            from collaboration_read_states
+            from collaboration_receipt_states
            where thread_id=$1 and user_id=$2) as last_read_sequence,
          (select count(*)::text
             from collaboration_outbox
-           where thread_id=$1 and family='read_state_updated') as event_count,
+           where thread_id=$1 and family='receipt_state_updated') as event_count,
          (select count(distinct (mutation_id,family))::text
             from collaboration_outbox
-           where thread_id=$1 and family='read_state_updated') as unique_mutation_families`,
+           where thread_id=$1 and family='receipt_state_updated') as unique_mutation_families`,
       [channel!.id, userId]
     );
     expect(durable.rows[0]).toMatchObject({
@@ -1471,6 +1471,171 @@ describeDb("Collaboration repository", () => {
     expect(durable.rows[0]!.unique_mutation_families).toBe(
       durable.rows[0]!.event_count
     );
+  });
+
+  it("tracks least-complete recipient receipts against immutable message audiences", async () => {
+    const fixture = await createTeamFixture();
+    const channel = await repository.createThread(actor(fixture.ownerUserId), {
+      kind: "workspace_channel",
+      idempotencyKey: `receipt-channel:${randomUUID()}`,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      name: `Receipt channel ${randomUUID()}`
+    });
+    if (!channel) throw new Error("Expected an authorized Workspace channel");
+
+    const first = await repository.sendMessage(actor(fixture.ownerUserId), {
+      threadId: channel.id,
+      idempotencyKey: `receipt-first:${randomUUID()}`,
+      bodyText: "Receipt state must reflect every original recipient."
+    });
+    if (!first) throw new Error("Expected the first message");
+    expect(first.recipientStatus).toBe("sent");
+
+    await repository.advanceDeliveryState(actor(fixture.memberUserId), {
+      threadId: channel.id,
+      messageId: first.id
+    });
+    expect(
+      (
+        await repository.listMessages(actor(fixture.ownerUserId), {
+          threadId: channel.id
+        })
+      )?.messages[0]?.recipientStatus
+    ).toBe("sent");
+
+    await repository.advanceDeliveryState(actor(fixture.secondMemberUserId), {
+      threadId: channel.id,
+      messageId: first.id
+    });
+    expect(
+      (
+        await repository.listMessages(actor(fixture.ownerUserId), {
+          threadId: channel.id
+        })
+      )?.messages[0]?.recipientStatus
+    ).toBe("delivered");
+
+    await repository.advanceReadState(actor(fixture.memberUserId), {
+      threadId: channel.id,
+      messageId: first.id
+    });
+    expect(
+      (
+        await repository.listMessages(actor(fixture.ownerUserId), {
+          threadId: channel.id
+        })
+      )?.messages[0]?.recipientStatus
+    ).toBe("delivered");
+
+    await pool.query(
+      `update team_workspace_access_grants
+          set access='disabled', disabled_at=now(), updated_at=now()
+        where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.secondMemberUserId]
+    );
+    const second = await repository.sendMessage(actor(fixture.ownerUserId), {
+      threadId: channel.id,
+      idempotencyKey: `receipt-second:${randomUUID()}`,
+      bodyText: "This audience no longer includes the removed member."
+    });
+    if (!second) throw new Error("Expected the second message");
+    expect(second.recipientStatus).toBe("sent");
+
+    await repository.advanceReadState(actor(fixture.memberUserId), {
+      threadId: channel.id,
+      messageId: second.id
+    });
+    const afterMembershipChange = await repository.listMessages(
+      actor(fixture.ownerUserId),
+      { threadId: channel.id }
+    );
+    expect(
+      afterMembershipChange?.messages.find(
+        (message) => message.id === second.id
+      )?.recipientStatus
+    ).toBe("read");
+    expect(
+      afterMembershipChange?.messages.find((message) => message.id === first.id)
+        ?.recipientStatus
+    ).toBe("delivered");
+
+    const audiences = await pool.query<{
+      audience_version: number;
+      recipient_count: string;
+    }>(
+      `select message.audience_version,
+              count(member.user_id)::text as recipient_count
+         from collaboration_messages message
+         join collaboration_thread_audience_members member
+           on member.thread_id=message.thread_id
+          and member.audience_version=message.audience_version
+          and member.user_id<>message.sender_principal_id
+        where message.id=any($1::uuid[])
+        group by message.id,message.audience_version,message.thread_sequence
+        order by message.thread_sequence`,
+      [[first.id, second.id]]
+    );
+    expect(audiences.rows).toEqual([
+      { audience_version: 1, recipient_count: "2" },
+      { audience_version: 2, recipient_count: "1" }
+    ]);
+  });
+
+  it("computes unread counts from other senders after the acknowledged cursor", async () => {
+    const fixture = await createTeamFixture();
+    const channel = await repository.createThread(actor(fixture.ownerUserId), {
+      kind: "workspace_channel",
+      idempotencyKey: `unread-channel:${randomUUID()}`,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      name: `Unread channel ${randomUUID()}`
+    });
+    if (!channel) throw new Error("Expected an authorized Workspace channel");
+
+    await repository.sendMessage(actor(fixture.ownerUserId), {
+      threadId: channel.id,
+      idempotencyKey: `unread-own:${randomUUID()}`,
+      bodyText: "My own message is not unread."
+    });
+    const beforeExternal = await repository.getAuthorizedSnapshot(
+      actor(fixture.ownerUserId),
+      { scope: "team", teamId: fixture.teamId }
+    );
+    expect(
+      beforeExternal?.threads.find((thread) => thread.id === channel.id)
+        ?.unreadCount
+    ).toBe(0);
+
+    const firstExternal = await repository.sendMessage(
+      actor(fixture.memberUserId),
+      {
+        threadId: channel.id,
+        idempotencyKey: `unread-external-first:${randomUUID()}`,
+        bodyText: "This message is unread."
+      }
+    );
+    if (!firstExternal) throw new Error("Expected an external message");
+    const read = await repository.advanceReadState(actor(fixture.ownerUserId), {
+      threadId: channel.id,
+      messageId: firstExternal.id
+    });
+    if (!read) throw new Error("Expected read state");
+    expect(read.unreadCount).toBe(0);
+
+    await repository.sendMessage(actor(fixture.memberUserId), {
+      threadId: channel.id,
+      idempotencyKey: `unread-external-second:${randomUUID()}`,
+      bodyText: "This newer message remains unread."
+    });
+    const afterExternal = await repository.getAuthorizedSnapshot(
+      actor(fixture.ownerUserId),
+      { scope: "team", teamId: fixture.teamId }
+    );
+    expect(
+      afterExternal?.threads.find((thread) => thread.id === channel.id)
+        ?.unreadCount
+    ).toBe(1);
   });
 
   it("rolls back message, encrypted companions, sequence, and outbox after an outbox failpoint", async () => {

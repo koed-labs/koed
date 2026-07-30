@@ -89,7 +89,13 @@ key. Pending and failed sends remain inspectable in the Inbox; retry does not
 create a second logical message.
 
 Opening a thread does not clear unread state. Koed marks it read only after the
-last unread row is visible while the window and document are active.
+last unread row is visible while the window and document are active. Personal,
+Team, Workspace, and channel badges use the resulting server-authoritative
+unread counts.
+
+Outgoing messages use aggregate receipt icons. One grey tick means sent, two
+grey ticks mean delivered to every original recipient, and two green ticks mean
+read by every original recipient. Recipient-level activity is not exposed.
 
 ### Review Shared Memory Together
 

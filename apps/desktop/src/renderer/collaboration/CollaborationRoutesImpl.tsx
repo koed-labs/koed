@@ -1570,6 +1570,10 @@ export function SharedSessionView({
           </header>
           <RouteThreadTimeline
             client={client}
+            currentUserId={
+              snapshot.navigation.teamPrincipal?.id ??
+              snapshot.navigation.personalOwner.id
+            }
             label={title}
             markdownAdapters={markdownAdapters}
             page={companion.messages}

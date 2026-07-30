@@ -120,7 +120,8 @@ const message = () => ({
   editedAt: null,
   deletedAt: null,
   delivery: "sent" as const,
-  failure: null
+  failure: null,
+  recipientStatus: null
 });
 
 const messagePage = () => ({
