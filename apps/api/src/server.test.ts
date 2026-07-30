@@ -11128,6 +11128,57 @@ describe("account and access flows", () => {
     expect(repositoryWriteCalls).toBe(0);
   });
 
+  it("accepts underscore-prefixed tool names without rejecting later batch items", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    const forwardedItems: ConversationItemInput[] = [];
+    repository.createConversationItems = async (actor, input) => {
+      forwardedItems.push(...input.items);
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "underscore-tool-name@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            sourceEventType: "function_call",
+            metadata: {
+              toolName: "_read_file",
+              toolCall: { name: "_read_file" }
+            }
+          }),
+          rawConversationItemPayload(session.id, {
+            sourceEventType: "agent_message",
+            rawText: "The item after the tool call still ingests."
+          })
+        ]
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(forwardedItems).toHaveLength(2);
+    expect(forwardedItems[0]?.metadata).toMatchObject({
+      toolName: "_read_file",
+      toolCall: { name: "_read_file" }
+    });
+    expect(forwardedItems[1]?.rawText).toBe(
+      "The item after the tool call still ingests."
+    );
+  });
+
   it("rejects content-like provider identifiers while accepting Codex IDs", async () => {
     const repository = createFakeRepository();
     const createConversationItems =

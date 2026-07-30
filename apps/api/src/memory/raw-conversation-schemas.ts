@@ -32,6 +32,14 @@ const classificationTokenSchema = tokenIdentifierSchema(
   128,
   "Classification fields"
 );
+const toolNameSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(
+    /^[A-Za-z0-9_][A-Za-z0-9._:/@-]*$/,
+    "Tool names may only contain bounded tool identifier characters"
+  );
 const sourceHashSchema = tokenIdentifierSchema(256, "Source hashes");
 const idempotencyKeySchema = tokenIdentifierSchema(512, "Idempotency keys");
 const canonicalItemKeySchema = z
@@ -57,7 +65,7 @@ const conversationToolCallMetadataSchema = z
   .object({
     kind: classificationTokenSchema.nullable().optional(),
     type: classificationTokenSchema.nullable().optional(),
-    name: tokenIdentifierSchema(256, "Tool names").nullable().optional(),
+    name: toolNameSchema.nullable().optional(),
     id: providerIdentifierSchema.nullable().optional(),
     status: classificationTokenSchema.nullable().optional()
   })
@@ -74,7 +82,7 @@ const conversationMetadataSchema = z
     transcriptSourceLineNumber: postgresNonNegativeInt.nullable().optional(),
     transcriptAssignedTurnId: providerIdentifierSchema.nullable().optional(),
     toolEventKind: classificationTokenSchema.nullable().optional(),
-    toolName: tokenIdentifierSchema(256, "Tool names").nullable().optional(),
+    toolName: toolNameSchema.nullable().optional(),
     callId: providerIdentifierSchema.nullable().optional(),
     toolCallId: providerIdentifierSchema.nullable().optional(),
     status: classificationTokenSchema.nullable().optional(),

@@ -753,6 +753,14 @@ sync, backup, and restore paths fail closed for affected payloads.
 Decrypted values must not be written to queue payloads, audit metadata, status
 responses, logs, or diagnostics.
 
+Raw-ingestion validation treats tool names as bounded source-protocol
+identifiers rather than classification tokens. In particular, a tool name may
+begin with an underscore and is preserved exactly for Projection and rendering.
+Other provider IDs, hashes, and classification fields retain their separate
+schemas. A rejected batch does not advance the Transcript Watcher's durable
+cursor, so corrected validation or source data is replayed without skipping
+later records.
+
 ```mermaid
 sequenceDiagram
   participant Client as AI Client
