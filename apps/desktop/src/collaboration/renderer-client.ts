@@ -2149,6 +2149,13 @@ export const createCollaborationRendererClient = (
         (candidate) => candidate.id === person.id
       );
       if (existingIndex === -1) return [...people, person];
+      const existing = people[existingIndex]!;
+      if (
+        existing.teamPresence.preferenceVersion >
+        person.teamPresence.preferenceVersion
+      ) {
+        return people;
+      }
       return people.map((candidate, index) =>
         index === existingIndex
           ? {
@@ -2952,8 +2959,8 @@ export const createCollaborationRendererClient = (
     return select(selectionForThread(thread));
   };
 
-  return {
-    async load() {
+  const loadAuthoritativeSnapshot =
+    async (): Promise<CollaborationSnapshot> => {
       pendingSharedSessionRecovery = null;
       const result = await command("collaboration.load", {});
       if (!result.ok || result.command !== "collaboration.load") {
@@ -2962,7 +2969,10 @@ export const createCollaborationRendererClient = (
       await applyCommandSnapshot(result.data.snapshot);
       await subscribeScope({ scope: "personal" });
       return requireSnapshot();
-    },
+    };
+
+  return {
+    load: loadAuthoritativeSnapshot,
     current: () => snapshot,
     currentRemoteUrl: () => connectedRemoteUrl,
     currentSelection: () =>
@@ -3327,17 +3337,34 @@ export const createCollaborationRendererClient = (
       return result.data.access;
     },
     async setTeamPresence(input) {
-      const result = await command("collaboration.set_team_presence", input);
-      if (!result.ok || result.command !== "collaboration.set_team_presence") {
-        throw new Error("Unexpected collaboration result.");
+      try {
+        const result = await command("collaboration.set_team_presence", input);
+        if (
+          !result.ok ||
+          result.command !== "collaboration.set_team_presence"
+        ) {
+          throw new Error("Unexpected collaboration result.");
+        }
+        if (snapshot) {
+          await publish(
+            applyTeamPersonUpdate(snapshot, input.teamId, result.data.person),
+            { kind: "command" }
+          );
+        }
+        return result.data.person;
+      } catch (error) {
+        if (
+          error instanceof CollaborationClientError &&
+          error.code === "conflict"
+        ) {
+          try {
+            await loadAuthoritativeSnapshot();
+          } catch {
+            // Preserve the original optimistic-write conflict for the caller.
+          }
+        }
+        throw error;
       }
-      if (snapshot) {
-        await publish(
-          applyTeamPersonUpdate(snapshot, input.teamId, result.data.person),
-          { kind: "command" }
-        );
-      }
-      return result.data.person;
     },
     async reportTeamActivity(teamIds) {
       const result = await command("collaboration.report_team_activity", {
