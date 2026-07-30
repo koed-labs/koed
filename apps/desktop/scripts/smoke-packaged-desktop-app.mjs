@@ -496,8 +496,9 @@ const smokePackageStatus = (layout, koedHome) => {
   return packageStatusJson;
 };
 
-const smokePackagedCollaborationBroker = (layout, koedHome) =>
-  new Promise((resolveSmoke, rejectSmoke) => {
+const smokePackagedCollaborationBroker = async (layout, koedHome) => {
+  const { COLLABORATION_CONTRACT_VERSION } = await import("@koed/shared");
+  return new Promise((resolveSmoke, rejectSmoke) => {
     const sessionToken = randomBytes(32).toString("base64url");
     const requestId = randomUUID();
     const commandEnvelopeId = randomUUID();
@@ -561,7 +562,7 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
         !message ||
         typeof message !== "object" ||
         message.protocolVersion !== 1 ||
-        message.contractVersion !== 2 ||
+        message.contractVersion !== COLLABORATION_CONTRACT_VERSION ||
         message.sessionToken !== sessionToken
       ) {
         finish(new Error("Packaged collaboration broker IPC was invalid."));
@@ -570,13 +571,13 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
       if (message.type === "ready") {
         child.send({
           protocolVersion: 1,
-          contractVersion: 2,
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
           sessionToken,
           type: "command",
           envelopeId: commandEnvelopeId,
           ownerId: "packaged-smoke-renderer",
           command: {
-            contractVersion: 2,
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
             requestId,
             command: "collaboration.load",
             input: {}
@@ -606,7 +607,7 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
         commandCompleted = true;
         child.send({
           protocolVersion: 1,
-          contractVersion: 2,
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
           sessionToken,
           type: "shutdown",
           envelopeId: shutdownEnvelopeId
@@ -639,6 +640,7 @@ const smokePackagedCollaborationBroker = (layout, koedHome) =>
       }
     });
   });
+};
 
 const smokeMissingAssets = (layout, koedHome) => {
   const packageStatus = smokePackageStatus(layout, koedHome);
