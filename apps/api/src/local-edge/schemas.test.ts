@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDeviceEnrollmentChallengeSchema,
+  localEdgeOperationFamilySchema,
   redeemDeviceEnrollmentChallengeSchema
 } from "./schemas.js";
 
@@ -12,6 +13,15 @@ const challenge = {
 };
 
 describe("local edge enrollment schemas", () => {
+  it("accepts personal collaboration operation families", () => {
+    expect(
+      localEdgeOperationFamilySchema.parse("personal_collaboration_read")
+    ).toBe("personal_collaboration_read");
+    expect(
+      localEdgeOperationFamilySchema.parse("personal_collaboration_write")
+    ).toBe("personal_collaboration_write");
+  });
+
   it("requires a non-empty operation-family allowlist", () => {
     expect(
       createDeviceEnrollmentChallengeSchema.safeParse(challenge).success

@@ -50,6 +50,8 @@ const localCollaborationBindingSchema = z.discriminatedUnion("scope", [
 
 export const localEdgeOperationFamilySchema = z.enum([
   "personal_memory_read",
+  "personal_collaboration_read",
+  "personal_collaboration_write",
   "team_workspace_read",
   "team_chat_read",
   "team_chat_write",

@@ -8275,6 +8275,7 @@ describe("account and access flows", () => {
     const upstreamBackendsPath = writeUpstreamRegistryFixture({
       baseUrl: "https://team.example.test",
       routePolicy: {
+        personalCollaboration: "enabled",
         teamWorkspaceRead: "enabled",
         sync: "enabled"
       }
@@ -8321,7 +8322,12 @@ describe("account and access flows", () => {
         upstream_backend_id: "team-vps",
         protocol_deployment_id: testProtocolDeploymentId,
         device_instance_id: "desktop-1",
-        requested_operation_families: ["team_workspace_read", "sync"]
+        requested_operation_families: [
+          "personal_collaboration_read",
+          "personal_collaboration_write",
+          "team_workspace_read",
+          "sync"
+        ]
       }
     });
     await app.inject({
@@ -8348,6 +8354,24 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(cookie),
       payload: {
         operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps"
+      }
+    });
+    const personalCollaborationReadDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: browserSessionHeaders(cookie),
+      payload: {
+        operation_family: "personal_collaboration_read",
+        upstream_backend_id: "team-vps"
+      }
+    });
+    const personalCollaborationWriteDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: browserSessionHeaders(cookie),
+      payload: {
+        operation_family: "personal_collaboration_write",
         upstream_backend_id: "team-vps"
       }
     });
@@ -8417,6 +8441,16 @@ describe("account and access flows", () => {
     ).toMatchObject({ action: "local_only" });
     expect(
       jsonBody<{ decision: { action: string } }>(teamDecision).decision
+    ).toMatchObject({ action: "live_upstream_proxy" });
+    expect(
+      jsonBody<{ decision: { action: string } }>(
+        personalCollaborationReadDecision
+      ).decision
+    ).toMatchObject({ action: "live_upstream_proxy" });
+    expect(
+      jsonBody<{ decision: { action: string } }>(
+        personalCollaborationWriteDecision
+      ).decision
     ).toMatchObject({ action: "live_upstream_proxy" });
     expect(
       jsonBody<{ decision: { action: string } }>(syncDecision).decision
