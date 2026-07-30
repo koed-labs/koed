@@ -9,6 +9,7 @@ import {
   pdsPortableMemoryEventId,
   pdsPortableMemoryEmbeddingId,
   pdsPortableMemoryEmbeddingWorkIdentity,
+  pdsPortableEmbeddingSourceHash,
   pdsPortableEmbeddingVectorHash,
   type PdsArtifactRecord,
   type PdsEmbeddingContractV1,
@@ -232,6 +233,17 @@ export interface PersonalDeviceArtifactRepository {
   }>;
 }
 
+interface PersonalDeviceArtifactRepositoryDependencies {
+  getEmbeddableSource(
+    sourceType: "memory_event" | "memory_node",
+    sourceId: string
+  ): Promise<{
+    ownerUserId: string | null;
+    text: string;
+    sourceHash: string;
+  } | null>;
+}
+
 const iso = (value: Date): string => value.toISOString();
 const leaseSeconds = (value: number | undefined): number =>
   Math.min(Math.max(value ?? 60, 5), 3600);
@@ -311,7 +323,8 @@ const portableMemoryEventMetadata = (
 };
 
 export const createPersonalDeviceArtifactRepository = (
-  pool: pg.Pool
+  pool: pg.Pool,
+  dependencies: PersonalDeviceArtifactRepositoryDependencies
 ): PersonalDeviceArtifactRepository => ({
   async listPdsPortableMemoryEventCandidates(input) {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 500);
@@ -577,6 +590,7 @@ export const createPersonalDeviceArtifactRepository = (
     const contractHash = pdsArtifactCompatibilityHash(input.contract);
     const result = await pool.query<{
       local_memory_embedding_id: string;
+      local_source_id: string;
       local_session_id: string;
       logical_source_id: string;
       source_content_hash: string;
@@ -590,7 +604,7 @@ export const createPersonalDeviceArtifactRepository = (
       source_text: string;
       vector_text: string;
     }>(
-      `select me.id as local_memory_embedding_id,
+      `select me.id as local_memory_embedding_id,ev.id as local_source_id,
          ev.session_id as local_session_id,
          pem.logical_event_id as logical_source_id,
          pem.content_hash as source_content_hash,pem.source_fingerprint,
@@ -635,64 +649,85 @@ export const createPersonalDeviceArtifactRepository = (
         limit
       ]
     );
-    const eventCandidates = result.rows.map((row) => {
-      const vector = JSON.parse(row.vector_text) as unknown;
-      if (
-        !Array.isArray(vector) ||
-        vector.length !== dimensions ||
-        vector.some((value) => typeof value !== "number")
-      ) {
-        throw new Error("PDS portable embedding vector is invalid");
-      }
-      const typedVector = vector as number[];
-      const portableVector = typedVector.map(String);
-      const vectorHash = pdsPortableEmbeddingVectorHash(portableVector);
-      const sourceTextHash = createHash("sha256")
-        .update(row.source_text)
-        .digest("base64url");
-      const logicalEmbeddingId = pdsPortableMemoryEmbeddingId({
-        logicalSourceType: "memory_event",
-        logicalSourceId: row.logical_source_id,
-        sourceContentHash: row.source_content_hash,
-        sourceChunkIndex: String(row.source_chunk_index),
-        sourceChunkCount: String(row.source_chunk_count),
-        compatibilityContractHash: contractHash,
-        vectorHash
-      });
-      return {
-        localMemoryEmbeddingId: row.local_memory_embedding_id,
-        localSessionId: row.local_session_id,
-        groupId: input.groupId,
-        sourcePackageId: row.package_id,
-        sourceManifestHash: row.source_manifest_hash,
-        sourceFingerprint: row.source_fingerprint,
-        sourceClosureHash: row.source_closure_hash,
-        workIdentity: pdsPortableMemoryEmbeddingWorkIdentity({
+    const eventCandidates = await Promise.all(
+      result.rows.map(async (row) => {
+        const vector = JSON.parse(row.vector_text) as unknown;
+        if (
+          !Array.isArray(vector) ||
+          vector.length !== dimensions ||
+          vector.some((value) => typeof value !== "number")
+        ) {
+          throw new Error("PDS portable embedding vector is invalid");
+        }
+        const typedVector = vector as number[];
+        const portableVector = typedVector.map(String);
+        const vectorHash = pdsPortableEmbeddingVectorHash(portableVector);
+        const sourceTextHash = createHash("sha256")
+          .update(row.source_text)
+          .digest("base64url");
+        const canonicalSource = await dependencies.getEmbeddableSource(
+          "memory_event",
+          row.local_source_id
+        );
+        if (!canonicalSource || canonicalSource.ownerUserId !== input.userId) {
+          throw new Error("PDS portable embedding source is unavailable");
+        }
+        const canonicalSourceTextHash = createHash("sha256")
+          .update(canonicalSource.text)
+          .digest("base64url");
+        const sourceHash = pdsPortableEmbeddingSourceHash({
           logicalSourceType: "memory_event",
           logicalSourceId: row.logical_source_id,
           sourceContentHash: row.source_content_hash,
-          compatibilityContractHash: contractHash
-        }),
-        compatibilityContract: input.contract,
-        embedding: {
-          logicalEmbeddingId,
-          logicalSourceType: "memory_event" as const,
+          canonicalSourceTextHash
+        });
+        const logicalEmbeddingId = pdsPortableMemoryEmbeddingId({
+          logicalSourceType: "memory_event",
           logicalSourceId: row.logical_source_id,
           sourceContentHash: row.source_content_hash,
           sourceChunkIndex: String(row.source_chunk_index),
           sourceChunkCount: String(row.source_chunk_count),
-          sourceHash: row.source_hash,
-          sourceText: row.source_text,
-          sourceTextHash,
-          vector: portableVector,
+          canonicalSourceTextHash,
+          compatibilityContractHash: contractHash,
           vectorHash
-        }
-      };
-    });
+        });
+        return {
+          localMemoryEmbeddingId: row.local_memory_embedding_id,
+          localSessionId: row.local_session_id,
+          groupId: input.groupId,
+          sourcePackageId: row.package_id,
+          sourceManifestHash: row.source_manifest_hash,
+          sourceFingerprint: row.source_fingerprint,
+          sourceClosureHash: row.source_closure_hash,
+          workIdentity: pdsPortableMemoryEmbeddingWorkIdentity({
+            logicalSourceType: "memory_event",
+            logicalSourceId: row.logical_source_id,
+            sourceContentHash: row.source_content_hash,
+            compatibilityContractHash: contractHash
+          }),
+          compatibilityContract: input.contract,
+          embedding: {
+            logicalEmbeddingId,
+            logicalSourceType: "memory_event" as const,
+            logicalSourceId: row.logical_source_id,
+            sourceContentHash: row.source_content_hash,
+            sourceChunkIndex: String(row.source_chunk_index),
+            sourceChunkCount: String(row.source_chunk_count),
+            sourceHash,
+            canonicalSourceTextHash,
+            sourceText: row.source_text,
+            sourceTextHash,
+            vector: portableVector,
+            vectorHash
+          }
+        };
+      })
+    );
     const remaining = Math.max(0, limit - eventCandidates.length);
     if (remaining === 0) return eventCandidates;
     const nodeResult = await pool.query<{
       local_memory_embedding_id: string;
+      local_source_id: string;
       local_session_id: string;
       logical_source_id: string;
       source_content_hash: string;
@@ -706,7 +741,7 @@ export const createPersonalDeviceArtifactRepository = (
       source_text: string;
       vector_text: string;
     }>(
-      `select me.id as local_memory_embedding_id,
+      `select me.id as local_memory_embedding_id,node.id as local_source_id,
          node.session_id as local_session_id,mapping.logical_node_id
            as logical_source_id,mapping.content_hash as source_content_hash,
          mapping.source_fingerprint,mapping.source_closure_hash,
@@ -752,60 +787,80 @@ export const createPersonalDeviceArtifactRepository = (
         remaining
       ]
     );
-    const nodeCandidates = nodeResult.rows.map((row) => {
-      const vector = JSON.parse(row.vector_text) as unknown;
-      if (
-        !Array.isArray(vector) ||
-        vector.length !== dimensions ||
-        vector.some((value) => typeof value !== "number")
-      ) {
-        throw new Error("PDS portable embedding vector is invalid");
-      }
-      const typedVector = vector as number[];
-      const portableVector = typedVector.map(String);
-      const vectorHash = pdsPortableEmbeddingVectorHash(portableVector);
-      const sourceTextHash = createHash("sha256")
-        .update(row.source_text)
-        .digest("base64url");
-      const logicalEmbeddingId = pdsPortableMemoryEmbeddingId({
-        logicalSourceType: "lcm_node",
-        logicalSourceId: row.logical_source_id,
-        sourceContentHash: row.source_content_hash,
-        sourceChunkIndex: String(row.source_chunk_index),
-        sourceChunkCount: String(row.source_chunk_count),
-        compatibilityContractHash: contractHash,
-        vectorHash
-      });
-      return {
-        localMemoryEmbeddingId: row.local_memory_embedding_id,
-        localSessionId: row.local_session_id,
-        groupId: input.groupId,
-        sourcePackageId: row.package_id,
-        sourceManifestHash: row.source_manifest_hash,
-        sourceFingerprint: row.source_fingerprint,
-        sourceClosureHash: row.source_closure_hash,
-        workIdentity: pdsPortableMemoryEmbeddingWorkIdentity({
+    const nodeCandidates = await Promise.all(
+      nodeResult.rows.map(async (row) => {
+        const vector = JSON.parse(row.vector_text) as unknown;
+        if (
+          !Array.isArray(vector) ||
+          vector.length !== dimensions ||
+          vector.some((value) => typeof value !== "number")
+        ) {
+          throw new Error("PDS portable embedding vector is invalid");
+        }
+        const typedVector = vector as number[];
+        const portableVector = typedVector.map(String);
+        const vectorHash = pdsPortableEmbeddingVectorHash(portableVector);
+        const sourceTextHash = createHash("sha256")
+          .update(row.source_text)
+          .digest("base64url");
+        const canonicalSource = await dependencies.getEmbeddableSource(
+          "memory_node",
+          row.local_source_id
+        );
+        if (!canonicalSource || canonicalSource.ownerUserId !== input.userId) {
+          throw new Error("PDS portable embedding source is unavailable");
+        }
+        const canonicalSourceTextHash = createHash("sha256")
+          .update(canonicalSource.text)
+          .digest("base64url");
+        const sourceHash = pdsPortableEmbeddingSourceHash({
           logicalSourceType: "lcm_node",
           logicalSourceId: row.logical_source_id,
           sourceContentHash: row.source_content_hash,
-          compatibilityContractHash: contractHash
-        }),
-        compatibilityContract: input.contract,
-        embedding: {
-          logicalEmbeddingId,
-          logicalSourceType: "lcm_node" as const,
+          canonicalSourceTextHash
+        });
+        const logicalEmbeddingId = pdsPortableMemoryEmbeddingId({
+          logicalSourceType: "lcm_node",
           logicalSourceId: row.logical_source_id,
           sourceContentHash: row.source_content_hash,
           sourceChunkIndex: String(row.source_chunk_index),
           sourceChunkCount: String(row.source_chunk_count),
-          sourceHash: row.source_hash,
-          sourceText: row.source_text,
-          sourceTextHash,
-          vector: portableVector,
+          canonicalSourceTextHash,
+          compatibilityContractHash: contractHash,
           vectorHash
-        }
-      };
-    });
+        });
+        return {
+          localMemoryEmbeddingId: row.local_memory_embedding_id,
+          localSessionId: row.local_session_id,
+          groupId: input.groupId,
+          sourcePackageId: row.package_id,
+          sourceManifestHash: row.source_manifest_hash,
+          sourceFingerprint: row.source_fingerprint,
+          sourceClosureHash: row.source_closure_hash,
+          workIdentity: pdsPortableMemoryEmbeddingWorkIdentity({
+            logicalSourceType: "lcm_node",
+            logicalSourceId: row.logical_source_id,
+            sourceContentHash: row.source_content_hash,
+            compatibilityContractHash: contractHash
+          }),
+          compatibilityContract: input.contract,
+          embedding: {
+            logicalEmbeddingId,
+            logicalSourceType: "lcm_node" as const,
+            logicalSourceId: row.logical_source_id,
+            sourceContentHash: row.source_content_hash,
+            sourceChunkIndex: String(row.source_chunk_index),
+            sourceChunkCount: String(row.source_chunk_count),
+            sourceHash,
+            canonicalSourceTextHash,
+            sourceText: row.source_text,
+            sourceTextHash,
+            vector: portableVector,
+            vectorHash
+          }
+        };
+      })
+    );
     return [...eventCandidates, ...nodeCandidates];
   },
 
@@ -1986,6 +2041,32 @@ export const createPersonalDeviceArtifactRepository = (
         );
         if (!localSource.rows[0]?.session_id) {
           throw new Error("PDS embedding artifact source is unavailable");
+        }
+        const canonicalSource = await dependencies.getEmbeddableSource(
+          embedding.logicalSourceType === "memory_event"
+            ? "memory_event"
+            : "memory_node",
+          localSource.rows[0].local_source_id
+        );
+        if (!canonicalSource || canonicalSource.ownerUserId !== input.userId) {
+          throw new Error("PDS embedding artifact source is unavailable");
+        }
+        const canonicalSourceTextHash = createHash("sha256")
+          .update(canonicalSource.text)
+          .digest("base64url");
+        const expectedPortableSourceHash = pdsPortableEmbeddingSourceHash({
+          logicalSourceType: embedding.logicalSourceType,
+          logicalSourceId: embedding.logicalSourceId,
+          sourceContentHash: embedding.sourceContentHash,
+          canonicalSourceTextHash
+        });
+        if (
+          embedding.canonicalSourceTextHash !== canonicalSourceTextHash ||
+          embedding.sourceHash !== expectedPortableSourceHash
+        ) {
+          throw new Error(
+            "PDS embedding artifact does not match canonical local source"
+          );
         }
         const compatibilityContract = manifest.compatibilityContract;
         const configuredModel = resolveSupportedEmbeddingModelConfig(

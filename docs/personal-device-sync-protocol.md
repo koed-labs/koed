@@ -444,9 +444,11 @@ The V1 artifact registry initially permits:
 
 - `memory_event/v1`, containing portable projected-event data with stable source
   item bindings and no database primary keys;
-- `memory_embedding/v1`, containing an event content hash, canonical vector, and
-  the exact embedding contract: model artifact identity, dimensions, tokenizer
-  and input transformation, pooling, normalization, and embedding version;
+- `memory_embedding/v1`, containing the logical source content hash, receiver-
+  verifiable canonical full-source text hash, exact chunk text hash, canonical
+  vector, and the exact embedding contract: model artifact identity,
+  dimensions, tokenizer and input transformation, pooling, normalization, and
+  embedding version;
 - `lcm_node/v1`, containing a leaf or rollup bound to its exact ordered logical
   source identities and complete LCM compatibility contract.
 
@@ -457,6 +459,12 @@ active explicitly enrolled Personal device. An incompatible or unavailable
 artifact is ignored without weakening source replication and is rebuilt from
 the canonical source closure. Local HNSW/vector indexes, queue state, leases,
 credentials, paths, and operational rows are never artifact payloads.
+
+Before importing a vector, the receiver derives the source through its normal
+embeddable-source path, including authorized decryption. It must match the
+artifact's canonical full-source text hash and portable source hash. This
+proves every chunk belongs to the receiver's exact logical source without
+requiring the database importer to reproduce llama-server token boundaries.
 
 `modelArtifactHash` and embedding `sourceHash` use lowercase SHA-256 hex because
 they bind the installed model artifact and local embedding-source contract.

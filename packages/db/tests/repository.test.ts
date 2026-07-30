@@ -44,6 +44,7 @@ import {
   crossIdentitySyncPackageRequestHash,
   decryptEnvelopeToUtf8,
   pdsArtifactCompatibilityHash,
+  pdsPortableEmbeddingSourceHash,
   pdsPortableEmbeddingVectorHash,
   pdsPortableLcmNodeContentHash,
   pdsPortableLcmNodeId,
@@ -56,7 +57,8 @@ import {
   type CapturedSessionSyncUploadPackageManifest,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
-  type ManagedKmsKeyring
+  type ManagedKmsKeyring,
+  type PdsPortableMemoryEmbeddingV1
 } from "@koed/shared";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -29234,12 +29236,16 @@ describeDb("memory repository visibility", () => {
       index === 0 ? "1" : "0"
     );
     const vectorHash = pdsPortableEmbeddingVectorHash(vector);
+    const canonicalSourceTextHash = createHash("sha256")
+      .update(content)
+      .digest("base64url");
     const embeddingId = pdsPortableMemoryEmbeddingId({
       logicalSourceType: "memory_event",
       logicalSourceId: logicalEventId,
       sourceContentHash: eventContentHash,
       sourceChunkIndex: "0",
       sourceChunkCount: "1",
+      canonicalSourceTextHash,
       compatibilityContractHash:
         pdsArtifactCompatibilityHash(embeddingContract),
       vectorHash
@@ -29254,9 +29260,13 @@ describeDb("memory repository visibility", () => {
           sourceContentHash: eventContentHash,
           sourceChunkIndex: "0",
           sourceChunkCount: "1",
-          sourceHash: createHash("sha256")
-            .update(`memory_event:${importedEvent.localSourceId}:${content}`)
-            .digest("hex"),
+          sourceHash: pdsPortableEmbeddingSourceHash({
+            logicalSourceType: "memory_event",
+            logicalSourceId: logicalEventId,
+            sourceContentHash: eventContentHash,
+            canonicalSourceTextHash
+          }),
+          canonicalSourceTextHash,
           sourceText: content,
           sourceTextHash: createHash("sha256")
             .update(content)
@@ -29266,6 +29276,45 @@ describeDb("memory repository visibility", () => {
         }
       ]
     });
+    const embeddingItem = embeddingRecord.payload
+      .items[0] as PdsPortableMemoryEmbeddingV1;
+    const wrongCanonicalSourceTextHash = createHash("sha256")
+      .update("Different canonical source")
+      .digest("base64url");
+    const wrongEmbeddingId = pdsPortableMemoryEmbeddingId({
+      logicalSourceType: "memory_event",
+      logicalSourceId: logicalEventId,
+      sourceContentHash: eventContentHash,
+      sourceChunkIndex: "0",
+      sourceChunkCount: "1",
+      canonicalSourceTextHash: wrongCanonicalSourceTextHash,
+      compatibilityContractHash:
+        pdsArtifactCompatibilityHash(embeddingContract),
+      vectorHash
+    });
+    const wrongSourceRecord = createRecord(
+      embeddingContract,
+      wrongEmbeddingId,
+      {
+        artifactClass: "memory_embedding/v1",
+        items: [
+          {
+            ...embeddingItem,
+            logicalEmbeddingId: wrongEmbeddingId,
+            canonicalSourceTextHash: wrongCanonicalSourceTextHash,
+            sourceHash: pdsPortableEmbeddingSourceHash({
+              logicalSourceType: "memory_event",
+              logicalSourceId: logicalEventId,
+              sourceContentHash: eventContentHash,
+              canonicalSourceTextHash: wrongCanonicalSourceTextHash
+            })
+          }
+        ]
+      }
+    );
+    await expect(importRecord(wrongSourceRecord)).rejects.toThrow(
+      "does not match canonical local source"
+    );
     const importedEmbedding = await importRecord(embeddingRecord);
     expect(importedEmbedding.state).toBe("ready");
     expect(typeof importedEmbedding.localSourceId).toBe("string");

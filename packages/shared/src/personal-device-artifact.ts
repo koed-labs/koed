@@ -100,6 +100,7 @@ export interface PdsPortableMemoryEmbeddingV1 {
   sourceChunkIndex: string;
   sourceChunkCount: string;
   sourceHash: string;
+  canonicalSourceTextHash: string;
   sourceText: string;
   sourceTextHash: string;
   vector: string[];
@@ -338,9 +339,18 @@ export const pdsPortableMemoryEmbeddingId = (input: {
   sourceContentHash: string;
   sourceChunkIndex: string;
   sourceChunkCount: string;
+  canonicalSourceTextHash: string;
   compatibilityContractHash: string;
   vectorHash: string;
 }): string => sha256(canonicalizePdsJson(input));
+
+export const pdsPortableEmbeddingSourceHash = (input: {
+  logicalSourceType: "memory_event" | "lcm_node";
+  logicalSourceId: string;
+  sourceContentHash: string;
+  canonicalSourceTextHash: string;
+}): string =>
+  createHash("sha256").update(canonicalizePdsJson(input)).digest("hex");
 
 export const pdsPortableMemoryEmbeddingWorkIdentity = (input: {
   logicalSourceType: "memory_event" | "lcm_node";
@@ -603,6 +613,7 @@ const validateArtifactItem = (
         "sourceChunkIndex",
         "sourceChunkCount",
         "sourceHash",
+        "canonicalSourceTextHash",
         "sourceText",
         "sourceTextHash",
         "vector",
@@ -614,18 +625,19 @@ const validateArtifactItem = (
       throw new TypeError("PDS embedding vector is invalid");
     }
     const vector = portableVectorValues(item.vector as Array<number | string>);
+    const normalizedSourceType: PdsPortableMemoryEmbeddingV1["logicalSourceType"] =
+      item.logicalSourceType === "memory_event" ||
+      item.logicalSourceType === "lcm_node"
+        ? item.logicalSourceType
+        : (() => {
+            throw new TypeError("PDS embedding source type is invalid");
+          })();
     const normalized = {
       logicalEmbeddingId: hashString(
         item.logicalEmbeddingId,
         "logical embedding ID"
       ),
-      logicalSourceType:
-        item.logicalSourceType === "memory_event" ||
-        item.logicalSourceType === "lcm_node"
-          ? item.logicalSourceType
-          : (() => {
-              throw new TypeError("PDS embedding source type is invalid");
-            })(),
+      logicalSourceType: normalizedSourceType,
       logicalSourceId: hashString(
         item.logicalSourceId,
         "logical embedding source ID"
@@ -643,6 +655,10 @@ const validateArtifactItem = (
         "embedding chunk count"
       ),
       sourceHash: sha256HexString(item.sourceHash, "embedding source hash"),
+      canonicalSourceTextHash: hashString(
+        item.canonicalSourceTextHash,
+        "canonical embedding source-text hash"
+      ),
       sourceText: boundedString(
         item.sourceText,
         "embedding source text",
@@ -660,6 +676,12 @@ const validateArtifactItem = (
       BigInt(normalized.sourceChunkIndex) >=
         BigInt(normalized.sourceChunkCount) ||
       sha256(normalized.sourceText) !== normalized.sourceTextHash ||
+      pdsPortableEmbeddingSourceHash({
+        logicalSourceType: normalized.logicalSourceType,
+        logicalSourceId: normalized.logicalSourceId,
+        sourceContentHash: normalized.sourceContentHash,
+        canonicalSourceTextHash: normalized.canonicalSourceTextHash
+      }) !== normalized.sourceHash ||
       pdsPortableEmbeddingVectorHash(vector) !== normalized.vectorHash
     ) {
       throw new TypeError("PDS embedding chunk binding is invalid");
@@ -835,6 +857,24 @@ export const validatePdsArtifactRecord = (
     pdsArtifactPayloadHash(payload) !== parsedManifest.payloadHash
   ) {
     throw new TypeError("PDS artifact content binding is invalid");
+  }
+  if (
+    parsedClass === "memory_embedding/v1" &&
+    (payload.items as PdsPortableMemoryEmbeddingV1[]).some(
+      (item) =>
+        pdsPortableMemoryEmbeddingId({
+          logicalSourceType: item.logicalSourceType,
+          logicalSourceId: item.logicalSourceId,
+          sourceContentHash: item.sourceContentHash,
+          sourceChunkIndex: item.sourceChunkIndex,
+          sourceChunkCount: item.sourceChunkCount,
+          canonicalSourceTextHash: item.canonicalSourceTextHash,
+          compatibilityContractHash: parsedManifest.compatibilityContractHash,
+          vectorHash: item.vectorHash
+        }) !== item.logicalEmbeddingId
+    )
+  ) {
+    throw new TypeError("PDS embedding identity is invalid");
   }
   const {
     artifactId,

@@ -3810,7 +3810,7 @@ export const createMemorySourceRepository = (
   ): Promise<T[]> =>
     Promise.all(rows.map((row) => hydrateRepositoryMemoryNodeRow(client, row)));
 
-  return {
+  const repository: MemorySourceRepository = {
     // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
     // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
     ...createUserApiTokenRepository(db),
@@ -3860,7 +3860,10 @@ export const createMemorySourceRepository = (
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     ...createPersonalDeviceSyncRepository(pool),
-    ...createPersonalDeviceArtifactRepository(pool),
+    ...createPersonalDeviceArtifactRepository(pool, {
+      getEmbeddableSource: (sourceType, sourceId) =>
+        repository.getEmbeddableSource(sourceType, sourceId)
+    }),
     ...createPersonalDeviceSyncLocalRepository(pool),
     ...createPersonalDeviceSyncLifecycleRepository(pool),
     ...createPersonalDeviceSyncRelayRepository(pool),
@@ -11842,4 +11845,5 @@ export const createMemorySourceRepository = (
       } satisfies ExpandedMemoryNode;
     }
   };
+  return repository;
 };

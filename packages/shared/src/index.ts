@@ -590,6 +590,7 @@ export {
   pdsArtifactClasses,
   pdsArtifactCompatibilityHash,
   pdsArtifactPayloadHash,
+  pdsPortableEmbeddingSourceHash,
   pdsPortableEmbeddingVectorHash,
   pdsPortableLcmNodeContentHash,
   pdsPortableLcmNodeId,

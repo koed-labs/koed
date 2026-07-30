@@ -5,6 +5,7 @@ import {
   createPdsArtifactRecord,
   pdsArtifactCompatibilityHash,
   pdsArtifactPayloadHash,
+  pdsPortableEmbeddingSourceHash,
   pdsPortableEmbeddingVectorHash,
   pdsPortableLcmNodeContentHash,
   pdsPortableLcmNodeId,
@@ -157,12 +158,16 @@ describe("portable Personal artifacts", () => {
         logicalSourceType === "memory_event" ? 11 : 12
       );
       const sourceContentHash = hash(13);
+      const canonicalSourceTextHash = createHash("sha256")
+        .update("Portable embedding source.")
+        .digest("base64url");
       const logicalEmbeddingId = pdsPortableMemoryEmbeddingId({
         logicalSourceType,
         logicalSourceId,
         sourceContentHash,
         sourceChunkIndex: "0",
         sourceChunkCount: "1",
+        canonicalSourceTextHash,
         compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
         vectorHash
       });
@@ -176,9 +181,13 @@ describe("portable Personal artifacts", () => {
             sourceContentHash,
             sourceChunkIndex: "0",
             sourceChunkCount: "1",
-            sourceHash: createHash("sha256")
-              .update("embedding-source")
-              .digest("hex"),
+            sourceHash: pdsPortableEmbeddingSourceHash({
+              logicalSourceType,
+              logicalSourceId,
+              sourceContentHash,
+              canonicalSourceTextHash
+            }),
+            canonicalSourceTextHash,
             sourceText: "Portable embedding source.",
             sourceTextHash: hash(15),
             vector,
