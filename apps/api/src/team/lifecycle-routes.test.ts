@@ -364,6 +364,14 @@ describe("Team lifecycle routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       principal: { id: user.id },
+      teamPresenceStatusCatalogue: {
+        version: 1,
+        statuses: [
+          { key: "available", label: "Available" },
+          { key: "do_not_disturb", label: "Do not disturb" },
+          { key: "out_of_office", label: "Out of office" }
+        ]
+      },
       teams: [
         {
           team: { id: teamId },

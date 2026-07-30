@@ -1,6 +1,7 @@
 import {
   highRiskActionGrantCanonicalHash,
-  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
+  teamPresenceStatusCatalogue
 } from "@koed/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
@@ -475,6 +476,7 @@ export const registerTeamRoutes = (
       );
       return {
         principal: publicUser(user),
+        teamPresenceStatusCatalogue,
         teams: navigationTeams
       };
     }

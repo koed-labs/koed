@@ -7,6 +7,29 @@ export const teamManualStatuses = [
   "out_of_office"
 ] as const;
 export type TeamManualStatus = (typeof teamManualStatuses)[number];
+export type TeamManualStatusDisplay = TeamManualStatus | "unknown";
+
+export const TEAM_PRESENCE_STATUS_CATALOGUE_VERSION = 1;
+
+export interface TeamPresenceStatusCatalogue {
+  version: number;
+  statuses: Array<{
+    key: TeamManualStatus;
+    label: string;
+  }>;
+}
+
+export const teamPresenceStatusCatalogue: TeamPresenceStatusCatalogue = {
+  version: TEAM_PRESENCE_STATUS_CATALOGUE_VERSION,
+  statuses: [
+    { key: "available", label: "Available" },
+    { key: "do_not_disturb", label: "Do not disturb" },
+    { key: "out_of_office", label: "Out of office" }
+  ]
+};
+
+export const isTeamManualStatus = (value: string): value is TeamManualStatus =>
+  teamManualStatuses.some((status) => status === value);
 
 export const teamActivityLevels = [
   "active",
@@ -23,7 +46,7 @@ export const TEAM_ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
 
 export interface TeamPresenceSnapshot {
   mode: TeamPresenceMode;
-  manualStatus: TeamManualStatus;
+  manualStatus: TeamManualStatusDisplay;
   activityLevel: TeamActivityLevel | null;
   lastActivityAt: string | null;
   nextTransitionAt: string | null;
@@ -33,7 +56,7 @@ export interface TeamPresenceSnapshot {
 export const deriveTeamPresenceSnapshot = (
   input: {
     mode: TeamPresenceMode;
-    manualStatus: TeamManualStatus;
+    manualStatus: TeamManualStatusDisplay;
     lastActivityAt: string | null;
     preferenceVersion: number;
   },

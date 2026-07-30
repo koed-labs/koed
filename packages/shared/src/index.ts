@@ -10,19 +10,24 @@ export {
 export {
   coarsePresenceFromTeamPresence,
   deriveTeamPresenceSnapshot,
+  isTeamManualStatus,
   TEAM_ACTIVITY_ACTIVE_MS,
   TEAM_ACTIVITY_IDLE_MS,
   TEAM_ACTIVITY_RECENT_MS,
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  TEAM_PRESENCE_STATUS_CATALOGUE_VERSION,
   teamActivityLevels,
   teamManualStatuses,
+  teamPresenceStatusCatalogue,
   teamPresenceModes
 } from "./team-presence.js";
 export type {
   TeamActivityLevel,
   TeamManualStatus,
+  TeamManualStatusDisplay,
   TeamPresenceMode,
-  TeamPresenceSnapshot
+  TeamPresenceSnapshot,
+  TeamPresenceStatusCatalogue
 } from "./team-presence.js";
 
 export {
@@ -238,6 +243,7 @@ export {
   collaborationSnapshotSchema,
   collaborationSubscriptionSchema,
   collaborationTeamPersonSchema,
+  collaborationTeamPresenceStatusCatalogueSchema,
   collaborationThreadSchema,
   collaborationThreadReferenceSchema,
   collaborationTimestampSchema,

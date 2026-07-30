@@ -37,6 +37,13 @@ User's devices in the Team:
 - `idle`: over 30 minutes and at most 2 hours;
 - `inactive`: over 2 hours, missing, or invalid.
 
+The collaboration snapshot carries a versioned manual-status catalogue with
+stable keys and display labels. Clients use that catalogue for available
+controls instead of treating a compile-time enum as the wire contract. A client
+that receives a valid but unknown future status key renders a neutral unknown
+state while retaining the catalogue version and entries; it does not reject the
+Team roster or guess that the User is available.
+
 Only foreground human interaction may report activity. Pointer or keyboard
 interaction, window focus, and a transition to a visible document qualify.
 Capture Hooks, AI Clients, agent execution, embedding, LCM work, sync,

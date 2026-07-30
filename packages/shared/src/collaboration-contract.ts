@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  teamManualStatuses,
+  teamPresenceStatusCatalogue
+} from "./team-presence.js";
 export {
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
   deriveTeamPresenceSnapshot
@@ -533,12 +537,51 @@ const collaborationPersonManagementSchema = z
   })
   .strict();
 
+const teamPresenceStatusKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9_]*$/);
+
+const collaborationTeamManualStatusSchema = z.union([
+  z.enum(teamManualStatuses),
+  teamPresenceStatusKeySchema.transform(() => "unknown" as const)
+]);
+
+export const collaborationTeamPresenceStatusCatalogueSchema = z
+  .object({
+    version: positiveVersionSchema,
+    statuses: z
+      .array(
+        z
+          .object({
+            key: teamPresenceStatusKeySchema,
+            label: z.string().trim().min(1).max(80)
+          })
+          .strict()
+      )
+      .min(1)
+      .max(32)
+  })
+  .strict()
+  .superRefine((catalogue, context) => {
+    const keys = catalogue.statuses.map((status) => status.key);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["statuses"],
+        message: "Team Presence status catalogue keys must be unique"
+      });
+    }
+  });
+
 export const collaborationTeamPersonSchema = collaborationPersonSchema
   .extend({
     teamPresence: z
       .object({
         mode: z.enum(["auto", "manual"]),
-        manualStatus: z.enum(["available", "do_not_disturb", "out_of_office"]),
+        manualStatus: collaborationTeamManualStatusSchema,
         activityLevel: z
           .enum(["active", "recently_active", "idle", "inactive"])
           .nullable(),
@@ -1338,6 +1381,13 @@ export const collaborationSnapshotSchema = z
     generatedAt: collaborationTimestampSchema,
     connection: collaborationConnectionSchema,
     limits: collaborationLimitsSchema,
+    teamPresenceStatusCatalogue:
+      collaborationTeamPresenceStatusCatalogueSchema.default(() => ({
+        version: teamPresenceStatusCatalogue.version,
+        statuses: teamPresenceStatusCatalogue.statuses.map((status) => ({
+          ...status
+        }))
+      })),
     outbox: z.array(collaborationDurableSendSchema).max(1_000).optional(),
     navigation: collaborationNavigationSchema,
     selection: collaborationSelectionSchema,

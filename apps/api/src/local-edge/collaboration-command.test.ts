@@ -1166,6 +1166,14 @@ const remoteNavigationPayload = (input?: {
     email: "remote-alice@example.test",
     displayName: "Remote Alice"
   },
+  teamPresenceStatusCatalogue: {
+    version: 1,
+    statuses: [
+      { key: "available", label: "Available" },
+      { key: "do_not_disturb", label: "Do not disturb" },
+      { key: "out_of_office", label: "Out of office" }
+    ]
+  },
   teams: [
     {
       team: remoteTeam,
@@ -2406,6 +2414,68 @@ describe("local-edge collaboration command route", () => {
       expect(headers.get("authorization")).not.toBe(desktopAuthorization);
       expect(headers.get("cookie")).toBeNull();
     }
+  });
+
+  it("keeps a future remote Presence status from invalidating Team navigation", async () => {
+    const harness = createHarness({
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        if (path === "/v1/teams/navigation") {
+          const payload = remoteNavigationPayload();
+          return Response.json({
+            ...payload,
+            teamPresenceStatusCatalogue: {
+              version: 2,
+              statuses: [
+                ...payload.teamPresenceStatusCatalogue.statuses,
+                { key: "heads_down", label: "Heads down" }
+              ]
+            },
+            teams: payload.teams.map((team) => ({
+              ...team,
+              members: team.members.map((member, index) =>
+                index === 0
+                  ? {
+                      ...member,
+                      teamPresence: {
+                        ...member.teamPresence,
+                        manualStatus: "heads_down"
+                      }
+                    }
+                  : member
+              )
+            }))
+          });
+        }
+        return remoteCompositionResponse(call);
+      }
+    });
+    const result = parseResultAs<LoadTestResult>(
+      (
+        await injectPersonalCommand(harness.app, {
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: randomUUID(),
+          command: "collaboration.load",
+          input: {}
+        } as CollaborationRendererCommand)
+      ).body
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok || result.command !== "collaboration.load") {
+      throw new Error("Expected collaboration.load success");
+    }
+    expect(
+      result.data.snapshot.navigation.teams[0]?.people[0]?.teamPresence
+        .manualStatus
+    ).toBe("unknown");
+    expect(result.data.snapshot.teamPresenceStatusCatalogue.version).toBe(2);
+    expect(
+      result.data.snapshot.teamPresenceStatusCatalogue.statuses
+    ).toContainEqual({
+      key: "heads_down",
+      label: "Heads down"
+    });
   });
 
   it("reuses Team navigation until an authoritative realtime event invalidates it", async () => {

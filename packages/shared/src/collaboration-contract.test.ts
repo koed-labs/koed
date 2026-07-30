@@ -17,6 +17,7 @@ import {
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
   collaborationSnapshotSchema,
+  collaborationTeamPresenceStatusCatalogueSchema,
   collaborationThreadSchema,
   collaborationTeamPersonSchema,
   collaborationTopicDescriptionSchema,
@@ -27,6 +28,7 @@ import {
   type CollaborationCommandResult,
   type CollaborationRendererCommand
 } from "./collaboration-contract.js";
+import { teamPresenceStatusCatalogue } from "./team-presence.js";
 
 const ids = {
   request: "00000000-0000-4000-8000-000000000001",
@@ -277,6 +279,7 @@ const snapshot = () => ({
     protocolVersion: COLLABORATION_CONTRACT_VERSION
   },
   limits: limits(),
+  teamPresenceStatusCatalogue,
   navigation: {
     personalOwner: {
       ...participant(),
@@ -1261,6 +1264,70 @@ describe("collaboration snapshots and DTOs", () => {
             }
           ]
         }
+      }).success
+    ).toBe(false);
+  });
+
+  it("returns a versioned Presence catalogue and safely degrades future status keys", () => {
+    const remotePrincipal = {
+      ...participant(ids.otherUser, "Bob"),
+      presence: "away" as const
+    };
+    const parsed = collaborationSnapshotSchema.parse({
+      ...snapshot(),
+      teamPresenceStatusCatalogue: {
+        version: 2,
+        statuses: [
+          ...teamPresenceStatusCatalogue.statuses,
+          { key: "heads_down", label: "Heads down" }
+        ]
+      },
+      navigation: {
+        ...snapshot().navigation,
+        teamPrincipal: remotePrincipal,
+        teams: [
+          {
+            id: ids.team,
+            name: "Remote Team",
+            role: "member",
+            lifecycle: "active",
+            unreadCount: 0,
+            people: [
+              {
+                ...remotePrincipal,
+                teamPresence: {
+                  mode: "manual",
+                  manualStatus: "heads_down",
+                  activityLevel: null,
+                  lastActivityAt: null,
+                  nextTransitionAt: null,
+                  preferenceVersion: 2
+                }
+              }
+            ],
+            directMessages: [],
+            workspaces: [],
+            version: 1
+          }
+        ]
+      }
+    });
+
+    expect(parsed.teamPresenceStatusCatalogue.version).toBe(2);
+    expect(parsed.teamPresenceStatusCatalogue.statuses).toContainEqual({
+      key: "heads_down",
+      label: "Heads down"
+    });
+    expect(
+      parsed.navigation.teams[0]?.people[0]?.teamPresence.manualStatus
+    ).toBe("unknown");
+    expect(
+      collaborationTeamPresenceStatusCatalogueSchema.safeParse({
+        version: 2,
+        statuses: [
+          { key: "available", label: "Available" },
+          { key: "available", label: "Duplicate" }
+        ]
       }).success
     ).toBe(false);
   });

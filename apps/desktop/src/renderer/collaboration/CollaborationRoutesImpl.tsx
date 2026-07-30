@@ -429,6 +429,22 @@ export function PeopleView({
     invitationUrl: string | null;
     copied: boolean;
   } | null>(null);
+  const presenceStatusLabels = new Map(
+    snapshot.teamPresenceStatusCatalogue.statuses.map((status) => [
+      status.key,
+      status.label
+    ])
+  );
+  const presenceStatusChoices = (
+    [
+      ["available", CircleCheck],
+      ["do_not_disturb", BellOff],
+      ["out_of_office", Umbrella]
+    ] as const
+  ).flatMap(([status, Icon]) => {
+    const label = presenceStatusLabels.get(status);
+    return label ? [[status, Icon, label] as const] : [];
+  });
 
   useEffect(() => {
     const nextTransition = view.people
@@ -473,11 +489,10 @@ export function PeopleView({
 
   const presenceLabel = (person: CollaborationTeamPerson): string => {
     if (person.teamPresence.mode === "manual") {
-      return person.teamPresence.manualStatus === "available"
-        ? "Available"
-        : person.teamPresence.manualStatus === "do_not_disturb"
-          ? "Do not disturb"
-          : "Out of office";
+      return (
+        presenceStatusLabels.get(person.teamPresence.manualStatus) ??
+        "Unknown status"
+      );
     }
     const activity = activityLevelAt(person);
     return activity === "active"
@@ -491,6 +506,12 @@ export function PeopleView({
 
   const presenceIcon = (person: CollaborationTeamPerson) => {
     const label = presenceLabel(person);
+    if (
+      person.teamPresence.mode === "manual" &&
+      person.teamPresence.manualStatus === "unknown"
+    ) {
+      return <CircleAlert aria-label={label} />;
+    }
     if (
       person.teamPresence.mode === "manual" &&
       person.teamPresence.manualStatus === "do_not_disturb"
@@ -881,7 +902,11 @@ export function PeopleView({
                                       ? "auto"
                                       : "manual",
                                     manualStatus:
-                                      person.teamPresence.manualStatus,
+                                      person.teamPresence.manualStatus ===
+                                      "unknown"
+                                        ? (presenceStatusChoices[0]?.[0] ??
+                                          "available")
+                                        : person.teamPresence.manualStatus,
                                     expectedVersion:
                                       person.teamPresence.preferenceVersion
                                   }),
@@ -892,50 +917,46 @@ export function PeopleView({
                           <span>Auto</span>
                         </label>
                         <div className="collab-presence-choices">
-                          {(
-                            [
-                              ["available", CircleCheck, "Available"],
-                              ["do_not_disturb", BellOff, "Do not disturb"],
-                              ["out_of_office", Umbrella, "Out of office"]
-                            ] as const
-                          ).map(([status, Icon, label]) => (
-                            <button
-                              key={status}
-                              type="button"
-                              className={
-                                person.teamPresence.mode === "manual" &&
-                                person.teamPresence.manualStatus === status
-                                  ? "selected"
-                                  : ""
-                              }
-                              aria-label={label}
-                              aria-pressed={
-                                person.teamPresence.mode === "manual" &&
-                                person.teamPresence.manualStatus === status
-                              }
-                              title={label}
-                              disabled={
-                                Boolean(busyKey) ||
-                                person.teamPresence.mode === "auto"
-                              }
-                              onClick={() =>
-                                void runOperation(
-                                  `presence-${status}`,
-                                  () =>
-                                    client.setTeamPresence({
-                                      teamId: team.id,
-                                      mode: "manual",
-                                      manualStatus: status,
-                                      expectedVersion:
-                                        person.teamPresence.preferenceVersion
-                                    }),
-                                  "Your presence could not be changed."
-                                )
-                              }
-                            >
-                              <Icon aria-hidden="true" />
-                            </button>
-                          ))}
+                          {presenceStatusChoices.map(
+                            ([status, Icon, label]) => (
+                              <button
+                                key={status}
+                                type="button"
+                                className={
+                                  person.teamPresence.mode === "manual" &&
+                                  person.teamPresence.manualStatus === status
+                                    ? "selected"
+                                    : ""
+                                }
+                                aria-label={label}
+                                aria-pressed={
+                                  person.teamPresence.mode === "manual" &&
+                                  person.teamPresence.manualStatus === status
+                                }
+                                title={label}
+                                disabled={
+                                  Boolean(busyKey) ||
+                                  person.teamPresence.mode === "auto"
+                                }
+                                onClick={() =>
+                                  void runOperation(
+                                    `presence-${status}`,
+                                    () =>
+                                      client.setTeamPresence({
+                                        teamId: team.id,
+                                        mode: "manual",
+                                        manualStatus: status,
+                                        expectedVersion:
+                                          person.teamPresence.preferenceVersion
+                                      }),
+                                    "Your presence could not be changed."
+                                  )
+                                }
+                              >
+                                <Icon aria-hidden="true" />
+                              </button>
+                            )
+                          )}
                         </div>
                       </div>
                     ) : null}
