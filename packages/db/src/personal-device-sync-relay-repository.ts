@@ -132,7 +132,7 @@ const assertCurrentRelayAuth = async (
     input.groupId
   ]);
   const groups = await client.query(
-    `select id,group_id,authority_public_key,current_epoch,head_hash,state,pending_epoch
+    `select id,group_id,authority_key_id,authority_public_key,current_epoch,head_hash,state,pending_epoch
      from personal_device_groups where id=$1 and group_id=$2 for share`,
     [input.groupDbId, input.groupId]
   );
@@ -144,7 +144,11 @@ const assertCurrentRelayAuth = async (
     group.pending_epoch !== null ||
     (!input.allowStaleHead && group.head_hash !== input.headHash) ||
     group.current_epoch !== input.epoch ||
-    !certificateIsPdsValid(certificate, group.authority_public_key as string) ||
+    !certificateIsPdsValid(
+      certificate,
+      group.authority_public_key as string,
+      group.authority_key_id as string
+    ) ||
     certificate.groupId !== group.group_id ||
     (!input.allowStaleHead && certificate.statementHash !== group.head_hash) ||
     certificate.epoch !== group.current_epoch ||
@@ -275,7 +279,7 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         groupId
       ]);
       const groups = await client.query(
-        `select id,group_id,authority_public_key,current_epoch,head_hash,state,pending_epoch
+        `select id,group_id,authority_key_id,authority_public_key,current_epoch,head_hash,state,pending_epoch
          from personal_device_groups where group_id=$1 for share`,
         [groupId]
       );
@@ -286,7 +290,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         group.pending_epoch !== null ||
         !certificateIsPdsValid(
           certificate,
-          group.authority_public_key as string
+          group.authority_public_key as string,
+          group.authority_key_id as string
         ) ||
         (!input.allowStaleHead &&
           certificate.statementHash !== group.head_hash) ||

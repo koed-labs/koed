@@ -249,7 +249,8 @@ or use a differently wrapped statement as log head.
 Every key ID is opaque ASCII; public keys are raw 32-byte base64url;
 `sequence`, epochs, and times/counts are canonical decimal strings.
 `operationFamilies` contains only `pds_relay`. `sequence` increments by one;
-`previousHash` is mandatory CAS input. Authority atomically accepts only
+`previousHash` is mandatory CAS input. Persisted statement history orders decimal
+sequence values numerically, never lexically. Authority atomically accepts only
 current hash and next sequence, verifies draft authorization, persists valid
 required bundle(s), and countersigns. CAS conflict returns current signed head;
 client rereads and creates a new explicit transition. It must never silently
@@ -269,7 +270,9 @@ fresh `K_epoch[nextEpoch]` and `K_project[nextEpoch]`; source and tombstone
 keys are re-enveloped unchanged. Authority never receives plaintext keys.
 
 Authority signs a membership certificate only for active group-log device key
-material. It has exactly `protocol`, `groupId`, `deviceId`, `deviceSigningKeyId`,
+material. Certificate renewal and repair revalidate active governance, no pending
+epoch, exact current head and epoch, device key bindings, and Authority key ID in
+one transaction before replacing stored certificate bytes. It has exactly `protocol`, `groupId`, `deviceId`, `deviceSigningKeyId`,
 `deviceSigningPublicKey`, `deviceKemKeyId`, `deviceKemPublicKey`, `epoch`,
 `operationFamilies`, `statementSequence`, `statementHash`, `issuedAt`,
 `expiresAt`, and `authoritySignature` (`keyId`, `signature`).
@@ -366,8 +369,11 @@ then validate ephemeral/nonce/tag lengths, all-zero shared-secret rejection,
 AEAD, canonical plaintext shape and lengths, commitments, and both signatures
 before marking transition usable. Bundle records and envelopes are retained
 through recovery and replay validation; duplicate same hash is idempotent, same
-transition/epoch with different bytes quarantines. Revocation removes future
-delivery but cannot erase already received plaintext.
+transition/epoch with different bytes quarantines. Key Bundle retrieval requires
+active governance and exact current or pending epoch, but does not require an
+active device: final-device recovery can retrieve its recovery bundle after that
+device is revoked. Frozen governance blocks Key Bundle and certificate retrieval.
+Revocation removes future delivery but cannot erase already received plaintext.
 
 ## 5. Closed Captured Session source package
 

@@ -273,11 +273,13 @@ export type PdsSessionPackageRuntimeContext = Readonly<{
   readonly recipients: readonly RuntimeMember[];
   readonly originCertificates: readonly unknown[];
   readonly authorityPublicKey: string | Buffer;
+  readonly authorityKeyId: string;
   readonly now: Date;
 }>;
 
 export interface CreatePdsSessionPackageRuntimeContextInput {
   authorityPublicKey: string | Buffer;
+  authorityKeyId: string;
   groupId: string;
   authorityHead: string;
   currentEpoch: string;
@@ -327,6 +329,7 @@ const own = (value: unknown, label: string): JsonRecord => {
 const memberFromCertificate = (
   raw: string | Uint8Array,
   authorityPublicKey: string | Buffer,
+  authorityKeyId: string,
   groupId: string,
   authorityHead: string,
   epoch: string,
@@ -337,7 +340,9 @@ const memberFromCertificate = (
     PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES,
     "membership certificate"
   );
-  if (!certificateIsPdsValid(certificate, authorityPublicKey, now)) {
+  if (
+    !certificateIsPdsValid(certificate, authorityPublicKey, authorityKeyId, now)
+  ) {
     throw new TypeError("PDS membership certificate is invalid or expired");
   }
   const record = own(certificate, "membership certificate");
@@ -398,6 +403,7 @@ export const createPdsSessionPackageRuntimeContext = (
   const serving = memberFromCertificate(
     input.servingCertificate,
     input.authorityPublicKey,
+    input.authorityKeyId,
     input.groupId,
     input.authorityHead,
     input.currentEpoch,
@@ -406,6 +412,7 @@ export const createPdsSessionPackageRuntimeContext = (
   const recipient = memberFromCertificate(
     input.recipientCertificate,
     input.authorityPublicKey,
+    input.authorityKeyId,
     input.groupId,
     input.authorityHead,
     input.currentEpoch,
@@ -415,6 +422,7 @@ export const createPdsSessionPackageRuntimeContext = (
     memberFromCertificate(
       certificate,
       input.authorityPublicKey,
+      input.authorityKeyId,
       input.groupId,
       input.authorityHead,
       input.currentEpoch,
@@ -454,6 +462,7 @@ export const createPdsSessionPackageRuntimeContext = (
       )
     ]),
     authorityPublicKey: input.authorityPublicKey,
+    authorityKeyId: input.authorityKeyId,
     now: new Date(now.getTime())
   });
 };
@@ -2048,7 +2057,12 @@ const verifyOriginMembership = (
       record.epoch === manifest.contentEpoch &&
       record.deviceId === manifest.originDeviceId &&
       record.deviceSigningKeyId === manifest.originSignature.signerKeyId &&
-      certificateIsPdsValid(candidate, runtime.authorityPublicKey, signedAt)
+      certificateIsPdsValid(
+        candidate,
+        runtime.authorityPublicKey,
+        runtime.authorityKeyId,
+        signedAt
+      )
     );
   });
   if (!certificate) {
