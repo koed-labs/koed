@@ -6,6 +6,7 @@ import {
   randomUUID
 } from "node:crypto";
 import {
+  COLLABORATION_CONTRACT_VERSION,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
   type EnvelopeEncryptionProvider,
@@ -1841,7 +1842,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`client:${randomUUID()}`),
       subscriptionKeyHash: hash(`subscription:${randomUUID()}`),
-      protocolVersion: 2
+      protocolVersion: COLLABORATION_CONTRACT_VERSION
     };
     const subscription = await repository.createSubscription(actor(userId), {
       ...binding,
@@ -1936,7 +1937,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`watermark-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`watermark-subscription:${randomUUID()}`),
-      protocolVersion: 2
+      protocolVersion: COLLABORATION_CONTRACT_VERSION
     };
     const subscription = await repository.createSubscription(actor(userId), {
       ...binding,
@@ -2006,7 +2007,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`other-watermark-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`other-watermark-subscription:${randomUUID()}`),
-      protocolVersion: 2
+      protocolVersion: COLLABORATION_CONTRACT_VERSION
     };
     const otherSubscription = await repository.createSubscription(
       actor(otherUserId),
@@ -2132,7 +2133,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`team-watermark-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`team-watermark-subscription:${randomUUID()}`),
-      protocolVersion: 2
+      protocolVersion: COLLABORATION_CONTRACT_VERSION
     };
     const subscription = await repository.createSubscription(
       actor(fixture.ownerUserId),
@@ -2170,7 +2171,7 @@ describeDb("Collaboration repository", () => {
       deviceCredentialId: null,
       clientInstanceHash: hash(`unrelated-team-client:${randomUUID()}`),
       subscriptionKeyHash: hash(`unrelated-team-subscription:${randomUUID()}`),
-      protocolVersion: 2
+      protocolVersion: COLLABORATION_CONTRACT_VERSION
     };
     const unrelatedSubscription = await repository.createSubscription(
       actor(unrelated.ownerUserId),
