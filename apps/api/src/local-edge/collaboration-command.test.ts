@@ -1104,6 +1104,10 @@ type LoadTestResult = {
   command: string;
   data: {
     snapshot: {
+      teamPresenceStatusCatalogue: {
+        version: number;
+        statuses: Array<{ key: string; label: string }>;
+      };
       navigation: {
         personalOwner: { id: string };
         teamPrincipal: { id: string } | null;
@@ -1111,7 +1115,10 @@ type LoadTestResult = {
           id: string;
           role: string;
           directMessages: Array<{ id: string }>;
-          people: Array<{ id: string }>;
+          people: Array<{
+            id: string;
+            teamPresence: { manualStatus: string };
+          }>;
           workspaces: Array<{
             id: string;
             access: string;
