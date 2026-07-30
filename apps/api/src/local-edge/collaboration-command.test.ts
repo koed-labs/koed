@@ -3541,6 +3541,83 @@ describe("local-edge collaboration command route", () => {
     expect(harness.calls).toHaveLength(0);
   });
 
+  it.each([
+    {
+      command: {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.set_team_presence",
+        input: {
+          teamId: ids.team,
+          mode: "auto",
+          manualStatus: "available",
+          expectedVersion: 1
+        }
+      } as CollaborationRendererCommand,
+      response: {
+        person: {
+          userId: ids.remotePrincipal,
+          displayName: "Remote Alice",
+          status: "enabled",
+          ...remotePresence
+        }
+      }
+    },
+    {
+      command: {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.report_team_activity",
+        input: { teamIds: [ids.team] }
+      } as CollaborationRendererCommand,
+      response: { acceptedTeamIds: [ids.team] }
+    }
+  ])(
+    "authorizes $command.command with the documented Team read credential family",
+    async ({ command, response: upstreamResponse }) => {
+      const harness = createHarness({
+        localFamilies: ["team_workspace_read", "team_chat_read"],
+        response: () => Response.json(upstreamResponse)
+      });
+      const response = await injectCommand(harness.app, command);
+
+      expect(parseResult(response.body)).toMatchObject({ ok: true });
+      expect(harness.calls).toHaveLength(1);
+    }
+  );
+
+  it.each([
+    {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.set_team_presence",
+      input: {
+        teamId: ids.team,
+        mode: "auto",
+        manualStatus: "available",
+        expectedVersion: 1
+      }
+    },
+    {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.report_team_activity",
+      input: { teamIds: [ids.team] }
+    }
+  ] as CollaborationRendererCommand[])(
+    "rejects $command when the enrolled credential lacks Team read authority",
+    async (command) => {
+      const harness = createHarness({ localFamilies: ["team_chat_write"] });
+      const response = await injectCommand(harness.app, command);
+
+      expect(parseResult(response.body)).toMatchObject({
+        ok: false,
+        error: { code: "permission_denied" }
+      });
+      expect(harness.calls).toHaveLength(0);
+    }
+  );
+
   it("strictly rejects extra fields and malicious backend identifiers", async () => {
     const harness = createHarness();
     const command = supportedMappings[0]!.command;

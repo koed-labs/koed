@@ -381,7 +381,7 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write,
     teamOperation: (command) => ({
-      operationFamily: "team_chat_write",
+      operationFamily: "team_chat_read",
       method: "PUT",
       path: `/v1/teams/${encodeURIComponent(command.input.teamId)}/presence/me`,
       body: {
@@ -406,7 +406,7 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write,
     teamOperation: (command) => ({
-      operationFamily: "team_chat_write",
+      operationFamily: "team_chat_read",
       method: "POST",
       path: "/v1/teams/presence/activity",
       body: { teamIds: command.input.teamIds },

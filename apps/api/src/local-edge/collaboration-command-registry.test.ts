@@ -350,5 +350,34 @@ describe("collaboration command registry", () => {
         topic: "Launch"
       })
     ).toBe(false);
+
+    const setPresence = command("collaboration.set_team_presence", {
+      teamId,
+      mode: "manual",
+      manualStatus: "do_not_disturb",
+      expectedVersion: 2
+    });
+    expect(teamCollaborationOperationFor(setPresence)).toEqual({
+      operationFamily: "team_chat_read",
+      method: "PUT",
+      path: `/v1/teams/${teamId}/presence/me`,
+      body: {
+        mode: "manual",
+        manualStatus: "do_not_disturb",
+        expectedVersion: 2
+      },
+      resultKey: "person"
+    });
+
+    const reportActivity = command("collaboration.report_team_activity", {
+      teamIds: [teamId]
+    });
+    expect(teamCollaborationOperationFor(reportActivity)).toEqual({
+      operationFamily: "team_chat_read",
+      method: "POST",
+      path: "/v1/teams/presence/activity",
+      body: { teamIds: [teamId] },
+      resultKey: "acceptedTeamIds"
+    });
   });
 });
