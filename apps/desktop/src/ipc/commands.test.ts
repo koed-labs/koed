@@ -13,6 +13,7 @@ import {
   collaborationCommandChannel,
   isDesktopCommandName,
   managedConversationCommandChannel,
+  personalDevicePairingLinkConsumeChannel,
   personalDevicePairingProgressChannel,
   personalMemoryCommandChannel,
   setupCommandChannel,
@@ -22,6 +23,8 @@ import {
 } from "./protocol.js";
 
 const requestId = "768ae5ae-fcbe-4e17-9d83-14a97d5f92a6";
+const pairingLink =
+  "http://192.168.1.20:3310/pair/11111111-2222-4333-8444-555555555555#token=abcdefghijklmnopqrstuvwxyzABCDEFGH123456789";
 
 const renderer = (url = "koed://app/") => {
   const sender = new EventEmitter() as EventEmitter & {
@@ -99,6 +102,9 @@ describe("desktop IPC command registry", () => {
       return { state: "complete" };
     });
     const writeClipboard = vi.fn();
+    const consumePendingPersonalDevicePairingLink = vi
+      .fn()
+      .mockReturnValue(pairingLink);
     let themePreference: "light" | "dark" | "system" = "system";
     const getThemePreference = vi.fn(() => themePreference);
     const setThemePreference = vi.fn(
@@ -144,6 +150,7 @@ describe("desktop IPC command registry", () => {
         allowedRendererOrigins: new Set(["koed://app"]),
         personalMemory,
         managedConversation: managedConversation as never,
+        consumePendingPersonalDevicePairingLink,
         writeClipboard,
         getThemePreference,
         setThemePreference
@@ -156,11 +163,28 @@ describe("desktop IPC command registry", () => {
       personalMemory,
       setupInspect,
       setupRun,
+      consumePendingPersonalDevicePairingLink,
       writeClipboard,
       getThemePreference,
       setThemePreference
     };
   };
+
+  it("consumes retained pairing links only for the trusted main frame", async () => {
+    const { registered, consumePendingPersonalDevicePairingLink } = register();
+    const invoke = registered.get(personalDevicePairingLinkConsumeChannel)!;
+
+    await expect(invoke(renderer(), pairingLink)).resolves.toBe(pairingLink);
+    expect(consumePendingPersonalDevicePairingLink).toHaveBeenCalledWith(
+      pairingLink
+    );
+    await expect(
+      invoke(renderer("https://attacker.example/"), pairingLink)
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
+    await expect(invoke(renderer(), { url: "expected-link" })).rejects.toThrow(
+      "Invalid pending pairing link acknowledgement"
+    );
+  });
 
   it("isolates setup behind its trusted channel and forwards progress", async () => {
     const { registered, setupInspect, setupRun } = register();

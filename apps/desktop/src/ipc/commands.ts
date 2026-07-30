@@ -20,6 +20,7 @@ import {
   isDesktopCommandName,
   managedConversationCommandChannel,
   personalDevicePairingProgressChannel,
+  personalDevicePairingLinkConsumeChannel,
   personalMemoryCommandChannel,
   setupCommandChannel,
   setupProgressEventChannel,
@@ -35,6 +36,7 @@ import {
 } from "./managed-conversation-protocol.js";
 import { parsePersonalDevicePairingProgress } from "./personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "../window/theme-preference.js";
+import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
 
 export const invokeChannel = "koed:invoke";
 
@@ -99,6 +101,9 @@ export const registerDesktopCommandHandlers = (
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
+    consumePendingPersonalDevicePairingLink: (
+      expectedLink?: string
+    ) => string | null;
     writeClipboard: (value: string) => void;
     getThemePreference: () => DesktopThemePreference;
     setThemePreference: (preference: DesktopThemePreference) => {
@@ -187,6 +192,22 @@ export const registerDesktopCommandHandlers = (
     }
     return options.setThemePreference(value);
   });
+
+  ipcMain.handle(
+    personalDevicePairingLinkConsumeChannel,
+    async (event, expectedLink: unknown) => {
+      if (!trustedSender(event, options.allowedRendererOrigins)) {
+        throw new Error("Untrusted Desktop IPC sender.");
+      }
+      if (expectedLink !== undefined && typeof expectedLink !== "string") {
+        throw new Error("Invalid pending pairing link acknowledgement.");
+      }
+      if (expectedLink !== undefined) {
+        parsePersonalDevicePairingLink(expectedLink);
+      }
+      return options.consumePendingPersonalDevicePairingLink(expectedLink);
+    }
+  );
 
   ipcMain.handle(
     personalMemoryCommandChannel,

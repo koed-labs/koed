@@ -2,8 +2,11 @@ import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.
 import { parsePersonalDevicePairingProgress } from "./personal-device-pairing-protocol.js";
 import {
   personalDevicePairingLinkChannel,
+  personalDevicePairingLinkConsumeChannel,
   personalDevicePairingProgressChannel
 } from "./protocol.js";
+
+type Invoke = (channel: string, value?: unknown) => Promise<unknown>;
 
 type PairingLinkEvents = {
   on(channel: string, listener: (event: unknown, value: unknown) => void): void;
@@ -14,9 +17,25 @@ type PairingLinkEvents = {
 };
 
 export const createPersonalDevicePairingPreloadApi = (
+  invoke: Invoke,
   events: PairingLinkEvents
 ) =>
   Object.freeze({
+    async consumePairingLink(expectedUrl?: string) {
+      if (expectedUrl !== undefined) {
+        parsePersonalDevicePairingLink(expectedUrl);
+      }
+      const value = await invoke(
+        personalDevicePairingLinkConsumeChannel,
+        expectedUrl
+      );
+      if (value === null) return null;
+      if (typeof value !== "string") {
+        throw new Error("Invalid pending pairing link.");
+      }
+      parsePersonalDevicePairingLink(value);
+      return value;
+    },
     subscribePairingLinks(listener: (url: string) => void) {
       if (typeof listener !== "function") {
         throw new TypeError("Pairing link listener is required.");

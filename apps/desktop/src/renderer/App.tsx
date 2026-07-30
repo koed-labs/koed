@@ -345,10 +345,28 @@ export function App({
   useEffect(() => {
     const devices = window.koedDesktop?.devices;
     if (!devices) return;
-    return devices.subscribePairingLinks((url) => {
+    let active = true;
+    const handledLinks = new Set<string>();
+    const openPairingLink = (url: string) => {
+      if (!active || handledLinks.has(url)) return;
+      handledLinks.add(url);
       setPendingDevicePairingLink(url);
       setDevicesOpen(true);
+    };
+    const unsubscribe = devices.subscribePairingLinks((url) => {
+      openPairingLink(url);
+      void devices.consumePairingLink(url).catch(() => undefined);
     });
+    void devices
+      .consumePairingLink()
+      .then((url) => {
+        if (url) openPairingLink(url);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(

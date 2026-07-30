@@ -47,11 +47,14 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     writeText: (value: string): Promise<void> =>
       ipcRenderer.invoke(clipboardWriteChannel, value)
   }),
-  devices: createPersonalDevicePairingPreloadApi({
-    on: (channel, listener) => ipcRenderer.on(channel, listener),
-    removeListener: (channel, listener) =>
-      ipcRenderer.removeListener(channel, listener)
-  }),
+  devices: createPersonalDevicePairingPreloadApi(
+    (channel, value) => ipcRenderer.invoke(channel, value),
+    {
+      on: (channel, listener) => ipcRenderer.on(channel, listener),
+      removeListener: (channel, listener) =>
+        ipcRenderer.removeListener(channel, listener)
+    }
+  ),
   theme: Object.freeze({
     get: () => ipcRenderer.invoke(themePreferenceGetChannel),
     set: (preference: "light" | "dark" | "system") =>

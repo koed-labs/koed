@@ -62,6 +62,8 @@ export const personalMemoryCommandChannel = "koed:personal-memory:command";
 export const personalMemoryEventChannel = "koed:personal-memory:event";
 export const personalDevicePairingLinkChannel =
   "koed:personal-device-pairing:link";
+export const personalDevicePairingLinkConsumeChannel =
+  "koed:personal-device-pairing:link:consume";
 export const personalDevicePairingProgressChannel =
   "koed:personal-device-pairing:progress";
 export { managedConversationCommandChannel } from "./managed-conversation-protocol.js";

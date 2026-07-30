@@ -56,6 +56,7 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
+import { createPersonalDevicePairingInbox } from "./personal-device-pairing-inbox.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
@@ -86,18 +87,17 @@ let themePreference: DesktopThemePreference = "system";
 let pdsSecretBridge: PdsSecretBridge | null = null;
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
-let pendingPairingLink: string | null = null;
+const pairingLinkInbox = createPersonalDevicePairingInbox();
 
 const acceptPairingDeepLink = (value: string): void => {
   const pairingLink = pairingLinkFromDeepLink(value);
   if (!pairingLink) return;
-  pendingPairingLink = pairingLink;
+  pairingLinkInbox.accept(pairingLink);
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
     mainWindow.webContents.send(personalDevicePairingLinkChannel, pairingLink);
-    pendingPairingLink = null;
   }
 };
 
@@ -263,13 +263,6 @@ const createWindow = async () => {
   } else {
     await window.loadURL(`${KOED_APP_SCHEME}://app/`);
   }
-  if (pendingPairingLink) {
-    window.webContents.send(
-      personalDevicePairingLinkChannel,
-      pendingPairingLink
-    );
-    pendingPairingLink = null;
-  }
   const personalMemoryController = new AbortController();
   window.once("closed", () => {
     personalMemoryController.abort();
@@ -325,6 +318,8 @@ const bootstrap = async () => {
     allowedRendererOrigins,
     personalMemory: server.personalMemory,
     managedConversation: server.managedConversation,
+    consumePendingPersonalDevicePairingLink: (expectedLink) =>
+      pairingLinkInbox.consume(expectedLink),
     writeClipboard: (value) => clipboard.writeText(value),
     getThemePreference: () => themePreference,
     setThemePreference: (preference) => {

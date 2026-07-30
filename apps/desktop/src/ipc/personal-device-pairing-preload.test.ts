@@ -6,6 +6,7 @@ import {
 } from "./personal-device-pairing-protocol.js";
 import {
   personalDevicePairingLinkChannel,
+  personalDevicePairingLinkConsumeChannel,
   personalDevicePairingProgressChannel
 } from "./protocol.js";
 
@@ -23,7 +24,7 @@ describe("Personal Device pairing preload bridge", () => {
       removeListener: vi.fn()
     };
     const listener = vi.fn();
-    const api = createPersonalDevicePairingPreloadApi(events);
+    const api = createPersonalDevicePairingPreloadApi(vi.fn(), events);
     const unsubscribe = api.subscribePairingLinks(listener);
 
     expect(events.on).toHaveBeenCalledWith(
@@ -46,7 +47,7 @@ describe("Personal Device pairing preload bridge", () => {
   });
 
   it("requires a listener", () => {
-    const api = createPersonalDevicePairingPreloadApi({
+    const api = createPersonalDevicePairingPreloadApi(vi.fn(), {
       on: vi.fn(),
       removeListener: vi.fn()
     });
@@ -67,7 +68,7 @@ describe("Personal Device pairing preload bridge", () => {
       removeListener: vi.fn()
     };
     const listener = vi.fn();
-    const api = createPersonalDevicePairingPreloadApi(events);
+    const api = createPersonalDevicePairingPreloadApi(vi.fn(), events);
     const unsubscribe = api.subscribePairingProgress(listener);
     const progress: PersonalDevicePairingProgress = {
       contractVersion: PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
@@ -92,6 +93,33 @@ describe("Personal Device pairing preload bridge", () => {
     expect(events.removeListener).toHaveBeenCalledWith(
       personalDevicePairingProgressChannel,
       wrapped
+    );
+  });
+
+  it("consumes and validates a retained pairing link", async () => {
+    const invoke = vi.fn().mockResolvedValue(link);
+    const api = createPersonalDevicePairingPreloadApi(invoke, {
+      on: vi.fn(),
+      removeListener: vi.fn()
+    });
+
+    await expect(api.consumePairingLink()).resolves.toBe(link);
+    expect(invoke).toHaveBeenCalledWith(
+      personalDevicePairingLinkConsumeChannel,
+      undefined
+    );
+
+    invoke.mockResolvedValueOnce(null);
+    await expect(api.consumePairingLink(link)).resolves.toBeNull();
+    await expect(
+      api.consumePairingLink(
+        `https://example.com/pair/${invitationId}#token=${token}`
+      )
+    ).rejects.toThrow();
+
+    invoke.mockResolvedValueOnce("malformed");
+    await expect(api.consumePairingLink()).rejects.toThrow(
+      "Pairing link is invalid"
     );
   });
 });

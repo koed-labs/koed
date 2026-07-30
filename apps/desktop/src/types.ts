@@ -102,6 +102,7 @@ export interface DesktopApi {
     writeText: (value: string) => Promise<void>;
   };
   devices?: {
+    consumePairingLink: (expectedUrl?: string) => Promise<string | null>;
     subscribePairingLinks: (listener: (url: string) => void) => () => void;
     subscribePairingProgress: (
       listener: (progress: PersonalDevicePairingProgress) => void
