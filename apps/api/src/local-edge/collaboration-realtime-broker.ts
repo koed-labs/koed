@@ -15,6 +15,7 @@ import {
   COLLABORATION_RENDERER_ACK_DEADLINE_MS,
   COLLABORATION_RENDERER_MAX_PENDING_BYTES,
   COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
+  collaborationRealtimeEventFamilySchema,
   collaborationRendererEventSchema,
   collaborationSafeErrorMessages,
   isLoopbackHostname,
@@ -228,28 +229,12 @@ const remoteAckResponseSchema = z
   .object({ subscription: remoteSubscriptionSchema })
   .strict();
 
-const collaborationEventFamilySchema = z.enum([
-  "team_lifecycle",
-  "team_membership_access",
-  "workspace_lifecycle_access",
-  "thread_lifecycle",
-  "message_created",
-  "receipt_state_updated",
-  "share_grant_lifecycle",
-  "representation_changed",
-  "memory_event_available",
-  "lcm_leaf_available",
-  "lcm_rollup_available",
-  "shared_session_discussion_activity",
-  "access_revoked"
-]);
-
 const remoteEventSchema = z
   .object({
     protocolVersion: z.literal(protocolVersion),
     eventId: z.uuid(),
     cursor: remoteCursorSchema,
-    type: collaborationEventFamilySchema,
+    type: collaborationRealtimeEventFamilySchema,
     occurredAt: timestampSchema,
     subscription: z.object({ id: z.uuid() }).strict(),
     resource: z

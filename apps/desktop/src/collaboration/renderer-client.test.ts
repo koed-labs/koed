@@ -700,7 +700,13 @@ const createBridge = (initial = fixture()) => {
         current.selection.kind === "shared_session" &&
         current.selection.sharedSessionId === selection.sharedSessionId;
       if (!keepsPreparedSharedSnapshot) {
-        current = fixture({ selectedTeam: "teamId" in selection });
+        const authoritative = current;
+        current = collaborationSnapshotSchema.parse({
+          ...fixture({ selectedTeam: "teamId" in selection }),
+          connection: authoritative.connection,
+          navigation: authoritative.navigation,
+          snapshotRevision: authoritative.snapshotRevision
+        });
         if (selection.kind === "team_people") {
           const team = current.navigation.teams.find(
             (candidate) => candidate.id === selection.teamId
@@ -2179,7 +2185,18 @@ describe("collaboration renderer client", () => {
   });
 
   it("reloads authoritative presence after an optimistic preference conflict", async () => {
-    const mock = createBridge();
+    const initial = fixture();
+    const initialTeam = initial.navigation.teams[0]!;
+    const selectedPeople = collaborationSnapshotSchema.parse({
+      ...initial,
+      selection: { kind: "team_people", teamId: ids.team },
+      view: {
+        kind: "team_people",
+        teamId: ids.team,
+        people: initialTeam.people
+      }
+    });
+    const mock = createBridge(selectedPeople);
     const client = createCollaborationRendererClient(mock.bridge);
     await client.load();
     const authoritativePerson = {
@@ -2194,15 +2211,22 @@ describe("collaboration renderer client", () => {
       }
     };
     const authoritative = collaborationSnapshotSchema.parse({
-      ...fixture(),
+      ...selectedPeople,
       navigation: {
-        ...fixture().navigation,
-        teams: fixture().navigation.teams.map((team) => ({
+        ...selectedPeople.navigation,
+        teams: selectedPeople.navigation.teams.map((team) => ({
           ...team,
           people: team.people.map((candidate) =>
             candidate.id === ids.remoteUser ? authoritativePerson : candidate
           )
         }))
+      },
+      view: {
+        kind: "team_people",
+        teamId: ids.team,
+        people: initialTeam.people.map((candidate) =>
+          candidate.id === ids.remoteUser ? authoritativePerson : candidate
+        )
       }
     });
     mock.setSnapshot(authoritative);
@@ -2220,6 +2244,9 @@ describe("collaboration renderer client", () => {
         }
       })
     );
+    mock.command.mockImplementationOnce(async (command) =>
+      success(command, authoritative, new Map())
+    );
 
     await expect(
       client.setTeamPresence({
@@ -2235,16 +2262,22 @@ describe("collaboration renderer client", () => {
       manualStatus: "out_of_office",
       preferenceVersion: 4
     });
+    expect(client.currentSelection()).toEqual({
+      kind: "team_people",
+      teamId: ids.team
+    });
     expect(
       mock.command.mock.calls.filter(
         ([command]) => command.command === "collaboration.load"
       )
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
-      mock.command.mock.calls.filter(
-        ([command]) => command.command === "collaboration.load"
-      )[1]?.[0].input
-    ).toEqual({ forceRemoteNavigation: true });
+      mock.command.mock.calls
+        .filter(([command]) => command.command === "collaboration.select")
+        .at(-1)?.[0].input
+    ).toEqual({
+      selection: { kind: "team_people", teamId: ids.team }
+    });
     client.dispose();
   });
 
@@ -3440,7 +3473,13 @@ describe("collaboration renderer client", () => {
         workspaceId: ids.workspace,
         threadId: ids.channel
       });
-      const refreshed = fixture({ selectedTeam: true });
+      const recoveredSelections: CollaborationSnapshot["selection"][] = [];
+      client.subscribe((next, update) => {
+        if (update.kind === "command" || update.kind === "realtime") {
+          recoveredSelections.push(next.selection);
+        }
+      });
+      const refreshed = fixture();
       const team = refreshed.navigation.teams[0]!;
       mock.setSnapshot(
         collaborationSnapshotSchema.parse({
@@ -3483,6 +3522,9 @@ describe("collaboration renderer client", () => {
           ([command]) => command.command === "collaboration.load"
         )
       ).toHaveLength(2);
+      expect(recoveredSelections).not.toContainEqual({
+        kind: "notes_to_self"
+      });
       client.dispose();
     }
   );

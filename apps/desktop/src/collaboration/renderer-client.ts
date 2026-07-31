@@ -2810,7 +2810,7 @@ export const createCollaborationRendererClient = (
         if (!result.ok || result.command !== "collaboration.load") {
           throw new Error("Unexpected collaboration result.");
         }
-        loaded = await applyCommandSnapshot(result.data.snapshot);
+        loaded = result.data.snapshot;
         break;
       } catch (error) {
         if (
@@ -2833,6 +2833,7 @@ export const createCollaborationRendererClient = (
       }
     }
     if (!loaded) throw new Error("Authoritative snapshot recovery failed.");
+    let resolved = loaded;
     const preferredTeamId = recoverySelection
       ? teamIdForSelection(recoverySelection)
       : null;
@@ -2841,23 +2842,35 @@ export const createCollaborationRendererClient = (
       preferredTeamId &&
       loaded.navigation.teams.some((team) => team.id === preferredTeamId)
     ) {
-      if (
-        selectionIdentity(loaded.selection) !==
-        selectionIdentity(recoverySelection)
-      ) {
-        try {
-          await select(recoverySelection, true);
-          if (recoverySelection.kind === "shared_session") {
-            pendingSharedSessionRecovery = null;
-          }
-        } catch {
-          if (recoverySelection.kind === "shared_session") {
-            rememberSharedSessionSelection(recoverySelection);
-          }
-          await select({ kind: "team_people", teamId: preferredTeamId }, true);
+      try {
+        const selected = await command("collaboration.select", {
+          selection: recoverySelection
+        });
+        if (!selected.ok || selected.command !== "collaboration.select") {
+          throw new Error("Unexpected collaboration result.");
         }
+        resolved = selected.data.snapshot;
+        if (recoverySelection.kind === "shared_session") {
+          pendingSharedSessionRecovery = null;
+        }
+      } catch {
+        if (recoverySelection.kind === "shared_session") {
+          rememberSharedSessionSelection(recoverySelection);
+        }
+        const fallbackSelection = {
+          kind: "team_people" as const,
+          teamId: preferredTeamId
+        };
+        const fallback = await command("collaboration.select", {
+          selection: fallbackSelection
+        });
+        if (!fallback.ok || fallback.command !== "collaboration.select") {
+          throw new Error("Unexpected collaboration result.");
+        }
+        resolved = fallback.data.snapshot;
       }
     }
+    await applyCommandSnapshot(resolved);
     await subscribeScope({ scope: "personal" });
     if (snapshot) {
       await publish(snapshot, { kind: "command", announcement: "" });
@@ -3370,7 +3383,12 @@ export const createCollaborationRendererClient = (
           error.code === "conflict"
         ) {
           try {
-            await loadSnapshot(true);
+            const currentSelection = snapshot?.selection;
+            if (currentSelection) {
+              await select(currentSelection, true);
+            } else {
+              await loadSnapshot(true);
+            }
           } catch {
             // Preserve the original optimistic-write conflict for the caller.
           }
