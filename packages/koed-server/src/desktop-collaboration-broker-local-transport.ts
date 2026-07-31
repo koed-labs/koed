@@ -7,6 +7,7 @@ import {
   COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS,
   COLLABORATION_RECONNECT_WINDOW_MS,
   COLLABORATION_RENDERER_MAX_PENDING_BYTES,
+  collaborationCommandReturnsSnapshot,
   collaborationCommandResultSchema,
   collaborationDeliveryIdSchema,
   collaborationRendererCommandSchema,
@@ -477,19 +478,14 @@ export const createDesktopCollaborationBrokerLocalTransport = (
   const authorityGeneration = (ownerId: string): number =>
     authorityGenerations.get(ownerId) ?? 0;
 
-  const commandReturnsSnapshot = (
-    command: CollaborationRendererCommand["command"]
+  const commandAffectsActiveSelection = (
+    command: CollaborationRendererCommand
   ): boolean =>
-    [
-      "collaboration.load",
-      "collaboration.select",
-      "collaboration.connect_backend",
-      "collaboration.reconnect_backend",
-      "collaboration.disconnect_backend",
-      "collaboration.create_team",
-      "collaboration.join_team",
-      "collaboration.create_workspace"
-    ].includes(command);
+    collaborationCommandReturnsSnapshot(command.command) &&
+    !(
+      command.command === "collaboration.select" &&
+      command.input.navigationIntent === "prewarm"
+    );
 
   const invalidateAuthority = (
     ownerId: string,
@@ -1270,7 +1266,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     command: CollaborationRendererCommand,
     context: CollaborationTransportContext
   ): Promise<CollaborationCommandResult> => {
-    const snapshotRequestGeneration = commandReturnsSnapshot(command.command)
+    const snapshotRequestGeneration = commandAffectsActiveSelection(command)
       ? (snapshotRequestGenerations.get(context.ownerId) ?? 0) + 1
       : null;
     if (snapshotRequestGeneration !== null) {

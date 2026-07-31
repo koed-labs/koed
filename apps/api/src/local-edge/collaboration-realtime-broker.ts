@@ -17,6 +17,7 @@ import {
   COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
   collaborationRealtimeEventFamilySchema,
   collaborationRendererEventSchema,
+  collaborationRendererUpdateSchema,
   collaborationSafeErrorMessages,
   isLoopbackHostname,
   readLocalEdgeClientCredentialAuthorization,
@@ -277,7 +278,25 @@ const remoteEventSchema = z
     actor: z.object({ principalId: nullableUuidSchema }).strict(),
     update: z.unknown()
   })
-  .strict();
+  .strict()
+  .superRefine((event, context) => {
+    if (event.type !== "team_presence_changed") return;
+    const update = collaborationRendererUpdateSchema.safeParse(event.update);
+    if (
+      !update.success ||
+      update.data.type !== "team_person_upserted" ||
+      event.resource.scope !== "team" ||
+      event.resource.teamId !== update.data.teamId ||
+      event.resource.id !== update.data.person.id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["update"],
+        message:
+          "Team Presence update must match its authorized Team and person resource"
+      });
+    }
+  });
 
 const remotePrincipalStatusSchema = z
   .object({

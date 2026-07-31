@@ -973,14 +973,19 @@ describe("Desktop collaboration local transport", () => {
       emitCollaborationEvent: (event: CollaborationRendererEvent) =>
         events.push(event)
     };
-    const select = (selectedTeam: boolean, requestId: string) =>
+    const select = (
+      selectedTeam: boolean,
+      requestId: string,
+      navigationIntent?: "foreground" | "prewarm"
+    ) =>
       transport.request(
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId,
           command: "collaboration.select",
           input: {
-            selection: fullSnapshot(selectedTeam).selection
+            selection: fullSnapshot(selectedTeam).selection,
+            ...(navigationIntent ? { navigationIntent } : {})
           }
         }),
         transportContext
@@ -1021,6 +1026,20 @@ describe("Desktop collaboration local transport", () => {
       transportContext
     );
     await waitFor(() => streamController !== null);
+    expect(events.filter((event) => event.type === "connection")).toEqual([]);
+
+    await select(true, "5fb03c7c-72f2-49c1-9c83-d8e81e5c57ec", "prewarm");
+    streamController!.enqueue(
+      new TextEncoder().encode(
+        `event: connection\ndata: ${JSON.stringify({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "connection",
+          connection: fullSnapshot(true).connection,
+          error: null
+        })}\n\n`
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(events.filter((event) => event.type === "connection")).toEqual([]);
 
     await select(true, "88dfb243-f750-4d36-8360-e8de8768819e");

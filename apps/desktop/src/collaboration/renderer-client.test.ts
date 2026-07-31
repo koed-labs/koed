@@ -788,6 +788,15 @@ describe("collaboration renderer client", () => {
     const client = createCollaborationRendererClient(bridge);
     await client.load();
     await waitFor(() => expect(sharedSelections).toBe(1));
+    expect(
+      vi
+        .mocked(bridge.command)
+        .mock.calls.find(
+          ([command]) =>
+            command.command === "collaboration.select" &&
+            command.input.selection.kind === "shared_session"
+        )?.[0]
+    ).toMatchObject({ input: { navigationIntent: "prewarm" } });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     const selected = client.select(prepared.selection);
@@ -1103,6 +1112,56 @@ describe("collaboration renderer client", () => {
 
     expect(client.currentSelection()).toEqual(channelSnapshot.selection);
     expect(client.current()?.view.kind).toBe("thread");
+    client.dispose();
+  });
+
+  it("does not launch stale snapshot work after subscription synchronization", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const originalCommand = mock.command.getMockImplementation()!;
+    let releaseTeamSubscription: (() => void) | null = null;
+    mock.command.mockImplementation(async (command) => {
+      if (
+        command.command === "collaboration.subscribe" &&
+        command.input.scope.scope === "team"
+      ) {
+        await new Promise<void>((resolve) => {
+          releaseTeamSubscription = resolve;
+        });
+      }
+      return originalCommand(command);
+    });
+
+    const prepared = sharedFixture();
+    const preparedTeam = prepared.navigation.teams[0]!;
+    mock.setSnapshot(
+      collaborationSnapshotSchema.parse({
+        ...prepared,
+        selection: { kind: "team_people", teamId: ids.team },
+        view: {
+          kind: "team_people",
+          teamId: ids.team,
+          people: preparedTeam.people
+        }
+      })
+    );
+    const older = client.select({ kind: "team_people", teamId: ids.team });
+    await waitFor(() => expect(releaseTeamSubscription).not.toBeNull());
+
+    mock.setSnapshot(fixture());
+    await client.select({ kind: "notes_to_self" });
+    releaseTeamSubscription!();
+    await older;
+
+    expect(client.currentSelection()).toEqual({ kind: "notes_to_self" });
+    expect(
+      mock.command.mock.calls.filter(
+        ([command]) =>
+          command.command === "collaboration.select" &&
+          command.input.navigationIntent === "prewarm"
+      )
+    ).toHaveLength(0);
     client.dispose();
   });
 

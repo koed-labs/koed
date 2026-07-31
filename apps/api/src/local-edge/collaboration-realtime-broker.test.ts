@@ -1815,6 +1815,37 @@ describe("local collaboration realtime broker", () => {
     ).toBe(false);
   });
 
+  it("rejects Team Presence updates outside the authorized person resource", async () => {
+    const spoofed = remotePresenceEvent(eventA, eventCursorA);
+    spoofed.update.person.id = remotePrincipalB;
+    const harness = await createHarness({
+      stream: () =>
+        sseResponse([
+          {
+            event: "collaboration_event",
+            data: spoofed
+          }
+        ])
+    });
+    harnesses.push(harness);
+    const { body } = await createSnapshot(harness);
+    await acknowledgeSnapshot(harness, body);
+    const { response } = await openLocalStream(harness, body.subscription.id);
+    const frames = brokerFrames(await readStream(response));
+
+    expect(frames.some((frame) => frame.type === "update")).toBe(false);
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: "connection",
+        connection: expect.objectContaining({ state: "unavailable" })
+      })
+    );
+    expect(harness.pool.rows[0]).toMatchObject({
+      remoteCursor: snapshotCursor,
+      lastAcknowledgedEventId: null
+    });
+  });
+
   it("accepts the complete remote envelope and preserves Shared Session identity", async () => {
     const harness = await createHarness({
       stream: () =>

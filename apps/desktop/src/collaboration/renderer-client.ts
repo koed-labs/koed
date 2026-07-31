@@ -1778,7 +1778,8 @@ export const createCollaborationRendererClient = (
         }
         const pending = selectionViews.coordinate(candidate.selection, () =>
           command("collaboration.select", {
-            selection: candidate.selection
+            selection: candidate.selection,
+            navigationIntent: "prewarm"
           })
             .then((result) => {
               if (
@@ -2768,6 +2769,7 @@ export const createCollaborationRendererClient = (
     next: CollaborationSnapshot,
     isCurrent: () => boolean = () => true
   ) => {
+    if (!isCurrent()) return requireSnapshot();
     const backendChanged =
       snapshot?.connection.backendId !== null &&
       snapshot?.connection.backendId !== undefined &&
@@ -2781,12 +2783,15 @@ export const createCollaborationRendererClient = (
       pendingSharedSessionRecovery = null;
       dropPendingDeliveries();
       await resetSubscriptions();
+      if (!isCurrent()) return requireSnapshot();
       await purgeAllTeams(next.connection, undefined, false);
+      if (!isCurrent()) return requireSnapshot();
     }
     if (!isCurrent()) return requireSnapshot();
     await publishValidated(next, { kind: "command" });
     if (!isCurrent()) return requireSnapshot();
     await syncTeamSubscription(next.selection);
+    if (!isCurrent()) return requireSnapshot();
     void prewarmSharedSessionViews(next.navigation);
     startSharedSourceBackfill(next);
     return requireSnapshot();
