@@ -326,6 +326,17 @@ jobs:
           cd apps/desktop/release
           shasum -a 256 Koed-*-arm64.dmg Koed-*-arm64.zip > koed-desktop-macos-arm64-unsigned.sha256
 
+      - name: Report release artifact sizes
+        run: |
+          du -h apps/desktop/release/Koed-*-arm64.dmg apps/desktop/release/Koed-*-arm64.zip
+          test "$(find apps/desktop/release -maxdepth 1 -name '*.blockmap' | wc -l | tr -d ' ')" -ge 2
+          {
+            echo "### Exact release artifact sizes"
+            echo '```text'
+            du -h apps/desktop/release/Koed-*-arm64.dmg apps/desktop/release/Koed-*-arm64.zip
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Upload unsigned Desktop assets to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

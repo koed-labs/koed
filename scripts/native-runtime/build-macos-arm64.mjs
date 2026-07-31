@@ -153,6 +153,18 @@ const archive = ({ outDir, version }) => {
   };
 };
 
+const timedPhase = (timings, label, work) => {
+  console.error(`[native-runtime] ${label} started`);
+  const startedAt = performance.now();
+  try {
+    return work();
+  } finally {
+    const durationMs = Math.round(performance.now() - startedAt);
+    timings[label] = durationMs;
+    console.error(`[native-runtime] ${label} finished in ${durationMs}ms`);
+  }
+};
+
 const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -169,36 +181,50 @@ const main = () => {
     mkdtempSync(resolve(tmpdir(), "koed-native-runtime-"));
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(runtimeRoot, { recursive: true });
-  const procurement = copySourceRuntime({
-    sourceDir: options.sourceDir,
-    runtimeRoot,
-    sourcesPath: options.sourcesPath,
-    workDir
-  });
-  prunePythonEmbeddingRuntimeFiles(runtimeRoot);
-  const nativeAssets = writeRuntimeAssetManifest({
-    runtimeRoot,
-    platform: "macos",
-    architecture: "arm64"
-  });
+  const timings = {};
+  const procurement = timedPhase(timings, "runtime payload procurement", () =>
+    copySourceRuntime({
+      sourceDir: options.sourceDir,
+      runtimeRoot,
+      sourcesPath: options.sourcesPath,
+      workDir
+    })
+  );
+  const nativeAssets = timedPhase(
+    timings,
+    "payload pruning and manifest generation",
+    () => {
+      prunePythonEmbeddingRuntimeFiles(runtimeRoot);
+      return writeRuntimeAssetManifest({
+        runtimeRoot,
+        platform: "macos",
+        architecture: "arm64"
+      });
+    }
+  );
   if (nativeAssets.length === 0)
     throw new Error(
       "No native runtime assets were staged; refusing to publish empty artifact."
     );
-  writeProvenance({
-    outDir,
-    runtimeRoot,
-    version: options.version,
-    sourceDir: options.sourceDir
-  });
-  const artifact = archive({ outDir, version: options.version });
+  timedPhase(timings, "current provenance generation", () =>
+    writeProvenance({
+      outDir,
+      runtimeRoot,
+      version: options.version,
+      sourceDir: options.sourceDir
+    })
+  );
+  const artifact = timedPhase(timings, "archive and checksum generation", () =>
+    archive({ outDir, version: options.version })
+  );
   const result = {
     ok: true,
     outDir,
     runtimeRoot,
     nativeAssets,
     artifact,
-    procurement
+    procurement,
+    timings
   };
   if (options.json) console.log(JSON.stringify(result, null, 2));
   else console.log(`Built ${artifact.tarPath}`);
