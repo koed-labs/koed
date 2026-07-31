@@ -205,6 +205,7 @@ describe("resolveApiServerConfig", () => {
       KOED_OPS_MAX_RSS_BYTES: "1048576",
       KOED_RUNBOOK_BASE_URL: "https://runbooks.example.test/koed/",
       KOED_OPS_OPERATOR_EMAILS: "Ops@Example.test, second@example.test",
+      KOED_OPS_METRICS_TOKEN: "ops-metrics-secret",
       KOED_OPS_ALERT_WEBHOOK_URL: "https://alerts.example.test/koed",
       KOED_OPS_ALERT_WEBHOOK_TOKEN: "ops-alert-secret"
     });
@@ -217,6 +218,7 @@ describe("resolveApiServerConfig", () => {
       maxRssBytes: 1048576,
       runbookBaseUrl: "https://runbooks.example.test/koed/",
       operatorEmails: ["ops@example.test", "second@example.test"],
+      metricsToken: "ops-metrics-secret",
       alertWebhookUrl: "https://alerts.example.test/koed",
       alertWebhookToken: "ops-alert-secret"
     });

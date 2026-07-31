@@ -366,6 +366,16 @@ raw-content break-glass flow must be separately scoped, approved, expiring,
 audited, and customer-visible; support/admin tooling must not use normal recall
 routes as an impersonation path.
 
+Embedding capacity telemetry follows
+[ADR 0024](adr/0024-embedding-capacity-telemetry.md). `/ops/status` includes a
+redacted Operator snapshot for all configured embedding and LCM queues,
+measured-token throughput, semantic backlog, the active capacity profile, and
+an estimated drain range. The private `/internal/metrics` surface exports
+OpenMetrics-compatible aggregates under a dedicated monitoring credential and
+must not be exposed by the public gateway. Neither surface starts calibration;
+the Worker performs missing-profile calibration asynchronously after model
+readiness using synthetic inputs only.
+
 Hosted backup and restore checks are operator-run workflows. `pnpm
 hosted:backup -- create` writes a `pg_dump` custom archive encrypted through
 the configured envelope provider (`local_test_key`, `managed_kms`, `byok`, or

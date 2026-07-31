@@ -744,6 +744,15 @@ export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
   projectedRecordCount: number;
   embeddingEligibleEventCount: number;
   embeddedEventCount: number;
+  embeddingEligibleEstimatedTokenCount: number;
+  embeddedMeasuredTokenCount: number;
+  pendingEmbeddingEstimatedTokenCount: number;
+  embeddingQueueAheadEstimatedTokenCount: number;
+  embeddingEtaLowerSeconds: number | null;
+  embeddingEtaUpperSeconds: number | null;
+  embeddingEtaConfidence: "conservative" | "low" | "medium";
+  oldestEmbeddedSourceTime: string | null;
+  newestEmbeddedSourceTime: string | null;
   lcmEligibleEventCount: number;
   lcmCompletedEventCount: number;
   rawIngested: boolean;
@@ -2445,6 +2454,7 @@ export interface MemorySourceRepository
     vector: number[];
     chunkIndex?: number;
     chunkCount?: number;
+    inputTokenCount?: number;
     sourceText?: string;
   }): Promise<{ id: string; inserted: boolean }>;
   replaceSourceEmbeddings(input: {
@@ -2461,6 +2471,7 @@ export interface MemorySourceRepository
       vector: number[];
       chunkIndex: number;
       chunkCount: number;
+      inputTokenCount: number;
       sourceText: string;
     }>;
   }): Promise<{ ids: string[]; inserted: boolean }>;

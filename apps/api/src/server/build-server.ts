@@ -7,11 +7,13 @@ import { type Visibility } from "@koed/core";
 import {
   createCollaborationRepository,
   createDbPool,
+  createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createRetentionLifecycleRepository,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRepository,
+  type EmbeddingCapacityRepository,
   type MemorySourceRepository,
   type RetentionLifecycleRepository
 } from "@koed/db";
@@ -78,6 +80,7 @@ import {
   type DeviceIdentityInspection,
   type EnvelopeEncryptionProvider,
   lcmCompactQueueName,
+  lcmEmbedQueueName,
   memoryEmbedQueueName,
   requestKoedLocalWork,
   readLocalEdgeUpstreamEnrollmentBinding,
@@ -145,6 +148,7 @@ export interface BuildServerOptions {
   repository?: MemorySourceRepository;
   collaborationRepository?: CollaborationRepository;
   retentionRepository?: RetentionLifecycleRepository;
+  embeddingCapacityRepository?: EmbeddingCapacityRepository;
   runMemoryJobsInlineForTests?: boolean;
   rateLimitStore?: RateLimitStore;
   cacheProvider?: CacheProvider;
@@ -359,6 +363,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     userId: string;
     visibility: Visibility;
   }>(lcmCompactQueueName);
+  const lcmEmbeddingQueue = createQueue<{
+    sourceType: "memory_node";
+    sourceId: string;
+  }>(lcmEmbedQueueName);
   const rateLimitRedis =
     !options.rateLimitStore &&
     config.rateLimit.store === "redis" &&
@@ -889,7 +897,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     dbPool: pool,
     repository,
     embeddingQueue,
+    lcmEmbeddingQueue,
     compactionQueue,
+    embeddingCapacityRepository:
+      options.embeddingCapacityRepository ??
+      (pool ? createEmbeddingCapacityRepository(pool) : null),
     envelopeEncryptionProvider,
     alertFetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     runCompactionInline,

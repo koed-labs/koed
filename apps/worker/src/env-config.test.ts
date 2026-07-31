@@ -11,6 +11,7 @@ describe("resolveWorkerEnv", () => {
       redisUrl: "redis://localhost:6379",
       databaseConfigured: false,
       embeddingServiceUrl: "http://embedding-service:8000",
+      embeddingPoolKey: "default",
       embeddingDimensions: 1024,
       embeddingVersion: "qwen3-0.6b",
       embeddingModelArtifactHash:
@@ -23,6 +24,7 @@ describe("resolveWorkerEnv", () => {
       embeddingMaxTextChars: 200_000,
       embeddingMaxRequestChars: 1_000_000,
       embeddingRequestTimeoutMs: 900000,
+      embeddingCapacityRefinedDelayMs: 1800000,
       rawProjectionBatchLimit: 1000,
       rawProjectionActorLimit: 10,
       crossIdentitySyncIntervalMs: 1000,
@@ -56,10 +58,12 @@ describe("resolveWorkerEnv", () => {
         REDIS_URL: "redis://local:6379",
         EMBEDDING_SERVICE_URL: "http://localhost:8000",
         EMBEDDING_SERVICE_TOKEN: " worker-token ",
+        KOED_EMBEDDING_POOL_KEY: "hosted-cpu-a",
         EMBEDDING_BATCH_LIMIT: "8",
         EMBEDDING_MAX_TEXT_CHARS: "120000",
         EMBEDDING_MAX_REQUEST_CHARS: "640000",
         EMBEDDING_REQUEST_TIMEOUT_MS: "1200000",
+        EMBEDDING_CAPACITY_REFINED_DELAY_MS: "5000",
         MEMORY_RAW_PROJECTION_BATCH_LIMIT: "50",
         MEMORY_RAW_PROJECTION_ACTOR_LIMIT: "4",
         CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS: "7200",
@@ -86,12 +90,14 @@ describe("resolveWorkerEnv", () => {
       databaseConfigured: true,
       embeddingServiceUrl: "http://localhost:8000",
       embeddingServiceToken: "worker-token",
+      embeddingPoolKey: "hosted-cpu-a",
       embeddingDimensions: 1024,
       embeddingVersion: "qwen3-0.6b",
       embeddingBatchLimit: 8,
       embeddingMaxTextChars: 120_000,
       embeddingMaxRequestChars: 640_000,
       embeddingRequestTimeoutMs: 1200000,
+      embeddingCapacityRefinedDelayMs: 5000,
       rawProjectionBatchLimit: 50,
       rawProjectionActorLimit: 4,
       crossIdentitySyncStaleAfterSeconds: 7200,
@@ -115,6 +121,12 @@ describe("resolveWorkerEnv", () => {
     });
   });
 
+  it("rejects unsafe embedding pool identities", () => {
+    expect(() =>
+      resolveWorkerEnv({ KOED_EMBEDDING_POOL_KEY: "tenant/private pool" })
+    ).toThrow("KOED_EMBEDDING_POOL_KEY");
+  });
+
   it("rejects unsafe historical import bounds and health URLs", () => {
     expect(() =>
       resolveWorkerEnv({ MEMORY_HISTORICAL_IMPORT_CONCURRENCY: "2" })
@@ -125,6 +137,11 @@ describe("resolveWorkerEnv", () => {
       resolveWorkerEnv({ MEMORY_HISTORICAL_IMPORT_BATCH_ROWS: "0" })
     ).toThrow(
       "MEMORY_HISTORICAL_IMPORT_BATCH_ROWS must be an integer from 1 to 1000"
+    );
+    expect(() =>
+      resolveWorkerEnv({ EMBEDDING_CAPACITY_REFINED_DELAY_MS: "999" })
+    ).toThrow(
+      "EMBEDDING_CAPACITY_REFINED_DELAY_MS must be an integer from 1000 to 86400000"
     );
     expect(() =>
       resolveWorkerEnv({

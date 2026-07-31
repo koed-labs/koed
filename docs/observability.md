@@ -204,5 +204,34 @@ adds scheduler, chunk/token, batch, fallback, and score counts. Input/query
 text, chunks, vectors, credentials, headers, cookies, bodies, and raw traces are
 prohibited.
 
+### Embedding Capacity Metrics
+
+Embedding capacity follows
+[ADR 0024](adr/0024-embedding-capacity-telemetry.md). `GET /ops/status` is the
+redacted human-Operator snapshot. `GET /internal/metrics` is the private
+OpenMetrics-compatible machine surface and is disabled unless a dedicated
+monitoring bearer credential is configured. Health and readiness remain coarse
+and never calculate capacity or initiate calibration.
+
+The surface must also be excluded from the public reverse proxy. The server
+Compose `public-gateway-test` profile is the deployment-boundary check: normal
+routes pass while `/internal/*` returns `404`, even with the monitoring token.
+Capacity profiles are scoped per equivalent worker pool and aggregate without
+using pool or tenant identifiers as metric labels. Until calibration succeeds,
+the Operator snapshot may show the documented 5-token/second conservative ETA,
+but historical admission remains closed.
+
+The machine surface uses low-cardinality queue, source-class, model, and outcome
+labels only. It exposes Memory Event arrival, embedding completion, chunk and
+measured-token counters, retry/failure counters, queue state, backlog age,
+pending token cost, duration summaries, calibrated capacity, and drain-range
+gauges. Tenant, Team, User, Project, Captured Session, source-row, prompt, path,
+Memory text, and vector values are forbidden as metric labels or values.
+
+The rolling Operator snapshot separates Memory Event arrivals from completed
+Memory Event, Memory Node, and message embeddings. LCM compaction completions
+are reported separately and are excluded from the generic embedding completion
+rate.
+
 Attach only the content-safe summary required by the structured release record
 in [Collaboration Launch Validation](collaboration-launch-validation.md).

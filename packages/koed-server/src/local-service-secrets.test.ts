@@ -61,6 +61,7 @@ describe("packaged local service secrets", () => {
     );
 
     expect(environment.COLLABORATION_LOCAL_BROKER_SECRET).toBeTruthy();
+    expect(environment.KOED_OPS_METRICS_TOKEN).toBeTruthy();
     expect(environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).toBeTruthy();
     expect(environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).not.toBe(
       environment.API_DATA_ENCRYPTION_KEY
@@ -74,7 +75,8 @@ describe("packaged local service secrets", () => {
         OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:
           environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY,
         COLLABORATION_LOCAL_BROKER_SECRET:
-          environment.COLLABORATION_LOCAL_BROKER_SECRET
+          environment.COLLABORATION_LOCAL_BROKER_SECRET,
+        KOED_OPS_METRICS_TOKEN: environment.KOED_OPS_METRICS_TOKEN
       }
     });
     expect(
@@ -88,7 +90,8 @@ describe("packaged local service secrets", () => {
       OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:
         environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY,
       COLLABORATION_LOCAL_BROKER_SECRET:
-        environment.COLLABORATION_LOCAL_BROKER_SECRET
+        environment.COLLABORATION_LOCAL_BROKER_SECRET,
+      KOED_OPS_METRICS_TOKEN: environment.KOED_OPS_METRICS_TOKEN
     });
   });
 

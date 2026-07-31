@@ -3,6 +3,7 @@ export type HistoricalAdmissionPauseReason =
   | "api_degraded"
   | "queue_degraded"
   | "embedding_service_degraded"
+  | "capacity_profile_unavailable"
   | "live_projection_pressure"
   | "concurrency_cap";
 
@@ -18,6 +19,7 @@ export interface HistoricalAdmissionInput {
   apiHealthy: boolean;
   queueHealthy: boolean;
   embeddingServiceHealthy: boolean;
+  capacityProfileHealthy: boolean;
   historicalImportRows: number;
   liveProjectionRows: number;
   activeHistoricalBatches: number;
@@ -42,6 +44,9 @@ export const decideHistoricalAdmission = (
   }
   if (!input.embeddingServiceHealthy) {
     return { admitted: false, reason: "embedding_service_degraded" };
+  }
+  if (!input.capacityProfileHealthy) {
+    return { admitted: false, reason: "capacity_profile_unavailable" };
   }
   if (input.liveProjectionRows > config.maxLiveProjectionRows) {
     return { admitted: false, reason: "live_projection_pressure" };

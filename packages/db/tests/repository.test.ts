@@ -13417,12 +13417,14 @@ describeDb("memory repository visibility", () => {
           vector: vector(1),
           chunkIndex: 0,
           chunkCount: 2,
+          inputTokenCount: 4,
           sourceText: "Complete new chunk one."
         },
         {
           vector: vector(2),
           chunkIndex: 1,
           chunkCount: 2,
+          inputTokenCount: 4,
           sourceText: "Complete new chunk two."
         }
       ]
@@ -13438,12 +13440,14 @@ describeDb("memory repository visibility", () => {
           vector: vector(1),
           chunkIndex: 0,
           chunkCount: 2,
+          inputTokenCount: 4,
           sourceText: "Complete new chunk one."
         },
         {
           vector: vector(2),
           chunkIndex: 1,
           chunkCount: 2,
+          inputTokenCount: 4,
           sourceText: "Complete new chunk two."
         }
       ]
@@ -13460,6 +13464,7 @@ describeDb("memory repository visibility", () => {
             vector: vector(3),
             chunkIndex: 1,
             chunkCount: 1,
+            inputTokenCount: 3,
             sourceText: "Out-of-order replacement."
           }
         ]

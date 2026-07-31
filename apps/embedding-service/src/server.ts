@@ -4,6 +4,8 @@ import {
   type Server,
   type ServerResponse
 } from "node:http";
+import { createHash } from "node:crypto";
+import { arch, cpus, platform, release, totalmem } from "node:os";
 import {
   HttpError,
   embeddingTokenAuthStatus,
@@ -87,6 +89,12 @@ export const createEmbeddingService = (
           if (request.method === "GET" && url.pathname === "/health") {
             return handleHealth(config, runtime, request, requestId);
           }
+          if (
+            request.method === "GET" &&
+            url.pathname === "/capacity/identity"
+          ) {
+            return handleCapacityIdentity(config, request, requestId);
+          }
           if (request.method === "POST" && url.pathname === "/embed") {
             return await handleEmbed(
               config,
@@ -139,6 +147,51 @@ export const createEmbeddingService = (
     return response;
   }
 });
+
+const stableHash = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const handleCapacityIdentity = (
+  config: EmbeddingServiceEnv,
+  request: Request,
+  requestId: string
+): Response => {
+  requireInternalToken(config, headerValue(request, "x-koed-embedding-token"));
+  const runtimeSettings = {
+    batchLimit: config.batchLimit,
+    embeddingMaxTokens: config.embeddingMaxTokens,
+    llamaNCtx: config.llamaNCtx,
+    llamaNThreads: config.llamaNThreads,
+    llamaNBatch: config.llamaNBatch,
+    llamaNUbatch: config.llamaNUbatch,
+    llamaParallel: config.llamaParallel
+  };
+  return jsonResponse(
+    {
+      schemaVersion: 1,
+      modelKey: config.modelKey,
+      dimensions: config.expectedDimensions,
+      runtimeKind: "llama-server",
+      runtimeVersion: config.runtimeVersion,
+      backendClass: config.backendClass,
+      hardwareFingerprint: stableHash({
+        platform: platform(),
+        release: release(),
+        arch: arch(),
+        cpuModels: cpus()
+          .map((cpu) => cpu.model)
+          .sort(),
+        cpuCount: cpus().length,
+        totalMemoryBytes: totalmem(),
+        backendClass: config.backendClass
+      }),
+      settingsFingerprint: stableHash(runtimeSettings),
+      runtimeSettings
+    },
+    200,
+    requestId
+  );
+};
 
 const handleHealth = (
   config: EmbeddingServiceEnv,

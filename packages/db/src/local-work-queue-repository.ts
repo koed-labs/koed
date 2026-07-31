@@ -28,6 +28,7 @@ export interface LocalWorkQueueJobRecord<TData = unknown> {
   maxAttempts: number;
   priority: number;
   lockToken: string;
+  createdAt: Date;
 }
 
 export interface ClaimLocalWorkQueueJobInput {
@@ -54,6 +55,7 @@ export interface LocalWorkQueueRepository {
     retry: boolean;
   }): Promise<boolean>;
   getJobCounts(statuses: string[]): Promise<Record<string, number>>;
+  getOldestPendingAgeMs(queueName: string): Promise<number | null>;
 }
 
 const toPositiveInteger = (
@@ -81,6 +83,7 @@ const mapJobRow = <TData>(row: {
   max_attempts: number;
   priority: number;
   lock_token: string;
+  created_at: Date;
 }): LocalWorkQueueJobRecord<TData> => ({
   id: Number(row.id),
   queueName: row.queue_name,
@@ -89,7 +92,8 @@ const mapJobRow = <TData>(row: {
   attemptCount: row.attempt_count,
   maxAttempts: row.max_attempts,
   priority: row.priority,
-  lockToken: row.lock_token
+  lockToken: row.lock_token,
+  createdAt: row.created_at
 });
 
 export const createLocalWorkQueueRepository = (
@@ -263,6 +267,7 @@ export const createLocalWorkQueueRepository = (
       max_attempts: number;
       priority: number;
       lock_token: string;
+      created_at: Date;
     }>(
       `
         with expired_failed as (
@@ -315,7 +320,8 @@ export const createLocalWorkQueueRepository = (
                   q.attempt_count,
                   q.max_attempts,
                   q.priority,
-                  q.lock_token
+                  q.lock_token,
+                  q.created_at
       `,
       [input.queueName, lockToken, `${leaseMs} milliseconds`]
     );
@@ -388,5 +394,18 @@ export const createLocalWorkQueueRepository = (
         Number(result.rows.find((row) => row.status === status)?.count ?? 0)
       ])
     );
+  },
+
+  async getOldestPendingAgeMs(queueName) {
+    const result = await pool.query<{ age_ms: string | null }>(
+      `select extract(epoch from (now() - min(created_at))) * 1000 as age_ms
+       from local_work_queue
+       where queue_name = $1 and status = 'pending'`,
+      [queueName]
+    );
+    const value = result.rows[0]?.age_ms;
+    return value === null || value === undefined
+      ? null
+      : Math.max(0, Number(value));
   }
 });

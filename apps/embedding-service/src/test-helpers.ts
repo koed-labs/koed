@@ -39,6 +39,8 @@ export const testConfig = (
   rerankerParallel: 1,
   rerankerPromptCacheEnabled: true,
   embeddingServiceToken: "",
+  backendClass: "cpu",
+  runtimeVersion: "test",
   logLevel: "critical",
   ...overrides
 });

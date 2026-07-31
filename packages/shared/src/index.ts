@@ -885,6 +885,7 @@ export interface KoedJobQueue<TJobData = unknown> {
     options?: KoedJobEnqueueOptions
   ): Promise<KoedJobHandle>;
   getJobCounts(...statuses: string[]): Promise<Record<string, number>>;
+  getOldestPendingAgeMs?(): Promise<number | null>;
   close(): Promise<void>;
 }
 

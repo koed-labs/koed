@@ -56,11 +56,31 @@ const source: EmbeddableSourceRecord = {
   sourceHash: "hash-1"
 };
 
-const jsonResponse = (body: Record<string, unknown>, status = 200) =>
-  new Response(JSON.stringify(body), {
+const jsonResponse = (body: Record<string, unknown>, status = 200) => {
+  const chunks = Array.isArray(body.chunks)
+    ? body.chunks.map((chunk) =>
+        typeof chunk === "object" && chunk !== null
+          ? { tokenCount: 1, ...chunk }
+          : chunk
+      )
+    : body.chunks;
+  const measuredTokens = Array.isArray(chunks)
+    ? chunks.reduce(
+        (total, chunk) =>
+          total +
+          (typeof chunk === "object" &&
+          chunk !== null &&
+          typeof chunk.tokenCount === "number"
+            ? chunk.tokenCount
+            : 0),
+        0
+      )
+    : 0;
+  return new Response(JSON.stringify({ measuredTokens, ...body, chunks }), {
     status,
     headers: { "content-type": "application/json" }
   });
+};
 
 describe("embedding workflow", () => {
   it("stores validated embedding chunks without prefixing source text", async () => {
@@ -104,7 +124,8 @@ describe("embedding workflow", () => {
     ).resolves.toEqual({
       dimensions: 3,
       inserted: true,
-      chunks: 1
+      chunks: 1,
+      measuredTokens: 1
     });
     expect(fetchFn).toHaveBeenCalledWith(
       "http://embedding.local/embed",
@@ -131,6 +152,7 @@ describe("embedding workflow", () => {
             vector: [1, 2, 3],
             chunkIndex: 0,
             chunkCount: 1,
+            inputTokenCount: 1,
             sourceText: "Source text"
           }
         ]
@@ -192,6 +214,47 @@ describe("embedding workflow", () => {
       workflow.embedSource("memory_event", "event-1")
     ).rejects.toThrow("embedding service returned an invalid 3-dim response");
     expect(repository.replaceSourceEmbeddings).not.toHaveBeenCalled();
+  });
+
+  it("keeps execution token totals separate from chunk tokenizer counts", async () => {
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
+      replaceSourceEmbeddings: vi
+        .fn()
+        .mockResolvedValue({ inserted: true, ids: ["embedding-1"] })
+    } as unknown as MemorySourceRepository;
+    const workflow = createEmbeddingWorkflow({
+      env: workerEnv,
+      fetchFn: vi.fn().mockResolvedValue(
+        jsonResponse({
+          model: "test-embedding-model",
+          dimensions: 3,
+          measuredTokens: 99,
+          vectors: [[1, 2, 3]],
+          chunks: [
+            {
+              inputIndex: 0,
+              chunkIndex: 0,
+              chunkCount: 1,
+              tokenCount: 2,
+              text: "Source text",
+              vector: [1, 2, 3]
+            }
+          ]
+        })
+      ),
+      repository: () => repository
+    });
+
+    await expect(
+      workflow.embedSource("memory_event", "event-1")
+    ).resolves.toMatchObject({ measuredTokens: 99 });
+    expect(repository.replaceSourceEmbeddings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chunks: [expect.objectContaining({ inputTokenCount: 2 })]
+      })
+    );
   });
 
   it("reuses a complete current embedding without calling the service", async () => {
@@ -414,7 +477,12 @@ describe("embedding workflow", () => {
 
     await expect(
       workflow.embedSource("memory_event", source.sourceId)
-    ).resolves.toEqual({ dimensions: 3, inserted: true, chunks: 2 });
+    ).resolves.toEqual({
+      dimensions: 3,
+      inserted: true,
+      chunks: 2,
+      measuredTokens: 2
+    });
     expect(repository.replaceSourceEmbeddings).toHaveBeenCalledTimes(1);
     expect(repository.replaceSourceEmbeddings).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -581,7 +649,8 @@ describe("embedding workflow", () => {
     ).resolves.toEqual({
       dimensions: 3,
       inserted: true,
-      chunks: 3
+      chunks: 3,
+      measuredTokens: 3
     });
 
     expect(submittedTexts).toEqual([["abcd"], ["😀efg", "hij"]]);

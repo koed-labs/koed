@@ -29,6 +29,15 @@ export interface WorkerQueueRuntimeOptions {
   lcmEmbedQueue: KoedJobQueue<EmbeddingQueueJobData>;
   handleJob(queueName: WorkerQueueName, data: unknown): Promise<unknown>;
   isTransientError(error: unknown): boolean;
+  recordTelemetry?(input: {
+    queueName: WorkerQueueName;
+    data: unknown;
+    outcome: "completed" | "skipped" | "retry" | "failed";
+    result?: unknown;
+    createdAt: Date;
+    startedAt: Date;
+    finishedAt: Date;
+  }): Promise<void>;
   pollIntervalMs?: number;
   leaseMs?: number;
 }
@@ -43,6 +52,26 @@ const createBullmqConnection = (redisUrl: string) => ({
   url: redisUrl,
   maxRetriesPerRequest: null
 });
+
+const getBullmqJobCounts = async (
+  queue: Queue,
+  statuses: string[]
+): Promise<Record<string, number>> => {
+  const requested = statuses.includes("waiting")
+    ? [...new Set([...statuses, "prioritized"])]
+    : statuses;
+  const counts = await queue.getJobCounts(
+    ...(requested as Parameters<typeof queue.getJobCounts>)
+  );
+  return Object.fromEntries(
+    statuses.map((status) => [
+      status,
+      status === "waiting"
+        ? (counts.waiting ?? 0) + (counts.prioritized ?? 0)
+        : (counts[status] ?? 0)
+    ])
+  );
+};
 
 const getLocalJobCounts = async (
   repository: LocalWorkQueueRepository,
@@ -93,6 +122,7 @@ export const createWorkerQueueProducer = <TJobData>(
           backoffMs: jobOptions?.backoff?.delay
         }),
       getJobCounts: (...statuses) => getLocalJobCounts(repository, statuses),
+      getOldestPendingAgeMs: () => repository.getOldestPendingAgeMs(name),
       close: () => Promise.resolve()
     };
   }
@@ -108,10 +138,18 @@ export const createWorkerQueueProducer = <TJobData>(
       });
       return { id: job.id };
     },
-    getJobCounts: (...statuses) =>
-      queue.getJobCounts(
-        ...(statuses as Parameters<typeof queue.getJobCounts>)
-      ),
+    getJobCounts: (...statuses) => getBullmqJobCounts(queue, statuses),
+    getOldestPendingAgeMs: async () => {
+      const jobs = await queue.getJobs(
+        ["wait", "paused", "prioritized", "delayed"],
+        0,
+        0,
+        true
+      );
+      return jobs[0]?.timestamp
+        ? Math.max(0, Date.now() - jobs[0].timestamp)
+        : null;
+    },
     close: () => queue.close()
   };
 };
@@ -126,7 +164,8 @@ const createLocalQueueWorker = ({
   handleJob,
   isTransientError,
   pollIntervalMs,
-  leaseMs
+  leaseMs,
+  recordTelemetry
 }: {
   queueName: WorkerQueueName;
   repository: LocalWorkQueueRepository;
@@ -135,6 +174,7 @@ const createLocalQueueWorker = ({
   isTransientError(error: unknown): boolean;
   pollIntervalMs: number;
   leaseMs: number;
+  recordTelemetry?: WorkerQueueRuntimeOptions["recordTelemetry"];
 }) => {
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -152,9 +192,25 @@ const createLocalQueueWorker = ({
   };
 
   const processJob = async (job: LocalWorkQueueJobRecord) => {
+    const startedAt = new Date();
     try {
-      await handleJob(queueName, job.data);
+      const result = await handleJob(queueName, job.data);
       await repository.complete({ id: job.id, lockToken: job.lockToken });
+      await recordTelemetry?.({
+        queueName,
+        data: job.data,
+        outcome:
+          typeof result === "object" &&
+          result !== null &&
+          "skipped" in result &&
+          result.skipped === true
+            ? "skipped"
+            : "completed",
+        result,
+        createdAt: job.createdAt,
+        startedAt,
+        finishedAt: new Date()
+      }).catch(() => undefined);
       logger.info(
         {
           event: { name: "worker.job.completed", category: "job" },
@@ -176,6 +232,14 @@ const createLocalQueueWorker = ({
         errorMessage: errorMessage(error),
         retry
       });
+      await recordTelemetry?.({
+        queueName,
+        data: job.data,
+        outcome: retry ? "retry" : "failed",
+        createdAt: job.createdAt,
+        startedAt,
+        finishedAt: new Date()
+      }).catch(() => undefined);
       logger[retry ? "warn" : "error"](
         {
           event: {
@@ -316,7 +380,8 @@ export const createWorkerQueueRuntime = async ({
   handleJob,
   isTransientError,
   pollIntervalMs = 1_000,
-  leaseMs = 10 * 60 * 1000
+  leaseMs = 10 * 60 * 1000,
+  recordTelemetry
 }: WorkerQueueRuntimeOptions): Promise<WorkerQueueRuntime> => {
   if (backend === "local") {
     const repository =
@@ -358,7 +423,8 @@ export const createWorkerQueueRuntime = async ({
         handleJob,
         isTransientError,
         pollIntervalMs,
-        leaseMs
+        leaseMs,
+        recordTelemetry
       })
     );
     return {
@@ -385,9 +451,37 @@ export const createWorkerQueueRuntime = async ({
     const worker = new Worker<unknown>(
       queueName,
       async (job) => {
+        const startedAt = new Date();
         try {
-          return await handleJob(queueName, job.data);
+          const result = await handleJob(queueName, job.data);
+          await recordTelemetry?.({
+            queueName,
+            data: job.data,
+            outcome:
+              typeof result === "object" &&
+              result !== null &&
+              "skipped" in result &&
+              result.skipped === true
+                ? "skipped"
+                : "completed",
+            result,
+            createdAt: new Date(job.timestamp),
+            startedAt,
+            finishedAt: new Date()
+          }).catch(() => undefined);
+          return result;
         } catch (error) {
+          const retry =
+            isTransientError(error) &&
+            job.attemptsMade + 1 < (job.opts.attempts ?? 1);
+          await recordTelemetry?.({
+            queueName,
+            data: job.data,
+            outcome: retry ? "retry" : "failed",
+            createdAt: new Date(job.timestamp),
+            startedAt,
+            finishedAt: new Date()
+          }).catch(() => undefined);
           if (isTransientError(error)) {
             logger.warn(
               {

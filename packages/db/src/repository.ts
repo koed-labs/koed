@@ -8718,6 +8718,8 @@ export const createMemorySourceRepository = (
             chunk.chunkCount !== expectedCount ||
             chunk.chunkIndex !== index ||
             chunk.vector.length !== input.dimensions ||
+            !Number.isSafeInteger(chunk.inputTokenCount) ||
+            chunk.inputTokenCount < 0 ||
             chunk.vector.some((value) => !Number.isFinite(value))
         )
       ) {
@@ -8823,6 +8825,7 @@ export const createMemorySourceRepository = (
                 source_hash,
                 source_chunk_index,
                 source_chunk_count,
+                input_token_count,
                 source_text,
                 model_artifact_hash,
                 tokenizer,
@@ -8834,8 +8837,8 @@ export const createMemorySourceRepository = (
                 case when $1 = 'memory_node' then $2::uuid else null end,
                 case when $1 = 'memory_event' then $2::uuid else null end,
                 case when $1 = 'message' then $2::uuid else null end,
-                $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                $12, $13, $14, $15, $16
+                $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17
               )
               returning id
             `,
@@ -8850,6 +8853,7 @@ export const createMemorySourceRepository = (
               input.source.sourceHash,
               chunk.chunkIndex,
               chunk.chunkCount,
+              chunk.inputTokenCount,
               sourceTextForStorage,
               input.modelArtifactHash,
               input.tokenizer,

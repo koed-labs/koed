@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -2142,6 +2143,7 @@ export const memoryEmbeddings = pgTable(
     sourceHash: text("source_hash").notNull(),
     sourceChunkIndex: integer("source_chunk_index").notNull().default(0),
     sourceChunkCount: integer("source_chunk_count").notNull().default(1),
+    inputTokenCount: integer("input_token_count"),
     sourceText: text("source_text"),
     queryableVectorStrategy: text("queryable_vector_strategy")
       .notNull()
@@ -2223,6 +2225,10 @@ export const memoryEmbeddings = pgTable(
       sql`${table.sourceChunkCount} >= 1 and ${table.sourceChunkIndex} < ${table.sourceChunkCount}`
     ),
     check(
+      "memory_embeddings_input_token_count_check",
+      sql`${table.inputTokenCount} is null or ${table.inputTokenCount} >= 0`
+    ),
+    check(
       "memory_embeddings_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
     ),
@@ -2237,6 +2243,176 @@ export const memoryEmbeddings = pgTable(
     check(
       "memory_embeddings_canonical_embedding_state_check",
       sql`${table.canonicalEmbeddingState} in ('not_stored', 'encrypted_payload')`
+    )
+  ]
+);
+
+export const embeddingCapacityProfiles = pgTable(
+  "embedding_capacity_profiles",
+  {
+    id: id(),
+    poolKey: text("pool_key").notNull(),
+    profileKey: text("profile_key").notNull(),
+    profileVersion: text("profile_version").notNull(),
+    processingEpoch: text("processing_epoch").notNull(),
+    state: text("state").notNull(),
+    calibrationMode: text("calibration_mode").notNull(),
+    modelKey: text("model_key").notNull(),
+    modelArtifactHash: text("model_artifact_hash").notNull(),
+    embeddingDimensions: integer("embedding_dimensions").notNull(),
+    tokenizer: text("tokenizer").notNull(),
+    inputTransform: text("input_transform").notNull(),
+    pooling: text("pooling").notNull(),
+    normalization: text("normalization").notNull(),
+    runtimeKind: text("runtime_kind").notNull(),
+    runtimeVersion: text("runtime_version"),
+    backendClass: text("backend_class").notNull(),
+    hardwareFingerprint: text("hardware_fingerprint").notNull(),
+    settingsFingerprint: text("settings_fingerprint").notNull(),
+    runtimeSettings: jsonb("runtime_settings")
+      .$type<Record<string, string | number | boolean | null>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    sampleMeasurements: jsonb("sample_measurements")
+      .$type<
+        Array<{
+          targetTokenClass: number;
+          measuredTokenCount: number;
+          durationMs: number;
+        }>
+      >()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    testedConcurrency: integer("tested_concurrency").notNull(),
+    sampleCount: integer("sample_count").notNull(),
+    measuredTokenCount: bigint("measured_token_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    durationMs: bigint("duration_ms", { mode: "number" }).notNull().default(0),
+    measuredTokensPerSecond: doublePrecision(
+      "measured_tokens_per_second"
+    ).notNull(),
+    p50LatencyMs: doublePrecision("p50_latency_ms").notNull(),
+    p95LatencyMs: doublePrecision("p95_latency_ms").notNull(),
+    failureCode: text("failure_code"),
+    calibratedAt: timestamp("calibrated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("embedding_capacity_profiles_active_key_unique")
+      .on(table.profileKey)
+      .where(sql`${table.invalidatedAt} is null`),
+    index("embedding_capacity_profiles_active_model_idx")
+      .on(table.poolKey, table.modelKey, table.calibratedAt.desc())
+      .where(sql`${table.invalidatedAt} is null and ${table.state} = 'usable'`),
+    check(
+      "embedding_capacity_profiles_state_check",
+      sql`${table.state} in ('usable','failed')`
+    ),
+    check(
+      "embedding_capacity_profiles_mode_check",
+      sql`${table.calibrationMode} in ('quick','refined')`
+    ),
+    check(
+      "embedding_capacity_profiles_backend_check",
+      sql`${table.backendClass} in ('cpu','metal','cuda','unknown')`
+    ),
+    check(
+      "embedding_capacity_profiles_values_check",
+      sql`${table.embeddingDimensions} > 0
+        and ${table.testedConcurrency} > 0
+        and ${table.sampleCount} > 0
+        and ${table.measuredTokenCount} >= 0
+        and ${table.durationMs} >= 0
+        and ${table.measuredTokensPerSecond} >= 0
+        and ${table.p50LatencyMs} >= 0
+        and ${table.p95LatencyMs} >= 0`
+    ),
+    check(
+      "embedding_capacity_profiles_fingerprints_check",
+      sql`${table.profileKey} ~ '^[0-9a-f]{64}$'
+        and ${table.hardwareFingerprint} ~ '^[0-9a-f]{64}$'
+        and ${table.settingsFingerprint} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const embeddingTelemetryMinuteBuckets = pgTable(
+  "embedding_telemetry_minute_buckets",
+  {
+    bucketStart: timestamp("bucket_start", { withTimezone: true }).notNull(),
+    queueName: text("queue_name").notNull(),
+    sourceClass: text("source_class").notNull(),
+    outcome: text("outcome").notNull(),
+    eventCount: bigint("event_count", { mode: "number" }).notNull().default(0),
+    chunkCount: bigint("chunk_count", { mode: "number" }).notNull().default(0),
+    measuredTokenCount: bigint("measured_token_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    queueWaitMsTotal: bigint("queue_wait_ms_total", { mode: "number" })
+      .notNull()
+      .default(0),
+    queueWaitSampleCount: bigint("queue_wait_sample_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    executionMsTotal: bigint("execution_ms_total", { mode: "number" })
+      .notNull()
+      .default(0),
+    executionSampleCount: bigint("execution_sample_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    endToEndMsTotal: bigint("end_to_end_ms_total", { mode: "number" })
+      .notNull()
+      .default(0),
+    endToEndSampleCount: bigint("end_to_end_sample_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.bucketStart,
+        table.queueName,
+        table.sourceClass,
+        table.outcome
+      ]
+    }),
+    index("embedding_telemetry_minute_buckets_recent_idx").on(
+      table.bucketStart.desc(),
+      table.queueName,
+      table.sourceClass,
+      table.outcome
+    ),
+    check(
+      "embedding_telemetry_minute_buckets_queue_check",
+      sql`${table.queueName} in ('projection','memory-embed','lcm-embed','lcm-compact','direct')`
+    ),
+    check(
+      "embedding_telemetry_minute_buckets_source_check",
+      sql`${table.sourceClass} in ('memory_event','memory_node','message','lcm_compaction')`
+    ),
+    check(
+      "embedding_telemetry_minute_buckets_outcome_check",
+      sql`${table.outcome} in ('created','completed','skipped','retry','failed')`
+    ),
+    check(
+      "embedding_telemetry_minute_buckets_values_check",
+      sql`${table.eventCount} >= 0
+        and ${table.chunkCount} >= 0
+        and ${table.measuredTokenCount} >= 0
+        and ${table.queueWaitMsTotal} >= 0
+        and ${table.queueWaitSampleCount} >= 0
+        and ${table.executionMsTotal} >= 0
+        and ${table.executionSampleCount} >= 0
+        and ${table.endToEndMsTotal} >= 0
+        and ${table.endToEndSampleCount} >= 0`
     )
   ]
 );
@@ -4221,6 +4397,29 @@ export const historicalImportSources = pgTable(
       .notNull()
       .default(0),
     embeddedEventCount: integer("embedded_event_count").notNull().default(0),
+    embeddingEligibleEstimatedTokenCount: bigint(
+      "embedding_eligible_estimated_token_count",
+      { mode: "number" }
+    )
+      .notNull()
+      .default(0),
+    embeddedMeasuredTokenCount: bigint("embedded_measured_token_count", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
+    pendingEmbeddingEstimatedTokenCount: bigint(
+      "pending_embedding_estimated_token_count",
+      { mode: "number" }
+    )
+      .notNull()
+      .default(0),
+    oldestEmbeddedSourceTime: timestamp("oldest_embedded_source_time", {
+      withTimezone: true
+    }),
+    newestEmbeddedSourceTime: timestamp("newest_embedded_source_time", {
+      withTimezone: true
+    }),
     lcmEligibleEventCount: integer("lcm_eligible_event_count")
       .notNull()
       .default(0),
@@ -4276,7 +4475,7 @@ export const historicalImportSources = pgTable(
     ),
     check(
       "historical_import_sources_counters_check",
-      sql`${table.discoveredRecordCount} >= 0 and ${table.importedRecordCount} >= 0 and ${table.skippedRecordCount} >= 0 and ${table.malformedRecordCount} >= 0 and ${table.rawIngestedRecordCount} >= 0 and ${table.projectedRecordCount} >= 0 and ${table.embeddingEligibleEventCount} >= 0 and ${table.embeddedEventCount} between 0 and ${table.embeddingEligibleEventCount} and ${table.lcmEligibleEventCount} >= 0 and ${table.lcmCompletedEventCount} between 0 and ${table.lcmEligibleEventCount} and ${table.retryCount} between 0 and 1000`
+      sql`${table.discoveredRecordCount} >= 0 and ${table.importedRecordCount} >= 0 and ${table.skippedRecordCount} >= 0 and ${table.malformedRecordCount} >= 0 and ${table.rawIngestedRecordCount} >= 0 and ${table.projectedRecordCount} >= 0 and ${table.embeddingEligibleEventCount} >= 0 and ${table.embeddedEventCount} between 0 and ${table.embeddingEligibleEventCount} and ${table.embeddingEligibleEstimatedTokenCount} >= 0 and ${table.embeddedMeasuredTokenCount} >= 0 and ${table.pendingEmbeddingEstimatedTokenCount} between 0 and ${table.embeddingEligibleEstimatedTokenCount} and ${table.lcmEligibleEventCount} >= 0 and ${table.lcmCompletedEventCount} between 0 and ${table.lcmEligibleEventCount} and ${table.retryCount} between 0 and 1000`
     ),
     check(
       "historical_import_sources_event_range_check",

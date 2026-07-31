@@ -153,6 +153,41 @@ describe("Embedding Service routes", () => {
     expect(payload.normalized).toBe(true);
   });
 
+  it("protects the content-free capacity identity with the internal token", async () => {
+    const config = testConfig({
+      embeddingServiceToken: "secret",
+      backendClass: "cpu",
+      runtimeVersion: "llama-server-test"
+    });
+    const runtime = new RouteRuntime(config, logger());
+    const service = createEmbeddingService(config, runtime, logger());
+
+    const rejected = await service.handle(
+      new Request("http://127.0.0.1/capacity/identity")
+    );
+    const accepted = await service.handle(
+      new Request("http://127.0.0.1/capacity/identity", {
+        headers: { "x-koed-embedding-token": "secret" }
+      })
+    );
+    const payload = await json(accepted);
+
+    expect(rejected.status).toBe(401);
+    expect(accepted.status).toBe(200);
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      modelKey: "qwen3-0.6b",
+      dimensions: 3,
+      runtimeKind: "llama-server",
+      runtimeVersion: "llama-server-test",
+      backendClass: "cpu"
+    });
+    expect(payload.hardwareFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(payload.settingsFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(payload)).not.toContain("/models/embedding.gguf");
+    expect(JSON.stringify(payload)).not.toContain("secret");
+  });
+
   it("requires embed auth and returns chunk metadata", async () => {
     const config = testConfig({ embeddingServiceToken: "secret" });
     const runtime = new RouteRuntime(config, logger());
