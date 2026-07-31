@@ -40,8 +40,9 @@ LCM Summary settings are resolved in this order:
 
 Curated Memory Review settings are resolved in this order:
 
-1. `MEMORY_CURATED_REVIEW_*`.
-2. Documented code defaults.
+1. API user setting stored in `local_memory_agent_settings`.
+2. `MEMORY_CURATED_REVIEW_*`.
+3. Documented code defaults.
 
 The default model and reasoning effort for all four flows are
 `gpt-5.6-luna` and `low`. Manual Memory Questions inherit the Memory Answer
@@ -60,12 +61,17 @@ app-server cannot be started or initialized, the Explorer must disable local
 manual questions and show the missing local AI Client state. Koed should not
 silently fall back to another synthesis path.
 
+The default `gpt-5.6-luna` model requires Codex CLI `0.144.0` or newer. Koed
+also verifies the configured model against app-server `model/list`, so an
+older or otherwise incompatible Codex installation fails readiness with
+upgrade or model-selection guidance instead of failing later during synthesis.
+
 ## Persistence
 
-MCP Memory Answer and LCM Summary user settings are stored in
-`local_memory_agent_settings`. The local MCP/bridge reads those settings at
-execution time, so changing Settings affects subsequent memory answers and LCM
-summary claims without editing `.env`.
+MCP Memory Answer, LCM Summary, and Curated Memory Review user settings are
+stored in `local_memory_agent_settings`. The local MCP/bridge reads those
+settings at execution time, so changing Settings affects subsequent memory
+answers, LCM summary claims, and durable-memory reviews without editing `.env`.
 
 Manual Memory Question settings are stored on the `memory_questions` row when
 the question is created. This lets background catch-up and retry use the same

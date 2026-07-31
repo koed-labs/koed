@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  checkCodexAppServerAvailability,
   CodexAppServerClient,
   CodexAppServerThreadSession,
   CodexAppServerTurnError,
@@ -282,6 +283,82 @@ describe("Codex app-server runner", () => {
         label: "gpt-5.4",
         defaultReasoningEffort: "high"
       });
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("requires the configured model to be exposed by Codex app-server", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-availability-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    const env = {
+      ...process.env,
+      CODEX_HOME: realCodexHome,
+      FAKE_REAL_CODEX_HOME: realCodexHome
+    };
+
+    try {
+      const available = await checkCodexAppServerAvailability(
+        {
+          appServerBinary: writeFakeAppServer(tempDirectory, {
+            modelPages: [
+              {
+                expectedCursor: null,
+                response: {
+                  data: [
+                    {
+                      id: "gpt-5.6-luna",
+                      model: "gpt-5.6-luna",
+                      hidden: false,
+                      isDefault: true,
+                      supportedReasoningEfforts: []
+                    }
+                  ]
+                }
+              }
+            ]
+          }),
+          model: "gpt-5.6-luna",
+          cwd: tempDirectory,
+          env
+        },
+        3000
+      );
+      expect(available).toEqual({ available: true });
+
+      const unavailable = await checkCodexAppServerAvailability(
+        {
+          appServerBinary: writeFakeAppServer(tempDirectory, {
+            modelPages: [
+              {
+                expectedCursor: null,
+                response: {
+                  data: [
+                    {
+                      id: "gpt-5.4-mini",
+                      model: "gpt-5.4-mini",
+                      hidden: false,
+                      isDefault: true,
+                      supportedReasoningEfforts: []
+                    }
+                  ]
+                }
+              }
+            ]
+          }),
+          model: "gpt-5.6-luna",
+          cwd: tempDirectory,
+          env
+        },
+        3000
+      );
+      expect(unavailable.available).toBe(false);
+      expect(unavailable.error).toContain("does not expose");
+      expect(unavailable.error).toContain("0.144.0 or newer");
+      expect(unavailable.error).toContain("model/list");
     } finally {
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }
