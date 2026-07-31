@@ -1202,6 +1202,50 @@ describe("CollaborationApp", () => {
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledOnce());
   });
 
+  it("refreshes local health when collaboration becomes live", async () => {
+    const initial = {
+      ...baseSnapshot(),
+      connection: {
+        ...baseSnapshot().connection,
+        state: "unavailable" as const,
+        connectedAt: null
+      }
+    };
+    const client = createClient(collaborationSnapshotSchema.parse(initial));
+    const localStatusStore = new DesktopStatusStore();
+    const refresh = vi
+      .spyOn(localStatusStore, "refresh")
+      .mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(
+        <App
+          collaborationClient={client}
+          onboardingComplete
+          statusStoreOverride={localStatusStore}
+        />
+      );
+    });
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      client.emit(
+        {
+          ...requireCurrent(client),
+          connection: {
+            ...requireCurrent(client).connection,
+            state: "live",
+            connectedAt: "2026-07-23T00:01:00.000Z"
+          }
+        },
+        undefined,
+        "connection"
+      );
+    });
+
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  });
+
   it("keeps an onboarded device in the app shell while services recover", async () => {
     const starting = {
       state: "starting" as const,

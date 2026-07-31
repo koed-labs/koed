@@ -3165,7 +3165,16 @@ export const registerCollaborationCommandRoute = (
       return cached.value;
     }
     const existing = remoteNavigationInFlight.get(key);
-    if (existing) return existing;
+    if (existing) {
+      if (!input.force) return existing;
+      try {
+        await existing;
+      } catch {
+        // A forced read still gets one fresh attempt after an older read fails.
+      }
+      const newer = remoteNavigationInFlight.get(key);
+      if (newer && newer !== existing) return newer;
+    }
     const pending = loadRemoteTeamNavigation({
       fetcher: options.fetch,
       credential: input.credential,
