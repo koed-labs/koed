@@ -668,7 +668,7 @@ describe("local memory answer bridge", () => {
     });
     expect(body.flows.curatedMemoryReview).toMatchObject({
       model: "gpt-5.4-mini-curated",
-      reasoningEffort: "medium",
+      reasoningEffort: "low",
       timeoutMs: 90000,
       maxAttempts: 2,
       source: "env"

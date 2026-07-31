@@ -2576,7 +2576,7 @@ const lcmDepthOneFanout = (): number =>
   positiveIntEnv("MEMORY_LCM_DEPTH1_FANOUT", 20);
 
 const lcmSummaryModel = (): string =>
-  process.env.MEMORY_LCM_SUMMARY_MODEL ?? "gpt-5.4-mini";
+  process.env.MEMORY_LCM_SUMMARY_MODEL ?? "gpt-5.6-luna";
 
 const normalizeForLcmSummary = (text: string): string =>
   text.replace(/\s+/g, " ").trim();

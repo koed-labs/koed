@@ -162,11 +162,11 @@ export const resolveLcmSummaryWorkerConfig = (
     model:
       overrides.model ??
       resolveEnvValue(env, "MEMORY_LCM_SUMMARY_MODEL") ??
-      "gpt-5.4-mini",
+      "gpt-5.6-luna",
     reasoningEffort:
       overrides.reasoningEffort ??
       resolveEnvValue(env, "MEMORY_LCM_SUMMARY_REASONING_EFFORT") ??
-      "medium",
+      "low",
     timeoutMs:
       overrides.timeoutMs ??
       integerEnv(

@@ -6,11 +6,12 @@ synthesis itself.
 
 ## Flows
 
-Three local synthesis flows have independent effective settings:
+Four local synthesis flows have independent effective settings:
 
 - MCP Memory Answer: the `memory_answer` tool used by an AI Client.
 - Manual Memory Question: a question sent from the Explorer questions composer.
 - LCM Summary: background LCM summary synthesis run by the MCP Server.
+- Curated Memory Review: semantic review of durable-memory proposals run by the MCP Server.
 
 Codex is the only supported AI Client for these flows today. The settings model
 keeps Codex as a provider/CLI selection so additional AI Client connectors can
@@ -36,6 +37,15 @@ LCM Summary settings are resolved in this order:
 1. API user settings edited in the Explorer Settings panel.
 2. `MEMORY_LCM_SUMMARY_*`.
 3. Documented code defaults.
+
+Curated Memory Review settings are resolved in this order:
+
+1. `MEMORY_CURATED_REVIEW_*`.
+2. Documented code defaults.
+
+The default model and reasoning effort for all four flows are
+`gpt-5.6-luna` and `low`. Manual Memory Questions inherit the Memory Answer
+defaults unless they are overridden for a question.
 
 `MEMORY_CODEX_APP_SERVER_BINARY` is the preferred app-server binary setting for
 all Codex-backed flows. Flow-specific legacy binary aliases are still read for
