@@ -635,6 +635,8 @@
 }
 
 .collab-people-list {
+  container-name: team-people-list;
+  container-type: inline-size;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -845,6 +847,10 @@
   padding: 9px 18px;
 }
 
+.collab-member-role {
+  grid-column: 4;
+}
+
 .collab-person-admin-row > select,
 .collab-access-grid select {
   background: var(--background);
@@ -876,6 +882,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@container team-people-list (max-width: 880px) {
+  .collab-person-admin-row {
+    grid-template-columns: 34px minmax(0, 1fr) minmax(138px, auto) 100px;
+  }
+
+  .collab-access-grid {
+    grid-column: 2 / 4;
+  }
+
+  .collab-member-disable {
+    grid-column: 4;
+    justify-self: end;
+  }
+}
+
+@container team-people-list (max-width: 620px) {
+  .collab-person-admin-row {
+    grid-template-columns: 34px minmax(0, 1fr) 92px;
+  }
+
+  .collab-member-role {
+    grid-column: 3;
+  }
+
+  .collab-presence-controls,
+  .collab-access-grid {
+    grid-column: 2 / -1;
+  }
+
+  .collab-member-disable {
+    grid-column: 3;
+  }
 }
 
 .collab-leave-section {

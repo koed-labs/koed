@@ -1929,6 +1929,33 @@ describe("CollaborationApp", () => {
     );
   });
 
+  it("keeps cached Team People visible during a transient outage", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const client = await render(createClient(selected));
+
+    await act(async () =>
+      client.emit(
+        {
+          ...requireCurrent(client),
+          connection: {
+            ...requireCurrent(client).connection,
+            state: "unavailable",
+            connectedAt: null
+          }
+        },
+        "Collaboration is temporarily unavailable.",
+        "connection"
+      )
+    );
+
+    expect(document.body.textContent).toContain("Members");
+    expect(document.body.textContent).toContain("Alex Chen");
+    expect(document.body.textContent).not.toContain("Team unavailable");
+  });
+
   it("clears a transient stream announcement after verified live activity", async () => {
     const client = await render();
     await act(async () =>

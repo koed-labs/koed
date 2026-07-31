@@ -2494,8 +2494,15 @@ export const createCollaborationRendererClient = (
       const backendChanged =
         snapshot.connection.backendId !== null &&
         event.connection.backendId !== snapshot.connection.backendId;
+      const recoveredSelectedTeamStream =
+        becameLive &&
+        (snapshot.connection.state === "reconnecting" ||
+          snapshot.connection.state === "unavailable") &&
+        teamIdForSelection(snapshot.selection) !== null;
       const requiresLiveRecovery =
-        becameLive && !backendChanged && snapshot.navigation.teams.length === 0;
+        becameLive &&
+        !backendChanged &&
+        (snapshot.navigation.teams.length === 0 || recoveredSelectedTeamStream);
       if (
         backendChanged ||
         event.connection.state === "disconnected" ||

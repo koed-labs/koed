@@ -469,6 +469,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     string,
     Map<string, CollaborationSelection>
   >();
+  const activeTeamIds = new Map<string, string | null>();
   const authorityGenerations = new Map<string, number>();
   let preferredBackendId: string | undefined;
 
@@ -536,6 +537,12 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     }
     if (eventInvalidatesSelection(parsed)) {
       invalidateAuthority(subscription.ownerId, subscription.teamId);
+    }
+    if (
+      parsed.type === "connection" &&
+      activeTeamIds.get(subscription.ownerId) !== subscription.teamId
+    ) {
+      return;
     }
     subscription.emit(parsed);
   };
@@ -1341,9 +1348,15 @@ export const createDesktopCollaborationBrokerLocalTransport = (
         invalidateAuthority(context.ownerId);
       }
       if (result.ok && "snapshot" in result.data) {
-        rememberTeamSelection(
+        const parsedSnapshot = collaborationSnapshotSchema.parse(
+          result.data.snapshot
+        );
+        rememberTeamSelection(context.ownerId, parsedSnapshot.selection);
+        activeTeamIds.set(
           context.ownerId,
-          collaborationSnapshotSchema.parse(result.data.snapshot).selection
+          "teamId" in parsedSnapshot.selection
+            ? parsedSnapshot.selection.teamId
+            : null
         );
       }
       return result;
@@ -1359,6 +1372,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       if (subscription.ownerId === ownerId) stopSubscription(subscription.id);
     }
     latestTeamSelections.delete(ownerId);
+    activeTeamIds.delete(ownerId);
     authorityGenerations.delete(ownerId);
   };
 
@@ -1367,6 +1381,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       stopSubscription(subscription.id);
     }
     latestTeamSelections.clear();
+    activeTeamIds.clear();
     authorityGenerations.clear();
   };
 

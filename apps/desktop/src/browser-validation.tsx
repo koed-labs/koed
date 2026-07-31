@@ -130,6 +130,19 @@ const collaborationFixture = (): CollaborationSnapshot => {
     ...currentUser,
     id: uuid(23)
   };
+  const teamPerson = (person: typeof currentUser) => ({
+    ...person,
+    teamPresence: {
+      mode: "auto" as const,
+      manualStatus: "available" as const,
+      activityLevel: "active" as const,
+      lastActivityAt: timestamp,
+      nextTransitionAt: new Date(
+        new Date(timestamp).getTime() + 5 * 60_000
+      ).toISOString(),
+      preferenceVersion: 1
+    }
+  });
   const participant = (person: typeof currentUser) => ({
     id: person.id,
     displayName: person.displayName,
@@ -253,7 +266,7 @@ const collaborationFixture = (): CollaborationSnapshot => {
       role: "owner" as const,
       lifecycle: "active" as const,
       unreadCount: teamIndex % 7 === 0 ? 3 : 0,
-      people: [teamPrincipal, teammate],
+      people: [teamPerson(teamPrincipal), teamPerson(teammate)],
       directMessages: [],
       workspaces,
       version: 1
@@ -384,7 +397,9 @@ const resultFor = (
               acknowledgedEventId: command.input.eventId,
               subscriptionVersion: command.input.expectedSubscriptionVersion + 1
             }
-          : {};
+          : command.command === "collaboration.report_team_activity"
+            ? { acceptedTeamIds: command.input.teamIds }
+            : {};
   return collaborationCommandResultSchema.parse({
     contractVersion: COLLABORATION_CONTRACT_VERSION,
     requestId: command.requestId,
@@ -401,9 +416,14 @@ const ChatValidationApp = () => {
       command: async (command) => {
         const browserWindow = window as Window & {
           __koedBrowserCommandCount?: number;
+          __koedBrowserUserCommands?: string[];
         };
-        browserWindow.__koedBrowserCommandCount =
-          (browserWindow.__koedBrowserCommandCount ?? 0) + 1;
+        if (command.command !== "collaboration.report_team_activity") {
+          browserWindow.__koedBrowserUserCommands ??= [];
+          browserWindow.__koedBrowserUserCommands.push(command.command);
+          browserWindow.__koedBrowserCommandCount =
+            browserWindow.__koedBrowserUserCommands.length;
+        }
         if (command.command === "collaboration.select") {
           await new Promise<void>((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(() => resolve()))

@@ -3916,6 +3916,49 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
+  it("reloads Team state once when its realtime stream recovers", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    await client.select({
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
+    const loadsBeforeRecovery = mock.command.mock.calls.filter(
+      ([command]) => command.command === "collaboration.load"
+    ).length;
+
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "connection",
+      connection: {
+        ...fixture().connection,
+        state: "reconnecting",
+        connectedAt: null,
+        reconnectAttempt: 1
+      },
+      error: null
+    });
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "connection",
+      connection: fixture().connection,
+      error: null
+    });
+
+    await waitFor(() =>
+      expect(
+        mock.command.mock.calls.filter(
+          ([command]) => command.command === "collaboration.load"
+        )
+      ).toHaveLength(loadsBeforeRecovery + 1)
+    );
+    expect(client.current()?.connection.state).toBe("live");
+    client.dispose();
+  });
+
   it("bounds pending realtime state and never polls", async () => {
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const mock = createBridge(fixture({ maxPendingEvents: 1 }));
