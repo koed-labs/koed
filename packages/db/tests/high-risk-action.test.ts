@@ -225,6 +225,26 @@ describeDb("high-risk action grants", () => {
     expect(count.rows[0]?.count).toBe("1");
   });
 
+  it("rejects commitment reuse under a different request", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const operation = binding(fixture);
+    const grantCommitment = highRiskActionGrantCommitment(createGrantSecret());
+    const createInput = (clientRequestId: string) => ({
+      ...operation,
+      clientRequestId,
+      credentialOperationFamily: "action_grant" as const,
+      grantCommitment
+    });
+
+    await expect(
+      repository.createActionGrant(createInput(randomUUID()))
+    ).resolves.not.toBeNull();
+    await expect(
+      repository.createActionGrant(createInput(randomUUID()))
+    ).resolves.toBeNull();
+  });
+
   it("allows only one concurrent browser decision to win", async () => {
     const fixture = await createFixture();
     const repository = createRepository({ pool });

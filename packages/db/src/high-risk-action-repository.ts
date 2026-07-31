@@ -757,12 +757,9 @@ export const createHighRiskActionRepository = (
             createdAt,
             expiresAt: new Date(createdAt.getTime() + confirmationTtlMs)
           })
-          .onConflictDoNothing({
-            target: [
-              highRiskBrowserConfirmations.deviceCredentialId,
-              highRiskBrowserConfirmations.clientRequestId
-            ]
-          })
+          // The idempotency key and secret commitment are independently
+          // unique. Resolve either race through the scoped binding lookup.
+          .onConflictDoNothing()
           .returning();
         if (!confirmation) {
           const concurrent = await selectConfirmationWithGrant(tx, {
