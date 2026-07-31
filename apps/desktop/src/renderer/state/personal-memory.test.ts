@@ -215,7 +215,7 @@ describe("PersonalMemoryStore", () => {
       store
         .detail(updatedThread)
         ?.events.map(({ sourceSequence }) => sourceSequence)
-    ).toEqual([2]);
+    ).toEqual([1, 2]);
   });
 
   it("keeps visible events mounted while refreshing the live head", async () => {
@@ -278,10 +278,192 @@ describe("PersonalMemoryStore", () => {
         store
           .detail(updated)
           ?.events.map(({ sourceSequence }) => sourceSequence)
-      ).toEqual([2])
+      ).toEqual([1, 2])
     );
     expect(observedEventCounts.every((count) => count > 0)).toBe(true);
     unsubscribe();
+  });
+
+  it("preserves paged history when an older-page request wins a live-refresh race", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    let resolveRefresh:
+      | ((events: PersonalDesktopConversationEvent[]) => void)
+      | undefined;
+    const selected = thread(1);
+    const updated = { ...selected, eventCount: 102 };
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(50), event(51)])
+      .mockImplementationOnce(
+        () =>
+          new Promise<PersonalDesktopConversationEvent[]>((resolve) => {
+            resolveRefresh = resolve;
+          })
+      )
+      .mockResolvedValueOnce([event(49), event(50)]);
+    const bridge = api({
+      listProjects: vi
+        .fn<PersonalDesktopApi["listProjects"]>()
+        .mockResolvedValueOnce([project([selected])])
+        .mockResolvedValue([project([updated])]),
+      loadEventPage,
+      subscribe: vi.fn((listener) => {
+        onChange = listener;
+        return () => undefined;
+      })
+    });
+    const store = new PersonalMemoryStore(bridge);
+    await store.loadProjects();
+    await store.loadInitial(selected);
+
+    onChange?.({
+      contractVersion: 1,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000052",
+          projectId: selected.projectId,
+          threadId: selected.id
+        }
+      ]
+    });
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
+
+    const older = store.loadOlder(updated);
+    await older;
+    expect(store.detail(updated)).toMatchObject({ status: "ready" });
+    expect(
+      store.detail(updated)?.events.map(({ sourceSequence }) => sourceSequence)
+    ).toEqual([49, 50, 51]);
+
+    resolveRefresh?.([event(51), event(52)]);
+    await vi.waitFor(() =>
+      expect(
+        store
+          .detail(updated)
+          ?.events.map(({ sourceSequence }) => sourceSequence)
+      ).toEqual([49, 50, 51, 52])
+    );
+  });
+
+  it("keeps pagination loading until it wins a live-refresh race", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    let resolveRefresh:
+      | ((events: PersonalDesktopConversationEvent[]) => void)
+      | undefined;
+    let resolveOlder:
+      | ((events: PersonalDesktopConversationEvent[]) => void)
+      | undefined;
+    const selected = thread(1);
+    const updated = { ...selected, eventCount: 102 };
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(50), event(51)])
+      .mockImplementationOnce(
+        () =>
+          new Promise<PersonalDesktopConversationEvent[]>((resolve) => {
+            resolveRefresh = resolve;
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<PersonalDesktopConversationEvent[]>((resolve) => {
+            resolveOlder = resolve;
+          })
+      );
+    const bridge = api({
+      listProjects: vi
+        .fn<PersonalDesktopApi["listProjects"]>()
+        .mockResolvedValueOnce([project([selected])])
+        .mockResolvedValue([project([updated])]),
+      loadEventPage,
+      subscribe: vi.fn((listener) => {
+        onChange = listener;
+        return () => undefined;
+      })
+    });
+    const store = new PersonalMemoryStore(bridge);
+    await store.loadProjects();
+    await store.loadInitial(selected);
+
+    onChange?.({
+      contractVersion: 1,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000052",
+          projectId: selected.projectId,
+          threadId: selected.id
+        }
+      ]
+    });
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
+    const older = store.loadOlder(updated);
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(3));
+
+    resolveRefresh?.([event(51), event(52)]);
+    await vi.waitFor(() =>
+      expect(store.detail(updated)).toMatchObject({
+        status: "loading",
+        events: [
+          expect.objectContaining({ sourceSequence: 50 }),
+          expect.objectContaining({ sourceSequence: 51 }),
+          expect.objectContaining({ sourceSequence: 52 })
+        ]
+      })
+    );
+
+    resolveOlder?.([event(49), event(50)]);
+    await older;
+    expect(store.detail(updated)).toMatchObject({ status: "ready" });
+    expect(
+      store.detail(updated)?.events.map(({ sourceSequence }) => sourceSequence)
+    ).toEqual([49, 50, 51, 52]);
+  });
+
+  it("does not expose a non-retryable live-refresh error over retained events", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    const selected = thread(1);
+    const updated = { ...selected, eventCount: 101 };
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(1)])
+      .mockRejectedValueOnce(new Error("temporary refresh failure"));
+    const bridge = api({
+      listProjects: vi
+        .fn<PersonalDesktopApi["listProjects"]>()
+        .mockResolvedValueOnce([project([selected])])
+        .mockResolvedValue([project([updated])]),
+      loadEventPage,
+      subscribe: vi.fn((listener) => {
+        onChange = listener;
+        return () => undefined;
+      })
+    });
+    const store = new PersonalMemoryStore(bridge);
+    await store.loadProjects();
+    await store.loadInitial(selected);
+
+    onChange?.({
+      contractVersion: 1,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000100",
+          projectId: selected.projectId,
+          threadId: selected.id
+        }
+      ]
+    });
+
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(store.detail(updated)).toMatchObject({
+        status: "ready",
+        error: null,
+        events: [expect.objectContaining({ sourceSequence: 1 })]
+      })
+    );
   });
 
   it("refreshes again when a live change arrives during a detail request", async () => {
@@ -336,7 +518,7 @@ describe("PersonalMemoryStore", () => {
         store
           .detail(updated)
           ?.events.map(({ sourceSequence }) => sourceSequence)
-      ).toEqual([2])
+      ).toEqual([1, 2])
     );
   });
 });

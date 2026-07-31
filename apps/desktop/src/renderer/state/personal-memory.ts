@@ -57,6 +57,7 @@ const eventCursor = (event: PersonalDesktopConversationEvent) => ({
 export class PersonalMemoryStore {
   readonly #api: PersonalDesktopApi;
   readonly #cache = new Map<string, PersonalMemoryDetail>();
+  readonly #detailPageLoadKeys = new Set<string>();
   readonly #detailRefreshKeys = new Set<string>();
   readonly #listeners = new Set<PersonalMemoryListener>();
   readonly #prewarmQueued = new Set<string>();
@@ -250,15 +251,20 @@ export class PersonalMemoryStore {
           limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
         });
         if (this.#cache.get(key) !== entry) continue;
-        entry.events = mergeConversationEvents([], events);
+        entry.events = mergeConversationEvents(entry.events, events);
         entry.hasOlder = entry.events.length < thread.eventCount;
         entry.loadedAt = Date.now();
-        entry.status = "ready";
+        if (!this.#detailPageLoadKeys.has(key)) entry.status = "ready";
         entry.error = null;
       } catch (cause) {
         if (this.#cache.get(key) !== entry) continue;
-        entry.status = entry.events.length > 0 ? "ready" : "error";
-        entry.error = cause instanceof Error ? cause.message : String(cause);
+        if (entry.events.length > 0) {
+          if (!this.#detailPageLoadKeys.has(key)) entry.status = "ready";
+          entry.error = null;
+        } else {
+          entry.status = "error";
+          entry.error = cause instanceof Error ? cause.message : String(cause);
+        }
       }
       this.#prune(new Set([key]));
       this.#emit();
@@ -273,12 +279,14 @@ export class PersonalMemoryStore {
     const cursor = entry.events[0];
     if (
       entry.status === "loading" ||
+      this.#detailPageLoadKeys.has(key) ||
       !entry.hasOlder ||
       !cursor ||
       this.#cache.get(key) !== entry
     ) {
       return entry;
     }
+    this.#detailPageLoadKeys.add(key);
     entry.status = "loading";
     entry.error = null;
     this.#emit();
@@ -303,6 +311,8 @@ export class PersonalMemoryStore {
       if (this.#cache.get(key) !== entry) return entry;
       entry.status = "error";
       entry.error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      this.#detailPageLoadKeys.delete(key);
     }
     this.#emit();
     if (this.#detailRefreshKeys.has(key)) this.#scheduleLiveRefresh();
