@@ -92,6 +92,12 @@ function visibleRangeFromTokens<M extends ChatTimelineMessage>(
   };
 }
 
+const timelineIsAtEnd = (state: {
+  contentLength: number;
+  isAtEnd: boolean;
+  scrollLength: number;
+}): boolean => state.isAtEnd || state.contentLength <= state.scrollLength + 1;
+
 function ChatTimelineInner<M extends ChatTimelineMessage>(
   {
     ariaLabel,
@@ -257,7 +263,7 @@ function ChatTimelineInner<M extends ChatTimelineMessage>(
     const state = listRef.current?.getState?.();
     if (!state) return;
     if (!state.isStartReached) olderLoadArmedRef.current = true;
-    reportAtEnd(state.isAtEnd);
+    reportAtEnd(timelineIsAtEnd(state));
   }, [reportAtEnd]);
 
   const handleViewableItemsChanged = useCallback(
@@ -270,7 +276,7 @@ function ChatTimelineInner<M extends ChatTimelineMessage>(
         visibleRangeFromTokens(viewableItems)
       );
       const state = listRef.current?.getState?.();
-      if (state) reportAtEnd(state.isAtEnd);
+      if (state) reportAtEnd(timelineIsAtEnd(state));
     },
     [reportAtEnd]
   );
