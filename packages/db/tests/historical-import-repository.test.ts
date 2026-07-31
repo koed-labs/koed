@@ -1315,6 +1315,9 @@ describeDb("journal-backed historical import repository", () => {
         }
       ]
     });
+    if (embeddedEvent.tokenCount == null || pendingEvent.tokenCount == null) {
+      throw new Error("Expected historical Memory Event token estimates");
+    }
     const eligibleEstimatedTokens =
       embeddedEvent.tokenCount + pendingEvent.tokenCount;
     const pendingEstimatedTokens = pendingEvent.tokenCount;
@@ -1352,15 +1355,19 @@ describeDb("journal-backed historical import repository", () => {
         metadata: {}
       }
     );
+    if (liveEvent.tokenCount == null) {
+      throw new Error("Expected live Memory Event token estimate");
+    }
+    const liveEventTokenCount = liveEvent.tokenCount;
     const queuedStatus = await repo.getHistoricalImportSource(
       { userId: owner.id },
       source!.id
     );
     expect(queuedStatus?.embeddingQueueAheadEstimatedTokenCount).toBe(
-      liveEvent.tokenCount
+      liveEventTokenCount
     );
     expect(queuedStatus?.embeddingEtaLowerSeconds).toBe(
-      Math.ceil((pendingEstimatedTokens + liveEvent.tokenCount) / 1_000)
+      Math.ceil((pendingEstimatedTokens + liveEventTokenCount) / 1_000)
     );
 
     const liveEmbeddable = await repo.getEmbeddableSource(
@@ -1382,7 +1389,7 @@ describeDb("journal-backed historical import repository", () => {
           vector: Array<number>(1024).fill(0.01),
           chunkIndex: 0,
           chunkCount: 1,
-          inputTokenCount: liveEvent.tokenCount,
+          inputTokenCount: liveEventTokenCount,
           sourceText: "Higher priority live event"
         }
       ]
