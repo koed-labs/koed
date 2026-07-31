@@ -179,6 +179,7 @@ export class PersonalMemoryStore {
     const key = personalMemoryThreadKey(thread);
     const existing = this.#cache.get(key);
     const now = Date.now();
+    if (existing) existing.thread = thread;
     if (
       existing?.status === "ready" &&
       now - existing.loadedAt < personalMemoryCacheRetentionMs
@@ -241,8 +242,26 @@ export class PersonalMemoryStore {
         this.#emit();
         continue;
       }
-      this.#cache.delete(key);
-      await this.loadInitial(thread);
+      entry.thread = thread;
+      try {
+        const events = await this.#api.loadEventPage({
+          projectId: thread.projectId,
+          threadId: thread.id,
+          limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
+        });
+        if (this.#cache.get(key) !== entry) continue;
+        entry.events = mergeConversationEvents([], events);
+        entry.hasOlder = entry.events.length < thread.eventCount;
+        entry.loadedAt = Date.now();
+        entry.status = "ready";
+        entry.error = null;
+      } catch (cause) {
+        if (this.#cache.get(key) !== entry) continue;
+        entry.status = entry.events.length > 0 ? "ready" : "error";
+        entry.error = cause instanceof Error ? cause.message : String(cause);
+      }
+      this.#prune(new Set([key]));
+      this.#emit();
     }
   }
 
@@ -286,6 +305,7 @@ export class PersonalMemoryStore {
       entry.error = cause instanceof Error ? cause.message : String(cause);
     }
     this.#emit();
+    if (this.#detailRefreshKeys.has(key)) this.#scheduleLiveRefresh();
     return entry;
   }
 

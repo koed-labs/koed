@@ -218,6 +218,72 @@ describe("PersonalMemoryStore", () => {
     ).toEqual([2]);
   });
 
+  it("keeps visible events mounted while refreshing the live head", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    let resolveRefresh:
+      | ((events: PersonalDesktopConversationEvent[]) => void)
+      | undefined;
+    const selected = thread(1);
+    const updated = { ...selected, eventCount: 101 };
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(1)])
+      .mockImplementationOnce(
+        () =>
+          new Promise<PersonalDesktopConversationEvent[]>((resolve) => {
+            resolveRefresh = resolve;
+          })
+      );
+    const bridge = api({
+      listProjects: vi
+        .fn<PersonalDesktopApi["listProjects"]>()
+        .mockResolvedValueOnce([project([selected])])
+        .mockResolvedValue([project([updated])]),
+      loadEventPage,
+      subscribe: vi.fn((listener) => {
+        onChange = listener;
+        return () => undefined;
+      })
+    });
+    const store = new PersonalMemoryStore(bridge);
+    await store.loadProjects();
+    await store.loadInitial(selected);
+    const observedEventCounts: number[] = [];
+    const unsubscribe = store.subscribe(() => {
+      observedEventCounts.push(store.detail(updated)?.events.length ?? 0);
+    });
+
+    onChange?.({
+      contractVersion: 1,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000100",
+          projectId: selected.projectId,
+          threadId: selected.id
+        }
+      ]
+    });
+
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
+    expect(store.detail(updated)).toMatchObject({
+      status: "ready",
+      events: [expect.objectContaining({ sourceSequence: 1 })]
+    });
+    expect(observedEventCounts.every((count) => count > 0)).toBe(true);
+
+    resolveRefresh?.([event(2)]);
+    await vi.waitFor(() =>
+      expect(
+        store
+          .detail(updated)
+          ?.events.map(({ sourceSequence }) => sourceSequence)
+      ).toEqual([2])
+    );
+    expect(observedEventCounts.every((count) => count > 0)).toBe(true);
+    unsubscribe();
+  });
+
   it("refreshes again when a live change arrives during a detail request", async () => {
     let onChange: ((change: PersonalDesktopChange) => void) | undefined;
     const deferred: {
