@@ -58,6 +58,49 @@ test("the workflow model cache key and filename track the pinned runtime model",
   assert.match(workflow, new RegExp(sha256));
 });
 
+test("native runtime caches are restored by PRs and written only by trusted main runs", () => {
+  const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const cacheWorkflow = readFileSync(
+    resolve(".github/workflows/native-runtime-cache.yml"),
+    "utf8"
+  );
+  const relevantSmoke = workflow
+    .split("  relevant-packaged-smoke:")[1]
+    .split("  release-candidate-validation:")[0];
+  const fullValidation = workflow
+    .split("  release-candidate-validation:")[1]
+    .split("  native-runtime-linux-x64:")[0];
+  const nativeRestoreStep = relevantSmoke
+    .split("      - name: Restore verified native runtime payload")[1]
+    .split("      - name: Build native runtime payload on cache miss")[0];
+  const cacheKey = /key: (native-runtime-payload-v3-[^\n]+)/;
+
+  assert.match(nativeRestoreStep, /uses: actions\/cache\/restore@/);
+  assert.doesNotMatch(nativeRestoreStep, /uses: actions\/cache@/);
+  assert.doesNotMatch(fullValidation, /native-runtime-payload-v3-/);
+  assert.doesNotMatch(cacheWorkflow, /pull_request:/);
+  assert.match(cacheWorkflow, /branches:\n\s+- main/);
+  assert.match(
+    cacheWorkflow,
+    /if: github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/
+  );
+  assert.match(cacheWorkflow, /uses: actions\/cache\/restore@/);
+  assert.match(cacheWorkflow, /uses: actions\/cache\/save@/);
+  assert.match(cacheWorkflow, /cron: "47 3 \* \* 2,5"/);
+  assert.ok(
+    cacheWorkflow.indexOf(
+      "Validate native runtime payload before use or save"
+    ) <
+      cacheWorkflow.indexOf(
+        "Save independently validated native runtime payload"
+      )
+  );
+  assert.equal(
+    relevantSmoke.match(cacheKey)?.[1],
+    cacheWorkflow.match(cacheKey)?.[1]
+  );
+});
+
 test("ordinary, documentation, relevant, forced, and release pull requests route correctly", () => {
   assert.deepEqual(
     evaluateCiPolicy({

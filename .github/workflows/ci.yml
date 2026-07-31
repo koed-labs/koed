@@ -248,10 +248,10 @@ jobs:
 
       - name: Restore verified native runtime payload
         id: native-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ runner.temp }}/koed-native-runtime-cache/macos-arm64/koed-runtime
-          key: native-runtime-payload-v3-macos-arm64-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('scripts/native-runtime/sources.macos-arm64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-macos-arm64.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/native-runtime-copy.mjs') }}
+          key: native-runtime-payload-v3-macos-arm64-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('scripts/native-runtime/sources.macos-arm64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-macos-arm64.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/native-runtime/validate-runtime.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Build native runtime payload on cache miss
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -348,10 +348,6 @@ jobs:
       - name: Build koed-server CLI
         run: pnpm --filter @koed/koed-server build
 
-      - name: Fingerprint native toolchain
-        id: full-toolchain
-        run: echo "fingerprint=$(xcodebuild -version | shasum -a 256 | awk '{print $1}')" >> "${GITHUB_OUTPUT}"
-
       - name: Cold-build native runtime artifact
         env:
           KOED_NATIVE_RUNTIME_VERSION: ${{ github.sha }}
@@ -368,17 +364,6 @@ jobs:
 
       - name: Validate native runtime artifact
         run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-validation/koed-runtime" --platform darwin --json
-
-      - name: Stage independently validated payload for future PRs
-        run: |
-          mkdir -p "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64"
-          ditto "${RUNNER_TEMP}/koed-native-runtime-validation/koed-runtime" "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64/koed-runtime"
-
-      - name: Save independently validated native payload
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          path: ${{ runner.temp }}/koed-native-runtime-cache/macos-arm64/koed-runtime
-          key: native-runtime-payload-v3-macos-arm64-${{ steps.full-toolchain.outputs.fingerprint }}-${{ hashFiles('scripts/native-runtime/sources.macos-arm64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-macos-arm64.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Build unsigned Desktop app, DMG, ZIP, and block maps
         env:

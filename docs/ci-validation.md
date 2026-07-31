@@ -53,6 +53,13 @@ architecture, and Xcode fingerprint. The workflow regenerates provenance,
 manifests, the archive, and checksums for the current commit, then validates the
 restored payload before packaging.
 
+Pull-request jobs use the cache in restore-only mode. They can read the trusted
+default-branch payload but cannot populate a cache for other pull requests. A
+separate `Native runtime cache` workflow is the only writer for this payload. It
+runs from trusted `push`, scheduled, or manual events on `main`, validates every
+restored payload, and saves a cold-built payload only after independent
+validation succeeds. Its immutable key has no partial restore fallback.
+
 This tier builds and ad-hoc-signs the Electron `dir` target, verifies the
 unpacked `.app`, and runs the complete packaged smoke. The pinned embedding
 model is restored by SHA-256 and copied into the smoke's otherwise-empty
@@ -77,11 +84,16 @@ checksummed artifacts, verifies the required asset set, and only then publishes.
 
 ## Scheduled and manual validation
 
-The weekly scheduled run selects full clean-install validation. It bypasses the
-completed native payload cache and installs the pinned embedding model over
-HTTPS into an empty `KOED_HOME`. Only after those independent checks succeed
-does it seed the default-branch native payload and model caches used by ordinary
-relevant pull requests.
+The weekly scheduled CI run selects full clean-install validation. It bypasses
+the completed native payload cache and installs the pinned embedding model over
+HTTPS into an empty `KOED_HOME`.
+
+Native cache maintenance is deliberately separate from release validation. A
+trusted `main` workflow runs after changes to native cache inputs and on Tuesday
+and Friday. Restoring the payload refreshes its last-access time comfortably
+inside GitHub's default seven-day retention window. A miss performs the cold
+source build; the completed payload is validated before it is saved. Manual
+cache maintenance must also be dispatched from the default branch.
 
 Manual `CI` dispatch supports:
 

@@ -74,6 +74,13 @@ The builder verifies each archive by SHA-256, assembles the deterministic `koed-
 
 `.github/workflows/ci.yml` runs native macOS validation only after static checks, tests, and the normal build succeed. Packaging/runtime-relevant pull requests restore a source-, script-, platform-, architecture-, and Xcode-keyed native payload, regenerate current provenance and checksums, validate it fail closed, and consume it in an unpacked-app packaged Desktop smoke. This path skips DMG/ZIP generation and routine artifact uploads. Documentation-only pull requests do not allocate a macOS runner, and the `full-ci` label forces the app-only smoke when the path policy needs an override.
 
+Pull requests restore the completed native payload without cache-write
+permission. `.github/workflows/native-runtime-cache.yml` is the only native
+payload writer: trusted default-branch push, scheduled, and manual runs restore
+and validate the immutable cache entry, cold-build it on a miss, and save it
+only after validation. Source archives and compiler work directories are not
+shared; the cached unit is the completed `koed-runtime/` tree.
+
 The `changeset-release/main` pull request, weekly schedule, and manual `full` or `clean-install` dispatch use an independent cold native build. CI extracts the completed tarball into a separate temporary directory before validation, which exercises the same relocation boundary as a consumer. That full path builds and verifies the app, DMG, ZIP, and block maps, but does not publish its validation outputs. The Linux x64 native runtime job remains manual because it is expensive and should run on dependency bumps or explicit review; its assets target glibc 2.35+ and should be built on Ubuntu 22.04 or an equivalent baseline image.
 
 The release workflow independently rebuilds the macOS native runtime and Desktop package from the exact merged release commit, uploads the unsigned DMG/ZIP and checksum file, verifies the complete required asset set, and publishes the draft only after validation succeeds. See `docs/ci-validation.md` for the complete tier policy and `docs/desktop-internal-artifacts.md` for release artifact install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
