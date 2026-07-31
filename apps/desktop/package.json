@@ -28,7 +28,7 @@
     "start": "pnpm build && electron .",
     "pretypecheck": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build",
+    "pretest": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed/koed-server build",
     "test": "vitest run --passWithNoTests",
     "test:browser": "pnpm build && electron scripts/validate-project-workspace.mjs && electron scripts/validate-collaboration-interactions.mjs"
   },
