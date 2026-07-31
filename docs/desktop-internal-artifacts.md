@@ -33,7 +33,9 @@ These GitHub Release assets are still unsigned and not notarized until the signi
 
 ## Install/open manually
 
-Download `koed-desktop-macos-arm64-unsigned` from the completed workflow run.
+Download the `Koed-<version>-arm64.dmg` or `Koed-<version>-arm64.zip` asset,
+along with `koed-desktop-macos-arm64-unsigned.sha256`, from the GitHub Release
+for the version under test.
 
 DMG path:
 

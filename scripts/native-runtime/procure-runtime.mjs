@@ -180,6 +180,7 @@ export const isLlamaRuntimeFile = (file) => {
   const name = basename(file);
   return (
     name === "llama-server" ||
+    name === "LICENSE" ||
     /\.dylib$/i.test(name) ||
     /\.so(?:\.\d+)*$/i.test(name) ||
     name === "ggml-metal.metal"

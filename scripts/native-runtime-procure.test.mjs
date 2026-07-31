@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isLlamaRuntimeFile } from "./native-runtime/procure-runtime.mjs";
 
-test("llama staging keeps the server runtime closure and prunes auxiliary executables", () => {
+test("llama staging keeps the server runtime closure and license while pruning auxiliary executables", () => {
   for (const file of [
     "llama-server",
+    "LICENSE",
     "libllama.0.dylib",
     "libggml.so",
     "libggml.so.1",
