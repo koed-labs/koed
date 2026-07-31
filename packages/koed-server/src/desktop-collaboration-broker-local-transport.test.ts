@@ -911,6 +911,8 @@ describe("Desktop collaboration local transport", () => {
   it("keeps inactive Team stream health out of the active renderer state", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | null =
       null;
+    let releaseDelayedTeamSelection: (() => void) | null = null;
+    let teamSelectionCount = 0;
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockImplementation(async (url, init) => {
@@ -922,6 +924,12 @@ describe("Desktop collaboration local transport", () => {
           const selectedTeam =
             body.command.command === "collaboration.select" &&
             "teamId" in body.command.input.selection;
+          if (selectedTeam) teamSelectionCount += 1;
+          if (selectedTeam && teamSelectionCount === 2) {
+            await new Promise<void>((resolve) => {
+              releaseDelayedTeamSelection = resolve;
+            });
+          }
           return commandSuccess(body.command, fullSnapshot(selectedTeam));
         }
         if (value.endsWith("/realtime/subscriptions")) {
@@ -979,7 +987,14 @@ describe("Desktop collaboration local transport", () => {
       );
 
     await select(true, requestId);
+    const delayedTeamSelection = select(
+      true,
+      "44dfb243-f750-4d36-8360-e8de8768819e"
+    );
+    await waitFor(() => releaseDelayedTeamSelection !== null);
     await select(false, "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec");
+    releaseDelayedTeamSelection!();
+    await delayedTeamSelection;
     await transport.request(
       collaborationRendererCommandSchema.parse({
         contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -1026,6 +1041,34 @@ describe("Desktop collaboration local transport", () => {
       )
     );
     expect(events.some((event) => event.type === "snapshot")).toBe(true);
+
+    await select(false, "13dfb243-f750-4d36-8360-e8de8768819e");
+    streamController!.enqueue(
+      new TextEncoder().encode(
+        `event: connection\ndata: ${JSON.stringify({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "connection",
+          connection: {
+            ...fullSnapshot(true).connection,
+            state: "access_revoked",
+            connectedAt: null
+          },
+          error: {
+            code: "access_revoked",
+            userMessage: collaborationSafeErrorMessages.access_revoked,
+            retryable: false,
+            retryAfterMs: null
+          }
+        })}\n\n`
+      )
+    );
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "connection" &&
+          event.connection.state === "access_revoked"
+      )
+    );
     owner.abort();
   });
 

@@ -2270,7 +2270,12 @@ describe("collaboration renderer client", () => {
       mock.command.mock.calls.filter(
         ([command]) => command.command === "collaboration.load"
       )
-    ).toHaveLength(1);
+    ).toHaveLength(2);
+    expect(
+      mock.command.mock.calls
+        .filter(([command]) => command.command === "collaboration.load")
+        .at(-1)?.[0].input
+    ).toEqual({ forceRemoteNavigation: true });
     expect(
       mock.command.mock.calls
         .filter(([command]) => command.command === "collaboration.select")
@@ -3593,6 +3598,52 @@ describe("collaboration renderer client", () => {
         ([command]) => command.command === "collaboration.load"
       )
     ).toHaveLength(3);
+    client.dispose();
+  });
+
+  it("does not let delayed stream recovery overwrite a newer user selection", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    await client.select({
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
+    const originalCommand = mock.command.getMockImplementation()!;
+    let releaseRecoverySelection: (() => void) | null = null;
+    mock.command.mockImplementation(async (command) => {
+      if (
+        command.command === "collaboration.select" &&
+        command.input.selection.kind === "workspace_channel"
+      ) {
+        await new Promise<void>((resolve) => {
+          releaseRecoverySelection = resolve;
+        });
+      }
+      return originalCommand(command);
+    });
+
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "control",
+      subscriptionId: ids.teamSubscription,
+      occurredAt: timestamp,
+      reason: "requires_snapshot"
+    });
+    await waitFor(() => expect(releaseRecoverySelection).not.toBeNull());
+
+    await client.select({ kind: "notes_to_self" });
+    releaseRecoverySelection!();
+    await waitFor(() =>
+      expect(client.currentSelection()).toEqual({ kind: "notes_to_self" })
+    );
+    const current = client.current();
+    expect(current?.view.kind).toBe("thread");
+    if (current?.view.kind === "thread") {
+      expect(current.view.thread.scope).toBe("personal");
+    }
     client.dispose();
   });
 

@@ -2764,7 +2764,10 @@ export const createCollaborationRendererClient = (
     return snapshot;
   };
 
-  const applyCommandSnapshot = async (next: CollaborationSnapshot) => {
+  const applyCommandSnapshot = async (
+    next: CollaborationSnapshot,
+    isCurrent: () => boolean = () => true
+  ) => {
     const backendChanged =
       snapshot?.connection.backendId !== null &&
       snapshot?.connection.backendId !== undefined &&
@@ -2780,7 +2783,9 @@ export const createCollaborationRendererClient = (
       await resetSubscriptions();
       await purgeAllTeams(next.connection, undefined, false);
     }
+    if (!isCurrent()) return requireSnapshot();
     await publishValidated(next, { kind: "command" });
+    if (!isCurrent()) return requireSnapshot();
     await syncTeamSubscription(next.selection);
     void prewarmSharedSessionViews(next.navigation);
     startSharedSourceBackfill(next);
@@ -2788,6 +2793,11 @@ export const createCollaborationRendererClient = (
   };
 
   reloadAuthoritativeSnapshot = async (preferredSelection) => {
+    const recoverySelectionRequestGeneration = ++selectionRequestGeneration;
+    const recoverySelectionIntentGeneration = selectionIntentGeneration;
+    const recoveryIsCurrent = () =>
+      recoverySelectionRequestGeneration === selectionRequestGeneration &&
+      recoverySelectionIntentGeneration === selectionIntentGeneration;
     const selectedSharedSession =
       snapshot?.selection.kind === "shared_session" ? snapshot.selection : null;
     if (selectedSharedSession) {
@@ -2833,6 +2843,10 @@ export const createCollaborationRendererClient = (
       }
     }
     if (!loaded) throw new Error("Authoritative snapshot recovery failed.");
+    if (!recoveryIsCurrent()) {
+      await subscribeScope({ scope: "personal" });
+      return;
+    }
     let resolved = loaded;
     const preferredTeamId = recoverySelection
       ? teamIdForSelection(recoverySelection)
@@ -2849,11 +2863,19 @@ export const createCollaborationRendererClient = (
         if (!selected.ok || selected.command !== "collaboration.select") {
           throw new Error("Unexpected collaboration result.");
         }
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
         resolved = selected.data.snapshot;
         if (recoverySelection.kind === "shared_session") {
           pendingSharedSessionRecovery = null;
         }
       } catch {
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
         if (recoverySelection.kind === "shared_session") {
           rememberSharedSessionSelection(recoverySelection);
         }
@@ -2867,10 +2889,15 @@ export const createCollaborationRendererClient = (
         if (!fallback.ok || fallback.command !== "collaboration.select") {
           throw new Error("Unexpected collaboration result.");
         }
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
         resolved = fallback.data.snapshot;
       }
     }
-    await applyCommandSnapshot(resolved);
+    await applyCommandSnapshot(resolved, recoveryIsCurrent);
+    if (!recoveryIsCurrent()) return;
     await subscribeScope({ scope: "personal" });
     if (snapshot) {
       await publish(snapshot, { kind: "command", announcement: "" });
@@ -2895,7 +2922,10 @@ export const createCollaborationRendererClient = (
         warmed &&
         selectionIdentity(warmed.selection) === selectionIdentity(selection)
       ) {
-        return applyCommandSnapshot(warmed);
+        return applyCommandSnapshot(
+          warmed,
+          () => generation === selectionRequestGeneration
+        );
       }
     }
     const shell = snapshot ? optimisticSelection(snapshot, selection) : null;
@@ -2915,7 +2945,10 @@ export const createCollaborationRendererClient = (
         throw new Error("Unexpected collaboration result.");
       }
       if (generation !== selectionRequestGeneration) return requireSnapshot();
-      return applyCommandSnapshot(result.data.snapshot);
+      return applyCommandSnapshot(
+        result.data.snapshot,
+        () => generation === selectionRequestGeneration
+      );
     } catch (cause) {
       if (
         generation === selectionRequestGeneration &&
@@ -3384,8 +3417,8 @@ export const createCollaborationRendererClient = (
         ) {
           try {
             const currentSelection = snapshot?.selection;
-            if (currentSelection) {
-              await select(currentSelection, true);
+            if (currentSelection && reloadAuthoritativeSnapshot) {
+              await reloadAuthoritativeSnapshot(currentSelection);
             } else {
               await loadSnapshot(true);
             }

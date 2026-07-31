@@ -470,11 +470,26 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     Map<string, CollaborationSelection>
   >();
   const activeTeamIds = new Map<string, string | null>();
+  const snapshotRequestGenerations = new Map<string, number>();
   const authorityGenerations = new Map<string, number>();
   let preferredBackendId: string | undefined;
 
   const authorityGeneration = (ownerId: string): number =>
     authorityGenerations.get(ownerId) ?? 0;
+
+  const commandReturnsSnapshot = (
+    command: CollaborationRendererCommand["command"]
+  ): boolean =>
+    [
+      "collaboration.load",
+      "collaboration.select",
+      "collaboration.connect_backend",
+      "collaboration.reconnect_backend",
+      "collaboration.disconnect_backend",
+      "collaboration.create_team",
+      "collaboration.join_team",
+      "collaboration.create_workspace"
+    ].includes(command);
 
   const invalidateAuthority = (
     ownerId: string,
@@ -540,6 +555,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     }
     if (
       parsed.type === "connection" &&
+      parsed.connection.state !== "access_revoked" &&
       activeTeamIds.get(subscription.ownerId) !== subscription.teamId
     ) {
       return;
@@ -1254,6 +1270,15 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     command: CollaborationRendererCommand,
     context: CollaborationTransportContext
   ): Promise<CollaborationCommandResult> => {
+    const snapshotRequestGeneration = commandReturnsSnapshot(command.command)
+      ? (snapshotRequestGenerations.get(context.ownerId) ?? 0) + 1
+      : null;
+    if (snapshotRequestGeneration !== null) {
+      snapshotRequestGenerations.set(
+        context.ownerId,
+        snapshotRequestGeneration
+      );
+    }
     const requestAuthorityGeneration = authorityGeneration(context.ownerId);
     const existing =
       "subscriptionId" in command.input
@@ -1347,7 +1372,13 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       if (result.ok && result.command === "collaboration.disconnect_backend") {
         invalidateAuthority(context.ownerId);
       }
-      if (result.ok && "snapshot" in result.data) {
+      if (
+        result.ok &&
+        "snapshot" in result.data &&
+        snapshotRequestGeneration !== null &&
+        snapshotRequestGenerations.get(context.ownerId) ===
+          snapshotRequestGeneration
+      ) {
         const parsedSnapshot = collaborationSnapshotSchema.parse(
           result.data.snapshot
         );
@@ -1373,6 +1404,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     }
     latestTeamSelections.delete(ownerId);
     activeTeamIds.delete(ownerId);
+    snapshotRequestGenerations.delete(ownerId);
     authorityGenerations.delete(ownerId);
   };
 
@@ -1382,6 +1414,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     }
     latestTeamSelections.clear();
     activeTeamIds.clear();
+    snapshotRequestGenerations.clear();
     authorityGenerations.clear();
   };
 
