@@ -62,9 +62,12 @@ manual questions and show the missing local AI Client state. Koed should not
 silently fall back to another synthesis path.
 
 The default `gpt-5.6-luna` model requires Codex CLI `0.144.0` or newer. Koed
-also verifies the configured model against app-server `model/list`, so an
-older or otherwise incompatible Codex installation fails readiness with
-upgrade or model-selection guidance instead of failing later during synthesis.
+validates each synthesis flow's configured model against one app-server
+`model/list` snapshot. Client readiness remains independent from flow-model
+readiness: when Codex is available but one configured model is not, valid
+alternatives remain selectable so the User can recover in Settings. A flow
+with an unavailable model remains unavailable until an exposed model is
+selected; it does not silently fall back or fail later during synthesis.
 
 ## Persistence
 
