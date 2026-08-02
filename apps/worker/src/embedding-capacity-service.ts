@@ -13,6 +13,8 @@ import type { WorkerEnvConfig } from "./env-config.js";
 const PROFILE_VERSION = "koed-embedding-capacity-v1";
 const IDENTITY_MAX_BYTES = 64 * 1024;
 const QUICK_TOKEN_CLASSES = [512, 1024, 2048, 4096] as const;
+const PROFILE_HEARTBEAT_MS = 30_000;
+const STARTUP_RETRY_MS = 5_000;
 
 type CapacityIdentity = {
   schemaVersion: 1;
@@ -104,6 +106,7 @@ export const createEmbeddingCapacityService = (config: {
   logger: CapacityLogger;
   fetchFn?: typeof fetch;
   refinedDelayMs?: number;
+  startupRetryMs?: number;
 }): EmbeddingCapacityService => {
   const fetchFn = config.fetchFn ?? fetch;
   const dispatcher = new Agent({
@@ -113,6 +116,8 @@ export const createEmbeddingCapacityService = (config: {
   });
   let stopped = false;
   let refinedTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let identityPromise: Promise<CapacityIdentity> | null = null;
 
   const identity = (): Promise<CapacityIdentity> => {
@@ -137,7 +142,10 @@ export const createEmbeddingCapacityService = (config: {
         );
       }
       return safeIdentity(payload);
-    })();
+    })().catch((error) => {
+      identityPromise = null;
+      throw error;
+    });
     return identityPromise;
   };
 
@@ -328,6 +336,63 @@ export const createEmbeddingCapacityService = (config: {
     }
   };
 
+  const beginHeartbeat = (key: string) => {
+    if (heartbeatTimer || stopped) return;
+    heartbeatTimer = setInterval(() => {
+      void config.repository
+        .heartbeatProfile(key)
+        .then((active) => {
+          if (!active && !stopped) scheduleStartup();
+        })
+        .catch(() => {
+          if (!stopped) scheduleStartup();
+        });
+    }, PROFILE_HEARTBEAT_MS);
+    heartbeatTimer.unref?.();
+  };
+
+  const scheduleRefined = () => {
+    if (refinedTimer || stopped) return;
+    refinedTimer = setTimeout(
+      () => {
+        refinedTimer = null;
+        void runCalibration("refined");
+      },
+      config.refinedDelayMs ?? 30 * 60_000
+    );
+    refinedTimer.unref?.();
+  };
+
+  const ensureProfile = async () => {
+    try {
+      const key = await profileKey();
+      const existing = await config.repository.getActiveProfile(key);
+      if (existing?.state !== "usable") await runCalibration("quick");
+      const active = await config.repository.heartbeatProfile(key);
+      if (!active) throw new Error("Embedding capacity profile is not usable");
+      beginHeartbeat(key);
+      scheduleRefined();
+    } catch (error) {
+      config.logger.warn(
+        {
+          event: { name: "embedding.capacity.startup_retry" },
+          error: error instanceof Error ? error.message : String(error)
+        },
+        "embedding capacity startup will retry"
+      );
+      scheduleStartup();
+    }
+  };
+
+  function scheduleStartup() {
+    if (retryTimer || stopped) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void ensureProfile();
+    }, config.startupRetryMs ?? STARTUP_RETRY_MS);
+    retryTimer.unref?.();
+  }
+
   return {
     profileKey,
     async hasUsableProfile() {
@@ -342,23 +407,14 @@ export const createEmbeddingCapacityService = (config: {
     },
     calibrate,
     start() {
-      void (async () => {
-        const existing = await config.repository
-          .getActiveProfile(await profileKey())
-          .catch(() => null);
-        if (existing?.state !== "usable") await runCalibration("quick");
-      })().then(() => {
-        if (stopped) return;
-        refinedTimer = setTimeout(
-          () => void runCalibration("refined"),
-          config.refinedDelayMs ?? 30 * 60_000
-        );
-        refinedTimer.unref?.();
-      });
+      stopped = false;
+      void ensureProfile();
     },
     stop() {
       stopped = true;
       if (refinedTimer) clearTimeout(refinedTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       void dispatcher.close();
     }
   };

@@ -231,7 +231,9 @@ Memory text, and vector values are forbidden as metric labels or values.
 The rolling Operator snapshot separates Memory Event arrivals from completed
 Memory Event, Memory Node, and message embeddings. LCM compaction completions
 are reported separately and are excluded from the generic embedding completion
-rate.
+rate. Arrival counters come from canonical Memory Event rows, while completed
+work uses durable telemetry buckets. Rolling rates use complete minute buckets;
+active capacity excludes worker pools whose profile heartbeat has expired.
 
 Attach only the content-safe summary required by the structured release record
 in [Collaboration Launch Validation](collaboration-launch-validation.md).

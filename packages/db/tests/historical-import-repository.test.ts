@@ -1272,6 +1272,7 @@ describeDb("journal-backed historical import repository", () => {
         rawEventType: "user_turn",
         visibility: "personal",
         content: "Embedded historical event",
+        sourceEventTime: "2026-01-01T00:00:00.000Z",
         sourceHash: digest(`historical-event:${fixture.externalSessionId}:1`),
         metadata: { rawConversationItemId: itemRows.rows[0]!.id }
       }
@@ -1286,6 +1287,7 @@ describeDb("journal-backed historical import repository", () => {
         rawEventType: "user_turn",
         visibility: "personal",
         content: "Pending historical event ".repeat(500),
+        sourceEventTime: "2026-01-02T00:00:00.000Z",
         sourceHash: digest(`historical-event:${fixture.externalSessionId}:2`),
         metadata: { rawConversationItemId: itemRows.rows[1]!.id }
       }
@@ -1405,6 +1407,92 @@ describeDb("journal-backed historical import repository", () => {
       "delete from embedding_capacity_profiles where profile_key = $1",
       [profileKey]
     );
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({
+      embeddingQueueAheadEstimatedTokenCount: 0,
+      embeddingEtaConfidence: "conservative"
+    });
+
+    const futureLiveEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        sessionId: fixture.sessionId,
+        projectId: "historical-capacity",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_turn",
+        visibility: "personal",
+        content: "Later live event in the same captured session",
+        sourceEventTime: "2099-01-01T00:00:00.000Z",
+        sourceHash: digest(`future-live:${fixture.externalSessionId}`),
+        metadata: {}
+      }
+    );
+    const futureLiveEmbeddable = await repo.getEmbeddableSource(
+      "memory_event",
+      futureLiveEvent.id
+    );
+    await repo.replaceSourceEmbeddings({
+      source: futureLiveEmbeddable!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2",
+      chunks: [
+        {
+          vector: Array<number>(1024).fill(0.01),
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: 9,
+          sourceText: "Later live event in the same captured session"
+        }
+      ]
+    });
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({
+      oldestEmbeddedSourceTime: "2026-01-01T00:00:00.000Z",
+      newestEmbeddedSourceTime: "2026-01-01T00:00:00.000Z"
+    });
+
+    const pendingEmbeddable = await repo.getEmbeddableSource(
+      "memory_event",
+      pendingEvent.id
+    );
+    await repo.replaceSourceEmbeddings({
+      source: pendingEmbeddable!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2",
+      chunks: [
+        {
+          vector: Array<number>(1024).fill(0.01),
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: pendingEstimatedTokens,
+          sourceText: "Pending historical event"
+        }
+      ]
+    });
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({
+      pendingEmbeddingEstimatedTokenCount: 0,
+      embeddingEtaLowerSeconds: 0,
+      embeddingEtaUpperSeconds: 0,
+      fullyEmbedded: true,
+      newestEmbeddedSourceTime: "2026-01-02T00:00:00.000Z"
+    });
   });
 
   it("replays an acknowledged batch without duplicate rows", async () => {

@@ -5043,6 +5043,9 @@ const createFakeEmbeddingCapacityRepository =
     async invalidateProfilesExcept() {
       return 0;
     },
+    async heartbeatProfile() {
+      return true;
+    },
     async recordTelemetry() {},
     async getRollingTelemetry() {
       return [1, 5, 15].map((windowMinutes) => ({

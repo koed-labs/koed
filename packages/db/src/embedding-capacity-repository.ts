@@ -2,6 +2,7 @@ import type pg from "pg";
 
 export const CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND = 5;
 export const EMBEDDING_CAPACITY_PROCESSING_EPOCH = "embedding-capacity-v1";
+export const EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS = 120;
 
 export type EmbeddingBackendClass = "cpu" | "metal" | "cuda" | "unknown";
 export type EmbeddingCalibrationMode = "quick" | "refined";
@@ -151,6 +152,7 @@ export interface EmbeddingCapacityRepository {
     profileKey: string,
     reason: string
   ): Promise<number>;
+  heartbeatProfile(profileKey: string): Promise<boolean>;
   recordTelemetry(input: EmbeddingTelemetryObservation): Promise<void>;
   getRollingTelemetry(): Promise<EmbeddingTelemetryWindow[]>;
   getCumulativeTelemetry(): Promise<EmbeddingTelemetryCumulative[]>;
@@ -275,8 +277,9 @@ export const createEmbeddingCapacityRepository = (
     const result = await pool.query<ProfileRow>(
       `select * from embedding_capacity_profiles
        where profile_key = $1 and invalidated_at is null
+         and updated_at >= now() - make_interval(secs => $2)
        limit 1`,
-      [profileKey]
+      [profileKey, EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS]
     );
     return result.rows[0] ? mapProfile(result.rows[0]) : null;
   },
@@ -285,7 +288,9 @@ export const createEmbeddingCapacityRepository = (
     const result = await pool.query<ProfileRow>(
       `select * from embedding_capacity_profiles
        where state = 'usable' and invalidated_at is null
-       order by calibrated_at desc limit 1`
+         and updated_at >= now() - make_interval(secs => $1)
+       order by calibrated_at desc limit 1`,
+      [EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS]
     );
     return result.rows[0] ? mapProfile(result.rows[0]) : null;
   },
@@ -294,6 +299,7 @@ export const createEmbeddingCapacityRepository = (
     const result = await pool.query<ProfileRow>(
       `select * from embedding_capacity_profiles
        where state = 'usable' and invalidated_at is null
+         and updated_at >= now() - make_interval(secs => $4)
          and ($1::text is null or model_key = $1)
          and ($2::int is null or embedding_dimensions = $2)
          and ($3::text is null or processing_epoch = $3)
@@ -301,7 +307,8 @@ export const createEmbeddingCapacityRepository = (
       [
         input.modelKey ?? null,
         input.embeddingDimensions ?? null,
-        input.processingEpoch ?? null
+        input.processingEpoch ?? null,
+        EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS
       ]
     );
     return result.rows.map(mapProfile);
@@ -389,6 +396,16 @@ export const createEmbeddingCapacityRepository = (
     return result.rowCount ?? 0;
   },
 
+  async heartbeatProfile(profileKey) {
+    const result = await pool.query(
+      `update embedding_capacity_profiles
+          set updated_at = now()
+        where profile_key = $1 and state = 'usable' and invalidated_at is null`,
+      [profileKey]
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
   async recordTelemetry(input) {
     const observedAt = input.observedAt ?? new Date();
     const queueWaitMs = nonNegative(input.queueWaitMs);
@@ -455,7 +472,9 @@ export const createEmbeddingCapacityRepository = (
     }>(
       `with windows(window_minutes) as (values (1), (5), (15))
        select windows.window_minutes,
-         coalesce(sum(bucket.event_count) filter (where bucket.outcome = 'created' and bucket.source_class = 'memory_event'), 0)::text as arrival_event_count,
+         (select count(*) from memory_events event
+           where event.created_at >= date_trunc('minute', now()) - make_interval(mins => windows.window_minutes)
+             and event.created_at < date_trunc('minute', now()))::text as arrival_event_count,
          coalesce(sum(bucket.event_count) filter (where bucket.outcome = 'completed' and bucket.source_class <> 'lcm_compaction'), 0)::text as event_count,
          coalesce(sum(bucket.event_count) filter (where bucket.outcome = 'completed' and bucket.source_class = 'memory_event'), 0)::text as memory_event_count,
          coalesce(sum(bucket.event_count) filter (where bucket.outcome = 'completed' and bucket.source_class = 'memory_node'), 0)::text as memory_node_count,
@@ -473,7 +492,8 @@ export const createEmbeddingCapacityRepository = (
          coalesce(sum(bucket.end_to_end_sample_count), 0)::text as end_to_end_samples
        from windows
        left join embedding_telemetry_minute_buckets bucket
-         on bucket.bucket_start >= now() - make_interval(mins => windows.window_minutes)
+         on bucket.bucket_start >= date_trunc('minute', now()) - make_interval(mins => windows.window_minutes)
+        and bucket.bucket_start < date_trunc('minute', now())
        group by windows.window_minutes order by windows.window_minutes`,
       []
     );
@@ -539,7 +559,8 @@ export const createEmbeddingCapacityRepository = (
       end_to_end_ms_total: string;
       end_to_end_sample_count: string;
     }>(
-      `select queue_name, source_class, outcome,
+      `with telemetry as (
+       select queue_name, source_class, outcome,
          sum(event_count)::text as event_count,
          sum(chunk_count)::text as chunk_count,
          sum(measured_token_count)::text as measured_token_count,
@@ -551,7 +572,11 @@ export const createEmbeddingCapacityRepository = (
          sum(end_to_end_sample_count)::text as end_to_end_sample_count
        from embedding_telemetry_minute_buckets
        group by queue_name, source_class, outcome
-       order by queue_name, source_class, outcome`
+       union all
+       select 'projection', 'memory_event', 'created', count(*)::text,
+         '0', '0', '0', '0', '0', '0', '0', '0'
+       from memory_events
+      ) select * from telemetry order by queue_name, source_class, outcome`
     );
     return result.rows.map((row) => ({
       queueName: row.queue_name,

@@ -938,6 +938,7 @@ describe("start supervisor", () => {
         "EMBEDDING_SERVICE_HOST_PORT=23800",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
         "EMBEDDING_LLAMA_RERANKER_SERVER_PORT=29080",
+        "WORKER_KOED_EMBEDDING_POOL_KEY=local-metal-pool",
         ""
       ].join("\n")
     );
@@ -1024,6 +1025,7 @@ describe("start supervisor", () => {
     expect(provisionedToken).toMatch(/^cmt_/);
     expect(worker?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
     expect(worker?.env?.MEMORY_API_URL).toBe("http://localhost:23300");
+    expect(worker?.env?.KOED_EMBEDDING_POOL_KEY).toBe("local-metal-pool");
     expect(
       JSON.parse(readFileSync(resolve(root, "config/local-ports.json"), "utf8"))
     ).toEqual({

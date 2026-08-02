@@ -51,6 +51,7 @@ const createRepository = () =>
       invalidationReason: null
     })),
     invalidateProfilesExcept: vi.fn().mockResolvedValue(0),
+    heartbeatProfile: vi.fn().mockResolvedValue(true),
     recordTelemetry: vi.fn(),
     getRollingTelemetry: vi.fn(),
     getCumulativeTelemetry: vi.fn(),
@@ -232,6 +233,39 @@ describe("embedding capacity service", () => {
     });
 
     await expect(service.hasUsableProfile()).resolves.toBe(false);
+    service.stop();
+  });
+
+  it("recovers when the embedding identity is unavailable during startup", async () => {
+    const repository = createRepository();
+    let identityAttempts = 0;
+    const fetchFn = vi
+      .fn()
+      .mockImplementation(async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/capacity/identity")) {
+          identityAttempts += 1;
+          return identityAttempts === 1
+            ? jsonResponse({}, 503)
+            : jsonResponse(identity);
+        }
+        return successfulFetch(input);
+      });
+    const service = createEmbeddingCapacityService({
+      env,
+      repository,
+      logger,
+      fetchFn,
+      startupRetryMs: 1,
+      refinedDelayMs: 60_000
+    });
+
+    service.start();
+
+    await vi.waitFor(() =>
+      expect(repository.replaceActiveProfile).toHaveBeenCalled()
+    );
+    expect(identityAttempts).toBeGreaterThanOrEqual(2);
+    expect(repository.heartbeatProfile).toHaveBeenCalled();
     service.stop();
   });
 });

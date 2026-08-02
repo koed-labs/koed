@@ -4,6 +4,7 @@ import { createConversationItemRepository } from "./conversation-item-repository
 import { currentEmbeddingConfig } from "./embedding-coverage.js";
 import {
   CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
+  EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS,
   EMBEDDING_CAPACITY_PROCESSING_EPOCH
 } from "./embedding-capacity-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
@@ -203,6 +204,7 @@ const SOURCE_SELECT = `
      from embedding_capacity_profiles profile
     where profile.state = 'usable'
       and profile.invalidated_at is null
+      and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
       and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}')
     as capacity_tokens_per_second,
   (select case
@@ -213,6 +215,7 @@ const SOURCE_SELECT = `
      from embedding_capacity_profiles profile
     where profile.state = 'usable'
       and profile.invalidated_at is null
+      and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
       and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}')
     as capacity_calibration_mode,
   source.oldest_embedded_source_time, source.newest_embedded_source_time,
@@ -247,13 +250,6 @@ const SOURCE_JOINS = `
         and not exists (
           select 1
           from memory_embeddings embedding
-          join embedding_capacity_profiles profile
-            on profile.state = 'usable'
-           and profile.invalidated_at is null
-           and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}'
-           and profile.model_key = embedding.embedding_model
-           and profile.embedding_dimensions = embedding.embedding_dimensions
-           and profile.model_key = embedding.embedding_version
           where embedding.memory_event_id = event.id
             and embedding.invalidated_at is null
             and embedding.personal_deleted_at is null
@@ -280,14 +276,6 @@ const SOURCE_JOINS = `
               and not exists (
                 select 1
                 from memory_embeddings source_embedding
-                join embedding_capacity_profiles source_profile
-                  on source_profile.state = 'usable'
-                 and source_profile.invalidated_at is null
-                 and source_profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}'
-                 and source_profile.model_key = source_embedding.embedding_model
-                 and source_profile.embedding_dimensions =
-                   source_embedding.embedding_dimensions
-                 and source_profile.model_key = source_embedding.embedding_version
                 where source_embedding.memory_event_id = source_event.id
                   and source_embedding.invalidated_at is null
                   and source_embedding.personal_deleted_at is null
@@ -313,13 +301,6 @@ const SOURCE_JOINS = `
         and not exists (
           select 1
           from memory_embeddings embedding
-          join embedding_capacity_profiles profile
-            on profile.state = 'usable'
-           and profile.invalidated_at is null
-           and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}'
-           and profile.model_key = embedding.embedding_model
-           and profile.embedding_dimensions = embedding.embedding_dimensions
-           and profile.model_key = embedding.embedding_version
           where embedding.memory_node_id = node.id
             and embedding.invalidated_at is null
             and embedding.personal_deleted_at is null
@@ -383,7 +364,9 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
   const capacityRate =
     row.capacity_tokens_per_second ?? CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND;
   const estimatedCompletionTokens =
-    pendingEstimatedTokens + queueAheadEstimatedTokens;
+    pendingEstimatedTokens > 0
+      ? pendingEstimatedTokens + queueAheadEstimatedTokens
+      : 0;
   const embeddingEtaLowerSeconds =
     capacityRate && capacityRate > 0
       ? Math.ceil(estimatedCompletionTokens / capacityRate)
@@ -693,7 +676,8 @@ const refreshSourceProgress = async (
               select 1
               from memory_event_sources event_source
               join conversation_item_observations observation
-                on observation.conversation_item_id = event_source.conversation_item_id
+                on observation.conversation_item_id =
+                  event_source.conversation_item_id
               where event_source.memory_event_id = event.id
                 and observation.source_transport = 'historical_import'
             )) as embedding_eligible_tokens,
@@ -805,6 +789,15 @@ const refreshSourceProgress = async (
             and event.include_in_embedding
             and exists (
               select 1
+              from memory_event_sources event_source
+              join conversation_item_observations observation
+                on observation.conversation_item_id =
+                  event_source.conversation_item_id
+              where event_source.memory_event_id = event.id
+                and observation.source_transport = 'historical_import'
+            )
+            and exists (
+              select 1
               from memory_embeddings embedding
               join ${embedding.table} vector
                 on vector.memory_embedding_id = embedding.id
@@ -829,6 +822,15 @@ const refreshSourceProgress = async (
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
+            and exists (
+              select 1
+              from memory_event_sources event_source
+              join conversation_item_observations observation
+                on observation.conversation_item_id =
+                  event_source.conversation_item_id
+              where event_source.memory_event_id = event.id
+                and observation.source_transport = 'historical_import'
+            )
             and exists (
               select 1
               from memory_embeddings embedding

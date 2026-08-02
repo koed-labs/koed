@@ -62,15 +62,20 @@ fingerprint. A material identity change invalidates old measurements from that
 pool instead of silently reusing their throughput. It does not invalidate an
 independent pool. PostgreSQL advisory leases ensure only one Worker replica
 calibrates a given pool at a time. Active compatible pool rates aggregate into
-the deployment capacity snapshot.
+the deployment capacity snapshot. Workers heartbeat their active profile in
+PostgreSQL; a profile whose pool has stopped heartbeating expires from active
+capacity and ETA calculations without deleting its calibration history.
 
 PostgreSQL is the durable operational truth for completed embedding work and
-calibration profiles. Low-cardinality minute buckets retain arrival,
-completion, retry, failure, token, chunk, queue-wait, execution, and end-to-end
-duration aggregates across Worker restarts and replicas. Canonical source and
-embedding rows remain the truth for current semantic coverage and pending
-token cost. BullMQ and the PostgreSQL local queue are execution transports and
-must report equivalent queue categories.
+calibration profiles. Canonical Memory Event rows provide arrival counts
+without adding a telemetry write to the Projection transaction. Low-cardinality
+minute buckets retain completion, retry, failure, token, chunk, queue-wait,
+execution, and end-to-end duration aggregates across Worker restarts and
+replicas. Rolling windows use complete minute buckets so their denominators and
+bucket boundaries agree. Canonical source and embedding rows remain the truth
+for current semantic coverage and pending token cost. BullMQ and the PostgreSQL
+local queue are execution transports and must report equivalent queue
+categories.
 
 Rolling throughput distinguishes Memory Event arrival from completed Memory
 Event, Memory Node, and message embeddings. LCM compaction completion is a
