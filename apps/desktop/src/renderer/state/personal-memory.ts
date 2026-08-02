@@ -13,6 +13,8 @@ export const personalMemoryCacheLimit = 32;
 export const personalMemoryCacheRetentionMs = 15 * 60 * 1000;
 export const personalMemoryPrewarmLimit = 10;
 export const personalMemoryPrewarmConcurrency = 2;
+export const personalMemoryRefreshRetryBaseMs = 1_000;
+export const personalMemoryRefreshRetryMaxMs = 30_000;
 
 export type PersonalMemoryDetail = {
   events: PersonalDesktopConversationEvent[];
@@ -58,9 +60,15 @@ export class PersonalMemoryStore {
   readonly #api: PersonalDesktopApi;
   readonly #cache = new Map<string, PersonalMemoryDetail>();
   readonly #detailPageLoadKeys = new Set<string>();
-  readonly #detailRefreshKeys = new Set<string>();
+  readonly #detailRefreshEventIds = new Map<string, Set<string>>();
+  readonly #detailRefreshRetryAttempts = new Map<string, number>();
+  readonly #detailRefreshRetryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   readonly #listeners = new Set<PersonalMemoryListener>();
   readonly #prewarmQueued = new Set<string>();
+  readonly #retryBaseMs: number;
   #snapshot = emptySnapshot();
   #projectRequest = 0;
   #prewarmActive = 0;
@@ -69,11 +77,18 @@ export class PersonalMemoryStore {
   #liveRefreshQueued = false;
   #liveRefreshRunning = false;
 
-  constructor(api: PersonalDesktopApi) {
+  constructor(
+    api: PersonalDesktopApi,
+    retryBaseMs = personalMemoryRefreshRetryBaseMs
+  ) {
     this.#api = api;
+    this.#retryBaseMs = Math.max(0, retryBaseMs);
     api.subscribe((change) => {
-      for (const { projectId, threadId } of change.eventRefs) {
-        this.#detailRefreshKeys.add(`${projectId}:${threadId}`);
+      for (const { id, projectId, threadId } of change.eventRefs) {
+        const key = `${projectId}:${threadId}`;
+        const eventIds = this.#detailRefreshEventIds.get(key) ?? new Set();
+        eventIds.add(id);
+        this.#detailRefreshEventIds.set(key, eventIds);
       }
       this.#scheduleLiveRefresh();
     });
@@ -174,6 +189,33 @@ export class PersonalMemoryStore {
     }
   }
 
+  #clearDetailRefreshRetry(key: string): void {
+    const timer = this.#detailRefreshRetryTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.#detailRefreshRetryTimers.delete(key);
+  }
+
+  #scheduleDetailRefreshRetry(key: string): void {
+    if (this.#detailRefreshRetryTimers.has(key)) return;
+    const attempts = (this.#detailRefreshRetryAttempts.get(key) ?? 0) + 1;
+    this.#detailRefreshRetryAttempts.set(key, attempts);
+    const delay = Math.min(
+      this.#retryBaseMs * 2 ** Math.min(attempts - 1, 10),
+      personalMemoryRefreshRetryMaxMs
+    );
+    const timer = setTimeout(() => {
+      this.#detailRefreshRetryTimers.delete(key);
+      this.#scheduleLiveRefresh();
+    }, delay);
+    this.#detailRefreshRetryTimers.set(key, timer);
+  }
+
+  #restoreDetailRefreshEventIds(key: string, eventIds: Set<string>): void {
+    const pending = this.#detailRefreshEventIds.get(key) ?? new Set<string>();
+    for (const eventId of eventIds) pending.add(eventId);
+    this.#detailRefreshEventIds.set(key, pending);
+  }
+
   async loadInitial(
     thread: PersonalDesktopProjectThread
   ): Promise<PersonalMemoryDetail> {
@@ -224,22 +266,26 @@ export class PersonalMemoryStore {
     }
     this.#prune(new Set([key]));
     this.#emit();
-    if (this.#detailRefreshKeys.has(key)) this.#scheduleLiveRefresh();
+    if (this.#detailRefreshEventIds.has(key)) this.#scheduleLiveRefresh();
     return entry;
   }
 
   async #refreshChangedDetails(): Promise<void> {
-    for (const key of [...this.#detailRefreshKeys]) {
+    for (const [key, changedEventIds] of [...this.#detailRefreshEventIds]) {
       const entry = this.#cache.get(key);
       if (!entry) {
-        this.#detailRefreshKeys.delete(key);
+        this.#detailRefreshEventIds.delete(key);
+        this.#clearDetailRefreshRetry(key);
+        this.#detailRefreshRetryAttempts.delete(key);
         continue;
       }
       if (entry.status === "loading") continue;
       const thread = this.#snapshot.threadsByKey.get(key);
-      this.#detailRefreshKeys.delete(key);
+      this.#detailRefreshEventIds.delete(key);
+      this.#clearDetailRefreshRetry(key);
       if (!thread) {
         this.#cache.delete(key);
+        this.#detailRefreshRetryAttempts.delete(key);
         this.#emit();
         continue;
       }
@@ -251,13 +297,19 @@ export class PersonalMemoryStore {
           limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
         });
         if (this.#cache.get(key) !== entry) continue;
-        entry.events = mergeConversationEvents(entry.events, events);
+        entry.events = mergeConversationEvents(
+          entry.events.filter(({ id }) => !changedEventIds.has(id)),
+          events
+        );
         entry.hasOlder = entry.events.length < thread.eventCount;
         entry.loadedAt = Date.now();
         if (!this.#detailPageLoadKeys.has(key)) entry.status = "ready";
         entry.error = null;
+        this.#detailRefreshRetryAttempts.delete(key);
       } catch (cause) {
         if (this.#cache.get(key) !== entry) continue;
+        this.#restoreDetailRefreshEventIds(key, changedEventIds);
+        this.#scheduleDetailRefreshRetry(key);
         if (entry.events.length > 0) {
           if (!this.#detailPageLoadKeys.has(key)) entry.status = "ready";
           entry.error = null;
@@ -315,7 +367,7 @@ export class PersonalMemoryStore {
       this.#detailPageLoadKeys.delete(key);
     }
     this.#emit();
-    if (this.#detailRefreshKeys.has(key)) this.#scheduleLiveRefresh();
+    if (this.#detailRefreshEventIds.has(key)) this.#scheduleLiveRefresh();
     return entry;
   }
 

@@ -218,6 +218,54 @@ describe("PersonalMemoryStore", () => {
     ).toEqual([1, 2]);
   });
 
+  it("removes a changed cached event omitted from the authoritative refresh", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    const selected = thread(1);
+    const updated = {
+      ...selected,
+      eventCount: 2,
+      invalidatedCount: 1
+    };
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(1), event(2)])
+      .mockResolvedValueOnce([event(2), event(3)]);
+    const bridge = api({
+      listProjects: vi
+        .fn<PersonalDesktopApi["listProjects"]>()
+        .mockResolvedValueOnce([project([selected])])
+        .mockResolvedValue([project([updated])]),
+      loadEventPage,
+      subscribe: vi.fn((listener) => {
+        onChange = listener;
+        return () => undefined;
+      })
+    });
+    const store = new PersonalMemoryStore(bridge);
+    await store.loadProjects();
+    await store.loadInitial(selected);
+
+    onChange?.({
+      contractVersion: 1,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: event(1).id,
+          projectId: selected.projectId,
+          threadId: selected.id
+        }
+      ]
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        store
+          .detail(updated)
+          ?.events.map(({ sourceSequence }) => sourceSequence)
+      ).toEqual([2, 3])
+    );
+  });
+
   it("keeps visible events mounted while refreshing the live head", async () => {
     let onChange: ((change: PersonalDesktopChange) => void) | undefined;
     let resolveRefresh:
@@ -421,14 +469,15 @@ describe("PersonalMemoryStore", () => {
     ).toEqual([49, 50, 51, 52]);
   });
 
-  it("does not expose a non-retryable live-refresh error over retained events", async () => {
+  it("retains and retries a failed live-detail refresh", async () => {
     let onChange: ((change: PersonalDesktopChange) => void) | undefined;
     const selected = thread(1);
     const updated = { ...selected, eventCount: 101 };
     const loadEventPage = vi
       .fn<PersonalDesktopApi["loadEventPage"]>()
       .mockResolvedValueOnce([event(1)])
-      .mockRejectedValueOnce(new Error("temporary refresh failure"));
+      .mockRejectedValueOnce(new Error("temporary refresh failure"))
+      .mockResolvedValueOnce([event(2)]);
     const bridge = api({
       listProjects: vi
         .fn<PersonalDesktopApi["listProjects"]>()
@@ -440,7 +489,7 @@ describe("PersonalMemoryStore", () => {
         return () => undefined;
       })
     });
-    const store = new PersonalMemoryStore(bridge);
+    const store = new PersonalMemoryStore(bridge, 0);
     await store.loadProjects();
     await store.loadInitial(selected);
 
@@ -456,12 +505,15 @@ describe("PersonalMemoryStore", () => {
       ]
     });
 
-    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(3));
     await vi.waitFor(() =>
       expect(store.detail(updated)).toMatchObject({
         status: "ready",
         error: null,
-        events: [expect.objectContaining({ sourceSequence: 1 })]
+        events: [
+          expect.objectContaining({ sourceSequence: 1 }),
+          expect.objectContaining({ sourceSequence: 2 })
+        ]
       })
     );
   });
