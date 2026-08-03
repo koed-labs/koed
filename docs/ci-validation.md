@@ -11,9 +11,11 @@ Every pull-request update runs these gates in order:
    types, and test-source types without starting Postgres or Redis.
 2. `Tests` and `Build` run in parallel after static checks pass. Tests owns the
    Postgres and Redis services and migration acceptance checks.
-3. `Relevant packaged Desktop app smoke` runs only when the tested change policy
+3. `Relevant packaged Desktop app smoke` starts after a successful `Build`,
+   without waiting for `Tests`, and runs only when the tested change policy
    identifies a Desktop, packaged-runtime, shared dependency, native script,
-   package metadata, lockfile, CI, or release workflow change.
+   package metadata, lockfile, CI, or release workflow change. `CI required`
+   still waits for both `Tests` and the policy-selected packaged validation.
 
 The exact path policy is implemented in `.github/scripts/ci-policy.mjs` and
 covered by `scripts/ci-policy.test.mjs`. Documentation-only changes skip macOS.
@@ -49,9 +51,11 @@ a check that cannot run.
 
 Relevant pull requests restore a macOS arm64 native payload using a key that
 includes the pinned sources, native build and validation scripts, platform,
-architecture, and Xcode fingerprint. The workflow regenerates provenance,
-manifests, the archive, and checksums for the current commit, then validates the
-restored payload before packaging.
+architecture, and Xcode fingerprint. The workflow validates that trusted
+payload once, then regenerates the current commit's manifest and provenance in
+a lightweight staging step. The app-only tier does not create a duplicate
+native archive or checksum and relies on the packaged install and daemon smoke
+to exercise the staged copy end to end.
 
 Pull-request jobs use the cache in restore-only mode. They can read the trusted
 default-branch payload but cannot populate a cache for other pull requests. A
@@ -61,11 +65,15 @@ restored payload, and saves a cold-built payload only after independent
 validation succeeds. Its immutable key has no partial restore fallback.
 
 This tier builds and ad-hoc-signs the Electron `dir` target, verifies the
-unpacked `.app`, and runs the complete packaged smoke. The pinned embedding
-model is restored by SHA-256 and copied into the smoke's otherwise-empty
-`KOED_HOME`; model status verifies the checksum before the daemon starts. The
-job does not create or upload a DMG, ZIP, block map, or release artifact.
-Diagnostics are uploaded only on failure.
+unpacked `.app` once, and runs the complete healthy packaged smoke. The pinned
+embedding model is restored by SHA-256 and copied into the smoke's
+otherwise-empty `KOED_HOME`; model status verifies the checksum before the
+daemon starts. A second focused mode temporarily masks the packaged `postgres`
+and `llama.cpp` directories, runs only packaged-CLI `package status`,
+`runtime status`, and `doctor --json` assertions, and restores the directories.
+It neither rebuilds the app nor launches the renderer, collaboration broker, or
+daemon. The job does not create or upload a DMG, ZIP, block map, or release
+artifact. Diagnostics are uploaded only on failure.
 
 ## Release candidates and releases
 
@@ -93,7 +101,9 @@ trusted `main` workflow runs after changes to native cache inputs and on Tuesday
 and Friday. Restoring the payload refreshes its last-access time comfortably
 inside GitHub's default seven-day retention window. A miss performs the cold
 source build; the completed payload is validated before it is saved. Manual
-cache maintenance must also be dispatched from the default branch.
+cache maintenance must also be dispatched from the default branch. After a
+cache-input workflow change lands, dispatch cache maintenance on `main` before
+using the next relevant pull request as a warm-cache performance measurement.
 
 Manual `CI` dispatch supports:
 

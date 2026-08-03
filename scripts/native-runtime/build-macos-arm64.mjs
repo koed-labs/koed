@@ -30,6 +30,7 @@ const parseArgs = (argv) => {
     else if (value === "--sources") options.sourcesPath = argv[++i];
     else if (value === "--out-dir") options.outDir = argv[++i];
     else if (value === "--version") options.version = argv[++i];
+    else if (value === "--no-archive") options.noArchive = true;
     else if (value === "--allow-host-mismatch")
       options.allowHostMismatch = true;
     else if (value === "--help" || value === "-h") options.help = true;
@@ -108,11 +109,19 @@ const copySourceRuntime = ({
   return { sourceDir: resolved };
 };
 
-const writeProvenance = ({ outDir, runtimeRoot, version, sourceDir }) => {
+const writeProvenance = ({
+  outDir,
+  runtimeRoot,
+  version,
+  sourceDir,
+  noArchive
+}) => {
   const provenance = {
     schemaVersion: 1,
     artifact: { platform: "macos", architecture: "arm64", version },
-    strategy: "koed-verified-runtime-tarball",
+    strategy: noArchive
+      ? "koed-verified-runtime-staging"
+      : "koed-verified-runtime-tarball",
     sourceDir: sourceDir ? resolve(sourceDir) : undefined,
     sources: readSources().sources,
     generatedAt: new Date().toISOString(),
@@ -169,7 +178,7 @@ const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     console.log(
-      "Usage: native-runtime:build:macos-arm64 -- [--source-dir <koed-runtime>] [--sources <sources.json>] [--out-dir <dir>] [--version <version>] [--json]"
+      "Usage: native-runtime:build:macos-arm64 -- [--source-dir <koed-runtime>] [--sources <sources.json>] [--out-dir <dir>] [--version <version>] [--no-archive] [--json]"
     );
     return;
   }
@@ -211,12 +220,15 @@ const main = () => {
       outDir,
       runtimeRoot,
       version: options.version,
-      sourceDir: options.sourceDir
+      sourceDir: options.sourceDir,
+      noArchive: options.noArchive
     })
   );
-  const artifact = timedPhase(timings, "archive and checksum generation", () =>
-    archive({ outDir, version: options.version })
-  );
+  const artifact = options.noArchive
+    ? null
+    : timedPhase(timings, "archive and checksum generation", () =>
+        archive({ outDir, version: options.version })
+      );
   const result = {
     ok: true,
     outDir,
@@ -227,7 +239,8 @@ const main = () => {
     timings
   };
   if (options.json) console.log(JSON.stringify(result, null, 2));
-  else console.log(`Built ${artifact.tarPath}`);
+  else if (artifact) console.log(`Built ${artifact.tarPath}`);
+  else console.log(`Staged ${runtimeRoot} without an archive.`);
 };
 
 main();

@@ -109,8 +109,48 @@ test("relevant packaged smoke retains fail-closed missing-asset coverage", () =>
 
   assert.match(
     relevantSmoke,
-    /pnpm desktop:package:smoke:mac -- --json --missing-assets/
+    /smoke-packaged-desktop-app\.mjs --json --missing-assets --mask-native-assets/
   );
+  assert.doesNotMatch(relevantSmoke, /package:smoke:mac/);
+  assert.doesNotMatch(relevantSmoke, /missing-assets[^\n]*--build/);
+});
+
+test("app-only smoke stages once-validated runtime without a PR archive", () => {
+  const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const relevantSmoke = workflow
+    .split("  relevant-packaged-smoke:")[1]
+    .split("  release-candidate-validation:")[0];
+  const fullValidation = workflow
+    .split("  release-candidate-validation:")[1]
+    .split("  native-runtime-linux-x64:")[0];
+
+  assert.equal(
+    relevantSmoke.match(/native-runtime:validate/g)?.length,
+    1,
+    "app-only smoke should fully validate the trusted payload once"
+  );
+  assert.match(relevantSmoke, /--source-dir[^\n]+--no-archive --json/);
+  assert.doesNotMatch(relevantSmoke, /archive and checksum/);
+  assert.match(fullValidation, /Cold-build native runtime artifact/);
+  assert.match(
+    fullValidation,
+    /Extract native runtime for relocation validation/
+  );
+  assert.match(fullValidation, /Validate native runtime artifact/);
+  assert.doesNotMatch(fullValidation, /--no-archive/);
+});
+
+test("app-only smoke starts after Build without waiting for Tests", () => {
+  const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const relevantSmoke = workflow
+    .split("  relevant-packaged-smoke:")[1]
+    .split("  release-candidate-validation:")[0];
+  const needs = relevantSmoke.split("    if:")[0];
+
+  assert.match(needs, /- changes/);
+  assert.match(needs, /- build/);
+  assert.doesNotMatch(needs, /- tests/);
+  assert.match(relevantSmoke, /needs\.build\.result == 'success'/);
 });
 
 test("ordinary, documentation, relevant, forced, and release pull requests route correctly", () => {

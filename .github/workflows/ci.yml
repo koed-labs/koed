@@ -213,10 +213,8 @@ jobs:
     name: Relevant packaged Desktop app smoke
     needs:
       - changes
-      - static-checks
-      - tests
       - build
-    if: needs.changes.outputs.run_app_smoke == 'true'
+    if: needs.changes.outputs.run_app_smoke == 'true' && needs.build.result == 'success'
     runs-on: macos-14
     timeout-minutes: 60
 
@@ -265,11 +263,8 @@ jobs:
       - name: Verify cached native payload fail closed
         run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64/koed-runtime" --platform darwin --json
 
-      - name: Regenerate current runtime provenance and archive
-        run: pnpm native-runtime:build:macos-arm64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64/koed-runtime" --version "${GITHUB_SHA}" --json
-
-      - name: Validate restored native runtime fail closed
-        run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/macos-arm64/koed-runtime --platform darwin --json
+      - name: Stage current runtime manifest and provenance
+        run: pnpm native-runtime:build:macos-arm64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64/koed-runtime" --version "${GITHUB_SHA}" --no-archive --json
 
       - name: Build ad-hoc-signed unpacked Desktop app
         env:
@@ -307,7 +302,7 @@ jobs:
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --embedding-model-source "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
       - name: Run packaged Desktop missing-asset smoke
-        run: pnpm desktop:package:smoke:mac -- --json --missing-assets
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --missing-assets --mask-native-assets --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
       - name: Upload packaged Desktop smoke diagnostics
         if: failure()

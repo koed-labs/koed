@@ -21,6 +21,10 @@ import {
   readDiagnosticWindow,
   writeDiagnosticWindow
 } from "./smoke-diagnostics.mjs";
+import {
+  smokeExecutionPlan,
+  withPackagedNativeAssetsMasked
+} from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
@@ -35,6 +39,7 @@ const parseArgs = (argv) => {
     json: false,
     build: false,
     missingAssets: false,
+    maskNativeAssets: false,
     embeddingModelSource: undefined,
     exportEmbeddingModel: undefined,
     diagnosticsDir: undefined,
@@ -54,6 +59,10 @@ const parseArgs = (argv) => {
     }
     if (value === "--missing-assets") {
       options.missingAssets = true;
+      continue;
+    }
+    if (value === "--mask-native-assets") {
+      options.maskNativeAssets = true;
       continue;
     }
     if (value === "--embedding-model-source") {
@@ -105,6 +114,9 @@ const parseArgs = (argv) => {
   if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
     throw new Error("--poll-interval-ms must be a positive integer.");
   }
+  if (options.maskNativeAssets && !options.missingAssets) {
+    throw new Error("--mask-native-assets requires --missing-assets.");
+  }
   return options;
 };
 
@@ -114,6 +126,7 @@ Options:
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
   --missing-assets          Expect packaged native runtime assets to be missing
+  --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
   --embedding-model-source  Pre-seed the pinned embedding model from this file
   --export-embedding-model  Copy the verified installed model to this path
   --diagnostics-dir <path>  Create a curated diagnostics child under this path
@@ -406,7 +419,7 @@ const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
   };
 };
 
-const assertNoSourceCheckoutResolution = (label, payload) => {
+export const assertNoSourceCheckoutResolution = (label, payload) => {
   const sourceMarkers = [
     resolve(sourceCheckoutRoot, "apps", "api"),
     resolve(sourceCheckoutRoot, "apps", "worker"),
@@ -715,6 +728,7 @@ const smokeMissingAssets = (layout, koedHome) => {
     runtimeStatus.stdout
   );
   assertNoSourceCheckoutResolution("runtime status --json", runtimeStatusJson);
+  assertMissingAssets(runtimeStatusJson, "runtime status --json");
   const doctor = runPackagedCommand(layout, koedHome, ["doctor", "--json"]);
   const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
   assertNoSourceCheckoutResolution("doctor --json", doctorJson);
@@ -1015,6 +1029,41 @@ const run = async () => {
   const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-smoke-"));
   const daemonPids = [];
   try {
+    const executionPlan = smokeExecutionPlan(options);
+    if (executionPlan.missingAssets) {
+      const runMissingAssets = () => smokeMissingAssets(layout, koedHome);
+      const result = await measurePhase(
+        timings,
+        "missing native asset diagnostics",
+        async () =>
+          options.maskNativeAssets
+            ? withPackagedNativeAssetsMasked({
+                runtimeRoot: layout.runtimeRoot,
+                work: runMissingAssets
+              })
+            : runMissingAssets()
+      );
+      finishPhase(timings, "complete smoke", totalStartedAt);
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              mode: "missing-assets",
+              appPath: layout.appPath,
+              timings,
+              ...result
+            },
+            null,
+            2
+          )
+        );
+      } else {
+        console.log("Packaged Desktop missing-assets smoke passed.");
+      }
+      return;
+    }
+
     if (options.embeddingModelSource) {
       await measurePhase(timings, "embedding model pre-seed", async () =>
         seedEmbeddingModel(koedHome, options.embeddingModelSource)
@@ -1037,29 +1086,6 @@ const run = async () => {
           koedHome
         })
     );
-    if (options.missingAssets) {
-      const result = smokeMissingAssets(layout, koedHome);
-      finishPhase(timings, "complete smoke", totalStartedAt);
-      if (options.json) {
-        console.log(
-          JSON.stringify(
-            {
-              ok: true,
-              mode: "missing-assets",
-              appPath: layout.appPath,
-              timings,
-              collaborationBroker,
-              rendererFaults,
-              ...result
-            },
-            null,
-            2
-          )
-        );
-      }
-      return;
-    }
-
     const result = await smokeHealthyDaemon(layout, koedHome, {
       ...options,
       daemonPids,
@@ -1125,7 +1151,9 @@ const run = async () => {
   }
 };
 
-run().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  run().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
