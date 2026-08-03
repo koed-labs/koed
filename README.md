@@ -27,7 +27,9 @@ need them.
 - Homebrew for the source-checkout bundled-local runtime install. Packaged
   Desktop can use packaged native runtime assets; external dependency mode does
   not require Homebrew.
-- Codex installed and signed in.
+- Codex CLI `0.144.0` or newer installed and signed in. Koed validates configured
+  synthesis models against Codex app-server `model/list`; the default
+  `gpt-5.6-luna` model is unavailable in older releases.
 
 If you are on Windows, run Koed inside WSL as Linux tooling. Keep `KOED_HOME`
 and checkout paths on Linux filesystem paths inside WSL; native Windows

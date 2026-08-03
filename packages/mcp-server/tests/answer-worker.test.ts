@@ -332,6 +332,14 @@ describe("memory answer worker", () => {
     expect(config.maxExpansions).toBe(2);
   });
 
+  it("uses the efficient GPT-5.6 defaults for memory answers", () => {
+    expect(resolveMemoryAnswerWorkerConfig({})).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low"
+    });
+  });
+
   it("sends recency and conflict guidance to the memory-answer worker prompt", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {

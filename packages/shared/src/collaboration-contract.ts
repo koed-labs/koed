@@ -1925,7 +1925,8 @@ export const collaborationRendererCommandSchema = z
       forceRemoteNavigation: z.boolean().optional()
     }),
     command("collaboration.select", {
-      selection: collaborationSelectionSchema
+      selection: collaborationSelectionSchema,
+      navigationIntent: z.enum(["foreground", "prewarm"]).optional()
     }),
     command("collaboration.connect_backend", {
       remoteUrl: collaborationRemoteBackendUrlSchema
@@ -2256,12 +2257,35 @@ const successResult = <const TName extends string, T extends z.ZodType>(
 
 const emptyResultDataSchema = z.object({}).strict();
 
-const snapshotResultCommands = [
+const directSnapshotResultCommands = [
   "collaboration.load",
   "collaboration.select",
   "collaboration.reconnect_backend",
   "collaboration.disconnect_backend"
 ] as const;
+
+const createdResourceSnapshotResultCommands = [
+  "collaboration.create_team",
+  "collaboration.join_team",
+  "collaboration.create_workspace"
+] as const;
+
+const connectBackendSnapshotResultCommand =
+  "collaboration.connect_backend" as const;
+
+export const collaborationSnapshotResultCommands = [
+  ...directSnapshotResultCommands,
+  connectBackendSnapshotResultCommand,
+  ...createdResourceSnapshotResultCommands
+] as const;
+
+const collaborationSnapshotResultCommandSet = new Set<string>(
+  collaborationSnapshotResultCommands
+);
+
+export const collaborationCommandReturnsSnapshot = (
+  commandName: string
+): boolean => collaborationSnapshotResultCommandSet.has(commandName);
 
 const threadResultCommands = [
   "collaboration.create_notes_to_self",
@@ -2275,7 +2299,10 @@ const threadResultCommands = [
   "collaboration.restore_thread"
 ] as const;
 
-const snapshotSuccessSchemas = snapshotResultCommands.map((name) =>
+const snapshotSuccessSchemas = [
+  ...directSnapshotResultCommands,
+  ...createdResourceSnapshotResultCommands
+].map((name) =>
   successResult(
     name,
     z.object({ snapshot: collaborationSnapshotSchema }).strict()
@@ -2286,14 +2313,10 @@ const threadSuccessSchemas = threadResultCommands.map((name) =>
 );
 
 const commandNameSchema = z.enum([
-  ...snapshotResultCommands,
-  "collaboration.connect_backend",
+  ...collaborationSnapshotResultCommands,
   "collaboration.request_action_grant",
   "collaboration.await_action_grant",
   "collaboration.cancel_action_grant",
-  "collaboration.create_team",
-  "collaboration.join_team",
-  "collaboration.create_workspace",
   ...threadResultCommands,
   "collaboration.send_message",
   "collaboration.retry_message",
@@ -2342,7 +2365,7 @@ export const collaborationCommandResultSchema = z.union([
   ...snapshotSuccessSchemas,
   ...threadSuccessSchemas,
   successResult(
-    "collaboration.connect_backend",
+    connectBackendSnapshotResultCommand,
     z
       .object({
         backend: collaborationBackendIdentitySchema,
@@ -2370,18 +2393,6 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.cancel_action_grant",
     z.object({ status: collaborationActionGrantStatusSchema }).strict()
-  ),
-  successResult(
-    "collaboration.create_team",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
-  successResult(
-    "collaboration.join_team",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
-  successResult(
-    "collaboration.create_workspace",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
   ),
   successResult(
     "collaboration.send_message",
@@ -2548,7 +2559,7 @@ const realtimeResourceSchema = z
     }
   });
 
-const rendererUpdateSchema = z.discriminatedUnion("type", [
+export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("navigation_snapshot"),
@@ -2774,14 +2785,14 @@ const realtimeUpdateDeliverySchema = z
     occurredAt: collaborationTimestampSchema,
     family: collaborationRealtimeEventFamilySchema,
     resource: realtimeResourceSchema,
-    update: rendererUpdateSchema
+    update: collaborationRendererUpdateSchema
   })
   .strict()
   .superRefine((delivery, context) => {
     const { family, resource, update } = delivery;
     const allowedUpdateTypes: Record<
       z.infer<typeof collaborationRealtimeEventFamilySchema>,
-      ReadonlySet<z.infer<typeof rendererUpdateSchema>["type"]>
+      ReadonlySet<z.infer<typeof collaborationRendererUpdateSchema>["type"]>
     > = {
       team_lifecycle: new Set(["navigation_snapshot"]),
       team_membership_access: new Set(["navigation_snapshot"]),

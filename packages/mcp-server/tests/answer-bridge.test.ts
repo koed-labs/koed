@@ -4,7 +4,6 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const answerWithMemoryWorker = vi.fn();
-const checkCodexAppServerAvailability = vi.fn();
 const listCodexAppServerModels = vi.fn();
 
 vi.mock("../src/answer-worker.js", async (importOriginal) => ({
@@ -16,7 +15,6 @@ vi.mock("../src/codex-app-server-runner.js", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../src/codex-app-server-runner.js")
   >()),
-  checkCodexAppServerAvailability,
   listCodexAppServerModels
 }));
 
@@ -148,7 +146,6 @@ afterEach(async () => {
   vi.resetModules();
   vi.unstubAllEnvs();
   answerWithMemoryWorker.mockReset();
-  checkCodexAppServerAvailability.mockReset();
   listCodexAppServerModels.mockReset();
   await Promise.all(
     servers
@@ -589,7 +586,6 @@ describe("local memory answer bridge", () => {
     vi.stubEnv("MEMORY_MANUAL_ANSWER_REASONING_EFFORT", "medium");
     vi.stubEnv("MEMORY_LCM_SUMMARY_MODEL", "gpt-5.4-mini-lcm");
     vi.stubEnv("MEMORY_CURATED_REVIEW_MODEL", "gpt-5.4-mini-curated");
-    checkCodexAppServerAvailability.mockResolvedValue({ available: true });
     listCodexAppServerModels.mockResolvedValue([
       {
         id: "gpt-5.4",
@@ -645,12 +641,23 @@ describe("local memory answer bridge", () => {
         model: "gpt-5.4-mini",
         label: "gpt-5.4-mini",
         defaultReasoningEffort: "medium"
+      }),
+      expect.objectContaining({
+        model: "gpt-5.4-mini-lcm",
+        available: false
+      }),
+      expect.objectContaining({
+        model: "gpt-5.4-mini-curated",
+        available: false
       })
     ]);
+    expect(listCodexAppServerModels).toHaveBeenCalledTimes(1);
     expect(body.flows.manualMemoryAnswer).toMatchObject({
       provider: "codex",
       model: "gpt-5.4",
-      reasoningEffort: "medium"
+      reasoningEffort: "medium",
+      modelAvailable: true,
+      modelError: null
     });
     expect(body.flows.mcpMemoryAnswer).toMatchObject({
       model: "gpt-5.4",
@@ -664,14 +671,66 @@ describe("local memory answer bridge", () => {
       reasoningEffort: "low",
       timeoutMs: 90000,
       maxAttempts: 4,
-      source: "db"
+      source: "db",
+      modelAvailable: false
     });
     expect(body.flows.curatedMemoryReview).toMatchObject({
       model: "gpt-5.4-mini-curated",
-      reasoningEffort: "medium",
+      reasoningEffort: "low",
       timeoutMs: 90000,
       maxAttempts: 2,
-      source: "env"
+      source: "env",
+      modelAvailable: false
+    });
+  });
+
+  it("keeps model recovery available when the configured model is missing", async () => {
+    listCodexAppServerModels.mockResolvedValue([
+      {
+        id: "available-model",
+        model: "available-model",
+        label: "Available model",
+        hidden: false,
+        isDefault: true,
+        defaultReasoningEffort: "low",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "Low" }
+        ]
+      }
+    ]);
+    const { localMemoryAgentSettings } =
+      await import("../src/answer-bridge.js");
+
+    const settings = await localMemoryAgentSettings({
+      ...process.env,
+      MEMORY_MANUAL_ANSWER_MODEL: "removed-model",
+      MEMORY_ANSWER_MODEL: "available-model",
+      MEMORY_LCM_SUMMARY_MODEL: "available-model",
+      MEMORY_CURATED_REVIEW_MODEL: "available-model"
+    });
+
+    expect(listCodexAppServerModels).toHaveBeenCalledTimes(1);
+    expect(settings.aiClients).toEqual([
+      { id: "codex", label: "Codex", status: "ready", error: null }
+    ]);
+    expect(settings.modelOptions).toEqual([
+      expect.objectContaining({
+        model: "available-model",
+        available: true
+      }),
+      expect.objectContaining({
+        model: "removed-model",
+        available: false
+      })
+    ]);
+    expect(settings.flows.manualMemoryAnswer).toMatchObject({
+      model: "removed-model",
+      modelAvailable: false
+    });
+    expect(settings.flows.mcpMemoryAnswer).toMatchObject({
+      model: "available-model",
+      modelAvailable: true,
+      modelError: null
     });
   });
 

@@ -156,11 +156,11 @@ export const resolveCuratedMemoryReviewConfig = (
   model:
     overrides.model ??
     envValue(env, "MEMORY_CURATED_REVIEW_MODEL") ??
-    "gpt-5.4-mini",
+    "gpt-5.6-luna",
   reasoningEffort:
     overrides.reasoningEffort ??
     envValue(env, "MEMORY_CURATED_REVIEW_REASONING_EFFORT") ??
-    "medium",
+    "low",
   timeoutMs: Math.max(
     1_000,
     overrides.timeoutMs ??

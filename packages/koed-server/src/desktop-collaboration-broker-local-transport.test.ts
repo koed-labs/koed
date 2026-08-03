@@ -908,6 +908,189 @@ describe("Desktop collaboration local transport", () => {
     owner.abort();
   });
 
+  it("keeps inactive Team stream health out of the active renderer state", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null =
+      null;
+    let releaseDelayedTeamSelection: (() => void) | null = null;
+    let teamSelectionCount = 0;
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (url, init) => {
+        const value = String(url);
+        if (value.endsWith(collaborationCommandPath)) {
+          const body = JSON.parse(String(init?.body)) as {
+            command: CollaborationRendererCommand;
+          };
+          const selectedTeam =
+            body.command.command === "collaboration.select" &&
+            "teamId" in body.command.input.selection;
+          if (selectedTeam) teamSelectionCount += 1;
+          if (selectedTeam && teamSelectionCount === 2) {
+            await new Promise<void>((resolve) => {
+              releaseDelayedTeamSelection = resolve;
+            });
+          }
+          return commandSuccess(body.command, fullSnapshot(selectedTeam));
+        }
+        if (value.endsWith("/realtime/subscriptions")) {
+          return Response.json(brokerSnapshot("team"));
+        }
+        if (value.endsWith("/ack")) {
+          return Response.json({
+            protocolVersion: COLLABORATION_CONTRACT_VERSION,
+            subscription: {
+              id: subscriptionId,
+              protocolVersion: COLLABORATION_CONTRACT_VERSION,
+              scope: { scope: "team", teamId },
+              state: "active",
+              version: 1,
+              expiresAt: "2026-07-17T02:00:00.000Z"
+            }
+          });
+        }
+        if (value.includes("/stream?")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                streamController = controller;
+              }
+            }),
+            { headers: { "content-type": "text/event-stream" } }
+          );
+        }
+        throw new Error(`Unexpected URL ${value}`);
+      });
+    const owner = new AbortController();
+    const events: CollaborationRendererEvent[] = [];
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection: async (requiresTeamBackend) =>
+        requiresTeamBackend ? connection : personalConnection
+    });
+    const transportContext = {
+      ownerId: "renderer-1",
+      signal: owner.signal,
+      emitCollaborationEvent: (event: CollaborationRendererEvent) =>
+        events.push(event)
+    };
+    const select = (
+      selectedTeam: boolean,
+      requestId: string,
+      navigationIntent?: "foreground" | "prewarm"
+    ) =>
+      transport.request(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId,
+          command: "collaboration.select",
+          input: {
+            selection: fullSnapshot(selectedTeam).selection,
+            ...(navigationIntent ? { navigationIntent } : {})
+          }
+        }),
+        transportContext
+      );
+
+    await select(true, requestId);
+    const delayedTeamSelection = select(
+      true,
+      "44dfb243-f750-4d36-8360-e8de8768819e"
+    );
+    await waitFor(() => releaseDelayedTeamSelection !== null);
+    await select(false, "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec");
+    releaseDelayedTeamSelection!();
+    await delayedTeamSelection;
+    await transport.request(
+      collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: "7159acdc-4c81-4a31-b2f0-221119a0d88d",
+        command: "collaboration.subscribe",
+        input: { scope: { scope: "team", teamId } }
+      }),
+      transportContext
+    );
+    await waitFor(() => events.some((event) => event.type === "snapshot"));
+    const snapshot = events.find((event) => event.type === "snapshot")!;
+    await transport.request(
+      collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: "99dfb243-f750-4d36-8360-e8de8768819e",
+        command: "collaboration.acknowledge_delivery",
+        input: {
+          subscriptionId,
+          deliveryId: snapshot.deliveryId,
+          eventId: null,
+          expectedSubscriptionVersion: snapshot.subscription.version
+        }
+      }),
+      transportContext
+    );
+    await waitFor(() => streamController !== null);
+    expect(events.filter((event) => event.type === "connection")).toEqual([]);
+
+    await select(true, "5fb03c7c-72f2-49c1-9c83-d8e81e5c57ec", "prewarm");
+    streamController!.enqueue(
+      new TextEncoder().encode(
+        `event: connection\ndata: ${JSON.stringify({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "connection",
+          connection: fullSnapshot(true).connection,
+          error: null
+        })}\n\n`
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events.filter((event) => event.type === "connection")).toEqual([]);
+
+    await select(true, "88dfb243-f750-4d36-8360-e8de8768819e");
+    streamController!.enqueue(
+      new TextEncoder().encode(
+        `event: connection\ndata: ${JSON.stringify({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "connection",
+          connection: fullSnapshot(true).connection,
+          error: null
+        })}\n\n`
+      )
+    );
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "connection" && event.connection.state === "live"
+      )
+    );
+    expect(events.some((event) => event.type === "snapshot")).toBe(true);
+
+    await select(false, "13dfb243-f750-4d36-8360-e8de8768819e");
+    streamController!.enqueue(
+      new TextEncoder().encode(
+        `event: connection\ndata: ${JSON.stringify({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          type: "connection",
+          connection: {
+            ...fullSnapshot(true).connection,
+            state: "access_revoked",
+            connectedAt: null
+          },
+          error: {
+            code: "access_revoked",
+            userMessage: collaborationSafeErrorMessages.access_revoked,
+            retryable: false,
+            retryAfterMs: null
+          }
+        })}\n\n`
+      )
+    );
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === "connection" &&
+          event.connection.state === "access_revoked"
+      )
+    );
+    owner.abort();
+  });
+
   it("acknowledges and unsubscribes Personal deliveries with the complete binding", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

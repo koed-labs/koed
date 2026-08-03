@@ -299,11 +299,11 @@ export const resolveMemoryAnswerWorkerConfig = (
     model:
       overrides.model ??
       resolveEnvValue(env, "MEMORY_ANSWER_MODEL") ??
-      "gpt-5.4-mini",
+      "gpt-5.6-luna",
     reasoningEffort:
       overrides.reasoningEffort ??
       resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ??
-      "high",
+      "low",
     timeoutMs: parsePositiveInteger(
       overrides.timeoutMs ?? resolveEnvValue(env, "MEMORY_ANSWER_TIMEOUT_MS"),
       DEFAULT_ANSWER_TIMEOUT_MS,

@@ -4,6 +4,7 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
   COLLABORATION_NAME_MAX_CODE_POINTS,
+  collaborationCommandReturnsSnapshot,
   collaborationCommandResultSchema,
   collaborationDurableSendEventSchema,
   collaborationDurableSendSchema,
@@ -16,6 +17,7 @@ import {
   collaborationRemoteBackendUrlSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
+  collaborationSnapshotResultCommands,
   collaborationSnapshotSchema,
   collaborationTeamPresenceStatusCatalogueSchema,
   collaborationThreadSchema,
@@ -465,6 +467,25 @@ describe("durable collaboration send DTOs", () => {
 });
 
 describe("collaboration renderer commands", () => {
+  it("keeps snapshot-bearing command routing in the shared contract", () => {
+    expect(collaborationSnapshotResultCommands).toEqual([
+      "collaboration.load",
+      "collaboration.select",
+      "collaboration.reconnect_backend",
+      "collaboration.disconnect_backend",
+      "collaboration.connect_backend",
+      "collaboration.create_team",
+      "collaboration.join_team",
+      "collaboration.create_workspace"
+    ]);
+    for (const command of collaborationSnapshotResultCommands) {
+      expect(collaborationCommandReturnsSnapshot(command)).toBe(true);
+    }
+    expect(
+      collaborationCommandReturnsSnapshot("collaboration.send_message")
+    ).toBe(false);
+  });
+
   it("classifies every selection scope from the shared contract", () => {
     const personal = [
       { kind: "personal_memory" as const },

@@ -2065,6 +2065,24 @@ const nextModelListCursor = (payload: unknown): string | null => {
     : null;
 };
 
+const listModelsWithClient = async (
+  client: CodexAppServerClient,
+  includeHidden?: boolean
+): Promise<CodexAppServerModelOption[]> => {
+  const models: CodexAppServerModelOption[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    if (cursor) {
+      seenCursors.add(cursor);
+    }
+    const payload = await client.listModels(includeHidden, cursor);
+    models.push(...normalizeModelList(payload));
+    cursor = nextModelListCursor(payload);
+  } while (cursor && !seenCursors.has(cursor));
+  return models;
+};
+
 export const listCodexAppServerModels = async (
   input: {
     appServerBinary: string;
@@ -2089,18 +2107,7 @@ export const listCodexAppServerModels = async (
   const timeout = setTimeout(() => client.close(), timeoutMs);
   try {
     await client.initialize(input.clientName ?? "koed-settings-model-list");
-    const models: CodexAppServerModelOption[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | null = null;
-    do {
-      if (cursor) {
-        seenCursors.add(cursor);
-      }
-      const payload = await client.listModels(input.includeHidden, cursor);
-      models.push(...normalizeModelList(payload));
-      cursor = nextModelListCursor(payload);
-    } while (cursor && !seenCursors.has(cursor));
-    return models;
+    return await listModelsWithClient(client, input.includeHidden);
   } finally {
     clearTimeout(timeout);
     client.close();
@@ -2116,7 +2123,7 @@ export const checkCodexAppServerAvailability = async (
     env: NodeJS.ProcessEnv;
     clientName?: string;
   },
-  timeoutMs = 3000
+  timeoutMs = 5000
 ): Promise<{ available: boolean; error?: string }> => {
   const isolatedHome = createIsolatedCodexHome(input.env, input.model);
   const env = {
@@ -2131,6 +2138,21 @@ export const checkCodexAppServerAvailability = async (
   const timeout = setTimeout(() => client.close(), timeoutMs);
   try {
     await client.initialize(input.clientName ?? "koed-settings-check");
+    const models = await listModelsWithClient(client, true);
+    if (
+      !models.some(
+        ({ id, model }) => id === input.model || model === input.model
+      )
+    ) {
+      const lunaGuidance =
+        input.model === "gpt-5.6-luna"
+          ? " GPT-5.6 Luna requires Codex CLI 0.144.0 or newer."
+          : "";
+      return {
+        available: false,
+        error: `Codex app-server does not expose the configured model "${input.model}".${lunaGuidance} Upgrade Codex or select a model reported by model/list.`
+      };
+    }
     return { available: true };
   } catch (error) {
     return {

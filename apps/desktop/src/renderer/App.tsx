@@ -329,6 +329,7 @@ export function App({
   );
   const route = currentNavigationEntry(navigation).route;
   const snapshot = collaboration.snapshot;
+  const liveHealthRefreshKey = useRef<string | null>(null);
   const activeTeamId = routeTeamId(route);
   const commands = useMemo(
     () => commandEntriesForSnapshot(snapshot, activeTeamId),
@@ -341,6 +342,25 @@ export function App({
       void activeStatusStore.refresh();
     }
   }, [activeStatusStore, statusReadyOverride]);
+
+  useEffect(() => {
+    if (
+      statusReadyOverride !== undefined ||
+      snapshot?.connection.state !== "live"
+    ) {
+      return;
+    }
+    const key = `${snapshot.connection.backendId}:${snapshot.connection.connectedAt}`;
+    if (liveHealthRefreshKey.current === key) return;
+    liveHealthRefreshKey.current = key;
+    void activeStatusStore.refresh();
+  }, [
+    activeStatusStore,
+    snapshot?.connection.backendId,
+    snapshot?.connection.connectedAt,
+    snapshot?.connection.state,
+    statusReadyOverride
+  ]);
 
   useEffect(() => {
     const devices = window.koedDesktop?.devices;

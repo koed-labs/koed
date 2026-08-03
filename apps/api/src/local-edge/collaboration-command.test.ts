@@ -2517,6 +2517,53 @@ describe("local-edge collaboration command route", () => {
     expect(navigationReads()).toBe(3);
   });
 
+  it("does not let a forced Team navigation refresh reuse an older in-flight read", async () => {
+    let releaseFirstNavigation!: (response: Response) => void;
+    const firstNavigation = new Promise<Response>((resolve) => {
+      releaseFirstNavigation = resolve;
+    });
+    let navigationReads = 0;
+    let firstNavigationStarted!: () => void;
+    const navigationStarted = new Promise<void>((resolve) => {
+      firstNavigationStarted = resolve;
+    });
+    const harness = createHarness({
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        if (path !== "/v1/teams/navigation") {
+          return remoteCompositionResponse(call);
+        }
+        navigationReads += 1;
+        if (navigationReads === 1) {
+          firstNavigationStarted();
+          return firstNavigation;
+        }
+        return remoteCompositionResponse(call);
+      }
+    });
+    const load = (forceRemoteNavigation = false) =>
+      injectPersonalCommand(harness.app, {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load",
+        input: forceRemoteNavigation ? { forceRemoteNavigation: true } : {}
+      } as CollaborationRendererCommand);
+
+    const initial = load();
+    await navigationStarted;
+    const forced = load(true);
+    releaseFirstNavigation(
+      Response.json({
+        ...remoteNavigationPayload(),
+        snapshotRevision: "remote-before-write"
+      })
+    );
+
+    expect((await initial).statusCode).toBe(200);
+    expect((await forced).statusCode).toBe(200);
+    expect(navigationReads).toBe(2);
+  });
+
   it("does not advertise remote Team navigation when Team collaboration is disabled", async () => {
     const harness = createHarness({
       teamCollaborationEnabled: false,

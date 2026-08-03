@@ -1778,7 +1778,8 @@ export const createCollaborationRendererClient = (
         }
         const pending = selectionViews.coordinate(candidate.selection, () =>
           command("collaboration.select", {
-            selection: candidate.selection
+            selection: candidate.selection,
+            navigationIntent: "prewarm"
           })
             .then((result) => {
               if (
@@ -2494,8 +2495,15 @@ export const createCollaborationRendererClient = (
       const backendChanged =
         snapshot.connection.backendId !== null &&
         event.connection.backendId !== snapshot.connection.backendId;
+      const recoveredSelectedTeamStream =
+        becameLive &&
+        (snapshot.connection.state === "reconnecting" ||
+          snapshot.connection.state === "unavailable") &&
+        teamIdForSelection(snapshot.selection) !== null;
       const requiresLiveRecovery =
-        becameLive && !backendChanged && snapshot.navigation.teams.length === 0;
+        becameLive &&
+        !backendChanged &&
+        (snapshot.navigation.teams.length === 0 || recoveredSelectedTeamStream);
       if (
         backendChanged ||
         event.connection.state === "disconnected" ||
@@ -2757,7 +2765,11 @@ export const createCollaborationRendererClient = (
     return snapshot;
   };
 
-  const applyCommandSnapshot = async (next: CollaborationSnapshot) => {
+  const applyCommandSnapshot = async (
+    next: CollaborationSnapshot,
+    isCurrent: () => boolean = () => true
+  ) => {
+    if (!isCurrent()) return requireSnapshot();
     const backendChanged =
       snapshot?.connection.backendId !== null &&
       snapshot?.connection.backendId !== undefined &&
@@ -2771,16 +2783,26 @@ export const createCollaborationRendererClient = (
       pendingSharedSessionRecovery = null;
       dropPendingDeliveries();
       await resetSubscriptions();
+      if (!isCurrent()) return requireSnapshot();
       await purgeAllTeams(next.connection, undefined, false);
+      if (!isCurrent()) return requireSnapshot();
     }
+    if (!isCurrent()) return requireSnapshot();
     await publishValidated(next, { kind: "command" });
+    if (!isCurrent()) return requireSnapshot();
     await syncTeamSubscription(next.selection);
+    if (!isCurrent()) return requireSnapshot();
     void prewarmSharedSessionViews(next.navigation);
     startSharedSourceBackfill(next);
     return requireSnapshot();
   };
 
   reloadAuthoritativeSnapshot = async (preferredSelection) => {
+    const recoverySelectionRequestGeneration = ++selectionRequestGeneration;
+    const recoverySelectionIntentGeneration = selectionIntentGeneration;
+    const recoveryIsCurrent = () =>
+      recoverySelectionRequestGeneration === selectionRequestGeneration &&
+      recoverySelectionIntentGeneration === selectionIntentGeneration;
     const selectedSharedSession =
       snapshot?.selection.kind === "shared_session" ? snapshot.selection : null;
     if (selectedSharedSession) {
@@ -2803,7 +2825,7 @@ export const createCollaborationRendererClient = (
         if (!result.ok || result.command !== "collaboration.load") {
           throw new Error("Unexpected collaboration result.");
         }
-        loaded = await applyCommandSnapshot(result.data.snapshot);
+        loaded = result.data.snapshot;
         break;
       } catch (error) {
         if (
@@ -2826,6 +2848,11 @@ export const createCollaborationRendererClient = (
       }
     }
     if (!loaded) throw new Error("Authoritative snapshot recovery failed.");
+    if (!recoveryIsCurrent()) {
+      await subscribeScope({ scope: "personal" });
+      return;
+    }
+    let resolved = loaded;
     const preferredTeamId = recoverySelection
       ? teamIdForSelection(recoverySelection)
       : null;
@@ -2834,23 +2861,48 @@ export const createCollaborationRendererClient = (
       preferredTeamId &&
       loaded.navigation.teams.some((team) => team.id === preferredTeamId)
     ) {
-      if (
-        selectionIdentity(loaded.selection) !==
-        selectionIdentity(recoverySelection)
-      ) {
-        try {
-          await select(recoverySelection, true);
-          if (recoverySelection.kind === "shared_session") {
-            pendingSharedSessionRecovery = null;
-          }
-        } catch {
-          if (recoverySelection.kind === "shared_session") {
-            rememberSharedSessionSelection(recoverySelection);
-          }
-          await select({ kind: "team_people", teamId: preferredTeamId }, true);
+      try {
+        const selected = await command("collaboration.select", {
+          selection: recoverySelection
+        });
+        if (!selected.ok || selected.command !== "collaboration.select") {
+          throw new Error("Unexpected collaboration result.");
         }
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
+        resolved = selected.data.snapshot;
+        if (recoverySelection.kind === "shared_session") {
+          pendingSharedSessionRecovery = null;
+        }
+      } catch {
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
+        if (recoverySelection.kind === "shared_session") {
+          rememberSharedSessionSelection(recoverySelection);
+        }
+        const fallbackSelection = {
+          kind: "team_people" as const,
+          teamId: preferredTeamId
+        };
+        const fallback = await command("collaboration.select", {
+          selection: fallbackSelection
+        });
+        if (!fallback.ok || fallback.command !== "collaboration.select") {
+          throw new Error("Unexpected collaboration result.");
+        }
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
+        resolved = fallback.data.snapshot;
       }
     }
+    await applyCommandSnapshot(resolved, recoveryIsCurrent);
+    if (!recoveryIsCurrent()) return;
     await subscribeScope({ scope: "personal" });
     if (snapshot) {
       await publish(snapshot, { kind: "command", announcement: "" });
@@ -2875,7 +2927,10 @@ export const createCollaborationRendererClient = (
         warmed &&
         selectionIdentity(warmed.selection) === selectionIdentity(selection)
       ) {
-        return applyCommandSnapshot(warmed);
+        return applyCommandSnapshot(
+          warmed,
+          () => generation === selectionRequestGeneration
+        );
       }
     }
     const shell = snapshot ? optimisticSelection(snapshot, selection) : null;
@@ -2895,7 +2950,10 @@ export const createCollaborationRendererClient = (
         throw new Error("Unexpected collaboration result.");
       }
       if (generation !== selectionRequestGeneration) return requireSnapshot();
-      return applyCommandSnapshot(result.data.snapshot);
+      return applyCommandSnapshot(
+        result.data.snapshot,
+        () => generation === selectionRequestGeneration
+      );
     } catch (cause) {
       if (
         generation === selectionRequestGeneration &&
@@ -3363,7 +3421,12 @@ export const createCollaborationRendererClient = (
           error.code === "conflict"
         ) {
           try {
-            await loadSnapshot(true);
+            const currentSelection = snapshot?.selection;
+            if (currentSelection && reloadAuthoritativeSnapshot) {
+              await reloadAuthoritativeSnapshot(currentSelection);
+            } else {
+              await loadSnapshot(true);
+            }
           } catch {
             // Preserve the original optimistic-write conflict for the caller.
           }
