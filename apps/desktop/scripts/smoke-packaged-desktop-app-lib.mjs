@@ -44,19 +44,22 @@ export const withPackagedNativeAssetsMasked = async ({ runtimeRoot, work }) => {
 
   let result;
   let workError;
+  const restoreErrors = [];
   try {
     result = await work({ maskedEntries: moved.map(({ entry }) => entry) });
   } catch (error) {
     workError = error;
   } finally {
-    const restoreErrors = [];
     for (const item of moved.toReversed()) {
-      try {
-        if (existsSync(item.source)) {
-          throw new Error(
+      if (existsSync(item.source)) {
+        restoreErrors.push(
+          new Error(
             `Cannot restore masked packaged native assets because ${item.source} already exists. Backup remains at ${item.target}.`
-          );
-        }
+          )
+        );
+        continue;
+      }
+      try {
         renameSync(item.target, item.source);
       } catch (error) {
         restoreErrors.push(error);
@@ -64,12 +67,13 @@ export const withPackagedNativeAssetsMasked = async ({ runtimeRoot, work }) => {
     }
     if (restoreErrors.length === 0) {
       rmSync(stagingRoot, { recursive: true, force: true });
-    } else {
-      throw new AggregateError(
-        workError ? [workError, ...restoreErrors] : restoreErrors,
-        `Failed to restore packaged native assets from ${stagingRoot}.`
-      );
     }
+  }
+  if (restoreErrors.length > 0) {
+    throw new AggregateError(
+      workError ? [workError, ...restoreErrors] : restoreErrors,
+      `Failed to restore packaged native assets from ${stagingRoot}.`
+    );
   }
   if (workError) throw workError;
   return result;
