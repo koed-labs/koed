@@ -9,9 +9,21 @@ import {
 } from "../.github/scripts/ci-policy.mjs";
 import { evaluateRequiredJobs } from "../.github/scripts/ci-required.mjs";
 
-const pullRequest = ({ head = "feature", labels = [] } = {}) => ({
+const REPOSITORY_FULL_NAME = "koed-labs/koed";
+
+const pullRequest = ({
+  head = "feature",
+  labels = [],
+  repository = REPOSITORY_FULL_NAME,
+  headRepository = REPOSITORY_FULL_NAME
+} = {}) => ({
+  repository: repository ? { full_name: repository } : undefined,
   pull_request: {
-    head: { ref: head, sha: "head-sha" },
+    head: {
+      ref: head,
+      sha: "head-sha",
+      repo: headRepository ? { full_name: headRepository } : null
+    },
     labels: labels.map((name) => ({ name }))
   }
 });
@@ -195,6 +207,33 @@ test("ordinary, documentation, relevant, forced, and release pull requests route
   assert.equal(release.changesets_release_pr, "true");
   assert.equal(release.run_app_smoke, "false");
   assert.equal(release.run_full_validation, "true");
+});
+
+test("Changesets release validation requires a same-repository head", () => {
+  const sameRepository = evaluateCiPolicy({
+    eventName: "pull_request",
+    event: pullRequest({ head: "changeset-release/main" }),
+    changedFiles: [".changeset/release.md"]
+  });
+  assert.equal(sameRepository.changesets_release_pr, "true");
+  assert.equal(sameRepository.run_full_validation, "true");
+
+  for (const event of [
+    pullRequest({
+      head: "changeset-release/main",
+      headRepository: "fork-owner/koed"
+    }),
+    pullRequest({ head: "changeset-release/main", headRepository: null }),
+    pullRequest({ head: "changeset-release/main", repository: null })
+  ]) {
+    const untrusted = evaluateCiPolicy({
+      eventName: "pull_request",
+      event,
+      changedFiles: [".changeset/release.md"]
+    });
+    assert.equal(untrusted.changesets_release_pr, "false");
+    assert.equal(untrusted.run_full_validation, "false");
+  }
 });
 
 test("only a repository-controlled exact head SHA can skip app validation", () => {

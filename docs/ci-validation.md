@@ -24,7 +24,9 @@ silently bypass packaged validation.
 
 Add the `full-ci` label to a pull request to force the app-only packaged smoke.
 The label does not select release distribution artifacts; the generated
-Changesets head branch, `changeset-release/main`, selects that stricter gate.
+Changesets head branch, `changeset-release/main`, selects that stricter gate
+only when the head branch belongs to this repository. A fork using the same
+branch name cannot select release-candidate validation.
 
 There is no contributor-controlled skip label or dispatch option. For trusted
 automation only, a repository administrator may set the

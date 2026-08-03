@@ -68,8 +68,14 @@ export const evaluateCiPolicy = ({
 }) => {
   const labels = labelNames(event);
   const headRef = event.pull_request?.head?.ref ?? "";
+  const repositoryFullName = event.repository?.full_name ?? "";
+  const headRepositoryFullName =
+    event.pull_request?.head?.repo?.full_name ?? "";
   const changesetsReleasePr =
-    eventName === "pull_request" && headRef === "changeset-release/main";
+    eventName === "pull_request" &&
+    headRef === "changeset-release/main" &&
+    Boolean(repositoryFullName) &&
+    headRepositoryFullName === repositoryFullName;
   const forceFullCi =
     eventName === "pull_request" && labels.includes("full-ci");
   const requestedValidation = event.inputs?.validation_level ?? "standard";
