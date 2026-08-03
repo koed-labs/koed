@@ -101,6 +101,18 @@ test("native runtime caches are restored by PRs and written only by trusted main
   );
 });
 
+test("relevant packaged smoke retains fail-closed missing-asset coverage", () => {
+  const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const relevantSmoke = workflow
+    .split("  relevant-packaged-smoke:")[1]
+    .split("  release-candidate-validation:")[0];
+
+  assert.match(
+    relevantSmoke,
+    /pnpm desktop:package:smoke:mac -- --json --missing-assets/
+  );
+});
+
 test("ordinary, documentation, relevant, forced, and release pull requests route correctly", () => {
   assert.deepEqual(
     evaluateCiPolicy({

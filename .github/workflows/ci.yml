@@ -306,6 +306,9 @@ jobs:
       - name: Run packaged Desktop native smoke
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --embedding-model-source "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
+      - name: Run packaged Desktop missing-asset smoke
+        run: pnpm desktop:package:smoke:mac -- --json --missing-assets
+
       - name: Upload packaged Desktop smoke diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
