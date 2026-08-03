@@ -8,7 +8,7 @@ import {
   rmSync,
   statSync
 } from "node:fs";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { basename, dirname, resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
@@ -50,6 +50,13 @@ export interface LocalModelInstallResult extends LocalModelStatus {
 
 export interface LocalModelInstallDependencies {
   fetch?: typeof fetch;
+  onProgress?: (progress: LocalModelInstallProgress) => void;
+}
+
+export interface LocalModelInstallProgress {
+  completedBytes: number | null;
+  phase: "downloading" | "verifying" | "complete";
+  totalBytes: number | null;
 }
 
 const MODEL_DEFINITIONS: Record<
@@ -212,7 +219,8 @@ export const installLocalModel = async (
   kind: LocalModelKind = "embedding",
   environment: NodeJS.ProcessEnv = process.env,
   {
-    fetch: fetcher = globalThis.fetch.bind(globalThis)
+    fetch: fetcher = globalThis.fetch.bind(globalThis),
+    onProgress
   }: LocalModelInstallDependencies = {}
 ): Promise<LocalModelInstallResult> => {
   const manifest = resolveLocalModelManifest(paths, kind, environment);
@@ -289,10 +297,52 @@ export const installLocalModel = async (
     };
   }
 
+  const contentLength = Number.parseInt(
+    response.headers.get("content-length") ?? "",
+    10
+  );
+  const totalBytes =
+    Number.isSafeInteger(contentLength) && contentLength >= 0
+      ? contentLength
+      : null;
+  let completedBytes = 0;
+  let lastReportedBytes = 0;
+  let lastReportedAt = 0;
+  onProgress?.({
+    completedBytes: 0,
+    phase: "downloading",
+    totalBytes
+  });
+  const progress = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      completedBytes += chunk.byteLength;
+      const now = Date.now();
+      if (
+        completedBytes === totalBytes ||
+        completedBytes - lastReportedBytes >= 1_048_576 ||
+        now - lastReportedAt >= 250
+      ) {
+        lastReportedBytes = completedBytes;
+        lastReportedAt = now;
+        onProgress?.({
+          completedBytes,
+          phase: "downloading",
+          totalBytes
+        });
+      }
+      callback(null, chunk);
+    }
+  });
   await pipeline(
     Readable.fromWeb(response.body as never),
+    progress,
     createWriteStream(tempPath, { mode: 0o600 })
   );
+  onProgress?.({
+    completedBytes,
+    phase: "verifying",
+    totalBytes
+  });
   const actual = await sha256File(tempPath);
   if (actual !== manifest.sha256) {
     rmSync(tempPath, { force: true });
@@ -309,5 +359,10 @@ export const installLocalModel = async (
 
   renameSync(tempPath, manifest.modelPath);
   const status = await collectLocalModelStatus(paths, kind, environment);
+  onProgress?.({
+    completedBytes: status.sizeBytes ?? completedBytes,
+    phase: "complete",
+    totalBytes: status.sizeBytes ?? totalBytes
+  });
   return { ok: status.state === "installed", ...status };
 };

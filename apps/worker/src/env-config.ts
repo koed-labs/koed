@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import {
   requireEnv,
+  resolveTeamCollaborationEnabled,
   resolveKoedQueueBackend,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
@@ -20,6 +21,7 @@ import {
 } from "./logging.js";
 
 export interface WorkerEnvConfig {
+  teamCollaborationEnabled: boolean;
   queueBackend: KoedQueueBackend;
   redisUrl: string;
   databaseUrl?: string;
@@ -28,15 +30,27 @@ export interface WorkerEnvConfig {
   embeddingServiceToken?: string;
   embeddingDimensions: number;
   embeddingVersion: string;
+  embeddingModelArtifactHash: string;
+  embeddingTokenizer: string;
+  embeddingInputTransform: string;
+  embeddingPooling: string;
+  embeddingNormalization: string;
   embeddingBatchLimit: number;
   embeddingMaxTextChars: number;
   embeddingMaxRequestChars: number;
   embeddingRequestTimeoutMs: number;
-  rawProjectionIntervalMs: number;
   rawProjectionBatchLimit: number;
   rawProjectionActorLimit: number;
   crossIdentitySyncIntervalMs: number;
   crossIdentitySyncStaleAfterSeconds: number;
+  retentionPurgeIntervalMs: number;
+  collaborationReplayPruneIntervalMs: number;
+  collaborationReplayPruneBatchLimit: number;
+  managedConversationApiUrl?: string;
+  managedConversationApiToken?: string;
+  managedConversationAppServerBinary: string;
+  managedConversationModel: string;
+  managedConversationReasoningEffort: string;
   koedHome: string;
   historicalImport: HistoricalImportBatchConfig;
   historicalImportApiReadyUrl?: string;
@@ -113,10 +127,16 @@ export const resolveWorkerEnv = (
   const embeddingServiceToken = optionalEnv(
     environment.EMBEDDING_SERVICE_TOKEN
   );
-  const historicalImportApiReadyUrl = optionalHttpUrl(
+  const managedConversationApiUrl = optionalHttpUrl(
     environment,
-    "MEMORY_HISTORICAL_IMPORT_API_READY_URL"
+    "MEMORY_API_URL"
   );
+  const historicalImportApiReadyUrl =
+    optionalHttpUrl(environment, "MEMORY_HISTORICAL_IMPORT_API_READY_URL") ??
+    (managedConversationApiUrl
+      ? new URL("/ready", managedConversationApiUrl).toString()
+      : undefined);
+  const managedConversationApiToken = optionalEnv(environment.MEMORY_API_TOKEN);
   const embeddingModel = resolveSupportedEmbeddingModelConfig(
     environment.EMBEDDING_MODEL
   );
@@ -136,6 +156,7 @@ export const resolveWorkerEnv = (
   }
 
   return {
+    teamCollaborationEnabled: resolveTeamCollaborationEnabled(environment),
     queueBackend,
     redisUrl: environment.REDIS_URL ?? "redis://localhost:6379",
     ...(databaseUrl ? { databaseUrl } : {}),
@@ -145,6 +166,13 @@ export const resolveWorkerEnv = (
     ...(embeddingServiceToken ? { embeddingServiceToken } : {}),
     embeddingDimensions: embeddingModel.dimensions,
     embeddingVersion: embeddingModel.key,
+    embeddingModelArtifactHash:
+      optionalEnv(environment.KOED_EMBEDDING_MODEL_SHA256) ??
+      embeddingModel.defaultArtifactSha256,
+    embeddingTokenizer: embeddingModel.tokenizer,
+    embeddingInputTransform: embeddingModel.inputTransform,
+    embeddingPooling: embeddingModel.pooling,
+    embeddingNormalization: embeddingModel.normalization,
     embeddingBatchLimit: positiveIntEnv(
       environment,
       "EMBEDDING_BATCH_LIMIT",
@@ -164,11 +192,6 @@ export const resolveWorkerEnv = (
       environment,
       "EMBEDDING_REQUEST_TIMEOUT_MS",
       900_000
-    ),
-    rawProjectionIntervalMs: positiveIntEnv(
-      environment,
-      "MEMORY_RAW_PROJECTION_INTERVAL_MS",
-      5_000
     ),
     rawProjectionBatchLimit: positiveIntEnv(
       environment,
@@ -190,6 +213,30 @@ export const resolveWorkerEnv = (
       "CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS",
       86_400
     ),
+    retentionPurgeIntervalMs: positiveIntEnv(
+      environment,
+      "RETENTION_PURGE_INTERVAL_MS",
+      1_000
+    ),
+    collaborationReplayPruneIntervalMs: positiveIntEnv(
+      environment,
+      "COLLABORATION_REPLAY_PRUNE_INTERVAL_MS",
+      60_000
+    ),
+    collaborationReplayPruneBatchLimit: positiveIntEnv(
+      environment,
+      "COLLABORATION_REPLAY_PRUNE_BATCH_LIMIT",
+      1_000
+    ),
+    ...(managedConversationApiUrl ? { managedConversationApiUrl } : {}),
+    ...(managedConversationApiToken ? { managedConversationApiToken } : {}),
+    managedConversationAppServerBinary:
+      optionalEnv(environment.MEMORY_CODEX_APP_SERVER_BINARY) ?? "codex",
+    managedConversationModel:
+      optionalEnv(environment.KOED_MANAGED_CONVERSATION_MODEL) ?? "gpt-5.4",
+    managedConversationReasoningEffort:
+      optionalEnv(environment.KOED_MANAGED_CONVERSATION_REASONING_EFFORT) ??
+      "high",
     koedHome: resolve(environment.KOED_HOME ?? resolve(homedir(), ".koed")),
     historicalImport: {
       maxRows: boundedIntEnv(

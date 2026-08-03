@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createEmbeddingLogger } from "./logging.js";
 import { EmbeddingRuntime } from "./runtime.js";
 import type { EmbedResponse, RerankResponse } from "./schemas.js";
-import { createEmbeddingService } from "./server.js";
+import {
+  createEmbeddingService,
+  createNodeHttpServer,
+  listenNodeHttpServer
+} from "./server.js";
 import { testConfig } from "./test-helpers.js";
 
 class RouteRuntime extends EmbeddingRuntime {
@@ -66,6 +70,30 @@ const json = async (response: Response) =>
 const logger = () => createEmbeddingLogger("critical", () => undefined);
 
 describe("Embedding Service routes", () => {
+  it("rejects HTTP bind failures through the awaited startup path", async () => {
+    const service = {
+      handle: async () => new Response(null, { status: 204 })
+    };
+    const occupied = createNodeHttpServer(service);
+    await listenNodeHttpServer(occupied, "127.0.0.1", 0);
+    const address = occupied.address();
+    expect(address).not.toBeNull();
+    expect(typeof address).not.toBe("string");
+
+    const conflicting = createNodeHttpServer(service);
+    await expect(
+      listenNodeHttpServer(
+        conflicting,
+        "127.0.0.1",
+        typeof address === "string" || address === null ? 0 : address.port
+      )
+    ).rejects.toMatchObject({ code: "EADDRINUSE" });
+
+    await new Promise<void>((resolve, reject) =>
+      occupied.close((error) => (error ? reject(error) : resolve()))
+    );
+  });
+
   it("reports loading health until configured reranker is loaded", async () => {
     const config = testConfig({
       embeddingServiceToken: "secret",

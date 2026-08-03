@@ -41,7 +41,7 @@ export const registerCuratedMemoryRoutes = (
           ? await repo.resolveCuratedMemoryProposalEvidence(
               { userId: user.id },
               {
-                workspaceId: input.source_workspace_id,
+                projectId: input.source_project_id,
                 sessionId: input.source_session_id,
                 exactQuote: input.evidence_exact_quote
               }
@@ -291,7 +291,7 @@ export const registerCuratedMemoryRoutes = (
           query: input.query,
           searchDomain: input.search_domain,
           sessionId: input.session_id,
-          workspaceId: input.workspace_id,
+          projectId: input.project_id,
           currentOnly: input.current_only,
           limit: input.limit
         }

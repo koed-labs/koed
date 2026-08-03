@@ -1,12 +1,17 @@
 import { loadEmbeddingServiceEnv, resolveEnv } from "./env-config.js";
 import { createEmbeddingLogger } from "./logging.js";
 import { EmbeddingRuntime } from "./runtime.js";
-import { createEmbeddingService, createNodeHttpServer } from "./server.js";
+import {
+  createEmbeddingService,
+  createNodeHttpServer,
+  listenNodeHttpServer
+} from "./server.js";
 
 loadEmbeddingServiceEnv();
 const config = resolveEnv();
 const logger = createEmbeddingLogger(config.logLevel);
 const runtime = new EmbeddingRuntime(config, logger);
+let shutdownPromise: Promise<void> | null = null;
 
 const start = async (): Promise<void> => {
   await runtime.loadEmbeddingModel();
@@ -14,22 +19,34 @@ const start = async (): Promise<void> => {
 
   const service = createEmbeddingService(config, runtime, logger);
   const server = createNodeHttpServer(service);
-  server.listen(config.port, config.host, () => {
-    logger.info("Embedding Service listening", {
-      event: { name: "embedding.service.listening" },
-      http: { host: config.host, port: config.port }
-    });
+  await listenNodeHttpServer(server, config.host, config.port);
+  logger.info("Embedding Service listening", {
+    event: { name: "embedding.service.listening" },
+    http: { host: config.host, port: config.port }
   });
 
-  const shutdown = () => {
-    server.close();
-    runtime.shutdownRuntime();
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = Promise.all([
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeIdleConnections();
+      }),
+      runtime.shutdownRuntime()
+    ]).then(() => undefined);
+    return shutdownPromise;
   };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  const shutdownFromSignal = () => {
+    void shutdown().then(
+      () => process.exit(0),
+      () => process.exit(1)
+    );
+  };
+  process.once("SIGINT", shutdownFromSignal);
+  process.once("SIGTERM", shutdownFromSignal);
 };
 
-start().catch((error: unknown) => {
+start().catch(async (error: unknown) => {
   logger.error("Embedding Service startup failed", {
     event: { name: "embedding.service.startup_failed" },
     error: {
@@ -38,6 +55,6 @@ start().catch((error: unknown) => {
       message: error instanceof Error ? error.message : String(error)
     }
   });
-  runtime.shutdownRuntime();
+  await runtime.shutdownRuntime();
   process.exitCode = 1;
 });

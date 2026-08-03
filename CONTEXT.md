@@ -133,6 +133,12 @@ _Avoid_: Health failure, pending count, summarization error
 Memory visible only to the owning user.
 _Avoid_: Private memory, individual memory
 
+**Team Presence**:
+A Team-scoped indication of a User's manually selected availability or coarse
+recent foreground activity. It does not describe agent, worker, sync, or
+background-service activity.
+_Avoid_: Agent status, read receipt, exact activity log
+
 **Project**:
 A local AI-client or code context such as a repository, working directory,
 filepath, ref, branch, or cwd.
@@ -203,8 +209,17 @@ Producing natural-language answers or summaries from evidence.
 _Avoid_: Recall, retrieval, embedding
 
 **Team**:
-A collaboration boundary for shared memory access.
+A collaboration boundary for shared memory access and member communication.
 _Avoid_: Operator, customer, account
+
+**Team Chat Thread**:
+A Team-scoped channel or direct-message stream for member-authored communication.
+_Avoid_: Conversation, Captured Session, Workspace, Share Grant
+
+**Team Chat Message**:
+A member-authored item in a Team Chat Thread. It is collaboration data, not
+Memory, unless a future explicit policy admits it to capture.
+_Avoid_: Memory Event, Conversation Item, Agent message
 
 **Team Membership**:
 A User's participation state and role within a Team.

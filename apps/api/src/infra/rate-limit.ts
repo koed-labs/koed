@@ -6,6 +6,7 @@ export type RateLimitName =
   | "memoryRead"
   | "memoryWrite"
   | "memoryRecall"
+  | "sourceJournal"
   | "projectionRebuild";
 
 export interface RateLimitStore {
@@ -153,6 +154,7 @@ export const createRateLimitHandlers = (
     memoryRead: rateLimit("memoryRead"),
     memoryWrite: rateLimit("memoryWrite"),
     memoryRecall: rateLimit("memoryRecall"),
+    sourceJournal: rateLimit("sourceJournal"),
     projectionRebuild: rateLimit("projectionRebuild")
   };
 };

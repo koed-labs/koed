@@ -26,13 +26,7 @@ import {
   type CodexConversationIdentityIssue,
   type CodexManagedConversationSourceContext
 } from "./codex-conversation-source-adapter.js";
-import {
-  buildRawTranscriptConversationItems,
-  effectiveCaptureContext,
-  parseTranscriptFileRecords,
-  type CaptureState,
-  type HookPayload
-} from "./capture-hook.js";
+import { ingestCodexTranscriptJournal } from "./codex-transcript-journal.js";
 import type { MemoryApiClient } from "./index.js";
 import {
   persistRawConversationItems,
@@ -43,7 +37,7 @@ import type { RawConversationItemRequest } from "./conversation-source-types.js"
 export interface CodexManagedConversationConfig {
   memoryClient: MemoryApiClient;
   appServer: CodexAppServerRunConfig;
-  workspaceId?: string;
+  projectId?: string;
   transcriptReadMaxBytes?: number;
   requestTimeoutMs?: number;
   interruptRequestTimeoutMs?: number;
@@ -66,6 +60,11 @@ export interface CodexManagedConversationConfig {
     transcriptPath: string;
     codexHome: string;
   };
+  fork?: {
+    parentThreadId: string;
+    sourceTranscriptPath: string;
+    codexHome: string;
+  };
 }
 
 export interface CodexManagedConversationStartResult {
@@ -73,6 +72,18 @@ export interface CodexManagedConversationStartResult {
   sessionId: string;
   transcriptPath: string;
   codexHome: string;
+}
+
+export interface CodexManagedConversationSealedSource {
+  threadId: string;
+  sessionId: string;
+  artifactId: string;
+  logicalSourceId: string;
+  sourceGenerationId: string;
+  originKeyId: string;
+  closureHash: string;
+  providerCursorOffset: number;
+  providerCursorLine: number;
 }
 
 export class CodexManagedConversationIdentityError extends Error {
@@ -105,71 +116,10 @@ const sleep = (ms: number): Promise<void> =>
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-const emptyCaptureState = (): CaptureState => ({
-  seen: {},
-  rawSeen: {},
-  transcriptOffsets: {}
-});
-
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-
-const managedTranscriptStateFilename = "koed-ingestion-state.json";
-
-const parseManagedTranscriptState = (value: unknown): CaptureState => {
-  const parsed = asRecord(value);
-  if (parsed.version !== 1) {
-    throw new Error("Managed transcript checkpoint has an unsupported version");
-  }
-  const offsets = asRecord(parsed.transcriptOffsets);
-  if (Object.keys(offsets).length > 2_000) {
-    throw new Error("Managed transcript checkpoint contains too many sources");
-  }
-  const transcriptOffsets: NonNullable<CaptureState["transcriptOffsets"]> = {};
-  for (const [key, rawCheckpoint] of Object.entries(offsets)) {
-    const checkpoint = asRecord(rawCheckpoint);
-    const offset = checkpoint.offset;
-    const lineCount = checkpoint.lineCount;
-    const size = checkpoint.size;
-    if (
-      !Number.isSafeInteger(offset) ||
-      Number(offset) < 0 ||
-      !Number.isSafeInteger(lineCount) ||
-      Number(lineCount) < 0 ||
-      !Number.isSafeInteger(size) ||
-      Number(size) < Number(offset)
-    ) {
-      throw new Error("Managed transcript checkpoint is malformed");
-    }
-    const lastEventTime = checkpoint.lastEventTime;
-    const activeTurnId = checkpoint.activeTurnId;
-    const assistantMessagePreference = checkpoint.assistantMessagePreference;
-    if (
-      (lastEventTime !== undefined &&
-        (typeof lastEventTime !== "string" ||
-          Number.isNaN(Date.parse(lastEventTime)))) ||
-      (activeTurnId !== undefined &&
-        (typeof activeTurnId !== "string" || activeTurnId.length > 512)) ||
-      (assistantMessagePreference !== undefined &&
-        assistantMessagePreference !== "response_item")
-    ) {
-      throw new Error("Managed transcript checkpoint metadata is malformed");
-    }
-    transcriptOffsets[key] = {
-      offset: Number(offset),
-      lineCount: Number(lineCount),
-      size: Number(size),
-      ...(typeof lastEventTime === "string" ? { lastEventTime } : {}),
-      ...(typeof activeTurnId === "string" ? { activeTurnId } : {}),
-      ...(assistantMessagePreference === "response_item"
-        ? { assistantMessagePreference }
-        : {})
-    };
-  }
-  return { seen: {}, rawSeen: {}, transcriptOffsets };
-};
 
 const positiveFiniteInteger = (value: number | undefined, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) && value > 0
@@ -242,6 +192,9 @@ const threadInfoFromStartedEvent = (
     ...(typeof thread.parentThreadId === "string"
       ? { parentThreadId: thread.parentThreadId }
       : {}),
+    ...(typeof thread.forkedFromId === "string"
+      ? { forkedFromId: thread.forkedFromId }
+      : {}),
     raw: thread
   };
 };
@@ -261,6 +214,7 @@ const mergeStartedThreadInfo = (
     for (const field of [
       "sessionId",
       "parentThreadId",
+      "forkedFromId",
       "path",
       "cwd"
     ] as const) {
@@ -286,7 +240,6 @@ const mergeStartedThreadInfo = (
 export class CodexManagedConversationSession {
   private client: CodexAppServerClient | null = null;
   private readonly bufferedEvents: CodexAppServerRawEvent[] = [];
-  private readonly transcriptState = emptyCaptureState();
   private readonly identityIssues: CodexConversationIdentityIssue[] = [];
   private readonly identityIssueKeys = new Set<string>();
   private readonly clientUserMessageIds = new Map<string, string>();
@@ -351,14 +304,16 @@ export class CodexManagedConversationSession {
             codexHome: this.managedHome
           }
         : this.config.resume;
+    const forkTarget = resumeTarget ? undefined : this.config.fork;
     let managedHome: string | null = null;
     let client: CodexAppServerClient | null = null;
     try {
-      managedHome = resumeTarget
-        ? path.resolve(resumeTarget.codexHome)
-        : prepareManagedCodexHome(this.config.appServer.env);
+      managedHome =
+        resumeTarget || forkTarget
+          ? path.resolve((resumeTarget ?? forkTarget)!.codexHome)
+          : prepareManagedCodexHome(this.config.appServer.env);
       this.managedHome ??= managedHome;
-      this.managedHomeDurable = Boolean(resumeTarget);
+      this.managedHomeDurable = Boolean(resumeTarget || forkTarget);
       if (
         this.managedHomeLease &&
         this.managedHomeLease.managedHome !== managedHome
@@ -371,13 +326,12 @@ export class CodexManagedConversationSession {
         managedHome,
         this.config.appServer.env
       );
-      if (resumeTarget) {
+      if (resumeTarget || forkTarget) {
         managedHome = reuseManagedCodexHome(
           managedHome,
           this.config.appServer.env
         );
       }
-      this.loadTranscriptState(managedHome);
       const managedEnv = {
         ...this.config.appServer.env,
         CODEX_HOME: managedHome,
@@ -429,12 +383,18 @@ export class CodexManagedConversationSession {
             resumeTarget.threadId,
             this.config.appServer
           )
-        : await client.startThread(this.config.appServer, {
-            ephemeral: false,
-            historyMode: "legacy",
-            threadSource: "user",
-            minimalContext: false
-          });
+        : forkTarget
+          ? await client.forkThread(
+              forkTarget.parentThreadId,
+              forkTarget.sourceTranscriptPath,
+              this.config.appServer
+            )
+          : await client.startThread(this.config.appServer, {
+              ephemeral: false,
+              historyMode: "legacy",
+              threadSource: "user",
+              minimalContext: false
+            });
       await client.flushRawEventHandler();
       thread = mergeStartedThreadInfo(thread, this.bufferedEvents);
       if (!thread.path) {
@@ -454,16 +414,23 @@ export class CodexManagedConversationSession {
           );
         }
       }
+      if (
+        forkTarget &&
+        (thread.id === forkTarget.parentThreadId ||
+          thread.forkedFromId !== forkTarget.parentThreadId ||
+          thread.path === forkTarget.sourceTranscriptPath)
+      ) {
+        throw new Error(
+          "Codex app-server did not preserve the requested fork lineage"
+        );
+      }
       const response = await this.config.memoryClient.createSession({
-        ...(this.config.workspaceId
-          ? { workspaceId: this.config.workspaceId }
-          : {}),
+        ...(this.config.projectId ? { projectId: this.config.projectId } : {}),
         externalSessionId: thread.id,
         sourceRuntime: "codex",
         captureMethod: "api",
         model: this.config.appServer.model,
         cwd: thread.cwd ?? this.config.appServer.cwd,
-        codexTranscriptPath: thread.path,
         idempotencyKey: `managed-codex-session:${thread.id}`,
         sourceHash: sha256({
           adapter: "codex-app-server-conversation-v1",
@@ -480,6 +447,11 @@ export class CodexManagedConversationSession {
             ? {
                 parentThreadId: thread.parentThreadId,
                 parentExternalSessionId: thread.parentThreadId
+              }
+            : {}),
+          ...(thread.forkedFromId
+            ? {
+                forked_from_id: thread.forkedFromId
               }
             : {}),
           threadSource: thread.source,
@@ -528,7 +500,7 @@ export class CodexManagedConversationSession {
         );
       }
       this.started = true;
-      if (resumeTarget) {
+      if (resumeTarget || forkTarget) {
         await this.reconcileTranscript();
       }
       this.throwIdentityIssues();
@@ -574,10 +546,11 @@ export class CodexManagedConversationSession {
 
   async runTurn(
     prompt: string,
-    timeoutMs: number
+    timeoutMs: number,
+    clientUserMessageId?: string
   ): Promise<CodexAppServerRunResult> {
     const operation = this.turnQueue.then(() =>
-      this.runTurnSerialized(prompt, timeoutMs)
+      this.runTurnSerialized(prompt, timeoutMs, clientUserMessageId)
     );
     this.turnQueue = operation.then(
       () => undefined,
@@ -588,17 +561,21 @@ export class CodexManagedConversationSession {
 
   private async runTurnSerialized(
     prompt: string,
-    timeoutMs: number
+    timeoutMs: number,
+    requestedClientUserMessageId?: string
   ): Promise<CodexAppServerRunResult> {
     await this.start();
     const client = this.appServerClient();
     const thread = this.thread!;
     await client.flushRawEventHandler();
-    await this.reconcileTranscript();
+    if (thread.path && fs.existsSync(thread.path)) {
+      await this.reconcileTranscript();
+    }
     this.throwIdentityIssues();
 
     const rawEventStart = client.rawEventCount();
-    const clientUserMessageId = `koed-user-message:${randomUUID()}`;
+    const clientUserMessageId =
+      requestedClientUserMessageId ?? `koed-user-message:${randomUUID()}`;
     const effectiveTimeoutMs = positiveFiniteInteger(timeoutMs, 1);
     let timeout: NodeJS.Timeout | undefined;
     let result: CodexAppServerRunResult | undefined;
@@ -691,7 +668,7 @@ export class CodexManagedConversationSession {
     try {
       if (turnId) {
         await this.reconcileAndSealTurn(turnId, ingestionError === undefined);
-      } else {
+      } else if (thread.path && fs.existsSync(thread.path)) {
         await this.reconcileTranscript();
       }
     } catch (error) {
@@ -817,34 +794,62 @@ export class CodexManagedConversationSession {
         `Managed ${source.threadKind} thread ${source.thread.id} has no persisted rollout path`
       );
     }
+    if (
+      !fs.existsSync(source.thread.path) ||
+      fs.statSync(source.thread.path).size === 0
+    ) {
+      return 0;
+    }
     let persistedCount = 0;
-    let previousCheckpointOffset = -1;
     while (true) {
-      const parsed = parseTranscriptFileRecords({
+      const result = await ingestCodexTranscriptJournal({
+        client: this.config.memoryClient,
+        sourceSession: {
+          externalSessionId: source.thread.id,
+          sourceRuntime: "codex",
+          captureMethod: "api",
+          model: this.config.appServer.model,
+          cwd: source.thread.cwd ?? this.config.appServer.cwd,
+          idempotencyKey: `managed-codex-session:${source.thread.id}`,
+          sourceHash: sha256({
+            adapter: "codex-app-server-conversation-v1",
+            threadId: source.thread.id,
+            sessionId: source.thread.sessionId,
+            path: source.thread.path,
+            parentThreadId: source.parentThreadId
+          }),
+          metadata: {
+            managedConversation: true,
+            externalThreadId: source.thread.id,
+            sessionTreeId: source.thread.sessionId,
+            threadKind: source.threadKind,
+            ...(source.parentThreadId
+              ? {
+                  parentThreadId: source.parentThreadId,
+                  parentExternalSessionId: source.parentThreadId
+                }
+              : {}),
+            ...(source.parentSessionId
+              ? { parentSessionId: source.parentSessionId }
+              : {}),
+            threadSource: source.thread.source,
+            modelProvider: source.thread.modelProvider,
+            cliVersion: source.thread.cliVersion,
+            gitInfo: source.thread.gitInfo,
+            appServerProtocol: {
+              adapterVersion: "codex-app-server-conversation-v1",
+              schemaSha256: this.protocol?.schemaSha256
+            }
+          }
+        },
+        sourceSessionId: source.thread.id,
         transcriptPath: source.thread.path,
-        state: this.transcriptState,
-        stateScope: `managed:${source.thread.id}`,
-        maxBytes: this.config.transcriptReadMaxBytes ?? 1_000_000,
-        deferPageEndingAssistantEvent: true
-      });
-      if (parsed.records.length === 0 && !parsed.checkpoint) {
-        break;
-      }
-      const payload: HookPayload = {
-        session_id: source.thread.id,
-        transcript_path: source.thread.path,
-        cwd: source.thread.cwd ?? this.config.appServer.cwd,
-        hook_event_name: "ManagedReconciliation",
-        model: this.config.appServer.model
-      };
-      const items = buildRawTranscriptConversationItems({
-        records: parsed.records,
-        indexOffset: parsed.indexOffset,
-        sessionId: source.sessionId,
-        effectiveContext: effectiveCaptureContext(payload, {
+        context: {
           threadKind: source.threadKind,
           transcriptSessionId: source.thread.id,
+          parentThreadId: source.parentThreadId,
           transcriptMetadata: {
+            cwd: source.thread.cwd ?? this.config.appServer.cwd,
             ...(source.parentThreadId
               ? { parentThreadId: source.parentThreadId }
               : {}),
@@ -852,66 +857,40 @@ export class CodexManagedConversationSession {
               ? { parentSessionId: source.parentSessionId }
               : {})
           }
-        }),
-        transcriptPath: source.thread.path,
-        payload,
-        sourceTransport: "transcript",
-        preferStableResponseItems: true
-      });
-      const pageTerminalTurnIds = [
-        ...new Set(
-          items
-            .filter((item) => isTerminalItem(item))
-            .map(itemTurnId)
-            .filter((turnId): turnId is string => turnId !== null)
-        )
-      ];
-      if (items.length > 0) {
-        const persisted = await persistRawConversationItems(
-          this.config.memoryClient,
-          items,
-          `managed Codex transcript ${source.thread.id}`
-        );
-        this.rememberTerminalItems(items, source.sessionId);
-        persistedCount += persisted.length;
-      }
-      if (pageTerminalTurnIds.length > 0) {
-        if (releaseTerminalTurns) {
-          for (const turnId of pageTerminalTurnIds) {
-            await this.releaseTurnProjection(turnId, source.sessionId);
+        },
+        maxBytesPerBatch: this.config.transcriptReadMaxBytes ?? 1_000_000,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        preferStableResponseItems: true,
+        projectPersisted: async (persisted, items) => {
+          const pageTerminalTurnIds = [
+            ...new Set(
+              items
+                .filter((item) => isTerminalItem(item))
+                .map(itemTurnId)
+                .filter((turnId): turnId is string => turnId !== null)
+            )
+          ];
+          this.rememberTerminalItems(items, source.sessionId);
+          if (releaseTerminalTurns) {
+            for (const turnId of pageTerminalTurnIds) {
+              await this.releaseTurnProjection(turnId, source.sessionId);
+            }
           }
+          await projectRawConversationItems(
+            this.config.memoryClient,
+            persisted.filter((item) => !isTerminalItem(item)),
+            `managed Codex transcript ${source.thread.id}`
+          );
+          return releaseTerminalTurns || pageTerminalTurnIds.length === 0;
         }
-      }
-      if (parsed.checkpoint) {
-        this.transcriptState.transcriptOffsets ??= {};
-        this.transcriptState.transcriptOffsets[parsed.checkpoint.key] = {
-          offset: parsed.checkpoint.offset,
-          lineCount: parsed.checkpoint.lineCount,
-          size: parsed.checkpoint.size,
-          ...(parsed.checkpoint.lastEventTime
-            ? { lastEventTime: parsed.checkpoint.lastEventTime }
-            : {}),
-          ...(parsed.checkpoint.activeTurnId
-            ? { activeTurnId: parsed.checkpoint.activeTurnId }
-            : {}),
-          ...(parsed.checkpoint.assistantMessagePreference
-            ? {
-                assistantMessagePreference:
-                  parsed.checkpoint.assistantMessagePreference
-              }
-            : {})
-        };
-        if (this.terminalTurnSessions.size === 0) {
-          this.saveTranscriptState();
-        }
-        if (
-          parsed.checkpoint.offset >= parsed.checkpoint.size ||
-          parsed.checkpoint.offset <= previousCheckpointOffset
-        ) {
-          break;
-        }
-        previousCheckpointOffset = parsed.checkpoint.offset;
-      } else {
+      });
+      persistedCount += result.itemsPersisted;
+      if (
+        result.canonicalCursorOffset >= result.artifact.providerCursorOffset ||
+        !result.cursorAdvanced ||
+        result.recordsConsumed === 0
+      ) {
         break;
       }
     }
@@ -983,6 +962,19 @@ export class CodexManagedConversationSession {
           closeError = error;
         }
       }
+      if (
+        !closeError &&
+        this.thread?.path &&
+        this.sessionId &&
+        fs.existsSync(this.thread.path)
+      ) {
+        try {
+          await this.waitForStableTranscript(this.thread.path);
+          await this.reconcileTranscriptInternal(true);
+        } catch (error) {
+          reconcileError = error;
+        }
+      }
     } finally {
       this.removeManagedHome();
     }
@@ -991,6 +983,93 @@ export class CodexManagedConversationSession {
     if (error) {
       throw error;
     }
+  }
+
+  async quiesceAndSealSources(): Promise<
+    CodexManagedConversationSealedSource[]
+  > {
+    await this.closeAndWait();
+    const primary = this.startResult();
+    const sources: ManagedConversationSource[] = [
+      {
+        thread: primary.thread,
+        sessionId: primary.sessionId,
+        threadKind: "conversation"
+      },
+      ...this.childSources.values()
+    ];
+    const sealed: CodexManagedConversationSealedSource[] = [];
+    for (const source of sources) {
+      const lookup =
+        await this.config.memoryClient.lookupConversationSourceArtifact({
+          sourceKind: "codex",
+          externalSessionId: source.thread.id
+        });
+      const artifact = asRecord(lookup.artifact);
+      const artifactId = artifact.id;
+      const logicalSourceId = artifact.logicalSourceId;
+      const sourceGenerationId = artifact.sourceGenerationId;
+      const originKeyId = artifact.originKeyId;
+      const providerCursorOffset = artifact.providerCursorOffset;
+      const providerCursorLine = artifact.providerCursorLine;
+      if (
+        typeof artifactId !== "string" ||
+        typeof logicalSourceId !== "string" ||
+        typeof sourceGenerationId !== "string" ||
+        typeof originKeyId !== "string" ||
+        typeof providerCursorOffset !== "number" ||
+        typeof providerCursorLine !== "number"
+      ) {
+        throw new Error(
+          `Managed Conversation source ${source.thread.id} is incomplete`
+        );
+      }
+      const finalized =
+        artifact.lifecycle === "finalized" &&
+        typeof artifact.closureHash === "string"
+          ? lookup
+          : await this.config.memoryClient.finalizeConversationSourceArtifact(
+              artifactId,
+              {
+                expectedProviderOffset: providerCursorOffset,
+                expectedProviderLine: providerCursorLine
+              }
+            );
+      const finalizedArtifact = asRecord(finalized.artifact);
+      if (
+        finalizedArtifact.lifecycle !== "finalized" ||
+        typeof finalizedArtifact.closureHash !== "string"
+      ) {
+        throw new Error(
+          `Managed Conversation source ${source.thread.id} was not sealed`
+        );
+      }
+      sealed.push({
+        threadId: source.thread.id,
+        sessionId: source.sessionId,
+        artifactId,
+        logicalSourceId,
+        sourceGenerationId,
+        originKeyId,
+        closureHash: finalizedArtifact.closureHash,
+        providerCursorOffset,
+        providerCursorLine
+      });
+    }
+    return sealed;
+  }
+
+  private async waitForStableTranscript(transcriptPath: string): Promise<void> {
+    let prior = fs.statSync(transcriptPath);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(25);
+      const current = fs.statSync(transcriptPath);
+      if (current.size === prior.size && current.mtimeMs === prior.mtimeMs) {
+        return;
+      }
+      prior = current;
+    }
+    throw new Error("Managed Conversation transcript did not reach stable EOF");
   }
 
   private startResult(): CodexManagedConversationStartResult {
@@ -1008,57 +1087,6 @@ export class CodexManagedConversationSession {
       transcriptPath: this.thread.path,
       codexHome: this.managedHome
     };
-  }
-
-  private loadTranscriptState(managedHome: string): void {
-    const stateFile = path.join(managedHome, managedTranscriptStateFilename);
-    this.transcriptState.seen = {};
-    this.transcriptState.rawSeen = {};
-    this.transcriptState.transcriptOffsets = {};
-    if (!fs.existsSync(stateFile)) {
-      return;
-    }
-    let parsed: CaptureState;
-    try {
-      parsed = parseManagedTranscriptState(
-        JSON.parse(fs.readFileSync(stateFile, "utf8"))
-      );
-    } catch (error) {
-      throw new Error("Managed transcript checkpoint could not be loaded", {
-        cause: error
-      });
-    }
-    this.transcriptState.transcriptOffsets = parsed.transcriptOffsets;
-  }
-
-  private saveTranscriptState(): void {
-    if (!this.managedHome) {
-      throw new Error("Managed transcript checkpoint has no Codex home");
-    }
-    const stateFile = path.join(
-      this.managedHome,
-      managedTranscriptStateFilename
-    );
-    const tempFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(
-      tempFile,
-      JSON.stringify(
-        {
-          version: 1,
-          transcriptOffsets: this.transcriptState.transcriptOffsets ?? {}
-        },
-        null,
-        2
-      ),
-      { mode: 0o600 }
-    );
-    const descriptor = fs.openSync(tempFile, "r");
-    try {
-      fs.fsyncSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
-    }
-    fs.renameSync(tempFile, stateFile);
   }
 
   private appServerClient(): CodexAppServerClient {
@@ -1192,15 +1220,12 @@ export class CodexManagedConversationSession {
       );
     }
     const response = await this.config.memoryClient.createSession({
-      ...(this.config.workspaceId
-        ? { workspaceId: this.config.workspaceId }
-        : {}),
+      ...(this.config.projectId ? { projectId: this.config.projectId } : {}),
       externalSessionId: thread.id,
       sourceRuntime: "codex",
       captureMethod: "api",
       model: this.config.appServer.model,
       cwd: thread.cwd ?? this.config.appServer.cwd,
-      codexTranscriptPath: thread.path,
       idempotencyKey: `managed-codex-session:${thread.id}`,
       sourceHash: sha256({
         adapter: "codex-app-server-conversation-v1",
@@ -1332,9 +1357,6 @@ export class CodexManagedConversationSession {
     }
     this.terminalTurnSessions.delete(turnId);
     this.clientUserMessageIds.delete(turnId);
-    if (this.terminalTurnSessions.size === 0) {
-      this.saveTranscriptState();
-    }
   }
 
   private async releaseTerminalTurns(): Promise<void> {
@@ -1401,9 +1423,6 @@ export class CodexManagedConversationSession {
     this.childSources.clear();
     this.identityIssues.length = 0;
     this.identityIssueKeys.clear();
-    this.transcriptState.seen = {};
-    this.transcriptState.rawSeen = {};
-    this.transcriptState.transcriptOffsets = {};
   }
 
   private throwIdentityIssues(): void {

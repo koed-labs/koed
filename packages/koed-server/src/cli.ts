@@ -16,6 +16,7 @@ import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 import { restartKoedServer } from "./restart.js";
 import { startKoedServer } from "./start.js";
 import { stopKoedServer } from "./stop.js";
+import { runDesktopCollaborationBrokerProcess } from "./desktop-collaboration-broker.js";
 import {
   collectLocalModelStatus,
   installLocalModel,
@@ -41,6 +42,7 @@ import {
   refreshUpstreamBackendCapabilities,
   registerUpstreamBackend,
   removeUpstreamBackend,
+  setActiveUpstreamBackend,
   updateUpstreamBackendRoutePolicy,
   type UpstreamRoutePolicyUpdate
 } from "./upstream-registry.js";
@@ -56,7 +58,6 @@ import {
   getProjectMetadataForCwd,
   listProjectMetadata
 } from "./project-metadata.js";
-import { shareProjectCapturedSession } from "./team-project-sharing.js";
 import {
   cancelUpstreamEnrollment,
   disconnectUpstreamBackendEnrollment,
@@ -65,9 +66,10 @@ import {
   startUpstreamEnrollment
 } from "./upstream-enrollment.js";
 import {
-  ensureDeviceIdentity,
+  inspectDeviceIdentityStatus,
   rotateDeviceIdentity
 } from "./device-identity.js";
+import { runPersonalSyncCommand } from "./personal-sync.js";
 
 export const usageText = `Usage: koed-server <command> [options]
 
@@ -80,6 +82,21 @@ Commands:
   doctor --json          Print actionable setup/dependency diagnostics
   identity status --json Print clone-safe deployment/device identity state
   identity rotate --json Create fresh device identity and invalidate local enrollment references
+  personal-sync status --json             Print redacted Personal Sync status
+  personal-sync group bootstrap --json    Create group and encrypted recovery kit
+  personal-sync recovery-kit create|verify --json
+  personal-sync join request|challenge|complete --json
+  personal-sync active-device approve|refresh --json
+  personal-sync recovery approve|guidance --json
+  personal-sync policy enable|pause|resume --json
+  personal-sync start --future-only --json
+  personal-sync device list|revoke --json
+  personal-sync credential status --json
+  personal-sync key-epoch status --json
+  personal-sync replica status --json
+  personal-sync retry --json
+  personal-sync local-replica remove --json
+  personal-sync conflict resolve --json
   setup codex --json     Configure the supported Codex integration
   repair codex --json    Rewrite Codex integration for the active local API
   models status --json   Print bundled local model install state
@@ -94,6 +111,7 @@ Commands:
   upstream register --json Register or update an upstream backend
   upstream refresh --json Refresh cached upstream capabilities
   upstream policy --json  Update explicit upstream route-policy families
+  upstream activate --json Select the registered upstream used for remote work
   upstream remove --json Remove an upstream backend
   upstream enroll start --json Start local upstream enrollment orchestration
   upstream enroll status --json Print local upstream enrollment state
@@ -107,7 +125,6 @@ Commands:
   team workspace list --json List local Project to Team Workspace links
   team workspace show --json Show the Team Workspace link for a Project root
   team workspace remove --json Remove the Team Workspace link for a Project root
-  team capture share-latest --json Share latest/selected Captured Session into linked Team Workspace
 
 Runtime providers:
   --provider homebrew       Use Homebrew-backed runtime assets (default)
@@ -127,7 +144,7 @@ Environment:
 export interface KoedServerCliDependencies {
   collectStatus?: typeof collectKoedServerStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
-  inspectDeviceIdentity?: typeof ensureDeviceIdentity;
+  inspectDeviceIdentity?: typeof inspectDeviceIdentityStatus;
   rotateDeviceIdentity?: typeof rotateDeviceIdentity;
   invalidateUpstreamEnrollmentReferences?: typeof invalidateUpstreamEnrollmentReferences;
   start?: typeof startKoedServer;
@@ -150,6 +167,7 @@ export interface KoedServerCliDependencies {
   registerUpstream?: typeof registerUpstreamBackend;
   refreshUpstream?: typeof refreshUpstreamBackendCapabilities;
   updateUpstreamPolicy?: typeof updateUpstreamBackendRoutePolicy;
+  activateUpstream?: typeof setActiveUpstreamBackend;
   removeUpstream?: typeof removeUpstreamBackend;
   startUpstreamEnroll?: typeof startUpstreamEnrollment;
   getUpstreamEnrollStatus?: typeof getUpstreamEnrollmentStatus;
@@ -163,7 +181,7 @@ export interface KoedServerCliDependencies {
   listProjectMetadata?: typeof listProjectMetadata;
   getProjectMetadataForCwd?: typeof getProjectMetadataForCwd;
   forgetProjectMetadata?: typeof forgetProjectMetadata;
-  shareProjectCapturedSession?: typeof shareProjectCapturedSession;
+  runPersonalSync?: typeof runPersonalSyncCommand;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
@@ -361,10 +379,12 @@ const routePolicyFlags: Array<{
   key: keyof UpstreamRoutePolicyUpdate;
 }> = [
   { flag: "--personal-memory-read", key: "personalMemoryRead" },
+  { flag: "--personal-collaboration", key: "personalCollaboration" },
   { flag: "--team-workspace-read", key: "teamWorkspaceRead" },
   { flag: "--share-grant-management", key: "shareGrantManagement" },
   { flag: "--capture-writes", key: "captureWrites" },
   { flag: "--sync", key: "sync" },
+  { flag: "--managed-execution", key: "managedExecution" },
   { flag: "--admin", key: "admin" }
 ];
 
@@ -386,7 +406,7 @@ export const runKoedServerCli = async (
   {
     collectStatus = collectKoedServerStatus,
     collectDoctor = collectKoedServerDoctor,
-    inspectDeviceIdentity = ensureDeviceIdentity,
+    inspectDeviceIdentity = inspectDeviceIdentityStatus,
     rotateDeviceIdentity: rotateIdentity = rotateDeviceIdentity,
     invalidateUpstreamEnrollmentReferences:
       invalidateEnrollmentReferences = invalidateUpstreamEnrollmentReferences,
@@ -411,6 +431,7 @@ export const runKoedServerCli = async (
     registerUpstream = registerUpstreamBackend,
     refreshUpstream = refreshUpstreamBackendCapabilities,
     updateUpstreamPolicy = updateUpstreamBackendRoutePolicy,
+    activateUpstream = setActiveUpstreamBackend,
     removeUpstream = removeUpstreamBackend,
     startUpstreamEnroll = startUpstreamEnrollment,
     getUpstreamEnrollStatus = getUpstreamEnrollmentStatus,
@@ -427,8 +448,7 @@ export const runKoedServerCli = async (
     listProjectMetadata: listProjects = listProjectMetadata,
     getProjectMetadataForCwd: getProjectForCwd = getProjectMetadataForCwd,
     forgetProjectMetadata: forgetProject = forgetProjectMetadata,
-    shareProjectCapturedSession:
-      shareProjectSession = shareProjectCapturedSession,
+    runPersonalSync = runPersonalSyncCommand,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -490,6 +510,21 @@ export const runKoedServerCli = async (
         stdout.write(`${identity.health}\n`);
       }
       return identity.remoteOperationsAllowed ? 0 : 1;
+    }
+
+    if (command === "personal-sync") {
+      const paths = resolvePaths();
+      const result = await runPersonalSync(
+        args.slice(1).filter((arg) => arg !== "--json"),
+        paths,
+        process.env
+      );
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
     }
 
     if (command === "start") {
@@ -750,6 +785,17 @@ export const runKoedServerCli = async (
       return result.ok ? 0 : 1;
     }
 
+    if (command === "upstream" && subcommand === "activate") {
+      const paths = resolvePaths();
+      const result = activateUpstream(paths, requireFlagValue(args, "--id"));
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
     if (command === "upstream" && subcommand === "remove") {
       const paths = resolvePaths();
       const result = removeUpstream(paths, requireFlagValue(args, "--id"));
@@ -835,6 +881,11 @@ export const runKoedServerCli = async (
       return result.ok ? 0 : 1;
     }
 
+    if (command === "desktop" && subcommand === "collaboration-broker") {
+      await runDesktopCollaborationBrokerProcess();
+      return 0;
+    }
+
     if (command === "team" && subcommand === "workspace") {
       const teamWorkspaceCommand = args[2];
       const paths = resolvePaths();
@@ -867,30 +918,6 @@ export const runKoedServerCli = async (
           "team workspace command must be link, list, show, or remove."
         );
       }
-      if (wantsJson) {
-        printJson(stdout, result);
-      } else {
-        stdout.write(`${result.message}\n`);
-      }
-      return result.ok ? 0 : 1;
-    }
-
-    if (
-      command === "team" &&
-      subcommand === "capture" &&
-      args[2] === "share-latest"
-    ) {
-      const paths = resolvePaths();
-      const repoEnv = loadEnvironment(paths.repoRoot);
-      const result = await shareProjectSession(
-        paths,
-        {
-          projectRoot: flagValue(args, "--project-root") ?? process.cwd(),
-          sessionId: flagValue(args, "--session-id")
-        },
-        process.env,
-        repoEnv
-      );
       if (wantsJson) {
         printJson(stdout, result);
       } else {

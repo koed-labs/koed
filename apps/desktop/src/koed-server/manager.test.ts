@@ -1,9 +1,26 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import {
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  storeDesktopLocalCredential
+} from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
-import { createKoedEnvironment, createKoedServerManager } from "./manager.js";
+import {
+  createKoedEnvironment,
+  createKoedServerManager,
+  desktopCodexSetupCommand,
+  personalMemoryChangeFromSseFrame,
+  setupStartupReady,
+  setupServicesHealthy
+} from "./manager.js";
 
 type FakeChildProcess = EventEmitter & {
   killed: boolean;
@@ -20,6 +37,18 @@ const childProcess = (): FakeChildProcess => {
   return child;
 };
 
+const healthyLocalServiceStatus = () => ({
+  ok: true,
+  state: "healthy",
+  api: { state: "healthy" },
+  database: { state: "healthy" },
+  redis: { state: "healthy" },
+  workerQueues: { state: "healthy" },
+  embeddingService: { state: "healthy" },
+  explorer: { state: "healthy" },
+  apiToken: { state: "healthy" }
+});
+
 const waitFor = async (predicate: () => boolean): Promise<void> => {
   const deadline = Date.now() + 1_000;
   while (!predicate()) {
@@ -31,6 +60,165 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("allows a full status inspection to outlive the old ten-second budget", async () => {
+    let timeout: number | undefined;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, options, callback) => {
+        if (args[1] === "status") timeout = options.timeout;
+        callback(null, JSON.stringify(healthyLocalServiceStatus()), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.status!();
+
+    expect(timeout).toBe(30_000);
+  });
+
+  it("treats local services as ready before later setup stages finish", () => {
+    expect(
+      setupServicesHealthy({
+        ok: false,
+        state: "needs_attention",
+        api: { state: "healthy" },
+        database: { state: "healthy" },
+        redis: { state: "healthy" },
+        workerQueues: { state: "healthy" },
+        embeddingService: { state: "healthy" },
+        explorer: { state: "healthy" },
+        codex: { state: "needs_attention" },
+        lastVerification: { state: "not_configured" }
+      })
+    ).toBe(true);
+    expect(
+      setupServicesHealthy({
+        api: { state: "healthy" },
+        database: { state: "needs_attention" },
+        redis: { state: "healthy" },
+        workerQueues: { state: "healthy" },
+        embeddingService: { state: "healthy" },
+        explorer: { state: "healthy" }
+      })
+    ).toBe(false);
+  });
+
+  it("waits for every local service and the Desktop credential before setup advances", () => {
+    const starting = {
+      api: { state: "healthy" },
+      database: { state: "healthy" },
+      redis: { state: "healthy" },
+      workerQueues: { state: "starting" },
+      embeddingService: { state: "healthy" },
+      explorer: { state: "starting" },
+      apiToken: { state: "healthy" }
+    };
+    expect(setupStartupReady(starting)).toBe(false);
+    expect(
+      setupStartupReady({
+        ...starting,
+        workerQueues: { state: "healthy" },
+        explorer: { state: "healthy" }
+      })
+    ).toBe(true);
+    expect(
+      setupStartupReady({
+        ...starting,
+        workerQueues: { state: "healthy" },
+        explorer: { state: "healthy" },
+        apiToken: { state: "not_configured" }
+      })
+    ).toBe(false);
+  });
+
+  it("repairs Codex directly after Desktop provisions its scoped API Token", () => {
+    expect(
+      desktopCodexSetupCommand({
+        apiToken: { state: "healthy" },
+        codex: { state: "not_configured" }
+      })
+    ).toEqual(["repair", "codex"]);
+    expect(
+      desktopCodexSetupCommand({
+        apiToken: { state: "not_configured" },
+        codex: { state: "not_configured" }
+      })
+    ).toEqual(["setup", "codex"]);
+  });
+
+  it("accepts only bounded, valid Personal Memory graph changes", () => {
+    const valid =
+      "event: graph_update\n" +
+      `data: ${JSON.stringify({
+        eventRefs: [
+          {
+            id: "00000000-0000-4000-8000-000000000001",
+            projectId: "project-1",
+            threadId: "thread-1"
+          },
+          {
+            id: "00000000-0000-4000-8000-000000000001",
+            projectId: "project-1",
+            threadId: "thread-1"
+          }
+        ]
+      })}`;
+    expect(personalMemoryChangeFromSseFrame(valid)).toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000001",
+          projectId: "project-1",
+          threadId: "thread-1"
+        }
+      ]
+    });
+    expect(
+      personalMemoryChangeFromSseFrame(
+        `event: graph_update\ndata: ${JSON.stringify({
+          table: "memory_events",
+          operation: "INSERT",
+          id: "00000000-0000-4000-8000-000000000002",
+          projectId: "project-1",
+          threadId: "thread-1"
+        })}`
+      )
+    ).toMatchObject({
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000002",
+          projectId: "project-1",
+          threadId: "thread-1"
+        }
+      ]
+    });
+    expect(
+      personalMemoryChangeFromSseFrame("event: heartbeat\ndata: {}")
+    ).toBeNull();
+    expect(
+      personalMemoryChangeFromSseFrame("event: graph_update\ndata: not-json")
+    ).toBeNull();
+    expect(
+      personalMemoryChangeFromSseFrame(
+        `event: graph_update\ndata: ${JSON.stringify({
+          eventRefs: [
+            { id: "bad", projectId: "project-1", threadId: "thread-1" }
+          ]
+        })}`
+      )
+    ).toBeNull();
+  });
+
   it("adds KOED_REPO_ROOT without overriding explicit values", () => {
     expect(createKoedEnvironment("/repo", {})).toMatchObject({
       KOED_REPO_ROOT: "/repo"
@@ -55,11 +243,16 @@ describe("Koed server desktop manager", () => {
     const packagedEnvironment = createKoedEnvironment(
       "/repo",
       {},
-      { desktopManagedLocal: true, packagedResourcesPath: "/resources" }
+      {
+        desktopManagedLocal: true,
+        packagedDesktop: true,
+        packagedResourcesPath: "/resources"
+      }
     );
     expect(packagedEnvironment).toMatchObject({
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
+      KOED_TEAM_COLLABORATION_ENABLED: "true",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1",
       KOED_PACKAGED_DESKTOP: "1",
@@ -72,6 +265,7 @@ describe("Koed server desktop manager", () => {
         {
           KOED_RUNTIME_MODE: "external",
           KOED_DEPENDENCY_MODE: "external",
+          KOED_TEAM_COLLABORATION_ENABLED: "false",
           WORK_QUEUE_BACKEND: "bullmq"
         },
         { desktopManagedLocal: true }
@@ -79,8 +273,35 @@ describe("Koed server desktop manager", () => {
     ).toMatchObject({
       KOED_RUNTIME_MODE: "external",
       KOED_DEPENDENCY_MODE: "external",
+      KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "bullmq"
     });
+  });
+
+  it("gives source-checkout Desktop the local-edge defaults without packaged flags", () => {
+    const sourceEnvironment = createKoedEnvironment(
+      "/repo",
+      {},
+      { desktopManagedLocal: true }
+    );
+    expect(sourceEnvironment).toMatchObject({
+      KOED_REPO_ROOT: "/repo",
+      KOED_RUNTIME_MODE: "local-personal",
+      KOED_DEPENDENCY_MODE: "bundled-local",
+      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      WORK_QUEUE_BACKEND: "local",
+      KOED_AUTO_PORTS: "1"
+    });
+    expect(sourceEnvironment).not.toHaveProperty("KOED_PACKAGED_DESKTOP");
+    expect(sourceEnvironment).not.toHaveProperty(
+      "KOED_PACKAGED_RESOURCES_PATH"
+    );
+  });
+
+  it("does not enable Team collaboration for non-Desktop server environments", () => {
+    expect(createKoedEnvironment("/repo", {})).not.toHaveProperty(
+      "KOED_TEAM_COLLABORATION_ENABLED"
+    );
   });
 
   it("runs JSON koed-server commands", async () => {
@@ -88,7 +309,7 @@ describe("Koed server desktop manager", () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/packages/koed-server/dist/cli.js",
-      environment: {},
+      environment: { PDS_DESKTOP_SECRET_STORAGE: "native_os" },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/packages/koed-server/dist/cli.js", ...args],
@@ -105,7 +326,12 @@ describe("Koed server desktop manager", () => {
 
     await expect(manager.handlers.status!()).resolves.toMatchObject({
       ok: true,
-      state: "healthy"
+      state: "healthy",
+      personalDeviceSync: {
+        state: "healthy",
+        message:
+          "Secure device storage is available through the operating system."
+      }
     });
     expect(calls[0]).toEqual({
       command: "/node",
@@ -124,9 +350,116 @@ describe("Koed server desktop manager", () => {
         "--json"
       ]
     });
+
+    await expect(
+      manager.handlers.personal_sync_revoke!({
+        deviceId: "device_redacted",
+        groupId: "group_redacted"
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(calls.slice(2)).toEqual([
+      {
+        command: "/node",
+        args: [
+          "/repo/packages/koed-server/dist/cli.js",
+          "personal-sync",
+          "device",
+          "revoke",
+          "--group-id",
+          "group_redacted",
+          "--device-id",
+          "device_redacted",
+          "--json"
+        ]
+      }
+    ]);
   });
 
-  it("replaces an existing Explorer credential when forced after a 401", async () => {
+  it("runs redacted Personal Sync controls through main-process CLI", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: true, state: "paused" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.personal_sync_pause!({ groupId: "group_one" });
+    await manager.handlers.personal_sync_resume!({ groupId: "group_one" });
+    await manager.handlers.personal_sync_retry!({ groupId: "group_one" });
+    await manager.handlers.personal_sync_join_request!({
+      groupId: "group_one"
+    });
+    await manager.handlers.personal_sync_revoke!({
+      deviceId: "device_one",
+      groupId: "group_one"
+    });
+    expect(calls).toEqual([
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "policy",
+        "pause",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "policy",
+        "resume",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "retry",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "join",
+        "request",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "device",
+        "revoke",
+        "--group-id",
+        "group_one",
+        "--device-id",
+        "device_one",
+        "--json"
+      ]
+    ]);
+    expect(manager.handlers.personal_sync_revoke!({})).toEqual({
+      ok: false,
+      error: "deviceId is required."
+    });
+  });
+
+  it("retains the API Token in main and rereads supervisor rotation after a 401", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });
     writeFileSync(
@@ -134,6 +467,21 @@ describe("Koed server desktop manager", () => {
       JSON.stringify({ apiToken: "stale_token" })
     );
     const calls: string[][] = [];
+    const personalMemoryFetch = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () => {
+        writeFileSync(
+          resolve(koedHome, "config/explorer-token.json"),
+          JSON.stringify({ apiToken: "fresh_token" })
+        );
+        return new Response(null, { status: 401 });
+      })
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ projects: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -146,21 +494,408 @@ describe("Koed server desktop manager", () => {
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
-        callback(null, "Created Koed API token.\nToken: fresh_token\n", "");
+        if (args.includes("status")) {
+          callback(
+            null,
+            JSON.stringify({
+              ok: true,
+              api: { state: "healthy", url: "http://127.0.0.1:4170" }
+            }),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true }), "");
       },
       spawn: () => childProcess() as never,
-      openExternal: async () => undefined
+      openExternal: async () => undefined,
+      personalMemoryFetch
     });
 
     await expect(
-      manager.handlers.explorer_credential!({ force: true })
-    ).resolves.toMatchObject({ ok: true, apiToken: "fresh_token" });
-    expect(calls[0]).toContain("api-token:create");
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.list",
+        input: {}
+      })
+    ).resolves.toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.projects.list",
+      ok: true,
+      data: { projects: [] }
+    });
+    expect(manager.handlers).not.toHaveProperty("explorer_credential");
+    expect(calls.some((args) => args.includes("api-token:create"))).toBe(false);
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+    expect(
+      new Headers(personalMemoryFetch.mock.calls[0]?.[1]?.headers).get(
+        "authorization"
+      )
+    ).toBe("Bearer stale_token");
+    expect(
+      new Headers(personalMemoryFetch.mock.calls[1]?.[1]?.headers).get(
+        "authorization"
+      )
+    ).toBe("Bearer fresh_token");
+    expect(JSON.stringify(personalMemoryFetch.mock.results)).not.toContain(
+      "fresh_token"
+    );
     expect(
       JSON.parse(
         readFileSync(resolve(koedHome, "config/explorer-token.json"), "utf8")
       )
     ).toMatchObject({ apiToken: "fresh_token" });
+  });
+
+  it("streams authenticated Personal Memory changes until the window aborts", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    const frame =
+      "event: graph_update\n" +
+      `data: ${JSON.stringify({
+        eventRefs: [
+          {
+            id: "00000000-0000-4000-8000-000000000001",
+            projectId: "project-1",
+            threadId: "thread-1"
+          }
+        ]
+      })}\n\n`;
+    const personalMemoryFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(frame));
+          }
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "text/event-stream" }
+        }
+      )
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? {
+                  ok: true,
+                  api: {
+                    state: "healthy",
+                    url: "http://127.0.0.1:4170"
+                  }
+                }
+              : { ok: true }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    const controller = new AbortController();
+    const listener = vi.fn(() => controller.abort());
+
+    await manager.subscribePersonalMemory(listener, controller.signal);
+
+    expect(listener).toHaveBeenCalledWith({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000001",
+          projectId: "project-1",
+          threadId: "thread-1"
+        }
+      ]
+    });
+    expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.1:4170/v1/memory/graph/stream"
+    );
+    expect(
+      new Headers(personalMemoryFetch.mock.calls[0]?.[1]?.headers).get(
+        "authorization"
+      )
+    ).toBe("Bearer personal_token");
+  });
+
+  it("retains the verified local API origin across Personal Memory requests", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    let statusCalls = 0;
+    const personalMemoryFetch = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ projects: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("status")) {
+          statusCalls += 1;
+          callback(
+            null,
+            JSON.stringify(
+              statusCalls === 1
+                ? {
+                    ok: true,
+                    api: {
+                      state: "healthy",
+                      url: "http://127.0.0.1:4170"
+                    }
+                  }
+                : { ok: false, state: "needs_attention" }
+            ),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    const request = {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.projects.list" as const,
+      input: {}
+    } as const;
+
+    await expect(manager.personalMemory(request)).resolves.toMatchObject({
+      ok: true
+    });
+    await expect(manager.personalMemory(request)).resolves.toMatchObject({
+      ok: true
+    });
+
+    expect(statusCalls).toBe(1);
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rediscovers the local API origin after a request failure", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    let statusCalls = 0;
+    const personalMemoryFetch = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error("stale local origin"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ projects: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("status")) {
+          statusCalls += 1;
+          callback(
+            null,
+            JSON.stringify({
+              ok: true,
+              api: {
+                state: "healthy",
+                url: `http://127.0.0.1:${statusCalls === 1 ? 4170 : 4180}`
+              }
+            }),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.list",
+        input: {}
+      })
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(statusCalls).toBe(2);
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+    expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toContain(":4170/");
+    expect(String(personalMemoryFetch.mock.calls[1]?.[0])).toContain(":4180/");
+  });
+
+  it("rejects a non-loopback API authority before any Personal Memory fetch", async () => {
+    const personalMemoryFetch = vi.fn<typeof fetch>();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "https://remote.example.test" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.list",
+        input: {}
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "not_ready" }
+    });
+    expect(personalMemoryFetch).not.toHaveBeenCalled();
+  });
+
+  it("derives the exact assignment body from the main-owned Project graph", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "main_only_token" })
+    );
+    const personalMemoryFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            projects: [
+              {
+                id: "project-2",
+                name: "Project Two",
+                path: "/work/project-two",
+                eventCount: 0,
+                threads: [],
+                ignoredRemoteAuthority: "https://remote.example.test"
+              }
+            ]
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            session: { project: { id: "project-2" }, apiToken: "must-strip" }
+          })
+        )
+      );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://localhost:4170" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+
+    const result = await manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.assign_project",
+      input: { action: "move", sessionId, targetProjectId: "project-2" }
+    });
+
+    expect(result).toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.assign_project",
+      ok: true,
+      data: { projectId: "project-2" }
+    });
+    expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toBe(
+      "http://localhost:4170/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false"
+    );
+    expect(String(personalMemoryFetch.mock.calls[1]?.[0])).toBe(
+      `http://localhost:4170/v1/memory/graph/sessions/${sessionId}/project`
+    );
+    expect(
+      JSON.parse(String(personalMemoryFetch.mock.calls[1]?.[1]?.body))
+    ).toEqual({
+      action: "move",
+      project: {
+        id: "project-2",
+        name: "Project Two",
+        path: "/work/project-two"
+      }
+    });
+    expect(JSON.stringify(result)).not.toMatch(
+      /main_only_token|must-strip|remote\.example/
+    );
   });
 
   it("reconciles approved upstream enrollment between ordinary status refreshes", async () => {
@@ -238,6 +973,177 @@ describe("Koed server desktop manager", () => {
       ],
       ["/repo/cli.js", "status", "--json"]
     ]);
+  });
+
+  it("reads Personal Device status through the loopback Desktop credential boundary", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-pds-status-"));
+    const ownerUserId = "00000000-0000-4000-8000-000000000001";
+    const desktop = storeDesktopLocalCredential(koedHome, {
+      ownerUserId,
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const requests: Array<{ authorization: string | null; url: string }> = [];
+    const closePairingServer = vi.fn(async () => undefined);
+    const startPairingServer = vi.fn(async () => ({
+      port: 3310,
+      createInvitation: vi.fn(),
+      waitForRequest: vi.fn(),
+      approve: vi.fn(),
+      waitForCompletion: vi.fn(),
+      cancel: vi.fn(),
+      inspect: vi.fn(() => []),
+      close: closePairingServer
+    }));
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args[1] === "stop") {
+          callback(null, JSON.stringify({ ok: true }), "");
+          return;
+        }
+        expect(args).toEqual(["/repo/cli.js", "status", "--json"]);
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:3300" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      startPairingServer,
+      personalMemoryFetch: (async (input, init) => {
+        const headers = new Headers(init?.headers);
+        requests.push({
+          authorization: headers.get("authorization"),
+          url: String(input)
+        });
+        return new Response(
+          JSON.stringify({
+            groups: [{ group_id: "group-one", members: [] }],
+            pairing_invitation_group_ids: ["group-one"]
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }) as typeof fetch
+    });
+    try {
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        ok: true,
+        groups: [{ group_id: "group-one" }]
+      });
+      expect(requests).toEqual([
+        {
+          authorization: desktop.authorization,
+          url: "http://127.0.0.1:3300/v1/personal-device-sync/groups"
+        }
+      ]);
+      expect(startPairingServer).toHaveBeenCalledTimes(1);
+    } finally {
+      await manager.stop();
+      expect(closePairingServer).toHaveBeenCalledTimes(1);
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("does not advertise or start an enrollment gateway on a joined replica", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-pds-replica-")
+    );
+    const desktop = storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "00000000-0000-4000-8000-000000000002",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const startPairingServer = vi.fn();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args[1] === "stop") {
+          callback(null, JSON.stringify({ ok: true }), "");
+          return;
+        }
+        expect(args).toEqual(["/repo/cli.js", "status", "--json"]);
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:3300" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      startPairingServer,
+      personalMemoryFetch: (async (_input, init) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          desktop.authorization
+        );
+        return new Response(
+          JSON.stringify({
+            groups: [{ group_id: "group-one", members: [] }],
+            pairing_invitation_group_ids: []
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }) as typeof fetch
+    });
+    try {
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        ok: true,
+        groups: [{ group_id: "group-one" }],
+        pairing_invitation_group_ids: []
+      });
+      expect(startPairingServer).not.toHaveBeenCalled();
+      await expect(
+        manager.handlers.personal_sync_pairing_create!({
+          groupId: "group-one"
+        })
+      ).resolves.toEqual({
+        ok: false,
+        state: "authority_host_required",
+        error:
+          "Create the pairing link on the device that originally set up this Personal Device Group."
+      });
+      expect(startPairingServer).not.toHaveBeenCalled();
+    } finally {
+      await manager.stop();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("returns status while one slow enrollment reconciliation remains in flight", async () => {
@@ -626,6 +1532,55 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("does not expose valid JSON package failure details to the renderer", async () => {
+    const secret = "secret-in-package-error-/Users/operator/private";
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("package")
+              ? {
+                  ok: false,
+                  state: "failed",
+                  message: secret,
+                  action: secret,
+                  errors: [secret]
+                }
+              : {
+                  ok: false,
+                  state: "starting",
+                  generatedAt: "2026-07-09T00:00:00.000Z",
+                  api: { state: "starting" }
+                }
+          ),
+          secret
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    const status = await manager.handlers.status!();
+    expect(status).toMatchObject({
+      serverPackage: {
+        state: "needs_attention",
+        message: "Standalone koed-server package needs attention.",
+        action: "Retry the local service check."
+      }
+    });
+    expect(JSON.stringify(status)).not.toContain(secret);
+  });
+
   it("rejects Team Backend URLs that could carry credentials or browser state", async () => {
     const execFile = vi.fn();
     const manager = createKoedServerManager({
@@ -738,6 +1693,10 @@ describe("Koed server desktop manager", () => {
         "--team-workspace-read",
         "enabled",
         "--share-grant-management",
+        "enabled",
+        "--sync",
+        "enabled",
+        "--admin",
         "enabled",
         "--json"
       ],
@@ -853,51 +1812,6 @@ describe("Koed server desktop manager", () => {
     expect(opened).toEqual([]);
   });
 
-  it("disconnects the first registered Team Backend when no explicit id is supplied", async () => {
-    const calls: string[][] = [];
-    const manager = createKoedServerManager({
-      repoRoot: "/repo",
-      cliPath: "/repo/cli.js",
-      environment: {},
-      createCliInvocation: (args) => ({
-        command: "/node",
-        args: ["/repo/cli.js", ...args],
-        env: { KOED_REPO_ROOT: "/repo" }
-      }),
-      existsSync: () => true,
-      execFile: (_command, args, _options, callback) => {
-        calls.push(args);
-        if (args.includes("status")) {
-          callback(
-            null,
-            JSON.stringify({
-              ok: true,
-              upstreamBackends: {
-                details: { backends: [{ id: "team-vps" }] }
-              }
-            }),
-            ""
-          );
-          return;
-        }
-        callback(null, JSON.stringify({ ok: true, state: "revoked" }), "");
-      },
-      spawn: () => childProcess() as never,
-      openExternal: async () => undefined
-    });
-
-    await expect(
-      manager.handlers.upstream_disconnect!()
-    ).resolves.toMatchObject({
-      ok: true,
-      state: "revoked"
-    });
-    expect(calls).toEqual([
-      ["/repo/cli.js", "status", "--json"],
-      ["/repo/cli.js", "upstream", "disconnect", "--id", "team-vps", "--json"]
-    ]);
-  });
-
   it("runs explicit stop through koed-server", async () => {
     const spawned = childProcess();
     const calls: string[][] = [];
@@ -930,9 +1844,10 @@ describe("Koed server desktop manager", () => {
               ? {
                   ok: false,
                   state: "needs_attention",
-                  api: { state: "needs_attention" }
+                  api: { state: "needs_attention" },
+                  apiToken: { state: "needs_attention" }
                 }
-              : { ok: true, state: "healthy", api: { state: "healthy" } }
+              : healthyLocalServiceStatus()
           ),
           ""
         );
@@ -966,14 +1881,17 @@ describe("Koed server desktop manager", () => {
       openExternal: async () => undefined
     });
 
-    await expect(manager.handlers.doctor!()).resolves.toMatchObject({
+    const doctor = await manager.handlers.doctor!();
+    expect(doctor).toMatchObject({
       ok: false,
       state: "not_configured",
       api: { state: "not_configured" },
       database: { state: "not_configured" },
       embeddingService: { state: "not_configured" },
-      details: { repoRoot: "/repo", cliPath: "/missing" }
+      error: "Koed's local service is unavailable."
     });
+    expect(JSON.stringify(doctor)).not.toContain("/repo");
+    expect(JSON.stringify(doctor)).not.toContain("/missing");
     await expect(manager.handlers.start!()).resolves.toMatchObject({
       ok: false,
       state: "not_configured",
@@ -1001,17 +1919,16 @@ describe("Koed server desktop manager", () => {
       openExternal: async () => undefined
     });
 
-    await expect(manager.handlers.status!()).resolves.toMatchObject({
+    const status = await manager.handlers.status!();
+    expect(status).toMatchObject({
       ok: false,
       state: "not_configured",
       database: { action: "Install runtime assets" },
       embeddingService: { action: "Install runtime assets" },
-      details: {
-        repoRoot: "/Applications/Koed.app/Contents/Resources",
-        cliPath:
-          "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js"
-      }
+      error: "Koed's local service is unavailable."
     });
+    expect(JSON.stringify(status)).not.toContain("/Applications");
+    expect(JSON.stringify(status)).not.toContain("app.asar");
   });
 
   it("returns renderable diagnostic status when status JSON cannot be parsed", async () => {
@@ -1032,15 +1949,17 @@ describe("Koed server desktop manager", () => {
       openExternal: async () => undefined
     });
 
-    await expect(manager.handlers.status!()).resolves.toMatchObject({
+    const status = await manager.handlers.status!();
+    expect(status).toMatchObject({
       ok: false,
       state: "needs_attention",
-      error: "status failed",
+      error: "Koed status could not be read.",
       api: { state: "needs_attention" },
       workerQueues: { state: "needs_attention" },
-      explorer: { state: "needs_attention" },
-      details: { stderr: "boom" }
+      explorer: { state: "needs_attention" }
     });
+    expect(JSON.stringify(status)).not.toContain("status failed");
+    expect(JSON.stringify(status)).not.toContain("boom");
   });
 
   it("reconnects without requesting koed-server start --daemon again once healthy", async () => {
@@ -1079,9 +1998,10 @@ describe("Koed server desktop manager", () => {
               ? {
                   ok: false,
                   state: "needs_attention",
-                  api: { state: "needs_attention" }
+                  api: { state: "needs_attention" },
+                  apiToken: { state: "needs_attention" }
                 }
-              : { ok: true, state: "healthy", api: { state: "healthy" } }
+              : healthyLocalServiceStatus()
           ),
           ""
         );
@@ -1097,6 +2017,107 @@ describe("Koed server desktop manager", () => {
       state: "healthy"
     });
     expect(calls.filter((args) => args.includes("--daemon"))).toHaveLength(1);
+  });
+
+  it("does not auto-start an unverified fresh Desktop install", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: "/home/test/.koed" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: "/home/test/.koed" }
+      }),
+      existsSync: (path) => path === "/repo/cli.js",
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: true }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.resume()).resolves.toMatchObject({
+      ok: true,
+      skipped: true,
+      state: "not_configured"
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("auto-starts a previously verified Desktop install", async () => {
+    const calls: string[][] = [];
+    let statusCalls = 0;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: "/home/test/.koed" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: "/home/test/.koed" }
+      }),
+      existsSync: (path) =>
+        path === "/repo/cli.js" ||
+        path === "/home/test/.koed/run/last-verification.json",
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        if (args.includes("--daemon")) {
+          callback(null, JSON.stringify({ ok: true, state: "starting" }), "");
+          return;
+        }
+        statusCalls += 1;
+        callback(
+          null,
+          JSON.stringify(
+            statusCalls === 1
+              ? {
+                  ok: false,
+                  state: "needs_attention",
+                  api: { state: "needs_attention" },
+                  apiToken: { state: "needs_attention" }
+                }
+              : healthyLocalServiceStatus()
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.resume()).resolves.toMatchObject({
+      state: "healthy"
+    });
+    expect(calls.filter((args) => args.includes("--daemon"))).toHaveLength(1);
+  });
+
+  it("opens a verified Desktop install into recovery when resume fails", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: "/home/test/.koed" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: "/home/test/.koed" }
+      }),
+      existsSync: (path) =>
+        path === "/repo/cli.js" ||
+        path === "/home/test/.koed/run/last-verification.json",
+      execFile: (_command, _args, _options, callback) => {
+        callback(new Error("runtime unavailable"), "", "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.resume()).resolves.toMatchObject({
+      ok: false,
+      state: "needs_attention"
+    });
   });
 
   it("reports koed-server daemon start failures without throwing", async () => {

@@ -56,6 +56,15 @@ describe("requireEnv", () => {
     );
   });
 
+  it("rejects generated-secret placeholders", () => {
+    expect(() =>
+      requireEnv(["COLLABORATION_REALTIME_CURSOR_SECRET"], {
+        COLLABORATION_REALTIME_CURSOR_SECRET:
+          "replace_with_generated_realtime_cursor_secret"
+      })
+    ).toThrow("COLLABORATION_REALTIME_CURSOR_SECRET");
+  });
+
   it("allows present required values", () => {
     expect(() =>
       requireEnv(["DATABASE_URL"], { DATABASE_URL: "postgres://db" })
@@ -136,7 +145,13 @@ describe("resolveSupportedEmbeddingModelConfig", () => {
   it("resolves supported embedding model metadata", () => {
     expect(resolveSupportedEmbeddingModelConfig("qwen3-0.6b")).toEqual({
       key: "qwen3-0.6b",
-      dimensions: 1024
+      dimensions: 1024,
+      defaultArtifactSha256:
+        "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2"
     });
   });
 

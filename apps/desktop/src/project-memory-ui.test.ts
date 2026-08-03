@@ -153,7 +153,10 @@ describe("project memory UI view model", () => {
   });
 
   it("preserves deliberate inactive-collapse clearing but reconciles missing Projects", () => {
-    const active = mergeProjectSources([graphProject()], [metadata()]);
+    const active = mergeProjectSources(
+      [graphProject()],
+      [metadata({ lastSeenAt: new Date().toISOString() })]
+    );
 
     expect(reconcileSelectedProjectId(active, null, true)).toBeNull();
     expect(

@@ -1,22 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   crossIdentitySyncDeterministicUuid,
-  crossIdentitySyncDigest,
-  CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
-  CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES,
-  fetchBoundedJsonObject,
-  generateRecipientKeyMaterial,
-  upstreamApiUrl,
-  toRecipientPublicKeyMaterial,
-  type RecipientPublicKeyMaterial
+  crossIdentitySyncDigest
 } from "@koed/shared";
 import type { DeviceCredentialAuthContext } from "@koed/db";
-import {
-  readLocalEdgeUpstreamRegistry,
-  resolveLocalEdgeRouteDecision,
-  upstreamAdvertisesCapability,
-  upstreamBackendById
-} from "../local-edge/upstream-routing.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   applyRemoteSyncRevocationSchema,
@@ -25,24 +12,24 @@ import {
   createUploadSessionSchema,
   relationshipParamsSchema,
   revokeSyncRelationshipSchema,
-  targetSyncRelationshipResponseSchema,
   targetSyncContextRequestSchema,
-  targetSyncContextResponseSchema,
   syncHeartbeatSchema,
   uploadChunkParamsSchema,
   uploadChunkSchema,
   uploadSessionParamsSchema
 } from "./schemas.js";
+import {
+  assertSourceSyncDeploymentProfile,
+  prepareSourceSyncRelationship
+} from "./source-relationship-service.js";
+import { resolveSyncRecipientContext } from "../sync/recipient-context.js";
 
 const assertSyncDeviceCredential = async (
   request: FastifyRequest,
   context: ApiRouteContext
 ): Promise<DeviceCredentialAuthContext> => {
   const auth = await context.auth.authenticateDeviceCredential(request);
-  if (
-    !auth.credential.operationFamilies.includes("sync") &&
-    !auth.credential.operationFamilies.includes("*")
-  ) {
+  if (!auth.credential.operationFamilies.includes("sync")) {
     throw Object.assign(
       new Error("Device credential is not allowed for sync"),
       { statusCode: 403 }
@@ -91,16 +78,6 @@ const verifiedLocalDeploymentId = (context: ApiRouteContext): string => {
   return identity.deploymentId;
 };
 
-const checkedJson = (response: Response, payload: Record<string, unknown>) => {
-  if (!response.ok) {
-    throw Object.assign(new Error("Remote sync operation failed"), {
-      statusCode: response.status >= 500 ? 424 : response.status,
-      remoteStatus: response.status
-    });
-  }
-  return payload;
-};
-
 const publicRelationship = (relationship: {
   id: string;
   logicalMemoryId: string;
@@ -143,48 +120,8 @@ export const registerCrossIdentitySyncRoutes = (
       });
     }
   };
-  const resolveTargetContext = async () => {
-    const protocolDeploymentId = verifiedLocalDeploymentId(context);
-    const rootProvider = context.encryption.envelopeEncryptionProvider;
-    if (
-      !rootProvider?.status ||
-      (await rootProvider.status()).status !== "available"
-    ) {
-      throw Object.assign(
-        new Error("Envelope encryption provider is required for sync"),
-        { statusCode: 503 }
-      );
-    }
-    const repository = repo();
-    const localDeployment = await repository.ensureLocalSyncDeployment({
-      profile: context.config.deploymentProfile,
-      protocolDeploymentId
-    });
-    let recipient = await repository.getActiveSyncRecipientKey(
-      localDeployment.id
-    );
-    if (!recipient) {
-      recipient = await repository.ensureSyncRecipientKey({
-        deploymentIdentityId: localDeployment.id,
-        material: await generateRecipientKeyMaterial(rootProvider, {
-          keyId: `sync-recipient:${localDeployment.protocolDeploymentId}`,
-          keyVersion: 1,
-          scope: {
-            deploymentId: localDeployment.protocolDeploymentId,
-            objectClass: "sync_recipient_key"
-          },
-          provenance: {
-            rowFamily: "sync_recipient_key",
-            sourceId: localDeployment.id
-          }
-        })
-      });
-    }
-    return {
-      localDeployment,
-      recipient
-    };
-  };
+  const resolveTargetContext = () =>
+    resolveSyncRecipientContext(context, targetProfiles);
 
   app.post(
     "/v1/cross-identity-sync/intake/context",
@@ -198,7 +135,7 @@ export const registerCrossIdentitySyncRoutes = (
         target_deployment_id: target.localDeployment.protocolDeploymentId,
         target_deployment_profile: target.localDeployment.profile,
         target_user_id: auth.user.id,
-        recipient_key: toRecipientPublicKeyMaterial(target.recipient)
+        recipient_key: target.publicRecipient
       };
     }
   );
@@ -207,267 +144,28 @@ export const registerCrossIdentitySyncRoutes = (
     "/v1/cross-identity-sync/relationships",
     { preHandler: memoryWrite },
     async (request) => {
-      if (
-        !["developer", "local_personal"].includes(
-          context.config.deploymentProfile
-        )
-      ) {
-        throw Object.assign(new Error("Sync source is unavailable"), {
-          statusCode: 404
-        });
-      }
+      assertSourceSyncDeploymentProfile(context.config.deploymentProfile);
       const user = await context.auth.authenticateSession(request);
       const input = createSourceSyncRelationshipSchema.parse(request.body);
-      const protocolDeploymentId = verifiedLocalDeploymentId(context);
-      const registry = readLocalEdgeUpstreamRegistry(
-        context.localEdge.upstreamBackendsPath
-      );
-      const backend = upstreamBackendById(registry, input.upstream_backend_id);
-      const authorization = backend
-        ? context.localEdge.resolveUpstreamAuthorization(backend)
-        : null;
-      const decision = resolveLocalEdgeRouteDecision({
-        operationFamily: "sync",
-        upstreamBackend: backend,
-        upstreamBackendId: input.upstream_backend_id,
-        upstreamCredentialAvailable: Boolean(authorization),
-        identityRemoteOperationsAllowed:
-          context.localEdge.remoteOperationsAllowed()
-      });
-      if (
-        decision.action !== "queued_sync_handoff" ||
-        !backend ||
-        !authorization ||
-        !upstreamAdvertisesCapability(backend, "memory.crossIdentitySync")
-      ) {
-        throw Object.assign(new Error(decision.reason), { statusCode: 424 });
-      }
-
-      const repository = repo();
-      const localDeployment = await repository.ensureLocalSyncDeployment({
-        profile: context.config.deploymentProfile,
-        protocolDeploymentId
-      });
-      const protocolIdentity = {
-        protocol: "koed.captured-session-sync/v1",
-        sourceDeploymentId: localDeployment.protocolDeploymentId,
-        sourceUserId: user.id,
-        originSessionId: input.session_id
-      };
-      const logicalMemoryId = crossIdentitySyncDeterministicUuid({
-        protocol: protocolIdentity.protocol,
-        sourceDeploymentId: protocolIdentity.sourceDeploymentId,
-        sourceUserId: protocolIdentity.sourceUserId,
-        originSessionId: protocolIdentity.originSessionId,
-        identity: "logical-memory"
-      });
-      const sourceReplicaId = crossIdentitySyncDeterministicUuid({
-        protocol: protocolIdentity.protocol,
-        sourceDeploymentId: protocolIdentity.sourceDeploymentId,
-        sourceUserId: protocolIdentity.sourceUserId,
-        originSessionId: protocolIdentity.originSessionId,
-        identity: "source-replica"
-      });
-      const session = await repository.getCapturedSessionSyncSource(
-        { userId: user.id },
-        input.session_id
-      );
-      if (!session) {
-        throw Object.assign(new Error("Captured Session not found"), {
-          statusCode: 404
-        });
-      }
-      const policyManifest = {
-        version: 1,
-        sourceBoundary: "captured_session",
-        transcriptIncluded: false,
-        sourceVectorsAccepted: false
-      };
-      const consentManifest = {
-        ...input.consent,
-        selectedSessionId: input.session_id
-      };
-      const requestBinding = {
-        logicalMemoryId,
-        sourceDeploymentId: localDeployment.protocolDeploymentId,
-        sourceUserId: user.id,
-        sourceReplicaId,
-        originSessionId: input.session_id,
-        policyDigest: crossIdentitySyncDigest(policyManifest),
-        consentDigest: crossIdentitySyncDigest(consentManifest)
-      };
-      const contextResult = await fetchBoundedJsonObject(
-        context.localEdge.fetch,
-        upstreamApiUrl(
-          backend.baseUrl,
-          "/v1/cross-identity-sync/intake/context"
-        ),
+      const activated = await prepareSourceSyncRelationship(
         {
-          method: "POST",
-          redirect: "error",
-          headers: {
-            accept: "application/json",
-            authorization,
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({})
+          deploymentProfile: context.config.deploymentProfile,
+          resolveVerifiedLocalDeploymentId: () =>
+            verifiedLocalDeploymentId(context),
+          upstreamBackendsPath: context.localEdge.upstreamBackendsPath,
+          fetch: context.localEdge.fetch,
+          resolveUpstreamAuthorization:
+            context.localEdge.resolveUpstreamAuthorization,
+          requireRepository: repo
         },
         {
-          timeoutMs: CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
-          maxBytes: CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES
-        }
-      );
-      const remoteContext = targetSyncContextResponseSchema.parse(
-        checkedJson(contextResult.response, contextResult.payload)
-      );
-      const relationshipId = crossIdentitySyncDeterministicUuid({
-        protocol: protocolIdentity.protocol,
-        sourceDeploymentId: protocolIdentity.sourceDeploymentId,
-        sourceUserId: protocolIdentity.sourceUserId,
-        originSessionId: protocolIdentity.originSessionId,
-        targetDeploymentId: remoteContext.target_deployment_id,
-        targetUserId: remoteContext.target_user_id,
-        identity: "relationship"
-      });
-      const targetReplicaId = crossIdentitySyncDeterministicUuid({
-        protocol: protocolIdentity.protocol,
-        relationshipId,
-        targetDeploymentId: remoteContext.target_deployment_id,
-        targetUserId: remoteContext.target_user_id,
-        identity: "target-replica"
-      });
-      const creationRequestHash = crossIdentitySyncDigest({
-        relationshipId,
-        ...requestBinding
-      });
-      if (
-        remoteContext.target_deployment_id ===
-          localDeployment.protocolDeploymentId ||
-        remoteContext.recipient_key.keyId !==
-          remoteContext.recipient_key.publicJwk.kid
-      ) {
-        throw Object.assign(
-          new Error("Remote sync identity binding is invalid"),
-          { statusCode: 424 }
-        );
-      }
-      const credentialReference = (
-        backend.credential as { reference?: string } | undefined
-      )?.reference;
-      if (!credentialReference) {
-        throw Object.assign(
-          new Error("Remote sync credential lineage is unavailable"),
-          { statusCode: 424 }
-        );
-      }
-      const remoteDeployment = await repository.upsertRemoteSyncDeployment({
-        protocolDeploymentId: remoteContext.target_deployment_id,
-        profile: remoteContext.target_deployment_profile,
-        baseUrl: backend.baseUrl,
-        upstreamBackendId: backend.id,
-        metadata: { credentialReference }
-      });
-      const remoteUser = await repository.upsertExternalSyncUserIdentity({
-        deploymentIdentityId: remoteDeployment.id,
-        externalSubjectId: remoteContext.target_user_id
-      });
-      await repository.linkExternalSyncUser(
-        { userId: user.id },
-        {
-          externalUserIdentityId: remoteUser.id,
-          proofKind: "device_enrollment",
-          proofReference: crossIdentitySyncDigest({
-            upstreamBackendId: backend.id,
-            credentialReference
-          })
-        }
-      );
-      const created = await repository.createSourceSyncRelationship(
-        { userId: user.id },
-        {
-          relationshipId,
-          logicalMemoryId,
-          localReplicaId: sourceReplicaId,
+          localUserId: user.id,
           sessionId: input.session_id,
-          localDeploymentIdentityId: localDeployment.id,
-          remoteDeploymentIdentityId: remoteDeployment.id,
-          remoteUserIdentityId: remoteUser.id,
-          remoteReplicaId: targetReplicaId,
+          upstreamBackendId: input.upstream_backend_id,
           idempotencyKey: input.idempotency_key,
-          creationRequestHash,
-          policyManifest: {
-            ...policyManifest,
-            recipientKey:
-              remoteContext.recipient_key as RecipientPublicKeyMaterial
-          },
-          consentManifest
+          consentedAt: input.consent.consented_at
         }
       );
-      if (!created) {
-        throw Object.assign(new Error("Captured Session not found"), {
-          statusCode: 404
-        });
-      }
-      const { response, payload } = await fetchBoundedJsonObject(
-        context.localEdge.fetch,
-        upstreamApiUrl(
-          backend.baseUrl,
-          "/v1/cross-identity-sync/intake/relationships"
-        ),
-        {
-          method: "POST",
-          redirect: "error",
-          headers: {
-            accept: "application/json",
-            authorization,
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({
-            relationship_id: relationshipId,
-            logical_memory_id: logicalMemoryId,
-            source_replica_id: sourceReplicaId,
-            source_deployment_id: localDeployment.protocolDeploymentId,
-            source_user_id: user.id,
-            origin_session_id: input.session_id,
-            idempotency_key: input.idempotency_key,
-            creation_request_hash: creationRequestHash,
-            policy_manifest: policyManifest,
-            consent_manifest: consentManifest,
-            session
-          })
-        },
-        {
-          timeoutMs: CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
-          maxBytes: CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES
-        }
-      );
-      const remote = targetSyncRelationshipResponseSchema.parse(
-        checkedJson(response, payload)
-      );
-      if (
-        remote.relationship.id !== relationshipId ||
-        remote.target_deployment_id !== remoteContext.target_deployment_id ||
-        remote.target_user_id !== remoteContext.target_user_id ||
-        remote.target_replica_id !== targetReplicaId ||
-        crossIdentitySyncDigest(remote.recipient_key) !==
-          crossIdentitySyncDigest(remoteContext.recipient_key)
-      ) {
-        throw Object.assign(
-          new Error("Remote sync identity binding is invalid"),
-          {
-            statusCode: 424
-          }
-        );
-      }
-      const activated = await repository.activateSourceSyncRelationship({
-        relationshipId,
-        localUserId: user.id
-      });
-      if (!activated) {
-        throw Object.assign(new Error("Sync relationship activation failed"), {
-          statusCode: 409
-        });
-      }
       return { relationship: publicRelationship(activated) };
     }
   );
@@ -557,7 +255,7 @@ export const registerCrossIdentitySyncRoutes = (
         target_deployment_profile: localDeployment.profile,
         target_user_id: auth.user.id,
         target_replica_id: created.localReplica.id,
-        recipient_key: toRecipientPublicKeyMaterial(target.recipient)
+        recipient_key: target.publicRecipient
       };
     }
   );

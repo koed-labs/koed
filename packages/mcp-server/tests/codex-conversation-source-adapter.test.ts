@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  buildRawTranscriptConversationItems,
-  effectiveCaptureContext
-} from "../src/capture-hook.js";
+import { buildCodexTranscriptConversationItems } from "../src/codex-transcript-parser.js";
 import {
   adaptCodexAppServerConversationEvent,
   codexCanonicalConversationItemKey
@@ -29,20 +26,11 @@ const adapt = (event: CodexAppServerRawEvent) =>
   });
 
 const transcriptItems = (records: unknown[]) =>
-  buildRawTranscriptConversationItems({
+  buildCodexTranscriptConversationItems({
     records,
     sessionId,
-    transcriptPath: "/tmp/managed-rollout.jsonl",
-    effectiveContext: effectiveCaptureContext({
-      hook_event_name: "Stop",
-      cwd: "/repo",
-      session_id: threadId
-    }),
-    payload: {
-      hook_event_name: "Stop",
-      cwd: "/repo",
-      session_id: threadId
-    },
+    sourceSessionId: threadId,
+    threadKind: "conversation",
     sourceTransport: "transcript",
     preferStableResponseItems: true
   });
@@ -250,7 +238,7 @@ describe("Codex managed conversation source adapter", () => {
 
   it("fails managed transcript reconciliation without a provider thread id", () => {
     expect(() =>
-      buildRawTranscriptConversationItems({
+      buildCodexTranscriptConversationItems({
         records: [
           {
             timestamp: observedAt,
@@ -268,12 +256,7 @@ describe("Codex managed conversation source adapter", () => {
           }
         ],
         sessionId,
-        transcriptPath: "/tmp/managed-rollout-without-thread.jsonl",
-        effectiveContext: effectiveCaptureContext({
-          hook_event_name: "Stop",
-          cwd: "/repo"
-        }),
-        payload: { hook_event_name: "Stop", cwd: "/repo" },
+        threadKind: "conversation",
         sourceTransport: "transcript",
         preferStableResponseItems: true
       })
@@ -503,7 +486,7 @@ describe("Codex managed conversation source adapter", () => {
   });
 
   it("uses provider thread, turn, and item identity for external response items", () => {
-    const externalItems = buildRawTranscriptConversationItems({
+    const externalItems = buildCodexTranscriptConversationItems({
       records: [
         {
           timestamp: observedAt,
@@ -555,17 +538,8 @@ describe("Codex managed conversation source adapter", () => {
         }
       ],
       sessionId,
-      transcriptPath: "/tmp/external-provider-items.jsonl",
-      effectiveContext: effectiveCaptureContext({
-        hook_event_name: "Stop",
-        cwd: "/repo",
-        session_id: threadId
-      }),
-      payload: {
-        hook_event_name: "Stop",
-        cwd: "/repo",
-        session_id: threadId
-      },
+      sourceSessionId: threadId,
+      threadKind: "conversation",
       sourceTransport: "transcript"
     }).filter((item) => item.sourceRecordType === "response_item");
 
@@ -603,7 +577,7 @@ describe("Codex managed conversation source adapter", () => {
       observationComponent: "tool_result"
     });
 
-    const changedContent = buildRawTranscriptConversationItems({
+    const changedContent = buildCodexTranscriptConversationItems({
       records: [
         {
           timestamp: "2026-07-11T10:01:00.000Z",
@@ -619,12 +593,8 @@ describe("Codex managed conversation source adapter", () => {
         }
       ],
       sessionId,
-      transcriptPath: "/tmp/moved-external-provider-items.jsonl",
-      effectiveContext: effectiveCaptureContext({
-        hook_event_name: "Stop",
-        session_id: threadId
-      }),
-      payload: { hook_event_name: "Stop", session_id: threadId },
+      sourceSessionId: threadId,
+      threadKind: "conversation",
       sourceTransport: "transcript"
     })[0]!;
 
@@ -635,7 +605,7 @@ describe("Codex managed conversation source adapter", () => {
   });
 
   it("keeps duplicate external event-message output as raw provenance", () => {
-    const items = buildRawTranscriptConversationItems({
+    const items = buildCodexTranscriptConversationItems({
       records: [
         {
           timestamp: "2026-07-11T09:59:55.000Z",
@@ -659,12 +629,8 @@ describe("Codex managed conversation source adapter", () => {
         }
       ],
       sessionId,
-      transcriptPath: "/tmp/external-duplicate-message.jsonl",
-      effectiveContext: effectiveCaptureContext({
-        hook_event_name: "Stop",
-        session_id: threadId
-      }),
-      payload: { hook_event_name: "Stop", session_id: threadId },
+      sourceSessionId: threadId,
+      threadKind: "conversation",
       sourceTransport: "transcript"
     });
     const eventMessage = items.find(

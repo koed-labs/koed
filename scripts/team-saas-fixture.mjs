@@ -4,6 +4,8 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import {
   FIXTURE_VERSION,
+  assertFixtureEnvironment,
+  createFixtureRuntime,
   resetFixture,
   seedFixture,
   validateFixture
@@ -22,6 +24,7 @@ Commands:
 
 Environment:
   DATABASE_URL must point at the Koed database to mutate or validate.
+  NODE_ENV must be test, or development with developer/omitted deployment profile.
 `;
 
 const command = process.argv[2];
@@ -32,6 +35,12 @@ if (!command || command === "--help" || command === "-h") {
 }
 
 loadRootEnv(process.cwd(), process.env);
+try {
+  assertFixtureEnvironment(process.env);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(2);
+}
 
 if (!process.env.DATABASE_URL?.trim()) {
   console.error("DATABASE_URL is required. Run pnpm env:setup or set it.");
@@ -57,6 +66,7 @@ if (command === "seed") {
 }
 
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 try {
   await client.connect();
@@ -65,14 +75,16 @@ try {
     await resetFixture(client);
     console.log(`Reset ${FIXTURE_VERSION} fixture rows.`);
   } else if (command === "seed") {
-    await seedFixture(client);
+    const runtime = await createFixtureRuntime(pool);
+    await seedFixture(client, runtime);
     console.log(`Seeded ${FIXTURE_VERSION} fixture rows.`);
-    const result = await validateFixture(client);
+    const result = await validateFixture(client, runtime);
     console.log(
-      `Validated ${result.users} users, ${result.workspaces} Workspaces, and ${result.memories} memories.`
+      `Validated ${result.users} users, ${result.workspaces} Workspaces, ${result.memories} memories, and ${result.threads} collaboration threads.`
     );
   } else if (command === "validate") {
-    const result = await validateFixture(client);
+    const runtime = await createFixtureRuntime(pool);
+    const result = await validateFixture(client, runtime);
     console.log(`Validated ${FIXTURE_VERSION}:`);
     for (const check of result.checks) {
       console.log(`- ${check}`);
@@ -87,4 +99,5 @@ try {
   process.exitCode = 1;
 } finally {
   await client.end().catch(() => {});
+  await pool.end().catch(() => {});
 }

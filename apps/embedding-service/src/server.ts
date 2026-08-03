@@ -1,6 +1,7 @@
 import {
   createServer,
   type IncomingMessage,
+  type Server,
   type ServerResponse
 } from "node:http";
 import {
@@ -301,4 +302,29 @@ export const createNodeHttpServer = (service: EmbeddingService) =>
         })
       );
     });
+  });
+
+export const listenNodeHttpServer = (
+  server: Server,
+  host: string,
+  port: number
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    try {
+      server.listen(port, host);
+    } catch (error) {
+      server.off("error", onError);
+      server.off("listening", onListening);
+      reject(error);
+    }
   });

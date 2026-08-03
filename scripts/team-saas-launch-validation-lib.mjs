@@ -27,19 +27,19 @@ export const launchValidationGates = [
   },
   {
     id: "shared-session-recall",
-    area: "Recall",
+    area: "Shared Memory",
     mode: "automated",
     description:
-      "Authorized Workspace members can see shared personal memories and hook message rows.",
+      "Authorized Workspace members can list Share Grants and read representation timeline/detail items without reading canonical owner-private rows.",
     launchCriterion:
-      "Captured Session is shared to a Workspace and recalled by another authorized member."
+      "Captured Session is shared to a Workspace and represented to another authorized member."
   },
   {
     id: "revoked-private-access",
     area: "Access control",
     mode: "automated",
     description:
-      "Revoked shares and private memories are excluded from Team-visible recall paths.",
+      "Revoked shares and private memories are excluded from Shared Memory grant and representation reads.",
     launchCriterion: "Unauthorized user cannot access hidden memory."
   },
   {
@@ -56,17 +56,18 @@ export const launchValidationGates = [
     area: "Retention",
     mode: "automated",
     description:
-      "Personal soft-deletion does not remove retained Team knowledge from authorized Workspace recall.",
-    launchCriterion: "Personal deletion and Team-retained recall."
+      "Personal soft-deletion does not remove retained Shared Memory representations from authorized Workspace reads.",
+    launchCriterion:
+      "Personal deletion and Team-retained representation access."
   },
   {
     id: "team-route-auth-boundaries",
     area: "Remote Team routing",
     mode: "automated",
     description:
-      "Team Workspace recall, graph, source expansion, and evidence routes require browser sessions or scoped device credentials; API Tokens remain personal-memory only.",
+      "Dedicated Shared Memory grant/list/timeline/detail routes require browser sessions or scoped device credentials; generic Team search, answer, graph, evidence, and expansion remain unavailable and fail closed.",
     launchCriterion:
-      "Remote Team recall respects session, device, and API-token route contracts."
+      "Remote Shared Memory representations respect session, device, API-token, and unavailable-surface contracts."
   },
   {
     id: "local-edge-fail-closed",
@@ -82,9 +83,9 @@ export const launchValidationGates = [
     area: "Access control",
     mode: "automated",
     description:
-      "Unauthorized memory is excluded during candidate selection, graph source expansion, and Evidence Bundle construction before any decrypt, rerank, or display step.",
+      "Unauthorized memory is excluded from Shared Memory grant listing and representation timeline/detail reads before decrypt or display.",
     launchCriterion:
-      "Revoked Workspace Access, revoked Share Grants, and private memory are absent from final results and provenance."
+      "Revoked Workspace Access, revoked Share Grants, and private memory are absent from Shared Memory representations."
   },
   {
     id: "encrypted-fixture-boundaries",
@@ -121,6 +122,15 @@ export const launchValidationGates = [
     launchCriterion: "Electron app connects to cloud backend."
   },
   {
+    id: "multi-device-personal-realtime",
+    area: "Electron",
+    mode: "automated",
+    description:
+      "Two enrolled Electron devices share remote Personal Notes and channels through durable sends and unsolicited realtime updates.",
+    launchCriterion:
+      "Personal messages and channel creation move in both directions without refresh or polling."
+  },
+  {
     id: "guided-client-setup",
     area: "Electron",
     mode: "manual",
@@ -134,8 +144,9 @@ export const launchValidationGates = [
     area: "End-to-end",
     mode: "manual",
     description:
-      "Capture a real session, share it to a Workspace, recall it from another member, and inspect evidence in the UI.",
-    launchCriterion: "User captures, shares, recalls, and inspects a session."
+      "Capture a real session, share it to a Workspace, then list and inspect its Shared Memory representation as another member.",
+    launchCriterion:
+      "User captures, shares, lists, and inspects a Shared Memory representation."
   },
   {
     id: "billing-seat-state",
@@ -201,6 +212,7 @@ const automatedLaunchTestEnvironmentKeys = [
   "KOED_OPS_OPERATOR_EMAILS",
   "KOED_OPS_REQUEST_METRICS_STATUS_PATH",
   "KOED_RUNBOOK_BASE_URL",
+  "KOED_TEAM_COLLABORATION_ENABLED",
   "MEMORY_API_TOKEN",
   "MANAGED_KMS_AUTH_TOKEN",
   "MANAGED_KMS_ENDPOINT_URL",
@@ -208,6 +220,12 @@ const automatedLaunchTestEnvironmentKeys = [
   "MANAGED_KMS_KEY_VERSION",
   "MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED",
   "NODE_ENV",
+  "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
+  "OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER",
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN",
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL",
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID",
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION",
   "POSTGRES_PASSWORD",
   "RATE_LIMIT_REDIS_URL",
   "RATE_LIMIT_STORE",
@@ -224,6 +242,21 @@ const automatedLaunchTestEnvironmentKeys = [
 
 export const automatedLaunchTestCommands = [
   {
+    id: "migration-acceptance",
+    command: "pnpm",
+    args: ["db:migrate:acceptance"]
+  },
+  {
+    id: "required-collaboration-suites",
+    command: "pnpm",
+    args: ["test:required-suites"]
+  },
+  {
+    id: "personal-device-sync-fixture",
+    command: "pnpm",
+    args: ["pds-fixture:validate"]
+  },
+  {
     id: "db-encrypted-tenant-boundaries",
     command: "pnpm",
     args: [
@@ -232,7 +265,6 @@ export const automatedLaunchTestCommands = [
       "exec",
       "vitest",
       "run",
-      "--passWithNoTests",
       "tests/repository.test.ts",
       "--testNamePattern",
       "encrypted|support overview|activation analytics|billing seats|Cross-Identity Sync|device credentials|Captured Session Share Grants|Team fixture boundaries|managed-cloud|plaintext lexical"
@@ -247,7 +279,6 @@ export const automatedLaunchTestCommands = [
       "exec",
       "vitest",
       "run",
-      "--passWithNoTests",
       "src/server.test.ts",
       "src/server/logging.test.ts",
       "src/server/route-identity.test.ts",
@@ -263,8 +294,16 @@ export const automatedLaunchTestCommands = [
       "scripts/hosted-backup-lib.test.mjs",
       "scripts/hosted-db-roles-lib.test.mjs",
       "scripts/hosted-capacity-lib.test.mjs",
+      "scripts/electron-cdp-lib.test.mjs",
+      "scripts/multi-device-profile-lib.test.mjs",
+      "scripts/multi-device-dogfood-lib.test.mjs",
       "scripts/team-saas-launch-validation-lib.test.mjs"
     ]
+  },
+  {
+    id: "desktop-electron-interactions",
+    command: "pnpm",
+    args: ["--filter", "@koed/desktop", "test:browser"]
   }
 ];
 
@@ -505,12 +544,16 @@ const fixtureDefaultNode = fixtureMemoryRows.find(
 
 export const defaultStagedRemoteOptions = (env = process.env) => ({
   baseUrl: env.KOED_LAUNCH_BASE_URL || env.MEMORY_API_URL || "",
+  browserOrigin: env.KOED_LAUNCH_BROWSER_ORIGIN || "",
   sessionCookie: env.KOED_LAUNCH_SESSION_COOKIE || "",
   deviceCredential: env.KOED_LAUNCH_DEVICE_CREDENTIAL || "",
   apiToken: env.KOED_LAUNCH_API_TOKEN || "",
   teamWorkspaceId:
     env.KOED_LAUNCH_TEAM_WORKSPACE_ID || fixtureWorkspaces.electron.id,
   teamNodeId: env.KOED_LAUNCH_TEAM_NODE_ID || fixtureDefaultNode?.nodeId || "",
+  teamId: fixtureTeam.id,
+  teamShareGrantId: fixtureDefaultNode?.shareGrantId || "",
+  teamRepresentation: fixtureDefaultNode?.representation || "memory_events",
   localEdgeBaseUrl: env.KOED_LAUNCH_LOCAL_EDGE_BASE_URL || "",
   localEdgeBackendId: env.KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID || ""
 });
@@ -590,6 +633,104 @@ const stagedProbe = async ({
   };
 };
 
+const stagedRoutePath = (path) =>
+  path.replaceAll(/\{([^}]+)\}/g, (_match, parameter) => {
+    if (parameter === "chunkIndex") return "0";
+    if (parameter === "representation") return "memory_events";
+    return randomUUID();
+  });
+
+const stagedApiTokenBoundaryRoutes = (openApi, deploymentProfile) => {
+  if (!openApi?.paths || typeof openApi.paths !== "object") {
+    throw new Error("Staged OpenAPI response does not contain route paths.");
+  }
+  const teamDomains = new Set([
+    "collaboration",
+    "high_risk",
+    "retention",
+    "shared_memory",
+    "team_memory"
+  ]);
+  const routes = [];
+  for (const [path, operations] of Object.entries(openApi.paths)) {
+    if (!operations || typeof operations !== "object") continue;
+    for (const [method, operation] of Object.entries(operations)) {
+      if (!new Set(["get", "post", "put", "patch", "delete"]).has(method)) {
+        continue;
+      }
+      if (!operation || typeof operation !== "object") continue;
+      const identity = operation["x-koed-identity"];
+      const domain = operation["x-koed-domain"];
+      const teamAuthority = operation["x-koed-team-authority"];
+      const deploymentModes = operation["x-koed-deployment-modes"];
+      if (
+        Array.isArray(deploymentModes) &&
+        !deploymentModes.includes(deploymentProfile)
+      ) {
+        continue;
+      }
+      const security = Array.isArray(operation.security)
+        ? operation.security
+        : [];
+      const acceptsBearer = security.some(
+        (entry) =>
+          entry &&
+          typeof entry === "object" &&
+          Object.hasOwn(entry, "bearerApiToken")
+      );
+      const relevant =
+        teamDomains.has(domain) ||
+        (typeof teamAuthority === "string" && teamAuthority !== "none");
+      if (
+        !relevant ||
+        acceptsBearer ||
+        identity === "public" ||
+        identity === "optional_session"
+      ) {
+        continue;
+      }
+      routes.push({
+        method: method.toUpperCase(),
+        path,
+        identity,
+        domain,
+        teamAuthority
+      });
+    }
+  }
+  return routes.sort((left, right) =>
+    `${left.path}:${left.method}`.localeCompare(`${right.path}:${right.method}`)
+  );
+};
+
+export const runStagedApiTokenBoundaryMatrix = async (
+  { baseUrl, apiToken, deploymentProfile, openApi, redactionSentinels = [] },
+  fetcher = fetch
+) => {
+  const routes = stagedApiTokenBoundaryRoutes(openApi, deploymentProfile);
+  if (!routes.length) {
+    throw new Error(
+      "Staged OpenAPI route inventory contains no Team API-token boundary routes."
+    );
+  }
+  const probes = [];
+  for (const route of routes) {
+    probes.push(
+      await stagedProbe({
+        fetcher,
+        baseUrl,
+        name: `api-token-denied:${route.method}:${route.path}`,
+        method: route.method,
+        path: stagedRoutePath(route.path),
+        headers: { authorization: `Bearer ${apiToken}` },
+        expect: [401, 403],
+        redactionSentinels
+      })
+    );
+  }
+  return { routes, probes };
+};
+
 export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
   const options = {
     ...defaultStagedRemoteOptions({}),
@@ -613,12 +754,20 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
   }
 
   const baseUrl = normalizeBaseUrl(options.baseUrl);
+  const browserOrigin = options.browserOrigin?.trim()
+    ? new URL(options.browserOrigin).origin
+    : new URL(baseUrl).origin;
   const localEdgeBaseUrl = options.localEdgeBaseUrl?.trim()
     ? normalizeBaseUrl(options.localEdgeBaseUrl)
     : "";
   const deviceAuthorization = normalizeDeviceAuthorization(
     options.deviceCredential
   );
+  const sessionHeaders = {
+    cookie: options.sessionCookie,
+    origin: browserOrigin,
+    "sec-fetch-site": "same-origin"
+  };
   const credentialSentinels = [
     options.sessionCookie,
     options.deviceCredential,
@@ -633,70 +782,116 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
     limit: 3,
     team_workspace_id: options.teamWorkspaceId
   };
+  const scopedGrantPath = `/v1/shared-memory/teams/${encodeURIComponent(options.teamId)}/workspaces/${encodeURIComponent(options.teamWorkspaceId)}/share-grants`;
   const results = [];
 
-  results.push(
-    await stagedProbe({
-      fetcher,
-      baseUrl,
-      name: "public-capabilities",
-      path: "/v1/capabilities",
-      redactionSentinels: credentialSentinels
-    })
-  );
+  const publicCapabilities = await stagedProbe({
+    fetcher,
+    baseUrl,
+    name: "public-capabilities",
+    path: "/v1/capabilities",
+    redactionSentinels: credentialSentinels
+  });
+  results.push(publicCapabilities);
   results.push(
     await stagedProbe({
       fetcher,
       baseUrl,
       name: "session-authenticated-capabilities",
       path: "/v1/capabilities/authenticated",
-      headers: { cookie: options.sessionCookie },
+      headers: sessionHeaders,
       redactionSentinels: credentialSentinels
     })
   );
+  for (const [actor, headers] of [
+    ["session", sessionHeaders],
+    ["device", { authorization: deviceAuthorization }]
+  ]) {
+    results.push(
+      await stagedProbe({
+        fetcher,
+        baseUrl,
+        name: `${actor}-shared-memory-grant-list`,
+        path: `${scopedGrantPath}?limit=100&offset=0`,
+        headers,
+        redactionSentinels: credentialSentinels
+      })
+    );
+  }
+  const representationQuery = `representation=${encodeURIComponent(options.teamRepresentation)}`;
+  const itemPath = `${scopedGrantPath}/${encodeURIComponent(options.teamShareGrantId)}/items?${representationQuery}`;
+  const sessionTimeline = await stagedProbe({
+    fetcher,
+    baseUrl,
+    name: "session-shared-memory-representation-timeline",
+    path: itemPath,
+    headers: sessionHeaders,
+    redactionSentinels: credentialSentinels
+  });
+  results.push(sessionTimeline);
   results.push(
     await stagedProbe({
       fetcher,
       baseUrl,
-      name: "session-team-answer",
-      method: "POST",
-      path: "/v1/memory/answer",
-      headers: { cookie: options.sessionCookie },
-      body: answerBody,
-      redactionSentinels: credentialSentinels
-    })
-  );
-  results.push(
-    await stagedProbe({
-      fetcher,
-      baseUrl,
-      name: "device-team-answer",
-      method: "POST",
-      path: "/v1/memory/answer",
+      name: "device-shared-memory-representation-timeline",
+      path: itemPath,
       headers: { authorization: deviceAuthorization },
-      body: answerBody,
       redactionSentinels: credentialSentinels
     })
   );
-  results.push(
-    await stagedProbe({
-      fetcher,
-      baseUrl,
-      name: "device-team-search",
-      method: "POST",
-      path: "/v1/memory/search",
-      headers: { authorization: deviceAuthorization },
-      body: answerBody,
-      redactionSentinels: credentialSentinels
-    })
-  );
+  const stagedSourceId = sessionTimeline.json?.items?.[0]?.sourceId;
+  if (typeof stagedSourceId !== "string" || !stagedSourceId) {
+    throw new Error(
+      "Shared Memory representation timeline did not return a detail source ID."
+    );
+  }
+  for (const [actor, headers] of [
+    ["session", sessionHeaders],
+    ["device", { authorization: deviceAuthorization }]
+  ]) {
+    results.push(
+      await stagedProbe({
+        fetcher,
+        baseUrl,
+        name: `${actor}-shared-memory-representation-detail`,
+        path: `${scopedGrantPath}/${encodeURIComponent(options.teamShareGrantId)}/items/${encodeURIComponent(stagedSourceId)}?${representationQuery}`,
+        headers,
+        redactionSentinels: credentialSentinels
+      })
+    );
+  }
+
+  for (const [actor, headers] of [
+    ["session", sessionHeaders],
+    ["device", { authorization: deviceAuthorization }]
+  ]) {
+    for (const [surface, path] of [
+      ["answer", "/v1/memory/answer"],
+      ["search", "/v1/memory/search"]
+    ]) {
+      results.push(
+        await stagedProbe({
+          fetcher,
+          baseUrl,
+          name: `${actor}-generic-team-${surface}-unavailable`,
+          method: "POST",
+          path,
+          headers,
+          body: answerBody,
+          expect: 404,
+          redactionSentinels: credentialSentinels
+        })
+      );
+    }
+  }
   results.push(
     await stagedProbe({
       fetcher,
       baseUrl,
       name: "session-team-graph-nodes",
       path: `/v1/memory/graph/nodes?teamWorkspaceId=${encodeURIComponent(options.teamWorkspaceId)}`,
-      headers: { cookie: options.sessionCookie },
+      headers: sessionHeaders,
+      expect: 404,
       redactionSentinels: credentialSentinels
     })
   );
@@ -706,7 +901,8 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
       baseUrl,
       name: "session-team-graph-events",
       path: `/v1/memory/graph/events?teamWorkspaceId=${encodeURIComponent(options.teamWorkspaceId)}`,
-      headers: { cookie: options.sessionCookie },
+      headers: sessionHeaders,
+      expect: 404,
       redactionSentinels: credentialSentinels
     })
   );
@@ -717,6 +913,7 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
       name: "device-team-graph-nodes",
       path: `/v1/memory/graph/nodes?teamWorkspaceId=${encodeURIComponent(options.teamWorkspaceId)}`,
       headers: { authorization: deviceAuthorization },
+      expect: 404,
       redactionSentinels: credentialSentinels
     })
   );
@@ -727,6 +924,7 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
       name: "device-team-graph-events",
       path: `/v1/memory/graph/events?teamWorkspaceId=${encodeURIComponent(options.teamWorkspaceId)}`,
       headers: { authorization: deviceAuthorization },
+      expect: 404,
       redactionSentinels: credentialSentinels
     })
   );
@@ -739,7 +937,7 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         name: "device-team-node-detail",
         path: `/v1/memory/graph/nodes/${encodeURIComponent(options.teamNodeId)}?teamWorkspaceId=${encodeURIComponent(options.teamWorkspaceId)}`,
         headers: { authorization: deviceAuthorization },
-        expect: [200, 404],
+        expect: 404,
         redactionSentinels: credentialSentinels
       })
     );
@@ -749,8 +947,8 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         baseUrl,
         name: "session-team-node-detail",
         path: `/v1/memory/graph/nodes/${encodeURIComponent(options.teamNodeId)}?teamWorkspaceId=${encodeURIComponent(options.teamWorkspaceId)}`,
-        headers: { cookie: options.sessionCookie },
-        expect: [200, 404],
+        headers: sessionHeaders,
+        expect: 404,
         redactionSentinels: credentialSentinels
       })
     );
@@ -761,7 +959,7 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         name: "device-team-node-expand",
         path: `/v1/memory/nodes/${encodeURIComponent(options.teamNodeId)}/expand?team_workspace_id=${encodeURIComponent(options.teamWorkspaceId)}`,
         headers: { authorization: deviceAuthorization },
-        expect: [200, 404],
+        expect: 404,
         redactionSentinels: credentialSentinels
       })
     );
@@ -771,8 +969,8 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         baseUrl,
         name: "session-team-node-expand",
         path: `/v1/memory/nodes/${encodeURIComponent(options.teamNodeId)}/expand?team_workspace_id=${encodeURIComponent(options.teamWorkspaceId)}`,
-        headers: { cookie: options.sessionCookie },
-        expect: [200, 404],
+        headers: sessionHeaders,
+        expect: 404,
         redactionSentinels: credentialSentinels
       })
     );
@@ -803,6 +1001,31 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         redactionSentinels: credentialSentinels
       })
     );
+    const openApi = await stagedProbe({
+      fetcher,
+      baseUrl,
+      name: "openapi-route-inventory",
+      path: "/openapi.json",
+      redactionSentinels: credentialSentinels
+    });
+    results.push(openApi);
+    const deploymentProfile = publicCapabilities.json?.deployment?.profile;
+    if (typeof deploymentProfile !== "string") {
+      throw new Error(
+        "Staged capability response does not identify the deployment profile."
+      );
+    }
+    const apiTokenMatrix = await runStagedApiTokenBoundaryMatrix(
+      {
+        baseUrl,
+        apiToken: options.apiToken,
+        deploymentProfile,
+        openApi: openApi.json,
+        redactionSentinels: credentialSentinels
+      },
+      fetcher
+    );
+    results.push(...apiTokenMatrix.probes);
   }
 
   if (localEdgeBaseUrl && options.localEdgeBackendId?.trim()) {
@@ -810,28 +1033,25 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
       await stagedProbe({
         fetcher,
         baseUrl: localEdgeBaseUrl,
-        name: "local-edge-team-answer-proxy",
+        name: "local-edge-generic-team-answer-unavailable",
         method: "POST",
-        path: "/v1/local-edge/upstream-operations",
+        path: "/v1/local-edge/team-memory/answer",
         headers: { authorization: deviceAuthorization },
         body: {
-          operation_family: "team_workspace_read",
           upstream_backend_id: options.localEdgeBackendId,
-          requested_mode: "live_upstream_proxy",
-          method: "POST",
-          path: "/v1/memory/answer",
-          body: answerBody
+          input: answerBody
         },
+        expect: [403, 404],
         redactionSentinels: credentialSentinels
       })
     );
   } else {
     results.push({
-      name: "local-edge-team-answer-proxy",
+      name: "local-edge-generic-team-answer-unavailable",
       status: "skipped",
       ok: true,
       reason:
-        "Set KOED_LAUNCH_LOCAL_EDGE_BASE_URL and KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID to probe local-edge proxying."
+        "Set KOED_LAUNCH_LOCAL_EDGE_BASE_URL and KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID to prove generic local-edge Team answer fails closed."
     });
   }
 
@@ -863,6 +1083,7 @@ export const summarizeLaunchValidation = (
     automatedChecks: fixtureResult.checks,
     automatedTestStatus: options.automatedTestStatus ?? "not_run",
     stagedRemote: options.stagedRemote ?? null,
+    multiDevice: options.multiDevice ?? null,
     automatedTestCommands: automatedLaunchTestCommands.map((item) => ({
       id: item.id,
       command: [item.command, ...item.args].join(" ")
@@ -871,7 +1092,7 @@ export const summarizeLaunchValidation = (
 };
 
 export const validateLaunchReadiness = async (client, options) => {
-  const fixtureResult = await validateFixture(client);
+  const fixtureResult = await validateFixture(client, options?.fixtureRuntime);
   return summarizeLaunchValidation(fixtureResult, options);
 };
 
@@ -898,10 +1119,17 @@ export const formatLaunchValidationReport = (summary) => {
   }
 
   if (summary.stagedRemote) {
+    const probeCounts = summary.stagedRemote.probes.reduce(
+      (counts, probe) => {
+        const key = probe.status === "skipped" ? "skipped" : "completed";
+        counts[key] += 1;
+        return counts;
+      },
+      { completed: 0, skipped: 0 }
+    );
     lines.push(
       "",
-      `Staged remote HTTP probes: ${summary.stagedRemote.baseUrl}`,
-      `Team Workspace: ${summary.stagedRemote.teamWorkspaceId}`
+      `Staged remote HTTP probes: ${probeCounts.completed} completed, ${probeCounts.skipped} skipped`
     );
     for (const probe of summary.stagedRemote.probes) {
       lines.push(`- ${probe.name}: ${probe.status}`);
@@ -909,6 +1137,17 @@ export const formatLaunchValidationReport = (summary) => {
         lines.push(`  ${probe.reason}`);
       }
     }
+  }
+
+  if (summary.multiDevice) {
+    lines.push(
+      "",
+      `Multi-device Electron dogfood: passed (${summary.multiDevice.backendId})`,
+      `- Notes A to B: ${summary.multiDevice.flows.aToB.eventType}`,
+      `- Notes B to A: ${summary.multiDevice.flows.bToA.eventType}`,
+      `- Personal channel B to A: ${summary.multiDevice.flows.channelBToA.eventType}`,
+      `- Renderer reload catch-up: ${summary.multiDevice.flows.rendererReloadCatchUp.recovered ? "passed" : "failed"}`
+    );
   }
 
   for (const mode of modeOrder) {

@@ -4,6 +4,8 @@ import type { Visibility } from "./types.js";
 import { isRecord } from "./value-helpers.js";
 
 export type ConversationSemanticUnitType = "user_turn" | "agent_turn";
+export const CURRENT_CONVERSATION_PROJECTION_VERSION =
+  "conversation-projection-v3";
 
 export type ConversationSemanticProjectionRow = {
   id: string;
@@ -14,7 +16,6 @@ export type ConversationSemanticProjectionRow = {
   source_kind: string;
   metadata: Record<string, unknown> | null;
   source_transport: string;
-  source_path: string | null;
   source_event_type: string | null;
   source_record_type: string;
   source_sequence: number | null;
@@ -39,7 +40,7 @@ export type ConversationSemanticProjectionRow = {
   projection_work_class:
     | "live_capture_projection"
     | "historical_import_backfill";
-  session_workspace_id: string | null;
+  session_project_id: string | null;
   session_cwd: string | null;
   session_metadata: Record<string, unknown> | null;
 };
@@ -96,7 +97,6 @@ export type SemanticBundleSealReason =
   | "user_turn"
   | "next_user_turn"
   | "token_limit"
-  | "stop_hook"
   | "turn_completed"
   | "catch_up_stale";
 

@@ -3,7 +3,12 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { assertSecureHttpTransport } from "@koed/shared";
+import {
+  createSecureUpstreamFetch,
+  registeredPrivateNetworkPolicy
+} from "@koed/shared/secure-upstream-fetch";
 import type { KoedServerPaths } from "./paths.js";
+import { upstreamDisconnectCleanupPending } from "./upstream-disconnect-cleanup.js";
 
 export type UpstreamDeploymentProfile =
   | "developer"
@@ -27,10 +32,12 @@ export type UpstreamFailureCategory =
 
 export interface UpstreamRoutePolicy {
   personalMemoryRead: "disabled" | "enabled";
+  personalCollaboration: "disabled" | "enabled";
   teamWorkspaceRead: "disabled" | "enabled";
   shareGrantManagement: "disabled" | "enabled";
   captureWrites: "disabled" | "enabled";
   sync: "disabled" | "enabled";
+  managedExecution: "disabled" | "enabled";
   admin: "disabled" | "enabled";
 }
 
@@ -64,8 +71,9 @@ export interface UpstreamBackendRecord {
 }
 
 export interface UpstreamBackendRegistry {
-  schemaVersion: 1;
+  schemaVersion: 2;
   updatedAt: string;
+  activeBackendId: string | null;
   backends: UpstreamBackendRecord[];
 }
 
@@ -118,6 +126,7 @@ export interface SanitizedCapabilitiesPayload {
   runtime?: Record<string, unknown>;
   auth?: Record<string, unknown>;
   memory?: Record<string, unknown>;
+  protocols?: Record<string, unknown>;
   commercial?: Record<string, unknown>;
   security?: Record<string, unknown>;
   authenticatedCapabilities?: Record<string, unknown>;
@@ -125,7 +134,7 @@ export interface SanitizedCapabilitiesPayload {
   capabilities?: Record<string, CapabilityDescriptor>;
 }
 
-const supportedCapabilitySchemaVersions = new Set([2, 3, 4]);
+const supportedCapabilitySchemaVersions = new Set([2, 3, 4, 5, 6]);
 
 export interface UpstreamRegistryDeps {
   existsSync?: typeof existsSync;
@@ -138,10 +147,12 @@ export interface UpstreamRegistryDeps {
 
 const defaultRoutePolicy = (): UpstreamRoutePolicy => ({
   personalMemoryRead: "disabled",
+  personalCollaboration: "disabled",
   teamWorkspaceRead: "disabled",
   shareGrantManagement: "disabled",
   captureWrites: "disabled",
   sync: "disabled",
+  managedExecution: "disabled",
   admin: "disabled"
 });
 
@@ -155,8 +166,9 @@ const emptyCapabilityCache = (): UpstreamCapabilityCache => ({
 });
 
 const defaultRegistry = (now: string): UpstreamBackendRegistry => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   updatedAt: now,
+  activeBackendId: null,
   backends: []
 });
 
@@ -245,12 +257,34 @@ const readRegistry = (
     const parsed = JSON.parse(
       deps.readFileSync(paths.upstreamBackendsPath, "utf8") as string
     ) as Partial<UpstreamBackendRegistry>;
+    if (parsed.schemaVersion !== 2) {
+      throw new Error("Upstream backend registry schema is unsupported.");
+    }
+    const backends = Array.isArray(parsed.backends)
+      ? parsed.backends.map((backend) => normalizeBackendRecord(backend, now))
+      : [];
+    if (
+      new Set(backends.map((backend) => backend.id)).size !== backends.length ||
+      new Set(backends.map((backend) => backend.baseUrl)).size !==
+        backends.length
+    ) {
+      throw new Error("Upstream backend registry entries must be unique.");
+    }
+    const activeBackendId =
+      typeof parsed.activeBackendId === "string"
+        ? validateBackendId(parsed.activeBackendId)
+        : null;
+    if (
+      activeBackendId &&
+      !backends.some((backend) => backend.id === activeBackendId)
+    ) {
+      throw new Error("Active upstream backend is not registered.");
+    }
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : now,
-      backends: Array.isArray(parsed.backends)
-        ? parsed.backends.map((backend) => normalizeBackendRecord(backend, now))
-        : []
+      activeBackendId,
+      backends
     };
   } catch {
     throw new Error("Upstream backend registry is malformed.");
@@ -385,6 +419,65 @@ export const listUpstreamBackends = (
   };
 };
 
+export const getActiveUpstreamBackend = (
+  paths: KoedServerPaths,
+  deps: UpstreamRegistryDeps = {}
+): UpstreamBackendSummary | null => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const registry = readRegistry(paths, resolvedDeps);
+  if (!registry.activeBackendId) return null;
+  const backend = registry.backends.find(
+    (candidate) => candidate.id === registry.activeBackendId
+  );
+  return backend ? summarize(backend) : null;
+};
+
+export const setActiveUpstreamBackend = (
+  paths: KoedServerPaths,
+  id: string | null,
+  deps: UpstreamRegistryDeps = {}
+): UpstreamRegistryResult => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const registry = readRegistry(paths, resolvedDeps);
+  const backendId = id === null ? null : validateBackendId(id);
+  const backend = backendId
+    ? registry.backends.find((candidate) => candidate.id === backendId)
+    : null;
+  if (backendId && !backend) {
+    return {
+      ok: false,
+      state: "missing",
+      message: `Upstream backend ${backendId} is not registered.`
+    };
+  }
+  registry.activeBackendId = backendId;
+  registry.updatedAt = resolvedDeps.now().toISOString();
+  writeRegistry(paths, registry, resolvedDeps);
+  return {
+    ok: true,
+    state: "updated",
+    ...(backend ? { backend: summarize(backend) } : {}),
+    message: backend
+      ? `Selected upstream backend ${backend.id}.`
+      : "Cleared the active upstream backend."
+  };
+};
+
+export const upstreamBackendAdvertisesCapability = (
+  paths: KoedServerPaths,
+  backendId: string,
+  capability: string,
+  deps: UpstreamRegistryDeps = {}
+): boolean => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const backend = readRegistry(paths, resolvedDeps).backends.find(
+    (candidate) => candidate.id === backendId
+  );
+  const availability =
+    backend?.capabilities.payload?.capabilities?.[capability]?.availability;
+  return availability === "available" || availability === "partial";
+};
+
 export const registerUpstreamBackend = (
   paths: KoedServerPaths,
   input: {
@@ -398,7 +491,7 @@ export const registerUpstreamBackend = (
   const resolvedDeps = depsWithDefaults(deps);
   const now = resolvedDeps.now().toISOString();
   const baseUrl = normalizeBaseUrl(input.url);
-  const id = input.id ? validateBackendId(input.id) : stableBackendId(baseUrl);
+  const requestedId = input.id ? validateBackendId(input.id) : null;
   const profile = normalizeProfile(input.profile);
   if (input.profile && !profile) {
     throw new Error(
@@ -406,10 +499,26 @@ export const registerUpstreamBackend = (
     );
   }
   const registry = readRegistry(paths, resolvedDeps);
-  const existingIndex = registry.backends.findIndex(
-    (backend) => backend.id === id || backend.baseUrl === baseUrl
+  const existingIdIndex =
+    requestedId === null
+      ? -1
+      : registry.backends.findIndex((backend) => backend.id === requestedId);
+  const existingUrlIndex = registry.backends.findIndex(
+    (backend) => backend.baseUrl === baseUrl
   );
+  if (
+    existingIdIndex >= 0 &&
+    existingUrlIndex >= 0 &&
+    existingIdIndex !== existingUrlIndex
+  ) {
+    throw new Error(
+      `Upstream URL is already registered as ${registry.backends[existingUrlIndex]!.id}.`
+    );
+  }
+  const existingIndex =
+    existingIdIndex >= 0 ? existingIdIndex : existingUrlIndex;
   const existing = registry.backends[existingIndex];
+  const id = requestedId ?? existing?.id ?? stableBackendId(baseUrl);
   const nextProfile = profile ?? existing?.profile ?? null;
   const trustBoundaryChanged = Boolean(
     existing &&
@@ -447,6 +556,12 @@ export const registerUpstreamBackend = (
 
   if (existingIndex >= 0) {
     registry.backends[existingIndex] = record;
+    if (
+      registry.activeBackendId === existing?.id &&
+      existing.id !== record.id
+    ) {
+      registry.activeBackendId = record.id;
+    }
   } else {
     registry.backends.push(record);
   }
@@ -470,6 +585,13 @@ export const removeUpstreamBackend = (
   const resolvedDeps = depsWithDefaults(deps);
   const registry = readRegistry(paths, resolvedDeps);
   const backendId = validateBackendId(id);
+  if (upstreamDisconnectCleanupPending(paths, backendId)) {
+    return {
+      ok: false,
+      state: "failed",
+      message: `Upstream backend ${backendId} cannot be removed until disconnect cleanup completes.`
+    };
+  }
   const nextBackends = registry.backends.filter(
     (backend) => backend.id !== backendId
   );
@@ -481,6 +603,9 @@ export const removeUpstreamBackend = (
     };
   }
   registry.backends = nextBackends;
+  if (registry.activeBackendId === backendId) {
+    registry.activeBackendId = null;
+  }
   registry.updatedAt = resolvedDeps.now().toISOString();
   writeRegistry(paths, registry, resolvedDeps);
   return {
@@ -539,6 +664,22 @@ export const updateUpstreamBackendCredential = (
       ...backend,
       updatedAt: now,
       credential: sanitizeCredential(credential)
+    }),
+    deps
+  );
+
+export const clearUpstreamBackendCapabilities = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamRegistryDeps = {}
+): UpstreamRegistryResult =>
+  updateUpstreamBackend(
+    paths,
+    id,
+    (backend, now) => ({
+      ...backend,
+      updatedAt: now,
+      capabilities: emptyCapabilityCache()
     }),
     deps
   );
@@ -623,6 +764,9 @@ const sanitizeCapabilitiesPayload = (
     ...(payload.memory
       ? { memory: redactCapabilityObject(payload.memory) }
       : {}),
+    ...(payload.protocols
+      ? { protocols: redactCapabilityObject(payload.protocols) }
+      : {}),
     ...(payload.commercial
       ? { commercial: redactCapabilityObject(payload.commercial) }
       : {}),
@@ -691,6 +835,32 @@ const redactCapabilitySecrets = (value: unknown): unknown => {
 const capabilityExpiresAt = (checkedAt: Date): string =>
   new Date(checkedAt.getTime() + 15 * 60 * 1000).toISOString();
 
+const commitCapabilityRefresh = (
+  paths: KoedServerPaths,
+  backendId: string,
+  expectedBackendUpdatedAt: string,
+  attemptedAt: Date,
+  update: (backend: UpstreamBackendRecord) => UpstreamBackendRecord,
+  deps: Required<UpstreamRegistryDeps>
+): UpstreamBackendRecord | null => {
+  const currentRegistry = readRegistry(paths, deps);
+  const currentIndex = currentRegistry.backends.findIndex(
+    (backend) => backend.id === backendId
+  );
+  const currentBackend = currentRegistry.backends[currentIndex];
+  if (
+    !currentBackend ||
+    currentBackend.updatedAt !== expectedBackendUpdatedAt
+  ) {
+    return null;
+  }
+  const refreshed = update(currentBackend);
+  currentRegistry.backends[currentIndex] = refreshed;
+  currentRegistry.updatedAt = attemptedAt.toISOString();
+  writeRegistry(paths, currentRegistry, deps);
+  return refreshed;
+};
+
 export const refreshUpstreamBackendCapabilities = async (
   paths: KoedServerPaths,
   id: string,
@@ -712,8 +882,16 @@ export const refreshUpstreamBackendCapabilities = async (
   }
 
   const attemptedAt = resolvedDeps.now();
+  const ownedRequestFetch = deps.fetch
+    ? null
+    : createSecureUpstreamFetch({
+        allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() => [
+          { baseUrl: backend.baseUrl, profile: backend.profile }
+        ])
+      });
   try {
-    const response = await resolvedDeps.fetch(
+    const requestFetch = deps.fetch ?? ownedRequestFetch!;
+    const response = await requestFetch(
       new URL("v1/capabilities", `${backend.baseUrl}/`),
       { redirect: "error" }
     );
@@ -727,23 +905,34 @@ export const refreshUpstreamBackendCapabilities = async (
     }
     const payload = sanitizeCapabilitiesPayload(await response.json());
     const profile = normalizeProfile(payload.deployment?.profile);
-    const refreshed: UpstreamBackendRecord = {
-      ...backend,
-      profile: profile ?? backend.profile,
-      updatedAt: attemptedAt.toISOString(),
-      capabilities: {
-        state: "validated",
-        checkedAt: attemptedAt.toISOString(),
-        expiresAt: capabilityExpiresAt(attemptedAt),
-        schemaVersion: payload.capabilitySchemaVersion,
-        profile: profile ?? null,
-        releaseVersion: payload.releaseVersion ?? null,
-        payload
-      }
-    };
-    registry.backends[index] = refreshed;
-    registry.updatedAt = attemptedAt.toISOString();
-    writeRegistry(paths, registry, resolvedDeps);
+    const refreshed = commitCapabilityRefresh(
+      paths,
+      backendId,
+      backend.updatedAt,
+      attemptedAt,
+      (currentBackend) => ({
+        ...currentBackend,
+        profile: profile ?? currentBackend.profile,
+        updatedAt: attemptedAt.toISOString(),
+        capabilities: {
+          state: "validated",
+          checkedAt: attemptedAt.toISOString(),
+          expiresAt: capabilityExpiresAt(attemptedAt),
+          schemaVersion: payload.capabilitySchemaVersion,
+          profile: profile ?? null,
+          releaseVersion: payload.releaseVersion ?? null,
+          payload
+        }
+      }),
+      resolvedDeps
+    );
+    if (!refreshed) {
+      return {
+        ok: false,
+        state: "failed",
+        message: `Capability refresh for upstream backend ${backendId} was superseded.`
+      };
+    }
     return {
       ok: true,
       state: "validated",
@@ -765,27 +954,40 @@ export const refreshUpstreamBackendCapabilities = async (
                 error.message.startsWith("Unsupported capability schema")
               ? "unsupported_schema"
               : "unexpected";
-    const failed: UpstreamBackendRecord = {
-      ...backend,
-      updatedAt: attemptedAt.toISOString(),
-      capabilities: {
-        ...backend.capabilities,
+    const failed = commitCapabilityRefresh(
+      paths,
+      backendId,
+      backend.updatedAt,
+      attemptedAt,
+      (currentBackend) => ({
+        ...currentBackend,
+        updatedAt: attemptedAt.toISOString(),
+        capabilities: {
+          ...currentBackend.capabilities,
+          state: "failed",
+          checkedAt: attemptedAt.toISOString(),
+          failureCategory: category,
+          failureMessage:
+            error instanceof Error ? error.message.slice(0, 240) : String(error)
+        }
+      }),
+      resolvedDeps
+    );
+    if (!failed) {
+      return {
+        ok: false,
         state: "failed",
-        checkedAt: attemptedAt.toISOString(),
-        failureCategory: category,
-        failureMessage:
-          error instanceof Error ? error.message.slice(0, 240) : String(error)
-      }
-    };
-    registry.backends[index] = failed;
-    registry.updatedAt = attemptedAt.toISOString();
-    writeRegistry(paths, registry, resolvedDeps);
+        message: `Capability refresh for upstream backend ${backendId} was superseded.`
+      };
+    }
     return {
       ok: false,
       state: "failed",
       backend: summarize(failed),
       message: `Failed to validate upstream backend ${backendId}.`
     };
+  } finally {
+    await ownedRequestFetch?.close();
   }
 };
 

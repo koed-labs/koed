@@ -15,13 +15,14 @@ export interface CapturedSessionRepository {
   createCapturedSession(
     actor: ActorContext,
     input: {
-      workspaceId?: string;
+      projectId?: string;
+      logicalSessionId?: string;
       externalSessionId?: string;
+      forkedFromExternalThreadId?: string;
       sourceRuntime?: SourceRuntime;
       captureMethod?: CaptureMethod;
       model?: string;
       cwd?: string;
-      codexTranscriptPath?: string;
       idempotencyKey?: string;
       sourceHash?: string;
       sourceKind?: string;
@@ -37,6 +38,14 @@ export interface CapturedSessionRepository {
     actor: ActorContext,
     sessionId: string
   ): Promise<CapturedSessionRecord | null>;
+  listCapturedSessionSummaries(
+    actor: ActorContext,
+    input?: { limit?: number }
+  ): Promise<CapturedSessionSummaryRecord[]>;
+  getCapturedSessionSummary(
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<CapturedSessionSummaryRecord | null>;
   updateCapturedSessionTitle(
     actor: ActorContext,
     sessionId: string,
@@ -57,7 +66,7 @@ export interface CapturedSessionRepository {
   ): Promise<CapturedSessionTitleCandidate[]>;
   getLatestCapturedSessionForProject(
     actor: ActorContext,
-    input: { workspaceId: string }
+    input: { projectId: string }
   ): Promise<CapturedSessionRecord | null>;
   updateCapturedSessionGeneratedTitle(
     actor: ActorContext,
@@ -70,12 +79,32 @@ export interface CapturedSessionRepositoryOptions {
   transactionClient?: pg.PoolClient;
 }
 
+export interface CapturedSessionSummaryRecord {
+  sessionId: string;
+  logicalMemoryId: string | null;
+  title: string;
+  projectName: string | null;
+  updatedAt: string;
+  eventCount: number;
+  hasSynchronizedRevision: boolean;
+  syncState:
+    | "not_started"
+    | "paused"
+    | "processing"
+    | "partially_available"
+    | "ready"
+    | "stale"
+    | "failed"
+    | "revoked";
+}
+
 type CapturedSessionRow = {
   id: string;
+  logical_session_id: string;
   owner_user_id: string | null;
   visibility: Visibility;
   external_session_id: string | null;
-  workspace_id: string | null;
+  forked_from_external_thread_id: string | null;
   source_runtime: SourceRuntime;
   capture_method: CaptureMethod;
   model: string | null;
@@ -113,6 +142,113 @@ type CapturedSessionTitleCandidateRow = {
   }> | null;
 };
 
+type CapturedSessionSummaryRow = {
+  session_id: string;
+  logical_memory_id: string | null;
+  title: string | null;
+  project_name: string | null;
+  latest_activity_at: Date;
+  event_count: string | number;
+  has_synchronized_revision: boolean;
+  sync_state: CapturedSessionSummaryRecord["syncState"] | null;
+};
+
+const mapCapturedSessionSummary = (
+  row: CapturedSessionSummaryRow
+): CapturedSessionSummaryRecord => ({
+  sessionId: row.session_id,
+  logicalMemoryId: row.logical_memory_id,
+  title: normalizeSessionTitle(row.title) ?? "Captured Session",
+  projectName: row.project_name,
+  updatedAt: row.latest_activity_at.toISOString(),
+  eventCount: Number(row.event_count),
+  hasSynchronizedRevision: row.has_synchronized_revision,
+  syncState: row.sync_state ?? "not_started"
+});
+
+export const getCapturedSessionSummaryWithClient = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  sessionId: string
+): Promise<CapturedSessionSummaryRecord | null> => {
+  const result = await client.query<CapturedSessionSummaryRow>(
+    `
+      select
+        s.id as session_id,
+        lm.id as logical_memory_id,
+        nullif(btrim(s.metadata ->> 'threadName'), '') as title,
+        coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+        greatest(
+          s.updated_at,
+          coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
+        ) as latest_activity_at,
+        count(me.id)::text as event_count,
+        coalesce(
+          relationship.source_cursor > 0
+            and relationship.last_synced_at is not null
+            and relationship.revoked_at is null
+            and relationship.state not in ('failed', 'revoked', 'purge_pending'),
+          false
+        ) as has_synchronized_revision,
+        case
+          when relationship.revoked_at is not null
+            or relationship.state in ('revoked', 'purge_pending') then 'revoked'
+          when relationship.state in ('created', 'uploading', 'uploaded', 'verified')
+            then 'processing'
+          else relationship.state::text
+        end as sync_state
+      from sessions s
+      left join memory_events me
+        on me.session_id = s.id
+       and me.owner_user_id = $1
+       and me.visibility = 'personal'
+       and me.invalidated_at is null
+       and me.personal_deleted_at is null
+      left join logical_memories lm
+        on lm.local_session_id = s.id
+       and lm.owner_user_id = $1
+       and lm.owner_principal_id = $1
+       and lm.source_boundary = 'captured_session'
+       and lm.lifecycle in ('active', 'stale')
+      left join lateral (
+        select relationship.state, relationship.revoked_at,
+               relationship.source_cursor, relationship.last_synced_at
+        from cross_identity_sync_relationships relationship
+        where relationship.logical_memory_id = lm.id
+          and relationship.local_user_id = $1
+          and relationship.local_replica_id in (
+            select replica.id
+            from memory_replicas replica
+            where replica.logical_memory_id = lm.id
+              and replica.local_session_id = s.id
+              and replica.owner_user_id = $1
+              and replica.owner_principal_id = $1
+              and replica.replica_role = 'source'
+          )
+          and relationship.side = 'source'
+        order by relationship.revoked_at nulls first, relationship.updated_at desc
+        limit 1
+      ) relationship on true
+      where s.id = $2
+        and s.owner_user_id = $1
+        and s.visibility = 'personal'
+        and s.invalidated_at is null
+        and s.personal_deleted_at is null
+        and exists (
+          select 1
+          from users owner
+          where owner.id = $1
+            and owner.disabled_at is null
+            and owner.deleted_at is null
+        )
+      group by s.id, lm.id, relationship.state, relationship.revoked_at,
+               relationship.source_cursor, relationship.last_synced_at
+    `,
+    [actor.userId, sessionId]
+  );
+  return result.rows[0] ? mapCapturedSessionSummary(result.rows[0]) : null;
+};
+
 const projectReference = (
   id: string | null,
   name: string | null,
@@ -132,14 +268,11 @@ const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
   );
   return {
     id: row.id,
+    logicalSessionId: row.logical_session_id,
     ownerUserId: row.owner_user_id,
     visibility: row.visibility,
     externalSessionId: row.external_session_id,
-    workspaceId:
-      row.workspace_id ??
-      (typeof row.metadata?.workspaceId === "string"
-        ? row.metadata.workspaceId
-        : null),
+    forkedFromExternalThreadId: row.forked_from_external_thread_id,
     sourceRuntime: row.source_runtime,
     captureMethod: row.capture_method,
     model: row.model,
@@ -193,20 +326,6 @@ const normalizeSessionTitle = (value: unknown): string | null => {
   return normalized.slice(0, 120);
 };
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const normalizeSessionMetadata = (input: {
-  workspaceId?: string;
-  metadata?: Record<string, unknown>;
-}): Record<string, unknown> => {
-  const metadata = { ...(input.metadata ?? {}) };
-  if (input.workspaceId && typeof metadata.workspaceId !== "string") {
-    metadata.workspaceId = input.workspaceId;
-  }
-  return metadata;
-};
-
 const normalizedProjectReference = (
   value: PersonalProjectReference
 ): PersonalProjectReference | null => {
@@ -217,7 +336,7 @@ const normalizedProjectReference = (
 };
 
 const detectedProjectsForCapture = (input: {
-  workspaceId?: string;
+  projectId?: string;
   cwd?: string;
   metadata?: Record<string, unknown>;
   detectedProjects?: PersonalProjectReference[];
@@ -239,8 +358,8 @@ const detectedProjectsForCapture = (input: {
             : (input.cwd ?? null);
         const id =
           metadataId ??
-          (input.workspaceId && input.workspaceId !== "default"
-            ? input.workspaceId
+          (input.projectId && input.projectId !== "default"
+            ? input.projectId
             : projectPath);
         if (!id) return [];
         const name =
@@ -262,20 +381,32 @@ const detectedProjectsForCapture = (input: {
 };
 
 const hasDetectedProjectInput = (input: {
-  workspaceId?: string;
+  projectId?: string;
   cwd?: string;
   metadata?: Record<string, unknown>;
   detectedProjects?: PersonalProjectReference[];
 }): boolean =>
   input.detectedProjects !== undefined ||
-  input.workspaceId !== undefined ||
+  input.projectId !== undefined ||
   input.cwd !== undefined ||
   ["localProjectId", "projectId", "projectPath", "projectName"].some((key) =>
     Object.hasOwn(input.metadata ?? {}, key)
   );
 
+const hasExplicitDetectedProjectIdentity = (input: {
+  projectId?: string;
+  metadata?: Record<string, unknown>;
+  detectedProjects?: PersonalProjectReference[];
+}): boolean =>
+  input.detectedProjects !== undefined ||
+  input.projectId !== undefined ||
+  ["localProjectId", "projectId"].some((key) =>
+    Object.hasOwn(input.metadata ?? {}, key)
+  );
+
 const capturedSessionColumns = `
-  id, owner_user_id, visibility, external_session_id, workspace_id,
+  id, logical_session_id, owner_user_id, visibility, external_session_id,
+  forked_from_external_thread_id,
   source_runtime, capture_method, model, cwd,
   source_kind, source_adapter_version, source_fingerprint,
   captured_project, import_observed_at, metadata,
@@ -285,29 +416,6 @@ const capturedSessionColumns = `
   project_override_id, project_override_name, project_override_path,
   project_override_at, created_at
 `;
-
-const resolveWorkspaceForeignKey = async (
-  pool: pg.Pool | pg.PoolClient,
-  actor: ActorContext,
-  workspaceId: string | undefined
-): Promise<string | null> => {
-  if (!workspaceId || !UUID_PATTERN.test(workspaceId)) {
-    return null;
-  }
-  const result = await pool.query<{ id: string }>(
-    `
-      select id
-      from workspaces
-      where id = $1
-        and owner_user_id = $2
-        and visibility = 'personal'
-        and archived_at is null
-      limit 1
-    `,
-    [workspaceId, actor.userId]
-  );
-  return result.rows[0]?.id ?? null;
-};
 
 export const createCapturedSessionRepository = (
   pool: pg.Pool,
@@ -326,20 +434,22 @@ export const createCapturedSessionRepository = (
           [`captured-session:${actor.userId}:${input.externalSessionId}`]
         );
       }
-      const metadata = normalizeSessionMetadata(input);
-      const workspaceForeignKey = await resolveWorkspaceForeignKey(
-        client,
-        actor,
-        input.workspaceId
-      );
+      const metadata = { ...(input.metadata ?? {}) };
+      const forkedFromExternalThreadId =
+        input.forkedFromExternalThreadId ??
+        (typeof metadata.forked_from_id === "string"
+          ? metadata.forked_from_id
+          : null);
       const detectedProjects = detectedProjectsForCapture(input);
       const automaticProject =
         detectedProjects.length === 1 ? detectedProjects[0]! : null;
       const detectedProjectInputProvided = hasDetectedProjectInput(input);
+      const explicitProjectIdentityProvided =
+        hasExplicitDetectedProjectIdentity(input);
       const capturedProjectProvenance = {
         schemaVersion: 1,
         capturedCwd: input.cwd ?? null,
-        capturedWorkspaceId: input.workspaceId ?? null,
+        capturedProjectId: input.projectId ?? null,
         candidates: detectedProjects,
         outcome:
           detectedProjects.length === 1
@@ -354,12 +464,10 @@ export const createCapturedSessionRepository = (
             update sessions
             set
               updated_at = now(),
-              workspace_id = coalesce(workspace_id, $3),
-              codex_transcript_path = coalesce(codex_transcript_path, $4),
-              model = coalesce(model, $5),
-              cwd = coalesce(cwd, $6),
+              model = coalesce(model, $3),
+              cwd = coalesce(cwd, $4),
               metadata =
-                metadata || $7::jsonb ||
+                metadata || $5::jsonb ||
                 case
                   when metadata ->> 'threadNameSource' = 'manual'
                   then jsonb_strip_nulls(jsonb_build_object(
@@ -369,19 +477,34 @@ export const createCapturedSessionRepository = (
                   ))
                   else '{}'::jsonb
                 end,
-              source_metadata = source_metadata || $7::jsonb,
-              source_fingerprint = coalesce(source_fingerprint, $8),
+              source_metadata = source_metadata || $5::jsonb,
+              source_fingerprint = coalesce(source_fingerprint, $6),
+              forked_from_external_thread_id =
+                coalesce(forked_from_external_thread_id, $14),
               captured_project = case
-                when captured_project = '{}'::jsonb then $9::jsonb
+                when captured_project = '{}'::jsonb then $7::jsonb
                 else captured_project
               end,
-              import_observed_at = coalesce(import_observed_at, $10),
-              automatic_project_id = case when $11::boolean then $12 else automatic_project_id end,
-              automatic_project_name = case when $11::boolean then $13 else automatic_project_name end,
-              automatic_project_path = case when $11::boolean then $14 else automatic_project_path end,
+              import_observed_at = coalesce(import_observed_at, $8),
+              automatic_project_id = case
+                when $13::boolean then $10
+                when $9::boolean and automatic_project_id is null then $10
+                else automatic_project_id
+              end,
+              automatic_project_name = case
+                when $13::boolean then $11
+                when $9::boolean and automatic_project_id is null then $11
+                else automatic_project_name
+              end,
+              automatic_project_path = case
+                when $13::boolean then $12
+                when $9::boolean and automatic_project_id is null then $12
+                else automatic_project_path
+              end,
               automatic_project_detected_at = case
-                when $11::boolean and $12::text is not null then now()
-                when $11::boolean then null
+                when $13::boolean and $10::text is not null then now()
+                when $13::boolean then null
+                when $9::boolean and automatic_project_id is null and $10::text is not null then now()
                 else automatic_project_detected_at
               end
             where id = (
@@ -389,9 +512,9 @@ export const createCapturedSessionRepository = (
               from sessions
               where owner_user_id = $1
                 and visibility = 'personal'
-                and external_session_id = $2
-                and invalidated_at is null
-                and personal_deleted_at is null
+              and external_session_id = $2
+              and invalidated_at is null
+              and personal_deleted_at is null
               order by created_at asc, id asc
               limit 1
             )
@@ -400,8 +523,6 @@ export const createCapturedSessionRepository = (
           [
             actor.userId,
             input.externalSessionId,
-            workspaceForeignKey,
-            input.codexTranscriptPath ?? null,
             input.model ?? null,
             input.cwd ?? null,
             metadata,
@@ -411,11 +532,32 @@ export const createCapturedSessionRepository = (
             detectedProjectInputProvided,
             automaticProject?.id ?? null,
             automaticProject?.name ?? null,
-            automaticProject?.path ?? null
+            automaticProject?.path ?? null,
+            explicitProjectIdentityProvided,
+            forkedFromExternalThreadId
           ]
         );
         const convergedRow = converged.rows[0];
         if (convergedRow) {
+          if (
+            input.logicalSessionId &&
+            convergedRow.logical_session_id !== input.logicalSessionId
+          ) {
+            throw Object.assign(
+              new Error("Captured Session logical identity conflicts"),
+              { statusCode: 409 }
+            );
+          }
+          if (
+            forkedFromExternalThreadId &&
+            convergedRow.forked_from_external_thread_id !==
+              forkedFromExternalThreadId
+          ) {
+            throw Object.assign(
+              new Error("Captured Session fork lineage conflicts"),
+              { statusCode: 409 }
+            );
+          }
           if (ownsTransaction) {
             await client.query("commit");
           }
@@ -426,12 +568,10 @@ export const createCapturedSessionRepository = (
         `
         insert into sessions (
           owner_user_id,
-          workspace_id,
           visibility,
           external_session_id,
           source_runtime,
           capture_method,
-          codex_transcript_path,
           idempotency_key,
           source_hash,
           model,
@@ -455,28 +595,29 @@ export const createCapturedSessionRepository = (
           automatic_project_detected_at,
           source_fingerprint,
           captured_project,
-          import_observed_at
+          import_observed_at,
+          logical_session_id
         )
         values (
-          $1, $2, 'personal', $3, $4, $5, $6, $7, $8, $9, $10, $11,
-          $12, $13, $14, $15, $16,
+          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9,
+          $10, $11, $12, $13, $14,
           (
             select id
             from sessions parent
             where parent.owner_user_id = $1
               and parent.visibility = 'personal'
               and (
-                parent.external_thread_id = $16
-                or parent.external_session_id = $16
-                or parent.id::text = $16
+                parent.external_thread_id = $14
+                or parent.external_session_id = $14
+                or parent.id::text = $14
               )
             order by parent.created_at desc
             limit 1
           ),
-          $17, $18, $19, $20, $21,
-          $22, $23, $24, $25,
-          case when $23::text is null then null else now() end,
-          $26, $27, $28
+          $15, $16, $17, $18, $19,
+          $20, $21, $22, $23,
+          case when $21::text is null then null else now() end,
+          $24, $25, $26, coalesce($29::uuid, gen_random_uuid())
         )
         on conflict (owner_user_id, visibility, idempotency_key)
         where idempotency_key is not null
@@ -495,6 +636,10 @@ export const createCapturedSessionRepository = (
               else '{}'::jsonb
             end,
           parent_session_id = coalesce(sessions.parent_session_id, excluded.parent_session_id),
+          forked_from_external_thread_id = coalesce(
+            sessions.forked_from_external_thread_id,
+            excluded.forked_from_external_thread_id
+          ),
           source_metadata = sessions.source_metadata || excluded.source_metadata,
           source_fingerprint = coalesce(sessions.source_fingerprint, excluded.source_fingerprint),
           captured_project = case
@@ -503,34 +648,49 @@ export const createCapturedSessionRepository = (
           end,
           import_observed_at = coalesce(sessions.import_observed_at, excluded.import_observed_at),
           automatic_project_id = case
-            when $29::boolean then excluded.automatic_project_id
+            when $28::boolean then excluded.automatic_project_id
+            when $27::boolean and sessions.automatic_project_id is null
+              then excluded.automatic_project_id
             else sessions.automatic_project_id
           end,
           automatic_project_name = case
-            when $29::boolean then excluded.automatic_project_name
+            when $28::boolean then excluded.automatic_project_name
+            when $27::boolean and sessions.automatic_project_id is null
+              then excluded.automatic_project_name
             else sessions.automatic_project_name
           end,
           automatic_project_path = case
-            when $29::boolean then excluded.automatic_project_path
+            when $28::boolean then excluded.automatic_project_path
+            when $27::boolean and sessions.automatic_project_id is null
+              then excluded.automatic_project_path
             else sessions.automatic_project_path
           end,
           automatic_project_detected_at = case
-            when $29::boolean then excluded.automatic_project_detected_at
+            when $28::boolean then excluded.automatic_project_detected_at
+            when $27::boolean and sessions.automatic_project_id is null
+              then excluded.automatic_project_detected_at
             else sessions.automatic_project_detected_at
           end
         where sessions.owner_user_id = excluded.owner_user_id
           and sessions.visibility = excluded.visibility
+          and (
+            $29::uuid is null
+            or sessions.logical_session_id = $29::uuid
+          )
           and sessions.invalidated_at is null
           and sessions.personal_deleted_at is null
+          and (
+            $13::text is null
+            or sessions.forked_from_external_thread_id is null
+            or sessions.forked_from_external_thread_id = $13
+          )
         returning ${capturedSessionColumns}
       `,
         [
           actor.userId,
-          workspaceForeignKey,
           input.externalSessionId ?? null,
           input.sourceRuntime ?? "codex",
           input.captureMethod ?? "mcp",
-          input.codexTranscriptPath ?? null,
           input.idempotencyKey ?? null,
           input.sourceHash ?? null,
           input.model ?? null,
@@ -542,9 +702,7 @@ export const createCapturedSessionRepository = (
               ? "codex-cli-hook-v1"
               : "codex-app-server-v1"),
           input.externalSessionId ?? null,
-          typeof metadata.forked_from_id === "string"
-            ? metadata.forked_from_id
-            : null,
+          forkedFromExternalThreadId,
           typeof metadata.parentThreadId === "string"
             ? metadata.parentThreadId
             : typeof metadata.parentExternalSessionId === "string"
@@ -574,7 +732,9 @@ export const createCapturedSessionRepository = (
           input.sourceFingerprint ?? null,
           input.capturedProject ?? {},
           input.importObservedAt ?? null,
-          detectedProjectInputProvided
+          detectedProjectInputProvided,
+          explicitProjectIdentityProvided,
+          input.logicalSessionId ?? null
         ]
       );
 
@@ -692,6 +852,84 @@ export const createCapturedSessionRepository = (
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
+  async listCapturedSessionSummaries(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 200, 1), 500);
+    const result = await pool.query<CapturedSessionSummaryRow>(
+      `
+        select
+          s.id as session_id,
+          lm.id as logical_memory_id,
+          nullif(btrim(s.metadata ->> 'threadName'), '') as title,
+          coalesce(s.project_override_name, s.automatic_project_name) as project_name,
+          greatest(
+            s.updated_at,
+            coalesce(max(coalesce(me.source_event_time, me.captured_at)), s.updated_at)
+          ) as latest_activity_at,
+          count(me.id)::text as event_count,
+          coalesce(
+            relationship.source_cursor > 0
+              and relationship.last_synced_at is not null
+              and relationship.revoked_at is null
+              and relationship.state not in ('failed', 'revoked', 'purge_pending'),
+            false
+          ) as has_synchronized_revision,
+          case
+            when relationship.revoked_at is not null
+              or relationship.state in ('revoked', 'purge_pending') then 'revoked'
+            when relationship.state in ('created', 'uploading', 'uploaded', 'verified')
+              then 'processing'
+            else relationship.state::text
+          end as sync_state
+        from sessions s
+        left join memory_events me
+          on me.session_id = s.id
+         and me.owner_user_id = $1
+         and me.visibility = 'personal'
+         and me.invalidated_at is null
+         and me.personal_deleted_at is null
+        left join logical_memories lm
+          on lm.local_session_id = s.id
+         and lm.owner_user_id = $1
+         and lm.owner_principal_id = $1
+         and lm.source_boundary = 'captured_session'
+         and lm.lifecycle in ('active', 'stale')
+        left join lateral (
+          select relationship.state, relationship.revoked_at,
+                 relationship.source_cursor, relationship.last_synced_at
+          from cross_identity_sync_relationships relationship
+          where relationship.logical_memory_id = lm.id
+            and relationship.local_user_id = $1
+            and relationship.local_replica_id in (
+              select replica.id
+              from memory_replicas replica
+              where replica.logical_memory_id = lm.id
+                and replica.local_session_id = s.id
+                and replica.owner_user_id = $1
+                and replica.owner_principal_id = $1
+                and replica.replica_role = 'source'
+            )
+            and relationship.side = 'source'
+          order by relationship.revoked_at nulls first, relationship.updated_at desc
+          limit 1
+        ) relationship on true
+        where s.owner_user_id = $1
+          and s.visibility = 'personal'
+          and s.invalidated_at is null
+          and s.personal_deleted_at is null
+        group by s.id, lm.id, relationship.state, relationship.revoked_at,
+                 relationship.source_cursor, relationship.last_synced_at
+        order by latest_activity_at desc, s.id desc
+        limit $2
+      `,
+      [actor.userId, limit]
+    );
+    return result.rows.map(mapCapturedSessionSummary);
+  },
+
+  async getCapturedSessionSummary(actor, sessionId) {
+    return getCapturedSessionSummaryWithClient(pool, actor, sessionId);
+  },
+
   async listCapturedSessionsNeedingTitles(actor, input = {}) {
     const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
     const minUserEvents = Math.min(Math.max(input.minUserEvents ?? 3, 1), 50);
@@ -771,15 +1009,16 @@ export const createCapturedSessionRepository = (
           and invalidated_at is null
           and personal_deleted_at is null
           and (
-            workspace_id::text = $2
-            or cwd = $2
-            or metadata ->> 'workspaceId' = $2
+            cwd = $2
+            or metadata ->> 'projectId' = $2
             or metadata ->> 'projectPath' = $2
+            or automatic_project_id = $2
+            or project_override_id = $2
           )
         order by created_at desc, id desc
         limit 1
       `,
-      [actor.userId, input.workspaceId]
+      [actor.userId, input.projectId]
     );
     const row = result.rows[0];
     return row ? mapCapturedSession(row) : null;

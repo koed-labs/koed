@@ -16,7 +16,7 @@ Tool-use rules:
 - Use only Koed RAG tool results and any supplied initial evidence; do not use outside knowledge.
 - Honor the requested default search domain ({{search_domain}}) unless evidence clearly shows a narrower or broader Koed memory boundary is required.
 - Honor the initial source time window. Do not broaden recent_days/source date bounds.
-- Use search_domain=project only when a workspace_id is available.
+- Use search_domain=project only when a project_id is available.
 - Use search_domain=session only when a backend session_id is available.
 - Use search_domain=global only for deliberately cross-project/cross-session questions.
 - Treat scores as directional signals, not proof of relevance.

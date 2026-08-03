@@ -447,7 +447,8 @@ export const createWorkflowTokenUsageRepository = (
       workflow: "workflow_type",
       model: "coalesce(model, 'unknown')",
       owner: "owner_user_id::text",
-      project: "coalesce(s.workspace_id::text, wtu.metadata ->> 'workspaceId')",
+      project:
+        "coalesce(s.project_override_id, s.automatic_project_id, s.metadata ->> 'projectId', s.cwd, wtu.metadata ->> 'projectId')",
       thread:
         "coalesce(s.external_session_id, wtu.metadata ->> 'appServerThreadId', wtu.metadata ->> 'executionThreadId', wtu.metadata ->> 'threadId', wtu.session_id::text)",
       connector:

@@ -59,13 +59,53 @@ target authenticates the scoped `sync` device credential and binds deployment,
 User, relationship, replica, consent, policy, cursor, version, size, and digest
 metadata before decrypting. A missing key, wrong version, provider outage,
 tampered envelope, unauthorized target, or unsupported package fails closed.
+After package verification, synchronized `conversation_items` keep raw JSON,
+raw text, transport text, and full metadata in owner-private encrypted field
+companions. Their operational columns contain only encryption markers and the
+bounded metadata required for rendering and lifecycle processing. Subsequent
+sync reads hydrate those companions inside the repository boundary before
+constructing another package, so redaction does not reduce replica fidelity.
+Synchronized target session rows retain only operational replica markers;
+source conversation titles and external session labels are not copied into
+plaintext structural storage.
 
-Personal Device Sync V1 is not implemented by this RSA envelope path. Its
-separate Ed25519/X25519/HKDF-SHA-256/AES-256-GCM, recovery, authority, and
-relay boundary is fixed by [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
-PDS keys and plaintext must never enter Operator/support/browser/email recovery
-flows, ordinary configuration, Authority, or Relay. Existing canonical JSON and
-RSA envelope code must not be represented as PDS V1 compliance.
+PDS control plane and relay are not implemented by RSA envelope path. Relay uses
+certificate-bound, domain-separated Ed25519 request proofs and stores canonical
+encrypted transport/envelope/chunk bytes plus opaque delivery metadata only.
+It never decrypts, projects, embeds, recalls, logs plaintext, source
+fingerprints, Project aliases, keys, credentials, or Team fields. Authority
+secret signer is deployment-secret material; Authority never stores PDS
+plaintext, group secrets, device/recovery private keys, or recovery kit
+material. Headless controls use an opaque Operator secret reference and
+provider stdin/stdout boundary; raw PDS environment values, CLI password
+arguments, config values, status, and logs are rejected. Desktop IPC never
+carries private keys or recovery-kit bytes. Browser session binds governance
+requester identity but cannot replace active-device/recovery authorization. A
+scoped `Koed-Desktop` credential may access the same PDS governance routes only
+on the `local_personal` loopback boundary for its recorded owner. API Tokens and
+`Koed-Device` authentication remain rejected.
+
+For a local-only topology, Desktop may co-locate the neutral Authority service
+role with its local API. Its Ed25519 key is a separate opaque,
+platform-protected secret resolved only by the trusted API child; it is not the
+device member key and is never embedded in the device runtime payload. WSL
+DPAPI references are profile-namespaced because multiple isolated Desktop
+profiles share one Windows-host credential store.
+
+Same-network Desktop enrollment never sends its invitation secret as an HTTP
+credential. The secret remains in the URL fragment and derives an
+HKDF-SHA-256/AES-256-GCM transport key. Pairing messages bind direction,
+invitation ID, and unique message ID, reject replay, and expose only exact
+enrollment control routes. The active device's existing PDS signature remains
+required for membership. See
+[ADR 0019](adr/0019-same-network-personal-device-enrollment.md).
+
+Existing directed-sync RSA code must not be represented as PDS compliance. PDS
+deletion floors are opaque group-lifetime records. Authority retains opaque
+logical-memory/floor tokens and encrypted signed tombstone records, not source
+plaintext or a source-fingerprint mapping. Normal relay ACK cleanup never
+removes a floor. A revoked device receives no new key bundle or package but
+cannot be remotely stripped of plaintext it already had.
 
 Use deployment controls for data-at-rest protection: private database networking, least-privilege database credentials, encrypted volumes or managed-database storage encryption, encrypted backups, and restricted administrator access. Treat database exports and backups as sensitive memory material.
 
@@ -109,3 +149,39 @@ Koed-managed cloud support/admin access is governed by
 Managed KMS deployment proof and the `local_test_key` to KMS cutover sequence
 should be recorded with the relevant private launch or staging record for each
 target environment.
+
+## Collaboration Security Boundary
+
+Personal and Team collaboration use distinct authority even when Desktop shows
+them in one application. The renderer receives schema-validated DTOs and events
+through allowlisted preload IPC and never receives reusable remote credentials,
+browser cookies, API Tokens, provider secrets, decrypted offline Team caches,
+or a general HTTP proxy. Electron main bridges lifecycle only; local
+`koed-server` owns credential custody, upstream HTTP and realtime connections,
+capability validation, durable cursors, replay, and reconnect.
+
+Personal API Tokens have no Team authority. Every Team command, route,
+snapshot, replay batch, and live event rechecks current Team Membership,
+Workspace Access, Share Grant, lifecycle, entitlement, credential operation
+family, and resource scope before selecting or decrypting content. High-risk
+device-mediated administration requires a freshly browser-confirmed, exact,
+one-use action grant; enrollment does not issue reusable admin authority.
+
+Desktop also treats rendered content as hostile. Markdown has no raw-HTML path,
+safe protocols are allowlisted, remote images are disabled, oversized input is
+rejected, and external links and clipboard writes use narrow trusted adapters.
+Protected Team drafts, outbox items, history, recents, selections, Inspector
+state, labels, and cached content are purged when backend or identity authority
+changes. Unknown realtime revocation state fails closed. The tested renderer
+and recovery behavior is summarized in
+[Koed Desktop](desktop-ui.md#security-boundary).
+
+Team collaboration fields and grant-scoped Shared Memory representations use
+Team envelope encryption. Canonical remote replicas use a separate owner-private
+envelope provider and are never read directly by Team clients. Plaintext must
+not enter outbox records, replay metadata, queues, caches, audit records, logs,
+metrics, diagnostics, or error responses. Authorization, key, encryption, and
+outbox failures fail closed. The route and credential rules are enumerated in
+[Team Collaboration Action And Credential Matrix](team-collaboration-action-credential-matrix.md),
+and the complete service boundary is in
+[Team Collaboration Architecture](team-collaboration.md).

@@ -17,23 +17,20 @@ import type { GraphEvent, GraphNode, ProjectGroup } from "./types";
 export { threadSelectionKey } from "@koed/memory-ui";
 
 function projectKey(
-  event: Pick<GraphEvent, "projectId" | "projectPath" | "workspaceId">
+  event: Pick<GraphEvent, "projectId" | "projectPath" | "projectId">
 ) {
   return (
-    event.projectId ??
-    event.projectPath ??
-    event.workspaceId ??
-    "unknown-project"
+    event.projectId ?? event.projectPath ?? event.projectId ?? "unknown-project"
   );
 }
 
 function projectLabel(
-  event: Pick<GraphEvent, "projectName" | "projectPath" | "workspaceId">
+  event: Pick<GraphEvent, "projectName" | "projectPath" | "projectId">
 ) {
   return (
     event.projectName ??
     event.projectPath ??
-    event.workspaceId ??
+    event.projectId ??
     "Unknown project"
   );
 }

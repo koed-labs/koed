@@ -52,6 +52,18 @@ const GCM_NONCE_BYTES = 12;
 const GCM_TAG_BYTES = 16;
 export const API_DATA_ENCRYPTION_KEY_ENV = "API_DATA_ENCRYPTION_KEY";
 export const DATA_ENCRYPTION_KEY_ENV_ALIAS = "DATA_ENCRYPTION_KEY";
+export const OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY_ENV =
+  "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY";
+export const OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV =
+  "OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER";
+export const OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID_ENV =
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID";
+export const OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION_ENV =
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION";
+export const OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL_ENV =
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL";
+export const OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN_ENV =
+  "OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -59,6 +71,7 @@ export interface EncryptedPayloadScope {
   deploymentId?: string | null;
   tenantId?: string | null;
   teamId?: string | null;
+  projectId?: string | null;
   workspaceId?: string | null;
   objectClass?: string | null;
 }
@@ -210,6 +223,8 @@ export interface HttpManagedKmsKeyringConfig {
   endpointUrl: string;
   authToken: string;
   fetch?: typeof fetch;
+  endpointEnvironmentName?: string;
+  authTokenEnvironmentName?: string;
 }
 
 export interface EnvelopeEncryptionProviderEnvironmentOptions {
@@ -295,7 +310,8 @@ export const createUnsupportedEnvelopeEncryptionProvider = (
 });
 
 const providerModeFromString = (
-  value: string | undefined
+  value: string | undefined,
+  environmentName = "API_ENVELOPE_ENCRYPTION_PROVIDER"
 ): EnvelopeEncryptionRootProviderMode | undefined => {
   const normalized = optionalEnvValue(value)?.toLowerCase();
   if (!normalized) {
@@ -308,9 +324,7 @@ const providerModeFromString = (
   ) {
     return normalized as EnvelopeEncryptionRootProviderMode;
   }
-  throw new EnvelopeEncryptionError(
-    `Unsupported API_ENVELOPE_ENCRYPTION_PROVIDER: ${value}`
-  );
+  throw new EnvelopeEncryptionError(`Unsupported ${environmentName}: ${value}`);
 };
 
 const positiveInt = (value: string | undefined, name: string): number => {
@@ -350,7 +364,10 @@ const base64Decode = (value: string, fieldName: string): Buffer => {
   }
 };
 
-const assertSafeManagedKmsEndpoint = (url: URL): void => {
+const assertSafeManagedKmsEndpoint = (
+  url: URL,
+  environmentName = "MANAGED_KMS_ENDPOINT_URL"
+): void => {
   if (url.protocol === "https:") {
     return;
   }
@@ -361,21 +378,24 @@ const assertSafeManagedKmsEndpoint = (url: URL): void => {
     return;
   }
   throw new ManagedKmsProviderError(
-    "MANAGED_KMS_ENDPOINT_URL must use HTTPS unless it targets localhost"
+    `${environmentName} must use HTTPS unless it targets localhost`
   );
 };
 
-const rootKeyFromBase64 = (value: string): Buffer => {
+const rootKeyFromBase64 = (
+  value: string,
+  environmentName = API_DATA_ENCRYPTION_KEY_ENV
+): Buffer => {
   const trimmed = value.trim();
   if (!trimmed || trimmed.startsWith("replace_with_generated")) {
     throw new EnvelopeEncryptionError(
-      "API_DATA_ENCRYPTION_KEY must be a generated base64 32-byte key"
+      `${environmentName} must be a generated base64 32-byte key`
     );
   }
-  const key = base64Decode(trimmed, "API_DATA_ENCRYPTION_KEY");
+  const key = base64Decode(trimmed, environmentName);
   if (key.length !== AES_256_KEY_BYTES) {
     throw new EnvelopeEncryptionError(
-      "API_DATA_ENCRYPTION_KEY must decode to exactly 32 bytes"
+      `${environmentName} must decode to exactly 32 bytes`
     );
   }
   return key;
@@ -542,9 +562,10 @@ const validateEnvelope = (envelope: EncryptedPayloadEnvelope): void => {
 };
 
 export const createLocalTestKeyEnvelopeEncryptionProvider = (
-  apiDataEncryptionKey: string
+  apiDataEncryptionKey: string,
+  environmentName = API_DATA_ENCRYPTION_KEY_ENV
 ): EnvelopeEncryptionProvider => {
-  const rootKey = rootKeyFromBase64(apiDataEncryptionKey);
+  const rootKey = rootKeyFromBase64(apiDataEncryptionKey, environmentName);
   const provider = {
     mode: "local_test_key" as const,
     keyId: localTestKeyId(rootKey),
@@ -1189,9 +1210,14 @@ export const createHttpManagedKmsKeyring = (
   config: HttpManagedKmsKeyringConfig
 ): ManagedKmsKeyring => {
   const endpoint = new URL(config.endpointUrl);
-  assertSafeManagedKmsEndpoint(endpoint);
+  assertSafeManagedKmsEndpoint(
+    endpoint,
+    config.endpointEnvironmentName ?? "MANAGED_KMS_ENDPOINT_URL"
+  );
   if (!config.authToken.trim()) {
-    throw new ManagedKmsProviderError("MANAGED_KMS_AUTH_TOKEN is required");
+    throw new ManagedKmsProviderError(
+      `${config.authTokenEnvironmentName ?? "MANAGED_KMS_AUTH_TOKEN"} is required`
+    );
   }
   const fetchFn = config.fetch ?? globalThis.fetch;
   if (!fetchFn) {
@@ -1458,20 +1484,59 @@ export const createCmekEnvelopeEncryptionProvider = (
 ): EnvelopeEncryptionProvider =>
   createKmsEnvelopeEncryptionProvider("cmek", keyring);
 
+interface EnvelopeEncryptionEnvironmentFamily {
+  providerMode: string;
+  localKey: readonly string[];
+  kmsKeyId: string;
+  kmsKeyVersion: string;
+  kmsEndpointUrl: string;
+  kmsAuthToken: string;
+}
+
+const apiEnvelopeEncryptionEnvironmentFamily = {
+  providerMode: "API_ENVELOPE_ENCRYPTION_PROVIDER",
+  localKey: [API_DATA_ENCRYPTION_KEY_ENV, DATA_ENCRYPTION_KEY_ENV_ALIAS],
+  kmsKeyId: "MANAGED_KMS_KEY_ID",
+  kmsKeyVersion: "MANAGED_KMS_KEY_VERSION",
+  kmsEndpointUrl: "MANAGED_KMS_ENDPOINT_URL",
+  kmsAuthToken: "MANAGED_KMS_AUTH_TOKEN"
+} as const satisfies EnvelopeEncryptionEnvironmentFamily;
+
+const ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily = {
+  providerMode: OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV,
+  localKey: [OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY_ENV],
+  kmsKeyId: OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_ID_ENV,
+  kmsKeyVersion: OWNER_PRIVATE_REPLICA_MANAGED_KMS_KEY_VERSION_ENV,
+  kmsEndpointUrl: OWNER_PRIVATE_REPLICA_MANAGED_KMS_ENDPOINT_URL_ENV,
+  kmsAuthToken: OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN_ENV
+} as const satisfies EnvelopeEncryptionEnvironmentFamily;
+
+const firstEnvironmentValue = (
+  environment: NodeJS.ProcessEnv,
+  names: readonly string[]
+): string | undefined => {
+  for (const name of names) {
+    const value = optionalEnvValue(environment[name]);
+    if (value) return value;
+  }
+  return undefined;
+};
+
 const createKmsKeyringFromEnvironment = (
   environment: NodeJS.ProcessEnv,
-  fetchFn: typeof fetch | undefined
+  fetchFn: typeof fetch | undefined,
+  family: EnvelopeEncryptionEnvironmentFamily
 ): ManagedKmsKeyring => {
-  const keyId = optionalEnvValue(environment.MANAGED_KMS_KEY_ID);
-  const keyVersion = optionalEnvValue(environment.MANAGED_KMS_KEY_VERSION);
-  const endpointUrl = optionalEnvValue(environment.MANAGED_KMS_ENDPOINT_URL);
-  const authToken = optionalEnvValue(environment.MANAGED_KMS_AUTH_TOKEN);
+  const keyId = optionalEnvValue(environment[family.kmsKeyId]);
+  const keyVersion = optionalEnvValue(environment[family.kmsKeyVersion]);
+  const endpointUrl = optionalEnvValue(environment[family.kmsEndpointUrl]);
+  const authToken = optionalEnvValue(environment[family.kmsAuthToken]);
 
   const missing = [
-    ["MANAGED_KMS_KEY_ID", keyId],
-    ["MANAGED_KMS_KEY_VERSION", keyVersion],
-    ["MANAGED_KMS_ENDPOINT_URL", endpointUrl],
-    ["MANAGED_KMS_AUTH_TOKEN", authToken]
+    [family.kmsKeyId, keyId],
+    [family.kmsKeyVersion, keyVersion],
+    [family.kmsEndpointUrl, endpointUrl],
+    [family.kmsAuthToken, authToken]
   ]
     .filter(([, value]) => !value)
     .map(([name]) => name);
@@ -1485,27 +1550,32 @@ const createKmsKeyringFromEnvironment = (
 
   return createHttpManagedKmsKeyring({
     keyId: keyId!,
-    keyVersion: positiveInt(keyVersion, "MANAGED_KMS_KEY_VERSION"),
+    keyVersion: positiveInt(keyVersion, family.kmsKeyVersion),
     endpointUrl: endpointUrl!,
     authToken: authToken!,
+    endpointEnvironmentName: family.kmsEndpointUrl,
+    authTokenEnvironmentName: family.kmsAuthToken,
     ...(fetchFn ? { fetch: fetchFn } : {})
   });
 };
 
-export const createEnvelopeEncryptionProviderFromEnvironment = (
-  options: EnvelopeEncryptionProviderEnvironmentOptions = {}
+const createEnvelopeEncryptionProviderFromEnvironmentFamily = (
+  options: EnvelopeEncryptionProviderEnvironmentOptions,
+  family: EnvelopeEncryptionEnvironmentFamily,
+  requiredDescription: string
 ): EnvelopeEncryptionProvider | undefined => {
   const environment = options.environment ?? process.env;
   const configuredMode = providerModeFromString(
-    environment.API_ENVELOPE_ENCRYPTION_PROVIDER
+    environment[family.providerMode],
+    family.providerMode
   );
-  const key = resolveApiDataEncryptionKeyFromEnv(environment);
+  const key = firstEnvironmentValue(environment, family.localKey);
   const mode = configuredMode ?? (key ? "local_test_key" : undefined);
 
   if (!mode) {
     if (options.required) {
       throw new EnvelopeEncryptionError(
-        "Envelope encryption provider is required but no provider mode or API_DATA_ENCRYPTION_KEY is configured"
+        `${requiredDescription} is required but neither ${family.providerMode} nor ${family.localKey.join(" or ")} is configured`
       );
     }
     return undefined;
@@ -1513,25 +1583,50 @@ export const createEnvelopeEncryptionProviderFromEnvironment = (
 
   switch (mode) {
     case "local_test_key":
+      if (!key) {
+        throw new EnvelopeEncryptionError(
+          `Missing required environment variable: ${family.localKey.join(" (or ")}${family.localKey.length > 1 ? ")" : ""}`
+        );
+      }
       return createLocalTestKeyEnvelopeEncryptionProvider(
-        requireApiDataEncryptionKey(environment)
+        key,
+        family.localKey[0]
       );
     case "managed_kms":
       return createManagedKmsEnvelopeEncryptionProvider(
-        createKmsKeyringFromEnvironment(environment, options.fetch)
+        createKmsKeyringFromEnvironment(environment, options.fetch, family)
       );
     case "byok":
       return createByokEnvelopeEncryptionProvider(
-        createKmsKeyringFromEnvironment(environment, options.fetch)
+        createKmsKeyringFromEnvironment(environment, options.fetch, family)
       );
     case "cmek":
       return createCmekEnvelopeEncryptionProvider(
-        createKmsKeyringFromEnvironment(environment, options.fetch)
+        createKmsKeyringFromEnvironment(environment, options.fetch, family)
       );
     case "operator_kms":
       throw new UnsupportedEnvelopeEncryptionProviderError(mode);
   }
 };
+
+export const createEnvelopeEncryptionProviderFromEnvironment = (
+  options: EnvelopeEncryptionProviderEnvironmentOptions = {}
+): EnvelopeEncryptionProvider | undefined =>
+  createEnvelopeEncryptionProviderFromEnvironmentFamily(
+    options,
+    apiEnvelopeEncryptionEnvironmentFamily,
+    "Envelope encryption provider"
+  );
+
+export const createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment =
+  (
+    options: EnvelopeEncryptionProviderEnvironmentOptions = {}
+  ): EnvelopeEncryptionProvider | undefined =>
+    createEnvelopeEncryptionProviderFromEnvironmentFamily(
+      options,
+      ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily,
+      "Owner-private replica envelope encryption provider"
+    );
 
 export const validateEnvelopeEncryptionProviderEnvironment = (
   options: EnvelopeEncryptionEnvironmentValidationOptions = {}
@@ -1566,12 +1661,62 @@ export const validateEnvelopeEncryptionProviderEnvironment = (
   }
 
   if (kmsBackedProviderModes.has(providerMode)) {
-    createKmsKeyringFromEnvironment(environment, undefined);
+    createKmsKeyringFromEnvironment(
+      environment,
+      undefined,
+      apiEnvelopeEncryptionEnvironmentFamily
+    );
   }
 
   if (providerMode === "operator_kms") {
     throw new UnsupportedEnvelopeEncryptionProviderError(providerMode);
   }
+
+  const ownerPrivateReplicaConfigured = [
+    ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.providerMode,
+    ...ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.localKey,
+    ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.kmsKeyId,
+    ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.kmsKeyVersion,
+    ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.kmsEndpointUrl,
+    ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.kmsAuthToken
+  ].some((name) => optionalEnvValue(environment[name]));
+  const ownerPrivateReplicaRequired =
+    deploymentProfile === "koed_managed_cloud" &&
+    ["paid", "production"].includes(releaseStage);
+  if (!ownerPrivateReplicaConfigured) {
+    if (ownerPrivateReplicaRequired) {
+      createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
+        environment,
+        required: true
+      });
+    }
+    return;
+  }
+
+  const ownerPrivateReplicaProviderMode =
+    providerModeFromString(
+      environment[OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV],
+      OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV
+    ) ??
+    (firstEnvironmentValue(
+      environment,
+      ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.localKey
+    )
+      ? "local_test_key"
+      : undefined);
+  if (
+    ownerPrivateReplicaRequired &&
+    ownerPrivateReplicaProviderMode !== undefined &&
+    !kmsBackedProviderModes.has(ownerPrivateReplicaProviderMode)
+  ) {
+    throw new EnvelopeEncryptionError(
+      `A KMS-backed ${OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV} is required for paid Koed-managed cloud`
+    );
+  }
+  createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
+    environment,
+    required: true
+  });
 };
 
 export const redactEnvelopeEncryptionProviderStatus = (

@@ -34,6 +34,7 @@ const REQUIRED_REQUEST_METHODS = [
   "initialize",
   "thread/start",
   "thread/resume",
+  "thread/fork",
   "turn/start",
   "turn/interrupt"
 ] as const;
@@ -120,11 +121,19 @@ const REQUIRED_SCHEMA_FIELDS: Array<{
     fields: ["thread"]
   },
   {
+    file: "v2/ThreadForkResponse.json",
+    fields: ["thread"]
+  },
+  {
     file: "v2/TurnStartResponse.json",
     fields: ["turn"]
   },
   {
     file: "v2/ThreadResumeParams.json",
+    fields: ["threadId"]
+  },
+  {
+    file: "v2/ThreadForkParams.json",
     fields: ["threadId"]
   },
   {
@@ -158,6 +167,11 @@ const REQUIRED_DEFINITION_FIELDS: Array<{
     fields: ["id", "sessionId"]
   },
   {
+    file: "v2/ThreadForkResponse.json",
+    definition: "Thread",
+    fields: ["id", "sessionId"]
+  },
+  {
     file: "v2/TurnStartResponse.json",
     definition: "Turn",
     fields: ["id"]
@@ -183,6 +197,11 @@ const REQUIRED_DEFINITION_PROPERTIES: Array<{
     file: "v2/ThreadStartedNotification.json",
     definition: "Thread",
     fields: ["parentThreadId", "path"]
+  },
+  {
+    file: "v2/ThreadForkResponse.json",
+    definition: "Thread",
+    fields: ["forkedFromId"]
   }
 ] as const;
 
@@ -197,6 +216,10 @@ const REQUIRED_SCHEMA_PROPERTIES: Array<{
   {
     file: "v2/ThreadStartParams.json",
     fields: ["historyMode"]
+  },
+  {
+    file: "v2/ThreadForkParams.json",
+    fields: ["path", "deferGoalContinuation", "excludeTurns"]
   }
 ] as const;
 

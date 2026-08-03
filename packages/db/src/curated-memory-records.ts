@@ -295,7 +295,7 @@ export const createCuratedMemoryRecordMethods = ({
       [
         actor.userId,
         input.sessionId ?? null,
-        input.workspaceId ?? null,
+        input.projectId ?? null,
         normalizedQuote ? null : 1
       ]
     );
@@ -378,10 +378,10 @@ export const createCuratedMemoryRecordMethods = ({
           and ($2::uuid is null or me.session_id = $2)
           and (
             $3::text is null
-            or me.payload ->> 'workspaceId' = $3
+            or me.payload ->> 'projectId' = $3
             or (
               me.payload ->> 'contentEncrypted' = 'true'
-              and encrypted.scope ->> 'workspaceId' = $3
+              and encrypted.scope ->> 'projectId' = $3
             )
           )
           and (
@@ -397,7 +397,7 @@ export const createCuratedMemoryRecordMethods = ({
       [
         actor.userId,
         input.sessionId ?? null,
-        input.workspaceId ?? null,
+        input.projectId ?? null,
         normalizedQuote ? null : 1
       ]
     );
@@ -420,8 +420,7 @@ export const createCuratedMemoryRecordMethods = ({
       }
       if (
         payload.actor !== "user" ||
-        (input.workspaceId !== undefined &&
-          payload.workspaceId !== input.workspaceId)
+        (input.projectId !== undefined && payload.projectId !== input.projectId)
       ) {
         throw new Error(
           "Curated Memory evidence metadata did not match its authenticated payload"

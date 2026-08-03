@@ -27,7 +27,9 @@ need them.
 - Homebrew for the source-checkout bundled-local runtime install. Packaged
   Desktop can use packaged native runtime assets; external dependency mode does
   not require Homebrew.
-- Codex installed and signed in.
+- Codex CLI `0.144.0` or newer installed and signed in. Koed validates configured
+  synthesis models against Codex app-server `model/list`; the default
+  `gpt-5.6-luna` model is unavailable in older releases.
 
 If you are on Windows, run Koed inside WSL as Linux tooling. Keep `KOED_HOME`
 and checkout paths on Linux filesystem paths inside WSL; native Windows
@@ -72,6 +74,9 @@ The README keeps to one basic local path. For other options, see:
 - [Running Koed](docs/running-koed.md) for external dependency mode, manual
   server commands, alternate ports, smoke tests, packaged first-run notes, and
   desktop development.
+- [Koed Desktop](docs/desktop-ui.md) for the Personal/Team information model,
+  collaboration workflows, recovery behavior, accessibility, and performance
+  boundaries.
 - [Configuration](docs/configuration.md) for environment variables, runtime
   modes, model overrides, logging, and production settings.
 - [Codex integration](docs/codex-integration.md) for manual Codex setup and
@@ -80,6 +85,9 @@ The README keeps to one basic local path. For other options, see:
   experimental recall-only Claude Code setup.
 - [Curated Memory](docs/curated-memory.md) for source-linked durable facts and
   recall behavior.
+- [Personal Device Sync controls](docs/running-koed.md#personal-sync-control-commands)
+  for opt-in future-Session replication, recovery-kit ceremony, and headless
+  Operator secret references.
 - [Security](docs/security.md), [Backup and restore](docs/backup-restore.md),
   and [Upgrades](docs/upgrades.md) for operational guidance.
 
@@ -146,6 +154,7 @@ add-ons.
 ## Learn More
 
 - [Running Koed](docs/running-koed.md)
+- [Koed Desktop](docs/desktop-ui.md)
 - [Configuration](docs/configuration.md)
 - [Server deployment boundary](docs/server-deployment-boundary.md)
 - [Hosted database roles](docs/hosted-database-roles.md)

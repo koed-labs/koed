@@ -103,7 +103,7 @@ export const registerCaptureRoutes = (
         repo,
         { userId: user.id },
         {
-          workspaceId: input.cwd ?? input.workspaceId,
+          projectId: input.projectId ?? input.cwd,
           threadId: input.externalSessionId
         }
       );
@@ -129,7 +129,7 @@ export const registerCaptureRoutes = (
       const query = latestCapturedSessionQuerySchema.parse(request.query);
       const session = await repo.getLatestCapturedSessionForProject(
         { userId: user.id },
-        { workspaceId: query.workspace_id }
+        { projectId: query.project_id }
       );
       if (!session) {
         throw Object.assign(
@@ -158,7 +158,7 @@ export const registerCaptureRoutes = (
           statusCode: 404
         });
       }
-      if (query.workspace_id && session.workspaceId !== query.workspace_id) {
+      if (query.project_id && session.project?.id !== query.project_id) {
         throw Object.assign(
           new Error("Captured Session does not belong to Project"),
           { statusCode: 404 }
@@ -180,7 +180,7 @@ export const registerCaptureRoutes = (
       const policy = await resolveCapturePolicyForRequest(
         repo,
         requesterContext,
-        { workspaceId: input.workspaceId, sessionId: params.sessionId }
+        { projectId: input.projectId, sessionId: params.sessionId }
       );
       rejectUnsupportedCapturePolicy(policy);
       if (policy.captureState !== "enabled") {
@@ -189,7 +189,7 @@ export const registerCaptureRoutes = (
       const event = await capturePersonalEvent({
         repository: repo,
         requesterContext,
-        workspaceId: input.workspaceId,
+        projectId: input.projectId,
         sessionId: params.sessionId,
         turnId: input.turnId,
         actor: input.actor,
@@ -226,7 +226,7 @@ export const registerCaptureRoutes = (
         repo,
         requesterContext,
         {
-          workspaceId: input.workspaceId,
+          projectId: input.projectId,
           sessionId: input.sessionId,
           threadId:
             typeof input.metadata.externalSessionId === "string"

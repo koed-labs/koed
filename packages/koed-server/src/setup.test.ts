@@ -23,7 +23,8 @@ const spawnResult = (status = 0, stdout = "ok", stderr = "") =>
 const writeRuntimeState = (
   root: string,
   dependencyMode: "bundled-local" | "external" = "bundled-local",
-  pid = process.pid
+  pid = process.pid,
+  automaticPorts = false
 ): void => {
   mkdirSync(resolve(root, "run"), { recursive: true });
   writeFileSync(
@@ -35,6 +36,7 @@ const writeRuntimeState = (
       apiUrl: "http://localhost:43300",
       explorerUrl: "http://localhost:45174",
       dependencyMode,
+      automaticPorts,
       services: []
     })
   );
@@ -466,7 +468,6 @@ describe("Codex setup wrapper", () => {
       ""
     );
     const codexConfigPath = resolve(root, "codex.toml");
-    const hookConfigPath = resolve(root, "hook.json");
 
     const result = repairCodexIntegration({
       environment: {
@@ -474,8 +475,7 @@ describe("Codex setup wrapper", () => {
         KOED_REPO_ROOT: root,
         KOED_AUTO_PORTS: "1",
         API_HOST_PORT: "43300",
-        CODEX_CONFIG_PATH: codexConfigPath,
-        MEMORY_HOOK_CONFIG: hookConfigPath
+        CODEX_CONFIG_PATH: codexConfigPath
       },
       now: () => new Date("2026-01-01T00:00:00.000Z")
     });
@@ -487,8 +487,9 @@ describe("Codex setup wrapper", () => {
     expect(result.stdout).toContain(
       `Wrote Codex MCP config: ${codexConfigPath}`
     );
-    expect(result.stdout).toContain(
-      `Wrote Capture Hook config: ${hookConfigPath}`
+    expect(readFileSync(codexConfigPath, "utf8")).not.toContain("--config");
+    expect(readFileSync(codexConfigPath, "utf8")).toContain(
+      `\\"--koed-home\\" \\"${root}\\"`
     );
     expect(
       JSON.parse(
@@ -498,6 +499,84 @@ describe("Codex setup wrapper", () => {
       ok: true,
       checkedAt: "2026-01-01T00:00:00.000Z"
     });
+  });
+
+  it("writes isolated device configuration beneath CODEX_HOME", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "isolated-codex");
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "desktop_token" })
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+
+    const result = repairCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_AUTO_PORTS: "1",
+        API_HOST_PORT: "43300",
+        CODEX_HOME: codexHome
+      },
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
+      'MEMORY_API_URL = "http://localhost:43300"'
+    );
+    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
+      `\\"--koed-home\\" \\"${root}\\"`
+    );
+  });
+
+  it("uses the supervisor credential for an active automatic-port runtime", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "isolated-codex");
+    writeRuntimeState(root, "bundled-local", process.pid, true);
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "desktop_token" })
+    );
+    writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=repo_token\n");
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+
+    const result = repairCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_HOME: codexHome,
+        MEMORY_API_URL: "http://localhost:3300",
+        KOED_EXPLORER_URL: "http://localhost:5174",
+        KOED_AUTO_PORTS: "0"
+      },
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
+      'MEMORY_API_TOKEN = "desktop_token"'
+    );
+    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
+      'MEMORY_API_URL = "http://localhost:43300"'
+    );
+    expect(
+      readFileSync(resolve(codexHome, "config.toml"), "utf8")
+    ).not.toContain("repo_token");
   });
 
   it("repairs Codex using current configuration when runtime state is stale", () => {
@@ -520,15 +599,13 @@ describe("Codex setup wrapper", () => {
       ""
     );
     const codexConfigPath = resolve(root, "codex.toml");
-    const hookConfigPath = resolve(root, "hook.json");
     const checkedPids: number[] = [];
 
     const result = repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        CODEX_CONFIG_PATH: codexConfigPath,
-        MEMORY_HOOK_CONFIG: hookConfigPath
+        CODEX_CONFIG_PATH: codexConfigPath
       },
       checkPid: (pid) => {
         checkedPids.push(pid);
@@ -539,9 +616,6 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(true);
     expect(checkedPids).toEqual([424_242]);
     expect(result.apiUrl).toBe("https://external.example.test");
-    expect(JSON.parse(readFileSync(hookConfigPath, "utf8"))).toMatchObject({
-      apiUrl: "https://external.example.test"
-    });
     expect(readFileSync(codexConfigPath, "utf8")).toContain(
       'MEMORY_API_URL = "https://external.example.test"'
     );

@@ -58,7 +58,7 @@ import { VirtualizedEventList } from "./VirtualizedEventList";
 
 const makeEvent = (threadKey: string, index: number): GraphEvent => ({
   actor: "assistant",
-  captureMethod: "hook",
+  captureMethod: "transcript",
   contentPreview: `event ${index}`,
   eventType: "captured",
   id: `${threadKey}-event-${index}`,
@@ -80,8 +80,7 @@ const makeEvent = (threadKey: string, index: number): GraphEvent => ({
   sourceSequence: index,
   capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
   createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
-  visibility: "personal",
-  workspaceId: "project"
+  visibility: "personal"
 });
 
 describe("VirtualizedEventList", () => {

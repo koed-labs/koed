@@ -1,11 +1,9 @@
 import { z } from "zod";
 import {
-  CAPTURED_SESSION_SYNC_FORMAT,
-  CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CHUNKS,
-  CAPTURED_SESSION_SYNC_MAX_CHANGES,
-  CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES
+  CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
+  capturedSessionSyncUploadPackageManifestSchema
 } from "@koed/shared";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/i);
@@ -26,19 +24,6 @@ const capturedSessionConsentManifestSchema = z
     policy_version: z.literal(1),
     source_boundary: z.literal("captured_session"),
     selectedSessionId: uuidSchema
-  })
-  .strict();
-const uploadPackageManifestSchema = z
-  .object({
-    objectClass: z.literal("sync_package"),
-    format: z.literal(CAPTURED_SESSION_SYNC_FORMAT),
-    formatVersion: z.literal(CAPTURED_SESSION_SYNC_FORMAT_VERSION),
-    packageDigest: sha256Schema,
-    recipientKeyId: z.string().trim().min(1).max(240),
-    recipientKeyVersion: safeIntegerSchema.positive(),
-    recordCount: safeIntegerSchema
-      .nonnegative()
-      .max(CAPTURED_SESSION_SYNC_MAX_CHANGES)
   })
   .strict();
 const boundedBase64Schema = z
@@ -221,7 +206,7 @@ export const createTargetSyncRelationshipSchema = z
         originSessionId: uuidSchema,
         externalSessionId: z.string().max(500).nullable(),
         sourceRuntime: z.enum(["codex", "codex-cli"]),
-        captureMethod: z.enum(["hook", "mcp", "web", "api"]),
+        captureMethod: z.enum(["transcript", "mcp", "web", "api"]),
         capturedAt: z.iso.datetime(),
         title: z.string().max(500).nullable(),
         sourceAdapterVersion: z.string().max(120).nullable()
@@ -235,7 +220,7 @@ export const createUploadSessionSchema = z
     protocol_package_id: uuidSchema,
     idempotency_key: z.string().trim().min(8).max(240),
     request_hash: sha256Schema,
-    package_manifest: uploadPackageManifestSchema,
+    package_manifest: capturedSessionSyncUploadPackageManifestSchema,
     package_checksum: sha256Schema,
     total_bytes: z
       .number()
@@ -322,6 +307,30 @@ export const targetSyncContextResponseSchema = z
 
 export const targetSyncRelationshipResponseSchema =
   targetSyncContextResponseSchema.extend({
-    relationship: z.object({ id: uuidSchema }).passthrough(),
+    relationship: z
+      .object({
+        id: uuidSchema,
+        state: z.enum([
+          "pending",
+          "uploading",
+          "uploaded",
+          "verified",
+          "processing",
+          "partially_available",
+          "ready",
+          "stale",
+          "paused",
+          "failed",
+          "revoked",
+          "purge_pending"
+        ])
+      })
+      .passthrough(),
     target_replica_id: uuidSchema
   });
+
+export const retrySyncRelationshipResponseSchema = z
+  .object({
+    relationship: targetSyncRelationshipResponseSchema.shape.relationship
+  })
+  .strict();

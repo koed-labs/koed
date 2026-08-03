@@ -85,7 +85,7 @@ return a cited Memory Answer.
 ## Search Domain behavior
 
 `memory_answer` defaults to the project Search Domain. Project search resolves
-from the MCP Server process working directory; pass `workspace_id` explicitly
+from the MCP Server process working directory; pass `project_id` explicitly
 when that working directory does not match the captured Project. Session search
 requires a backend `session_id`, and global search spans all memory visible to
 the API Token. The tool guidance in

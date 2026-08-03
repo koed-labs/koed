@@ -51,7 +51,7 @@ project.threads = [thread];
 
 const makeEvent = (overrides: Partial<GraphEvent> = {}): GraphEvent => ({
   actor: "user",
-  captureMethod: "hook",
+  captureMethod: "transcript",
   contentPreview: "Preview",
   eventType: "captured",
   id: "event-1",
@@ -74,7 +74,6 @@ const makeEvent = (overrides: Partial<GraphEvent> = {}): GraphEvent => ({
   capturedAt: "2026-01-01T00:00:01.000Z",
   createdAt: "2026-01-01T00:00:01.000Z",
   visibility: "personal",
-  workspaceId: project.id,
   ...overrides
 });
 

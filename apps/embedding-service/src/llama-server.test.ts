@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+
+import type { ChildProcess } from "node:child_process";
+import { describe, expect, it, vi } from "vitest";
 import {
   extractRerankScores,
+  LlamaServerClient,
+  llamaServerArgs,
   llamaServerEnvironment,
   tokenPieceText
 } from "./llama-server.js";
+import { testConfig, testLogger } from "./test-helpers.js";
 
 describe("llama-server adapter helpers", () => {
   it("decodes token pieces from llama-server responses", () => {
@@ -15,13 +21,45 @@ describe("llama-server adapter helpers", () => {
   it("derives llama-server library path from configured binary", () => {
     expect(
       llamaServerEnvironment("/runtime/llama.cpp/llama-server", {})
-        .LD_LIBRARY_PATH
-    ).toBe("/runtime/llama.cpp");
+    ).toEqual(
+      expect.objectContaining({
+        LD_LIBRARY_PATH: "/runtime/llama.cpp",
+        LLAMA_ARG_UI: "false"
+      })
+    );
     expect(
       llamaServerEnvironment("/runtime/llama.cpp/llama-server", {
-        LD_LIBRARY_PATH: "/existing"
-      }).LD_LIBRARY_PATH
-    ).toBe("/runtime/llama.cpp:/existing");
+        LD_LIBRARY_PATH: "/existing",
+        LLAMA_ARG_UI: "true"
+      })
+    ).toEqual(
+      expect.objectContaining({
+        LD_LIBRARY_PATH: "/runtime/llama.cpp:/existing",
+        LLAMA_ARG_UI: "false"
+      })
+    );
+  });
+
+  it("uses arguments supported by the pinned and current llama-server builds", () => {
+    const config = testConfig();
+    const args = llamaServerArgs({
+      name: "embedding",
+      modelPath: config.modelPath!,
+      port: config.embeddingServerPort,
+      pooling: "last",
+      embedding: true,
+      reranking: false,
+      nCtx: config.llamaNCtx,
+      nThreads: config.llamaNThreads,
+      nBatch: config.llamaNBatch,
+      nUbatch: config.llamaNUbatch,
+      parallel: config.llamaParallel,
+      promptCacheEnabled: false
+    });
+
+    expect(args).toContain("--embedding");
+    expect(args).not.toContain("--no-ui");
+    expect(args).not.toContain("--embd-normalize");
   });
 
   it("extracts rerank scores in original document order", () => {
@@ -44,5 +82,57 @@ describe("llama-server adapter helpers", () => {
     expect(() =>
       extractRerankScores({ results: [{ index: 1, score: 0.5 }] }, 2)
     ).toThrow("incomplete rerank scores");
+  });
+
+  it("waits for the llama-server child to exit during shutdown", async () => {
+    const childState = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdout: null,
+      stderr: null,
+      kill: vi.fn((signal: NodeJS.Signals) => {
+        if (signal === "SIGTERM") {
+          setTimeout(() => {
+            childState.signalCode = signal;
+            childState.emit("exit", null, signal);
+          }, 10);
+        }
+        return true;
+      })
+    });
+    const child = childState as unknown as ChildProcess;
+    const config = testConfig();
+    const client = new LlamaServerClient(
+      config,
+      testLogger(),
+      {
+        name: "embedding",
+        modelPath: config.modelPath!,
+        port: config.embeddingServerPort,
+        pooling: "last",
+        embedding: true,
+        reranking: false,
+        nCtx: config.llamaNCtx,
+        nThreads: config.llamaNThreads,
+        nBatch: config.llamaNBatch,
+        nUbatch: config.llamaNUbatch,
+        parallel: config.llamaParallel,
+        promptCacheEnabled: false
+      },
+      async () =>
+        new Response(JSON.stringify({ status: "ok" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }),
+      (() => child) as typeof import("node:child_process").spawn
+    );
+
+    await client.start();
+    await client.stop();
+
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(child.signalCode).toBe("SIGTERM");
+    expect(client.isRunning()).toBe(false);
   });
 });

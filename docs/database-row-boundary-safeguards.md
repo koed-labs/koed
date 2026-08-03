@@ -30,7 +30,9 @@ memory evidence:
 - `messages`
 - `tool_events`
 - `sessions`
-- `workspaces`
+- `conversation_source_artifacts`
+- `conversation_source_segments`
+- `conversation_source_consumer_cursors`
 - `memory_questions`
 - `capture_policies`
 - `api_tokens`

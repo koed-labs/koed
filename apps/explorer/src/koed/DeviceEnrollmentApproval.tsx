@@ -8,14 +8,17 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { Button } from "../components/ui/button";
-import { cn } from "../lib/cn";
+import { Button, cn, Input } from "@koed/ui";
 import {
   apiBaseUrl,
   approveDeviceEnrollmentChallenge,
   denyDeviceEnrollmentChallenge,
-  loadDeviceEnrollmentChallenge
+  loadBrowserAuthProviders,
+  loadDeviceEnrollmentChallenge,
+  loginWithLocalSession,
+  requireBrowserSession
 } from "./api";
+import type { BrowserAuthProvider } from "./api";
 import koedMarkUrl from "./assets/koed-mark.svg";
 import type { DeviceEnrollmentChallenge } from "./types";
 
@@ -35,6 +38,8 @@ const operationFamilyLabels: Record<string, string> = {
   personal_memory_read: "Personal Memory recall",
   share_grant_management: "Share Grant management",
   sync: "Sync",
+  team_chat_read: "Team chat read access",
+  team_chat_write: "Team chat write access",
   team_workspace_read: "Team Workspace recall"
 };
 
@@ -93,6 +98,11 @@ export function DeviceEnrollmentApproval({
   const [state, setState] = useState<EnrollmentLoadState>("loading");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
+  const [authProviders, setAuthProviders] = useState<BrowserAuthProvider[]>([]);
+  const [authProvidersLoading, setAuthProvidersLoading] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   const loadChallenge = useCallback(async () => {
     if (!challengeId) {
@@ -105,7 +115,26 @@ export function DeviceEnrollmentApproval({
     try {
       const loaded = await loadDeviceEnrollmentChallenge(challengeId);
       setChallenge(loaded);
-      setState(enrollmentStateFromChallenge(loaded));
+      const loadedState = enrollmentStateFromChallenge(loaded);
+      if (loadedState === "pending") {
+        try {
+          await requireBrowserSession();
+          setState("pending");
+        } catch (caught) {
+          const message =
+            caught instanceof Error
+              ? caught.message
+              : "Browser session is unavailable.";
+          if (message.toLowerCase().includes("session cookie")) {
+            setState("unauthenticated");
+            setError(null);
+          } else {
+            throw caught;
+          }
+        }
+      } else {
+        setState(loadedState);
+      }
     } catch (caught) {
       const message =
         caught instanceof Error ? caught.message : "Enrollment lookup failed.";
@@ -124,6 +153,30 @@ export function DeviceEnrollmentApproval({
   useEffect(() => {
     void loadChallenge();
   }, [loadChallenge]);
+
+  useEffect(() => {
+    if (state !== "unauthenticated") return;
+    let current = true;
+    setAuthProvidersLoading(true);
+    void loadBrowserAuthProviders()
+      .then((providers) => {
+        if (current) setAuthProviders(providers);
+      })
+      .catch((caught) => {
+        if (!current) return;
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : "Authentication options could not be loaded."
+        );
+      })
+      .finally(() => {
+        if (current) setAuthProvidersLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [state]);
 
   const backendDisplayName = useMemo(
     () =>
@@ -153,12 +206,32 @@ export function DeviceEnrollmentApproval({
       setChallenge(updated);
       setState(enrollmentStateFromChallenge(updated));
     } catch (caught) {
-      setState("error");
-      setError(
-        caught instanceof Error ? caught.message : "Enrollment update failed."
-      );
+      const message =
+        caught instanceof Error ? caught.message : "Enrollment update failed.";
+      if (message.toLowerCase().includes("session cookie")) {
+        setState("unauthenticated");
+        setError(null);
+      } else {
+        setState("error");
+        setError(message);
+      }
     } finally {
       setBusy(null);
+    }
+  };
+
+  const submitLocalLogin = async () => {
+    if (authBusy || !email.trim() || !password) return;
+    setAuthBusy(true);
+    setError(null);
+    try {
+      await loginWithLocalSession(email.trim(), password);
+      setPassword("");
+      await loadChallenge();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Sign in failed.");
+    } finally {
+      setAuthBusy(false);
     }
   };
 
@@ -232,19 +305,102 @@ export function DeviceEnrollmentApproval({
           ) : null}
         </div>
 
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <div className="mt-5">
           {state === "unauthenticated" ? (
-            <Button
-              onClick={() => {
-                window.location.href = `${apiBaseUrl}/auth/workos/login?return_to=${encodeURIComponent(window.location.pathname + window.location.search)}`;
-              }}
-              size="lg"
-            >
-              <LogInIcon className="size-4" />
-              Sign in
-            </Button>
+            <div className="ml-auto max-w-sm space-y-3">
+              {authProviders.includes("local") ? (
+                <form
+                  className="space-y-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void submitLocalLogin();
+                  }}
+                >
+                  <label
+                    className="block space-y-1.5"
+                    htmlFor="enrollment-email"
+                  >
+                    <span className="font-medium text-sm">Email</span>
+                    <Input
+                      autoComplete="email"
+                      id="enrollment-email"
+                      name="email"
+                      nativeInput
+                      onChange={(event) => setEmail(event.currentTarget.value)}
+                      required
+                      size="lg"
+                      type="email"
+                      value={email}
+                    />
+                  </label>
+                  <label
+                    className="block space-y-1.5"
+                    htmlFor="enrollment-password"
+                  >
+                    <span className="font-medium text-sm">Password</span>
+                    <Input
+                      autoComplete="current-password"
+                      id="enrollment-password"
+                      name="password"
+                      nativeInput
+                      onChange={(event) =>
+                        setPassword(event.currentTarget.value)
+                      }
+                      required
+                      size="lg"
+                      type="password"
+                      value={password}
+                    />
+                  </label>
+                  <Button
+                    className="w-full"
+                    disabled={authBusy}
+                    size="lg"
+                    type="submit"
+                  >
+                    {authBusy ? (
+                      <RefreshCwIcon className="size-4 animate-spin" />
+                    ) : (
+                      <LogInIcon className="size-4" />
+                    )}
+                    Sign in
+                  </Button>
+                </form>
+              ) : null}
+              {authProviders.includes("workos") ? (
+                <Button
+                  className="w-full"
+                  onClick={() => {
+                    window.location.href = `${apiBaseUrl}/auth/workos/login?return_to=${encodeURIComponent(window.location.href)}`;
+                  }}
+                  size="lg"
+                  variant={
+                    authProviders.includes("local") ? "outline" : "default"
+                  }
+                >
+                  <LogInIcon className="size-4" />
+                  Sign in with WorkOS
+                </Button>
+              ) : null}
+              {authProvidersLoading ? (
+                <p className="text-muted-foreground text-sm">
+                  Loading sign-in options.
+                </p>
+              ) : null}
+              {!authProvidersLoading && authProviders.length === 0 ? (
+                <Button
+                  className="w-full"
+                  onClick={() => void loadChallenge()}
+                  size="lg"
+                  variant="outline"
+                >
+                  <RefreshCwIcon className="size-4" />
+                  Retry
+                </Button>
+              ) : null}
+            </div>
           ) : (
-            <>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button
                 disabled={!canAct}
                 onClick={() => void submitDecision("deny")}
@@ -280,7 +436,7 @@ export function DeviceEnrollmentApproval({
                   Retry
                 </Button>
               ) : null}
-            </>
+            </div>
           )}
         </div>
       </section>

@@ -351,7 +351,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           turnId: "turn-identifiers",
           createdAt: "2026-05-05T13:05:00.000Z",
           position: 1,
-          text: "Important env vars: MEMORY_HOOK_TRIGGER_LCM_SUMMARY, MEMORY_HOOK_LCM_SUMMARY_LIMIT, and MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS."
+          text: "Important env vars: MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS, MEMORY_LCM_BACKGROUND_BATCH_LIMIT, and MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS."
         }
       ]
     },

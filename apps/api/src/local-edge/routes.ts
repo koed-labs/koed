@@ -1,7 +1,8 @@
 import type { DeviceCredentialRecord } from "@koed/db";
 import { verifyLocalEdgeClientCredentialAuthorization } from "@koed/shared";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
+import { enforceCollaborationAdmission } from "../collaboration/admission.js";
 import {
   localEdgeDeploymentModes,
   type RouteDeploymentMode
@@ -12,6 +13,9 @@ import {
   deviceEnrollmentChallengeParamsSchema,
   deviceCredentialParamsSchema,
   localEdgeRouteDecisionSchema,
+  localEdgeTeamMemoryAnswerSchema,
+  localEdgeTeamMemoryExpandSchema,
+  localEdgeTeamMemorySearchSchema,
   localEdgeUpstreamOperationSchema,
   listDeviceCredentialsQuerySchema,
   redeemDeviceEnrollmentChallengeSchema,
@@ -26,6 +30,7 @@ import {
   type LocalEdgeOperationFamily,
   type LocalEdgeRouteDecision
 } from "./upstream-routing.js";
+import { registerCollaborationCommandRoute } from "./collaboration-command.js";
 
 const publicDeviceCredential = (credential: DeviceCredentialRecord) => ({
   id: credential.id,
@@ -127,9 +132,7 @@ const activeDeviceCredentialForDecision = (
 const credentialAllowsOperation = (
   credential: DeviceCredentialRecord,
   operationFamily: LocalEdgeOperationFamily
-): boolean =>
-  credential.operationFamilies.includes(operationFamily) ||
-  credential.operationFamilies.includes("*");
+): boolean => credential.operationFamilies.includes(operationFamily);
 
 const secretMetadataKeyParts = [
   "token",
@@ -273,6 +276,7 @@ export const registerLocalEdgeRoutes = (
       memoryWrite: memoryWriteRateLimit
     },
     capture: { resolveCapturePolicyForRequest },
+    collaboration: { admission: collaborationAdmission },
     localEdge: {
       upstreamBackendsPath,
       remoteOperationsAllowed,
@@ -284,12 +288,147 @@ export const registerLocalEdgeRoutes = (
   const upstreamRegistry = () =>
     readLocalEdgeUpstreamRegistry(upstreamBackendsPath);
 
+  const authorizeLocalTeamMemoryRequest = (request: FastifyRequest) => {
+    assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
+    const body = request.body;
+    const upstreamBackendId =
+      body && typeof body === "object" && !Array.isArray(body)
+        ? (body as Record<string, unknown>).upstream_backend_id
+        : undefined;
+    const localCredential =
+      typeof upstreamBackendId === "string"
+        ? verifyLocalEdgeClientCredentialAuthorization(
+            context.config.koedHome,
+            request.headers.authorization,
+            {
+              backendId: upstreamBackendId,
+              operationFamily: "team_workspace_read"
+            }
+          )
+        : null;
+    if (!localCredential) {
+      throw Object.assign(
+        new Error(
+          "Scoped local-edge client credential required for Team Memory"
+        ),
+        { statusCode: 401 }
+      );
+    }
+    return localCredential;
+  };
+
+  const relayTeamMemoryRequest = async (
+    reply: FastifyReply,
+    input: {
+      upstreamBackendId: string;
+      method: "GET" | "POST";
+      path: string;
+      body?: Record<string, unknown>;
+    },
+    localCredential: ReturnType<typeof authorizeLocalTeamMemoryRequest>
+  ) => {
+    const backend = upstreamBackendById(
+      upstreamRegistry(),
+      input.upstreamBackendId
+    );
+    const upstreamAuthorization = backend
+      ? resolveUpstreamAuthorization(backend)
+      : null;
+    const decision = resolveLocalEdgeRouteDecision({
+      operationFamily: "team_workspace_read",
+      requestedMode: "live_upstream_proxy",
+      upstreamBackend: backend,
+      upstreamBackendId: input.upstreamBackendId,
+      deviceCredential: {
+        upstreamBackendId: localCredential.backendId,
+        operationFamilies: localCredential.operationFamilies
+      },
+      upstreamCredentialAvailable: Boolean(upstreamAuthorization)
+    });
+    assertLiveProxyDecision(decision);
+    if (!backend) {
+      throw Object.assign(new Error("upstream_not_registered"), {
+        statusCode: 424
+      });
+    }
+    if (!upstreamAuthorization) {
+      throw Object.assign(new Error("upstream_credential_missing"), {
+        statusCode: 424
+      });
+    }
+    const upstreamResponse = await upstreamFetch(
+      safeUpstreamProxyUrl(backend, input.path),
+      {
+        method: input.method,
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          authorization: upstreamAuthorization,
+          ...(input.method === "POST"
+            ? { "content-type": "application/json" }
+            : {})
+        },
+        body:
+          input.method === "POST" ? JSON.stringify(input.body ?? {}) : undefined
+      }
+    );
+    reply.header("x-koed-upstream-backend-id", backend.id);
+    reply.status(upstreamResponse.status);
+    if (upstreamResponse.status === 204) return reply.send();
+    const text = await upstreamResponse.text();
+    const contentType = upstreamResponse.headers.get("content-type") ?? "";
+    return contentType.includes("application/json")
+      ? text
+        ? (JSON.parse(text) as unknown)
+        : {}
+      : { upstreamStatus: upstreamResponse.status, body: text };
+  };
+
+  registerCollaborationCommandRoute(app, {
+    deploymentProfile: context.config.deploymentProfile,
+    resolveVerifiedLocalDeploymentId: () => {
+      const identity = context.deploymentIdentity.inspect();
+      if (
+        identity.health !== "healthy" ||
+        !identity.remoteOperationsAllowed ||
+        !identity.deploymentId
+      ) {
+        throw Object.assign(
+          new Error("Local deployment identity is not verified"),
+          { statusCode: 424 }
+        );
+      }
+      return identity.deploymentId;
+    },
+    teamCollaborationEnabled: context.config.teamCollaborationEnabled,
+    koedHome: context.config.koedHome,
+    upstreamBackendsPath,
+    corsOrigins: context.config.corsOrigins,
+    fetch: upstreamFetch,
+    resolveUpstreamAuthorization,
+    requireCollaborationRepository: requireRepository,
+    resolveActiveLocalUser: (userId) => requireRepository().getUser(userId),
+    actionGrantControl: context.collaboration.actionGrantControl,
+    sharedMemoryControl: context.collaboration.sharedMemoryControl,
+    subscribeRemoteNavigationInvalidation:
+      context.collaboration.subscribeNavigationInvalidation,
+    readPreHandler: memoryReadRateLimit,
+    writePreHandler: memoryWriteRateLimit
+  });
+
   app.post(
     "/v1/local-edge/device-enrollments/challenges",
     { preHandler: memoryWriteRateLimit },
-    async (request) => {
+    async (request, reply) => {
       const repo = requireRepository();
       const input = createDeviceEnrollmentChallengeSchema.parse(request.body);
+      await enforceCollaborationAdmission(
+        reply,
+        collaborationAdmission.admitConnectionFailure({
+          deviceId: input.device_instance_id ?? input.challenge_hash,
+          origin: request.headers.origin ?? request.ip
+        })
+      );
       let rotationLineageId: string | null = null;
       let rotationOwnerUserId: string | null = null;
       let rotationCredentialId: string | null = null;
@@ -321,7 +460,13 @@ export const registerLocalEdgeRoutes = (
       const requestedOperationFamilies =
         input.requested_operation_families ??
         pendingCredential?.operationFamilies;
-      const requestedFamilySet = new Set(requestedOperationFamilies ?? []);
+      if (!requestedOperationFamilies) {
+        throw Object.assign(
+          new Error("At least one requested operation family is required"),
+          { statusCode: 400 }
+        );
+      }
+      const requestedFamilySet = new Set(requestedOperationFamilies);
       if (
         pendingCredential?.operationFamilies?.some(
           (family) => !requestedFamilySet.has(family)
@@ -335,6 +480,7 @@ export const registerLocalEdgeRoutes = (
         );
       }
       const metadata = redactOptionalMetadata(input.metadata) ?? {};
+      metadata.protocolDeploymentId = input.protocol_deployment_id;
       if (pendingCredential) {
         metadata[pendingDeviceCredentialMetadataKey] = pendingCredential;
       }
@@ -346,12 +492,23 @@ export const registerLocalEdgeRoutes = (
         rotationOwnerUserId,
         rotationCredentialId,
         deviceLabel: input.device_label,
-        requestedOperationFamilies: requestedOperationFamilies,
+        requestedOperationFamilies,
         metadata,
         expiresAt: new Date(Date.now() + input.ttl_seconds * 1000)
       });
 
-      return { challenge: publicDeviceEnrollmentChallenge(challenge) };
+      const publicChallenge = publicDeviceEnrollmentChallenge(challenge);
+      return {
+        challenge: publicChallenge,
+        ...(context.config.explorerPublicUrl
+          ? {
+              activationUrl: new URL(
+                `device-enrollment/${encodeURIComponent(publicChallenge.id)}`,
+                `${context.config.explorerPublicUrl}/`
+              ).toString()
+            }
+          : {})
+      };
     }
   );
 
@@ -469,10 +626,17 @@ export const registerLocalEdgeRoutes = (
   app.post(
     "/v1/local-edge/device-enrollments/credentials",
     { preHandler: memoryWriteRateLimit },
-    async (request) => {
+    async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticateSession(request);
       const input = redeemDeviceEnrollmentChallengeSchema.parse(request.body);
+      await enforceCollaborationAdmission(
+        reply,
+        collaborationAdmission.admitConnectionFailure({
+          deviceId: input.credential_key_id,
+          origin: request.headers.origin ?? request.ip
+        })
+      );
       const credential = await repo.redeemDeviceEnrollmentChallenge(
         { userId: user.id },
         {
@@ -511,6 +675,27 @@ export const registerLocalEdgeRoutes = (
       );
 
       return { credentials: credentials.map(publicDeviceCredential) };
+    }
+  );
+
+  app.delete(
+    "/v1/local-edge/device-credentials/current",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const authContext = await authenticateDeviceCredential(request);
+      const revoked = await repo.revokeDeviceCredential(
+        { userId: authContext.user.id },
+        authContext.credential.id,
+        "local_edge_disconnected"
+      );
+      if (!revoked) {
+        throw Object.assign(new Error("Device credential not found"), {
+          statusCode: 404
+        });
+      }
+
+      return { revoked: true };
     }
   );
 
@@ -580,7 +765,7 @@ export const registerLocalEdgeRoutes = (
               repo,
               { userId: user.id },
               {
-                workspaceId: input.capture_context?.workspace_id,
+                projectId: input.capture_context?.project_id,
                 sessionId: input.capture_context?.session_id,
                 threadId: input.capture_context?.thread_id
               }
@@ -598,11 +783,74 @@ export const registerLocalEdgeRoutes = (
         upstreamCredentialAvailable: upstreamBackend
           ? Boolean(resolveUpstreamAuthorization(upstreamBackend))
           : false,
-        identityRemoteOperationsAllowed: remoteOperationsAllowed(),
         capturePolicy
       });
 
       return { decision };
+    }
+  );
+
+  app.post(
+    "/v1/local-edge/team-memory/search",
+    { preHandler: memoryReadRateLimit },
+    async (request, reply) => {
+      const localCredential = authorizeLocalTeamMemoryRequest(request);
+      const input = localEdgeTeamMemorySearchSchema.parse(request.body);
+      return relayTeamMemoryRequest(
+        reply,
+        {
+          upstreamBackendId: input.upstream_backend_id,
+          method: "POST",
+          path: "/v1/memory/search",
+          body: input.input
+        },
+        localCredential
+      );
+    }
+  );
+
+  app.post(
+    "/v1/local-edge/team-memory/answer",
+    { preHandler: memoryReadRateLimit },
+    async (request, reply) => {
+      const localCredential = authorizeLocalTeamMemoryRequest(request);
+      const input = localEdgeTeamMemoryAnswerSchema.parse(request.body);
+      return relayTeamMemoryRequest(
+        reply,
+        {
+          upstreamBackendId: input.upstream_backend_id,
+          method: "POST",
+          path: "/v1/memory/answer",
+          body: input.input
+        },
+        localCredential
+      );
+    }
+  );
+
+  app.post(
+    "/v1/local-edge/team-memory/expand",
+    { preHandler: memoryReadRateLimit },
+    async (request, reply) => {
+      const localCredential = authorizeLocalTeamMemoryRequest(request);
+      const input = localEdgeTeamMemoryExpandSchema.parse(request.body);
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(input.input)) {
+        if (value === undefined) continue;
+        query.set(
+          key,
+          value instanceof Date ? value.toISOString() : String(value)
+        );
+      }
+      return relayTeamMemoryRequest(
+        reply,
+        {
+          upstreamBackendId: input.upstream_backend_id,
+          method: "GET",
+          path: `/v1/memory/nodes/${encodeURIComponent(input.node_id)}/expand?${query.toString()}`
+        },
+        localCredential
+      );
     }
   );
 
@@ -680,7 +928,7 @@ export const registerLocalEdgeRoutes = (
               repo,
               { userId: authContext.user!.id },
               {
-                workspaceId: input.capture_context?.workspace_id,
+                projectId: input.capture_context?.project_id,
                 sessionId: input.capture_context?.session_id,
                 threadId: input.capture_context?.thread_id
               }

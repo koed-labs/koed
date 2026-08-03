@@ -69,6 +69,7 @@ export interface KoedServerRuntimeState {
   startedAt: string;
   runtimeMode?: "local-personal" | "external" | "developer";
   dependencyMode?: "bundled-local" | "external";
+  automaticPorts?: boolean;
   codexTranscriptWatcherEnabled?: boolean;
   repoRoot: string;
   apiUrl: string;

@@ -36,6 +36,30 @@ export class LlamaServerError extends Error {}
 
 type FetchLike = typeof fetch;
 type SpawnLike = typeof spawn;
+const llamaServerShutdownGraceMs = 2_000;
+
+const waitForChildExit = (
+  child: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> => {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
+};
 
 export const llamaServerEnvironment = (
   llamaServerBinary: string,
@@ -45,8 +69,51 @@ export const llamaServerEnvironment = (
   const existing = environment.LD_LIBRARY_PATH?.trim();
   return {
     ...environment,
+    LLAMA_ARG_UI: "false",
     LD_LIBRARY_PATH: existing ? `${llamaDir}:${existing}` : llamaDir
   };
+};
+
+export const llamaServerArgs = (options: LlamaServerOptions): string[] => {
+  const args = [
+    "--model",
+    options.modelPath,
+    "--ctx-size",
+    String(options.nCtx),
+    "--threads",
+    String(options.nThreads),
+    "--threads-batch",
+    String(options.nThreads),
+    "--batch-size",
+    String(options.nBatch),
+    "--ubatch-size",
+    String(options.nUbatch),
+    "--parallel",
+    String(options.parallel),
+    "--poll",
+    "0",
+    "--poll-batch",
+    "0",
+    "--n-gpu-layers",
+    "0",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(options.port),
+    "--pooling",
+    options.pooling,
+    "--log-disable"
+  ];
+  if (!options.promptCacheEnabled) {
+    args.push("--no-cache-prompt", "--cache-ram", "0");
+  }
+  if (options.embedding) {
+    args.push("--embedding");
+  }
+  if (options.reranking) {
+    args.push("--reranking");
+  }
+  return args;
 };
 
 export const tokenPieceText = (piece: unknown): string => {
@@ -142,52 +209,11 @@ export class LlamaServerClient {
     this.logPath = `/tmp/koed-${options.name}-llama-server.log`;
   }
 
-  start(): Promise<void> {
+  async start(): Promise<void> {
     if (this.isRunning()) {
-      return Promise.resolve();
+      return;
     }
-    const args = [
-      "--model",
-      this.options.modelPath,
-      "--ctx-size",
-      String(this.options.nCtx),
-      "--threads",
-      String(this.options.nThreads),
-      "--threads-batch",
-      String(this.options.nThreads),
-      "--batch-size",
-      String(this.options.nBatch),
-      "--ubatch-size",
-      String(this.options.nUbatch),
-      "--parallel",
-      String(this.options.parallel),
-      "--poll",
-      "0",
-      "--poll-batch",
-      "0",
-      "--n-gpu-layers",
-      "0",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(this.options.port),
-      "--pooling",
-      this.options.pooling,
-      "--no-ui",
-      "--log-disable"
-    ];
-    if (!this.options.promptCacheEnabled) {
-      args.push("--no-cache-prompt", "--cache-ram", "0");
-    }
-    if (this.options.embedding) {
-      args.push("--embedding");
-    }
-    if (this.options.reranking) {
-      args.push("--reranking");
-    }
-    if (this.options.embedding && !this.options.reranking) {
-      args.push("--embd-normalize", "2");
-    }
+    const args = llamaServerArgs(this.options);
 
     this.logger.info("llama-server process starting", {
       event: event("embedding.llama_server.starting"),
@@ -225,14 +251,9 @@ export class LlamaServerClient {
       this.process = child;
       child.stdout?.pipe(this.logFile, { end: false });
       child.stderr?.pipe(this.logFile, { end: false });
-      return this.waitReady(this.config.llamaServerStartupTimeoutSeconds).catch(
-        (error: unknown) => {
-          this.stop();
-          throw error;
-        }
-      );
+      await this.waitReady(this.config.llamaServerStartupTimeoutSeconds);
     } catch (error) {
-      this.stop();
+      await this.stop();
       throw error;
     }
   }
@@ -267,22 +288,22 @@ export class LlamaServerClient {
     );
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.process === null) {
       return;
     }
     const child = this.process;
-    if (child.exitCode === null) {
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (child.exitCode === null) {
-          child.kill("SIGKILL");
-        }
-      }, 10000).unref();
-    }
     this.process = null;
     this.logFile?.end();
     this.logFile = null;
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      const exited = await waitForChildExit(child, llamaServerShutdownGraceMs);
+      if (!exited && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await waitForChildExit(child, llamaServerShutdownGraceMs);
+      }
+    }
   }
 
   async get(path: string, timeoutMs: number): Promise<Record<string, unknown>> {

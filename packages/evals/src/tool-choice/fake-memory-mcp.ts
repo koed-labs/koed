@@ -48,7 +48,7 @@ server.registerTool(
       search_domain: z
         .enum(["global", "project", "session"])
         .default("project"),
-      workspace_id: z.string().min(1).optional(),
+      project_id: z.string().min(1).optional(),
       session_id: z.string().uuid().optional(),
       limit: z.number().int().positive().max(50).default(10),
       include_evidence: z.boolean().default(false)

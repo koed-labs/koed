@@ -325,6 +325,31 @@ export const createWorkerQueueRuntime = async ({
     if (!repository) {
       throw new Error("DATABASE_URL is required for local queue backend");
     }
+    const runtimeLease = await repository.tryAcquireRuntimeLease();
+    if (!runtimeLease) {
+      throw new Error(
+        "Another Postgres-backed local work queue runtime is already active"
+      );
+    }
+    let recoveredJobs: number;
+    try {
+      recoveredJobs = await runtimeLease.requeueAbandonedJobs();
+    } catch (error) {
+      await runtimeLease.release();
+      throw error;
+    }
+    if (recoveredJobs > 0) {
+      logger.info(
+        {
+          event: {
+            name: "worker.queue.abandoned_jobs_recovered",
+            category: "job"
+          },
+          jobs: { recovered: recoveredJobs }
+        },
+        "abandoned local queue jobs recovered"
+      );
+    }
     const workers = workerQueueNames.map((queueName) =>
       createLocalQueueWorker({
         queueName,
@@ -340,8 +365,15 @@ export const createWorkerQueueRuntime = async ({
       lcmEmbedQueue,
       workers,
       close: async () => {
-        await Promise.all(workers.map((worker) => worker.close()));
-        await lcmEmbedQueue.close();
+        try {
+          await Promise.all(workers.map((worker) => worker.close()));
+        } finally {
+          try {
+            await lcmEmbedQueue.close();
+          } finally {
+            await runtimeLease.release();
+          }
+        }
       }
     };
   }

@@ -2,6 +2,7 @@ import type { KoedWorkClass } from "@koed/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
+  conversationItemStableIdentityQuerySchema,
   createConversationItemsSchema,
   projectConversationItemsSchema,
   releaseConversationProjectionHoldSchema,
@@ -47,14 +48,6 @@ export const registerRawConversationRoutes = (
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
       const input = createConversationItemsSchema.parse(request.body);
-      const localProfile = ["developer", "local_personal"].includes(
-        context.config.deploymentProfile
-      );
-      if (!localProfile && input.items.some((item) => item.sourcePath)) {
-        throw Object.assign(new Error("Raw source paths are local-only"), {
-          statusCode: 400
-        });
-      }
 
       const items = await repo.createConversationItems(
         { userId: user.id },
@@ -71,6 +64,27 @@ export const registerRawConversationRoutes = (
         acceptedCount: input.items.length,
         canonicalItemCount: items.length,
         sourceObservationCount: input.items.length - items.length
+      };
+    }
+  );
+
+  app.get(
+    "/v1/memory/conversation-items/by-stable-identity",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const query = conversationItemStableIdentityQuerySchema.parse(
+        request.query
+      );
+      return {
+        item: await repo.findConversationItemByStableIdentity(
+          { userId: user.id },
+          {
+            sessionId: query.session_id,
+            canonicalStableItemId: query.canonical_stable_item_id
+          }
+        )
       };
     }
   );

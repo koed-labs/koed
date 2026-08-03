@@ -10,7 +10,7 @@ MCP-side workers.
 
 - **AI Client**: Codex is the supported AI Client in this build.
 - **Transcript Watcher**: the local background service that owns correctness for externally managed Codex transcript growth.
-- **Capture Hook**: the TypeScript hook that provides low-latency wake signals and completion evidence.
+- **Capture Hook**: the TypeScript hook that provides content-free, low-latency wake signals.
 - **MCP Server**: the local process that exposes `memory_answer`, runs local
   memory-answer work, and runs the LCM Summary Service.
 - **API**: the Fastify backend that authenticates API Tokens, persists raw
@@ -34,14 +34,16 @@ MCP-side workers.
 
 1. The Operator or Koed Desktop starts `koed-server`.
 2. `koed-server` resolves `KOED_HOME`, prepares local config/log/runtime
-   directories, provisions the Explorer credential inside `KOED_HOME`, and
+   directories, and
    resolves runtime/dependency mode from explicit environment overrides,
    `KOED_HOME/config/server.json`, or package/profile defaults. Packaged Koed
    Desktop starts its managed local personal `koed-server` with
    `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
    Operator overrides those values. Desktop bundled-local startup allocates free
-   local API, Explorer, Postgres, and Embedding Service ports and persists them
-   under `KOED_HOME/config/local-ports.json` for stable later launches. The same
+   local API, Explorer, Postgres, Embedding Service, and private llama-server
+   child ports and persists them under `KOED_HOME/config/local-ports.json` for
+   stable later launches. This keeps independent Koed homes from attaching to
+   each other's model processes. The same
    control plane uses `KOED_HOME/config`, `run`, `logs`, `data`, `models`,
    `cache`, and `runtime` as durable local state.
 3. In the current source-checkout path, bare `koed-server` defaults to external
@@ -89,20 +91,41 @@ MCP-side workers.
    reachability, and stop-based cleanup before Operators rely on it for local
    development or packaging checks.
 6. The API, Worker, and Explorer run as local app processes supervised by
-   `koed-server` and connect to those configured dependency URLs. API/Worker
+   `koed-server` and connect to those configured dependency URLs. On a
+   Desktop-managed fresh start, the supervisor starts the API first, waits for
+   API and migration readiness, provisions the app-owned local API Token and
+   Explorer credential inside `KOED_HOME`, and only then starts Worker and
+   Explorer with that credential. This ordering prevents authenticated
+   background work from ever starting with an example or stale token. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
-   table. After the API is healthy and a local API Token exists, the supervisor
-   starts `@koed/mcp-server` command `watch-codex-transcripts` when enabled.
-7. `koed-server start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. `koed-server stop --json` stops supervised processes in dependency-safe order: Transcript Watcher, Explorer, Worker, API, native Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the watcher before the API lets its active scan finish or terminate without losing the API dependency. Stop treats stale process IDs as an idempotent no-op and does not stop Docker Compose or Operator-managed dependencies. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
+   table. API and Worker consume the same strict
+   `KOED_TEAM_COLLABORATION_ENABLED` setting. When false, the API retains
+   Personal notes, channels, realtime, and the local Personal broker, and the
+   Worker retains Personal Projection, embedding, LCM, and deletion
+   reembedding. Cross-Identity Sync, retention purge, collaboration replay
+   pruning, and other Team collaboration jobs are not started.
+   After the API is healthy and a local API Token exists, the supervisor starts
+   `@koed/mcp-server` command `watch-codex-transcripts` when enabled.
+7. `koed-server start --daemon --json` starts a detached `koed-server start`
+   supervisor and returns machine-readable startup intent for Desktop and
+   scripts. `koed-server stop --json` stops supervised processes in
+   dependency-safe order: Transcript Watcher, Explorer, Worker, API, native
+   Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
+   watcher before the API lets its active scan finish or terminate without
+   losing the API dependency. Stop treats stale process IDs as an idempotent
+   no-op and does not stop Docker Compose or Operator-managed dependencies.
+   `koed-server restart --json` runs the same stop lifecycle, starts a detached
+   supervisor, and returns machine-readable JSON without streaming startup logs.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
    output, Supported Capture Hook config, Codex config, LCM Summary Service
    availability, and last verification metadata. Status compares the active
-   local API URL/token against the Koed-managed Codex MCP block and Capture
-   Hook config so stale ports or credentials show as explicit integration
-   mismatches. Readiness gates include Postgres reachability and version,
+   local API URL/token against the Koed-managed Codex MCP block and separately
+   verifies the credential-free Capture Hook command path. Stale ports,
+   credentials, or runtime paths show as explicit integration mismatches.
+   Readiness gates include Postgres reachability and version,
    current migrations, pgvector, local or BullMQ queue backend availability,
    and Embedding Service model/dimension compatibility. Historical-import
    backlog and aggregate Transcript Watcher process/status data are diagnostic
@@ -114,8 +137,13 @@ MCP-side workers.
    resolving the API/Explorer URLs, so Desktop-managed ports and direct CLI
    setup write the same target URL/token. `koed-server repair codex --json` is
    the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
-   block and hook config for the currently active local API URL/token without
-   running the full bootstrap.
+   block for the active local API URL/token and the credential-free Hook
+   command without
+   running the full bootstrap. The managed supervisor is the sole owner of
+   Desktop API Token provisioning and rotation. Source and packaged runtimes
+   both mint the token through the active runtime repository with the same
+   database and token pepper used by the API; Electron main only retains and
+   rereads that supervisor-owned credential.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
     offer one-click Codex integration repair for stale local config, and
@@ -239,26 +267,36 @@ tests, and future route review. It distinguishes:
   browser session or API Token.
 - `session_or_device_credential`: Team-scoped remote-control surfaces that
   accept either a browser session or a scoped enrolled device credential.
-  Browser session is the preferred identity for interactive Team recall and
-  graph. Team admin and Share Grant management remain session-only unless a
-  later design explicitly promotes a device-mediated management path.
+  Browser session is the preferred identity for interactive Team operations.
+  Device-mediated administration requires the narrow `action_grant` family
+  plus an exact, short-lived, browser-confirmed Action Grant; the device
+  credential never receives reusable `admin` authority.
 - `conditional_team_session_or_device`: personal recall/graph routes that
   accept an API Token only for personal scope and require a browser session or
-  scoped enrolled device credential when a Team Workspace scope is requested.
+  scoped enrolled device credential before a Team Workspace request can fail
+  closed. Generic Team evidence, graph, and expansion remain unavailable until
+  they can operate exclusively over the selected grant-scoped representation.
 - `device_credential`: enrolled local-edge status and remote-operation
   credential checks. Device credentials identify a User, upstream backend, and
   local device; they do not carry Team authority.
+- `pds_browser_governance`: browser-session-only Personal Device Group genesis,
+  challenge, transition, policy, and Remote Account Link routes. Bearer API
+  Tokens and device credentials are denied; active-device/recovery signatures
+  remain required in request body and Authority countersigns via configured
+  secret provider.
 - `upstream_credential` and `internal_service_token`: explicit future
   boundaries that must remain `not_implemented` until the corresponding relay
   or internal-service design exists.
 
 API Tokens remain personal-memory credentials for AI Client compatibility. They
 must not carry Team authority, create Share Grants, manage Workspaces, unlock
-Team Workspace recall, or act as a hosted-service credential. Team authority is
+Shared Memory, or act as a hosted-service credential. Team authority is
 resolved at request time from Koed-owned Membership, Team Workspace Access,
-Share Grant, lifecycle, profile, and entitlement state. Retrieval and graph
-routes must filter authorized candidates before semantic ranking or expansion;
-post-filtering is only defense in depth.
+Share Grant, lifecycle, profile, and entitlement state. The explicit Shared
+Memory list, timeline, detail, and realtime routes apply that boundary to the
+selected redacted representation. Generic Team retrieval, evidence, graph, and
+expansion routes authenticate and then fail closed before repository access;
+they cannot treat a Share Grant as authority over canonical Personal Memory.
 
 The route contract also exports `x-koed-deployment-modes` for each implemented
 OpenAPI operation. This metadata describes where an endpoint is product-applicable
@@ -338,11 +376,29 @@ feed `/ops/status` through
 payload when a status path is configured, so operations alerts do not have to
 wait for freshness expiry. Backup commands do not run inside request handling.
 
+Backup creation computes content-free summaries of actual collaboration
+threads, messages, encrypted companions, outbox rows, key references, and link
+integrity immediately before and after `pg_dump`; source churn fails the backup.
+After `pg_restore` and before any synthetic writes, restore-smoke requires the
+target summary to match the stored stable source summary exactly, including an
+explicit all-zero `empty` state. This proves transport of pre-existing stored
+collaboration rows without decrypting customer content.
+
+Encrypted manifests separately carry ciphertext-only synthetic collaboration
+sentinels. Once transport comparison passes, restore-smoke seeds them only into
+the confirmed disposable target, verifies their schema relationships and key
+references, and decrypts through the synthetic owner's authorized selection
+with the retained provider key. That second check proves restored schema and
+provider decrypt viability, not `pg_dump` transport. Missing summaries,
+mismatches, sentinel metadata, or key material fail closed; neither proof
+mutates the source database.
+
 Hosted capacity checks are also operator-run workflows. `pnpm hosted:capacity
 -- plan` prints the current launch assumptions, and `pnpm hosted:capacity -- run`
 exercises public readiness/capability routes, personal capture, personal recall,
-Team Workspace answer routes through browser sessions and scoped device
-credentials, local-edge Team proxying, graph overview, and `/ops/status`
+Team Workspace authentication denial and unavailable-surface behavior through
+browser sessions and scoped device credentials, local-edge Team relay behavior,
+graph overview, and `/ops/status`
 depending on the selected scenario and available credentials. When
 `DATABASE_URL` is available, the harness records before/after database and local
 queue snapshots; when a browser session cookie is available, it records redacted
@@ -359,8 +415,8 @@ surfaces, checks supplied Team or Workspace IDs against request-time Koed
 authorization, and records durable `analytics.activation.*` audit events with
 flat scalar metadata only. Metadata uses an explicit low-cardinality allowlist;
 string values must be short token-like values rather than free-form text. API
-Tokens, device credentials, Capture Hooks, and MCP Server credentials must not
-record hosted product analytics. `GET
+Tokens, device credentials, and MCP Server credentials must not record hosted
+product analytics. `GET
 /v1/analytics/activation-funnel` returns redacted event-count summaries grouped
 by event, surface, and deployment profile. Personal summaries are scoped to the
 authenticated User's own activation events; Team or Workspace summaries require
@@ -381,15 +437,15 @@ available for local development, and capability, enrollment, and Memory proxy
 requests reject redirects rather than allowing a transport downgrade.
 
 Registering an upstream is not sufficient to route memory traffic. Route policy
-defaults are fail-closed for capture-bearing writes, Team Workspace recall,
+defaults are fail-closed for capture-bearing writes, Team Workspace reads,
 Share Grant management, sync/offload, and admin operations. `koed-server
 upstream refresh --id <id> --json` validates the upstream `/v1/capabilities`
 contract and records checked, expiry, schema, profile, release, and failure
 metadata. `koed-server upstream policy --id <id> --... enabled --json`
 explicitly enables the operation families the Operator has approved. Stale,
 failed, and unchecked upstreams show as attention items in `koed-server status
---json` and `doctor --json`, so future routing can refuse remote-dependent
-operations without guessing from hostnames, ports, or route availability.
+--json` and `doctor --json`. Remote-dependent routing refuses those states
+without guessing from hostnames, ports, or route availability.
 
 The API local-edge layer resolves remote routing through explicit route
 decisions. `POST /v1/local-edge/route-decisions` uses the upstream registry,
@@ -400,32 +456,34 @@ explicitly supplied. Remote Team Workspace read, sync, or capture-bearing
 actions fail closed when the upstream is missing, route policy is disabled,
 capabilities are stale/failed/unchecked, the User has no matching device
 credential, or the device credential does not allow the requested operation
-family. Share Grant management and Team admin stay behind browser-session
-authorization in the current API.
+family. Share Grant management retains its dedicated family. Team
+administration through Desktop uses `action_grant` only to request, poll, and
+present exact one-use authority created by fresh browser confirmation; normal
+browser-session administration remains available directly.
 
-`POST /v1/local-edge/upstream-operations` is the live proxy path for operations
-that resolve to `live_upstream_proxy`. It accepts a `Koed-Device` credential and
-relays only non-local-edge `/v1/*` API paths to the selected upstream, preserving
-any configured upstream base-path prefix. The accepted `Koed-Device` credential
-authorizes the local-edge operation only. Local edge then resolves separate
-upstream relay authorization from secret storage using the selected backend's
-safe credential reference or backend id; if that relay credential is missing,
-the route fails closed. It does not forward arbitrary browser headers or the
-local device credential upstream, does not store reusable upstream credentials
-in the upstream registry, and does not expose upstream credentials to MCP Server
-or Supported Capture Hook processes. Queued sync/offload currently resolves as
-an explicit
-`queued_sync_handoff` decision only; the durable Cross-Identity Sync/offload
-state model records logical memory identity, source and target replicas, sync
-relationships, resumable upload sessions, chunks, and inbox/outbox entries for
-the later hosted intake and worker implementation.
+The typed local-edge search, answer, and node-expansion relays under
+`/v1/local-edge/team-memory/*` accept only the per-install Local-Edge Client
+Credential, bind it to the selected backend and `team_workspace_read`, validate
+the exact request schema, and translate it to a fixed remote Memory route. The
+remote currently authenticates and rejects those generic Team evidence surfaces
+as unavailable; the relay does not create authority. Local edge resolves the
+separate upstream device credential from secret storage and never forwards the
+local credential, arbitrary paths, methods, browser headers, or reusable
+credentials. Chat, Shared Memory, Team lifecycle, and realtime use their own
+typed collaboration controls; there is no general local-edge HTTP proxy.
+Cross-Identity Sync uses a typed `queued_sync_handoff` route decision, durable
+source outbox and target inbox processing, resumable encrypted upload sessions,
+bounded chunks, and idempotent target apply. Its state model records logical
+Memory identity, source and target replicas, sync relationships, cursors,
+package state, and inbox/outbox entries independently from Share Grants.
 
-For MCP Team recall, the incoming `Koed-Device` value is a Local-Edge Client
-Credential created during enrollment and scoped to the selected backend plus
-`team_workspace_read`. It is not the upstream device credential. The local edge
-validates the local credential before opening secure storage for the separate
-upstream credential. Personal API Tokens remain on Personal Memory routes and
-cannot be promoted into Team authority from the requested operation body.
+For a future representation-aware MCP Team recall flow, the incoming
+`Koed-Device` value remains a Local-Edge Client Credential created during
+enrollment and scoped to the selected backend plus `team_workspace_read`. It is
+not the upstream device credential. The local edge validates the local
+credential before opening secure storage for the separate upstream credential.
+Personal API Tokens remain on Personal Memory routes and cannot be promoted
+into Team authority from the requested operation body.
 
 ## Explorer-First Auth And Device Enrollment
 
@@ -461,9 +519,14 @@ remains available for headless/browser-mediated exchanges that already have
 session auth. Server-side persistence stores only verifier hashes or public-key
 material, never reusable device secrets. `GET
 /v1/local-edge/device-credentials/status` accepts the `Koed-Device` credential
-scheme for credential validation, while listing and revocation remain
-browser-session routes. Revoking a device credential stops future
-device-credential authentication without rotating local personal API Tokens.
+scheme for credential validation. Browser sessions can list and revoke any of
+the User's enrolled credentials, while `DELETE
+/v1/local-edge/device-credentials/current` lets a local edge revoke only its
+currently authenticated credential during an explicit disconnect. Revoking a
+device credential stops future device-credential authentication without
+rotating local personal API Tokens. A local edge keeps its secure credential and
+route state unchanged when remote revocation cannot be confirmed, so the User
+can retry without leaving an untracked remote credential.
 
 Device credential metadata records created, updated, last-used, last-validated,
 expiry, and revocation state. Audit events record credential creation and
@@ -478,8 +541,8 @@ remote credential material directly.
 
 Team entitlement state is a request-time lifecycle gate on Team and Team
 Workspace behavior. The current coarse states are `active`, `grace`,
-`suspended`, and `revoked`. `active` and `grace` allow normal Team Workspace
-recall, sharing, ingestion, sync handoff, and Team admin flows. `suspended` and
+`suspended`, and `revoked`. `active` and `grace` allow normal Shared Memory
+views, sharing, ingestion, sync handoff, and Team admin flows. `suspended` and
 `revoked` deny those Team operation families without deleting Users, Teams,
 Workspaces, Share Grants, or retained Memory rows.
 
@@ -522,18 +585,24 @@ remains a later integration on top of this durable seat lifecycle state.
    prefix mutation fail visibly without advancing it. Mutations outside sentinel
    windows are intentionally not detected by this bounded check.
 4. Codex may also emit `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`,
-   `SubagentStart`, and `SubagentStop`. The Supported Capture Hook writes a
-   content-free local wake hint and may provide stripped completion evidence.
-   Missing, duplicate, delayed, or reordered signals cannot create a capture
-   gap or duplicate. Transcript JSONL remains the content source of truth.
+   `SubagentStart`, and `SubagentStop`. The Supported Capture Hook writes only a
+   content-free local wake hint. Stop events additionally record the exact
+   complete JSONL byte frontier under hashed source-routing identities. The
+   watcher journals through that frontier and writes one idempotent,
+   server-validated lifecycle control for the active transcript turn before
+   consuming newer bytes. The Hook never supplies semantic content or provider
+   item identity, and the control cannot render or embed. Missing signals may
+   delay a fallback seal; duplicate, delayed, or reordered signals cannot seal
+   a later frontier or create duplicate content. Transcript JSONL remains the
+   content, provider item identity, and chronology source of truth.
 5. The watcher checks Capture Policy and Capture Pause before session creation
    and before every batch, then converts records with `codex-transcript-v1` into
    canonical `conversation_items` plus immutable
    `conversation_item_observations`. The API authenticates the Personal API
    Token and persists each raw batch as Personal Memory. No Team Workspace,
    Share Grant, remote authority, or backend synthesis is introduced.
-6. Exact provider identity controls canonicalization across watcher, Hook,
-   managed reconciliation, and historical import. Replayed observations are
+6. Exact provider identity controls canonicalization across live watcher,
+   managed ingestion, and historical import. Replayed observations are
    idempotent, conflicting bytes fail, and a later live observation promotes
    work to live Projection priority without another canonical item or Memory
    Event. Cursor advancement occurs only after raw persistence and direct live
@@ -586,26 +655,22 @@ remains a later integration on top of this durable seat lifecycle state.
     embeddings retain it.
 12. Local historical import state uses authenticated
     `/v1/historical-imports` and `/v1/historical-import-sources` routes. A
-    strict local-only lookup resolves one owner-scoped source from its AI
-    Client, source kind, and source session ID so capture can resume after
-    restart without exposing raw paths or path-like Project provenance. These
-    routes exist only on
-    developer/local-personal edges. Durable run/source
-    records validate transitions and retain an immutable complete-record
-    registration frontier (offset/bounded prefix sentinel hash plus fingerprint/session ID),
-    separate historical imported ranges/checkpoint and live recovery cursor,
-    stage counters, retry/failure timestamps, immutable
-    detected Project provenance, and local-only raw source path. Responses and
-    canonical raw/Captured Session provenance remove raw path and path-like
-    Project fields. New sources can be registered only while a run is active or
-    paused; completed, failed, and skipped runs reject registration
-    transactionally. The owner-scoped `live-cursor` route is part of the same
-    local-only route identity and OpenAPI inventory.
+    strict local-only lookup resolves one owner-scoped Conversation Source
+    Artifact from its AI Client, source kind, and provider session ID. These
+    routes exist only on developer/local-personal edges. Durable run/source
+    records validate transitions and retain the immutable registration
+    frontier, separate historical ranges and journal consumer cursor, stage
+    counters, retry/failure timestamps, and immutable detected Project
+    provenance. Raw source paths remain local process state and are never
+    persisted or returned. New sources can be registered only while a run is
+    active or paused; completed, failed, and skipped runs reject registration
+    transactionally.
 13. Before source eligibility/queueing and every import batch, API resolves
     owning User's effective Capture Policy and Capture Pause. Disabled, ask,
     paused, or non-personal results fail closed. Policy mutation is serialized
     against batch persistence. Batch writes use the same
-    `codex-transcript-v1` adapter and `conversation_items` path as Hook capture.
+    `codex-transcript-v1` journal consumer and `conversation_items` path as live
+    capture.
     The boundary accepts canonical response-item identity, immutable observation
     fields, observation-only records, and raw-only classifications without
     rewriting them; raw persistence, counters, and checkpoint advancement
@@ -669,7 +734,7 @@ through Projection and downstream memory.
 
 This path currently has no frontend and does not replace the Transcript Watcher.
 Threads started outside Koed are captured from transcript growth; Supported
-Capture Hook signals provide low-latency wakeups and completion evidence.
+Capture Hook signals only reduce watcher latency.
 
 Commercial/private VPS/Team deployments can run encrypted-field backfill over
 existing human-readable Memory and evidence columns. Backfill is whitelist-based
@@ -688,6 +753,14 @@ sync, backup, and restore paths fail closed for affected payloads.
 Decrypted values must not be written to queue payloads, audit metadata, status
 responses, logs, or diagnostics.
 
+Raw-ingestion validation treats tool names as bounded source-protocol
+identifiers rather than classification tokens. In particular, a tool name may
+begin with an underscore and is preserved exactly for Projection and rendering.
+Other provider IDs, hashes, and classification fields retain their separate
+schemas. A rejected batch does not advance the Transcript Watcher's durable
+cursor, so corrected validation or source data is replayed without skipping
+later records.
+
 ```mermaid
 sequenceDiagram
   participant Client as AI Client
@@ -700,7 +773,7 @@ sequenceDiagram
   participant Embed as Embedding Service
 
   Client->>Transcript: Append transcript records
-  Hook-->>Watcher: Content-free wake hint / completion evidence
+  Hook-->>Watcher: Content-free wake hint
   Watcher->>API: Read durable frontier and live cursor
   API->>DB: Resolve owner-scoped source state
   Watcher->>Transcript: Compare prefix sentinels and parse bounded complete records
@@ -723,14 +796,20 @@ Team Workspace visibility. Team membership identifies whether a User can manage
 team-level settings, while a Team Workspace access grant controls whether that
 User can recall from, share into, or manage a specific Team Workspace.
 
-1. A User with enabled owner/admin membership creates a Team Workspace.
-2. The API stores the `team_workspaces` row and a creator self-grant with
-   `write` access in one transaction.
-3. Workspace access checks resolve enabled membership and the Workspace grant at
+1. Team creation atomically stores the Team, owner membership, exactly one
+   default Workspace, and exactly one structural `#general` channel. Retrying
+   the same idempotency key returns that completed Team without creating more
+   default records.
+2. A User with enabled owner/admin membership may create another Team
+   Workspace. Workspace creation always stores one structural `#general`; there
+   is no caller-controlled omission option.
+3. The API stores each `team_workspaces` row, creator self-grant with `write`
+   access, and structural `#general` in one transaction.
+4. Workspace access checks resolve enabled membership and the Workspace grant at
    request time. A missing grant is treated as `disabled`.
-4. Recall and share decisions use the resolved Workspace grant: `read` can
+5. Recall and share decisions use the resolved Workspace grant: `read` can
    recall, `write` can recall and create shares, and `disabled` can do neither.
-5. Workspace grant management requires both enabled owner/admin membership and a
+6. Workspace grant management requires both enabled owner/admin membership and a
    `write` grant on that Team Workspace, so Workspace-level downgrades take
    effect without rotating credentials.
 
@@ -740,9 +819,8 @@ sequenceDiagram
   participant API as API
   participant DB as Database
 
-  User->>API: Create Team Workspace
-  API->>DB: Insert team_workspaces row
-  API->>DB: Insert creator write grant
+  User->>API: Create Team or Team Workspace
+  API->>DB: Atomic Team/Workspace, access, and #general writes
   User->>API: Recall, share, or manage Workspace
   API->>DB: Resolve membership and Workspace grant
   DB-->>API: Request-time access profile
@@ -869,10 +947,15 @@ cwd is used only to resolve or display a Workspace.
 4. The API creates or revokes the Share Grant and writes an audit event.
    Captured Session grants are managed through browser-session Team Workspace
    routes; API Tokens remain personal-memory credentials and cannot create,
-   list, or revoke Team Share Grants.
-5. Recall uses active Share Grants at request time, plus independent lifecycle
-   gates for Access Suspension, Workspace archive state, membership state,
-   and Workspace Access.
+   list, or revoke Team Share Grants. Team creation atomically establishes the
+   initial Team retention policy. Share Grant revocation removes access and
+   atomically creates the immutable grant-scoped retention decision, purge job,
+   and artifact inventory; later purge remains a separate Worker operation.
+5. Shared Memory list, timeline, detail, and realtime reads use the exact active
+   grant-scoped representation plus independent lifecycle gates for Access
+   Suspension, Workspace archive state, membership state, and Workspace Access.
+   Generic recall, evidence, graph, expansion, and export do not inherit Share
+   Grant authority.
 6. Personal deletion removes memory from the owner's Personal Memory recall
    surface through `personal_deleted_at` lifecycle markers. It is not the same
    as global invalidation and does not revoke an active Team / Workspace Share
@@ -904,6 +987,14 @@ cwd is used only to resolve or display a Workspace.
     Session. Revocation is allowed by a current Workspace sharer or by the
     original source owner, preserving a User-controlled privacy exit even if
     their Workspace grant later changes.
+
+Team chat is a separate collaboration path even when Desktop presents it beside
+Team-shared Captured Sessions. Team Chat Messages use dedicated encrypted tables
+and durable content-safe outbox events; they do not enter raw ingestion,
+Projection, LCM, embedding, or recall. Local-edge Team chat uses separately
+scoped `team_chat_read` and `team_chat_write` device operations and the same
+request-time Team Membership, Workspace Access, lifecycle, and entitlement
+boundaries. See [Team Collaboration Architecture](team-collaboration.md).
 
 ## Cross-Identity Sync And Offload
 
@@ -944,17 +1035,23 @@ Fork/Import operation is introduced.
    count before accepting bytes; incomplete, unknown, unsafe, or out-of-bounds
    manifest fields fail closed.
 10. In the implemented Captured Session path, a local-personal source writes a
-    durable coalesced outbox signal when canonical Memory changes. It packages
-    only changes after the acknowledged source cursor and encrypts each bounded
-    chunk to the target deployment's active recipient key.
+    durable coalesced outbox signal when canonical Memory changes or a local
+    AI-client-created, session-bound LCM Summary snapshot changes. It packages
+    only Events after the acknowledged source cursor plus, when changed, one
+    complete authoritative summary snapshot, and encrypts each bounded chunk to
+    the target deployment's active recipient key.
 11. A private VPS, Team Self-Hosted, or Koed-managed cloud target verifies the
     encrypted upload and queues durable inbox processing. Authorization,
     deployment identity, target User, policy, consent, version, size, ordering,
     hash, and replay checks run before content is decrypted or made visible.
 12. Target apply is atomic and idempotent. The target preserves canonical
-    provenance and timestamps, then uses its existing embedding, indexing, LCM,
-    evidence, graph, and invalidation paths. Source vectors and LCM nodes are
-    never trusted or copied as searchable state.
+    provenance and timestamps, reconstructs synchronized summary nodes as
+    owner-private encrypted target records, then uses its existing embedding,
+    indexing, evidence, graph, and invalidation paths. Exact summary content,
+    model, prompt, schema, algorithm, and provenance cross the encrypted sync
+    boundary; source vectors and source-local node identities do not. The target
+    does not run LCM compaction or summary synthesis over synchronized replica
+    Events.
 13. Processing and partially available replicas are excluded from Recall. A
     target replica becomes recallable only after target processing reaches the
     package cursor and marks it ready. An overdue `stale_after` deadline removes
@@ -962,6 +1059,22 @@ Fork/Import operation is introduced.
     The source does not acknowledge the package cursor while the target remains
     in processing; it polls durable target state without spending transport
     retry attempts and becomes ready only after target completion.
+    Summary representation readiness additionally requires acknowledgment of
+    the exact source snapshot revision. Revision replacement invalidates prior
+    target nodes and embeddings, an authoritative empty snapshot removes them,
+    and event-only packages do not alter the last acknowledged summary snapshot.
+    `hasSynchronizedRevision` records that at least one target revision completed
+    and therefore may remain true during later processing or after relationship
+    revocation; `syncState` is the current transfer/freshness state.
+    When the source acknowledgement changes the relationship from `processing`
+    to `ready`, that transaction also appends one durable, content-free
+    `personal_memory_changed` collaboration outbox event and issues its Postgres
+    wake-up notification. Personal realtime replay binds the event to the exact
+    owner and Captured Session, materializes the current authorized
+    `PersonalMemoryEntry`, and delivers `personal_memory_upserted` through the
+    normal renderer acknowledgement queue. The outbox remains the recovery
+    source when a notification is missed; no Personal Memory polling or display
+    content in the outbox is used.
 14. Sync revocation stops future transfer but leaves existing Share Grant and
     retention semantics independent. Share Grant revocation removes Team
     visibility without deleting the synchronized target replica.
@@ -976,17 +1089,68 @@ Fork/Import operation is introduced.
 ## Personal Device Sync V1
 
 Personal Device Sync is not Directed Hosted Cross-Identity Sync; both remain
-Cross-Identity Sync umbrella specializations. PDS has no production route,
-worker, or local-edge API in this build. Its accepted
-protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
-When implemented, an eligible future closed Captured Session will follow this
-sequence: source seals contiguous raw closure; origin signs JCS source manifest;
-source encrypts package and recipient CEK envelopes; relay stores encrypted
-chunks; every active device verifies membership/log, signatures, hashes, and
-AEAD before local materialization; local Projection, embedding, and LCM Summary
-work rebuilds derived state. Relay/Authority outage, conflict quarantine, or
-expired membership certificate blocks remote PDS action only; local capture and
-Recall continue. PDS must not use Cross-Identity Sync's RSA recipient-envelope
+Cross-Identity Sync umbrella specializations. PDS V1 now exposes browser-session
+Personal Device Group authority routes only: challenge, genesis, membership
+transition, signed key-bundle ACK, scoped group/status/key-bundle/certificate
+retrieval, policy, and opaque Remote Account Link proof submission. A membership
+transition advances log head but leaves its epoch pending. Every active
+post-transition device must submit its signed ACK, bound to bundle, recipient
+KEM key commitment, and epoch, before authority activates epoch or issues
+membership certificates. Invalid, stale, missing, or revoked-device ACKs never
+activate an epoch. Relay authenticates each request with active membership
+certificate and Ed25519 proof, validates signed transport metadata/current
+recipient snapshot, stores only encrypted package bytes, verifies complete
+chunk/digest commit without decrypting, delivers mailbox chunks, validates
+signed package ACKs, and tracks independent recipient/origin high-water cursors.
+All-recipient ACK cleanup waits seven days; unacked package retention expires
+after thirty days; finalized post-acceptance revocation can waive only its
+snapshot recipient. Before every package accept, restore, materialization, or
+re-serve, device fetches current Authority lifecycle/floor state and rejects a
+matching opaque logical-memory/floor pair regardless of package origin sequence
+or delivery order. Tombstone apply disables source packages and converged
+replicas, invalidates derived Memory/embeddings/graph/evidence, excludes Recall,
+then sends a signed tombstone ACK. Snapshot quorum plus thirty days retains
+signed tombstone ledger records; opaque floors survive normal relay cleanup for
+group lifetime. Conflict records name exact observed closure hashes and either
+select one closure or mark candidates intentionally distinct; no latest-clock or
+silent merge exists. Materialization stays device-local.
+
+KOE-351 adds local materialization foundation: browser-authenticated close seals
+one eligible future Captured Session after Personal Sync Policy activation;
+association alone never publishes. Source raw items are sanitized, closure-bound,
+and retained only as an application-envelope-encrypted PDS package. Receiver
+claims inbox work with leases, verifies/decrypts only inside secure worker,
+then materializes read-only raw source before compatible portable artifact
+import or fallback local Projection, embedding, and LCM dispatch. Equal source
+fingerprint/closure converges observations;
+different closure quarantines every synchronized representation before Projection
+or Recall. PDS data-plane tables remain separate from directed sync tables.
+
+PDS protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+Same-network Desktop enrollment is a narrow transport over these existing
+primitives, not another membership protocol. The active Desktop creates a
+ten-minute one-use invitation and listens on a configurable private IPv4 port.
+The joining Desktop retrieves the invitation, submits its signed request, and
+uses only allowlisted enrollment control routes through AES-256-GCM envelopes
+derived from the invitation fragment. The active Desktop uses its loopback-only
+scoped Desktop credential to reach its local Authority, displays the joining
+device and comparison code, and requires explicit approval. Its approval IPC
+remains pending without polling until the joining device activates the new
+epoch. The gateway then invalidates the invitation but remains the encrypted
+PDS relay endpoint for that local-only topology. PDS private keys, runtime
+secrets, browser sessions, and Desktop credentials never enter renderer IPC.
+
+Any future eligible closed Captured Session sequence remains separate: source
+seals contiguous raw closure; origin signs JCS source manifest; source encrypts
+package and recipient CEK envelopes; relay stores encrypted chunks; every active
+device verifies membership/log, signatures, hashes, and AEAD before local
+materialization. A receiver imports separately signed compatible portable
+Memory Event, embedding, and LCM node artifacts when available, otherwise it
+rebuilds them locally. Semantic work uses stable logical identities, exact
+compatibility contracts, signed bounded capability advertisements, and fenced
+claims; physical queue leases remain local. Local indexes, queues, credentials,
+and runtime state never replicate. Team-owned collaboration data remains Team
+backend governed. PDS must not use Cross-Identity Sync's RSA recipient-envelope
 or target-processing path.
 
 ## Future Memory Inbox
@@ -1022,27 +1186,22 @@ grant-based visibility model.
 3. The local memory-answer worker calls API search through the MCP client's
    dynamic tools. Personal Project search uses Captured Sessions' effective
    organizational assignment: a User override, then automatic detection, then
-   `Unassigned`. Project context may separately resolve to a Workspace for
-   Team-shared search; session
-   search requires a captured-session id; global search still only searches
-   memory visible through the selected Retrieval Scope.
+   `Unassigned`. Session search requires a captured-session id; global search
+   still only searches Personal Memory visible through the selected Retrieval
+   Scope.
 4. The API authenticates the API Token and calls the core recall path.
-5. The repository validates the Search Domain, applies Personal Memory and
-   active Team / Workspace Share Grant authorization during candidate selection,
-   applies lifecycle gates such as Access Suspension and Workspace archive state,
-   and runs retrieval stages over Memory Nodes, fresh pending Memory Events,
-   raw fallback evidence, and lexical matches. Semantic stages use local
-   embedding search and may be reranked when configured.
+5. The repository validates the Search Domain, applies Personal Memory
+   authorization during candidate selection, and runs retrieval stages over
+   Memory Nodes, fresh pending Memory Events, raw fallback evidence, and lexical
+   matches. Semantic stages use local embedding search and may be reranked when
+   configured.
    Personal assignment changes only Personal Memory grouping and candidate
    filtering; immutable capture provenance remains available independently.
-   Team Workspace recall uses an explicit Team Workspace id separate from local
-   Project matching or assignment. The repository resolves the caller's enabled Team
-   Membership and Workspace Access before query execution, then admits only the
-   caller's Personal Memory plus rows whose sessions have active Share Grants to
-   that Team Workspace. Derived Memory Nodes are admitted only when their linked
-   source rows are all inside the authorized personal or Team Workspace
-   boundary, so unauthorized rows never reach semantic ranking, lexical
-   selection, expansion, or reranking inputs.
+   Supplying a Team Workspace id changes the authentication requirement but does
+   not authorize canonical Personal Memory. Search, answer, graph, and expansion
+   reject that scope before repository access until a grant-scoped queryable
+   representation can guarantee the same selected fidelity, redaction, policy,
+   and provenance boundary as the Shared Memory timeline.
    In commercial encrypted-field mode, any decrypt needed for source text,
    Evidence Bundle expansion, graph/source expansion, LCM Summary source items,
    Memory Node summary text, embedding source text, Memory Question result

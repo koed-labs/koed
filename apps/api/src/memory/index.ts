@@ -1,5 +1,7 @@
 export { registerCaptureRoutes } from "./capture-routes.js";
 export { registerCuratedMemoryRoutes } from "./curated-memory-routes.js";
+export { registerConversationSourceJournalRoutes } from "./conversation-source-journal-routes.js";
+export type { ConversationSourceSignerFactory } from "./conversation-source-journal-routes.js";
 export { registerGraphRoutes } from "./graph-routes.js";
 export { registerHistoricalImportRoutes } from "./historical-import-routes.js";
 export {

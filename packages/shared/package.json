@@ -10,6 +10,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./collaboration": {
+      "types": "./dist/collaboration-contract.d.ts",
+      "import": "./dist/collaboration-contract.js"
+    },
+    "./personal-desktop": {
+      "types": "./dist/personal-desktop-contract.d.ts",
+      "import": "./dist/personal-desktop-contract.js"
+    },
+    "./secure-upstream-fetch": {
+      "types": "./dist/secure-upstream-fetch.d.ts",
+      "import": "./dist/secure-upstream-fetch.js"
     }
   },
   "files": [
@@ -23,6 +35,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "json-canonicalize": "2.0.0"
+    "json-canonicalize": "2.0.0",
+    "undici": "^7.28.0",
+    "zod": "^4.4.3"
   }
 }

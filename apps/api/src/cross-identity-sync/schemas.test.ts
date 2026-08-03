@@ -8,7 +8,10 @@ import {
 } from "./schemas.js";
 
 const responseFixture = () => ({
-  relationship: { id: "11111111-1111-4111-8111-111111111111" },
+  relationship: {
+    id: "11111111-1111-4111-8111-111111111111",
+    state: "ready"
+  },
   target_deployment_id: "22222222-2222-4222-8222-222222222222",
   target_deployment_profile: "team_self_hosted",
   target_user_id: "33333333-3333-4333-8333-333333333333",
@@ -35,6 +38,7 @@ const uploadManifestFixture = () => ({
   format: "koed.captured-session-sync/v1",
   formatVersion: 1,
   packageDigest: "c".repeat(64),
+  summaryRevisionHash: null,
   recipientKeyId: "sync-recipient:test",
   recipientKeyVersion: 1,
   recordCount: 1
@@ -109,6 +113,23 @@ describe("Cross-Identity Sync response schemas", () => {
     expect(
       createUploadSessionSchema.safeParse({
         ...upload,
+        package_manifest: {
+          ...uploadManifestFixture(),
+          summaryRevisionHash: "d".repeat(64)
+        }
+      }).success
+    ).toBe(true);
+    const missingRevision = { ...uploadManifestFixture() };
+    Reflect.deleteProperty(missingRevision, "summaryRevisionHash");
+    expect(
+      createUploadSessionSchema.safeParse({
+        ...upload,
+        package_manifest: missingRevision
+      }).success
+    ).toBe(false);
+    expect(
+      createUploadSessionSchema.safeParse({
+        ...upload,
         package_manifest: { recordCount: 1 }
       }).success
     ).toBe(false);
@@ -149,7 +170,7 @@ describe("Cross-Identity Sync response schemas", () => {
         originSessionId: "55555555-5555-4555-8555-555555555555",
         externalSessionId: null,
         sourceRuntime: "codex",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         capturedAt: "2026-07-13T00:00:00.000Z",
         title: null,
         sourceAdapterVersion: null

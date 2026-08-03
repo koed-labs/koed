@@ -20,7 +20,7 @@ import {
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
-import { ensureDeviceIdentity } from "./device-identity.js";
+import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
 import type {
   KoedServerComponentState,
@@ -288,6 +288,30 @@ export const statusFromApiReady = async (
   };
 };
 
+const statusWaitingForManagedRuntime = (
+  staleRuntime: boolean
+): Awaited<ReturnType<typeof statusFromApiReady>> => {
+  const api = staleRuntime
+    ? needsAttention(
+        "Koed Desktop's managed supervisor is not running.",
+        "Restart Koed Desktop or run koed-server start."
+      )
+    : starting("Waiting for Koed Desktop to start its managed API.");
+  return {
+    api,
+    database: starting(
+      "Waiting for the managed API to confirm database state."
+    ),
+    redis: starting("Waiting for the managed API to confirm Redis state."),
+    workerQueues: starting(
+      "Waiting for the managed API to confirm work queue state."
+    ),
+    embeddingService: starting(
+      "Waiting for the managed API to confirm Embedding Service state."
+    )
+  };
+};
+
 const koedServerConfigEnvironment = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>
@@ -361,7 +385,7 @@ const inspectCodex = (
 ): KoedServerStatus["codex"] => {
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
-      `${environment.HOME ?? ""}/.codex/config.toml`
+      `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
   );
   if (!deps.existsSync(codexConfigPath)) {
     return {
@@ -436,65 +460,52 @@ const inspectCodex = (
 };
 
 const inspectCaptureHook = (
-  apiUrl: string,
-  apiToken: string | undefined,
   environment: NodeJS.ProcessEnv,
+  paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ) => {
-  const hookConfigPath = resolve(
-    environment.MEMORY_HOOK_CONFIG ??
-      `${environment.HOME ?? ""}/.koed/config.json`
+  const codexConfigPath = resolve(
+    environment.CODEX_CONFIG_PATH ??
+      `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
   );
-  if (!deps.existsSync(hookConfigPath)) {
+  if (!deps.existsSync(codexConfigPath)) {
     return notConfigured(
-      "Supported Capture Hook config was not found.",
+      "Codex configuration containing the Supported Capture Hook was not found.",
       "Run Fix Codex integration."
     );
   }
-  const parsed = readJsonFile<{
-    apiUrl?: string;
-    apiToken?: string;
-    captureEnabled?: boolean;
-  }>(hookConfigPath, deps.readFileSync);
-  if (!parsed?.apiUrl || !parsed.apiToken) {
+  const content = String(deps.readFileSync(codexConfigPath, "utf8"));
+  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  const requiredEvents = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop"
+  ];
+  const missingEvents = requiredEvents.filter(
+    (eventName) => !content.includes(`[[hooks.${eventName}]]`)
+  );
+  if (
+    !content.includes("# >>> koed") ||
+    !content.includes("capture-hook") ||
+    missingEvents.length > 0
+  ) {
     return needsAttention(
-      "Supported Capture Hook config is incomplete.",
-      "Run Fix Codex integration to rewrite hook configuration.",
-      { hookConfigPath }
-    );
-  }
-  if (parsed.apiUrl.replace(/\/+$/, "") !== apiUrl.replace(/\/+$/, "")) {
-    return needsAttention(
-      `Supported Capture Hook points to ${parsed.apiUrl}, but Koed Desktop is running at ${apiUrl}.`,
+      "Supported Capture Hook signal entries are incomplete.",
       "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
       {
-        configuredApiUrl: parsed.apiUrl,
-        expectedApiUrl: apiUrl,
-        hookConfigPath
+        codexConfigPath,
+        captureHookPath: runtime.captureHook,
+        missingEvents
       }
-    );
-  }
-  if (apiToken && parsed.apiToken !== apiToken) {
-    return needsAttention(
-      "Supported Capture Hook uses a different API Token than Koed Desktop.",
-      "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
-      {
-        configuredApiUrl: parsed.apiUrl,
-        expectedApiUrl: apiUrl,
-        hookConfigPath
-      }
-    );
-  }
-  if (parsed.captureEnabled === false) {
-    return needsAttention(
-      "Supported Capture Hook is configured but capture is disabled.",
-      "Run Fix Codex integration or enable capture in the Koed hook config.",
-      { hookConfigPath }
     );
   }
   return healthy("Supported Capture Hook is configured.", {
-    configuredApiUrl: parsed.apiUrl,
-    hookConfigPath
+    codexConfigPath,
+    captureHookPath: runtime.captureHook,
+    mode: "transcript_watcher_signal"
   });
 };
 
@@ -688,7 +699,7 @@ const inspectDeviceIdentity = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv
 ): Promise<KoedServerStatus["deviceIdentity"]> => {
-  const identity = await ensureDeviceIdentity(paths, { environment });
+  const identity = await inspectDeviceIdentityStatus(paths, { environment });
   const component = identity.remoteOperationsAllowed
     ? healthy(identity.message)
     : needsAttention(identity.message, identity.action);
@@ -817,6 +828,7 @@ export const collectKoedServerStatus = async (
           ...environment,
           KOED_RUNTIME_MODE: runtime.runtimeMode,
           KOED_DEPENDENCY_MODE: runtime.dependencyMode,
+          ...(runtime.automaticPorts ? { KOED_AUTO_PORTS: "1" } : {}),
           ...(runtime.codexTranscriptWatcherEnabled === undefined
             ? {}
             : {
@@ -842,9 +854,15 @@ export const collectKoedServerStatus = async (
     runtimeProcessRunning && runtime?.explorerUrl
       ? runtime.explorerUrl
       : resolveExplorerUrl(runtimeEnvironment, repoEnv);
-  const apiReady = await statusFromApiReady(apiUrl, deps.fetch, {
-    dependencyMode: serverConfig.dependencyMode
-  });
+  // Automatic ports identify a Desktop-owned local control plane. Without a
+  // live runtime for this KOED_HOME, a healthy service on the default port may
+  // be an unrelated Koed backend and must not satisfy local readiness.
+  const apiReady =
+    runtimeEnvironment.KOED_AUTO_PORTS === "1" && !runtimeProcessRunning
+      ? statusWaitingForManagedRuntime(Boolean(runtime))
+      : await statusFromApiReady(apiUrl, deps.fetch, {
+          dependencyMode: serverConfig.dependencyMode
+        });
   const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
@@ -860,12 +878,7 @@ export const collectKoedServerStatus = async (
     runtimeEnvironment,
     deps
   );
-  const captureHook = inspectCaptureHook(
-    apiUrl,
-    integrationToken?.token,
-    runtimeEnvironment,
-    deps
-  );
+  const captureHook = inspectCaptureHook(runtimeEnvironment, paths, deps);
   const codexTranscriptWatcher = inspectCodexTranscriptWatcher(
     serverConfig.codexTranscriptWatcherEnabled,
     runtime,

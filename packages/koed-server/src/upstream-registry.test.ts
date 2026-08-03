@@ -10,11 +10,17 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
+  beginUpstreamDisconnectCleanup,
+  completeUpstreamDisconnectCleanup
+} from "./upstream-disconnect-cleanup.js";
+import {
   collectUpstreamRegistryStatus,
+  getActiveUpstreamBackend,
   listUpstreamBackends,
   refreshUpstreamBackendCapabilities,
   registerUpstreamBackend,
   removeUpstreamBackend,
+  setActiveUpstreamBackend,
   updateUpstreamBackendRoutePolicy,
   type UpstreamBackendRegistry
 } from "./upstream-registry.js";
@@ -87,10 +93,12 @@ describe("upstream backend registry", () => {
       credential: { status: "not_configured" },
       routePolicy: {
         personalMemoryRead: "disabled",
+        personalCollaboration: "disabled",
         teamWorkspaceRead: "disabled",
         shareGrantManagement: "disabled",
         captureWrites: "disabled",
         sync: "disabled",
+        managedExecution: "disabled",
         admin: "disabled"
       },
       capabilities: {
@@ -189,6 +197,118 @@ describe("upstream backend registry", () => {
         profile: "team_self_hosted"
       }
     });
+  });
+
+  it("preserves backend identity and trust when reconnecting by canonical URL", async () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "team-vps",
+      url: "https://team.example.test/",
+      displayName: "Team VPS",
+      profile: "team-self-hosted"
+    });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      sync: "enabled"
+    });
+    await refreshUpstreamBackendCapabilities(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      fetch: async () =>
+        response(true, 200, {
+          product: "koed",
+          apiVersion: "v1",
+          capabilitySchemaVersion: 4,
+          releaseVersion: "0.2.0",
+          deployment: { profile: "team_self_hosted" }
+        })
+    });
+    const trustedRegistry = JSON.parse(
+      readFileSync(paths.upstreamBackendsPath, "utf8")
+    ) as UpstreamBackendRegistry;
+    firstBackend(trustedRegistry).credential = {
+      status: "configured",
+      reference: "keychain://team-vps"
+    };
+    writeFileSync(
+      paths.upstreamBackendsPath,
+      `${JSON.stringify(trustedRegistry, null, 2)}\n`
+    );
+    setActiveUpstreamBackend(paths, "team-vps");
+
+    registerUpstreamBackend(paths, {
+      url: "https://team.example.test",
+      displayName: "Team Backend",
+      profile: "team-self-hosted"
+    });
+
+    expect(getActiveUpstreamBackend(paths)).toMatchObject({
+      id: "team-vps",
+      displayName: "Team Backend",
+      credential: { status: "configured", reference: "keychain://team-vps" },
+      routePolicy: { teamWorkspaceRead: "enabled", sync: "enabled" },
+      capabilities: {
+        state: "validated",
+        schemaVersion: 4,
+        profile: "team_self_hosted"
+      }
+    });
+    expect(listUpstreamBackends(paths).backends).toHaveLength(1);
+  });
+
+  it("moves active selection with an explicit backend id rename", () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "old-team-vps",
+      url: "https://team.example.test",
+      profile: "team-self-hosted"
+    });
+    setActiveUpstreamBackend(paths, "old-team-vps");
+
+    const renamed = registerUpstreamBackend(paths, {
+      id: "new-team-vps",
+      url: "https://team.example.test",
+      profile: "team-self-hosted"
+    });
+
+    expect(renamed).toMatchObject({
+      ok: true,
+      state: "updated",
+      backend: {
+        id: "new-team-vps",
+        credential: { status: "not_configured" }
+      }
+    });
+    expect(getActiveUpstreamBackend(paths)).toMatchObject({
+      id: "new-team-vps"
+    });
+    expect(listUpstreamBackends(paths).backends).toHaveLength(1);
+  });
+
+  it("rejects a backend update that would duplicate another normalized URL", () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "primary-team",
+      url: "https://primary.example.test",
+      profile: "team-self-hosted"
+    });
+    registerUpstreamBackend(paths, {
+      id: "secondary-team",
+      url: "https://secondary.example.test",
+      profile: "team-self-hosted"
+    });
+    setActiveUpstreamBackend(paths, "primary-team");
+    const before = readFileSync(paths.upstreamBackendsPath, "utf8");
+
+    expect(() =>
+      registerUpstreamBackend(paths, {
+        id: "primary-team",
+        url: "https://secondary.example.test/",
+        profile: "team-self-hosted"
+      })
+    ).toThrow("Upstream URL is already registered as secondary-team.");
+    expect(readFileSync(paths.upstreamBackendsPath, "utf8")).toBe(before);
+    expect(getActiveUpstreamBackend(paths)?.id).toBe("primary-team");
+    expect(listUpstreamBackends(paths).backends).toHaveLength(2);
   });
 
   it("resets credentials, capabilities, and routes when the upstream trust boundary changes", async () => {
@@ -428,6 +548,61 @@ describe("upstream backend registry", () => {
     expect(listUpstreamBackends(paths).backends).toHaveLength(1);
   });
 
+  it("does not let a late capability refresh overwrite disconnect state", async () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "team-vps",
+      url: "https://team.example.test"
+    });
+    setActiveUpstreamBackend(paths, "team-vps");
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      sync: "enabled"
+    });
+    let release!: () => void;
+    let requested!: () => void;
+    const requestStarted = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    const pendingResponse = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const refresh = refreshUpstreamBackendCapabilities(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      fetch: async () => {
+        requested();
+        await pendingResponse;
+        return response(true, 200, {
+          product: "koed",
+          apiVersion: "v1",
+          capabilitySchemaVersion: 4,
+          deployment: { profile: "team_self_hosted" }
+        });
+      }
+    });
+    await requestStarted;
+
+    setActiveUpstreamBackend(paths, null, {
+      now: () => new Date("2026-01-01T00:01:00.000Z")
+    });
+    updateUpstreamBackendRoutePolicy(
+      paths,
+      "team-vps",
+      { sync: "disabled" },
+      { now: () => new Date("2026-01-01T00:01:00.000Z") }
+    );
+    release();
+
+    await expect(refresh).resolves.toMatchObject({
+      ok: false,
+      state: "failed"
+    });
+    expect(getActiveUpstreamBackend(paths)).toBeNull();
+    expect(listUpstreamBackends(paths).backends?.[0]).toMatchObject({
+      routePolicy: { sync: "disabled" },
+      capabilities: { state: "not_checked" }
+    });
+  });
+
   it("fails closed when the upstream registry file is malformed", () => {
     const paths = tempPaths();
     mkdirSync(resolve(paths.upstreamBackendsPath, ".."), { recursive: true });
@@ -447,6 +622,78 @@ describe("upstream backend registry", () => {
       parseError: "Upstream backend registry is malformed.",
       backends: []
     });
+  });
+
+  it("fails closed when persisted backends duplicate an id or normalized URL", () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "first-team",
+      url: "https://first.example.test"
+    });
+    registerUpstreamBackend(paths, {
+      id: "second-team",
+      url: "https://second.example.test"
+    });
+    const registry = JSON.parse(
+      readFileSync(paths.upstreamBackendsPath, "utf8")
+    ) as UpstreamBackendRegistry;
+    registry.backends[1]!.baseUrl = "https://first.example.test/";
+    writeFileSync(paths.upstreamBackendsPath, JSON.stringify(registry));
+
+    expect(() => listUpstreamBackends(paths)).toThrow(
+      "Upstream backend registry is malformed"
+    );
+    expect(collectUpstreamRegistryStatus(paths)).toMatchObject({
+      registered: 0,
+      parseError: "Upstream backend registry is malformed.",
+      backends: []
+    });
+  });
+
+  it("fails closed for an unsupported registry schema or dangling active backend", () => {
+    const paths = tempPaths();
+    mkdirSync(resolve(paths.upstreamBackendsPath, ".."), { recursive: true });
+    writeFileSync(
+      paths.upstreamBackendsPath,
+      JSON.stringify({ schemaVersion: 1, updatedAt: "now", backends: [] })
+    );
+    expect(() => listUpstreamBackends(paths)).toThrow(
+      "Upstream backend registry is malformed"
+    );
+
+    writeFileSync(
+      paths.upstreamBackendsPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        updatedAt: "now",
+        activeBackendId: "missing",
+        backends: []
+      })
+    );
+    expect(() => listUpstreamBackends(paths)).toThrow(
+      "Upstream backend registry is malformed"
+    );
+  });
+
+  it("persists one explicit active backend and clears it when removed", () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "first",
+      url: "https://first.example.test"
+    });
+    registerUpstreamBackend(paths, {
+      id: "second",
+      url: "https://second.example.test"
+    });
+
+    expect(getActiveUpstreamBackend(paths)).toBeNull();
+    expect(setActiveUpstreamBackend(paths, "second").ok).toBe(true);
+    expect(getActiveUpstreamBackend(paths)?.id).toBe("second");
+    expect(setActiveUpstreamBackend(paths, "missing").ok).toBe(false);
+    expect(getActiveUpstreamBackend(paths)?.id).toBe("second");
+
+    removeUpstreamBackend(paths, "second");
+    expect(getActiveUpstreamBackend(paths)).toBeNull();
   });
 
   it("summarizes stale, failed, and unchecked upstreams for diagnostics", () => {
@@ -512,5 +759,23 @@ describe("upstream backend registry", () => {
     expect(removeUpstreamBackend(paths, "team-vps").state).toBe("removed");
     expect(removeUpstreamBackend(paths, "team-vps").state).toBe("missing");
     expect(listUpstreamBackends(paths).backends).toHaveLength(0);
+  });
+
+  it("refuses to remove a backend while disconnect cleanup is durable", () => {
+    const paths = tempPaths();
+    registerUpstreamBackend(paths, {
+      id: "team-vps",
+      url: "https://team.example.test"
+    });
+    beginUpstreamDisconnectCleanup(paths, "team-vps");
+
+    expect(removeUpstreamBackend(paths, "team-vps")).toMatchObject({
+      ok: false,
+      state: "failed"
+    });
+    expect(listUpstreamBackends(paths).backends).toHaveLength(1);
+
+    completeUpstreamDisconnectCleanup(paths, "team-vps");
+    expect(removeUpstreamBackend(paths, "team-vps").state).toBe("removed");
   });
 });

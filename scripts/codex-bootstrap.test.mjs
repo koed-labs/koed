@@ -27,8 +27,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
     MEMORY_NODE_COMMAND: "node",
     MEMORY_CODEX_APP_SERVER_BINARY: "codex",
     KOED_PROMPT_DIR: "/opt/koed/prompts",
-    CODEX_CONFIG_PATH: "/tmp/koed-config.toml",
-    MEMORY_HOOK_CONFIG: "/tmp/koed-hook.json"
+    CODEX_CONFIG_PATH: "/tmp/koed-config.toml"
   };
   const tokenResult = {
     ownerCreated: true,
@@ -88,8 +87,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
 
   assert.equal(result.help, false);
   assert.deepEqual(result.paths, {
-    codexConfigPath: "/tmp/koed-config.toml",
-    hookConfigPath: "/tmp/koed-hook.json"
+    codexConfigPath: "/tmp/koed-config.toml"
   });
   assert.equal(result.tokenResult, tokenResult);
   assert.equal(result.doctorResult?.ok, true);
@@ -142,8 +140,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
 test("codex bootstrap loads root env before resolving defaults", async () => {
   const calls = [];
   const environment = {
-    CODEX_CONFIG_PATH: "/tmp/koed-config.toml",
-    MEMORY_HOOK_CONFIG: "/tmp/koed-hook.json"
+    CODEX_CONFIG_PATH: "/tmp/koed-config.toml"
   };
   const tokenResult = {
     ownerCreated: false,

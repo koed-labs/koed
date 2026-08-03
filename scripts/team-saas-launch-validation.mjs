@@ -12,21 +12,26 @@ import {
   runStagedRemoteValidation,
   validateLaunchReadiness
 } from "./team-saas-launch-validation-lib.mjs";
+import { createFixtureRuntime } from "./team-saas-fixture-lib.mjs";
 import { loadRootEnv } from "./api-token-bootstrap-lib.mjs";
+import { runMultiDeviceElectronDogfood } from "./multi-device-dogfood-lib.mjs";
 
 const requireFromDbPackage = createRequire(resolve("packages/db/package.json"));
 const pg = requireFromDbPackage("pg");
 
-const usage = `Usage: pnpm team-launch:validate [--with-automated-tests] [--with-staged-remote] [options]
+const usage = `Usage: pnpm team-launch:validate [--with-automated-tests] [--with-staged-remote] [--with-multi-device] [options]
 
 Validates the seeded Team SaaS fixture and prints the launch validation gates.
 With --with-automated-tests it also runs the focused repository test commands
 that back the non-fixture automated launch gates.
 With --with-staged-remote it also probes Team Workspace routes on a running
 target using a browser session cookie and scoped device credential.
+With --with-multi-device it drives two running Electron renderers over their
+isolated Chrome DevTools Protocol ports.
 
 Options:
   --base-url <url>                 Running API target for staged remote probes.
+  --browser-origin <url>           Browser/Explorer origin for session CSRF evidence.
   --session-cookie <cookie>        Browser Cookie header for Team routes.
   --device-credential <credential> Koed-Device credential value or full header.
   --api-token <token>              Optional API Token used to prove Team rejection.
@@ -34,11 +39,16 @@ Options:
   --team-node-id <uuid>            Memory node to expand; defaults to a fixture node.
   --local-edge-base-url <url>      Optional local-edge API target for proxy probes.
   --local-edge-backend-id <id>     Optional upstream backend id for local-edge proxy probes.
+  --device-a-cdp-port <port>        Device A Electron CDP port. Default: 9224.
+  --device-b-cdp-port <port>        Device B Electron CDP port. Default: 9225.
+  --multi-device-backend-id <id>    Expected active upstream backend id.
+  --multi-device-timeout-ms <ms>    Per-event timeout. Default: 15000.
 
 Environment:
   DATABASE_URL must point at the Koed database to validate.
   API_TOKEN_PEPPER must be configured so fixture API sessions are seeded and validated.
   KOED_LAUNCH_BASE_URL, KOED_LAUNCH_SESSION_COOKIE,
+  KOED_LAUNCH_BROWSER_ORIGIN,
   KOED_LAUNCH_DEVICE_CREDENTIAL, KOED_LAUNCH_API_TOKEN,
   KOED_LAUNCH_TEAM_WORKSPACE_ID, KOED_LAUNCH_TEAM_NODE_ID,
   KOED_LAUNCH_LOCAL_EDGE_BASE_URL, and KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID
@@ -53,6 +63,7 @@ loadRootEnv(process.cwd(), process.env);
 const args = process.argv.slice(2);
 const withAutomatedTests = args.includes("--with-automated-tests");
 const withStagedRemote = args.includes("--with-staged-remote");
+const withMultiDevice = args.includes("--with-multi-device");
 if (args.includes("--help") || args.includes("-h")) {
   process.stdout.write(usage);
   process.exit(0);
@@ -60,18 +71,41 @@ if (args.includes("--help") || args.includes("-h")) {
 
 const stagedRemoteOptionFlags = new Set([
   "--base-url",
+  "--browser-origin",
   "--session-cookie",
   "--device-credential",
   "--api-token",
   "--team-workspace-id",
   "--team-node-id",
   "--local-edge-base-url",
-  "--local-edge-backend-id"
+  "--local-edge-backend-id",
+  "--device-a-cdp-port",
+  "--device-b-cdp-port",
+  "--multi-device-backend-id",
+  "--multi-device-timeout-ms"
 ]);
 const stagedRemoteOptions = defaultStagedRemoteOptions(process.env);
+const multiDeviceOptions = {
+  deviceAPort: 9224,
+  deviceBPort: 9225,
+  timeoutMs: 15_000,
+  expectedBackendId: undefined
+};
+const parsePositiveInteger = (flag, value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    console.error(`${flag} must be a positive integer.`);
+    process.exit(2);
+  }
+  return parsed;
+};
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
-  if (arg === "--with-automated-tests" || arg === "--with-staged-remote") {
+  if (
+    arg === "--with-automated-tests" ||
+    arg === "--with-staged-remote" ||
+    arg === "--with-multi-device"
+  ) {
     continue;
   }
   if (stagedRemoteOptionFlags.has(arg)) {
@@ -82,6 +116,8 @@ for (let index = 0; index < args.length; index += 1) {
     }
     if (arg === "--base-url") {
       stagedRemoteOptions.baseUrl = value;
+    } else if (arg === "--browser-origin") {
+      stagedRemoteOptions.browserOrigin = value;
     } else if (arg === "--session-cookie") {
       stagedRemoteOptions.sessionCookie = value;
     } else if (arg === "--device-credential") {
@@ -96,6 +132,14 @@ for (let index = 0; index < args.length; index += 1) {
       stagedRemoteOptions.localEdgeBaseUrl = value;
     } else if (arg === "--local-edge-backend-id") {
       stagedRemoteOptions.localEdgeBackendId = value;
+    } else if (arg === "--device-a-cdp-port") {
+      multiDeviceOptions.deviceAPort = parsePositiveInteger(arg, value);
+    } else if (arg === "--device-b-cdp-port") {
+      multiDeviceOptions.deviceBPort = parsePositiveInteger(arg, value);
+    } else if (arg === "--multi-device-backend-id") {
+      multiDeviceOptions.expectedBackendId = value;
+    } else if (arg === "--multi-device-timeout-ms") {
+      multiDeviceOptions.timeoutMs = parsePositiveInteger(arg, value);
     }
     index += 1;
     continue;
@@ -119,16 +163,23 @@ try {
 }
 
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 let automatedTestDatabase = null;
 
 try {
   await client.connect();
+  const fixtureRuntime = await createFixtureRuntime(pool);
   const stagedRemote = withStagedRemote
     ? await runStagedRemoteValidation(stagedRemoteOptions)
     : null;
+  const multiDevice = withMultiDevice
+    ? await runMultiDeviceElectronDogfood(multiDeviceOptions)
+    : null;
   const summary = await validateLaunchReadiness(client, {
     automatedTestStatus: withAutomatedTests ? "passed" : "not_run",
-    stagedRemote
+    fixtureRuntime,
+    stagedRemote,
+    multiDevice
   });
   if (withAutomatedTests) {
     automatedTestDatabase = await provisionAutomatedLaunchTestDatabase({
@@ -142,6 +193,7 @@ try {
       environmentOverrides: {
         API_TOKEN_PEPPER: randomBytes(32).toString("base64url"),
         DATABASE_URL: automatedTestDatabase.databaseUrl,
+        KOED_TEAM_COLLABORATION_ENABLED: "true",
         NODE_ENV: "test",
         SESSION_SECRET: randomBytes(32).toString("base64url")
       },
@@ -163,4 +215,5 @@ try {
     process.exitCode = 1;
   });
   await client.end().catch(() => {});
+  await pool.end().catch(() => {});
 }

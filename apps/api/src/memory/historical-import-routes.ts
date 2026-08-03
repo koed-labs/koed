@@ -12,10 +12,8 @@ import {
   historicalImportRunListSchema,
   historicalImportRunParamsSchema,
   historicalImportSourceLookupSchema,
-  historicalImportSourceObservationSchema,
   historicalImportSourceParamsSchema,
-  historicalImportTransitionSchema,
-  liveTranscriptCursorSchema
+  historicalImportTransitionSchema
 } from "./historical-import-schemas.js";
 
 const localProfiles = new Set(["developer", "local_personal"]);
@@ -40,10 +38,7 @@ const safeProjectProvenance = (
 const presentSource = (source: HistoricalImportSourceRecord) => {
   const safe = Object.fromEntries(
     Object.entries(source).filter(
-      ([key]) =>
-        key !== "localSourcePath" &&
-        key !== "redactedSourceLabel" &&
-        key !== "detectedProject"
+      ([key]) => key !== "redactedSourceLabel" && key !== "detectedProject"
     )
   );
   return {
@@ -96,7 +91,7 @@ const requireImportPolicy = async (
     repo,
     { userId },
     {
-      workspaceId: policyProjectId(source),
+      projectId: policyProjectId(source),
       threadId: source.sourceSessionId
     }
   );
@@ -226,39 +221,6 @@ const registerSourceLookupRoute = (
   );
 };
 
-const registerSourceObservationRoute = (
-  app: FastifyInstance,
-  context: ApiRouteContext
-): void => {
-  app.patch(
-    "/v1/historical-import-sources/:sourceId/observation",
-    { preHandler: context.rateLimit.memoryWrite },
-    async (request) => {
-      requireLocalImportSurface(context);
-      const user = await context.auth.authenticate(request);
-      const { sourceId } = historicalImportSourceParamsSchema.parse(
-        request.params
-      );
-      const input = historicalImportSourceObservationSchema.parse(request.body);
-      const source = await context
-        .requireRepository()
-        .observeHistoricalImportSource(
-          { userId: user.id },
-          {
-            sourceId,
-            ...input
-          }
-        );
-      if (!source) {
-        throw Object.assign(new Error("Historical import source not found"), {
-          statusCode: 404
-        });
-      }
-      return { source: presentSource(source) };
-    }
-  );
-};
-
 const registerRunTransitionRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
@@ -374,31 +336,6 @@ const registerBatchRoute = (
   );
 };
 
-const registerLiveCursorRoute = (
-  app: FastifyInstance,
-  context: ApiRouteContext
-): void => {
-  app.post(
-    "/v1/historical-import-sources/:sourceId/live-cursor",
-    { preHandler: context.rateLimit.memoryWrite },
-    async (request) => {
-      requireLocalImportSurface(context);
-      const user = await context.auth.authenticate(request);
-      const { sourceId } = historicalImportSourceParamsSchema.parse(
-        request.params
-      );
-      const input = liveTranscriptCursorSchema.parse(request.body);
-      const source = await context
-        .requireRepository()
-        .advanceLiveTranscriptCursor(
-          { userId: user.id },
-          { sourceId, ...input }
-        );
-      return { source: presentSource(source) };
-    }
-  );
-};
-
 export const registerHistoricalImportRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
@@ -408,9 +345,7 @@ export const registerHistoricalImportRoutes = (
   registerGetRunRoute(app, context);
   registerCreateSourceRoute(app, context);
   registerSourceLookupRoute(app, context);
-  registerSourceObservationRoute(app, context);
   registerRunTransitionRoute(app, context);
   registerSourceTransitionRoute(app, context);
   registerBatchRoute(app, context);
-  registerLiveCursorRoute(app, context);
 };

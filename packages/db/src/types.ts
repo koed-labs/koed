@@ -5,17 +5,33 @@ import type {
 } from "@koed/core";
 import type { KoedWorkClass } from "@koed/shared";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
+import type { PersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
+import type { PersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
+import type { PersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
+import type { ConversationSourceJournalRepository } from "./conversation-source-journal-repository.js";
+import type {
+  CollaborationRealtimeMaterializationRepository,
+  CollaborationRepository
+} from "./collaboration-repository.js";
 import type { CrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
 import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.js";
+import type { HighRiskActionRepository } from "./high-risk-action-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
+import type { ManagedConversationRepository } from "./managed-conversation-repository.js";
+import type { DevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
+import type { ManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
+import type { ManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
+import type { PersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
+import type { PersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
+import type { SharedMemoryRepository } from "./shared-memory-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 
 export type Visibility = "personal";
 
-export type CaptureMethod = "hook" | "mcp" | "web" | "api";
+export type CaptureMethod = "transcript" | "mcp" | "web" | "api";
 
 export type SourceRuntime = "codex" | "codex-cli";
 
@@ -93,6 +109,13 @@ export interface UserRecord {
   passwordHash: string | null;
 }
 
+export interface UserSessionContext {
+  sessionId: string;
+  createdAt: Date;
+  expiresAt: Date;
+  user: UserRecord;
+}
+
 export type ExternalAuthProvider = "workos_authkit";
 
 export type ExternalAuthLinkStatus = "linked" | "disabled";
@@ -140,6 +163,25 @@ export type TeamMembershipStatus = "invited" | "enabled" | "disabled";
 
 export type TeamWorkspaceAccessLevel = "disabled" | "read" | "write";
 
+export type TeamLifecycle =
+  | "active"
+  | "suspended"
+  | "deletion_requested"
+  | "purge_pending"
+  | "purged";
+
+export type TeamWorkspaceLifecycle =
+  | "active"
+  | "archived"
+  | "purge_pending"
+  | "purged";
+
+export type TeamInviteLifecycle =
+  | "pending"
+  | "accepted"
+  | "revoked"
+  | "expired";
+
 export type TeamEntitlementStatus =
   | "active"
   | "grace"
@@ -154,6 +196,7 @@ export type TeamBillingSeatSyncStatus =
 
 export interface TeamEntitlementGateRecord {
   teamId: string;
+  version: number;
   status: TeamEntitlementStatus;
   allowsTeamAccess: boolean;
   deniedOperationFamilies: string[];
@@ -164,16 +207,23 @@ export interface TeamEntitlementGateRecord {
 export interface TeamRecord {
   id: string;
   name: string;
+  version: number;
+  lifecycle: TeamLifecycle;
   entitlementStatus: TeamEntitlementStatus;
   entitlementReason: string | null;
   entitlementUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
-  archivedAt: string | null;
+  suspendedAt: string | null;
+  deletionRequestedAt: string | null;
+  tombstonedAt: string | null;
+  retainUntil: string | null;
+  purgeCompletedAt: string | null;
 }
 
 export interface TeamBillingSeatStateRecord {
   teamId: string;
+  version: number;
   seatLimit: number | null;
   billableSeatCount: number;
   pendingBillingSeatCount: number;
@@ -266,19 +316,54 @@ export interface TeamMembershipRecord {
   userId: string;
   role: TeamRole;
   status: TeamMembershipStatus;
+  version: number;
   createdAt: string;
   updatedAt: string;
   acceptedAt: string | null;
   disabledAt: string | null;
 }
 
+export interface TeamRosterMemberRecord {
+  userId: string;
+  displayName: string | null;
+  avatarReference: string | null;
+  status: "enabled";
+  presenceMode: "auto" | "manual";
+  manualPresenceStatus: "available" | "do_not_disturb" | "out_of_office";
+  presenceVersion: number;
+  lastHumanActivityAt: string | null;
+}
+
+export interface TeamManagementMemberRecord extends TeamMembershipRecord {
+  email: string;
+  displayName: string | null;
+  avatarReference: string | null;
+  presenceMode: "auto" | "manual";
+  manualPresenceStatus: "available" | "do_not_disturb" | "out_of_office";
+  presenceVersion: number;
+  lastHumanActivityAt: string | null;
+  workspaceAccess: {
+    teamWorkspaceId: string;
+    userId: string;
+    access: TeamWorkspaceAccessLevel;
+    version: number;
+  }[];
+}
+
 export interface TeamWorkspaceRecord {
   id: string;
   teamId: string;
   name: string;
+  description: string | null;
+  version: number;
+  lifecycle: TeamWorkspaceLifecycle;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  retentionPolicyId: string | null;
+  retentionPolicyVersion: number | null;
+  retainUntil: string | null;
+  purgeCompletedAt: string | null;
 }
 
 export interface TeamWorkspaceAccessRecord {
@@ -288,6 +373,8 @@ export interface TeamWorkspaceAccessRecord {
   role: TeamRole | null;
   membershipStatus: TeamMembershipStatus | null;
   access: TeamWorkspaceAccessLevel;
+  canShareOwnedMemory: boolean;
+  version: number | null;
   teamEntitlementStatus: TeamEntitlementStatus;
   teamEntitlementAllowsAccess: boolean;
   canManageTeam: boolean;
@@ -296,30 +383,26 @@ export interface TeamWorkspaceAccessRecord {
   canCreateShare: boolean;
 }
 
-export interface TeamSessionShareGrantRecord {
-  id: string;
-  ownerUserId: string | null;
-  sessionId: string | null;
+export interface TeamWorkspaceContextRecord {
   teamId: string;
+  teamName: string;
+  teamRole: TeamRole;
   teamWorkspaceId: string;
-  grantedByUserId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  revokedAt: string | null;
-  revokedByUserId: string | null;
-  revocationReason: string | null;
-  personalDeletedAt: string | null;
-  personalDeletedByUserId: string | null;
-  personalDeletionReason: string | null;
-  retainedByTeamAt: string | null;
-  retentionReason: string;
+  teamWorkspaceName: string;
+  access: Exclude<TeamWorkspaceAccessLevel, "disabled">;
 }
 
 export interface TeamInviteRecord {
   id: string;
   teamId: string;
+  defaultTeamWorkspaceId: string;
+  defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
   email: string;
+  normalizedEmail: string;
+  backendOriginHash: string;
   role: TeamRole;
+  version: number;
+  lifecycle: TeamInviteLifecycle;
   createdByUserId: string | null;
   acceptedByUserId: string | null;
   createdAt: string;
@@ -469,7 +552,6 @@ export interface CreateMemoryNodeInput {
   bodyText?: string | null;
   captureMethod?: CaptureMethod;
   sourceRuntime?: SourceRuntime;
-  codexTranscriptPath?: string;
   idempotencyKey?: string;
   sourceHash?: string;
   summaryModel?: string;
@@ -567,38 +649,25 @@ export interface HistoricalImportSourceIdentity {
   sourceSessionId: string;
 }
 
-export interface HistoricalImportSourceObservationInput {
-  sourceId: string;
-  localSourcePath: string;
-  sourceSizeBytes: number;
-  sourceModifiedAt?: string;
-}
-
 export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
   id: string;
   runId: string;
   ownerUserId: string;
   state: HistoricalImportState;
+  artifactId: string;
   aiClient: string;
   sourceKind: string;
   sourceSessionId: string;
   sourceFingerprint: string;
+  sessionId: string;
   registrationFrontierOffset: number;
-  registrationPrefixHash: string;
-  localSourcePath: string;
   redactedSourceLabel: string;
-  checkpointOffset: number;
-  checkpointLine: number;
-  checkpointHash: string | null;
-  historicalImportedRanges: Array<{
-    fromOffset: number;
-    toOffset: number;
-    checkpointHash: string;
-  }>;
-  liveCursorOffset: number;
-  liveCursorLine: number;
-  liveCursorHash: string | null;
-  sourceSizeBytes: number | null;
+  historicalCursorOffset: number;
+  historicalCursorLine: number;
+  historicalCursorDigest: string | null;
+  providerCursorOffset: number;
+  providerCursorLine: number;
+  sourceSizeBytes: number;
   sourceModifiedAt: string | null;
   sourceEventFrom: string | null;
   sourceEventTo: string | null;
@@ -636,14 +705,244 @@ export interface HistoricalImportRunDetail extends HistoricalImportRunRecord {
   sources: HistoricalImportSourceRecord[];
 }
 
+export type ConversationSourceArtifactLifecycle =
+  | "active"
+  | "finalizing"
+  | "finalized"
+  | "failed"
+  | "conflicted"
+  | "deletion_pending"
+  | "deleted";
+
+export type ConversationSourceConsumerKind =
+  | "canonical_live"
+  | "canonical_historical"
+  | "remote_upload"
+  | "remote_processing"
+  | "projection";
+
+export type ConversationSourceReplicaRole =
+  | "origin_local"
+  | "hosted_personal"
+  | "peer_personal";
+
+export type ConversationSourceOriginKeyStatus = "active" | "lost" | "revoked";
+
+export type PersonalSourceReplicationMode = "hosted_personal" | "peer_personal";
+
+export type ConversationSourceReplicationOutboxState =
+  | "pending"
+  | "in_flight"
+  | "succeeded"
+  | "failed"
+  | "quarantined";
+
+export type ConversationSourceReplicationAuthorizationBasis =
+  | "personal_sync_policy"
+  | "execution_transfer";
+
+export interface ConversationSourceArtifactRecord {
+  id: string;
+  ownerUserId: string;
+  sessionId: string;
+  logicalSourceId: string;
+  sourceGenerationId: string;
+  replicaRole: ConversationSourceReplicaRole;
+  sourceKind: string;
+  sourceRuntime: SourceRuntime;
+  externalSessionId: string;
+  sourceFingerprint: string;
+  artifactFormat: string;
+  artifactFormatVersion: number;
+  sourceAdapterVersion: string;
+  lifecycle: ConversationSourceArtifactLifecycle;
+  journalStartOffset: number;
+  journalStartLine: number;
+  liveStartOffset: number;
+  liveStartLine: number;
+  providerCursorOffset: number;
+  providerCursorLine: number;
+  currentSourceLength: number;
+  currentJournalSequence: number;
+  sourceCreatedAt: string;
+  sourceModifiedAt: string | null;
+  storageProvider: string;
+  storagePrefix: string;
+  closureHash: string | null;
+  closureManifest: Record<string, unknown> | null;
+  closureSignature: string | null;
+  originDeploymentId: string;
+  originDeviceId: string;
+  originKeyId: string;
+  originPublicKey: string;
+  originKeyStatus: ConversationSourceOriginKeyStatus;
+  priorGenerationClosure: Record<string, unknown> | null;
+  redactedSourceLabel: string;
+  createdAt: string;
+  updatedAt: string;
+  finalizedAt: string | null;
+}
+
+export interface ConversationSourceSegmentRecord {
+  id: string;
+  artifactId: string;
+  segmentIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  sourceStartLine: number;
+  sourceEndLine: number;
+  plaintextDigest: string;
+  ciphertextDigest: string | null;
+  plaintextSize: number;
+  storedSize: number;
+  storageKey: string;
+  storageProvider: string;
+  encryptionEnvelope: Record<string, unknown> | null;
+  signedManifest: Record<string, unknown>;
+  originSignature: string;
+  manifestDigest: string;
+  previousContentDigest: string | null;
+  contentDigest: string;
+  createdAt: string;
+  sealedAt: string;
+}
+
+export interface PersonalSourceReplicationPolicyRecord {
+  ownerUserId: string;
+  enabled: boolean;
+  targetUpstreamId: string | null;
+  mode: PersonalSourceReplicationMode;
+  effectiveFrom: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationSourceReplicationOutboxRecord {
+  id: string;
+  ownerUserId: string;
+  artifactId: string;
+  operationKind: "registration" | "segment" | "closure";
+  segmentId: string | null;
+  targetUpstreamId: string;
+  mode: PersonalSourceReplicationMode;
+  authorizationBasis: ConversationSourceReplicationAuthorizationBasis;
+  state: ConversationSourceReplicationOutboxState;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAt: string;
+  leaseOwner: string | null;
+  leaseToken: string | null;
+  leaseExpiresAt: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  succeededAt: string | null;
+  quarantinedAt: string | null;
+}
+
+export interface ConversationSourceReplicationOutboxClaimRecord extends ConversationSourceReplicationOutboxRecord {
+  artifact: ConversationSourceArtifactRecord;
+  segment: ConversationSourceSegmentRecord | null;
+}
+
+export interface ConversationSourceDownloadAuthorizationRecord {
+  id: string;
+  ownerUserId: string;
+  deviceCredentialId: string;
+  artifactId: string;
+  recipientKey: Record<string, unknown>;
+  firstSegmentIndex: number;
+  lastSegmentIndex: number;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  revocationReason: string | null;
+}
+
+export interface ConversationSourceRestoreJobRecord {
+  id: string;
+  ownerUserId: string;
+  upstreamBackendId: string;
+  sourceGenerationId: string;
+  targetDeploymentId: string;
+  recipientKeyId: string;
+  recipientKeyVersion: number;
+  actionGrantId: string;
+  state:
+    | "awaiting_approval"
+    | "ready"
+    | "downloading"
+    | "materializing"
+    | "completed"
+    | "failed"
+    | "revoked";
+  remoteAuthorizationId: string | null;
+  registration: Record<string, unknown> | null;
+  sourceDescriptor: Record<string, unknown> | null;
+  sourceClosure: Record<string, unknown> | null;
+  nextSegmentIndex: number;
+  lastSegmentIndex: number | null;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAt: string;
+  leaseOwner: string | null;
+  leaseToken: string | null;
+  leaseExpiresAt: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface ClaimedConversationSourceRestoreJob extends ConversationSourceRestoreJobRecord {
+  capability: string;
+}
+
+export type ConversationSourceReplicaSegmentAcceptance =
+  | {
+      status: "accepted" | "replayed";
+      artifact: ConversationSourceArtifactRecord;
+      segment: ConversationSourceSegmentRecord;
+    }
+  | {
+      status: "gap";
+      artifact: ConversationSourceArtifactRecord;
+      segment: null;
+      expectedSegmentIndex: number;
+    }
+  | {
+      status: "quarantined";
+      artifact: ConversationSourceArtifactRecord;
+      segment: null;
+      reason:
+        | "segment_identity_conflict"
+        | "segment_chain_conflict"
+        | "post_closure_append";
+    };
+
+export interface ConversationSourceConsumerCursorRecord {
+  artifactId: string;
+  consumerKind: ConversationSourceConsumerKind;
+  segmentIndex: number;
+  sourceOffset: number;
+  sourceLine: number;
+  lastVerifiedDigest: string | null;
+  parserState: Record<string, unknown>;
+  failureCode: string | null;
+  retryCount: number;
+  nextAttemptAt: string | null;
+  updatedAt: string;
+}
+
 export interface HistoricalImportBatchWriteInput {
   sourceId: string;
-  expectedCheckpointOffset: number;
-  expectedCheckpointHash?: string | null;
-  checkpointOffset: number;
-  checkpointLine: number;
-  checkpointHash: string;
-  sourceSizeBytes: number;
+  expectedSourceOffset: number;
+  sourceOffset: number;
+  sourceLine: number;
+  segmentIndex: number;
+  lastVerifiedDigest: string;
+  parserState?: Record<string, unknown>;
   skippedRecordCount?: number;
   malformedRecordCount?: number;
   sourceEventFrom?: string;
@@ -656,16 +955,6 @@ export interface HistoricalImportBatchWriteResult {
   source: HistoricalImportSourceRecord;
   policy: EffectiveCapturePolicy;
   replayed: boolean;
-}
-
-export interface LiveTranscriptCursorAdvanceInput {
-  sourceId: string;
-  expectedCursorOffset: number;
-  expectedCursorHash?: string | null;
-  cursorOffset: number;
-  cursorLine: number;
-  cursorHash: string;
-  sourceSizeBytes: number;
 }
 
 export interface UpsertCapturePolicyInput {
@@ -768,7 +1057,6 @@ export interface LcmGraphEvent {
   sourceRuntime: SourceRuntime | null;
   captureMethod: CaptureMethod;
   model: string | null;
-  workspaceId: string | null;
   projectId: string | null;
   projectName: string | null;
   projectPath: string | null;
@@ -870,10 +1158,11 @@ export interface PersonalProjectReference {
 
 export interface CapturedSessionRecord {
   id: string;
+  logicalSessionId: string;
   ownerUserId: string | null;
   visibility: Visibility;
   externalSessionId: string | null;
-  workspaceId: string | null;
+  forkedFromExternalThreadId: string | null;
   sourceRuntime: SourceRuntime;
   captureMethod: CaptureMethod;
   model: string | null;
@@ -923,7 +1212,6 @@ export interface ConversationItemInput {
   parentExternalItemId?: string;
   sourceRecordType: string;
   sourceEventType?: string;
-  sourcePath?: string;
   sourceLineNumber?: number;
   sourceSequence?: number;
   eventTime?: string;
@@ -940,7 +1228,6 @@ export interface ConversationItemInput {
   transportChunkEncoding?: string;
   sourceHash: string;
   idempotencyKey: string;
-  legacyIdempotencyKeys?: string[];
   canonicalItemKey?: string;
   canonicalStableItemId?: string;
   canonicalSourcePriority?: number;
@@ -1173,7 +1460,7 @@ export interface MemoryQuestionShellRecord {
   origin: MemoryQuestionOrigin;
   retrievalScope: MemoryQuestionRetrievalScope;
   searchDomain: MemoryQuestionSearchDomain;
-  workspaceId: string | null;
+  projectId: string | null;
   projectName: string | null;
   projectPath: string | null;
   sessionId: string | null;
@@ -1386,7 +1673,7 @@ export interface CuratedMemorySearchInput {
   query: string;
   searchDomain?: MemoryQuestionSearchDomain;
   sessionId?: string;
-  workspaceId?: string;
+  projectId?: string;
   limit?: number;
   currentOnly?: boolean;
   sourceAfter?: string;
@@ -1419,12 +1706,26 @@ export interface MemorySourceRepository
   extends
     MemoryEngineRepository,
     CapturedSessionRepository,
+    CollaborationRepository,
+    CollaborationRealtimeMaterializationRepository,
     ConversationItemRepository,
+    ConversationSourceJournalRepository,
     CrossIdentitySyncRepository,
+    DevelopmentWorkspaceSnapshotRepository,
     EncryptedPayloadRepository,
+    HighRiskActionRepository,
     LocalEmbeddingStatusRepository,
+    ManagedConversationRepository,
+    ManagedConversationForkRepository,
+    ManagedConversationTransferRepository,
+    PersonalDeviceArtifactRepository,
+    PersonalDeviceSyncRepository,
+    PersonalDeviceSyncLocalRepository,
+    PersonalDeviceSyncLifecycleRepository,
+    PersonalDeviceSyncRelayRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,
+    SharedMemoryRepository,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;
@@ -1450,7 +1751,7 @@ export interface MemorySourceRepository
   resolveCuratedMemoryProposalEvidence(
     actor: ActorContext,
     input: {
-      workspaceId?: string;
+      projectId?: string;
       sessionId?: string;
       exactQuote?: string;
     }
@@ -1526,11 +1827,48 @@ export interface MemorySourceRepository
     providerEnvironment?: string;
     providerUserId: string;
   }): Promise<ExternalAuthIdentityRecord | null>;
-  createTeam(actor: ActorContext, input: { name: string }): Promise<TeamRecord>;
+  getVerifiedExternalAuthIdentityForUser(
+    userId: string
+  ): Promise<ExternalAuthIdentityRecord | null>;
+  createTeam(
+    actor: ActorContext,
+    input: { name: string; idempotencyKey?: string }
+  ): Promise<TeamRecord>;
+  getTeamDefaultWorkspace(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamWorkspaceRecord | null>;
+  listTeams(actor: ActorContext): Promise<TeamRecord[]>;
   getTeamMembership(
     actor: ActorContext,
     teamId: string
   ): Promise<TeamMembershipRecord | null>;
+  listTeamRoster(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamRosterMemberRecord[] | null>;
+  getTeamRosterMember(
+    actor: ActorContext,
+    teamId: string,
+    userId: string
+  ): Promise<TeamRosterMemberRecord | null>;
+  setTeamPresence(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      mode: "auto" | "manual";
+      manualPresenceStatus: "available" | "do_not_disturb" | "out_of_office";
+      expectedVersion: number;
+    }
+  ): Promise<TeamRosterMemberRecord | null>;
+  recordTeamHumanActivity(
+    actor: ActorContext,
+    teamIds: string[]
+  ): Promise<string[]>;
+  listTeamManagementMembers(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamManagementMemberRecord[] | null>;
   getTeamEntitlementGate(
     actor: ActorContext,
     teamId: string
@@ -1539,6 +1877,7 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: {
       teamId: string;
+      expectedVersion: number;
       status: TeamEntitlementStatus;
       reason?: string | null;
     }
@@ -1551,6 +1890,7 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: {
       teamId: string;
+      expectedVersion: number;
       seatLimit: number | null;
     }
   ): Promise<TeamBillingSeatStateRecord | null>;
@@ -1562,25 +1902,31 @@ export interface MemorySourceRepository
     actor: ActorContext,
     teamId: string
   ): Promise<TeamSupportOverviewRecord | null>;
-  upsertTeamMember(
-    actor: ActorContext,
-    input: {
-      teamId: string;
-      userId: string;
-      role: TeamRole;
-      status?: TeamMembershipStatus;
-    }
-  ): Promise<TeamMembershipRecord | null>;
   createTeamWorkspace(
     actor: ActorContext,
-    input: { teamId: string; name: string }
+    input: { teamId: string; name: string; description?: string | null }
   ): Promise<TeamWorkspaceRecord | null>;
+  listTeamWorkspaces(
+    actor: ActorContext,
+    input: { teamId: string; includeArchived?: boolean; limit?: number }
+  ): Promise<TeamWorkspaceRecord[] | null>;
+  getTeamWorkspaceContext(
+    actor: ActorContext,
+    teamWorkspaceId: string
+  ): Promise<{
+    team: TeamRecord;
+    teamWorkspace: TeamWorkspaceRecord;
+    access: TeamWorkspaceAccessRecord;
+  } | null>;
   createTeamInvite(
     actor: ActorContext,
     input: {
       teamId: string;
+      defaultTeamWorkspaceId: string;
+      defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
       email: string;
       role: TeamRole;
+      backendOriginHash: string;
       tokenHash: string;
       expiresAt: Date;
     }
@@ -1590,14 +1936,42 @@ export interface MemorySourceRepository
   ): Promise<TeamInviteRecord | null>;
   acceptTeamInvite(input: {
     tokenHash: string;
-    userId?: string;
-    email?: string;
-    displayName?: string;
-    passwordHash?: string;
+    userId: string;
+    expectedVersion: number;
+    expectedBackendOriginHash: string;
   }): Promise<AcceptedTeamInviteRecord | null>;
+  listTeamInvites(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      includeRevoked?: boolean;
+      limit?: number;
+      cursor?: { createdAt: string; id: string };
+    }
+  ): Promise<{
+    invites: TeamInviteRecord[];
+    nextCursor: { createdAt: string; id: string } | null;
+  } | null>;
+  revokeTeamInvite(
+    actor: ActorContext,
+    input: { teamId: string; inviteId: string; expectedVersion: number }
+  ): Promise<TeamInviteRecord | null>;
+  updateTeamMemberRole(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      userId: string;
+      role: TeamRole;
+      expectedVersion: number;
+    }
+  ): Promise<TeamMembershipRecord | null>;
+  leaveTeam(
+    actor: ActorContext,
+    input: { teamId: string; expectedVersion: number }
+  ): Promise<TeamMembershipRecord | null>;
   disableTeamMember(
     actor: ActorContext,
-    input: { teamId: string; userId: string }
+    input: { teamId: string; userId: string; expectedVersion: number }
   ): Promise<TeamMembershipRecord | null>;
   setTeamWorkspaceAccess(
     actor: ActorContext,
@@ -1605,28 +1979,24 @@ export interface MemorySourceRepository
       teamWorkspaceId: string;
       userId: string;
       access: TeamWorkspaceAccessLevel;
+      expectedVersion: number | null;
     }
   ): Promise<TeamWorkspaceAccessRecord | null>;
+  archiveTeamWorkspace(
+    actor: ActorContext,
+    input: { teamWorkspaceId: string; expectedVersion: number }
+  ): Promise<TeamWorkspaceRecord | null>;
+  restoreTeamWorkspace(
+    actor: ActorContext,
+    input: { teamWorkspaceId: string; expectedVersion: number }
+  ): Promise<TeamWorkspaceRecord | null>;
   getTeamWorkspaceAccess(
     actor: ActorContext,
     teamWorkspaceId: string
   ): Promise<TeamWorkspaceAccessRecord | null>;
-  createTeamSessionShareGrant(
-    actor: ActorContext,
-    input: { teamWorkspaceId: string; sessionId: string }
-  ): Promise<TeamSessionShareGrantRecord | null>;
-  revokeTeamSessionShareGrant(
-    actor: ActorContext,
-    input: {
-      teamWorkspaceId: string;
-      shareGrantId: string;
-      reason?: string | null;
-    }
-  ): Promise<TeamSessionShareGrantRecord | null>;
-  listTeamSessionShareGrants(
-    actor: ActorContext,
-    input: { teamWorkspaceId: string; includeRevoked?: boolean; limit?: number }
-  ): Promise<TeamSessionShareGrantRecord[] | null>;
+  listTeamWorkspaceContexts(
+    actor: ActorContext
+  ): Promise<TeamWorkspaceContextRecord[]>;
   listTeamAuditEvents(
     actor: ActorContext,
     input: ListTeamAuditEventsInput
@@ -1636,6 +2006,7 @@ export interface MemorySourceRepository
     sessionHash: string,
     expiresAt: Date
   ): Promise<void>;
+  getSessionContext(sessionHash: string): Promise<UserSessionContext | null>;
   getSessionUser(sessionHash: string): Promise<UserRecord | null>;
   revokeSession(sessionHash: string): Promise<void>;
   createApiToken(input: {
@@ -1662,7 +2033,7 @@ export interface MemorySourceRepository
     rotationOwnerUserId?: string | null;
     rotationCredentialId?: string | null;
     deviceLabel?: string | null;
-    requestedOperationFamilies?: string[];
+    requestedOperationFamilies: string[];
     metadata?: Record<string, unknown>;
     expiresAt: Date;
   }): Promise<DeviceEnrollmentChallengeRecord>;
@@ -1756,6 +2127,7 @@ export interface MemorySourceRepository
   listSemanticMemoryRebuildActors(input?: {
     limit?: number;
   }): Promise<ActorContext[]>;
+  getNextSemanticMemoryRebuildDueAt(): Promise<Date | null>;
   processDueSemanticMemoryRebuilds(
     actor: ActorContext,
     input?: SemanticMemoryRebuildInput
@@ -1789,15 +2161,8 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: {
       runId: string;
+      artifactId: string;
       aiClient: string;
-      sourceKind: string;
-      sourceSessionId: string;
-      sourceFingerprint: string;
-      registrationFrontierOffset: number;
-      registrationPrefixHash: string;
-      localSourcePath: string;
-      sourceSizeBytes: number;
-      sourceModifiedAt?: string;
       sourceEventFrom?: string;
       sourceEventTo?: string;
       discoveredRecordCount?: number;
@@ -1824,27 +2189,6 @@ export interface MemorySourceRepository
       nextRetryAt?: string | null;
     }
   ): Promise<HistoricalImportSourceRecord | null>;
-  advanceHistoricalImportSource(
-    actor: ActorContext,
-    input: {
-      sourceId: string;
-      expectedCheckpointOffset: number;
-      expectedCheckpointHash?: string | null;
-      checkpointOffset: number;
-      checkpointLine: number;
-      checkpointHash: string;
-      sourceSizeBytes: number;
-      importedRecordCount: number;
-      skippedRecordCount?: number;
-      malformedRecordCount?: number;
-      sourceEventFrom?: string;
-      sourceEventTo?: string;
-    }
-  ): Promise<HistoricalImportSourceRecord | null>;
-  advanceLiveTranscriptCursor(
-    actor: ActorContext,
-    input: LiveTranscriptCursorAdvanceInput
-  ): Promise<HistoricalImportSourceRecord>;
   ingestHistoricalImportBatch(
     actor: ActorContext,
     input: HistoricalImportBatchWriteInput
@@ -1856,10 +2200,6 @@ export interface MemorySourceRepository
   getHistoricalImportSourceByIdentity(
     actor: ActorContext,
     identity: HistoricalImportSourceIdentity
-  ): Promise<HistoricalImportSourceRecord | null>;
-  observeHistoricalImportSource(
-    actor: ActorContext,
-    input: HistoricalImportSourceObservationInput
   ): Promise<HistoricalImportSourceRecord | null>;
   getEffectiveCapturePolicy(
     actor: ActorContext,
@@ -1881,7 +2221,6 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
-      teamWorkspaceId?: string;
       threadId?: string;
       nodeIds?: string[];
       includeInvalidated?: boolean;
@@ -1891,7 +2230,7 @@ export interface MemorySourceRepository
   getLcmGraphNode(
     actor: ActorContext,
     nodeId: string,
-    input?: { includeInvalidated?: boolean; teamWorkspaceId?: string }
+    input?: { includeInvalidated?: boolean }
   ): Promise<LcmGraphNodeDetail | null>;
   updateLcmGraphNode(
     actor: ActorContext,
@@ -1906,7 +2245,6 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
-      teamWorkspaceId?: string;
       threadId?: string;
       cursorTimestamp?: string;
       cursorSourceSequence?: number;
@@ -1923,7 +2261,6 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
-      teamWorkspaceId?: string;
       threadId?: string;
       includeInvalidated?: boolean;
       limit?: number;
@@ -1936,7 +2273,6 @@ export interface MemorySourceRepository
     input?: {
       includeInvalidated?: boolean;
       includeRaw?: boolean;
-      teamWorkspaceId?: string;
     }
   ): Promise<LcmGraphEvent | null>;
   updateLcmGraphEvent(
@@ -1991,8 +2327,13 @@ export interface MemorySourceRepository
   upsertSourceEmbedding(input: {
     source: EmbeddableSourceRecord;
     model: string;
+    modelArtifactHash: string;
     dimensions: number;
     version: string;
+    tokenizer: string;
+    inputTransform: string;
+    pooling: string;
+    normalization: string;
     vector: number[];
     chunkIndex?: number;
     chunkCount?: number;
@@ -2001,8 +2342,13 @@ export interface MemorySourceRepository
   replaceSourceEmbeddings(input: {
     source: EmbeddableSourceRecord;
     model: string;
+    modelArtifactHash: string;
     dimensions: number;
     version: string;
+    tokenizer: string;
+    inputTransform: string;
+    pooling: string;
+    normalization: string;
     chunks: Array<{
       vector: number[];
       chunkIndex: number;

@@ -1,47 +1,30 @@
 # Observability
 
-The API writes structured JSON logs through Fastify and Pino. API logs use
-`schema_version: "api_log_v1"` with `service: "koed-api"` and the resolved
-runtime environment.
+The API writes structured JSON through Fastify/Pino with
+`schema_version: "api_log_v1"` and `service: "koed-api"`. Worker services use
+structured Pino events. The implementation does not expose collaboration
+Prometheus counters; operate the launch from `/ops/status`, `/v1/capabilities`,
+durable audit rows, and exact `event.name` log queries. Do not invent or alert on
+metric names that are not emitted.
 
-## Request Logs
+## Safe Request Logs
 
-Request logs intentionally avoid request bodies, response bodies, full headers,
-and query values. The request serializer emits:
+Request logs contain request ID, method, path without query values, route,
+sorted query keys, optional W3C trace IDs, socket metadata, and rounded
+`http.duration_ms`. Authenticated logs may contain `auth.kind` and
+`actor.user_id`.
 
-- `request.id`: the Fastify request id. The API accepts a safe inbound
-  `x-request-id` value and returns `x-request-id` on every response.
-- `request.method`
-- `request.path`: URL pathname without query string values.
-- `request.route`: Fastify route pattern when available.
-- `request.query_keys`: sorted query parameter names, never values.
-- `request.trace.trace_id` and `request.trace.span_id`: parsed from a valid
-  W3C `traceparent` header when present.
-- `client.ip` and `client.port`: remote socket metadata when available.
-- `http.duration_ms`: request duration from Fastify completion logs, rounded to
-  an integer millisecond value.
+Logs and retained evidence must not contain emails, Memory or chat content,
+prompts, search text, request/response bodies, cookies, API/device credentials,
+token prefixes, passwords, connection strings, encryption/key material, raw
+headers, remote package manifests/bytes, vectors, or raw graph payloads.
+Unexpected errors retain Pino's error object for restricted debugging, but raw
+traces must not be copied into public release evidence. Validation failures
+record issue code/path, never rejected values.
 
-## Error Logs
+## Implemented Signals
 
-Unexpected server errors are logged at `error` with `err` so Pino can retain the
-error type, message, stack, and cause. Expected client/domain errors are logged
-at `warn` with sanitized fields. Zod validation failures include issue codes and
-paths, not rejected values.
-
-## Auth Context
-
-After authentication succeeds, logs may include:
-
-- `auth.kind`: `session` or `api_token`.
-- `actor.user_id`: the authenticated user id.
-
-Logs must not include emails, raw API tokens, token prefixes, session cookies,
-passwords, request bodies, memory content, search query text, or raw graph
-notification payloads.
-
-## Domain Events
-
-Operational events use namespaced `event.name` values:
+General API events include:
 
 - `http.request.failed`
 - `api.listen.failed`
@@ -73,7 +56,8 @@ source, batch, record, and advanced-byte counters and one sanitized error code.
 the watcher is enabled and whether its supervised process is recorded/running.
 Watcher status is diagnostic-only: disabled, missing, stale, or failed watcher
 status never changes API `/ready`, overall readiness, or doctor success. Hook
-wake hints contain only a timestamp and are not evidence of ingestion success.
+wake and matched boundary files contain only a version and timestamp under
+hashed routing identities. They are not evidence of ingestion success.
 
 Logs, status, metrics, wake hints, and support output must not include transcript
 content, Memory content, raw payloads, transcript or local source paths, API
@@ -81,39 +65,61 @@ Tokens, credential values, Memory Question text, or request payloads. Watcher
 failures log only bounded error codes; path and record details remain local data,
 not operational telemetry.
 
-Use the database `audit_events` table for durable operator/audit history such
-as token lifecycle changes, login outcomes, policy changes, and destructive
-memory actions. Operational logs are for debugging and monitoring.
+Implemented Team Worker events are:
 
-Cross-Identity Sync logs include only the queue side, bounded attempt count,
-and redacted error class. Remote response bodies, package manifests and bytes,
-Memory content, relationship/customer identifiers, credentials, recipient-key
-material, and provider details are not log fields. `/ops/status` reports
-bounded-cardinality queue depth/age, retry count, relationship state counts,
-recent byte/record throughput, and source/target record lag. Record throughput
-uses the authenticated package-manifest record count rather than cursor
-distance because monotonic source cursors may contain gaps between sessions.
-Source lag counts unsynchronized canonical changes for each selected session;
-target lag counts authenticated package records beyond the processing cursor.
+- `sync.outbox.failed`, `sync.inbox.failed`, `sync.service.failed`
+- `collaboration.replay_history.pruned`
+- `collaboration.replay_history.prune_failed`
+- `retention.purge.attempt_started`
+- `retention.purge.completed`
+- `retention.purge.awaiting_completion`
+- `retention.purge.retry_scheduled`
+- `retention.purge.terminal_failure`
+- `retention.purge.loop_failed`
 
-Personal Device Sync V1 is not yet an operational service. When implemented,
-its redacted metrics may include opaque group state, log-head sequence,
-certificate/ACK age, package/chunk counts and bytes, retry class, epoch,
-quarantine count, deletion-floor state, and quota state. Logs, metrics, audit
-metadata, support views, and status must exclude Memory, raw source IDs,
-fingerprints, Project aliases, keys, recovery-kit data, signatures, nonces,
-ciphertext, credentials, and signed record bodies. See
-[Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+PDS relay capability liveness requires both configured Authority signer and a
+successful relay repository status query. `/ops/status` reports implemented,
+bounded-cardinality relay metrics: uploading/committed/expired transport counts,
+active ciphertext-byte total, pending-recipient count, oldest pending ACK lag,
+group quota usage/limit, and uploading/expired retry classes. It does not report
+per-origin cursor state. Audit stores transition kind, opaque group/head, actor
+key id, outcome, and timestamp. Relay logs/metrics/audit exclude Memory, raw
+source IDs, fingerprints, Project aliases, keys, recovery-kit data, signatures,
+nonces, ciphertext, credentials, browser identity, and signed record bodies.
+PDS request logs use relay route templates/category only; they omit concrete
+route IDs and query keys. Local materialization status reports only bounded
+outbox/inbox/replica state counts and secure-worker heartbeat readiness. It does
+not expose per-origin high-water marks, source fingerprints, package IDs,
+closure hashes, paths, retained ciphertext, keys, or source content. Conflict
+quarantine is a redacted state, never an automatic winner selection. Lifecycle metrics add only tombstone ledger count, pending snapshot ACK count, oldest tombstone ACK lag, deletion-floor count, restore rollback rejections, and conflict-resolution state counts. They never expose floor tokens, logical IDs, candidate hashes, package IDs, source fingerprints, or signed records. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 
-Current durable audit action names:
+Cross-Identity Sync failure logs expose only queue side, bounded attempt, and
+redacted error class. Replay-prune logs expose deleted counts or error class.
+Retention logs expose content-free purge job/attempt IDs, artifact kind/count,
+reason, and error class.
 
-- `api_token.created`
-- `api_token.revoked`
-- `capture_policy.upserted`
-- `capture_policy.deleted`
-- `memory.deleted`
-- `memory.presentation_updated`
-- `memory_event.invalidated`
+`GET /ops/status` requires an Operator session. Its `crossIdentitySync`
+component is `degraded` when any outbox, inbox, or relationship failed count is
+nonzero and `error` when status cannot be read. Details include the implemented
+queue depth/age, retry and relationship-state counts, recent byte/record
+throughput, source/target record lag, and worker heartbeat state. The endpoint
+also reports API, database/migrations/pgvector, Redis, embedding, queue, backup,
+and other configured component status. `GET /v1/capabilities` exposes
+`teamCollaborationEnabled` and availability for Team Workspaces, collaboration,
+Share Grants, Cross-Identity Sync, and enrollment.
+
+Durable `audit_events` are the source for authorization and lifecycle history.
+Current collaboration-related action names include:
+
+`koed-server personal-sync status --json`, `credential status`, `key-epoch
+status`, and `replica status` use same redaction boundary. They show only
+policy, epoch, device lifecycle, freshness, processing, failure, conflict,
+revocation, and tombstone counters. They never show secret-provider references,
+private keys, recovery bytes/passwords, Team authority, API Tokens, paths,
+vectors, package bytes, or plaintext.
+
+Current durable audit action names include:
+
 - `cross_identity_sync.relationship.created`
 - `cross_identity_sync.upload.committed`
 - `cross_identity_sync.processing.completed`
@@ -123,25 +129,80 @@ Current durable audit action names:
 - `cross_identity_sync.relationship.remote_revoked`
 - `cross_identity_sync.relationship.retry_requested`
 
-Audit metadata may include identifiers, target names, target type, capture
-state, visibility, pause timestamps, token prefixes, actor type, and changed
-field names. Audit metadata must not include token secrets, token hashes,
-session cookies, passwords, memory content, search query text, or raw request
-bodies.
+Query other Team/high-risk action names by the exact action written by the
+tested route; do not infer success from an HTTP request log alone.
 
-## Embedding Service Logs
+## Post-Deploy Queries
 
-The embedding service writes structured JSON logs with
-`schema_version: "embedding_service_log_v1"` and
-`service: "koed-embedding-service"`. Configure verbosity with
-`EMBEDDING_LOG_LEVEL` in the root environment, which maps to service-local
-`LOG_LEVEL`.
+Run these against the deployment log store using its JSON-field syntax. The
+examples are logical predicates, not a claim about a specific log vendor:
 
-`info` logs cover model load lifecycle, embed/rerank completion, failures, and
-reranker lazy-load lifecycle. `debug` logs add scheduler snapshots, chunk counts,
-token counts, embedding batch sizes, fallback-to-single-chunk embedding, and
-reranker score counts.
+```text
+event.name IN (
+  "sync.outbox.failed", "sync.inbox.failed", "sync.service.failed",
+  "collaboration.replay_history.prune_failed",
+  "retention.purge.retry_scheduled", "retention.purge.terminal_failure",
+  "retention.purge.loop_failed"
+)
 
-Embedding logs must not include input text, query text, document text, chunks,
-vectors, API tokens, full headers, cookies, request bodies, or raw exception
-traces.
+request.path STARTS_WITH "/v1/collaboration" AND http.status_code >= 500
+request.path STARTS_WITH "/v1/shared-memory" AND http.status_code >= 500
+request.path STARTS_WITH "/v1/cross-identity-sync" AND http.status_code >= 500
+request.path STARTS_WITH "/v1/high-risk" AND http.status_code >= 500
+auth.kind = "api_token" AND request.path MATCHES_TEAM_ROUTE
+```
+
+The last query is investigative: Team requests authenticated as `api_token`
+must be denied and must have no corresponding successful durable Team action.
+Correlate by request ID and content-free audit identifiers. Also sample:
+
+```bash
+curl -fsS -H 'Cookie: <Operator session cookie>' https://<api>/ops/status
+curl -fsS https://<api>/v1/capabilities
+```
+
+Do not paste either secret or unredacted output into evidence.
+
+## Launch Thresholds
+
+Manually test the post-enable path through one successful Cross-Identity Sync
+cycle. Record redacted `/ops/status` samples before enable, after enable, and
+after the sync cycle.
+
+Immediately set `KOED_TEAM_COLLABORATION_ENABLED=false` on every API and Worker
+and restart them when any of these occurs:
+
+- unauthorized Team content, API Token Team success, or a successful altered,
+  stale, reused, wrong-device, wrong-backend, or wrong-Team Action Grant;
+- ciphertext/key/provider failure, Personal-to-Team scope leak, replay gap,
+  acknowledged event loss, or revoked/disabled content exposure;
+- any `retention.purge.terminal_failure`;
+- `/ops/status.components.crossIdentitySync.status` is `error`, or is
+  `degraded` because a failed outbox, inbox, or relationship count is nonzero;
+- any migration, backup verification, or restore-smoke failure.
+
+Keep the switch off and forward-fix when `sync.service.failed`,
+`collaboration.replay_history.prune_failed`, `retention.purge.loop_failed`, or
+`retention.purge.retry_scheduled` repeats in two consecutive five-minute samples,
+or when queue depth/oldest age, source/target lag, or heartbeat state worsens in
+two consecutive samples. These are trend triggers because the implementation
+exposes status values but no universal numeric service-level threshold.
+
+A single recovered retry is recorded but does not fail launch when the next
+sample is healthy, no terminal event occurred, and the full sync cycle
+completes. Any Team 5xx during the manual flow blocks signoff until explained,
+fixed, and rerun. Normal traffic percentage/error-rate thresholds require an
+external request-log aggregator and an established baseline; Koed does not
+currently emit that metric itself.
+
+## Embedding Service
+
+Embedding logs use `schema_version: "embedding_service_log_v1"` and
+`service: "koed-embedding-service"`. `EMBEDDING_LOG_LEVEL` maps to service-local
+`LOG_LEVEL`. Info covers model/reranker lifecycle and completion/failure; debug
+adds scheduler, chunk/token, batch, fallback, and score counts. Input/query
+text, chunks, vectors, credentials, headers, cookies, bodies, and raw traces are
+prohibited.
+
+Attach only the content-safe summary required by the structured release record
+in [Collaboration Launch Validation](collaboration-launch-validation.md).

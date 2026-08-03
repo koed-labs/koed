@@ -9,6 +9,7 @@ RUN find apps packages -name "*.tsbuildinfo" -delete && rm -rf apps/*/dist packa
 RUN pnpm --filter @koed/shared build \
   && pnpm --filter @koed/core build \
   && pnpm --filter @koed/db build \
+  && pnpm --filter @koed/mcp-server build \
   && pnpm --filter @koed/worker build
 
 FROM node:22-alpine AS runtime

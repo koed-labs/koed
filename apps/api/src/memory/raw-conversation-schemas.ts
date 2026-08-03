@@ -32,6 +32,14 @@ const classificationTokenSchema = tokenIdentifierSchema(
   128,
   "Classification fields"
 );
+const toolNameSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(
+    /^[A-Za-z0-9_][A-Za-z0-9._:/@-]*$/,
+    "Tool names may only contain bounded tool identifier characters"
+  );
 const sourceHashSchema = tokenIdentifierSchema(256, "Source hashes");
 const idempotencyKeySchema = tokenIdentifierSchema(512, "Idempotency keys");
 const canonicalItemKeySchema = z
@@ -57,7 +65,7 @@ const conversationToolCallMetadataSchema = z
   .object({
     kind: classificationTokenSchema.nullable().optional(),
     type: classificationTokenSchema.nullable().optional(),
-    name: tokenIdentifierSchema(256, "Tool names").nullable().optional(),
+    name: toolNameSchema.nullable().optional(),
     id: providerIdentifierSchema.nullable().optional(),
     status: classificationTokenSchema.nullable().optional()
   })
@@ -65,7 +73,7 @@ const conversationToolCallMetadataSchema = z
 
 const conversationMetadataSchema = z
   .object({
-    workspaceId: z.string().min(1).max(4096).nullable().optional(),
+    projectId: z.string().min(1).max(4096).nullable().optional(),
     transcriptType: classificationTokenSchema.nullable().optional(),
     transcriptParentType: classificationTokenSchema.nullable().optional(),
     transcriptIndex: postgresNonNegativeInt.nullable().optional(),
@@ -74,11 +82,10 @@ const conversationMetadataSchema = z
     transcriptSourceLineNumber: postgresNonNegativeInt.nullable().optional(),
     transcriptAssignedTurnId: providerIdentifierSchema.nullable().optional(),
     toolEventKind: classificationTokenSchema.nullable().optional(),
-    toolName: tokenIdentifierSchema(256, "Tool names").nullable().optional(),
+    toolName: toolNameSchema.nullable().optional(),
     callId: providerIdentifierSchema.nullable().optional(),
     toolCallId: providerIdentifierSchema.nullable().optional(),
     status: classificationTokenSchema.nullable().optional(),
-    hookEventName: classificationTokenSchema.nullable().optional(),
     threadKind: z.enum(["conversation", "subagent"]).nullable().optional(),
     parentThreadId: providerIdentifierSchema.nullable().optional(),
     parentSessionId: providerIdentifierSchema.nullable().optional(),
@@ -213,11 +220,17 @@ const conversationItemSchema = z
     sourceKind: z.enum(["codex", "codex-cli"]),
     sourceAdapterVersion: z.enum([
       "codex-transcript-v1",
-      "codex-hook-v1",
+      "codex-hook-signal-v1",
       "codex-app-server-conversation-v1",
       "codex-app-server-v1"
     ]),
-    sourceTransport: z.enum(["hook", "transcript", "app_server", "mcp", "web"]),
+    sourceTransport: z.enum([
+      "transcript",
+      "hook_signal",
+      "app_server",
+      "mcp",
+      "web"
+    ]),
     externalSessionId: providerIdentifierSchema.optional(),
     externalThreadId: providerIdentifierSchema.optional(),
     externalTurnId: providerIdentifierSchema.optional(),
@@ -225,7 +238,6 @@ const conversationItemSchema = z
     parentExternalItemId: providerIdentifierSchema.optional(),
     sourceRecordType: classificationTokenSchema,
     sourceEventType: classificationTokenSchema.optional(),
-    sourcePath: z.string().min(1).max(4096).optional(),
     sourceLineNumber: postgresNonNegativeInt.optional(),
     sourceSequence: postgresNonNegativeInt.optional(),
     eventTime: z.string().datetime({ offset: true }).optional(),
@@ -257,7 +269,6 @@ const conversationItemSchema = z
     transportChunkEncoding: classificationTokenSchema.optional(),
     sourceHash: sourceHashSchema,
     idempotencyKey: idempotencyKeySchema,
-    legacyIdempotencyKeys: z.array(idempotencyKeySchema).max(16).optional(),
     canonicalItemKey: canonicalItemKeySchema.optional(),
     canonicalStableItemId: providerIdentifierSchema.optional(),
     observationKind: z
@@ -349,8 +360,8 @@ const conversationItemSchema = z
       });
     }
     const allowedTransports = {
-      "codex-transcript-v1": ["hook", "transcript"],
-      "codex-hook-v1": ["hook"],
+      "codex-transcript-v1": ["transcript"],
+      "codex-hook-signal-v1": ["hook_signal"],
       "codex-app-server-conversation-v1": ["app_server"],
       "codex-app-server-v1": ["app_server"]
     }[item.sourceAdapterVersion];
@@ -362,11 +373,11 @@ const conversationItemSchema = z
       });
     }
     const expectedRecordType =
-      item.sourceAdapterVersion === "codex-hook-v1"
-        ? "hook_payload"
-        : item.sourceAdapterVersion === "codex-app-server-v1" ||
-            item.sourceAdapterVersion === "codex-app-server-conversation-v1"
-          ? "app_server_notification"
+      item.sourceAdapterVersion === "codex-app-server-v1" ||
+      item.sourceAdapterVersion === "codex-app-server-conversation-v1"
+        ? "app_server_notification"
+        : item.sourceAdapterVersion === "codex-hook-signal-v1"
+          ? "hook_signal"
           : undefined;
     if (expectedRecordType && item.sourceRecordType !== expectedRecordType) {
       context.addIssue({
@@ -374,6 +385,49 @@ const conversationItemSchema = z
         message: "Source adapter and record classifications disagree",
         path: ["sourceRecordType"]
       });
+    }
+    if (item.sourceAdapterVersion === "codex-hook-signal-v1") {
+      const expectedStableItemId = item.externalTurnId
+        ? `turn:${item.externalTurnId}:completed`
+        : null;
+      const expectedCanonicalItemKey =
+        item.externalThreadId && item.externalTurnId && expectedStableItemId
+          ? codexCanonicalConversationItemKey({
+              externalThreadId: item.externalThreadId,
+              externalTurnId: item.externalTurnId,
+              stableItemId: expectedStableItemId,
+              component: "control"
+            })
+          : null;
+      const raw = isRecord(item.rawJson) ? item.rawJson : {};
+      const payload = isRecord(raw.payload) ? raw.payload : {};
+      if (
+        item.sourceEventType !== "turn_completed" ||
+        raw.type !== "hook_signal" ||
+        payload.type !== "turn_completed" ||
+        !Number.isSafeInteger(payload.sourceFrontierOffset) ||
+        Number(payload.sourceFrontierOffset) < 0 ||
+        !Number.isSafeInteger(payload.sourceFrontierLine) ||
+        Number(payload.sourceFrontierLine) < 0 ||
+        item.rawText !== undefined ||
+        !item.eventTime ||
+        !item.externalSessionId ||
+        !item.externalThreadId ||
+        !item.externalTurnId ||
+        item.externalSessionId !== item.externalThreadId ||
+        item.externalItemId !== expectedStableItemId ||
+        item.canonicalStableItemId !== expectedStableItemId ||
+        item.observationKind !== "control" ||
+        item.observationComponent !== "control" ||
+        item.canonicalItemKey !== expectedCanonicalItemKey
+      ) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "Capture Hook turn boundaries require exact canonical turn identity",
+          path: ["canonicalItemKey"]
+        });
+      }
     }
     const chunkFields = [
       ["transportChunkIndex", item.transportChunkIndex],
@@ -506,7 +560,6 @@ const conversationItemSchema = z
     const transportChunkText = sanitizeForPostgresStorage(
       item.transportChunkText
     );
-    const sourcePath = sanitizeForPostgresStorage(item.sourcePath);
     const metadata = sanitizeForPostgresStorage(
       withoutClientClassificationOverrides(item.metadata)
     );
@@ -514,7 +567,6 @@ const conversationItemSchema = z
       rawJson,
       rawText,
       transportChunkText,
-      sourcePath,
       metadata
     );
 
@@ -543,7 +595,6 @@ const conversationItemSchema = z
       rawJson: rawJsonValue,
       rawText: rawText.value as string | undefined,
       transportChunkText: transportChunkText.value as string | undefined,
-      sourcePath: sourcePath.value as string | undefined,
       metadata: metadataWithStorageSanitization(
         {
           ...(metadata.value as Record<string, unknown>),
@@ -678,6 +729,13 @@ export const releaseConversationProjectionHoldSchema = z.object({
   sessionId: z.string().uuid(),
   externalTurnId: providerIdentifierSchema
 });
+
+export const conversationItemStableIdentityQuerySchema = z
+  .object({
+    session_id: z.string().uuid(),
+    canonical_stable_item_id: providerIdentifierSchema
+  })
+  .strict();
 
 export const resetConversationProjectionSchema = z.object({
   sessionId: z.string().uuid()

@@ -337,8 +337,13 @@ export const createEmbeddingWorkflow = (
         const stored = await config.repository().replaceSourceEmbeddings({
           source,
           model: config.env.embeddingVersion,
+          modelArtifactHash: config.env.embeddingModelArtifactHash,
           dimensions: config.env.embeddingDimensions,
           version: config.env.embeddingVersion,
+          tokenizer: config.env.embeddingTokenizer,
+          inputTransform: config.env.embeddingInputTransform,
+          pooling: config.env.embeddingPooling,
+          normalization: config.env.embeddingNormalization,
           chunks: chunks.map((chunk, chunkIndex) => ({
             vector: chunk.vector,
             chunkIndex,

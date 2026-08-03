@@ -18,11 +18,11 @@ describe("searchMemorySchema", () => {
     const parsed = searchMemorySchema.parse({
       query: "What can this Workspace see?",
       search_domain: "project",
-      workspace_id: "/Users/jacobo/Coding/koed",
+      project_id: "/fixture/projects/koed",
       team_workspace_id: teamWorkspaceId
     });
 
-    expect(parsed.workspace_id).toBe("/Users/jacobo/Coding/koed");
+    expect(parsed.project_id).toBe("/fixture/projects/koed");
     expect(parsed.team_workspace_id).toBe(teamWorkspaceId);
   });
 

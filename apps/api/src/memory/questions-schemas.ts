@@ -20,7 +20,7 @@ export const memoryQuestionSchema = z
     origin: z.literal("explorer").default("explorer"),
     retrieval_scope: memoryQuestionRetrievalScopeSchema.default("personal"),
     search_domain: searchDomainSchema.default("global"),
-    workspace_id: z.string().min(1).optional(),
+    project_id: z.string().min(1).optional(),
     project_name: z.string().min(1).optional(),
     project_path: z.string().min(1).optional(),
     session_id: z.string().uuid().optional(),
@@ -36,11 +36,11 @@ export const memoryQuestionSchema = z
         message: "session_id is required when search_domain is session"
       });
     }
-    if (input.search_domain === "project" && !input.workspace_id) {
+    if (input.search_domain === "project" && !input.project_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["workspace_id"],
-        message: "workspace_id is required when search_domain is project"
+        path: ["project_id"],
+        message: "project_id is required when search_domain is project"
       });
     }
   });
@@ -50,7 +50,7 @@ const finalMemoryQuestionBaseSchema = z.object({
   origin: z.literal("mcp_memory_answer"),
   retrieval_scope: memoryQuestionRetrievalScopeSchema.default("personal"),
   search_domain: searchDomainSchema.default("global"),
-  workspace_id: z.string().min(1).optional(),
+  project_id: z.string().min(1).optional(),
   project_name: z.string().min(1).optional(),
   project_path: z.string().min(1).optional(),
   session_id: z.string().uuid().optional(),
@@ -83,11 +83,11 @@ export const finalMemoryQuestionSchema = z
         message: "session_id is required when search_domain is session"
       });
     }
-    if (input.search_domain === "project" && !input.workspace_id) {
+    if (input.search_domain === "project" && !input.project_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["workspace_id"],
-        message: "workspace_id is required when search_domain is project"
+        path: ["project_id"],
+        message: "project_id is required when search_domain is project"
       });
     }
   });
@@ -96,7 +96,7 @@ export const memoryQuestionsQuerySchema = z.object({
   query: z.string().min(1).optional(),
   search_domain: searchDomainSchema.optional(),
   status: z.enum(["pending", "answered", "error"]).optional(),
-  workspace_id: z.string().min(1).optional(),
+  project_id: z.string().min(1).optional(),
   session_id: z.string().uuid().optional(),
   limit: z.coerce.number().int().positive().max(500).default(100),
   offset: z.coerce.number().int().nonnegative().default(0)

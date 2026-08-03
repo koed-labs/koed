@@ -37,7 +37,7 @@ export function groupMemoryQuestions(
     if (question.searchDomain === "global") {
       continue;
     }
-    const projectId = question.workspaceId ?? "unknown-project";
+    const projectId = question.projectId ?? "unknown-project";
     const project = projectMap.get(projectId) ?? {
       id: projectId,
       name: question.projectName ?? "Selected project",

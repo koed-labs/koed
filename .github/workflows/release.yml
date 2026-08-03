@@ -22,7 +22,7 @@ jobs:
       version: ${{ steps.product.outputs.version }}
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_DB: koed
           POSTGRES_USER: koed
@@ -90,6 +90,9 @@ jobs:
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+          KOED_CI_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          PG_DUMP_BIN: .github/scripts/pg-dump-service.sh
+          PG_RESTORE_BIN: .github/scripts/pg-restore-service.sh
         run: pnpm verify
 
       - name: Create release notes

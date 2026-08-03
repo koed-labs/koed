@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "suite": "koed/pds/v1/adversarial-fixture",
+  "mode": "ci-safe-deterministic-in-memory-protocol-simulation",
+  "realCrypto": {
+    "sharedFixture": "packages/shared/src/personal-device-sync-v1-fixture.test.ts",
+    "packageFixture": "packages/shared/src/personal-device-session-package.test.ts",
+    "adversarialFixture": "packages/shared/src/personal-device-sync-adversarial-fixture.test.ts",
+    "controlsFixture": "packages/koed-server/src/personal-sync.test.ts"
+  },
+  "coverageBoundary": {
+    "executed": [
+      "Authority CAS membership, epochs, certificates, and signed Key Bundles",
+      "encrypted relay header/chunk/replay/ACK/expiry state",
+      "two-or-more device retained packages, cursors, floors, conflicts, and redacted logs",
+      "real shared PDS signing, certificate, package, envelope, decrypt, and lifecycle validation"
+    ],
+    "optionalDb": [
+      "real DB migrations",
+      "repository Projection/Recall subset",
+      "worker Projection subset"
+    ],
+    "optionalDbPrerequisite": "DATABASE_URL"
+  },
+  "scenarioMatrix": [
+    { "id": "two-device-offline-concurrent-capture", "coverage": "executed" },
+    { "id": "two-order-convergence", "coverage": "executed" },
+    {
+      "id": "n-device-conflict-quarantine-and-resolution",
+      "coverage": "executed"
+    },
+    {
+      "id": "relay-replay-chunk-reorder-drop-and-duplicate",
+      "coverage": "executed"
+    },
+    { "id": "relay-and-authority-outage", "coverage": "executed" },
+    { "id": "membership-expiry", "coverage": "executed" },
+    { "id": "key-rotation-and-revoked-member", "coverage": "executed" },
+    {
+      "id": "delayed-join-and-replacement-from-retained-replica",
+      "coverage": "executed"
+    },
+    { "id": "lost-origin-and-recovery-loss", "coverage": "executed" },
+    {
+      "id": "tombstone-before-after-and-old-backup-restore",
+      "coverage": "executed"
+    },
+    { "id": "perfect-clone-warning", "coverage": "executed" },
+    {
+      "id": "unknown-version-downgrade-tamper-and-cross-group",
+      "coverage": "executed"
+    },
+    {
+      "id": "no-team-api-token-path-vector-or-plaintext-leak",
+      "coverage": "executed"
+    }
+  ],
+  "truth": {
+    "associationSyncsNothing": true,
+    "remoteAccountLinkSyncsNothing": true,
+    "futureClosedSessionsOnly": true,
+    "offlineLocalCaptureAndRecallContinue": true,
+    "conflictsRequireExactResolution": true,
+    "revocationCannotEraseDownloadedPlaintext": true,
+    "allDeviceAndRecoveryLossIsPermanent": true,
+    "statusIsRedacted": true
+  }
+}

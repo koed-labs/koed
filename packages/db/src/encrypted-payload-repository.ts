@@ -19,6 +19,13 @@ export type EncryptedFieldSourceTable =
   | "memory_nodes"
   | "memory_questions"
   | "messages"
+  | "collaboration_messages"
+  | "collaboration_threads"
+  | "memory_replica_revisions"
+  | "shared_source_artifacts"
+  | "shared_source_previews"
+  | "team_memory_representations"
+  | "team_workspaces"
   | "tool_events";
 
 export type EncryptedFieldBackfillStatus =
@@ -27,7 +34,10 @@ export type EncryptedFieldBackfillStatus =
   | "completed"
   | "error";
 
-export type EncryptedFieldVisibility = Visibility | "team";
+export type EncryptedFieldVisibility =
+  | Visibility
+  | "team"
+  | "owner_private_replica";
 
 export interface EncryptedFieldReference {
   sourceTable: EncryptedFieldSourceTable;
@@ -37,7 +47,8 @@ export interface EncryptedFieldReference {
 
 export interface StoredEncryptedFieldRecord extends EncryptedFieldReference {
   id: string;
-  ownerUserId: string;
+  ownerUserId: string | null;
+  ownerPrincipalId: string | null;
   teamId: string | null;
   teamWorkspaceId: string | null;
   visibility: Visibility;
@@ -78,6 +89,7 @@ export interface EncryptedPayloadRepository {
       visibility?: EncryptedFieldVisibility;
       teamId?: string | null;
       teamWorkspaceId?: string | null;
+      ownerPrincipalId?: string | null;
       plaintextContentType?: string;
       plaintextEncoding?: string;
       scope?: EncryptedPayloadEnvelope["scope"];
@@ -139,15 +151,18 @@ export interface EncryptedPayloadRepository {
     provider: EnvelopeEncryptionProvider,
     input?: {
       ownerUserId?: string;
+      teamId?: string;
       sourceTable?: EncryptedFieldSourceTable;
       sourceColumn?: string;
       batchSize?: number;
       force?: boolean;
+      dryRun?: boolean;
       afterId?: string;
     }
   ): Promise<{
     processedRows: number;
     rewrappedRows: number;
+    wouldRewrapRows: number;
     failedRows: number;
     done: boolean;
     nextCursorId: string | null;
@@ -156,7 +171,8 @@ export interface EncryptedPayloadRepository {
 
 type EncryptedFieldRow = {
   id: string;
-  owner_user_id: string;
+  owner_user_id: string | null;
+  owner_principal_id: string | null;
   team_id: string | null;
   team_workspace_id: string | null;
   visibility: Visibility;
@@ -229,7 +245,6 @@ const backfillSources: Partial<
       "raw_json",
       "raw_text",
       "transport_chunk_text",
-      "source_path",
       "metadata"
     ]),
     valueSql: jsonbValue,
@@ -240,7 +255,6 @@ const backfillSources: Partial<
       "raw_json",
       "raw_text",
       "transport_chunk_text",
-      "source_path",
       "metadata"
     ]),
     valueSql: jsonbValue,
@@ -470,6 +484,7 @@ const mapEncryptedFieldRow = (
 ): StoredEncryptedFieldRecord => ({
   id: row.id,
   ownerUserId: row.owner_user_id,
+  ownerPrincipalId: row.owner_principal_id,
   teamId: row.team_id,
   teamWorkspaceId: row.team_workspace_id,
   visibility: row.visibility as Visibility,
@@ -526,6 +541,7 @@ const selectEncryptedFieldSql = `
   select
     id,
     owner_user_id,
+    owner_principal_id,
     team_id,
     team_workspace_id,
     visibility,
@@ -586,6 +602,7 @@ export const upsertEncryptedFieldPayloadWithClient = async (
     visibility?: EncryptedFieldVisibility;
     teamId?: string | null;
     teamWorkspaceId?: string | null;
+    ownerPrincipalId?: string | null;
     plaintextContentType?: string;
     plaintextEncoding?: string;
     scope?: EncryptedPayloadEnvelope["scope"];
@@ -597,11 +614,23 @@ export const upsertEncryptedFieldPayloadWithClient = async (
   const rowVisibility: Visibility = "personal";
   const teamId = input.teamId ?? null;
   const teamWorkspaceId = input.teamWorkspaceId ?? null;
+  const ownerPrincipalId = input.ownerPrincipalId ?? null;
   if (visibility === "personal" && (teamId || teamWorkspaceId)) {
     throw new Error("Personal encrypted fields cannot include Team scope");
   }
   if (visibility === "team" && !teamId) {
     throw new Error("Team encrypted fields require teamId");
+  }
+  if (visibility === "owner_private_replica") {
+    if (!ownerPrincipalId || teamId || teamWorkspaceId) {
+      throw new Error(
+        "Owner-private replica fields require ownerPrincipalId and cannot include Team scope"
+      );
+    }
+  } else if (ownerPrincipalId) {
+    throw new Error(
+      "Only owner-private replica fields can include ownerPrincipalId"
+    );
   }
   const plaintextContentType =
     input.plaintextContentType ??
@@ -619,6 +648,7 @@ export const upsertEncryptedFieldPayloadWithClient = async (
     ciphertextLocation: "encrypted_field_payloads",
     aad: {
       ownerUserId: actor.userId,
+      ownerPrincipalId,
       visibility: rowVisibility,
       encryptionScope: visibility,
       teamId,
@@ -633,6 +663,7 @@ export const upsertEncryptedFieldPayloadWithClient = async (
     `
       insert into encrypted_field_payloads (
         owner_user_id,
+        owner_principal_id,
         team_id,
         team_workspace_id,
         visibility,
@@ -662,8 +693,8 @@ export const upsertEncryptedFieldPayloadWithClient = async (
         $1,
         $2,
         $3,
-        $4::visibility_scope,
-        $5,
+        $4,
+        $5::visibility_scope,
         $6,
         $7,
         $8,
@@ -673,22 +704,24 @@ export const upsertEncryptedFieldPayloadWithClient = async (
         $12,
         $13,
         $14,
-        $15::jsonb,
+        $15,
         $16::jsonb,
-        $17,
+        $17::jsonb,
         $18,
         $19,
         $20,
-        $21::jsonb,
-        $22,
-        $23::jsonb,
-        $24,
-        $25
+        $21,
+        $22::jsonb,
+        $23,
+        $24::jsonb,
+        $25,
+        $26
       )
       on conflict (source_table, source_id, source_column)
       where invalidated_at is null
       do update set
         owner_user_id = excluded.owner_user_id,
+        owner_principal_id = excluded.owner_principal_id,
         team_id = excluded.team_id,
         team_workspace_id = excluded.team_workspace_id,
         visibility = excluded.visibility,
@@ -714,6 +747,7 @@ export const upsertEncryptedFieldPayloadWithClient = async (
       returning
         id,
         owner_user_id,
+        owner_principal_id,
         team_id,
         team_workspace_id,
         visibility,
@@ -743,6 +777,7 @@ export const upsertEncryptedFieldPayloadWithClient = async (
     `,
     [
       actor.userId,
+      ownerPrincipalId,
       teamId,
       teamWorkspaceId,
       rowVisibility,
@@ -811,6 +846,137 @@ export const decryptAuthorizedEncryptedFieldPayloadWithClient = async (
     plaintext: parsePlaintext(plaintextUtf8, record.plaintextContentType)
   };
 };
+
+export const decryptTeamEncryptedFieldAfterAuthorizationWithClient = async (
+  client: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider,
+  input: EncryptedFieldReference & {
+    teamId: string;
+    teamWorkspaceId?: string | null;
+  }
+): Promise<unknown | null> => {
+  const result = await client.query<EncryptedFieldRow>(
+    `
+      ${selectEncryptedFieldSql}
+      where encryption_scope = 'team'
+        and team_id = $1
+        and team_workspace_id is not distinct from $2::uuid
+        and source_table = $3
+        and source_id = $4
+        and source_column = $5
+        and invalidated_at is null
+      limit 1
+    `,
+    [
+      input.teamId,
+      input.teamWorkspaceId ?? null,
+      input.sourceTable,
+      input.sourceId,
+      input.sourceColumn
+    ]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const record = mapEncryptedFieldRow(row);
+  const expectedTeamWorkspaceId = input.teamWorkspaceId ?? null;
+  const aad = record.envelope.aad;
+  const provenance = record.envelope.provenance;
+  const hasExactCompanionIdentity =
+    record.encryptionScope === "team" &&
+    record.teamId === input.teamId &&
+    record.teamWorkspaceId === expectedTeamWorkspaceId &&
+    provenance.sourceTable === input.sourceTable &&
+    provenance.sourceId === input.sourceId &&
+    provenance.sourceColumn === input.sourceColumn &&
+    aad.encryptionScope === "team" &&
+    aad.teamId === input.teamId &&
+    (expectedTeamWorkspaceId === null
+      ? aad.teamWorkspaceId === undefined
+      : aad.teamWorkspaceId === expectedTeamWorkspaceId) &&
+    aad.sourceTable === input.sourceTable &&
+    aad.sourceId === input.sourceId &&
+    aad.sourceColumn === input.sourceColumn;
+  if (!hasExactCompanionIdentity) {
+    return null;
+  }
+  const plaintextUtf8 = await decryptEnvelopeToUtf8(provider, record.envelope);
+  return parsePlaintext(plaintextUtf8, record.plaintextContentType);
+};
+
+export const decryptOwnerPrivateEncryptedFieldWithClient = async (
+  client: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider,
+  input: EncryptedFieldReference & {
+    ownerPrincipalId: string;
+  }
+): Promise<{
+  record: StoredEncryptedFieldRecord;
+  plaintext: unknown;
+} | null> => {
+  const result = await client.query<EncryptedFieldRow>(
+    `
+      ${selectEncryptedFieldSql}
+      where owner_principal_id = $1
+        and visibility = 'personal'
+        and encryption_scope = 'owner_private_replica'
+        and source_table = $2
+        and source_id = $3
+        and source_column = $4
+        and invalidated_at is null
+      limit 1
+    `,
+    [
+      input.ownerPrincipalId,
+      input.sourceTable,
+      input.sourceId,
+      input.sourceColumn
+    ]
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+  const record = mapEncryptedFieldRow(row);
+  const plaintextUtf8 = await decryptEnvelopeToUtf8(provider, record.envelope);
+  return {
+    record,
+    plaintext: parsePlaintext(plaintextUtf8, record.plaintextContentType)
+  };
+};
+
+export const decryptOwnerPrivateEncryptedFieldAfterAuthorizationWithClient =
+  async (
+    client: pg.Pool | pg.PoolClient,
+    provider: EnvelopeEncryptionProvider,
+    input: EncryptedFieldReference & { ownerPrincipalId: string }
+  ): Promise<unknown | null> => {
+    const result = await client.query<EncryptedFieldRow>(
+      `
+        ${selectEncryptedFieldSql}
+        where encryption_scope = 'owner_private_replica'
+          and owner_principal_id = $1
+          and source_table = $2
+          and source_id = $3
+          and source_column = $4
+          and invalidated_at is null
+        limit 1
+      `,
+      [
+        input.ownerPrincipalId,
+        input.sourceTable,
+        input.sourceId,
+        input.sourceColumn
+      ]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const record = mapEncryptedFieldRow(row);
+    const plaintextUtf8 = await decryptEnvelopeToUtf8(
+      provider,
+      record.envelope
+    );
+    return parsePlaintext(plaintextUtf8, record.plaintextContentType);
+  };
 
 export const createEncryptedPayloadRepository = (
   pool: pg.Pool
@@ -1153,17 +1319,19 @@ export const createEncryptedPayloadRepository = (
           and key_id = $2
           and invalidated_at is null
           and ($3::uuid is null or owner_user_id = $3)
-          and ($4::text is null or source_table = $4)
-          and ($5::text is null or source_column = $5)
-          and ($6::boolean or key_version <> $7)
-          and ($8::text is null or id::text > $8)
+          and ($4::uuid is null or team_id = $4)
+          and ($5::text is null or source_table = $5)
+          and ($6::text is null or source_column = $6)
+          and ($7::boolean or key_version <> $8)
+          and ($9::text is null or id::text > $9)
         order by id::text asc
-        limit $9
+        limit $10
       `,
       [
         provider.mode,
         provider.keyId,
         input.ownerUserId ?? null,
+        input.teamId ?? null,
         input.sourceTable ?? null,
         input.sourceColumn ?? null,
         input.force ?? false,
@@ -1174,6 +1342,16 @@ export const createEncryptedPayloadRepository = (
     );
 
     let rewrappedRows = 0;
+    if (input.dryRun) {
+      return {
+        processedRows: result.rows.length,
+        rewrappedRows: 0,
+        wouldRewrapRows: result.rows.length,
+        failedRows: 0,
+        done: result.rows.length < batchSize,
+        nextCursorId: result.rows.at(-1)?.id ?? null
+      };
+    }
     for (const row of result.rows) {
       const record = mapEncryptedFieldRow(row);
       try {
@@ -1215,6 +1393,7 @@ export const createEncryptedPayloadRepository = (
     return {
       processedRows: result.rows.length,
       rewrappedRows,
+      wouldRewrapRows: 0,
       failedRows: 0,
       done: result.rows.length < batchSize,
       nextCursorId: result.rows.at(-1)?.id ?? null

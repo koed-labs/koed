@@ -1,59 +1,241 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
-import { codexCanonicalConversationItemKey } from "@koed/shared";
+import {
+  calculateConversationSourceReplicationContentDigest,
+  calculateConversationSourceReplicationManifestDigest,
+  calculateConversationSourceRootDigest,
+  CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  generateConversationSourceReplicationOriginKeyPair,
+  signConversationSourceClosureManifest,
+  signConversationSourceReplicationManifest,
+  type ConversationSourceOriginKeyPair,
+  type ConversationSourcePriorGenerationClosure
+} from "@koed/shared";
 import {
   createDbPool,
-  createHistoricalImportRepository,
   createMemorySourceRepository,
   runDbMigrations,
   validateHistoricalImportTransition,
-  type ConversationItemInput
+  type ConversationItemInput,
+  type ConversationSourceArtifactRecord,
+  type MemorySourceRepository
 } from "../src/index.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDb = databaseUrl ? describe : describe.skip;
+const digest = (value: string): string =>
+  createHash("sha256").update(value).digest("hex");
+const sourceCreatedAt = "2026-07-01T00:00:00.000Z";
 
-const fingerprint = (value: string) => value.padEnd(64, "0").slice(0, 64);
+const sourceIdentity = (
+  keys: ConversationSourceOriginKeyPair,
+  sourceGenerationId = randomUUID()
+) => ({
+  logicalSourceId: randomUUID(),
+  sourceGenerationId,
+  replicaRole: "origin_local" as const,
+  sourceRuntime: "codex-cli" as const,
+  sourceAdapterVersion: "codex-transcript-v1",
+  sourceCreatedAt,
+  originDeploymentId: randomUUID(),
+  originDeviceId: randomUUID(),
+  originKeyId: keys.originKeyId,
+  originPublicKey: keys.publicKeyBase64url
+});
 
-const transcriptItem = (input: {
-  sessionId: string;
-  transport: "hook" | "transcript" | "historical_import";
-  path?: string;
+const signedSegment = (input: {
+  artifact: {
+    logicalSourceId: string;
+    sourceGenerationId: string;
+    originKeyId: string;
+    artifactFormat: string;
+    sourceAdapterVersion: string;
+    sourceCreatedAt: string;
+  };
+  keys: ConversationSourceOriginKeyPair;
+  segmentIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  sourceStartLine: number;
+  sourceEndLine: number;
+  plaintextDigest: string;
+  previousContentDigest: string | null;
+}) => {
+  const signed = signConversationSourceReplicationManifest(
+    {
+      protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+      logicalSourceId: input.artifact.logicalSourceId,
+      sourceGenerationId: input.artifact.sourceGenerationId,
+      originKeyId: input.artifact.originKeyId,
+      segmentIndex: input.segmentIndex,
+      startByteCursor: input.sourceStartOffset,
+      endByteCursor: input.sourceEndOffset,
+      startItemCursor: input.sourceStartLine,
+      endItemCursor: input.sourceEndLine,
+      previousContentDigest: input.previousContentDigest,
+      plaintextDigest: input.plaintextDigest,
+      sourceFormat: input.artifact.artifactFormat,
+      adapterVersion: input.artifact.sourceAdapterVersion,
+      sourceCreatedAt: input.artifact.sourceCreatedAt,
+      priorGenerationClosure: null
+    },
+    input.keys.privateKey
+  );
+  return {
+    signedManifest: signed.manifest as unknown as Record<string, unknown>,
+    originSignature: signed.signature,
+    manifestDigest: calculateConversationSourceReplicationManifestDigest(
+      signed.manifest
+    ),
+    previousContentDigest: input.previousContentDigest,
+    contentDigest: calculateConversationSourceReplicationContentDigest(signed)
+  };
+};
+
+const sourceItem = (input: {
+  externalSessionId: string;
+  rawText?: string;
+  byteOffset?: number;
 }): ConversationItemInput => ({
-  sessionId: input.sessionId,
   sourceKind: "codex",
   sourceAdapterVersion: "codex-transcript-v1",
-  sourceTransport: input.transport,
-  externalSessionId: "codex-source-session",
-  externalThreadId: "codex-source-session",
+  sourceTransport: "historical_import",
+  externalSessionId: input.externalSessionId,
+  externalThreadId: input.externalSessionId,
   externalTurnId: "turn-1",
   sourceRecordType: "event_msg",
   sourceEventType: "user_message",
-  sourcePath: input.path,
-  sourceLineNumber: 4,
-  sourceSequence: 8,
+  sourceLineNumber: 2,
+  sourceSequence: 2,
   eventTime: "2026-07-01T12:00:00.000Z",
   rawJson: {
     timestamp: "2026-07-01T12:00:00.000Z",
     type: "event_msg",
-    payload: { type: "user_message", message: "Durable import memory" }
+    payload: {
+      type: "user_message",
+      message: input.rawText ?? "Durable historical memory"
+    }
   },
-  rawText: "Durable import memory",
-  sourceHash: "legacy-transcript-source",
-  idempotencyKey: "legacy-transcript-item",
+  rawText: input.rawText ?? "Durable historical memory",
+  sourceHash: digest(`source:${input.externalSessionId}:${input.byteOffset}`),
+  idempotencyKey: `item:${input.externalSessionId}:${input.byteOffset ?? 64}`,
   projectionStatus: "pending",
   projectionVersion: "codex-transcript-v1",
   metadata: {
-    transcriptByteOffset: 128,
+    transcriptByteOffset: input.byteOffset ?? 64,
     transcriptItemDiscriminator: "primary:codex_transcript_user",
     transcriptType: "user_message",
     sourceEventTimeAccuracy: "source"
   }
 });
 
+interface JournalFixture {
+  ownerId: string;
+  sessionId: string;
+  artifactId: string;
+  externalSessionId: string;
+  frontier: number;
+  segmentIndex: number;
+  segmentDigest: string;
+  segmentContentDigest: string;
+  artifact: ConversationSourceArtifactRecord;
+  keys: ConversationSourceOriginKeyPair;
+}
+
+const createJournalFixture = async (
+  repo: MemorySourceRepository,
+  input: {
+    ownerId: string;
+    externalSessionId?: string;
+    frontier?: number;
+    sourceLength?: number;
+  }
+): Promise<JournalFixture> => {
+  const externalSessionId =
+    input.externalSessionId ?? `historical-${randomUUID()}`;
+  const frontier = input.frontier ?? 128;
+  const sourceLength = input.sourceLength ?? frontier;
+  const keys = generateConversationSourceReplicationOriginKeyPair();
+  const session = await repo.createCapturedSession(
+    { userId: input.ownerId },
+    {
+      externalSessionId,
+      sourceRuntime: "codex-cli",
+      captureMethod: "api",
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceFingerprint: digest(`source:${externalSessionId}`),
+      idempotencyKey: `session:${externalSessionId}`,
+      projectId: `/projects/${externalSessionId}`,
+      metadata: { projectName: "Historical Project" }
+    }
+  );
+  const artifact = await repo.ensureConversationSourceArtifact(
+    { userId: input.ownerId },
+    {
+      sessionId: session.id,
+      ...sourceIdentity(keys),
+      sourceKind: "codex",
+      externalSessionId,
+      sourceFingerprint: digest(`artifact:${externalSessionId}`),
+      artifactFormat: "codex_rollout_jsonl",
+      artifactFormatVersion: 1,
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: frontier,
+      liveStartLine: 2,
+      currentSourceLength: sourceLength,
+      storageProvider: "test",
+      storagePrefix: `artifact-${externalSessionId}`,
+      redactedSourceLabel: "rollout.jsonl"
+    }
+  );
+  const segmentDigest = digest(`segment:${externalSessionId}`);
+  const segmentProof = signedSegment({
+    artifact,
+    keys,
+    segmentIndex: 0,
+    sourceStartOffset: 0,
+    sourceEndOffset: sourceLength,
+    sourceStartLine: 0,
+    sourceEndLine: 2,
+    plaintextDigest: segmentDigest,
+    previousContentDigest: null
+  });
+  const appended = await repo.appendConversationSourceSegment(
+    { userId: input.ownerId },
+    {
+      artifactId: artifact.id,
+      expectedProviderOffset: 0,
+      expectedProviderLine: 0,
+      sourceEndOffset: sourceLength,
+      sourceEndLine: 2,
+      plaintextDigest: segmentDigest,
+      plaintextSize: sourceLength,
+      storedSize: sourceLength,
+      storageKey: `test/${artifact.id}/${segmentDigest}`,
+      storageProvider: "test",
+      currentSourceLength: sourceLength,
+      ...segmentProof
+    }
+  );
+  return {
+    ownerId: input.ownerId,
+    sessionId: session.id,
+    artifactId: artifact.id,
+    externalSessionId,
+    frontier,
+    segmentIndex: appended.segment.segmentIndex,
+    segmentDigest,
+    segmentContentDigest: appended.segment.contentDigest,
+    artifact: appended.artifact,
+    keys
+  };
+};
+
 describe("historical import transitions", () => {
-  it("accepts resumable transitions and rejects terminal or skipped edges", () => {
+  it("accepts resumable transitions and rejects invalid terminal edges", () => {
     expect(() =>
       validateHistoricalImportTransition("discovered", "eligible")
     ).not.toThrow();
@@ -72,7 +254,7 @@ describe("historical import transitions", () => {
   });
 });
 
-describeDb("durable historical import repository", () => {
+describeDb("journal-backed historical import repository", () => {
   let pool: pg.Pool;
 
   beforeAll(async () => {
@@ -84,1287 +266,914 @@ describeDb("durable historical import repository", () => {
     await pool?.end();
   });
 
-  it("registers new sources only while the run can accept work", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const owner = await repo.createUser({
-      email: `registration-state-${randomUUID()}@example.com`
+  it("creates, reads, and touches a hosted Personal source authorization", async () => {
+    const repository = createMemorySourceRepository(pool);
+    const owner = await repository.createUser({
+      email: `source-download-${randomUUID()}@example.com`
     });
-    const sourceInput = (runId: string, suffix: string) => ({
-      runId,
-      aiClient: "codex",
-      sourceKind: "codex",
-      sourceSessionId: `registration-${suffix}-${randomUUID()}`,
-      sourceFingerprint: createHash("sha256").update(suffix).digest("hex"),
-      registrationFrontierOffset: 0,
-      registrationPrefixHash:
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      localSourcePath: `/private/${suffix}.jsonl`,
-      sourceSizeBytes: 0
+    const fixture = await createJournalFixture(repository, {
+      ownerId: owner.id
     });
-    const transitionTo = async (
-      runId: string,
-      states: ReadonlyArray<
-        readonly [
-          "discovered" | "eligible" | "queued" | "importing" | "paused",
-          (
-            | "eligible"
-            | "queued"
-            | "importing"
-            | "paused"
-            | "completed"
-            | "failed"
-            | "skipped"
-          )
-        ]
-      >
-    ) => {
-      for (const [expectedState, state] of states) {
-        expect(
-          await repo.transitionHistoricalImportRun(
-            { userId: owner.id },
-            {
-              runId,
-              expectedState,
-              state,
-              ...(state === "failed" ? { failureReason: "test.failure" } : {})
-            }
-          )
-        ).not.toBeNull();
-      }
-    };
-
-    for (const [name, states] of [
-      ["discovered", []],
-      ["eligible", [["discovered", "eligible"]]],
-      [
-        "queued",
-        [
-          ["discovered", "eligible"],
-          ["eligible", "queued"]
-        ]
-      ],
-      [
-        "importing",
-        [
-          ["discovered", "eligible"],
-          ["eligible", "queued"],
-          ["queued", "importing"]
-        ]
-      ],
-      ["paused", [["discovered", "paused"]]]
-    ] as const) {
-      const run = await repo.createHistoricalImportRun({ userId: owner.id });
-      await transitionTo(run.id, [...states]);
-      expect(
-        await repo.createHistoricalImportSource(
-          { userId: owner.id },
-          sourceInput(run.id, name)
-        )
-      ).not.toBeNull();
-    }
-
-    for (const [name, states] of [
-      [
-        "completed",
-        [
-          ["discovered", "eligible"],
-          ["eligible", "queued"],
-          ["queued", "importing"],
-          ["importing", "completed"]
-        ]
-      ],
-      ["failed", [["discovered", "failed"]]],
-      ["skipped", [["discovered", "skipped"]]]
-    ] as const) {
-      const run = await repo.createHistoricalImportRun({ userId: owner.id });
-      await transitionTo(run.id, [...states]);
-      expect(
-        await repo.createHistoricalImportSource(
-          { userId: owner.id },
-          sourceInput(run.id, name)
-        )
-      ).toBeNull();
-      expect(
-        await repo.getHistoricalImportRun({ userId: owner.id }, run.id)
-      ).toMatchObject({ sourceCount: 0, state: name });
-    }
-
-    const retryRun = await repo.createHistoricalImportRun({ userId: owner.id });
-    const immutable = sourceInput(retryRun.id, "retry");
-    const original = await repo.createHistoricalImportSource(
-      { userId: owner.id },
-      immutable
+    await pool.query(
+      `update conversation_source_artifacts
+          set replica_role = 'hosted_personal'
+        where owner_user_id = $1 and id = $2`,
+      [owner.id, fixture.artifactId]
     );
-    await transitionTo(retryRun.id, [["discovered", "failed"]]);
-    expect(
-      await repo.createHistoricalImportSource(
+    const challengeHash = digest(`challenge:${randomUUID()}`);
+    await repository.createDeviceEnrollmentChallenge({
+      challengeHash,
+      upstreamBackendId: "source-download-test",
+      deviceInstanceId: randomUUID(),
+      requestedOperationFamilies: ["sync"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const credential = await repository.redeemDeviceEnrollmentChallenge(
+      { userId: owner.id },
+      {
+        challengeHash,
+        credentialKeyId: `source-download-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: digest(`verifier:${randomUUID()}`)
+      }
+    );
+    expect(credential).not.toBeNull();
+    const capabilityHash = digest(`capability:${randomUUID()}`);
+    const authorization =
+      await repository.createConversationSourceDownloadAuthorization(
         { userId: owner.id },
-        { ...immutable, localSourcePath: "/private/moved.jsonl" }
-      )
-    ).toBeNull();
-    expect(
-      await repo.transitionHistoricalImportRun(
+        {
+          deviceCredentialId: credential!.id,
+          artifactId: fixture.artifactId,
+          recipientKey: { targetDeploymentId: randomUUID() },
+          capabilityHash,
+          firstSegmentIndex: 0,
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
+        }
+      );
+
+    await expect(
+      repository.getConversationSourceDownloadAuthorization(
         { userId: owner.id },
-        { runId: retryRun.id, expectedState: "failed", state: "queued" }
+        {
+          deviceCredentialId: credential!.id,
+          authorizationId: authorization.id,
+          capabilityHash
+        }
       )
-    ).not.toBeNull();
-    expect(
-      await repo.createHistoricalImportSource(
+    ).resolves.toMatchObject({
+      id: authorization.id,
+      artifactId: fixture.artifactId,
+      firstSegmentIndex: 0,
+      lastSegmentIndex: 0
+    });
+    await expect(
+      repository.touchConversationSourceDownloadAuthorization(
         { userId: owner.id },
-        { ...immutable, localSourcePath: "/private/moved.jsonl" }
+        authorization.id
       )
-    ).toMatchObject({
-      id: original!.id,
-      localSourcePath: "/private/moved.jsonl"
+    ).resolves.toBe(true);
+    await expect(
+      repository.listConversationSourceSegmentsByIndex(
+        { userId: owner.id },
+        {
+          artifactId: fixture.artifactId,
+          afterSegmentIndex: -1,
+          throughSegmentIndex: authorization.lastSegmentIndex,
+          limit: 100
+        }
+      )
+    ).resolves.toEqual([
+      expect.objectContaining({
+        artifactId: fixture.artifactId,
+        segmentIndex: 0,
+        plaintextDigest: fixture.segmentDigest
+      })
+    ]);
+
+    const closedAt = new Date().toISOString();
+    await repository.finalizeConversationSourceArtifact(
+      { userId: owner.id },
+      {
+        artifactId: fixture.artifactId,
+        signedClosure: signConversationSourceClosureManifest(
+          {
+            protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+            logicalSourceId: fixture.artifact.logicalSourceId,
+            sourceGenerationId: fixture.artifact.sourceGenerationId,
+            originKeyId: fixture.artifact.originKeyId,
+            segmentCount: 1,
+            endByteCursor: fixture.artifact.providerCursorOffset,
+            endItemCursor: fixture.artifact.providerCursorLine,
+            chainHeadDigest: fixture.segmentContentDigest,
+            sourceRootDigest: calculateConversationSourceRootDigest([
+              fixture.segmentContentDigest
+            ]),
+            sourceCreatedAt: fixture.artifact.sourceCreatedAt,
+            closedAt,
+            priorGenerationClosure: null
+          },
+          fixture.keys.privateKey
+        )
+      }
+    );
+
+    const finalizedCapabilityHash = digest(`sealed-capability:${randomUUID()}`);
+    const finalizedAuthorization =
+      await repository.createConversationSourceDownloadAuthorization(
+        { userId: owner.id },
+        {
+          deviceCredentialId: credential!.id,
+          artifactId: fixture.artifactId,
+          recipientKey: { targetDeploymentId: randomUUID() },
+          capabilityHash: finalizedCapabilityHash,
+          firstSegmentIndex: 0,
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
+        }
+      );
+    expect(finalizedAuthorization).toMatchObject({
+      artifactId: fixture.artifactId,
+      firstSegmentIndex: 0,
+      lastSegmentIndex: 0
+    });
+    await expect(
+      repository.getConversationSourceDownloadAuthorization(
+        { userId: owner.id },
+        {
+          deviceCredentialId: credential!.id,
+          authorizationId: finalizedAuthorization.id,
+          capabilityHash: finalizedCapabilityHash
+        }
+      )
+    ).resolves.toMatchObject({
+      artifactId: fixture.artifactId,
+      id: finalizedAuthorization.id
+    });
+
+    const successorKeys = generateConversationSourceReplicationOriginKeyPair();
+    const successor =
+      await repository.createConversationSourceSuccessorGeneration(
+        { userId: owner.id },
+        {
+          parentArtifactId: fixture.artifactId,
+          expectedParentClosureHash:
+            (await repository.getConversationSourceArtifact(
+              { userId: owner.id },
+              fixture.artifactId
+            ))!.closureHash!,
+          sourceGenerationId: randomUUID(),
+          originDeploymentId: randomUUID(),
+          originDeviceId: randomUUID(),
+          originKeyId: successorKeys.originKeyId,
+          originPublicKey: successorKeys.publicKeyBase64url,
+          sourceCreatedAt: new Date().toISOString(),
+          storageProvider: "postgres",
+          storagePrefix: `test/${randomUUID()}`
+        }
+      );
+    const successorClosedAt = new Date().toISOString();
+    const finalizedSuccessor =
+      await repository.finalizeConversationSourceArtifact(
+        { userId: owner.id },
+        {
+          artifactId: successor.artifact.id,
+          signedClosure: signConversationSourceClosureManifest(
+            {
+              protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+              logicalSourceId: successor.artifact.logicalSourceId,
+              sourceGenerationId: successor.artifact.sourceGenerationId,
+              originKeyId: successor.artifact.originKeyId,
+              segmentCount: 0,
+              endByteCursor: successor.artifact.providerCursorOffset,
+              endItemCursor: successor.artifact.providerCursorLine,
+              chainHeadDigest: null,
+              sourceRootDigest: calculateConversationSourceRootDigest([]),
+              sourceCreatedAt: successor.artifact.sourceCreatedAt,
+              closedAt: successorClosedAt,
+              priorGenerationClosure: successor.artifact
+                .priorGenerationClosure as ConversationSourcePriorGenerationClosure | null
+            },
+            successorKeys.privateKey
+          )
+        }
+      );
+    await pool.query(
+      `update conversation_source_artifacts
+          set replica_role = 'hosted_personal'
+        where owner_user_id = $1 and id = $2`,
+      [owner.id, finalizedSuccessor.artifact.id]
+    );
+    const emptyAuthorization =
+      await repository.createConversationSourceDownloadAuthorization(
+        { userId: owner.id },
+        {
+          deviceCredentialId: credential!.id,
+          artifactId: finalizedSuccessor.artifact.id,
+          recipientKey: { targetDeploymentId: randomUUID() },
+          capabilityHash: digest(`empty-capability:${randomUUID()}`),
+          firstSegmentIndex: 0,
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
+        }
+      );
+    expect(emptyAuthorization).toMatchObject({
+      artifactId: finalizedSuccessor.artifact.id,
+      firstSegmentIndex: 0,
+      lastSegmentIndex: -1
     });
   });
 
-  it("persists owner-scoped restart state, checkpoints, counters, and local path", async () => {
+  it("atomically registers a Captured Session with its source artifact", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
-      email: `import-owner-${randomUUID()}@example.com`
+      email: `journal-registration-${randomUUID()}@example.com`
+    });
+    const externalSessionId = `journal-${randomUUID()}`;
+    const keys = generateConversationSourceReplicationOriginKeyPair();
+    const session = {
+      externalSessionId,
+      sourceRuntime: "codex-cli" as const,
+      captureMethod: "api" as const,
+      cwd: `/projects/${externalSessionId}`,
+      idempotencyKey: `journal-session:${externalSessionId}`,
+      metadata: { sourceTransport: "transcript" }
+    };
+    const artifact = {
+      ...sourceIdentity(keys),
+      sourceKind: "codex",
+      externalSessionId,
+      sourceFingerprint: digest(`artifact:${externalSessionId}`),
+      artifactFormat: "codex_rollout_jsonl",
+      artifactFormatVersion: 1,
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 128,
+      liveStartLine: 2,
+      currentSourceLength: 128,
+      storageProvider: "test",
+      storagePrefix: `artifact-${externalSessionId}`,
+      redactedSourceLabel: "rollout.jsonl"
+    };
+
+    const registered =
+      await repo.ensureConversationSourceArtifactForCapturedSession(
+        { userId: owner.id },
+        { session, artifact }
+      );
+    expect(registered.artifact.sessionId).toBe(registered.session.id);
+
+    const invalidExternalSessionId = `invalid-${randomUUID()}`;
+    await expect(
+      repo.ensureConversationSourceArtifactForCapturedSession(
+        { userId: owner.id },
+        {
+          session: {
+            ...session,
+            externalSessionId: invalidExternalSessionId,
+            idempotencyKey: `journal-session:${invalidExternalSessionId}`
+          },
+          artifact: {
+            ...artifact,
+            externalSessionId: `mismatch-${randomUUID()}`
+          }
+        }
+      )
+    ).rejects.toThrow("Captured Session not found for source artifact");
+    const rolledBack = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from sessions
+        where owner_user_id = $1 and external_session_id = $2`,
+      [owner.id, invalidExternalSessionId]
+    );
+    expect(rolledBack.rows[0]?.count).toBe("0");
+  });
+
+  it("registers only owner-scoped journal artifacts on writable runs", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-owner-${randomUUID()}@example.com`
     });
     const outsider = await repo.createUser({
-      email: `import-outsider-${randomUUID()}@example.com`
+      email: `historical-outsider-${randomUUID()}@example.com`
     });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
     const run = await repo.createHistoricalImportRun({ userId: owner.id });
-    const sourceSessionId = `session-${randomUUID()}`;
+
+    await expect(
+      repo.createHistoricalImportSource(
+        { userId: outsider.id },
+        {
+          runId: run.id,
+          artifactId: fixture.artifactId,
+          aiClient: "codex"
+        }
+      )
+    ).resolves.toBeNull();
+
     const source = await repo.createHistoricalImportSource(
       { userId: owner.id },
       {
         runId: run.id,
+        artifactId: fixture.artifactId,
         aiClient: "codex",
-        sourceKind: "codex",
-        sourceSessionId,
-        sourceFingerprint: fingerprint("a"),
-        registrationFrontierOffset: 100,
-        registrationPrefixHash: "1".repeat(64),
-        localSourcePath: "/Users/private/.codex/sessions/private.jsonl",
-        sourceSizeBytes: 100,
-        discoveredRecordCount: 3,
-        detectedProject: { name: "Koed", path: "/Users/private/koed" }
+        discoveredRecordCount: 2,
+        detectedProject: {
+          projectId: `/projects/${fixture.externalSessionId}`,
+          name: "Historical Project",
+          path: `/private/${fixture.externalSessionId}`
+        }
       }
     );
-    expect(source?.redactedSourceLabel).toBe("…/private.jsonl");
+    expect(source).toMatchObject({
+      artifactId: fixture.artifactId,
+      sessionId: fixture.sessionId,
+      sourceSessionId: fixture.externalSessionId,
+      registrationFrontierOffset: fixture.frontier,
+      historicalCursorOffset: 0,
+      providerCursorOffset: fixture.frontier,
+      redactedSourceLabel: "rollout.jsonl"
+    });
     expect(
-      await repo.getHistoricalImportRun({ userId: outsider.id }, run.id)
-    ).toBeNull();
+      await repo.getHistoricalImportSourceByIdentity(
+        { userId: owner.id },
+        {
+          aiClient: "codex",
+          sourceKind: "codex",
+          sourceSessionId: fixture.externalSessionId
+        }
+      )
+    ).toMatchObject({ id: source!.id });
     expect(
       await repo.getHistoricalImportSource({ userId: outsider.id }, source!.id)
     ).toBeNull();
-    const identity = {
-      aiClient: "codex",
-      sourceKind: "codex",
-      sourceSessionId
-    };
-    expect(
-      await repo.getHistoricalImportSourceByIdentity(
-        { userId: owner.id },
-        identity
-      )
-    ).toMatchObject({
-      id: source!.id,
-      localSourcePath: source!.localSourcePath,
-      updatedAt: source!.updatedAt
-    });
-    expect(
-      await repo.getHistoricalImportSourceByIdentity(
-        { userId: outsider.id },
-        identity
-      )
-    ).toBeNull();
 
-    await repo.transitionHistoricalImportSource(
-      { userId: owner.id },
-      { sourceId: source!.id, expectedState: "discovered", state: "eligible" }
-    );
-    await repo.transitionHistoricalImportSource(
-      { userId: owner.id },
-      { sourceId: source!.id, expectedState: "eligible", state: "queued" }
-    );
-    await repo.advanceHistoricalImportSource(
-      { userId: owner.id },
-      {
-        sourceId: source!.id,
-        expectedCheckpointOffset: 0,
-        checkpointOffset: 80,
-        checkpointLine: 2,
-        checkpointHash: "c".repeat(64),
-        sourceSizeBytes: 120,
-        importedRecordCount: 2
-      }
-    );
-
-    const restarted = createHistoricalImportRepository(pool);
-    const resumed = await restarted.getHistoricalImportSourceByIdentity(
-      { userId: owner.id },
-      identity
-    );
-    expect(resumed).toMatchObject({
-      state: "importing",
-      checkpointOffset: 80,
-      checkpointLine: 2,
-      checkpointHash: "c".repeat(64),
-      importedRecordCount: 2,
-      sourceSizeBytes: 120,
-      localSourcePath: "/Users/private/.codex/sessions/private.jsonl"
-    });
-    const detail = await repo.getHistoricalImportRun(
-      { userId: owner.id },
-      run.id
-    );
-    expect(detail).toMatchObject({
-      sourceCount: 1,
-      discoveredRecordCount: 3,
-      importedRecordCount: 2,
-      scannedByteCount: 80
-    });
-  });
-
-  it("owner-scopes Captured Session identities used by import and Hook overlap", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const firstOwner = await repo.createUser({
-      email: `session-owner-a-${randomUUID()}@example.com`
-    });
-    const secondOwner = await repo.createUser({
-      email: `session-owner-b-${randomUUID()}@example.com`
-    });
-    const input = {
-      externalSessionId: "shared-source-session",
-      idempotencyKey: "shared-session-idempotency",
-      sourceHash: "shared-session-source-hash",
-      sourceFingerprint: "f".repeat(64)
-    };
-
-    const first = await repo.createCapturedSession(
-      { userId: firstOwner.id },
-      input
-    );
-    const second = await repo.createCapturedSession(
-      { userId: secondOwner.id },
-      input
-    );
-
-    expect(second.id).not.toBe(first.id);
-    expect(second.ownerUserId).toBe(secondOwner.id);
-    expect(
-      await repo.getCapturedSession({ userId: secondOwner.id }, first.id)
-    ).toBeNull();
-  });
-
-  it("keeps immutable registration frontier, historical checkpoint, and live cursor independent", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const owner = await repo.createUser({
-      email: `frontier-owner-${randomUUID()}@example.com`
-    });
-    const run = await repo.createHistoricalImportRun({ userId: owner.id });
-    const sourceSessionId = `frontier-session-${randomUUID()}`;
-    const prefixHash = "3".repeat(64);
-    const source = await repo.createHistoricalImportSource(
+    await repo.transitionHistoricalImportRun(
       { userId: owner.id },
       {
         runId: run.id,
-        aiClient: "codex",
-        sourceKind: "codex",
-        sourceSessionId,
-        sourceFingerprint: "4".repeat(64),
-        registrationFrontierOffset: 100,
-        registrationPrefixHash: prefixHash,
-        localSourcePath: "/private/original.jsonl",
-        sourceSizeBytes: 200
+        expectedState: "discovered",
+        state: "failed",
+        failureReason: "test.closed"
       }
     );
-    await repo.transitionHistoricalImportSource(
-      { userId: owner.id },
-      { sourceId: source!.id, expectedState: "discovered", state: "eligible" }
-    );
-    await repo.transitionHistoricalImportSource(
-      { userId: owner.id },
-      { sourceId: source!.id, expectedState: "eligible", state: "queued" }
-    );
-    await repo.advanceHistoricalImportSource(
-      { userId: owner.id },
-      {
-        sourceId: source!.id,
-        expectedCheckpointOffset: 0,
-        checkpointOffset: 60,
-        checkpointLine: 2,
-        checkpointHash: "5".repeat(64),
-        sourceSizeBytes: 200,
-        importedRecordCount: 2
-      }
-    );
-    await repo.advanceLiveTranscriptCursor(
-      { userId: owner.id },
-      {
-        sourceId: source!.id,
-        expectedCursorOffset: 100,
-        expectedCursorHash: prefixHash,
-        cursorOffset: 150,
-        cursorLine: 5,
-        cursorHash: "6".repeat(64),
-        sourceSizeBytes: 200
-      }
-    );
-    const restarted = createHistoricalImportRepository(pool);
-    expect(
-      await restarted.getHistoricalImportSource(
-        { userId: owner.id },
-        source!.id
-      )
-    ).toMatchObject({
-      registrationFrontierOffset: 100,
-      registrationPrefixHash: prefixHash,
-      checkpointOffset: 60,
-      liveCursorOffset: 150,
-      historicalImportedRanges: [
-        {
-          fromOffset: 0,
-          toOffset: 60,
-          checkpointHash: "5".repeat(64)
-        }
-      ]
-    });
-    for (const sourceSizeBytes of [59, 99, 149, 175]) {
-      expect(
-        await repo.observeHistoricalImportSource(
-          { userId: owner.id },
-          {
-            sourceId: source!.id,
-            localSourcePath: "/private/stale.jsonl",
-            sourceSizeBytes
-          }
-        )
-      ).toBeNull();
-    }
-    expect(
-      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).toMatchObject({
-      localSourcePath: "/private/original.jsonl",
-      sourceSizeBytes: 200,
-      liveCursorOffset: 150
-    });
-    await expect(
-      repo.advanceHistoricalImportSource(
-        { userId: owner.id },
-        {
-          sourceId: source!.id,
-          expectedCheckpointOffset: 60,
-          expectedCheckpointHash: "5".repeat(64),
-          checkpointOffset: 80,
-          checkpointLine: 3,
-          checkpointHash: "7".repeat(64),
-          sourceSizeBytes: 175,
-          importedRecordCount: 1
-        }
-      )
-    ).rejects.toThrow("conflict");
-    expect(
-      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).toMatchObject({
-      checkpointOffset: 60,
-      sourceSizeBytes: 200,
-      liveCursorOffset: 150
-    });
-    await expect(
-      repo.advanceHistoricalImportSource(
-        { userId: owner.id },
-        {
-          sourceId: source!.id,
-          expectedCheckpointOffset: 60,
-          expectedCheckpointHash: "5".repeat(64),
-          checkpointOffset: 110,
-          checkpointLine: 4,
-          checkpointHash: "7".repeat(64),
-          sourceSizeBytes: 150,
-          importedRecordCount: 1
-        }
-      )
-    ).rejects.toThrow("conflict");
-    await expect(
-      repo.advanceLiveTranscriptCursor(
-        { userId: owner.id },
-        {
-          sourceId: source!.id,
-          expectedCursorOffset: 150,
-          expectedCursorHash: "6".repeat(64),
-          cursorOffset: 160,
-          cursorLine: 6,
-          cursorHash: "8".repeat(64),
-          sourceSizeBytes: 175
-        }
-      )
-    ).rejects.toThrow("conflict");
-    expect(
-      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).toMatchObject({
-      sourceSizeBytes: 200,
-      liveCursorOffset: 150
+    const secondFixture = await createJournalFixture(repo, {
+      ownerId: owner.id
     });
     expect(
       await repo.createHistoricalImportSource(
         { userId: owner.id },
         {
           runId: run.id,
-          aiClient: "codex",
-          sourceKind: "codex",
-          sourceSessionId,
-          sourceFingerprint: "9".repeat(64),
-          registrationFrontierOffset: 100,
-          registrationPrefixHash: "a".repeat(64),
-          localSourcePath: "/private/mutated.jsonl",
-          sourceSizeBytes: 160
+          artifactId: secondFixture.artifactId,
+          aiClient: "codex"
         }
       )
     ).toBeNull();
-    const newSource = await repo.createHistoricalImportSource(
-      { userId: owner.id },
-      {
-        runId: run.id,
-        aiClient: "codex",
-        sourceKind: "codex",
-        sourceSessionId: `new-${randomUUID()}`,
-        sourceFingerprint: "b".repeat(64),
-        registrationFrontierOffset: 0,
-        registrationPrefixHash:
-          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        localSourcePath: "/private/new.jsonl",
-        sourceSizeBytes: 0
-      }
-    );
-    expect(newSource).toMatchObject({
-      registrationFrontierOffset: 0,
-      checkpointOffset: 0,
-      liveCursorOffset: 0,
-      rawIngested: true
-    });
   });
 
-  it("converges import and Hook Captured Sessions by owner and source session", async () => {
+  it("allows repeated content-addressed bytes at different source ranges", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
-      email: `session-convergence-${randomUUID()}@example.com`
+      email: `journal-repeated-segment-${randomUUID()}@example.com`
+    });
+    const externalSessionId = `journal-repeated-segment-${randomUUID()}`;
+    const keys = generateConversationSourceReplicationOriginKeyPair();
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "api",
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceFingerprint: digest(`source:${externalSessionId}`),
+        idempotencyKey: `session:${externalSessionId}`,
+        projectId: `/projects/${externalSessionId}`
+      }
+    );
+    const artifact = await repo.ensureConversationSourceArtifact(
+      { userId: owner.id },
+      {
+        sessionId: session.id,
+        ...sourceIdentity(keys),
+        sourceKind: "codex",
+        externalSessionId,
+        sourceFingerprint: digest(`artifact:${externalSessionId}`),
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        currentSourceLength: 64,
+        storageProvider: "test",
+        storagePrefix: `artifact-${externalSessionId}`,
+        redactedSourceLabel: "rollout.jsonl"
+      }
+    );
+    const plaintextDigest = digest("identical-valid-jsonl-segment");
+    const storageKey = `test/${artifact.id}/${plaintextDigest}`;
+    const firstProof = signedSegment({
+      artifact,
+      keys,
+      segmentIndex: 0,
+      sourceStartOffset: 0,
+      sourceEndOffset: 32,
+      sourceStartLine: 0,
+      sourceEndLine: 1,
+      plaintextDigest,
+      previousContentDigest: null
     });
 
-    for (const importFirst of [true, false]) {
-      const externalSessionId = `converged-${randomUUID()}`;
-      const importedInput = {
-        externalSessionId,
-        captureMethod: "api" as const,
-        idempotencyKey: `historical-${randomUUID()}`,
-        sourceFingerprint: fingerprint("import"),
-        importObservedAt: "2026-07-02T00:00:00.000Z"
-      };
-      const hookInput = {
-        externalSessionId,
-        captureMethod: "hook" as const,
-        idempotencyKey: `hook-${randomUUID()}`,
-        codexTranscriptPath: `/private/${externalSessionId}.jsonl`
-      };
-      const first = await repo.createCapturedSession(
-        { userId: owner.id },
-        importFirst ? importedInput : hookInput
-      );
-      const second = await repo.createCapturedSession(
-        { userId: owner.id },
-        importFirst ? hookInput : importedInput
-      );
-      const watched = await repo.createCapturedSession(
+    const first = await repo.appendConversationSourceSegment(
+      { userId: owner.id },
+      {
+        artifactId: artifact.id,
+        expectedProviderOffset: 0,
+        expectedProviderLine: 0,
+        sourceEndOffset: 32,
+        sourceEndLine: 1,
+        plaintextDigest,
+        plaintextSize: 32,
+        storedSize: 32,
+        storageKey,
+        storageProvider: "test",
+        currentSourceLength: 64,
+        ...firstProof
+      }
+    );
+    const secondProof = signedSegment({
+      artifact,
+      keys,
+      segmentIndex: 1,
+      sourceStartOffset: 32,
+      sourceEndOffset: 64,
+      sourceStartLine: 1,
+      sourceEndLine: 2,
+      plaintextDigest,
+      previousContentDigest: first.segment.contentDigest
+    });
+    const second = await repo.appendConversationSourceSegment(
+      { userId: owner.id },
+      {
+        artifactId: artifact.id,
+        expectedProviderOffset: 32,
+        expectedProviderLine: 1,
+        sourceEndOffset: 64,
+        sourceEndLine: 2,
+        plaintextDigest,
+        plaintextSize: 32,
+        storedSize: 32,
+        storageKey,
+        storageProvider: "test",
+        currentSourceLength: 64,
+        ...secondProof
+      }
+    );
+
+    expect(first.segment.storageKey).toBe(storageKey);
+    expect(second.segment.storageKey).toBe(storageKey);
+    expect(second.segment.segmentIndex).toBe(first.segment.segmentIndex + 1);
+  });
+
+  it("claims a newly appended segment for an enabled Personal replica", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `source-replication-claim-${randomUUID()}@example.com`
+    });
+    const targetUpstreamId = `up_${randomUUID().replaceAll("-", "")}`;
+    await repo.upsertPersonalSourceReplicationPolicy(
+      { userId: owner.id },
+      {
+        enabled: true,
+        targetUpstreamId,
+        mode: "hosted_personal",
+        effectiveFrom: "2026-06-01T00:00:00.000Z"
+      }
+    );
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+
+    await expect(
+      repo.listConversationSourceReplicationActors({
+        direction: "upload",
+        limit: 25
+      })
+    ).resolves.toContainEqual({ userId: owner.id });
+    const claims = await repo.claimConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        workerId: "source-replication-claim-test",
+        leaseMs: 180_000,
+        limit: 8
+      }
+    );
+    expect(claims).toMatchObject([
+      {
+        ownerUserId: owner.id,
+        artifactId: fixture.artifactId,
+        operationKind: "registration",
+        targetUpstreamId,
+        mode: "hosted_personal",
+        state: "in_flight",
+        attempts: 1,
+        artifact: {
+          id: fixture.artifactId,
+          replicaRole: "origin_local"
+        },
+        segment: null
+      }
+    ]);
+    await repo.completeConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        outboxId: claims[0]!.id,
+        leaseToken: claims[0]!.leaseToken!
+      }
+    );
+    const segmentClaims = await repo.claimConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        workerId: "source-replication-claim-test",
+        leaseMs: 180_000,
+        limit: 8
+      }
+    );
+    expect(segmentClaims).toMatchObject([
+      {
+        operationKind: "segment",
+        segment: {
+          segmentIndex: fixture.segmentIndex
+        }
+      }
+    ]);
+    await expect(
+      repo.failConversationSourceReplicationOutbox(
         { userId: owner.id },
         {
-          externalSessionId,
-          captureMethod: "api",
-          idempotencyKey: `watcher-${randomUUID()}`,
-          codexTranscriptPath: `/private/${externalSessionId}.jsonl`,
-          metadata: { sourceTransport: "transcript" }
+          outboxId: segmentClaims[0]!.id,
+          leaseToken: segmentClaims[0]!.leaseToken!,
+          errorCode: "SourceReplicationGapError",
+          retryAt: new Date(Date.now() + 60_000).toISOString()
         }
-      );
-
-      expect(second.id).toBe(first.id);
-      expect(watched.id).toBe(first.id);
-      expect(second.importObservedAt).toBe("2026-07-02T00:00:00.000Z");
-      const stored = await pool.query<{
-        codex_transcript_path: string | null;
-      }>("select codex_transcript_path from sessions where id = $1", [
-        second.id
-      ]);
-      expect(stored.rows[0]?.codex_transcript_path).toBe(
-        `/private/${externalSessionId}.jsonl`
-      );
-    }
+      )
+    ).resolves.toMatchObject({
+      state: "failed",
+      lastErrorCode: "SourceReplicationGapError"
+    });
   });
 
-  it("reuses a legacy transcript canonical identity through its compatibility alias", async () => {
+  it("publishes a finalized peer source for execution transfer without a Personal sync policy", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
-      email: `legacy-identity-${randomUUID()}@example.com`
+      email: `source-transfer-publish-${randomUUID()}@example.com`
     });
-    const session = await repo.createCapturedSession(
+    const targetUpstreamId = `up_${randomUUID().replaceAll("-", "")}`;
+    await repo.upsertPersonalSourceReplicationPolicy(
       { userId: owner.id },
       {
-        externalSessionId: "codex-source-session",
-        idempotencyKey: `session-${randomUUID()}`
+        enabled: true,
+        targetUpstreamId,
+        mode: "hosted_personal",
+        effectiveFrom: "2026-06-01T00:00:00.000Z"
       }
     );
-    const legacyKey = `legacy-${randomUUID()}`;
-    const currentKey = `conversation-item:${randomUUID()}`;
-    const legacy = await repo.createConversationItems(
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    await repo.finalizeConversationSourceArtifact(
       { userId: owner.id },
       {
-        items: [
+        artifactId: fixture.artifactId,
+        signedClosure: signConversationSourceClosureManifest(
           {
-            ...transcriptItem({ sessionId: session.id, transport: "hook" }),
-            idempotencyKey: legacyKey
-          }
-        ]
+            protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+            logicalSourceId: fixture.artifact.logicalSourceId,
+            sourceGenerationId: fixture.artifact.sourceGenerationId,
+            originKeyId: fixture.artifact.originKeyId,
+            segmentCount: 1,
+            endByteCursor: fixture.artifact.providerCursorOffset,
+            endItemCursor: fixture.artifact.providerCursorLine,
+            chainHeadDigest: fixture.segmentContentDigest,
+            sourceRootDigest: calculateConversationSourceRootDigest([
+              fixture.segmentContentDigest
+            ]),
+            sourceCreatedAt: fixture.artifact.sourceCreatedAt,
+            closedAt: new Date().toISOString(),
+            priorGenerationClosure: null
+          },
+          fixture.keys.privateKey
+        )
       }
     );
-    const current = await repo.createConversationItems(
+    await repo.upsertPersonalSourceReplicationPolicy(
       { userId: owner.id },
-      {
-        items: [
-          {
-            ...transcriptItem({ sessionId: session.id, transport: "hook" }),
-            idempotencyKey: currentKey,
-            legacyIdempotencyKeys: [legacyKey]
-          }
-        ]
-      }
+      { enabled: false, mode: "hosted_personal" }
     );
-
-    expect(current[0]?.id).toBe(legacy[0]?.id);
-  });
-
-  it("excludes inactive Captured Sessions from Projection admission backlog", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const owner = await repo.createUser({
-      email: `inactive-backlog-${randomUUID()}@example.com`
-    });
-    const session = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId: "codex-source-session",
-        idempotencyKey: `session-${randomUUID()}`
-      }
-    );
-    const before = await repo.getConversationProjectionBacklog();
-    await repo.createConversationItems(
-      { userId: owner.id },
-      {
-        items: [transcriptItem({ sessionId: session.id, transport: "hook" })]
-      }
-    );
-    const active = await repo.getConversationProjectionBacklog();
-    expect(active.liveProjectionRows).toBe(before.liveProjectionRows + 1);
-
     await pool.query(
-      "update sessions set invalidated_at = now() where id = $1",
-      [session.id]
+      `update conversation_source_artifacts
+          set replica_role = 'peer_personal'
+        where owner_user_id = $1 and id = $2`,
+      [owner.id, fixture.artifactId]
     );
-    const inactive = await repo.getConversationProjectionBacklog();
-    expect(inactive.liveProjectionRows).toBe(before.liveProjectionRows);
+
+    await expect(
+      repo.enqueueConversationSourceArtifactReplication(
+        { userId: owner.id },
+        {
+          artifactId: fixture.artifactId,
+          targetUpstreamId,
+          mode: "hosted_personal"
+        }
+      )
+    ).resolves.toBe(3);
+    await expect(
+      repo.enqueueConversationSourceArtifactReplication(
+        { userId: owner.id },
+        {
+          artifactId: fixture.artifactId,
+          targetUpstreamId,
+          mode: "hosted_personal"
+        }
+      )
+    ).resolves.toBe(3);
+    await expect(
+      repo.listConversationSourceReplicationActors({
+        direction: "upload",
+        limit: 25
+      })
+    ).resolves.toContainEqual({ userId: owner.id });
+
+    const claims = await repo.claimConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        workerId: "source-transfer-publish-test",
+        leaseMs: 180_000,
+        limit: 8
+      }
+    );
+    expect(claims).toMatchObject([
+      {
+        operationKind: "registration",
+        authorizationBasis: "execution_transfer",
+        state: "in_flight",
+        artifact: {
+          id: fixture.artifactId,
+          replicaRole: "peer_personal"
+        }
+      }
+    ]);
+    await repo.completeConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        outboxId: claims[0]!.id,
+        leaseToken: claims[0]!.leaseToken!
+      }
+    );
+    const segmentClaims = await repo.claimConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        workerId: "source-transfer-publish-test",
+        leaseMs: 180_000,
+        limit: 8
+      }
+    );
+    expect(segmentClaims).toMatchObject([
+      {
+        operationKind: "segment",
+        authorizationBasis: "execution_transfer",
+        state: "in_flight",
+        artifact: {
+          id: fixture.artifactId,
+          replicaRole: "peer_personal"
+        }
+      }
+    ]);
+    await repo.completeConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        outboxId: segmentClaims[0]!.id,
+        leaseToken: segmentClaims[0]!.leaseToken!
+      }
+    );
+    const closureClaims = await repo.claimConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        workerId: "source-transfer-publish-test",
+        leaseMs: 180_000,
+        limit: 8
+      }
+    );
+    expect(closureClaims).toMatchObject([
+      {
+        operationKind: "closure",
+        authorizationBasis: "execution_transfer",
+        state: "in_flight",
+        artifact: {
+          id: fixture.artifactId,
+          replicaRole: "peer_personal"
+        }
+      }
+    ]);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count
+           from conversation_source_replication_outbox
+          where owner_user_id = $1
+            and artifact_id = $2
+            and target_upstream_id = $3`,
+        [owner.id, fixture.artifactId, targetUpstreamId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: "3" }] });
   });
 
-  it("commits policy-gated batches and checkpoints atomically under retry", async () => {
+  it("publishes an active successor registration before any source payload", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
-      email: `batch-owner-${randomUUID()}@example.com`
+      email: `source-transfer-registration-${randomUUID()}@example.com`
     });
+    const targetUpstreamId = `up_${randomUUID().replaceAll("-", "")}`;
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+
+    await expect(
+      repo.enqueueConversationSourceGenerationRegistration(
+        { userId: owner.id },
+        {
+          artifactId: fixture.artifactId,
+          targetUpstreamId,
+          mode: "hosted_personal"
+        }
+      )
+    ).resolves.toBe(true);
+    await expect(
+      repo.enqueueConversationSourceGenerationRegistration(
+        { userId: owner.id },
+        {
+          artifactId: fixture.artifactId,
+          targetUpstreamId,
+          mode: "hosted_personal"
+        }
+      )
+    ).resolves.toBe(true);
+
+    const claims = await repo.claimConversationSourceReplicationOutbox(
+      { userId: owner.id },
+      {
+        workerId: "source-transfer-registration-test",
+        leaseMs: 180_000,
+        limit: 8
+      }
+    );
+    expect(claims).toMatchObject([
+      {
+        operationKind: "registration",
+        segment: null,
+        authorizationBasis: "execution_transfer",
+        state: "in_flight",
+        targetUpstreamId,
+        artifact: {
+          id: fixture.artifactId,
+          lifecycle: "active",
+          replicaRole: "origin_local"
+        }
+      }
+    ]);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count
+           from conversation_source_replication_outbox
+          where owner_user_id = $1
+            and artifact_id = $2
+            and target_upstream_id = $3
+            and operation_kind = 'registration'`,
+        [owner.id, fixture.artifactId, targetUpstreamId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
+  });
+
+  it("does not enqueue a source created before future-session sync consent", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `source-replication-future-only-${randomUUID()}@example.com`
+    });
+    await repo.upsertPersonalSourceReplicationPolicy(
+      { userId: owner.id },
+      {
+        enabled: true,
+        targetUpstreamId: `up_${randomUUID().replaceAll("-", "")}`,
+        mode: "hosted_personal",
+        effectiveFrom: "2026-07-02T00:00:00.000Z"
+      }
+    );
+
+    await createJournalFixture(repo, { ownerId: owner.id });
+
+    await expect(
+      repo.listConversationSourceReplicationActors({
+        direction: "upload",
+        limit: 25
+      })
+    ).resolves.not.toContainEqual({ userId: owner.id });
+  });
+
+  it("advances canonical historical ingestion and source counters atomically", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-batch-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
     const run = await repo.createHistoricalImportRun({ userId: owner.id });
     const source = await repo.createHistoricalImportSource(
       { userId: owner.id },
       {
         runId: run.id,
+        artifactId: fixture.artifactId,
         aiClient: "codex",
-        sourceKind: "codex",
-        sourceSessionId: `batch-session-${randomUUID()}`,
-        sourceFingerprint: "d".repeat(64),
-        registrationFrontierOffset: 100,
-        registrationPrefixHash: "e".repeat(64),
-        localSourcePath: "/Users/private/.codex/sessions/batch.jsonl",
-        sourceSizeBytes: 100,
+        discoveredRecordCount: 2,
         detectedProject: {
-          name: "Koed",
-          path: "/Users/private/koed",
-          branch: "audit"
+          projectId: `/projects/${fixture.externalSessionId}`,
+          name: "Historical Project"
         }
+      }
+    );
+    await repo.transitionHistoricalImportRun(
+      { userId: owner.id },
+      { runId: run.id, expectedState: "discovered", state: "eligible" }
+    );
+    await repo.transitionHistoricalImportRun(
+      { userId: owner.id },
+      { runId: run.id, expectedState: "eligible", state: "queued" }
+    );
+    await repo.transitionHistoricalImportSource(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        expectedState: "discovered",
+        state: "eligible"
+      }
+    );
+    await repo.transitionHistoricalImportSource(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        expectedState: "eligible",
+        state: "queued"
+      }
+    );
+
+    const batch = {
+      sourceId: source!.id,
+      expectedSourceOffset: 0,
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest,
+      items: [
+        sourceItem({
+          externalSessionId: fixture.externalSessionId,
+          byteOffset: 64
+        })
+      ]
+    };
+    const result = await repo.ingestHistoricalImportBatch(
+      { userId: owner.id },
+      batch
+    );
+    expect(result.replayed).toBe(false);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.sessionId).toBe(fixture.sessionId);
+    expect(result.source).toMatchObject({
+      state: "importing",
+      historicalCursorOffset: fixture.frontier,
+      importedRecordCount: 1,
+      rawIngested: true
+    });
+    const runDetail = await repo.getHistoricalImportRun(
+      { userId: owner.id },
+      run.id
+    );
+    expect(runDetail).toMatchObject({
+      sourceCount: 1,
+      discoveredRecordCount: 2,
+      importedRecordCount: 1,
+      scannedByteCount: fixture.frontier
+    });
+  });
+
+  it("replays an acknowledged batch without duplicate rows", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-replay-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const run = await repo.createHistoricalImportRun({ userId: owner.id });
+    const source = await repo.createHistoricalImportSource(
+      { userId: owner.id },
+      {
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "codex"
       }
     );
     for (const [expectedState, state] of [
       ["discovered", "eligible"],
       ["eligible", "queued"]
-    ] as const) {
-      expect(
-        await repo.transitionHistoricalImportRun(
-          { userId: owner.id },
-          { runId: run.id, expectedState, state }
-        )
-      ).not.toBeNull();
-      expect(
-        await repo.transitionHistoricalImportSource(
-          { userId: owner.id },
-          { sourceId: source!.id, expectedState, state }
-        )
-      ).not.toBeNull();
-    }
-
-    expect(
-      await repo.transitionHistoricalImportRun(
-        { userId: owner.id },
-        { runId: run.id, expectedState: "queued", state: "importing" }
-      )
-    ).not.toBeNull();
-    expect(
-      await repo.transitionHistoricalImportSource(
-        { userId: owner.id },
-        { sourceId: source!.id, expectedState: "queued", state: "importing" }
-      )
-    ).not.toBeNull();
-    expect(
-      await repo.transitionHistoricalImportRun(
-        { userId: owner.id },
-        { runId: run.id, expectedState: "importing", state: "completed" }
-      )
-    ).toBeNull();
-    expect(
-      await repo.transitionHistoricalImportSource(
-        { userId: owner.id },
-        {
-          sourceId: source!.id,
-          expectedState: "importing",
-          state: "completed"
-        }
-      )
-    ).toBeNull();
-
-    await repo.upsertCapturePolicy(
-      { userId: owner.id },
-      {
-        targetType: "global",
-        captureState: "disabled",
-        visibility: "personal"
-      }
-    );
-    const batch = {
-      sourceId: source!.id,
-      expectedCheckpointOffset: 0,
-      checkpointOffset: 100,
-      checkpointLine: 1,
-      checkpointHash: "e".repeat(64),
-      sourceSizeBytes: 100,
-      sourceEventFrom: "2026-07-01T12:00:00.000Z",
-      sourceEventTo: "2026-07-01T12:00:00.000Z",
-      items: [
-        {
-          sessionId: undefined,
-          sourceKind: "codex",
-          sourceAdapterVersion: "codex-transcript-v1",
-          sourceTransport: "historical_import" as const,
-          externalSessionId: source!.sourceSessionId,
-          externalThreadId: source!.sourceSessionId,
-          externalTurnId: "turn-1",
-          externalItemId: "assistant-message-1",
-          sourceRecordType: "response_item",
-          sourceEventType: "message",
-          sourceLineNumber: 1,
-          sourceSequence: 1,
-          eventTime: "2026-07-01T12:00:00.000Z",
-          rawJson: {
-            type: "response_item",
-            payload: {
-              id: "assistant-message-1",
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: "Durable import memory" }]
-            }
-          },
-          rawText: "Durable import memory",
-          sourceHash: "response-item-source-hash",
-          idempotencyKey: "response-item-historical-observation",
-          canonicalItemKey: codexCanonicalConversationItemKey({
-            externalThreadId: source!.sourceSessionId,
-            externalTurnId: "turn-1",
-            stableItemId: "assistant-message-1",
-            component: "message"
-          }),
-          canonicalStableItemId: "assistant-message-1",
-          canonicalSourcePriority: 200,
-          observationKind: "reconciliation" as const,
-          observationComponent: "message",
-          projectionStatus: "pending" as const,
-          projectionVersion: "codex-transcript-v1",
-          metadata: {
-            transcriptByteOffset: 0,
-            transcriptItemDiscriminator: "primary:codex_response_message",
-            transcriptType: "message"
-          }
-        },
-        {
-          observationOnly: true,
-          sessionId: undefined,
-          sourceKind: "codex",
-          sourceAdapterVersion: "codex-transcript-v1",
-          sourceTransport: "historical_import" as const,
-          sourceRecordType: "event_msg",
-          sourceEventType: "agent_message",
-          sourceLineNumber: 2,
-          sourceSequence: 2,
-          eventTime: "2026-07-01T12:00:00.100Z",
-          rawJson: {
-            type: "event_msg",
-            payload: { type: "agent_message", message: "Durable import memory" }
-          },
-          rawText: "Durable import memory",
-          sourceHash: "duplicate-observation-source-hash",
-          idempotencyKey: "duplicate-historical-observation",
-          observationKind: "reconciliation" as const,
-          observationComponent: "message",
-          projectionStatus: "raw_only" as const,
-          projectionVersion: "codex-transcript-v1",
-          metadata: {
-            transcriptByteOffset: 1,
-            transcriptItemDiscriminator: "observation:duplicate_agent_message",
-            transcriptType: "agent_message"
-          }
-        },
-        {
-          sessionId: undefined,
-          sourceKind: "codex",
-          sourceAdapterVersion: "codex-transcript-v1",
-          sourceTransport: "historical_import" as const,
-          sourceRecordType: "response_item",
-          sourceEventType: "message",
-          sourceLineNumber: 3,
-          sourceSequence: 3,
-          eventTime: "2026-07-01T12:00:00.200Z",
-          rawJson: {
-            type: "response_item",
-            payload: {
-              type: "message",
-              role: "user",
-              content: [{ type: "input_text", text: "Injected context" }]
-            }
-          },
-          rawText: "Injected context",
-          sourceHash: "ambiguous-user-context-source-hash",
-          idempotencyKey: "ambiguous-user-context-observation",
-          observationKind: "snapshot" as const,
-          observationComponent: "message",
-          projectionStatus: "raw_only" as const,
-          projectionVersion: "codex-transcript-v1",
-          metadata: {
-            transcriptByteOffset: 2,
-            transcriptItemDiscriminator: "raw:ambiguous_user_context",
-            transcriptType: "message",
-            managedConversationSourceRole: "ambiguous_user_context_provenance"
-          }
-        }
-      ]
-    };
-    await expect(
-      repo.ingestHistoricalImportBatch({ userId: owner.id }, batch)
-    ).rejects.toThrow("Capture Policy");
-    expect(
-      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).toMatchObject({ checkpointOffset: 0, importedRecordCount: 0 });
-
-    await repo.upsertCapturePolicy(
-      { userId: owner.id },
-      {
-        targetType: "global",
-        captureState: "enabled",
-        visibility: "personal"
-      }
-    );
-    const policyWriter = await pool.connect();
-    await policyWriter.query("begin");
-    await policyWriter.query(
-      "select pg_advisory_xact_lock(hashtextextended($1, 0))",
-      [`capture-policy:${owner.id}`]
-    );
-    await policyWriter.query(
-      `update capture_policies set capture_state = 'disabled', updated_at = now()
-       where owner_user_id = $1 and target_type = 'global'`,
-      [owner.id]
-    );
-    const policyRaceBatch = repo.ingestHistoricalImportBatch(
-      { userId: owner.id },
-      batch
-    );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await policyWriter.query("commit");
-    policyWriter.release();
-    await expect(policyRaceBatch).rejects.toThrow("Capture Policy");
-    await repo.upsertCapturePolicy(
-      { userId: owner.id },
-      {
-        targetType: "global",
-        captureState: "enabled",
-        visibility: "personal"
-      }
-    );
-
-    const [first, retry] = await Promise.all([
-      repo.ingestHistoricalImportBatch({ userId: owner.id }, batch),
-      repo.ingestHistoricalImportBatch({ userId: owner.id }, batch)
-    ]);
-    expect([first.replayed, retry.replayed].sort()).toEqual([false, true]);
-    const liveCursor = {
-      sourceId: source!.id,
-      expectedCursorOffset: 100,
-      expectedCursorHash: "e".repeat(64),
-      cursorOffset: 110,
-      cursorLine: 2,
-      cursorHash: "f".repeat(64),
-      sourceSizeBytes: 110
-    };
-    await repo.advanceLiveTranscriptCursor({ userId: owner.id }, liveCursor);
-    await repo.observeHistoricalImportSource(
-      { userId: owner.id },
-      {
-        sourceId: source!.id,
-        localSourcePath: "/Users/private/.codex/sessions/batch.jsonl",
-        sourceSizeBytes: 120
-      }
-    );
-    await expect(
-      repo.advanceLiveTranscriptCursor({ userId: owner.id }, liveCursor)
-    ).resolves.toMatchObject({ liveCursorOffset: 110 });
-    await expect(
-      repo.ingestHistoricalImportBatch({ userId: owner.id }, batch)
-    ).resolves.toMatchObject({ replayed: true });
-    const stored = await pool.query<{
-      source_path: string | null;
-      captured_project: Record<string, unknown>;
-      canonical_stable_item_id: string | null;
-      projection_status: string;
-    }>(
-      `select source_path, captured_project, canonical_stable_item_id,
-         projection_status from conversation_items
-       where owner_user_id = $1 and external_session_id = $2
-       order by projection_status`,
-      [owner.id, source!.sourceSessionId]
-    );
-    expect(stored.rows).toEqual([
-      {
-        source_path: null,
-        captured_project: { name: "Koed", branch: "audit" },
-        canonical_stable_item_id: "assistant-message-1",
-        projection_status: "pending"
-      },
-      {
-        source_path: null,
-        captured_project: { name: "Koed", branch: "audit" },
-        canonical_stable_item_id: null,
-        projection_status: "raw_only"
-      }
-    ]);
-    const rawOnlyObservation = await pool.query<{
-      observation_kind: string;
-      observation_component: string | null;
-      ingestion_status: string;
-    }>(
-      `select observation_kind, observation_component, ingestion_status
-       from conversation_item_observations
-       where source_idempotency_key = 'duplicate-historical-observation'`,
-      []
-    );
-    expect(rawOnlyObservation.rows).toEqual([
-      {
-        observation_kind: "reconciliation",
-        observation_component: "message",
-        ingestion_status: "identity_unresolved"
-      }
-    ]);
-    const artifacts = await pool.query<{ shares: string; access: string }>(
-      `select
-        (select count(*) from team_session_share_grants where owner_user_id = $1)::text shares,
-        (select count(*) from team_workspace_access_grants where user_id = $1)::text access`,
-      [owner.id]
-    );
-    expect(artifacts.rows[0]).toEqual({ shares: "0", access: "0" });
-    expect(
-      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).toMatchObject({
-      checkpointOffset: 100,
-      checkpointHash: "e".repeat(64),
-      importedRecordCount: 3
-    });
-    expect(
-      await repo.transitionHistoricalImportSource(
-        { userId: owner.id },
-        {
-          sourceId: source!.id,
-          expectedState: "importing",
-          state: "completed"
-        }
-      )
-    ).toBeNull();
-    expect(
-      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).toMatchObject({
-      rawIngested: true,
-      rawIngestedRecordCount: 3,
-      projectedRecordCount: 2,
-      semanticReady: false,
-      lcmComplete: true
-    });
-    expect(
-      await repo.transitionHistoricalImportRun(
-        { userId: owner.id },
-        { runId: run.id, expectedState: "importing", state: "completed" }
-      )
-    ).toBeNull();
-    await expect(
-      repo.ingestHistoricalImportBatch({ userId: owner.id }, batch)
-    ).resolves.toMatchObject({ replayed: true, items: [] });
-  });
-
-  it("deduplicates hook/import transport and promotes live Projection without changing captured Project provenance", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const owner = await repo.createUser({
-      email: `dedup-owner-${randomUUID()}@example.com`
-    });
-    const session = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId: "codex-source-session",
-        sourceRuntime: "codex",
-        captureMethod: "api",
-        idempotencyKey: `session-${randomUUID()}`,
-        sourceKind: "codex",
-        sourceAdapterVersion: "codex-transcript-v1",
-        sourceFingerprint: fingerprint("b"),
-        capturedProject: { name: "Captured", path: "/private/captured" },
-        importObservedAt: "2026-07-02T00:00:00.000Z"
-      }
-    );
-    const imported = await repo.createConversationItems(
-      { userId: owner.id },
-      {
-        items: [
-          {
-            ...transcriptItem({
-              sessionId: session.id,
-              transport: "historical_import"
-            }),
-            sourceFingerprint: fingerprint("b"),
-            capturedProject: { name: "Captured", path: "/private/captured" },
-            importObservedAt: "2026-07-02T00:00:00.000Z"
-          }
-        ]
-      }
-    );
-    const watched = await repo.createConversationItems(
-      { userId: owner.id },
-      {
-        items: [
-          transcriptItem({
-            sessionId: session.id,
-            transport: "transcript",
-            path: "/watched/local/path.jsonl"
-          })
-        ]
-      }
-    );
-    expect(watched[0]?.id).toBe(imported[0]?.id);
-    const watcherPromoted = await pool.query<{
-      projection_work_class: string;
-    }>("select projection_work_class from conversation_items where id = $1", [
-      imported[0]?.id
-    ]);
-    expect(watcherPromoted.rows[0]?.projection_work_class).toBe(
-      "live_capture_projection"
-    );
-
-    const live = await repo.createConversationItems(
-      { userId: owner.id },
-      {
-        items: [
-          {
-            ...transcriptItem({
-              sessionId: session.id,
-              transport: "hook",
-              path: "/different/local/path.jsonl"
-            }),
-            capturedProject: { name: "Later detection" }
-          }
-        ]
-      }
-    );
-    expect(live[0]?.id).toBe(imported[0]?.id);
-    const otherOwner = await repo.createUser({
-      email: `dedup-other-${randomUUID()}@example.com`
-    });
-    const otherSession = await repo.createCapturedSession(
-      { userId: otherOwner.id },
-      {
-        externalSessionId: "codex-source-session",
-        idempotencyKey: `other-session-${randomUUID()}`
-      }
-    );
-    const otherItem = await repo.createConversationItems(
-      { userId: otherOwner.id },
-      {
-        items: [
-          transcriptItem({ sessionId: otherSession.id, transport: "hook" })
-        ]
-      }
-    );
-    expect(otherItem[0]?.id).not.toBe(imported[0]?.id);
-
-    const observations = await pool.query<{ source_transport: string }>(
-      `select source_transport
-       from conversation_item_observations
-       where owner_user_id = $1 and conversation_item_id = $2
-       order by source_transport`,
-      [owner.id, imported[0]?.id]
-    );
-    expect(observations.rows.map((row) => row.source_transport)).toEqual([
-      "historical_import",
-      "hook",
-      "transcript"
-    ]);
-
-    const raw = await pool.query<{
-      count: string;
-      source_transport: string;
-      projection_work_class: string;
-      captured_project: Record<string, unknown>;
-      import_observed_at: Date | null;
-      event_time: Date | null;
-      observed_at: Date;
-      projected_at: Date | null;
-    }>(
-      `select count(*) over ()::text count, source_transport,
-         projection_work_class, captured_project, import_observed_at,
-         event_time, observed_at, projected_at
-       from conversation_items where owner_user_id = $1
-         and external_session_id = 'codex-source-session'`,
-      [owner.id]
-    );
-    expect(raw.rows).toHaveLength(1);
-    expect(raw.rows[0]).toMatchObject({
-      count: "1",
-      source_transport: "hook",
-      projection_work_class: "live_capture_projection",
-      captured_project: { name: "Captured", path: "/private/captured" }
-    });
-    expect(raw.rows[0]?.import_observed_at?.toISOString()).toBe(
-      "2026-07-02T00:00:00.000Z"
-    );
-    expect(raw.rows[0]?.event_time?.getTime()).not.toBe(
-      raw.rows[0]?.observed_at.getTime()
-    );
-    await repo.projectPendingConversationItems(
-      { userId: owner.id },
-      { workClass: "live_capture_projection", limit: 10 }
-    );
-    const projected = await pool.query<{ count: string }>(
-      "select count(*)::text count from memory_events where owner_user_id = $1",
-      [owner.id]
-    );
-    expect(projected.rows[0]?.count).toBe("1");
-    const teamArtifacts = await pool.query<{ grants: string; access: string }>(
-      `select
-        (select count(*) from team_session_share_grants where owner_user_id = $1)::text grants,
-        (select count(*) from team_workspace_access_grants where user_id = $1)::text access`,
-      [owner.id]
-    );
-    expect(teamArtifacts.rows[0]).toEqual({ grants: "0", access: "0" });
-  });
-
-  it("converges realistic response_item observations across historical, Hook, and transcript ordering", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const owner = await repo.createUser({
-      email: `response-convergence-${randomUUID()}@example.com`
-    });
-    for (const order of [
-      ["historical_import", "hook", "transcript"],
-      ["hook", "historical_import", "transcript"],
-      ["transcript", "hook", "historical_import"]
-    ] as const) {
-      const externalSessionId = `response-session-${randomUUID()}`;
-      const session = await repo.createCapturedSession(
-        { userId: owner.id },
-        {
-          externalSessionId,
-          idempotencyKey: `response-session:${externalSessionId}`
-        }
-      );
-      const canonicalItemKey = codexCanonicalConversationItemKey({
-        externalThreadId: externalSessionId,
-        externalTurnId: "turn-1",
-        stableItemId: "assistant-message-1",
-        component: "message"
-      });
-      const ids: string[] = [];
-      for (const transport of order) {
-        const [item] = await repo.createConversationItems(
-          { userId: owner.id },
-          {
-            items: [
-              {
-                sessionId: session.id,
-                sourceKind: "codex",
-                sourceAdapterVersion: "codex-transcript-v1",
-                sourceTransport: transport,
-                externalSessionId,
-                externalThreadId: externalSessionId,
-                externalTurnId: "turn-1",
-                externalItemId: "assistant-message-1",
-                sourceRecordType: "response_item",
-                sourceEventType: "message",
-                sourceLineNumber: 3,
-                sourceSequence: 3,
-                eventTime: "2026-07-01T12:00:00.000Z",
-                rawJson: {
-                  type: "response_item",
-                  payload: {
-                    id: "assistant-message-1",
-                    type: "message",
-                    role: "assistant",
-                    content: [{ type: "output_text", text: "Canonical answer" }]
-                  }
-                },
-                rawText: "Canonical answer",
-                sourceHash: "response-item-source-hash",
-                idempotencyKey: `response-item:${externalSessionId}:${transport}`,
-                canonicalItemKey,
-                canonicalStableItemId: "assistant-message-1",
-                canonicalSourcePriority: 200,
-                observationKind: "reconciliation",
-                observationComponent: "message",
-                projectionStatus: "pending",
-                projectionVersion: "codex-transcript-v1",
-                metadata: {
-                  transcriptByteOffset: 256,
-                  transcriptItemDiscriminator: "primary:codex_response_message",
-                  transcriptType: "message",
-                  canonicalConversationItemActor: "agent",
-                  canonicalConversationItemKind: "message"
-                }
-              }
-            ]
-          }
-        );
-        ids.push(item!.id);
-      }
-      expect(new Set(ids).size).toBe(1);
-      const projection = await repo.projectPendingConversationItems(
-        { userId: owner.id },
-        { limit: 10, workClass: "live_capture_projection" }
-      );
-      expect(projection.rawItemsProjected).toBe(1);
-      expect(
-        await pool.query(
-          `select 1 from conversation_items
-           where owner_user_id = $1 and canonical_item_key = $2`,
-          [owner.id, canonicalItemKey]
-        )
-      ).toHaveProperty("rowCount", 1);
-    }
-  });
-
-  it("converges Hook-first, watcher-first, and historical-first item observations with immutable provenance", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const owner = await repo.createUser({
-      email: `transport-order-${randomUUID()}@example.com`
-    });
-    for (const order of [
-      ["hook", "transcript", "historical_import"],
-      ["transcript", "historical_import", "hook"],
-      ["historical_import", "hook", "transcript"]
-    ] as const) {
-      const externalSessionId = `transport-${randomUUID()}`;
-      const session = await repo.createCapturedSession(
-        { userId: owner.id },
-        {
-          externalSessionId,
-          idempotencyKey: `session-${externalSessionId}`
-        }
-      );
-      const canonicalKey = `conversation-item:${randomUUID()}`;
-      const ids: string[] = [];
-      for (const transport of order) {
-        const [item] = await repo.createConversationItems(
-          { userId: owner.id },
-          {
-            items: [
-              {
-                ...transcriptItem({
-                  sessionId: session.id,
-                  transport,
-                  path:
-                    transport === "historical_import"
-                      ? undefined
-                      : `/private/${transport}.jsonl`
-                }),
-                externalSessionId,
-                externalThreadId: externalSessionId,
-                idempotencyKey: canonicalKey,
-                metadata: {
-                  transcriptByteOffset: 128,
-                  transcriptItemDiscriminator: "primary:codex_transcript_user",
-                  ...(transport === "hook"
-                    ? { observedViaHook: true }
-                    : transport === "transcript"
-                      ? { observedViaTranscript: true }
-                      : { observedViaHistoricalImport: true })
-                }
-              }
-            ]
-          }
-        );
-        ids.push(item!.id);
-      }
-      expect(new Set(ids).size).toBe(1);
-      const observations = await pool.query<{ source_transport: string }>(
-        `select source_transport from conversation_item_observations
-         where conversation_item_id = $1 order by source_transport`,
-        [ids[0]]
-      );
-      expect(observations.rows.map((row) => row.source_transport)).toEqual([
-        "historical_import",
-        "hook",
-        "transcript"
-      ]);
-    }
-  });
-
-  it("finalizes non-UUID external-session historical LCM work with internal session ID", async () => {
-    const repo = createMemorySourceRepository(pool);
-    const owner = await repo.createUser({
-      email: `terminal-lcm-owner-${randomUUID()}@example.com`
-    });
-    const externalSessionId = `codex-terminal-${randomUUID()}`;
-    const run = await repo.createHistoricalImportRun({ userId: owner.id });
-    const source = await repo.createHistoricalImportSource(
-      { userId: owner.id },
-      {
-        runId: run.id,
-        aiClient: "codex",
-        sourceKind: "codex",
-        sourceSessionId: externalSessionId,
-        sourceFingerprint: fingerprint("a"),
-        registrationFrontierOffset: 0,
-        registrationPrefixHash:
-          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        localSourcePath: "/private/terminal-lcm.jsonl",
-        sourceSizeBytes: 0
-      }
-    );
-    const session = await repo.createCapturedSession(
-      { userId: owner.id },
-      {
-        externalSessionId,
-        idempotencyKey: `terminal-lcm-session:${externalSessionId}`
-      }
-    );
-    for (const [expectedState, state] of [
-      ["discovered", "eligible"],
-      ["eligible", "queued"],
-      ["queued", "importing"]
     ] as const) {
       await repo.transitionHistoricalImportRun(
         { userId: owner.id },
@@ -1375,107 +1184,282 @@ describeDb("durable historical import repository", () => {
         { sourceId: source!.id, expectedState, state }
       );
     }
-    await repo.createConversationItems(
+    const input = {
+      sourceId: source!.id,
+      expectedSourceOffset: 0,
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest,
+      items: [
+        sourceItem({
+          externalSessionId: fixture.externalSessionId,
+          byteOffset: 64
+        })
+      ]
+    };
+    const first = await repo.ingestHistoricalImportBatch(
+      { userId: owner.id },
+      input
+    );
+    const replay = await repo.ingestHistoricalImportBatch(
+      { userId: owner.id },
+      input
+    );
+    expect(first.replayed).toBe(false);
+    expect(replay).toMatchObject({ replayed: true, items: [] });
+    const stored = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from conversation_items
+        where session_id = $1`,
+      [fixture.sessionId]
+    );
+    expect(Number(stored.rows[0]?.count)).toBe(1);
+  });
+
+  it("fails closed on wrong segment, cursor, ownership, or Capture Policy", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-security-${randomUUID()}@example.com`
+    });
+    const outsider = await repo.createUser({
+      email: `historical-security-outsider-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const run = await repo.createHistoricalImportRun({ userId: owner.id });
+    const source = await repo.createHistoricalImportSource(
+      { userId: owner.id },
+      {
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "codex"
+      }
+    );
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      await repo.transitionHistoricalImportRun(
+        { userId: owner.id },
+        { runId: run.id, expectedState, state }
+      );
+      await repo.transitionHistoricalImportSource(
+        { userId: owner.id },
+        { sourceId: source!.id, expectedState, state }
+      );
+    }
+    const input = {
+      sourceId: source!.id,
+      expectedSourceOffset: 0,
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest,
+      items: [sourceItem({ externalSessionId: fixture.externalSessionId })]
+    };
+    await expect(
+      repo.ingestHistoricalImportBatch({ userId: outsider.id }, input)
+    ).rejects.toThrow("not found");
+    await expect(
+      repo.ingestHistoricalImportBatch(
+        { userId: owner.id },
+        { ...input, lastVerifiedDigest: digest("wrong") }
+      )
+    ).rejects.toThrow("segment verification");
+    await expect(
+      repo.ingestHistoricalImportBatch(
+        { userId: owner.id },
+        { ...input, sourceOffset: fixture.frontier + 1 }
+      )
+    ).rejects.toThrow("cursor conflict");
+
+    await repo.upsertCapturePolicy(
+      { userId: owner.id },
+      {
+        targetType: "global",
+        captureState: "disabled",
+        visibility: "personal"
+      }
+    );
+    await expect(
+      repo.ingestHistoricalImportBatch({ userId: owner.id }, input)
+    ).rejects.toThrow("Capture Policy");
+    const cursor = await repo.getConversationSourceConsumerCursor(
+      { userId: owner.id },
+      {
+        artifactId: fixture.artifactId,
+        consumerKind: "canonical_historical"
+      }
+    );
+    expect(cursor).toBeNull();
+  });
+
+  it("advances consumer cursors only through exact owner-visible journal segments", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `journal-cursor-owner-${randomUUID()}@example.com`
+    });
+    const outsider = await repo.createUser({
+      email: `journal-cursor-outsider-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const input = {
+      artifactId: fixture.artifactId,
+      consumerKind: "canonical_historical" as const,
+      expectedSourceOffset: 0,
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest
+    };
+
+    await expect(
+      repo.advanceConversationSourceConsumerCursor(
+        { userId: outsider.id },
+        input
+      )
+    ).rejects.toThrow("cursor conflict");
+    await expect(
+      repo.advanceConversationSourceConsumerCursor(
+        { userId: owner.id },
+        { ...input, lastVerifiedDigest: "0".repeat(64) }
+      )
+    ).rejects.toThrow("cursor conflict");
+    await expect(
+      repo.advanceConversationSourceConsumerCursor(
+        { userId: owner.id },
+        { ...input, segmentIndex: fixture.segmentIndex + 1 }
+      )
+    ).rejects.toThrow("cursor conflict");
+    await expect(
+      repo.advanceConversationSourceConsumerCursor(
+        { userId: owner.id },
+        { ...input, sourceLine: 3 }
+      )
+    ).rejects.toThrow("cursor conflict");
+
+    await expect(
+      repo.advanceConversationSourceConsumerCursor({ userId: owner.id }, input)
+    ).resolves.toMatchObject({
+      artifactId: fixture.artifactId,
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest
+    });
+  });
+
+  it("resumes from a verified line boundary inside a sealed segment", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `journal-mid-segment-owner-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const firstCheckpoint = {
+      artifactId: fixture.artifactId,
+      consumerKind: "canonical_historical" as const,
+      expectedSourceOffset: 0,
+      sourceOffset: Math.floor(fixture.frontier / 2),
+      sourceLine: 1,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest
+    };
+
+    await expect(
+      repo.advanceConversationSourceConsumerCursor(
+        { userId: owner.id },
+        firstCheckpoint
+      )
+    ).resolves.toMatchObject({
+      sourceOffset: firstCheckpoint.sourceOffset,
+      sourceLine: 1,
+      segmentIndex: fixture.segmentIndex
+    });
+
+    await expect(
+      repo.advanceConversationSourceConsumerCursor(
+        { userId: owner.id },
+        {
+          ...firstCheckpoint,
+          expectedSourceOffset: firstCheckpoint.sourceOffset,
+          sourceOffset: fixture.frontier,
+          sourceLine: 2
+        }
+      )
+    ).resolves.toMatchObject({
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      segmentIndex: fixture.segmentIndex
+    });
+  });
+
+  it("converges historical and live observations onto one canonical item", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-convergence-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const canonical = sourceItem({
+      externalSessionId: fixture.externalSessionId,
+      byteOffset: 64
+    });
+    const live = await repo.createConversationItems(
       { userId: owner.id },
       {
         items: [
           {
-            sessionId: session.id,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-transcript-v1",
-            sourceTransport: "historical_import",
-            externalSessionId,
-            externalThreadId: externalSessionId,
-            externalTurnId: "terminal-turn",
-            externalItemId: "terminal-response",
-            sourceRecordType: "response_item",
-            sourceEventType: "message",
-            sourceLineNumber: 1,
-            sourceSequence: 1,
-            eventTime: "2026-07-01T12:00:00.000Z",
-            rawJson: {
-              type: "response_item",
-              payload: {
-                id: "terminal-response",
-                type: "message",
-                role: "assistant",
-                content: [{ type: "output_text", text: "Terminal LCM memory" }]
-              }
-            },
-            rawText: "Terminal LCM memory",
-            sourceHash: `terminal-source:${externalSessionId}`,
-            idempotencyKey: `terminal-lcm-item:${externalSessionId}`,
-            canonicalItemKey: codexCanonicalConversationItemKey({
-              externalThreadId: externalSessionId,
-              externalTurnId: "terminal-turn",
-              stableItemId: "terminal-response",
-              component: "message"
-            }),
-            canonicalStableItemId: "terminal-response",
-            canonicalSourcePriority: 200,
-            observationKind: "reconciliation",
-            observationComponent: "message",
-            projectionStatus: "pending",
-            projectionVersion: "codex-transcript-v1",
-            metadata: {
-              transcriptByteOffset: 0,
-              transcriptItemDiscriminator: "primary:codex_response_message",
-              transcriptType: "message"
-            }
+            ...canonical,
+            sessionId: fixture.sessionId,
+            sourceTransport: "transcript"
           }
         ]
       }
     );
-    await repo.projectPendingConversationItems(
-      { userId: owner.id },
-      { workClass: "historical_import_backfill", limit: 10 }
-    );
-    await pool.query(
-      `update memory_events set include_in_embedding = false, include_in_lcm = true
-       where owner_user_id = $1 and session_id = $2`,
-      [owner.id, session.id]
-    );
-
-    expect(
-      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).toMatchObject({
-      state: "importing",
-      projectedRecordCount: 1,
-      embeddingEligibleEventCount: 0,
-      lcmEligibleEventCount: 1,
-      lcmCompletedEventCount: 0
-    });
-    const [finalization] =
-      await repo.listHistoricalImportSourcesNeedingLcmFinalization();
-    expect(finalization).toMatchObject({
-      sourceId: source!.id,
-      ownerUserId: owner.id,
-      sessionId: session.id
-    });
-    const compaction = await repo.createLcmNodes(
+    const run = await repo.createHistoricalImportRun({ userId: owner.id });
+    const source = await repo.createHistoricalImportSource(
       { userId: owner.id },
       {
-        visibility: "personal",
-        workClass: "historical_import_backfill",
-        sessionId: finalization!.sessionId,
-        finalize: true
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "codex"
       }
     );
-    expect(compaction.leafNodeIds).toEqual([expect.any(String)]);
-    await pool.query(
-      `update memory_nodes set summary_model = 'test-summary-model'
-       where id = any($1::uuid[])`,
-      [compaction.leafNodeIds]
-    );
-    await expect(
-      repo.transitionHistoricalImportSource(
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      await repo.transitionHistoricalImportRun(
         { userId: owner.id },
-        {
-          sourceId: source!.id,
-          expectedState: "importing",
-          state: "completed"
-        }
-      )
-    ).resolves.toMatchObject({ state: "completed" });
+        { runId: run.id, expectedState, state }
+      );
+      await repo.transitionHistoricalImportSource(
+        { userId: owner.id },
+        { sourceId: source!.id, expectedState, state }
+      );
+    }
+    const imported = await repo.ingestHistoricalImportBatch(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        expectedSourceOffset: 0,
+        sourceOffset: fixture.frontier,
+        sourceLine: 2,
+        segmentIndex: fixture.segmentIndex,
+        lastVerifiedDigest: fixture.segmentDigest,
+        items: [canonical]
+      }
+    );
+    expect(imported.items[0]?.id).toBe(live[0]?.id);
+    const observations = await pool.query<{ source_transport: string }>(
+      `select source_transport
+         from conversation_item_observations
+        where conversation_item_id = $1
+        order by source_transport`,
+      [live[0]!.id]
+    );
+    expect(observations.rows.map((row) => row.source_transport)).toEqual([
+      "historical_import",
+      "transcript"
+    ]);
   });
 });

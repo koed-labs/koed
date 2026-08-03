@@ -6,15 +6,29 @@ import {
   assertSecureHttpTransport,
   deleteLocalEdgeClientCredential,
   deleteUpstreamCredentialSecret,
+  readLocalEdgeUpstreamEnrollmentBinding,
   readUpstreamCredentialAuthorization,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret
 } from "@koed/shared";
+import {
+  createSecureUpstreamFetch,
+  registeredPrivateNetworkPolicy
+} from "@koed/shared/secure-upstream-fetch";
 import type { KoedServerPaths } from "./paths.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
+import {
+  beginUpstreamDisconnectCleanup,
+  updateUpstreamDisconnectCleanup,
+  upstreamDisconnectCleanupPending
+} from "./upstream-disconnect-cleanup.js";
 import { withUpstreamEnrollmentLock } from "./upstream-enrollment-lock.js";
 import {
+  clearUpstreamBackendCapabilities,
   collectUpstreamRegistryStatus,
+  getActiveUpstreamBackend,
+  setActiveUpstreamBackend,
+  upstreamBackendAdvertisesCapability,
   updateUpstreamBackendCredential,
   updateUpstreamBackendRoutePolicy,
   type UpstreamBackendSummary,
@@ -42,6 +56,8 @@ export interface UpstreamEnrollmentRecord {
   credentialKeyId?: string;
   credentialReference?: string;
   localClientCredentialReference?: string;
+  deviceCredentialId?: string;
+  principalUserId?: string;
   createdAt: string;
   updatedAt: string;
   expiresAt: string | null;
@@ -63,6 +79,8 @@ export interface UpstreamEnrollmentSummary {
   activationUrl: string | null;
   requestedOperationFamilies: string[];
   challengeId?: string;
+  deviceCredentialId?: string;
+  principalUserId?: string;
   createdAt: string;
   updatedAt: string;
   expiresAt: string | null;
@@ -182,6 +200,14 @@ const normalizeRecord = (
           .slice(0, 200)
       }
     : {}),
+  ...(typeof record.deviceCredentialId === "string" &&
+  uuidPattern.test(record.deviceCredentialId)
+    ? { deviceCredentialId: record.deviceCredentialId.toLowerCase() }
+    : {}),
+  ...(typeof record.principalUserId === "string" &&
+  uuidPattern.test(record.principalUserId)
+    ? { principalUserId: record.principalUserId.toLowerCase() }
+    : {}),
   createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
   updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
   expiresAt: typeof record.expiresAt === "string" ? record.expiresAt : null,
@@ -208,6 +234,9 @@ const normalizeEnrollmentState = (value: unknown): UpstreamEnrollmentState => {
   }
   return "pending";
 };
+
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const sanitizeActivationUrl = (value: string): string | null => {
   try {
@@ -293,6 +322,12 @@ const summarizeEnrollment = (
     activationUrl: record.activationUrl,
     requestedOperationFamilies: record.requestedOperationFamilies,
     ...(record.challengeId ? { challengeId: record.challengeId } : {}),
+    ...(record.deviceCredentialId
+      ? { deviceCredentialId: record.deviceCredentialId }
+      : {}),
+    ...(record.principalUserId
+      ? { principalUserId: record.principalUserId }
+      : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     expiresAt: record.expiresAt,
@@ -303,15 +338,29 @@ const summarizeEnrollment = (
 };
 
 const routePolicyOperationFamilies = (
-  routePolicy: UpstreamRoutePolicy
+  routePolicy: UpstreamRoutePolicy,
+  options: { collaboration: boolean } = { collaboration: false }
 ): string[] => {
   const entries: Array<[keyof UpstreamRoutePolicy, string]> = [
     ["personalMemoryRead", "personal_memory_read"],
+    ...(options.collaboration
+      ? ([
+          ["personalCollaboration", "personal_collaboration_read"],
+          ["personalCollaboration", "personal_collaboration_write"]
+        ] as Array<[keyof UpstreamRoutePolicy, string]>)
+      : []),
     ["teamWorkspaceRead", "team_workspace_read"],
+    ...(options.collaboration
+      ? ([
+          ["teamWorkspaceRead", "team_chat_read"],
+          ["teamWorkspaceRead", "team_chat_write"]
+        ] as Array<[keyof UpstreamRoutePolicy, string]>)
+      : []),
     ["shareGrantManagement", "share_grant_management"],
     ["captureWrites", "capture_writes"],
     ["sync", "sync"],
-    ["admin", "admin"]
+    ["managedExecution", "managed_execution"],
+    ["admin", "action_grant"]
   ];
   return entries
     .filter(([key]) => routePolicy[key] === "enabled")
@@ -319,11 +368,9 @@ const routePolicyOperationFamilies = (
 };
 
 const browserEnrollmentOperationFamilies = (
-  routePolicy: UpstreamRoutePolicy
-): string[] =>
-  routePolicyOperationFamilies(routePolicy).filter(
-    (family) => family !== "admin"
-  );
+  routePolicy: UpstreamRoutePolicy,
+  options: { collaboration: boolean }
+): string[] => routePolicyOperationFamilies(routePolicy, options);
 
 const expiresAtFor = (now: Date): string =>
   new Date(now.getTime() + 10 * 60 * 1000).toISOString();
@@ -382,13 +429,14 @@ const createUpstreamChallenge = async (
   backend: UpstreamBackendSummary,
   input: {
     backendId: string;
+    deviceInstanceId: string;
+    protocolDeploymentId: string;
     challengeHash: string;
     credentialKeyId: string;
     verifierSecret: string;
     operationFamilies: string[];
     requestId: string;
     expiresAt: string | null;
-    deviceInstanceId: string;
   },
   deps: Required<UpstreamEnrollmentDeps>
 ): Promise<{ challengeId: string; activationUrl: string }> => {
@@ -404,6 +452,7 @@ const createUpstreamChallenge = async (
         challenge_hash: input.challengeHash,
         upstream_backend_id: input.backendId,
         device_instance_id: input.deviceInstanceId,
+        protocol_deployment_id: input.protocolDeploymentId,
         device_label: "Koed local edge",
         requested_operation_families: input.operationFamilies,
         pending_credential: {
@@ -438,9 +487,14 @@ const createUpstreamChallenge = async (
       "Upstream challenge response did not include a challenge id."
     );
   }
+  const rawActivationUrl = result.payload.activationUrl;
+  const activationUrl =
+    typeof rawActivationUrl === "string"
+      ? sanitizeActivationUrl(rawActivationUrl)
+      : null;
   return {
     challengeId,
-    activationUrl: approvalUrlFor(backend, challengeId)
+    activationUrl: activationUrl ?? approvalUrlFor(backend, challengeId)
   };
 };
 
@@ -480,7 +534,18 @@ const readUpstreamChallengeStatus = async (
     : "unknown";
 };
 
-type RemoteCredentialStatus = "active" | "rejected" | "unknown";
+type RemoteCredentialStatus =
+  | {
+      state: "active";
+      deviceCredentialId: string;
+      principalUserId: string;
+    }
+  | { state: "rejected" | "unknown" };
+
+type RemoteCredentialRevocationStatus =
+  | "revoked"
+  | "already_inactive"
+  | "unavailable";
 
 const remoteCredentialStatus = async (
   paths: KoedServerPaths,
@@ -493,7 +558,7 @@ const remoteCredentialStatus = async (
     reference
   );
   if (!authorization) {
-    return "unknown";
+    return { state: "unknown" };
   }
   try {
     const result = await jsonFetch(
@@ -505,11 +570,63 @@ const remoteCredentialStatus = async (
       }
     );
     if (result.status === 401 || result.status === 403) {
-      return "rejected";
+      return { state: "rejected" };
     }
-    return result.ok && result.payload.ok === true ? "active" : "unknown";
+    const credential = result.payload.credential;
+    const user = result.payload.user;
+    const deviceCredentialId =
+      credential && typeof credential === "object" && "id" in credential
+        ? (credential as { id?: unknown }).id
+        : null;
+    const principalUserId =
+      user && typeof user === "object" && "id" in user
+        ? (user as { id?: unknown }).id
+        : null;
+    return result.ok &&
+      result.payload.ok === true &&
+      typeof deviceCredentialId === "string" &&
+      uuidPattern.test(deviceCredentialId) &&
+      typeof principalUserId === "string" &&
+      uuidPattern.test(principalUserId)
+      ? {
+          state: "active",
+          deviceCredentialId: deviceCredentialId.toLowerCase(),
+          principalUserId: principalUserId.toLowerCase()
+        }
+      : { state: "unknown" };
   } catch {
-    return "unknown";
+    return { state: "unknown" };
+  }
+};
+
+const revokeRemoteCredential = async (
+  paths: KoedServerPaths,
+  backend: UpstreamBackendSummary,
+  reference: string | undefined,
+  deps: Required<UpstreamEnrollmentDeps>
+): Promise<RemoteCredentialRevocationStatus> => {
+  const authorization = readUpstreamCredentialAuthorization(
+    paths.koedHome,
+    reference
+  );
+  if (!authorization) return "unavailable";
+  try {
+    const result = await jsonFetch(
+      deps,
+      new URL(
+        "v1/local-edge/device-credentials/current",
+        `${backend.baseUrl}/`
+      ),
+      {
+        method: "DELETE",
+        headers: { authorization }
+      }
+    );
+    if (result.ok && result.payload.revoked === true) return "revoked";
+    if (result.status === 401) return "already_inactive";
+    return "unavailable";
+  } catch {
+    return "unavailable";
   }
 };
 
@@ -520,6 +637,25 @@ const latestEnrollment = (
   [...store.enrollments]
     .reverse()
     .find((enrollment) => enrollment.backendId === backendId);
+
+export const readUpstreamEnrollmentBinding = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): {
+  backendId: string;
+  enrollmentId: string;
+  deviceCredentialId: string;
+  principalUserId: string;
+} | null =>
+  readLocalEdgeUpstreamEnrollmentBinding(
+    paths.upstreamEnrollmentsPath,
+    validateBackendId(id),
+    {
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync
+    }
+  );
 
 const backendById = (
   paths: KoedServerPaths,
@@ -626,7 +762,32 @@ const materializeState = (
   return record;
 };
 
-export const startUpstreamEnrollment = async (
+const withSecureFetchForBackend = async <T>(
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps,
+  operation: (resolvedDeps: UpstreamEnrollmentDeps) => Promise<T>
+): Promise<T> => {
+  if (deps.fetch) return operation(deps);
+  const backend = backendById(
+    paths,
+    validateBackendId(id),
+    depsWithDefaults(deps)
+  ).backend;
+  if (!backend) return operation(deps);
+  const secureFetch = createSecureUpstreamFetch({
+    allowPrivateNetworkForUrl: registeredPrivateNetworkPolicy(() => [
+      { baseUrl: backend.baseUrl, profile: backend.profile }
+    ])
+  });
+  try {
+    return await operation({ ...deps, fetch: secureFetch });
+  } finally {
+    await secureFetch.close();
+  }
+};
+
+const startUpstreamEnrollmentWithFetch = async (
   paths: KoedServerPaths,
   id: string,
   deps: UpstreamEnrollmentDeps = {}
@@ -658,6 +819,14 @@ export const startUpstreamEnrollment = async (
       message: `Upstream backend ${backendId} is not registered.`
     };
   }
+  if (upstreamDisconnectCleanupPending(paths, backendId)) {
+    return {
+      ok: false,
+      state: "failed",
+      backend,
+      message: `Upstream backend ${backendId} cannot enroll until disconnect cleanup completes.`
+    };
+  }
   if (backend.capabilities.state !== "validated") {
     return {
       ok: false,
@@ -669,8 +838,19 @@ export const startUpstreamEnrollment = async (
   const configuredOperationFamilies = routePolicyOperationFamilies(
     backend.routePolicy
   );
+  const collaboration = upstreamBackendAdvertisesCapability(
+    paths,
+    backendId,
+    "memory.collaboration",
+    {
+      existsSync: resolvedDeps.existsSync,
+      readFileSync: resolvedDeps.readFileSync,
+      now: resolvedDeps.now
+    }
+  );
   const operationFamilies = browserEnrollmentOperationFamilies(
-    backend.routePolicy
+    backend.routePolicy,
+    { collaboration }
   );
   if (configuredOperationFamilies.length === 0) {
     return {
@@ -685,7 +865,7 @@ export const startUpstreamEnrollment = async (
       ok: false,
       state: "failed",
       backend,
-      message: `Upstream backend ${backendId} only enables admin routing, which cannot be enrolled through browser-mediated device enrollment.`
+      message: `Upstream backend ${backendId} has no browser-enrollable route-policy families.`
     };
   }
 
@@ -709,6 +889,7 @@ export const startUpstreamEnrollment = async (
   }
 
   const requestId = resolvedDeps.randomId();
+  const deviceInstanceId = identity.deviceInstanceId!;
   const verifierSecret = randomSecret(resolvedDeps);
   const challengeSecret = randomSecret(resolvedDeps);
   const challengeHash = challengeHashFor(backendId, requestId, challengeSecret);
@@ -718,7 +899,14 @@ export const startUpstreamEnrollment = async (
     .slice(0, 40)}`;
   const expiresAt = expiresAtFor(now);
   const localClientOperationFamilies = operationFamilies.filter(
-    (family) => family === "team_workspace_read"
+    (family) =>
+      family === "personal_collaboration_read" ||
+      family === "personal_collaboration_write" ||
+      family === "team_workspace_read" ||
+      family === "team_chat_read" ||
+      family === "team_chat_write" ||
+      family === "share_grant_management" ||
+      family === "managed_execution"
   );
   const localClientSecret = randomSecret(resolvedDeps);
 
@@ -728,13 +916,14 @@ export const startUpstreamEnrollment = async (
       backend,
       {
         backendId,
+        deviceInstanceId,
+        protocolDeploymentId: identity.deploymentId!,
         challengeHash,
         credentialKeyId,
         verifierSecret,
         operationFamilies,
         requestId,
-        expiresAt,
-        deviceInstanceId: identity.deviceInstanceId!
+        expiresAt
       },
       resolvedDeps
     );
@@ -758,8 +947,20 @@ export const startUpstreamEnrollment = async (
       ? sameEnrollmentIdentity(currentRecord, expectedRecord) &&
         currentRecord.state === expectedRecord.state
       : currentRecord === undefined;
+    const currentCollaboration = upstreamBackendAdvertisesCapability(
+      paths,
+      backendId,
+      "memory.collaboration",
+      {
+        existsSync: resolvedDeps.existsSync,
+        readFileSync: resolvedDeps.readFileSync,
+        now: resolvedDeps.now
+      }
+    );
     const currentOperationFamilies = currentBackend
-      ? browserEnrollmentOperationFamilies(currentBackend.routePolicy)
+      ? browserEnrollmentOperationFamilies(currentBackend.routePolicy, {
+          collaboration: currentCollaboration
+        })
       : [];
     if (
       !expectedStillCurrent ||
@@ -839,7 +1040,16 @@ export const startUpstreamEnrollment = async (
   });
 };
 
-export const getUpstreamEnrollmentStatus = async (
+export const startUpstreamEnrollment = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> =>
+  withSecureFetchForBackend(paths, id, deps, (resolvedDeps) =>
+    startUpstreamEnrollmentWithFetch(paths, id, resolvedDeps)
+  );
+
+const getUpstreamEnrollmentStatusWithFetch = async (
   paths: KoedServerPaths,
   id: string,
   deps: UpstreamEnrollmentDeps = {}
@@ -887,10 +1097,11 @@ export const getUpstreamEnrollmentStatus = async (
       resolvedDeps
     );
     if (
-      credentialStatus !== "active" &&
+      credentialStatus?.state !== "active" &&
       !(
         materialized.state === "exchanged" &&
-        (credentialStatus === "rejected" || credentialStatus === "unknown")
+        (credentialStatus?.state === "rejected" ||
+          credentialStatus?.state === "unknown")
       ) &&
       materialized.challengeId
     ) {
@@ -925,7 +1136,7 @@ export const getUpstreamEnrollmentStatus = async (
       currentBackend.credential.status !== "not_configured" &&
       currentBackend.credential.reference === record.credentialReference;
 
-    if (remoteResultStillApplies && credentialStatus === "active") {
+    if (remoteResultStillApplies && credentialStatus?.state === "active") {
       updateUpstreamBackendCredential(
         paths,
         backendId,
@@ -951,11 +1162,13 @@ export const getUpstreamEnrollmentStatus = async (
         credential: {
           status: "configured",
           reference: current.credentialReference
-        }
+        },
+        deviceCredentialId: credentialStatus.deviceCredentialId,
+        principalUserId: credentialStatus.principalUserId
       };
     } else if (
       remoteResultStillApplies &&
-      credentialStatus === "rejected" &&
+      credentialStatus?.state === "rejected" &&
       current.state === "exchanged"
     ) {
       deleteUpstreamCredentialSecret(
@@ -987,7 +1200,7 @@ export const getUpstreamEnrollmentStatus = async (
       };
     } else if (
       remoteResultStillApplies &&
-      credentialStatus === "unknown" &&
+      credentialStatus?.state === "unknown" &&
       current.state === "exchanged"
     ) {
       temporaryCredentialStatusFailure = true;
@@ -1076,6 +1289,15 @@ export const getUpstreamEnrollmentStatus = async (
   });
 };
 
+export const getUpstreamEnrollmentStatus = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> =>
+  withSecureFetchForBackend(paths, id, deps, (resolvedDeps) =>
+    getUpstreamEnrollmentStatusWithFetch(paths, id, resolvedDeps)
+  );
+
 export const cancelUpstreamEnrollment = async (
   paths: KoedServerPaths,
   id: string,
@@ -1132,6 +1354,15 @@ export const cancelUpstreamEnrollment = async (
     );
     store.updatedAt = now;
     writeStore(paths, store, resolvedDeps);
+    if (getActiveUpstreamBackend(paths)?.id === backendId) {
+      setActiveUpstreamBackend(paths, null, {
+        existsSync: resolvedDeps.existsSync,
+        readFileSync: resolvedDeps.readFileSync,
+        writeFileSync: resolvedDeps.writeFileSync,
+        renameSync: resolvedDeps.renameSync,
+        now: resolvedDeps.now
+      });
+    }
     return {
       ok: true,
       state: "canceled" as const,
@@ -1173,6 +1404,7 @@ export const invalidateUpstreamEnrollmentReferences = async (
         backend.id,
         {
           personalMemoryRead: "disabled",
+          personalCollaboration: "disabled",
           teamWorkspaceRead: "disabled",
           shareGrantManagement: "disabled",
           captureWrites: "disabled",
@@ -1225,14 +1457,14 @@ export const invalidateUpstreamEnrollmentReferences = async (
   return { pendingRemoteRevocation };
 };
 
-export const disconnectUpstreamBackendEnrollment = async (
+const disconnectUpstreamBackendEnrollmentWithFetch = async (
   paths: KoedServerPaths,
   id: string,
   deps: UpstreamEnrollmentDeps = {}
 ): Promise<UpstreamEnrollmentResult> => {
   const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
-  return withUpstreamEnrollmentLock(paths, backendId, () => {
+  return withUpstreamEnrollmentLock(paths, backendId, async () => {
     const now = resolvedDeps.now().toISOString();
     const { backend } = backendById(paths, backendId, resolvedDeps);
     if (!backend) {
@@ -1242,11 +1474,53 @@ export const disconnectUpstreamBackendEnrollment = async (
         message: `Upstream backend ${backendId} is not registered.`
       };
     }
+    beginUpstreamDisconnectCleanup(paths, backendId, {
+      now: resolvedDeps.now
+    });
+    if (
+      backend.credential.status !== "revoked" &&
+      backend.credential.status !== "not_configured"
+    ) {
+      const remoteRevocation = await revokeRemoteCredential(
+        paths,
+        backend,
+        backend.credential.reference,
+        resolvedDeps
+      );
+      if (remoteRevocation === "unavailable") {
+        updateUpstreamDisconnectCleanup(
+          paths,
+          backendId,
+          {
+            phase: "remote_revocation_pending",
+            lastFailureCategory: "remote_unavailable"
+          },
+          { now: resolvedDeps.now }
+        );
+        return {
+          ok: false,
+          state: "failed" as const,
+          backend,
+          message:
+            "The upstream device credential could not be revoked. Local credentials and routes were kept so disconnect can be retried safely."
+        };
+      }
+    }
+    updateUpstreamDisconnectCleanup(
+      paths,
+      backendId,
+      {
+        phase: "local_cleanup_pending",
+        lastFailureCategory: null
+      },
+      { now: resolvedDeps.now }
+    );
     updateUpstreamBackendRoutePolicy(
       paths,
       backendId,
       {
         personalMemoryRead: "disabled",
+        personalCollaboration: "disabled",
         teamWorkspaceRead: "disabled",
         shareGrantManagement: "disabled",
         captureWrites: "disabled",
@@ -1264,7 +1538,7 @@ export const disconnectUpstreamBackendEnrollment = async (
     updateUpstreamBackendCredential(
       paths,
       backendId,
-      { status: "revoked", reference: backend.credential.reference },
+      { status: "revoked" },
       {
         existsSync: resolvedDeps.existsSync,
         readFileSync: resolvedDeps.readFileSync,
@@ -1273,6 +1547,13 @@ export const disconnectUpstreamBackendEnrollment = async (
         now: resolvedDeps.now
       }
     );
+    clearUpstreamBackendCapabilities(paths, backendId, {
+      existsSync: resolvedDeps.existsSync,
+      readFileSync: resolvedDeps.readFileSync,
+      writeFileSync: resolvedDeps.writeFileSync,
+      renameSync: resolvedDeps.renameSync,
+      now: resolvedDeps.now
+    });
     deleteUpstreamCredentialSecret(
       paths.koedHome,
       backend.credential.reference
@@ -1286,17 +1567,15 @@ export const disconnectUpstreamBackendEnrollment = async (
     const store = readStore(paths, resolvedDeps);
     const existing = latestEnrollment(store, backendId);
     const record: UpstreamEnrollmentRecord = {
-      ...(existing ?? {
-        backendId,
-        requestId: resolvedDeps.randomId(),
-        activationUrl: null,
-        requestedOperationFamilies: []
-      }),
+      backendId,
+      requestId: existing?.requestId ?? resolvedDeps.randomId(),
       state: "revoked",
+      activationUrl: null,
+      requestedOperationFamilies: [],
       updatedAt: now,
       createdAt: existing?.createdAt ?? now,
-      expiresAt: existing?.expiresAt ?? null,
-      credential: { status: "revoked", reference: backend.credential.reference }
+      expiresAt: null,
+      credential: { status: "revoked" }
     };
     if (existing) {
       store.enrollments = store.enrollments.map((entry) =>
@@ -1310,12 +1589,30 @@ export const disconnectUpstreamBackendEnrollment = async (
     }
     store.updatedAt = now;
     writeStore(paths, store, resolvedDeps);
+    if (getActiveUpstreamBackend(paths)?.id === backendId) {
+      setActiveUpstreamBackend(paths, null, {
+        existsSync: resolvedDeps.existsSync,
+        readFileSync: resolvedDeps.readFileSync,
+        writeFileSync: resolvedDeps.writeFileSync,
+        renameSync: resolvedDeps.renameSync,
+        now: resolvedDeps.now
+      });
+    }
     return {
       ok: true,
       state: "revoked" as const,
       backend: refreshedBackend,
       enrollment: summarizeEnrollment(record, refreshedBackend),
-      message: `Disconnected upstream backend ${backendId} locally. Revoke any browser/session-issued device credential on the upstream backend if it was already exchanged.`
+      message: `Disconnected upstream backend ${backendId} and revoked its exchanged device credential.`
     };
   });
 };
+
+export const disconnectUpstreamBackendEnrollment = (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> =>
+  withSecureFetchForBackend(paths, id, deps, (resolvedDeps) =>
+    disconnectUpstreamBackendEnrollmentWithFetch(paths, id, resolvedDeps)
+  );

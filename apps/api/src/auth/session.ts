@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type {
   DeviceCredentialAuthContext,
-  MemorySourceRepository
+  MemorySourceRepository,
+  UserSessionContext
 } from "@koed/db";
 import type { AuthLogKind } from "../server/logging.js";
 
@@ -53,6 +54,9 @@ export interface AuthHelpers {
     displayName: string | null;
     passwordHash?: string | null;
   }>;
+  authenticateSessionContext(
+    request: FastifyRequest
+  ): Promise<UserSessionContext>;
   authenticateApiToken(request: FastifyRequest): Promise<{
     id: string;
     email: string;
@@ -65,10 +69,15 @@ export interface AuthHelpers {
   authenticateSessionOrDeviceCredential(
     request: FastifyRequest,
     operationFamily:
+      | "personal_collaboration_read"
+      | "personal_collaboration_write"
       | "team_workspace_read"
+      | "team_chat_read"
+      | "team_chat_write"
       | "share_grant_management"
       | "capture_writes"
       | "sync"
+      | "managed_execution"
       | "admin",
     options?: { apiTokenError?: string }
   ): Promise<{
@@ -217,6 +226,22 @@ export const createAuthHelpers = (
     });
   };
 
+  const authenticateSessionContext = async (request: FastifyRequest) => {
+    const repo = requireRepository();
+    const sessionSecret = request.cookies[sessionCookieName];
+    if (sessionSecret) {
+      const context = await repo.getSessionContext(hashSecret(sessionSecret));
+      if (context) {
+        recordAuthContext(request, "session", context.user.id);
+        return context;
+      }
+    }
+
+    throw Object.assign(new Error("Session cookie required"), {
+      statusCode: 401
+    });
+  };
+
   const authenticateApiToken = async (request: FastifyRequest) => {
     const bearer = readAuthorizationCredential(request, "Bearer");
     if (!bearer) {
@@ -251,10 +276,15 @@ export const createAuthHelpers = (
   const authenticateSessionOrDeviceCredential = async (
     request: FastifyRequest,
     operationFamily:
+      | "personal_collaboration_read"
+      | "personal_collaboration_write"
       | "team_workspace_read"
+      | "team_chat_read"
+      | "team_chat_write"
       | "share_grant_management"
       | "capture_writes"
       | "sync"
+      | "managed_execution"
       | "admin",
     options: { apiTokenError?: string } = {}
   ) => {
@@ -275,10 +305,7 @@ export const createAuthHelpers = (
     }
     if (authScheme === "koed-device") {
       const context = await authenticateDeviceCredential(request);
-      if (
-        !context.credential.operationFamilies.includes(operationFamily) &&
-        !context.credential.operationFamilies.includes("*")
-      ) {
+      if (!context.credential.operationFamilies.includes(operationFamily)) {
         throw Object.assign(
           new Error("Device credential is not allowed for this operation"),
           { statusCode: 403 }
@@ -296,6 +323,7 @@ export const createAuthHelpers = (
     setSessionCookie,
     authenticate,
     authenticateSession,
+    authenticateSessionContext,
     authenticateApiToken,
     authenticateDeviceCredential,
     authenticateSessionOrDeviceCredential

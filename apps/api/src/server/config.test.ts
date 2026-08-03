@@ -17,13 +17,15 @@ describe("resolveApiServerConfig", () => {
       dependencyMode: "external",
       cookieSecure: true,
       publicRegistrationEnabled: false,
+      teamCollaborationEnabled: false,
       rateLimit: {
         store: "memory",
         policies: {
           auth: { windowMs: 60_000, max: 20 },
           memoryRead: { windowMs: 60_000, max: 1000 },
           memoryWrite: { windowMs: 60_000, max: 1000 },
-          memoryRecall: { windowMs: 60_000, max: 1000 }
+          memoryRecall: { windowMs: 60_000, max: 1000 },
+          sourceJournal: { windowMs: 60_000, max: 10_000 }
         }
       },
       cache: {
@@ -34,6 +36,10 @@ describe("resolveApiServerConfig", () => {
         updateDebounceMs: 1_000,
         memoryEventUpdateDebounceMs: 100
       },
+      collaborationRealtime: {
+        streamMaxClients: 1_000,
+        streamMaxClientsPerPrincipal: 6
+      },
       ops: {
         backupMaxAgeSeconds: 24 * 60 * 60,
         requestMetricsMaxAgeSeconds: 5 * 60,
@@ -42,6 +48,19 @@ describe("resolveApiServerConfig", () => {
     });
     expect(config.corsOrigins.has("http://localhost:5174")).toBe(true);
     expect(config.corsOrigins.has("http://localhost:5173")).toBe(false);
+    expect(config.upstreamEnrollmentsPath).toMatch(
+      /[/\\]\.koed[/\\]run[/\\]upstream-enrollments\.json$/
+    );
+  });
+
+  it("enables Team collaboration only with an explicit validated value", () => {
+    expect(
+      resolveApiServerConfig({ KOED_TEAM_COLLABORATION_ENABLED: "true" })
+        .teamCollaborationEnabled
+    ).toBe(true);
+    expect(() =>
+      resolveApiServerConfig({ KOED_TEAM_COLLABORATION_ENABLED: "yes" })
+    ).toThrow(/must be exactly/);
   });
 
   it("normalizes configured origins and keeps API_CORS_ORIGINS root-only", () => {
@@ -62,6 +81,22 @@ describe("resolveApiServerConfig", () => {
     ]);
   });
 
+  it("validates and normalizes the public Explorer URL", () => {
+    expect(
+      resolveApiServerConfig({
+        EXPLORER_PUBLIC_URL: "https://app.example.test/koed/"
+      }).explorerPublicUrl
+    ).toBe("https://app.example.test/koed");
+    expect(() =>
+      resolveApiServerConfig({
+        EXPLORER_PUBLIC_URL: "https://user:secret@app.example.test/koed"
+      })
+    ).toThrow(/without credentials/);
+    expect(() =>
+      resolveApiServerConfig({ EXPLORER_PUBLIC_URL: "file:///tmp/explorer" })
+    ).toThrow(/HTTP or HTTPS/);
+  });
+
   it("resolves Redis-backed cache and rate-limit settings", () => {
     const config = resolveApiServerConfig({
       REDIS_URL: "redis://default:6379",
@@ -69,9 +104,15 @@ describe("resolveApiServerConfig", () => {
       RATE_LIMIT_REDIS_URL: "redis://rate-limit:6379",
       CACHE_STORE: "redis",
       GRAPH_CACHE_TTL_SECONDS: "30",
+      COLLABORATION_REALTIME_CURSOR_SECRET: "cursor-secret",
+      COLLABORATION_LOCAL_BROKER_SECRET: "local-broker-secret",
+      COLLABORATION_REALTIME_STREAM_MAX_CLIENTS: "400",
+      COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL: "4",
       MEMORY_RATE_LIMIT_WINDOW_MS: "120000",
       MEMORY_RATE_LIMIT_MAX: "50",
-      MEMORY_WRITE_RATE_LIMIT_MAX: "10"
+      MEMORY_WRITE_RATE_LIMIT_MAX: "10",
+      SOURCE_JOURNAL_RATE_LIMIT_WINDOW_MS: "30000",
+      SOURCE_JOURNAL_RATE_LIMIT_MAX: "2000"
     });
 
     expect(config.rateLimit.store).toBe("redis");
@@ -84,10 +125,20 @@ describe("resolveApiServerConfig", () => {
       windowMs: 120_000,
       max: 10
     });
+    expect(config.rateLimit.policies.sourceJournal).toEqual({
+      windowMs: 30_000,
+      max: 2_000
+    });
     expect(config.cache).toMatchObject({
       store: "redis",
       redisUrl: "redis://default:6379",
       graphCacheTtlSeconds: 30
+    });
+    expect(config.collaborationRealtime).toEqual({
+      cursorSecret: "cursor-secret",
+      localBrokerSecret: "local-broker-secret",
+      streamMaxClients: 400,
+      streamMaxClientsPerPrincipal: 4
     });
   });
 

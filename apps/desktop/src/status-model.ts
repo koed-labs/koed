@@ -281,7 +281,7 @@ export const statusCards = [
   {
     id: "capturePath",
     title: "Capture Path",
-    role: "Supported Capture Hook and credentials used to turn AI-client activity into memory.",
+    role: "Transcript Watcher and content-free Capture Hook used to turn AI-client activity into memory.",
     impact:
       "New conversations will not be captured automatically when this is blocked.",
     componentKeys: ["captureHook", "apiToken", "api"],

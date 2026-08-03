@@ -425,6 +425,8 @@ describe("JSON command output", () => {
               projectRoot: input.projectRoot,
               teamWorkspaceId: input.teamWorkspaceId,
               backendId: input.backendId ?? null,
+              remotePrincipalId: input.remotePrincipalId ?? null,
+              deviceCredentialId: input.deviceCredentialId ?? null,
               localProjectId: input.localProjectId ?? null,
               projectDisplayName: input.projectDisplayName ?? null,
               createdAt: "2026-01-01T00:00:00.000Z",
@@ -482,6 +484,8 @@ describe("JSON command output", () => {
               projectRoot: input.projectRoot,
               teamWorkspaceId: input.teamWorkspaceId,
               backendId: input.backendId ?? null,
+              remotePrincipalId: input.remotePrincipalId ?? null,
+              deviceCredentialId: input.deviceCredentialId ?? null,
               localProjectId: input.localProjectId ?? null,
               projectDisplayName: input.projectDisplayName ?? null,
               createdAt: "2026-01-01T00:00:00.000Z",
@@ -500,49 +504,16 @@ describe("JSON command output", () => {
     });
   });
 
-  it("prints team capture share-latest --json", async () => {
-    const stdout = writer();
-    const calls: Record<string, unknown>[] = [];
+  it("does not expose the legacy Captured Session sharing command", async () => {
+    const stderr = writer();
 
     const exitCode = await runKoedServerCli(
-      [
-        "team",
-        "capture",
-        "share-latest",
-        "--project-root",
-        "/repo/koed",
-        "--session-id",
-        "22222222-2222-4222-8222-222222222222",
-        "--json"
-      ],
-      {
-        stdout: stdout.stream,
-        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
-        loadEnvironment: () => ({ MEMORY_API_URL: "http://localhost:3300" }),
-        shareProjectCapturedSession: async (_paths, input) => {
-          calls.push(input);
-          return {
-            ok: true,
-            state: "shared",
-            message: "shared",
-            projectRoot: input.projectRoot,
-            teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
-            sessionId: input.sessionId
-          };
-        }
-      }
+      ["team", "capture", "share-latest"],
+      { stderr: stderr.stream }
     );
 
-    expect(exitCode).toBe(0);
-    expect(calls[0]).toMatchObject({
-      projectRoot: "/repo/koed",
-      sessionId: "22222222-2222-4222-8222-222222222222"
-    });
-    expect(JSON.parse(stdout.text())).toMatchObject({
-      ok: true,
-      state: "shared",
-      sessionId: "22222222-2222-4222-8222-222222222222"
-    });
+    expect(exitCode).toBe(2);
+    expect(stderr.text()).toContain("Unknown command");
   });
 
   it("prints packaged runtime install --json", async () => {
@@ -758,6 +729,36 @@ describe("JSON command output", () => {
     });
   });
 
+  it("prints personal-sync status --json through koed-server", async () => {
+    const stdout = writer();
+    const calls: unknown[] = [];
+
+    const exitCode = await runKoedServerCli(
+      ["personal-sync", "status", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ configDir: "/tmp/koed/config" }) as never,
+        runPersonalSync: async (args, paths) => {
+          calls.push({ args, paths });
+          return {
+            ok: true,
+            state: "not_configured",
+            message: "Association alone synchronizes nothing."
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(calls).toEqual([
+      { args: ["status"], paths: { configDir: "/tmp/koed/config" } }
+    ]);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      state: "not_configured",
+      message: "Association alone synchronizes nothing."
+    });
+  });
+
   it("prints status --json", async () => {
     const stdout = writer();
 
@@ -790,11 +791,13 @@ describe("JSON command output", () => {
             baseUrl: "https://team.example.test",
             profile: "private_vps",
             routePolicy: {
+              personalCollaboration: "disabled",
               personalMemoryRead: "disabled",
               teamWorkspaceRead: "disabled",
               shareGrantManagement: "disabled",
               captureWrites: "disabled",
               sync: "disabled",
+              managedExecution: "disabled",
               admin: "disabled"
             },
             credential: { status: "not_configured" },
@@ -851,11 +854,13 @@ describe("JSON command output", () => {
               baseUrl: "https://team.example.test",
               profile: "private_vps",
               routePolicy: {
+                personalCollaboration: "disabled",
                 personalMemoryRead: "disabled",
                 teamWorkspaceRead: "disabled",
                 shareGrantManagement: "disabled",
                 captureWrites: "disabled",
                 sync: "disabled",
+                managedExecution: "disabled",
                 admin: "disabled"
               },
               credential: { status: "not_configured" },
@@ -904,11 +909,13 @@ describe("JSON command output", () => {
             baseUrl: "https://team.example.test",
             profile: "private_vps",
             routePolicy: {
+              personalCollaboration: "disabled",
               personalMemoryRead: "disabled",
               teamWorkspaceRead: "disabled",
               shareGrantManagement: "disabled",
               captureWrites: "disabled",
               sync: "disabled",
+              managedExecution: "disabled",
               admin: "disabled"
             },
             credential: { status: "not_configured" },
@@ -933,6 +940,34 @@ describe("JSON command output", () => {
       backend: {
         capabilities: { failureCategory: "network" }
       }
+    });
+  });
+
+  it("selects the active upstream explicitly", async () => {
+    const stdout = writer();
+    const seen: string[] = [];
+
+    const exitCode = await runKoedServerCli(
+      ["upstream", "activate", "--id", "team-vps", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        activateUpstream: (_paths, id) => {
+          seen.push(id ?? "");
+          return {
+            ok: true,
+            state: "updated",
+            message: "selected"
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(seen).toEqual(["team-vps"]);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "updated"
     });
   });
 
@@ -969,11 +1004,13 @@ describe("JSON command output", () => {
               baseUrl: "https://team.example.test",
               profile: "private_vps",
               routePolicy: {
+                personalCollaboration: "disabled",
                 personalMemoryRead: "disabled",
                 teamWorkspaceRead: "enabled",
                 shareGrantManagement: "enabled",
                 captureWrites: "disabled",
                 sync: "disabled",
+                managedExecution: "disabled",
                 admin: "disabled"
               },
               credential: { status: "not_configured" },

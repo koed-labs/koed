@@ -1,0 +1,707 @@
+.personal-memory-workspace {
+  display: grid;
+  grid-template-columns: minmax(16rem, 19rem) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.personal-memory-workspace .sr-only {
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.personal-projects-pane,
+.personal-memory-detail-pane,
+.personal-project-detail,
+.personal-session-detail,
+.personal-conversation-host,
+.personal-session-copy,
+.personal-project-row-copy {
+  min-height: 0;
+  min-width: 0;
+}
+
+.personal-projects-pane {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.personal-projects-pane > header,
+.personal-project-detail > header,
+.personal-session-detail > header,
+.personal-sessions > header {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 1rem;
+}
+
+.personal-projects-pane h1,
+.personal-project-detail h2,
+.personal-session-detail h2,
+.personal-sessions h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.personal-project-search {
+  padding: 0 0.75rem 0.75rem;
+}
+
+.personal-project-search input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.personal-project-list {
+  overflow: auto;
+  padding: 0 0.5rem 1rem;
+}
+
+.personal-project-list section > h2,
+.personal-inactive-toggle {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 0.75rem;
+  font-weight: 600;
+  gap: 0.5rem;
+  justify-content: space-between;
+  margin: 0.75rem 0.5rem 0.375rem;
+  text-transform: uppercase;
+  width: calc(100% - 1rem);
+}
+
+.personal-project-row,
+.personal-session-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  color: inherit;
+  display: grid;
+  gap: 0.75rem;
+  text-align: left;
+  width: 100%;
+}
+
+.personal-project-row {
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  padding: 0.625rem;
+}
+
+.personal-project-row[aria-current="page"],
+.personal-project-row:hover,
+.personal-session-row:hover {
+  background: var(--accent);
+}
+
+.personal-project-monogram,
+.personal-memory-mark {
+  align-items: center;
+  background: color-mix(in oklab, var(--memory) 14%, transparent);
+  border-radius: 0.45rem;
+  color: var(--memory);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 2rem;
+  justify-content: center;
+  width: 2rem;
+}
+
+.personal-project-row-copy,
+.personal-session-copy,
+.personal-session-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.personal-project-row-copy > *,
+.personal-session-copy > *,
+.personal-session-meta > * {
+  overflow-wrap: anywhere;
+}
+
+.personal-project-row small,
+.personal-project-row time,
+.personal-session-row small,
+.personal-session-row time {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
+.personal-memory-detail-pane {
+  overflow: auto;
+}
+
+.personal-memory-empty-detail {
+  align-items: center;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.personal-project-detail > nav,
+.personal-session-detail > nav {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.75rem 1rem;
+}
+
+.personal-project-detail > nav strong,
+.personal-session-detail > nav strong,
+.personal-session-detail > nav button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-project-detail > header {
+  justify-content: flex-start;
+}
+
+.personal-project-detail > header > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.personal-new-conversation {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.4rem;
+}
+
+.personal-new-conversation svg,
+.personal-managed-composer button svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.personal-new-conversation:disabled svg,
+.personal-managed-composer.state-sending button svg {
+  animation: personal-managed-spin 900ms linear infinite;
+}
+
+.personal-managed-error {
+  color: var(--destructive);
+  margin: 0;
+  padding: 0 1rem 0.75rem;
+}
+
+.personal-project-details,
+.personal-session-assignment {
+  border-block: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+}
+
+.personal-project-details dd,
+.personal-session-assignment label {
+  overflow-wrap: anywhere;
+}
+
+.personal-sessions > header {
+  border-bottom: 1px solid var(--border);
+}
+
+.personal-session-row {
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  padding: 0.75rem 1rem;
+}
+
+.personal-session-copy > span {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.personal-invalidated-label,
+.personal-event-invalidated {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+.personal-session-meta {
+  align-items: flex-end;
+}
+
+.personal-session-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.personal-session-detail > header {
+  border-bottom: 1px solid var(--border);
+}
+
+.personal-share-button {
+  flex: 0 0 auto;
+}
+
+.personal-session-assignment form {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+}
+
+.personal-session-assignment > summary {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.personal-session-assignment label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.personal-conversation-host {
+  flex: 1;
+  overflow: hidden;
+  background: var(--background);
+}
+
+.personal-conversation-shell {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+}
+
+.personal-conversation-timeline {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.personal-managed-composer {
+  background: var(--background);
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.75rem clamp(0.75rem, 3vw, 1.5rem) 0.5rem;
+}
+
+.personal-managed-composer label {
+  min-width: 0;
+}
+
+.personal-managed-composer textarea {
+  box-sizing: border-box;
+  display: block;
+  max-height: 10rem;
+  min-height: 4.5rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.personal-managed-composer > button {
+  align-self: end;
+  height: 2.25rem;
+  margin: 0 0 0 0.5rem;
+  width: 2.5rem;
+}
+
+.personal-managed-composer > p {
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  grid-column: 1 / -1;
+  margin: 0.35rem 0 0;
+  min-height: 1rem;
+}
+
+.personal-managed-composer.state-error > p,
+.personal-managed-composer.state-reconciling > p {
+  color: var(--destructive);
+}
+
+.personal-managed-transfer {
+  border-top: 1px solid var(--border);
+  grid-column: 1 / -1;
+  margin-top: 0.35rem;
+  padding-top: 0.45rem;
+}
+
+.personal-managed-transfer summary {
+  align-items: center;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.75rem;
+  gap: 0.4rem;
+  list-style: none;
+  width: fit-content;
+}
+
+.personal-managed-transfer summary::-webkit-details-marker {
+  display: none;
+}
+
+.personal-managed-transfer summary svg,
+.personal-managed-transfer button svg {
+  height: 0.9rem;
+  width: 0.9rem;
+}
+
+.personal-managed-transfer > div {
+  align-items: end;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: minmax(10rem, 1fr) auto auto;
+  padding-top: 0.5rem;
+}
+
+.personal-managed-transfer label {
+  display: grid;
+  font-size: 0.72rem;
+  gap: 0.2rem;
+}
+
+.personal-managed-transfer select {
+  min-height: 2rem;
+  min-width: 0;
+}
+
+.personal-managed-transfer button {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+  height: 2rem;
+}
+
+.personal-managed-transfer p {
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+@keyframes personal-managed-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.native-conversation-content {
+  position: relative;
+  block-size: 100%;
+  min-block-size: 0;
+}
+
+.native-timeline-scroll {
+  block-size: 100%;
+  overflow-x: hidden;
+  padding-inline: clamp(0.75rem, 3vw, 1.5rem);
+}
+
+.native-event-wrap {
+  max-inline-size: 52rem;
+  margin-inline: auto;
+  padding-block: 0.45rem;
+}
+
+.native-conversation-event {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.native-conversation-event.user {
+  background: var(--muted);
+  border-color: var(--border);
+}
+
+.native-conversation-event.agent {
+  background: var(--background);
+}
+
+.native-conversation-event > header,
+.native-tool-event-frame > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.native-conversation-event > header > div:first-child,
+.native-tool-event-frame > header > div:first-child {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.native-event-avatar {
+  display: inline-grid;
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  flex: 0 0 1.75rem;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+
+.native-event-avatar.user {
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.native-event-avatar.agent {
+  background: color-mix(in oklab, var(--memory) 15%, transparent);
+  color: var(--memory);
+}
+
+.native-event-avatar.tool {
+  background: color-mix(in oklab, var(--warning) 18%, transparent);
+  color: var(--warning-foreground);
+}
+
+.native-conversation-event > div,
+.native-tool-event-frame > div {
+  min-inline-size: 0;
+}
+
+.native-conversation-event > footer,
+.native-tool-event-frame > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+}
+
+.native-event-content {
+  color: var(--foreground);
+  font-size: 0.84rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.native-tool-event,
+.native-tool-group {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--warning) 7%, var(--background));
+}
+
+.native-tool-event > summary,
+.native-tool-group > summary {
+  display: grid;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.native-tool-event > summary {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+
+.native-tool-group > summary {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.native-tool-event > summary::-webkit-details-marker,
+.native-tool-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.native-event-heading,
+.native-tool-group > summary > span:nth-child(2) {
+  display: grid;
+  min-inline-size: 0;
+  gap: 0.1rem;
+}
+
+.native-event-heading small,
+.native-tool-group small,
+.native-tool-preview {
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+}
+
+.native-tool-preview,
+.native-tool-group small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.native-tool-preview,
+.native-tool-event pre,
+.native-diff-disclosure pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.native-tool-event-frame,
+.native-tool-group-events {
+  border-block-start: 1px solid var(--border);
+}
+
+.native-tool-event-frame {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  background: var(--background);
+}
+
+.native-tool-event pre,
+.native-diff-disclosure pre {
+  max-block-size: 22rem;
+  margin: 0;
+  overflow: auto;
+  color: var(--foreground);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.native-diff-disclosure {
+  min-inline-size: 0;
+}
+
+.native-diff-disclosure > summary {
+  margin-block-end: 0.5rem;
+  cursor: pointer;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
+.native-tool-group-icon {
+  display: inline-grid;
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--warning) 18%, transparent);
+  color: var(--warning-foreground);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.native-tool-group-disclosure {
+  color: var(--muted-foreground);
+  transition: transform 150ms ease;
+}
+
+.native-tool-group[open] .native-tool-group-disclosure {
+  transform: rotate(45deg);
+}
+
+.native-tool-group-events {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.5rem;
+}
+
+.native-tool-group-events .native-event-wrap {
+  inline-size: 100%;
+  padding: 0;
+}
+
+.native-inspect-event {
+  min-block-size: 1.75rem;
+  padding-inline: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 0.72rem;
+}
+
+.native-conversation-state {
+  display: grid;
+  block-size: 100%;
+  place-content: center;
+  justify-items: center;
+  gap: 0.4rem;
+  padding: 2rem;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.native-conversation-state p {
+  max-inline-size: 34rem;
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.native-conversation-state.error strong,
+.native-older-status.error {
+  color: var(--destructive);
+}
+
+.native-older-status {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: 0.5rem;
+  inset-inline-start: 50%;
+  padding: 0.3rem 0.55rem;
+  transform: translateX(-50%);
+  background: var(--popover);
+  color: var(--muted-foreground);
+  box-shadow: var(--shadow-sm);
+  font-size: 0.7rem;
+}
+
+.personal-event-invalidated {
+  color: var(--destructive);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.personal-memory-state {
+  color: var(--muted-foreground);
+  padding: 1rem;
+}
+
+.personal-memory-state.error,
+.personal-memory-error {
+  color: var(--destructive);
+}
+
+@media (max-width: 1040px) {
+  .personal-memory-workspace {
+    display: block;
+  }
+
+  .personal-memory-workspace.route-project .personal-projects-pane,
+  .personal-memory-workspace.route-session .personal-projects-pane,
+  .personal-memory-workspace.route-projects .personal-memory-detail-pane {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .native-tool-group-disclosure {
+    transition: none;
+  }
+}

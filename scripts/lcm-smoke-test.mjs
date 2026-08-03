@@ -57,11 +57,11 @@ const timeoutMs = Number.parseInt(
 );
 const marker =
   args.get("marker") ?? `lcm-smoke-${Date.now()}-${randomUUID().slice(0, 8)}`;
-const workspaceId = `lcm-smoke-${marker}`;
+const projectId = `lcm-smoke-${marker}`;
 const summaryModel =
   args.get("summary-model") ??
   process.env.LCM_SMOKE_SUMMARY_MODEL ??
-  "gpt-5.4-mini";
+  "gpt-5.6-luna";
 const summaryReasoningEffort =
   args.get("summary-reasoning-effort") ??
   process.env.LCM_SMOKE_SUMMARY_REASONING_EFFORT ??
@@ -509,7 +509,7 @@ const main = async () => {
       externalSessionId: marker,
       sourceRuntime: "codex-cli",
       captureMethod: "api",
-      cwd: workspaceId,
+      cwd: projectId,
       metadata: {
         lcmSmokeMarker: marker
       }
@@ -534,7 +534,7 @@ const main = async () => {
       method: "POST",
       headers: authHeaders,
       body: JSON.stringify({
-        workspaceId,
+        projectId,
         sessionId,
         actor: "user",
         eventType: "user_prompt",

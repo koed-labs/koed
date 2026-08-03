@@ -9,6 +9,7 @@ Related decisions:
 - [0008 Explorer-First Auth And Device Enrollment](./0008-explorer-first-auth-and-device-enrollment.md)
 - [0009 Commercial SaaS Encryption And Key Management](./0009-commercial-saas-encryption-key-management.md)
 - [0010 Managed SaaS Queryable Vector Boundary](./0010-managed-saas-queryable-vectors.md)
+- [0020 Portable Personal Derived Artifact Replication](./0020-portable-personal-derived-artifact-replication.md)
 - [Personal Device Sync Protocol V1](../personal-device-sync-protocol.md)
 
 Related planning and foundations:
@@ -69,23 +70,28 @@ relay-required full replication of future closed Captured Sessions; Ed25519
 signatures; X25519/HKDF-SHA-256/AES-256-GCM recipient envelopes with
 role-separated keys; active-device or recovery-root authorization plus Authority
 countersignature; conflict quarantine; current protocol version only; bounded
-relay/tombstone retention; no first-slice LCM Summary replication; and only one
+relay/tombstone retention; compatible portable LCM node reuse; and only one
 unambiguous canonical Project alias auto-match. That normative specification
 controls where this ADR's earlier exploratory language differs.
 
 The V1 replication model is a relay-assisted, source-owned replicated log of
-immutable Captured Session packages:
+immutable Captured Session packages and explicitly allowlisted portable
+Personal artifacts:
 
-- No personal device is the permanent Personal Memory authority.
+- No personal device is the permanent plaintext or source-of-truth Personal
+  Memory authority.
 - Every associated device remains a normal local `koed-server` and can capture,
   project, embed, inspect, and recall Personal Memory locally.
 - V1 replicates closed Captured Sessions. Each Session has one origin
   deployment/device, and that origin is the sole writer for its content stream.
 - Other devices store read-only replicas of that source Session. Authenticated
   group-level lifecycle tombstones remain possible if the origin is lost.
-- Each device rebuilds or verifies its own Projection, embeddings, and indexes
-  from synchronized source material. Embeddings and plaintext-equivalent
-  vectors are not replicated as the product primitive.
+- Authenticated devices in the same Personal Device Group may reuse
+  origin-signed compatible derived artifacts rather than repeat avoidable
+  CPU/GPU work. Local indexes remain device-local.
+- Replication selects rows from explicitly allowlisted tables through versioned
+  portable serializers. It does not copy PostgreSQL tables, primary keys,
+  migrations, or arbitrary rows.
 - Devices exchange versioned, encrypted, checksummed, idempotent packages and
   signed lifecycle records through an encrypted mailbox/relay.
 - The relay supports discovery, offline delivery, resumable chunks, and
@@ -93,6 +99,11 @@ immutable Captured Session packages:
   recall authority, Team authority, or source of truth.
 - Relay transfer is required in V1. Direct peer transfer is non-V1 and requires
   a later protocol decision; it cannot become an implicit relay fallback.
+- The same-network V1 deployment has one fixed Authority/Relay-hosting
+  installation. That installation is an operational availability hub for
+  enrollment, governance, and package transfer even though every admitted
+  device is a symmetric data-plane replica. V1 does not transfer or rotate the
+  Authority private key.
 - Personal multi-device association does not create or modify Team Membership,
   Workspace Access, Share Grants, Team retention, or Project-to-Team Workspace
   mappings.
@@ -119,7 +130,8 @@ provenance, encrypted resumable transport, durable inbox/outbox work,
 idempotency, retry, and readiness/freshness gates. They retain distinct
 identity, key-management, package-closure, lifecycle, and anti-entropy
 contracts. A hosted target's independently generated LCM Summary is not a PDS
-source record; PDS LCM Summary replication is non-V1.
+source record. PDS may reuse a compatible LCM Summary only as a separately
+signed `lcm_node/v1` artifact bound to its exact source range and work claim.
 
 ## Personal Device Group Authority And Association
 
@@ -216,6 +228,16 @@ Memory synchronization. The association must record at least:
 Email equality, hostname, operating-system account, local path, Git remote, or
 package name is never sufficient to associate devices.
 
+Enrollment completion must also reconcile the verified group state into the
+joining deployment's local database. The joining device binds its own
+deployment-local User subject to the group, persists the active membership and
+Personal Sync Policy needed by local workers, and resumes that state after
+restart. The authority-side User subject is provenance for the enrollment; it
+must not replace the joining deployment's local User id in local Projection,
+materialization, or Recall. A device that holds group secrets but has no durable
+local group binding is not fully enrolled and must not report synchronization
+as ready.
+
 Device credentials identify an enrolled device. They do not cache Team
 Membership, Workspace Access, Share Grants, lifecycle state, or commercial
 entitlements. Personal API Tokens remain AI-client compatibility credentials
@@ -249,21 +271,47 @@ V1 replicates one Captured Session at a time. Personal Device Sync uses its own
 versioned package protocol; it must not treat a directed hosted projected-event
 package as its source closure.
 
-A package contains the closed source set needed to reconstruct that Session's
-Personal Memory representation, including:
+A source package contains the closed source set needed to reconstruct that
+Session's Personal Memory representation, including:
 
 - Captured Session metadata and stable source identity;
 - raw Conversation source items;
 - Project metadata sanitized for the replication boundary;
-- no LCM Summary in V1; source-owned LCM Summary replication is deferred;
 - invalidation and group-level personal-deletion tombstones;
 - source sequence and package cursors;
 - provenance, integrity, and idempotency metadata.
 
-Memory Events, Memory Nodes, LCM Placeholders, LCM Summaries, Projection
-outputs, embeddings, and indexes are derived locally and are not replicated in
-V1. Source-owned LCM Summary replication is deferred; receiving devices run
-local LCM Summary work from validated source closure.
+Portable artifact packages are separate from the immutable source package and
+are bound to its source fingerprint and closure hash. The Personal replication
+registry makes an explicit decision for every durable Personal data class:
+
+- `replicate`: select allowlisted rows, serialize a versioned portable artifact,
+  sign and encrypt it, then transactionally validate and upsert it;
+- `derive locally`: declare a compatibility contract and rebuild only when a
+  trusted compatible artifact is unavailable;
+- `device-local`: exclude it with a documented device-specific reason.
+
+The default reusable artifact classes are projected Memory Events and their
+canonical embeddings. A receiver imports them only when the complete contract
+matches, including source closure, Projection schema and policy revision,
+embedding model artifact, dimensions, tokenizer and input transformation,
+pooling, normalization, and embedding version. Otherwise it derives them from
+the canonical source package. Local vector indexes are rebuilt from imported
+vectors. Source-owned LCM leaves and rollups are registry artifacts. Their
+identity binds the exact ordered logical source range and complete LCM contract.
+Only the source-authoritative device may compact that range; compatible
+completed nodes may then be imported by other devices.
+
+The registry is extensible. Adding a durable Personal table requires an
+explicit replication classification and tests. It must never silently include a
+new table or silently leave durable Personal data device-local. Credentials,
+API Tokens, local paths, device identity material, leases, queues, transient
+cursors, process and health state, and local indexes are always device-local.
+
+Ownership selects the protocol. Personal-owned notes, chats, and future
+artifacts may use this registry. Team-owned channel or direct-message history
+remains governed by the Team backend and its revocation and retention rules;
+PDS must not convert temporary Team access into an irrevocable Personal replica.
 
 The package format separates source provenance from transport encryption. The
 origin signs an immutable content manifest containing the logical source id,
@@ -285,15 +333,15 @@ If the origin, relay copy, and every replica are lost, the source data is not
 recoverable; governance recovery material restores group control, not missing
 Memory bytes.
 
-A package must not contain:
+A canonical source package must not contain:
 
 - raw local paths or transcript paths;
 - API Tokens, browser sessions, device credentials, provider keys, or database
   credentials;
 - queue internals or unrelated Personal Memory;
 - Team Membership, Workspace Access, or Share Grant authority;
-- embeddings, plaintext-equivalent vectors, raw DEKs, or object-storage
-  credentials;
+- derived artifacts, embeddings, plaintext-equivalent vectors, raw DEKs, or
+  object-storage credentials;
 - support-only or operator-private diagnostics.
 
 Project-wide and all-Personal-Memory packages remain deferred. A Project can
@@ -319,8 +367,9 @@ total order.
 - Mutable policy or lifecycle records require explicit version and conflict
   rules. Unknown or conflicting versions fail closed instead of selecting the
   latest wall-clock timestamp.
-- Projection and embedding completion are device-local processing states, not
-  replicated source ordering.
+- Projection and embedding readiness are device-local processing states, even
+  when a receiver imports compatible artifacts. They are not replicated source
+  ordering.
 
 This avoids general CRDT or multi-primary relational-database semantics for V1.
 A future shared mutable object would need a separate conflict-resolution
@@ -399,7 +448,8 @@ transport is non-V1. Relay deployment choice is separate from Memory ownership.
 ## Local Materialization And Recall
 
 Each device materializes synchronized source packages into its local Personal
-Memory store and runs local Projection and embedding work.
+Memory store. It imports compatible trusted portable artifacts when available
+and otherwise runs local Projection and embedding work.
 
 Recall normally queries the local materialized view. Evidence Bundles should
 carry source-device provenance and freshness when synchronized Memory is used.
@@ -536,36 +586,41 @@ and becomes a concentrated plaintext target, while symmetric replication gives
 every selected device a decryptable replica and therefore expands endpoint
 exposure. Neither model removes trust; they place it differently.
 
-The Hub design is not selected: symmetric replication avoids privileged personal
-device and is accepted as stronger long-term product property despite added
-implementation and operational cost.
+The Personal Memory Hub design is not selected: no device owns canonical
+plaintext Memory or aggregate Recall. The V1 same-network transport still has a
+fixed operational Authority/Relay host. Removing that availability dependency
+requires a later protocol decision covering direct or multiple relay endpoints,
+Authority transfer/rotation, recovery-kit evolution, and split-brain handling.
 
 ## Consequences
 
 Benefits:
 
-- no permanent privileged personal device;
+- no permanent plaintext Memory authority or aggregate Recall device;
 - local capture and recall remain available on every device;
-- replacement devices can recover already replicated closed Sessions without
-  transferring Hub authority while an authorized replica or retained relay copy
-  remains available;
+- replacement devices can recover retained closed Sessions through the valid
+  recovery flow while the fixed Authority/Relay host and an authorized replica
+  or retained relay copy remain available;
 - replicas can converge after offline work;
 - transport deployment is separable from Memory ownership;
 - Project matching can span trusted devices without affecting Team security.
 
 Costs:
 
-- more replicas and repeated Projection/embedding work;
+- more replicas and compatibility/fallback Projection and embedding work;
 - per-device cursors, anti-entropy, key distribution, and compatibility state;
 - harder revocation and deletion semantics;
 - more upgrade and current-version coordination cases;
 - greater storage and bandwidth use;
 - more complex stale/partial/error UX;
+- enrollment, governance, and package transfer pause while the fixed V1
+  Authority/Relay host is unavailable;
 - wider security and two-node/N-device test matrix.
 
 The complexity is materially greater than a Personal Hub. It remains bounded by
 keeping Captured Sessions source-owned and immutable on replicas, avoiding
-global ordering, and rebuilding derived data locally.
+global ordering, and transferring only explicitly registered portable derived
+artifacts.
 
 ## Non-Goals
 
@@ -581,7 +636,8 @@ This decision does not add:
 - Project-wide or global Personal Memory package boundaries;
 - selective partial replication in V1;
 - relay plaintext processing;
-- consensus or leader election between personal devices.
+- consensus or leader election between personal devices;
+- direct or multiple relay endpoints and Authority transfer/rotation.
 
 ## Required Follow-Up Work
 
@@ -603,7 +659,9 @@ Follow-up implementation work:
 10. Desktop device, freshness, processing, and revocation UX;
 11. historical-import integration without implicit upload consent;
 12. two-device and N-device migration, duplicate import, authority compromise,
-    recovery loss, outage, replay, and security validation.
+    recovery loss, outage, replay, and security validation;
+13. versioned portable Memory Event and embedding artifact serializers,
+    compatibility verification, transactional import, and fallback derivation.
 
 KOE-264 remains the directed-hosted design foundation, and KOE-338 / PR #290 is
 the implemented directed-hosted baseline. Personal Device Sync must generalize

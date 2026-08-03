@@ -33,6 +33,7 @@ describe("rate limiting", () => {
         memoryRead: { windowMs: 60_000, max: 1 },
         memoryWrite: { windowMs: 60_000, max: 1 },
         memoryRecall: { windowMs: 60_000, max: 1 },
+        sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
       { resolveAuthenticatedUserId: () => undefined }
@@ -62,6 +63,7 @@ describe("rate limiting", () => {
         memoryRead: { windowMs: 60_000, max: 1 },
         memoryWrite: { windowMs: 60_000, max: 1 },
         memoryRecall: { windowMs: 60_000, max: 1 },
+        sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
       {

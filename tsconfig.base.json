@@ -19,7 +19,19 @@
       "@koed/db": ["packages/db/src/index.ts"],
       "@koed/koed-server": ["packages/koed-server/src/index.ts"],
       "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
-      "@koed/shared": ["packages/shared/src/index.ts"]
+      "@koed/mcp-server/codex-transcript-parser": [
+        "packages/mcp-server/src/codex-transcript-parser.ts"
+      ],
+      "@koed/shared": ["packages/shared/src/index.ts"],
+      "@koed/shared/collaboration": [
+        "packages/shared/src/collaboration-contract.ts"
+      ],
+      "@koed/shared/personal-desktop": [
+        "packages/shared/src/personal-desktop-contract.ts"
+      ],
+      "@koed/shared/secure-upstream-fetch": [
+        "packages/shared/src/secure-upstream-fetch.ts"
+      ]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

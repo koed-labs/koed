@@ -7,18 +7,37 @@ const { Pool } = pg;
 
 export interface DbConfig {
   connectionString?: string;
+  onPoolError?: (error: Error) => void;
 }
 
 export type DbPool = pg.Pool;
 export type KoedDb = NodePgDatabase<typeof schema>;
 
-export const createDbPool = (config: DbConfig = {}): pg.Pool =>
-  new Pool({
+export const createDbPool = (config: DbConfig = {}): pg.Pool => {
+  const pool = new Pool({
     connectionString: config.connectionString ?? env("DATABASE_URL")
   });
+  const reportedErrors = new WeakSet<object>();
+  const reportError = (error: Error) => {
+    if (reportedErrors.has(error)) return;
+    reportedErrors.add(error);
+    config.onPoolError?.(error);
+  };
+  pool.on("connect", (client) => client.on("error", reportError));
+  pool.on("error", reportError);
+  return pool;
+};
 
-export const createDb = (client: pg.Pool | pg.PoolClient): KoedDb =>
-  drizzle(client, { schema });
+export const databaseErrorCode = (error: unknown): string => {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String(error.code)
+      : "unknown";
+  return /^[0-9A-Z]{5}$/.test(code) ? code : "unknown";
+};
+
+export const createDb = (pool: pg.Pool | pg.PoolClient): KoedDb =>
+  drizzle(pool, { schema });
 
 export const checkDatabase = async (pool: pg.Pool): Promise<boolean> => {
   const result = await pool.query<{ ok: number }>("select 1 as ok");

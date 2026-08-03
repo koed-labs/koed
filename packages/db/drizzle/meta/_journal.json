@@ -141,6 +141,27 @@
       "when": 1784300000000,
       "tag": "0019_tidy_rhino",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785308557907,
+      "tag": "0020_zippy_apocalypse",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785418996088,
+      "tag": "0021_workable_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1785433191165,
+      "tag": "0022_deep_brood",
+      "breakpoints": true
     }
   ]
 }

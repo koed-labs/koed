@@ -25,7 +25,7 @@ export const curatedMemoryProposalSchema = z
     evidence_exact_quote: z.string().trim().min(1).max(16_000).optional(),
     operation: operationSchema.default("store"),
     target_assertion_id: z.string().uuid().optional(),
-    source_workspace_id: z.string().trim().min(1).optional(),
+    source_project_id: z.string().trim().min(1).optional(),
     source_session_id: z.string().uuid().optional(),
     created_by_model: z.string().trim().max(200).optional(),
     created_by_prompt_version: z.string().trim().max(200).optional()
@@ -34,13 +34,13 @@ export const curatedMemoryProposalSchema = z
     if (
       input.evidence_conversation_item_ids.length === 0 &&
       input.evidence_memory_event_ids.length === 0 &&
-      !input.source_workspace_id &&
+      !input.source_project_id &&
       !input.source_session_id
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["evidence_conversation_item_ids"],
-        message: "Evidence IDs or a source workspace/session scope is required"
+        message: "Evidence IDs or a source Project/session scope is required"
       });
     }
     if (
@@ -157,7 +157,7 @@ export const curatedMemorySearchQuerySchema = z
     query: z.string().trim().min(1).max(4000),
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
-    workspace_id: z.string().trim().min(1).optional(),
+    project_id: z.string().trim().min(1).optional(),
     current_only: queryBooleanSchema.default(true),
     limit: z.coerce.number().int().positive().max(50).default(10)
   })
@@ -169,11 +169,11 @@ export const curatedMemorySearchQuerySchema = z
         message: "session_id is required when search_domain is session"
       });
     }
-    if (input.search_domain === "project" && !input.workspace_id) {
+    if (input.search_domain === "project" && !input.project_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["workspace_id"],
-        message: "workspace_id is required when search_domain is project"
+        path: ["project_id"],
+        message: "project_id is required when search_domain is project"
       });
     }
   });

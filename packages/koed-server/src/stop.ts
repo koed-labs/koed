@@ -9,6 +9,7 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { resolve } from "node:path";
+import { environmentWithRepoEnv } from "./env-file.js";
 import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { readSupervisorLock } from "./supervisor-lock.js";
@@ -178,6 +179,10 @@ export const stopKoedServer = ({
   readSupervisorLock: readLock = readSupervisorLock
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
+  const runtimeEnvironment = environmentWithRepoEnv(
+    paths.repoRoot,
+    environment
+  );
   const runtime = readRuntimeState(paths.runtimeStatePath, {
     existsSync: pathExists,
     readFileSync: readFile
@@ -201,75 +206,13 @@ export const stopKoedServer = ({
   const stoppedServices: string[] = [];
   const missingServices: string[] = [];
   const errors: Array<{ target: string; error: string }> = [];
-
-  for (const { processName, serviceName } of APP_PROCESS_ORDER) {
-    const pid = runtime.processes?.[processName];
-    if (!pid || pid <= 0) {
-      if (runtime.services.includes(serviceName)) {
-        missingServices.push(serviceName);
-      }
-      continue;
-    }
-    const stopped = stopPid(serviceName, pid, {
-      kill,
-      checkPid,
-      waitForExitMs,
-      pollIntervalMs,
-      sleepSync
-    });
-    stoppedPids.push(...stopped.stoppedPids);
-    missingPids.push(...stopped.missingPids);
-    if (stopped.missingPids.length > 0) {
-      missingServices.push(serviceName);
-    } else if (stopped.stoppedPids.length > 0) {
-      stoppedServices.push(serviceName);
-    }
-    errors.push(...stopped.errors);
-  }
-
-  if (runtime.dependencyMode === "bundled-local") {
-    const embeddingPid = runtime.processes?.embeddingService;
-    if (runtime.services.includes("embedding-service-native")) {
-      if (!embeddingPid || embeddingPid <= 0) {
-        missingServices.push("embedding-service-native");
-      } else {
-        const stopped = stopPid("embedding-service-native", embeddingPid, {
-          kill,
-          checkPid,
-          waitForExitMs,
-          pollIntervalMs,
-          sleepSync
-        });
-        stoppedPids.push(...stopped.stoppedPids);
-        missingPids.push(...stopped.missingPids);
-        errors.push(...stopped.errors);
-        if (stopped.missingPids.length > 0) {
-          missingServices.push("embedding-service-native");
-        } else if (stopped.stoppedPids.length > 0) {
-          stoppedServices.push("embedding-service-native");
-        }
-      }
-    }
-
-    if (shouldStopNativePostgres(runtime)) {
-      const stopped = stopLocalPostgresRuntime(paths, environment, {
-        existsSync: pathExists,
-        spawnSync
-      });
-      if (stopped.ok) {
-        stoppedServices.push("postgres-native");
-      } else {
-        errors.push({
-          target: "postgres-native",
-          error: stopped.error ?? stopped.message
-        });
-      }
-    }
-  }
+  let supervisorStoppedGracefully = false;
+  let supervisorLockMatches = true;
 
   if (runtime.pid > 0 && runtime.pid !== process.pid && checkPid(runtime.pid)) {
     const lock = readLock(resolve(paths.runDir, "koed-server.lock"));
     if (lock?.pid !== runtime.pid) {
+      supervisorLockMatches = false;
       errors.push({
         target: `supervisor (${runtime.pid})`,
         error: "Runtime state does not match the active supervisor lock"
@@ -279,22 +222,112 @@ export const stopKoedServer = ({
         pid: runtime.pid,
         startedAt: runtime.startedAt
       });
-      if (
-        waitForPidExit(runtime.pid, {
-          checkPid,
-          waitForExitMs,
-          pollIntervalMs,
-          sleepSync
-        })
-      ) {
-        stoppedPids.push(runtime.pid);
-        stoppedServices.push("supervisor");
-      } else {
-        errors.push({
-          target: `supervisor (${runtime.pid})`,
-          error: "Timed out waiting for the supervisor to exit naturally"
-        });
+      supervisorStoppedGracefully = waitForPidExit(runtime.pid, {
+        checkPid,
+        waitForExitMs,
+        pollIntervalMs,
+        sleepSync
+      });
+      if (supervisorStoppedGracefully) {
+        stoppedPids.push(
+          ...Object.values(runtime.processes ?? {}).filter(
+            (pid): pid is number => typeof pid === "number" && pid > 0
+          ),
+          runtime.pid
+        );
+        stoppedServices.push(...runtime.services, "supervisor");
       }
+    }
+  }
+
+  if (!supervisorStoppedGracefully && supervisorLockMatches) {
+    for (const { processName, serviceName } of APP_PROCESS_ORDER) {
+      const pid = runtime.processes?.[processName];
+      if (!pid || pid <= 0) {
+        if (runtime.services.includes(serviceName)) {
+          missingServices.push(serviceName);
+        }
+        continue;
+      }
+      const stopped = stopPid(serviceName, pid, {
+        kill,
+        checkPid,
+        waitForExitMs,
+        pollIntervalMs,
+        sleepSync
+      });
+      stoppedPids.push(...stopped.stoppedPids);
+      missingPids.push(...stopped.missingPids);
+      if (stopped.missingPids.length > 0) {
+        missingServices.push(serviceName);
+      } else if (stopped.stoppedPids.length > 0) {
+        stoppedServices.push(serviceName);
+      }
+      errors.push(...stopped.errors);
+    }
+
+    if (runtime.dependencyMode === "bundled-local") {
+      const embeddingPid = runtime.processes?.embeddingService;
+      if (runtime.services.includes("embedding-service-native")) {
+        if (!embeddingPid || embeddingPid <= 0) {
+          missingServices.push("embedding-service-native");
+        } else {
+          const stopped = stopPid("embedding-service-native", embeddingPid, {
+            kill,
+            checkPid,
+            waitForExitMs,
+            pollIntervalMs,
+            sleepSync
+          });
+          stoppedPids.push(...stopped.stoppedPids);
+          missingPids.push(...stopped.missingPids);
+          errors.push(...stopped.errors);
+          if (stopped.missingPids.length > 0) {
+            missingServices.push("embedding-service-native");
+          } else if (stopped.stoppedPids.length > 0) {
+            stoppedServices.push("embedding-service-native");
+          }
+        }
+      }
+
+      if (shouldStopNativePostgres(runtime)) {
+        const stopped = stopLocalPostgresRuntime(paths, runtimeEnvironment, {
+          existsSync: pathExists,
+          spawnSync
+        });
+        if (stopped.ok) {
+          stoppedServices.push("postgres-native");
+        } else {
+          errors.push({
+            target: "postgres-native",
+            error: stopped.error ?? stopped.message
+          });
+        }
+      }
+    }
+  }
+
+  if (
+    !supervisorStoppedGracefully &&
+    supervisorLockMatches &&
+    runtime.pid > 0 &&
+    runtime.pid !== process.pid &&
+    checkPid(runtime.pid)
+  ) {
+    const stopped = stopPid("supervisor", runtime.pid, {
+      kill,
+      checkPid,
+      waitForExitMs,
+      pollIntervalMs,
+      sleepSync
+    });
+    stoppedPids.push(...stopped.stoppedPids);
+    missingPids.push(...stopped.missingPids);
+    errors.push(...stopped.errors);
+    if (stopped.missingPids.length > 0) {
+      missingServices.push("supervisor");
+    } else if (stopped.stoppedPids.length > 0) {
+      stoppedServices.push("supervisor");
     }
   }
 

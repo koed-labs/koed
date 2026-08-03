@@ -310,7 +310,7 @@ export const createMemoryNodeRepository = (
           coalesce(
             s.project_override_id,
             s.automatic_project_id,
-            case when s.id is null then ev.payload ->> 'workspaceId' end,
+            case when s.id is null then ev.payload ->> 'projectId' end,
             'unassigned'
           ) as project_id,
           coalesce(
@@ -346,7 +346,7 @@ export const createMemoryNodeRepository = (
             or coalesce(
               s.project_override_id,
               s.automatic_project_id,
-              case when s.id is null then ev.payload ->> 'workspaceId' end,
+              case when s.id is null then ev.payload ->> 'projectId' end,
               'unassigned'
             ) = $3
             or coalesce(s.project_override_path, s.automatic_project_path) = $3
@@ -422,7 +422,6 @@ export const createMemoryNodeRepository = (
               body_text,
               source_runtime,
               capture_method,
-              codex_transcript_path,
               idempotency_key,
               source_hash,
               summary_model,
@@ -430,7 +429,7 @@ export const createMemoryNodeRepository = (
               lcm_algorithm_version
             )
             values (
-              $1, $2, $3, 'leaf', 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+              $1, $2, $3, 'leaf', 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             )
             returning id, owner_user_id, visibility, title, summary_text
           `,
@@ -443,7 +442,6 @@ export const createMemoryNodeRepository = (
             bodyTextForStorage ?? null,
             input.sourceRuntime ?? null,
             input.captureMethod ?? "mcp",
-            input.codexTranscriptPath ?? null,
             input.idempotencyKey ?? null,
             input.sourceHash ?? null,
             input.summaryModel ?? null,

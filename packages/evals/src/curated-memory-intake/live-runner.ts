@@ -401,13 +401,13 @@ const runWorkflowCase = async (
 ): Promise<CuratedMemoryIntakeRunInput> => {
   const token = await tokenForNewUser(app, benchmarkCase.id, runIndex);
   const authorization = `Bearer ${token}`;
-  const workspaceId = `eval://${benchmarkCase.id}/${runIndex}`;
+  const projectId = `eval://${benchmarkCase.id}/${runIndex}`;
   const captured = await injectJson(app, {
     method: "POST",
     url: "/v1/memory/capture-personal-event",
     headers: { authorization },
     payload: {
-      workspaceId,
+      projectId,
       actor: benchmarkCase.sourceActor ?? "user",
       eventType: "curated_memory_eval_prompt",
       content: benchmarkCase.prompt,
@@ -428,7 +428,7 @@ const runWorkflowCase = async (
   );
   const scoredCalls = calls.map((call) => ({
     ...call,
-    arguments: { ...call.arguments, source_workspace_id: workspaceId }
+    arguments: { ...call.arguments, source_project_id: projectId }
   }));
   let intake: CuratedMemoryIntakeRunInput["intake"] = {
     proposalStatus: "skipped"
@@ -449,7 +449,7 @@ const runWorkflowCase = async (
         evidence_conversation_item_ids: [],
         evidence_memory_event_ids: [],
         evidence_exact_quote: args.evidence_exact_quote,
-        source_workspace_id: workspaceId,
+        source_project_id: projectId,
         created_by_model: "curated-memory-live-eval",
         created_by_prompt_version: "curated-memory-live-eval-v1"
       }
@@ -660,7 +660,6 @@ const environment = {
   API_TOKEN_PEPPER: randomBytes(32).toString("hex"),
   EMBEDDING_MODEL: "qwen3-0.6b",
   EMBEDDING_SERVICE_URL: "http://127.0.0.1:1",
-  MEMORY_RAW_PROJECTION_INTERVAL_MS: "60000",
   AUTH_RATE_LIMIT_MAX: "100000",
   MEMORY_READ_RATE_LIMIT_MAX: "100000",
   MEMORY_WRITE_RATE_LIMIT_MAX: "100000",

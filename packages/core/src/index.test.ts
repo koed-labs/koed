@@ -258,7 +258,7 @@ const createFakeRepository = (): MemoryEngineRepository => {
     async createMemoryEvent(actor, input) {
       const event: MemoryEventRecord = {
         id: `event-${events.length + 1}`,
-        workspaceId: input.workspaceId,
+        projectId: input.projectId,
         sessionId: input.sessionId ?? null,
         turnId: input.turnId ?? null,
         actor: input.actor,
@@ -354,11 +354,11 @@ describe("provider-neutral memory engine", () => {
     engine: ReturnType<typeof createMemoryEngine>,
     userId: string,
     content: string,
-    input: { workspaceId?: string; sessionId?: string } = {}
+    input: { projectId?: string; sessionId?: string } = {}
   ) =>
     engine.capturePersonalEvent({
       requesterContext: { userId },
-      workspaceId: input.workspaceId ?? "w",
+      projectId: input.projectId ?? "w",
       sessionId: input.sessionId,
       actor: "user",
       eventType: "user_prompt",
@@ -369,7 +369,7 @@ describe("provider-neutral memory engine", () => {
     const engine = createMemoryEngine(createFakeRepository());
     const event = await engine.capturePersonalEvent({
       requesterContext: { userId: "alice" },
-      workspaceId: "workspace-1",
+      projectId: "workspace-1",
       actor: "assistant",
       eventType: "message",
       content: "Alice prefers concise summaries."
@@ -393,7 +393,7 @@ describe("provider-neutral memory engine", () => {
 
     await engine.capturePersonalEvent({
       requesterContext: { userId: "alice" },
-      workspaceId: "workspace-1",
+      projectId: "workspace-1",
       actor: "assistant",
       eventType: "message",
       content: "Alice prefers concise summaries.",

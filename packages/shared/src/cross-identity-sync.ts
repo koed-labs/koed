@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { canonicalJsonStringify } from "./canonical-json.js";
 
 export const CAPTURED_SESSION_SYNC_FORMAT =
@@ -8,6 +9,7 @@ export const CAPTURED_SESSION_SYNC_POLICY_VERSION = 1;
 export const CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES = 512 * 1024;
 export const CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 export const CAPTURED_SESSION_SYNC_MAX_CHANGES = 10_000;
+export const CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES = 10_000;
 export const CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT = 512;
 export const CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS = 30_000;
 export const CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES = 1024 * 1024;
@@ -15,6 +17,31 @@ export const CAPTURED_SESSION_SYNC_MAX_CHUNKS = Math.ceil(
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES /
     CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES
 );
+
+export const capturedSessionSyncUploadPackageManifestSchema = z
+  .object({
+    objectClass: z.literal("sync_package"),
+    format: z.literal(CAPTURED_SESSION_SYNC_FORMAT),
+    formatVersion: z.literal(CAPTURED_SESSION_SYNC_FORMAT_VERSION),
+    packageDigest: z.string().regex(/^[a-f0-9]{64}$/i),
+    summaryRevisionHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .nullable(),
+    recipientKeyId: z.string().trim().min(1).max(240),
+    recipientKeyVersion: z.number().int().safe().positive(),
+    recordCount: z
+      .number()
+      .int()
+      .safe()
+      .nonnegative()
+      .max(CAPTURED_SESSION_SYNC_MAX_CHANGES)
+  })
+  .strict();
+
+export type CapturedSessionSyncUploadPackageManifest = z.infer<
+  typeof capturedSessionSyncUploadPackageManifestSchema
+>;
 
 export type CapturedSessionSyncChangeOperation = "upsert" | "delete";
 
@@ -28,6 +55,24 @@ export interface CapturedSessionSyncContributorV1 {
   toolCallId: string | null;
   sourceEventTime: string | null;
   sourceSequence: number | null;
+  sourceKind: string;
+  sourceAdapterVersion: string;
+  sourceTransport: string;
+  sourceRecordType: string;
+  sourceEventType: string | null;
+  rawJson: unknown;
+  rawText: string | null;
+  metadata: Record<string, unknown>;
+  logicalSourceId: string | null;
+  transportChunkIndex: number;
+  transportChunkCount: number;
+  transportChunkText: string | null;
+  transportChunkEncoding: string | null;
+  projectionStatus: "pending" | "held" | "projected" | "error" | "raw_only";
+  projectionVersion: string | null;
+  projectionPolicyRevision: number | null;
+  memoryExcludedAt: string | null;
+  memoryExclusionReason: string | null;
 }
 
 export interface CapturedSessionSyncEventV1 {
@@ -37,6 +82,10 @@ export interface CapturedSessionSyncEventV1 {
   actor: string;
   content: string;
   metadata: Record<string, unknown>;
+  includeInEmbedding: boolean;
+  includeInLcm: boolean;
+  projectionPolicyKey: string | null;
+  projectionPolicyRevision: number | null;
   tokenCount: number | null;
   sealReason: string | null;
   capturedAt: string;
@@ -51,6 +100,27 @@ export interface CapturedSessionSyncChangeV1 {
   originEventId: string;
   revisionHash: string;
   event: CapturedSessionSyncEventV1 | null;
+}
+
+export interface CapturedSessionSyncSummaryNodeV1 {
+  originNodeId: string;
+  kind: "leaf" | "rollup";
+  depth: number;
+  lcmAlgorithmVersion: string;
+  summaryText: string;
+  summaryModel: string;
+  summaryPromptVersion: string;
+  summaryStructuredJson: Record<string, unknown>;
+  summaryStructuredSchemaVersion: string;
+  sourceOriginEventIds: string[];
+  childOriginNodeIds: string[];
+  sourceHash: string;
+  sourceEventCount: number;
+  sourceTokenEstimate: number;
+  summaryTokenEstimate: number;
+  createdAt: string;
+  updatedAt: string;
+  revisionHash: string;
 }
 
 export interface CapturedSessionSyncPackageV1 {
@@ -72,6 +142,7 @@ export interface CapturedSessionSyncPackageV1 {
   createdAt: string;
   consentDigest: string;
   policyDigest: string;
+  summaryRevisionHash: string;
   session: {
     originSessionId: string;
     externalSessionId: string | null;
@@ -82,6 +153,7 @@ export interface CapturedSessionSyncPackageV1 {
     sourceAdapterVersion: string | null;
   };
   changes: CapturedSessionSyncChangeV1[];
+  summaryNodes: CapturedSessionSyncSummaryNodeV1[];
 }
 
 export interface CapturedSessionSyncChunkV1 {
@@ -100,6 +172,16 @@ export interface CapturedSessionSyncChunkV1 {
 
 export const crossIdentitySyncDigest = (value: unknown): string =>
   createHash("sha256").update(canonicalJsonStringify(value)).digest("hex");
+
+export const crossIdentitySyncSummaryNodeRevisionHash = (
+  node:
+    | CapturedSessionSyncSummaryNodeV1
+    | Omit<CapturedSessionSyncSummaryNodeV1, "revisionHash">
+): string => {
+  const revisionSource: Partial<CapturedSessionSyncSummaryNodeV1> = { ...node };
+  delete revisionSource.revisionHash;
+  return crossIdentitySyncDigest(revisionSource);
+};
 
 export const crossIdentitySyncDeterministicUuid = (value: unknown): string => {
   const bytes = Buffer.from(crossIdentitySyncDigest(value).slice(0, 32), "hex");
@@ -126,6 +208,7 @@ export const crossIdentitySyncPackageRequestHash = (
     | "toCursor"
     | "consentDigest"
     | "policyDigest"
+    | "summaryRevisionHash"
   >
 ): string => crossIdentitySyncDigest(value);
 
@@ -137,27 +220,91 @@ const hasOnlyKeys = (value: unknown, allowed: readonly string[]): boolean => {
   );
 };
 
-const validEventMetadata = (
+const validBoundedJsonValue = (
+  value: unknown,
+  state: {
+    depth: number;
+    nodes: { count: number };
+    ancestors: Set<object>;
+  }
+): boolean => {
+  state.nodes.count += 1;
+  if (state.depth > 16 || state.nodes.count > 4_096) {
+    return false;
+  }
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return true;
+  }
+  if (typeof value === "string") {
+    return value.length <= 1_000_000;
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (state.ancestors.has(value)) {
+    return false;
+  }
+  state.ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.every((item) =>
+        validBoundedJsonValue(item, {
+          ...state,
+          depth: state.depth + 1
+        })
+      );
+    }
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return false;
+    }
+    return Object.entries(value as Record<string, unknown>).every(
+      ([key, nested]) =>
+        key.length <= 240 &&
+        validBoundedJsonValue(nested, {
+          ...state,
+          depth: state.depth + 1
+        })
+    );
+  } finally {
+    state.ancestors.delete(value);
+  }
+};
+
+const validBoundedJsonObject = (
   value: unknown
 ): value is Record<string, unknown> => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const metadata = value as Record<string, unknown>;
-  const allowed = [
-    "includeInLcm",
-    "semanticUnitType",
-    "rawEventType",
-    "sourceRole"
-  ];
-  return (
-    Object.keys(metadata).every((key) => allowed.includes(key)) &&
-    (metadata.includeInLcm === undefined ||
-      typeof metadata.includeInLcm === "boolean") &&
-    ["semanticUnitType", "rawEventType", "sourceRole"].every(
-      (key) =>
-        metadata[key] === undefined ||
-        (typeof metadata[key] === "string" && metadata[key].length <= 120)
-    )
-  );
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !validBoundedJsonValue(value, {
+      depth: 0,
+      nodes: { count: 0 },
+      ancestors: new Set()
+    })
+  ) {
+    return false;
+  }
+  try {
+    return (
+      Buffer.byteLength(canonicalJsonStringify(value), "utf8") <= 1_000_000
+    );
+  } catch {
+    return false;
+  }
+};
+
+const digestMatches = (value: unknown, digest: string): boolean => {
+  try {
+    return crossIdentitySyncDigest(value) === digest;
+  } catch {
+    return false;
+  }
 };
 
 const validateCapturedSessionSyncPackageV1 = (
@@ -186,6 +333,41 @@ const validateCapturedSessionSyncPackageV1 = (
     new Date(candidate).toISOString() === candidate;
   const session = input.session;
   const changes = input.changes;
+  const summaryNodes = input.summaryNodes;
+  const validSummaryGraph = (
+    nodes: CapturedSessionSyncSummaryNodeV1[]
+  ): boolean => {
+    const byId = new Map(nodes.map((node) => [node.originNodeId, node]));
+    return nodes.every((node) => {
+      if (
+        crossIdentitySyncSummaryNodeRevisionHash(node) !== node.revisionHash ||
+        node.sourceEventCount !== node.sourceOriginEventIds.length ||
+        node.summaryStructuredJson.summary_text !== node.summaryText ||
+        node.summaryStructuredJson.schema_version !==
+          node.summaryStructuredSchemaVersion
+      ) {
+        return false;
+      }
+      if (node.kind === "leaf") {
+        return node.depth === 0;
+      }
+      const children = node.childOriginNodeIds.map((childId) =>
+        byId.get(childId)
+      );
+      if (children.some((child) => !child || child.depth >= node.depth)) {
+        return false;
+      }
+      const childSourceIds = [
+        ...new Set(
+          children.flatMap((child) => child?.sourceOriginEventIds ?? [])
+        )
+      ].sort();
+      return (
+        crossIdentitySyncDigest(childSourceIds) ===
+        crossIdentitySyncDigest([...node.sourceOriginEventIds].sort())
+      );
+    });
+  };
   return (
     hasOnlyKeys(input, [
       "format",
@@ -206,8 +388,10 @@ const validateCapturedSessionSyncPackageV1 = (
       "createdAt",
       "consentDigest",
       "policyDigest",
+      "summaryRevisionHash",
       "session",
-      "changes"
+      "changes",
+      "summaryNodes"
     ]) &&
     input.format === CAPTURED_SESSION_SYNC_FORMAT &&
     input.formatVersion === CAPTURED_SESSION_SYNC_FORMAT_VERSION &&
@@ -234,6 +418,7 @@ const validateCapturedSessionSyncPackageV1 = (
     timestamp(input.createdAt) &&
     hash(input.consentDigest) &&
     hash(input.policyDigest) &&
+    hash(input.summaryRevisionHash) &&
     Boolean(session) &&
     hasOnlyKeys(session!, [
       "originSessionId",
@@ -247,16 +432,93 @@ const validateCapturedSessionSyncPackageV1 = (
     uuid(session?.originSessionId) &&
     nullableString(session?.externalSessionId, 500) &&
     ["codex", "codex-cli"].includes(session?.sourceRuntime ?? "") &&
-    ["hook", "mcp", "web", "api"].includes(session?.captureMethod ?? "") &&
+    ["transcript", "mcp", "web", "api"].includes(
+      session?.captureMethod ?? ""
+    ) &&
     timestamp(session.capturedAt) &&
     nullableString(session.title, 500) &&
     nullableString(session.sourceAdapterVersion, 120) &&
     Array.isArray(changes) &&
-    changes.length > 0 &&
+    Array.isArray(summaryNodes) &&
     changes.length <= CAPTURED_SESSION_SYNC_MAX_CHANGES &&
+    summaryNodes.length <= CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES &&
+    new Set(summaryNodes.map((node) => node?.originNodeId)).size ===
+      summaryNodes.length &&
+    summaryNodes.every(
+      (node) =>
+        hasOnlyKeys(node, [
+          "originNodeId",
+          "kind",
+          "depth",
+          "lcmAlgorithmVersion",
+          "summaryText",
+          "summaryModel",
+          "summaryPromptVersion",
+          "summaryStructuredJson",
+          "summaryStructuredSchemaVersion",
+          "sourceOriginEventIds",
+          "childOriginNodeIds",
+          "sourceHash",
+          "sourceEventCount",
+          "sourceTokenEstimate",
+          "summaryTokenEstimate",
+          "createdAt",
+          "updatedAt",
+          "revisionHash"
+        ]) &&
+        uuid(node.originNodeId) &&
+        ["leaf", "rollup"].includes(node.kind) &&
+        Number.isSafeInteger(node.depth) &&
+        node.depth >= 0 &&
+        typeof node.lcmAlgorithmVersion === "string" &&
+        node.lcmAlgorithmVersion.length > 0 &&
+        node.lcmAlgorithmVersion.length <= 240 &&
+        typeof node.summaryText === "string" &&
+        node.summaryText.length > 0 &&
+        node.summaryText.length <= 1_000_000 &&
+        typeof node.summaryModel === "string" &&
+        node.summaryModel.length > 0 &&
+        node.summaryModel.length <= 240 &&
+        typeof node.summaryPromptVersion === "string" &&
+        node.summaryPromptVersion.length > 0 &&
+        node.summaryPromptVersion.length <= 240 &&
+        validBoundedJsonObject(node.summaryStructuredJson) &&
+        typeof node.summaryStructuredSchemaVersion === "string" &&
+        node.summaryStructuredSchemaVersion.length > 0 &&
+        node.summaryStructuredSchemaVersion.length <= 240 &&
+        Array.isArray(node.sourceOriginEventIds) &&
+        node.sourceOriginEventIds.length > 0 &&
+        node.sourceOriginEventIds.length <= CAPTURED_SESSION_SYNC_MAX_CHANGES &&
+        new Set(node.sourceOriginEventIds).size ===
+          node.sourceOriginEventIds.length &&
+        node.sourceOriginEventIds.every(uuid) &&
+        Array.isArray(node.childOriginNodeIds) &&
+        node.childOriginNodeIds.length <=
+          CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES &&
+        new Set(node.childOriginNodeIds).size ===
+          node.childOriginNodeIds.length &&
+        node.childOriginNodeIds.every(uuid) &&
+        (node.kind === "leaf"
+          ? node.childOriginNodeIds.length === 0
+          : node.childOriginNodeIds.length > 0) &&
+        hash(node.sourceHash) &&
+        Number.isSafeInteger(node.sourceEventCount) &&
+        node.sourceEventCount > 0 &&
+        Number.isSafeInteger(node.sourceTokenEstimate) &&
+        node.sourceTokenEstimate >= 0 &&
+        Number.isSafeInteger(node.summaryTokenEstimate) &&
+        node.summaryTokenEstimate > 0 &&
+        timestamp(node.createdAt) &&
+        timestamp(node.updatedAt) &&
+        hash(node.revisionHash)
+    ) &&
+    validSummaryGraph(summaryNodes as CapturedSessionSyncSummaryNodeV1[]) &&
+    digestMatches(summaryNodes, input.summaryRevisionHash) &&
     (!requireFinalCursor ||
-      (changes[changes.length - 1] as { cursor?: unknown } | null)?.cursor ===
-        input.toCursor) &&
+      (changes.length === 0
+        ? input.fromCursor === input.toCursor
+        : (changes[changes.length - 1] as { cursor?: unknown } | null)
+            ?.cursor === input.toCursor)) &&
     changes.every((change, index) => {
       if (
         !hasOnlyKeys(change, [
@@ -287,6 +549,10 @@ const validateCapturedSessionSyncPackageV1 = (
           "actor",
           "content",
           "metadata",
+          "includeInEmbedding",
+          "includeInLcm",
+          "projectionPolicyKey",
+          "projectionPolicyRevision",
           "tokenCount",
           "sealReason",
           "capturedAt",
@@ -303,7 +569,13 @@ const validateCapturedSessionSyncPackageV1 = (
         event!.actor.length > 0 &&
         event!.actor.length <= 120 &&
         typeof event!.content === "string" &&
-        validEventMetadata(event!.metadata) &&
+        validBoundedJsonObject(event!.metadata) &&
+        typeof event!.includeInEmbedding === "boolean" &&
+        typeof event!.includeInLcm === "boolean" &&
+        nullableString(event!.projectionPolicyKey, 240) &&
+        (event!.projectionPolicyRevision === null ||
+          (Number.isSafeInteger(event!.projectionPolicyRevision) &&
+            event!.projectionPolicyRevision! > 0)) &&
         (event!.tokenCount === null ||
           (Number.isSafeInteger(event!.tokenCount) &&
             event!.tokenCount! >= 0)) &&
@@ -328,7 +600,25 @@ const validateCapturedSessionSyncPackageV1 = (
               "toolName",
               "toolCallId",
               "sourceEventTime",
-              "sourceSequence"
+              "sourceSequence",
+              "sourceKind",
+              "sourceAdapterVersion",
+              "sourceTransport",
+              "sourceRecordType",
+              "sourceEventType",
+              "rawJson",
+              "rawText",
+              "metadata",
+              "logicalSourceId",
+              "transportChunkIndex",
+              "transportChunkCount",
+              "transportChunkText",
+              "transportChunkEncoding",
+              "projectionStatus",
+              "projectionVersion",
+              "projectionPolicyRevision",
+              "memoryExcludedAt",
+              "memoryExclusionReason"
             ]) &&
             uuid(contributor.originItemId) &&
             hash(contributor.revisionHash) &&
@@ -341,6 +631,44 @@ const validateCapturedSessionSyncPackageV1 = (
             typeof contributor.content === "string" &&
             nullableString(contributor.toolName, 240) &&
             nullableString(contributor.toolCallId, 500) &&
+            typeof contributor.sourceKind === "string" &&
+            contributor.sourceKind.length > 0 &&
+            contributor.sourceKind.length <= 120 &&
+            typeof contributor.sourceAdapterVersion === "string" &&
+            contributor.sourceAdapterVersion.length > 0 &&
+            contributor.sourceAdapterVersion.length <= 120 &&
+            typeof contributor.sourceTransport === "string" &&
+            contributor.sourceTransport.length > 0 &&
+            contributor.sourceTransport.length <= 120 &&
+            typeof contributor.sourceRecordType === "string" &&
+            contributor.sourceRecordType.length > 0 &&
+            contributor.sourceRecordType.length <= 120 &&
+            nullableString(contributor.sourceEventType, 120) &&
+            validBoundedJsonValue(contributor.rawJson, {
+              depth: 0,
+              nodes: { count: 0 },
+              ancestors: new Set()
+            }) &&
+            nullableString(contributor.rawText, 1_000_000) &&
+            validBoundedJsonObject(contributor.metadata) &&
+            nullableString(contributor.logicalSourceId, 500) &&
+            Number.isSafeInteger(contributor.transportChunkIndex) &&
+            contributor.transportChunkIndex >= 0 &&
+            Number.isSafeInteger(contributor.transportChunkCount) &&
+            contributor.transportChunkCount >= 1 &&
+            contributor.transportChunkIndex < contributor.transportChunkCount &&
+            nullableString(contributor.transportChunkText, 1_000_000) &&
+            nullableString(contributor.transportChunkEncoding, 120) &&
+            ["pending", "held", "projected", "error", "raw_only"].includes(
+              contributor.projectionStatus
+            ) &&
+            nullableString(contributor.projectionVersion, 240) &&
+            (contributor.projectionPolicyRevision === null ||
+              (Number.isSafeInteger(contributor.projectionPolicyRevision) &&
+                contributor.projectionPolicyRevision > 0)) &&
+            (contributor.memoryExcludedAt === null ||
+              timestamp(contributor.memoryExcludedAt)) &&
+            nullableString(contributor.memoryExclusionReason, 240) &&
             (contributor.sourceEventTime === null ||
               timestamp(contributor.sourceEventTime)) &&
             (contributor.sourceSequence === null ||
@@ -354,50 +682,59 @@ const validateCapturedSessionSyncPackageV1 = (
 
 export const isCapturedSessionSyncPackageV1 = (
   value: unknown
-): value is CapturedSessionSyncPackageV1 =>
-  validateCapturedSessionSyncPackageV1(value, true);
+): value is CapturedSessionSyncPackageV1 => {
+  try {
+    return validateCapturedSessionSyncPackageV1(value, true);
+  } catch {
+    return false;
+  }
+};
 
 export const isCapturedSessionSyncChunkV1 = (
   value: unknown
 ): value is CapturedSessionSyncChunkV1 => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const input = value as Partial<CapturedSessionSyncChunkV1>;
+    return (
+      hasOnlyKeys(input, [
+        "format",
+        "formatVersion",
+        "packageId",
+        "relationshipId",
+        "packageSequence",
+        "fromCursor",
+        "toCursor",
+        "chunkIndex",
+        "chunkCount",
+        "packageDigest",
+        "package"
+      ]) &&
+      input.format === CAPTURED_SESSION_SYNC_FORMAT &&
+      input.formatVersion === CAPTURED_SESSION_SYNC_FORMAT_VERSION &&
+      typeof input.packageId === "string" &&
+      typeof input.relationshipId === "string" &&
+      Number.isSafeInteger(input.packageSequence) &&
+      Number.isSafeInteger(input.fromCursor) &&
+      Number.isSafeInteger(input.toCursor) &&
+      Number.isSafeInteger(input.chunkIndex) &&
+      Number.isSafeInteger(input.chunkCount) &&
+      input.chunkIndex! >= 0 &&
+      input.chunkCount! > 0 &&
+      input.chunkCount! <= CAPTURED_SESSION_SYNC_MAX_CHUNKS &&
+      input.chunkIndex! < input.chunkCount! &&
+      typeof input.packageDigest === "string" &&
+      input.packageDigest.length === 64 &&
+      validateCapturedSessionSyncPackageV1(input.package, false) &&
+      input.package.packageId === input.packageId &&
+      input.package.relationshipId === input.relationshipId &&
+      input.package.packageSequence === input.packageSequence &&
+      input.package.fromCursor === input.fromCursor &&
+      input.package.toCursor === input.toCursor
+    );
+  } catch {
     return false;
   }
-  const input = value as Partial<CapturedSessionSyncChunkV1>;
-  return (
-    hasOnlyKeys(input, [
-      "format",
-      "formatVersion",
-      "packageId",
-      "relationshipId",
-      "packageSequence",
-      "fromCursor",
-      "toCursor",
-      "chunkIndex",
-      "chunkCount",
-      "packageDigest",
-      "package"
-    ]) &&
-    input.format === CAPTURED_SESSION_SYNC_FORMAT &&
-    input.formatVersion === CAPTURED_SESSION_SYNC_FORMAT_VERSION &&
-    typeof input.packageId === "string" &&
-    typeof input.relationshipId === "string" &&
-    Number.isSafeInteger(input.packageSequence) &&
-    Number.isSafeInteger(input.fromCursor) &&
-    Number.isSafeInteger(input.toCursor) &&
-    Number.isSafeInteger(input.chunkIndex) &&
-    Number.isSafeInteger(input.chunkCount) &&
-    input.chunkIndex! >= 0 &&
-    input.chunkCount! > 0 &&
-    input.chunkCount! <= CAPTURED_SESSION_SYNC_MAX_CHUNKS &&
-    input.chunkIndex! < input.chunkCount! &&
-    typeof input.packageDigest === "string" &&
-    input.packageDigest.length === 64 &&
-    validateCapturedSessionSyncPackageV1(input.package, false) &&
-    input.package.packageId === input.packageId &&
-    input.package.relationshipId === input.relationshipId &&
-    input.package.packageSequence === input.packageSequence &&
-    input.package.fromCursor === input.fromCursor &&
-    input.package.toCursor === input.toCursor
-  );
 };

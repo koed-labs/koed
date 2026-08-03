@@ -27,13 +27,6 @@ const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
 );
-const hookConfigPath = resolve(
-  process.env.MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed/config.json`
-);
-const hookRequestTimeoutMs = Number.parseInt(
-  process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS ?? "1500",
-  10
-);
 const mcpCliPath = resolve(repoRoot, "packages/mcp-server/dist/cli.js");
 const captureHookPath = resolve(
   repoRoot,
@@ -49,28 +42,12 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
   }
 }
 
-mkdirSync(dirname(hookConfigPath), { recursive: true, mode: 0o700 });
-writeFileSync(
-  hookConfigPath,
-  JSON.stringify(
-    {
-      apiUrl,
-      apiToken: token,
-      captureEnabled: true,
-      requestTimeoutMs:
-        Number.isFinite(hookRequestTimeoutMs) && hookRequestTimeoutMs > 0
-          ? hookRequestTimeoutMs
-          : 1500
-    },
-    null,
-    2
-  ) + "\n",
-  { mode: 0o600 }
-);
-
 const markerStart = "# >>> koed";
 const markerEnd = "# <<< koed";
-const hookCommand = `${nodeCommand} ${captureHookPath} --config ${hookConfigPath}`;
+const koedHome = process.env.KOED_HOME ?? resolve(homedir(), ".koed");
+const hookCommand = [nodeCommand, captureHookPath, "--koed-home", koedHome]
+  .map((value) => JSON.stringify(value))
+  .join(" ");
 const hookEvents = [
   ["SessionStart", 10],
   ["UserPromptSubmit", 10],
@@ -84,7 +61,7 @@ const hookBlocks = hookEvents
     ([eventName, timeout]) => `[[hooks.${eventName}]]
 [[hooks.${eventName}.hooks]]
 type = "command"
-command = "${hookCommand}"
+command = ${JSON.stringify(hookCommand)}
 timeout = ${timeout}`
   )
   .join("\n\n");
@@ -124,7 +101,6 @@ if (promptOverrideDirectory) {
   console.log(`Detected prompt override directory: ${promptOverrideDirectory}`);
 }
 console.log(`Wrote Codex MCP config: ${codexConfigPath}`);
-console.log(`Wrote Capture Hook config: ${hookConfigPath}`);
 console.log(
   "Next: restart Codex, then run `pnpm codex:verify-capture` or `pnpm codex:doctor` to confirm the integration is healthy."
 );

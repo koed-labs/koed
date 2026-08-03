@@ -3,17 +3,27 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemorySourceRepository, SyncQueueEntryRecord } from "@koed/db";
+import type {
+  MemorySourceRepository,
+  SyncPackageChunkRecord,
+  SyncPackageUploadSessionRecord,
+  SyncQueueEntryRecord
+} from "@koed/db";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+  CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
   createEncryptedJsonPackage,
   createLocalTestKeyEnvelopeEncryptionProvider,
+  createRecipientPrivateKeyEnvelopeEncryptionProvider,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
+  crossIdentitySyncSummaryNodeRevisionHash,
   crossIdentitySyncPackageRequestHash,
+  decryptEncryptedJsonPackage,
   generateRecipientKeyMaterial,
+  isCapturedSessionSyncChunkV1,
   storeUpstreamCredentialSecret,
   type CapturedSessionSyncChunkV1,
   type CapturedSessionSyncPackageV1,
@@ -94,6 +104,43 @@ const queueEntry = (): SyncQueueEntryRecord => ({
   leaseExpiresAt: null
 });
 
+const summaryNodeFixture = (
+  index: number,
+  summaryText = `Authoritative summary ${index}`
+): CapturedSessionSyncPackageV1["summaryNodes"][number] => {
+  const node = {
+    originNodeId: `cccccccc-cccc-4ccc-8ccc-${String(index).padStart(12, "0")}`,
+    kind: "leaf",
+    depth: 0,
+    lcmAlgorithmVersion: "lcm-v1",
+    summaryText,
+    summaryModel: "local-summary-model",
+    summaryPromptVersion: "prompt-v1",
+    summaryStructuredJson: {
+      schema_version: "lcm-structured-summary-v1",
+      summary_text: summaryText
+    },
+    summaryStructuredSchemaVersion: "lcm-structured-summary-v1",
+    sourceOriginEventIds: [
+      `dddddddd-dddd-4ddd-8ddd-${String(index).padStart(12, "0")}`
+    ],
+    childOriginNodeIds: [],
+    sourceHash: "a".repeat(64),
+    sourceEventCount: 1,
+    sourceTokenEstimate: 100,
+    summaryTokenEstimate: 25,
+    createdAt: "2026-07-13T00:00:00.000Z",
+    updatedAt: "2026-07-13T00:01:00.000Z"
+  } satisfies Omit<
+    CapturedSessionSyncPackageV1["summaryNodes"][number],
+    "revisionHash"
+  >;
+  return {
+    ...node,
+    revisionHash: crossIdentitySyncSummaryNodeRevisionHash(node)
+  };
+};
+
 const createFixture = (
   status: number,
   responseBody: Record<string, unknown>
@@ -152,7 +199,7 @@ const createFixture = (
   );
   const service = createCrossIdentitySyncService({
     repository,
-    rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+    recipientKeyEncryptionProvider: {} as EnvelopeEncryptionProvider,
     embeddingWorkflow: {} as EmbeddingWorkflow,
     koedHome,
     isSourceIdentityHealthy: () => true,
@@ -191,7 +238,7 @@ describe("Cross-Identity Sync device identity gate", () => {
     } as unknown as MemorySourceRepository;
     const service = createCrossIdentitySyncService({
       repository,
-      rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      recipientKeyEncryptionProvider: {} as EnvelopeEncryptionProvider,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
       fetch: fetchFn,
@@ -290,6 +337,7 @@ describe("Cross-Identity Sync service failures", () => {
 const createProcessingHandshakeFixture = (input: {
   remoteState: string;
   remoteProcessingCursor: number;
+  remotePackageSequence?: number;
   uploadState?: "created" | "completed";
 }) => {
   const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-handshake-"));
@@ -310,7 +358,10 @@ const createProcessingHandshakeFixture = (input: {
     protocolPackageId: "77777777-7777-4777-8777-777777777777",
     state: input.uploadState ?? "completed",
     requestHash: "b".repeat(64),
-    packageManifest: { recordCount: 1 },
+    packageManifest: {
+      recordCount: 1,
+      summaryRevisionHash: null
+    },
     packageChecksum: "c".repeat(64),
     sourceSequence: 1,
     fromCursor: 0,
@@ -388,7 +439,8 @@ const createProcessingHandshakeFixture = (input: {
                 ? {
                     relationship: {
                       state: input.remoteState,
-                      targetProcessingCursor: input.remoteProcessingCursor
+                      targetProcessingCursor: input.remoteProcessingCursor,
+                      packageSequence: input.remotePackageSequence ?? 1
                     }
                   }
                 : {};
@@ -401,7 +453,7 @@ const createProcessingHandshakeFixture = (input: {
     });
   const service = createCrossIdentitySyncService({
     repository,
-    rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+    recipientKeyEncryptionProvider: {} as EnvelopeEncryptionProvider,
     embeddingWorkflow: {} as EmbeddingWorkflow,
     koedHome,
     isSourceIdentityHealthy: () => true,
@@ -495,11 +547,26 @@ describe("Cross-Identity Sync processing handshake", () => {
       expect.objectContaining({
         sourceCursor: 7,
         targetProcessingCursor: 7,
-        packageSequence: 1
+        packageSequence: 1,
+        summaryRevisionHash: null
       })
     );
     expect(fixture.completeSyncQueueEntry).toHaveBeenCalledOnce();
     expect(fixture.deferSyncQueueEntry).not.toHaveBeenCalled();
+  });
+
+  it("does not acknowledge readiness from an older package sequence", async () => {
+    const fixture = createProcessingHandshakeFixture({
+      remoteState: "ready",
+      remoteProcessingCursor: 7,
+      remotePackageSequence: 0
+    });
+
+    await fixture.service.processOnce();
+
+    expect(fixture.markSourceSyncProcessing).toHaveBeenCalledOnce();
+    expect(fixture.deferSyncQueueEntry).toHaveBeenCalledOnce();
+    expect(fixture.acknowledgeSourceSyncPackage).not.toHaveBeenCalled();
   });
 
   it("discards an interrupted source package and regenerates the same sequence", async () => {
@@ -599,7 +666,7 @@ describe("Cross-Identity Sync processing handshake", () => {
           originSessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
           externalSessionId: "thread-recovery",
           sourceRuntime: "codex",
-          captureMethod: "hook",
+          captureMethod: "transcript",
           capturedAt: "2026-07-13T00:00:00.000Z",
           title: "Recovery test",
           sourceAdapterVersion: "1"
@@ -654,7 +721,13 @@ describe("Cross-Identity Sync processing handshake", () => {
           : path.endsWith("/complete")
             ? { upload: { state: "completed" } }
             : path.includes("/relationships/")
-              ? { relationship: { state: "ready", targetProcessingCursor: 1 } }
+              ? {
+                  relationship: {
+                    state: "ready",
+                    targetProcessingCursor: 1,
+                    packageSequence: 1
+                  }
+                }
               : {};
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -665,7 +738,7 @@ describe("Cross-Identity Sync processing handshake", () => {
     });
     const service = createCrossIdentitySyncService({
       repository,
-      rootEncryptionProvider: root,
+      recipientKeyEncryptionProvider: root,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
       isSourceIdentityHealthy: () => true,
@@ -686,10 +759,535 @@ describe("Cross-Identity Sync processing handshake", () => {
         syncRelationshipId: relationshipId,
         sourceSequence: 1,
         fromCursor: 0,
-        toCursor: 1
+        toCursor: 1,
+        packageManifest: expect.objectContaining({
+          summaryRevisionHash: null
+        })
       })
     );
     expect(recordSyncPackageChunk).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Cross-Identity Sync summary transport", () => {
+  it("encrypts and partitions a multi-record summary-only package without changing its digest", async () => {
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-summary-source-"));
+    temporaryHomes.push(koedHome);
+    const root = createLocalTestKeyEnvelopeEncryptionProvider(
+      randomBytes(32).toString("base64")
+    );
+    const recipient = await generateRecipientKeyMaterial(root, {
+      keyId: "sync-recipient:summary-source",
+      keyVersion: 1
+    });
+    const backendId = "team-backend";
+    const { reference } = storeUpstreamCredentialSecret(koedHome, {
+      backendId,
+      credentialKeyId: "credential-key",
+      secret: "device-secret"
+    });
+    const relationshipId = queueEntry().syncRelationshipId;
+    const sourceDeploymentId = "44444444-4444-4444-8444-444444444444";
+    const targetDeploymentId = "55555555-5555-4555-8555-555555555555";
+    const sourceReplicaId = "66666666-6666-4666-8666-666666666666";
+    const targetReplicaId = "77777777-7777-4777-8777-777777777777";
+    const consentManifest = { consented: true };
+    const policyManifest = {
+      sourceBoundary: "captured_session",
+      recipientKey: recipient
+    };
+    const summaryNodes = [1, 2, 3].map((index) =>
+      summaryNodeFixture(index, `${index}:${"x".repeat(200_000)}`)
+    );
+    const entry: SyncQueueEntryRecord = {
+      ...queueEntry(),
+      payloadManifest: { kind: "changes" }
+    };
+    let persisted:
+      | {
+          upload: SyncPackageUploadSessionRecord;
+          chunks: SyncPackageChunkRecord[];
+        }
+      | undefined;
+    const requirePersistedPackage = (): {
+      upload: SyncPackageUploadSessionRecord;
+      chunks: SyncPackageChunkRecord[];
+    } => {
+      if (!persisted) {
+        throw new Error("Expected the sync package to be persisted");
+      }
+      return persisted;
+    };
+    const createSyncPackageUploadSession = vi
+      .fn()
+      .mockImplementation((_actor, input) => {
+        persisted = {
+          upload: {
+            id: "88888888-8888-4888-8888-888888888888",
+            syncRelationshipId: input.syncRelationshipId,
+            protocolPackageId: input.protocolPackageId,
+            state: "created",
+            packageFormatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+            requestHash: input.requestHash,
+            packageManifest: input.packageManifest,
+            packageChecksum: input.packageChecksum,
+            sourceSequence: input.sourceSequence,
+            fromCursor: input.fromCursor,
+            toCursor: input.toCursor,
+            totalBytes: input.totalBytes,
+            uploadedBytes: 0,
+            expectedChunkCount: input.expectedChunkCount,
+            chunkCount: 0,
+            verifiedChunkCount: 0
+          },
+          chunks: []
+        };
+        return Promise.resolve(persisted.upload);
+      });
+    const recordSyncPackageChunk = vi
+      .fn()
+      .mockImplementation((_actor, input) => {
+        persisted?.chunks.push({
+          id: `eeeeeeee-eeee-4eee-8eee-${String(input.chunkIndex).padStart(12, "0")}`,
+          uploadSessionId: persisted.upload.id,
+          chunkIndex: input.chunkIndex,
+          chunkChecksum: input.chunkChecksum,
+          byteCount: input.byteCount,
+          encryptedPayload: input.encryptedPayload
+        });
+        return Promise.resolve(input);
+      });
+    const repository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
+      markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
+      cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      claimSyncQueueEntry: vi
+        .fn()
+        .mockImplementation(({ queue }) =>
+          Promise.resolve(queue === "outbox" ? entry : null)
+        ),
+      renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+      readCapturedSessionSyncDelta: vi.fn().mockResolvedValue({
+        relationship: {
+          packageSequence: 0,
+          logicalMemoryId: "99999999-9999-4999-8999-999999999999",
+          localUserId: "source-user",
+          localReplicaId: sourceReplicaId,
+          remoteReplicaId: targetReplicaId,
+          policyManifest,
+          consentManifest
+        },
+        fromCursor: 4,
+        toCursor: 4,
+        session: {
+          originSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          externalSessionId: "thread-summary-only",
+          sourceRuntime: "codex",
+          captureMethod: "transcript",
+          capturedAt: "2026-07-13T00:00:00.000Z",
+          title: "Summary-only transport",
+          sourceAdapterVersion: "1"
+        },
+        changes: [],
+        summarySnapshotIncluded: true,
+        summaryNodes
+      }),
+      getSyncTransportContext: vi.fn().mockResolvedValue({
+        relationship: { side: "source" },
+        localProtocolDeploymentId: sourceDeploymentId,
+        remoteProtocolDeploymentId: targetDeploymentId,
+        remoteBaseUrl: "https://team.example.com",
+        remoteUpstreamBackendId: backendId,
+        remoteCredentialReference: reference,
+        remoteSubjectId: "target-user"
+      }),
+      getSyncPackageBySequence: vi.fn().mockResolvedValue(null),
+      createSyncPackageUploadSession,
+      recordSyncPackageChunk,
+      getSyncPackageForService: vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(persisted)),
+      markSourceSyncUploadCommitted: vi.fn().mockResolvedValue(undefined),
+      acknowledgeSourceSyncPackage: vi.fn().mockResolvedValue(undefined),
+      completeSyncQueueEntry: vi.fn().mockResolvedValue(true),
+      failSyncQueueEntry: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn().mockImplementation((url: URL, request) => {
+      const path = url.pathname;
+      const body = path.endsWith("/upload-sessions")
+        ? { upload: { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } }
+        : request.method === "GET" && path.includes("/upload-sessions/")
+          ? { acceptedChunkIndexes: [] }
+          : path.endsWith("/complete")
+            ? { upload: { state: "completed" } }
+            : path.includes("/relationships/")
+              ? {
+                  relationship: {
+                    state: "ready",
+                    targetProcessingCursor: 4,
+                    packageSequence: 1
+                  }
+                }
+              : {};
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    });
+    const service = createCrossIdentitySyncService({
+      repository,
+      recipientKeyEncryptionProvider: root,
+      embeddingWorkflow: {} as EmbeddingWorkflow,
+      koedHome,
+      fetch: fetchFn,
+      isSourceIdentityHealthy: () => true,
+      staleAfterSeconds: 3_600,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+
+    await expect(service.processOnce()).resolves.toEqual({
+      outbox: true,
+      inbox: false
+    });
+
+    expect(persisted?.upload.fromCursor).toBe(4);
+    expect(persisted?.upload.toCursor).toBe(4);
+    expect(persisted?.upload.packageManifest.recordCount).toBe(3);
+    expect(persisted?.chunks.length).toBeGreaterThan(1);
+    const privateProvider =
+      await createRecipientPrivateKeyEnvelopeEncryptionProvider(
+        root,
+        recipient
+      );
+    const decryptedValues = await Promise.all(
+      (persisted?.chunks ?? []).map((chunk) =>
+        decryptEncryptedJsonPackage(privateProvider, chunk.encryptedPayload)
+      )
+    );
+    expect(decryptedValues.every(isCapturedSessionSyncChunkV1)).toBe(true);
+    const chunks = (decryptedValues as CapturedSessionSyncChunkV1[]).sort(
+      (left, right) => left.chunkIndex - right.chunkIndex
+    );
+    expect(
+      chunks.every(
+        (chunk) =>
+          Buffer.byteLength(JSON.stringify(chunk.package), "utf8") <=
+          CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES
+      )
+    ).toBe(true);
+    const mergedSummaryNodes = chunks.flatMap(
+      (chunk) => chunk.package.summaryNodes
+    );
+    const merged: CapturedSessionSyncPackageV1 = {
+      ...chunks[0]!.package,
+      changes: chunks.flatMap((chunk) => chunk.package.changes),
+      summaryNodes: mergedSummaryNodes,
+      summaryRevisionHash: crossIdentitySyncDigest(mergedSummaryNodes)
+    };
+    expect(merged.changes).toEqual([]);
+    expect(merged.summaryNodes.map((node) => node.originNodeId)).toEqual(
+      summaryNodes.map((node) => node.originNodeId)
+    );
+    expect(
+      new Set(merged.summaryNodes.map((node) => node.originNodeId)).size
+    ).toBe(summaryNodes.length);
+    expect(crossIdentitySyncDigest(merged)).toBe(chunks[0]!.packageDigest);
+    expect(crossIdentitySyncPackageRequestHash(merged)).toBe(
+      persisted?.upload.requestHash
+    );
+    expect(persisted?.upload.packageManifest.summaryRevisionHash).toBe(
+      merged.summaryRevisionHash
+    );
+
+    if (!persisted) throw new Error("Summary source package was not persisted");
+    const targetEntry: SyncQueueEntryRecord = {
+      ...queueEntry(),
+      syncRelationshipId: relationshipId,
+      uploadSessionId: persisted.upload.id,
+      payloadManifest: { kind: "package" }
+    };
+    const applyCapturedSessionSyncPackage = vi.fn().mockResolvedValue({
+      eventIds: [],
+      invalidatedEventIds: [],
+      summaryNodeIds: ["12121212-1212-4212-8212-121212121212"],
+      invalidatedSummaryNodeIds: []
+    });
+    const embedSources = vi.fn().mockResolvedValue(undefined);
+    const targetRepository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
+      markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
+      cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      claimSyncQueueEntry: vi
+        .fn()
+        .mockImplementation(({ queue }) =>
+          Promise.resolve(queue === "inbox" ? targetEntry : null)
+        ),
+      renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+      getSyncPackageForService: vi.fn().mockResolvedValue(persisted),
+      getSyncTransportContext: vi.fn().mockResolvedValue({
+        relationship: {
+          side: "target",
+          localUserId: "target-user",
+          localReplicaId: targetReplicaId,
+          remoteReplicaId: sourceReplicaId,
+          policyManifest: { sourceBoundary: "captured_session" },
+          consentManifest
+        },
+        localDeploymentId: "target-local-deployment",
+        localProtocolDeploymentId: targetDeploymentId,
+        remoteProtocolDeploymentId: sourceDeploymentId,
+        remoteSubjectId: "source-user"
+      }),
+      authorizeTargetSyncProcessing: vi.fn().mockResolvedValue(true),
+      getSyncRecipientKey: vi.fn().mockResolvedValue(recipient),
+      applyCapturedSessionSyncPackage,
+      markTargetSyncReady: vi.fn().mockResolvedValue(undefined),
+      advanceContinuousGrantRepresentations: vi
+        .fn()
+        .mockResolvedValue({ advanced: 1 }),
+      completeSyncQueueEntry: vi.fn().mockResolvedValue(true),
+      failSyncQueueEntry: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const targetService = createCrossIdentitySyncService({
+      repository: targetRepository,
+      recipientKeyEncryptionProvider: root,
+      embeddingWorkflow: { embedSources } as unknown as EmbeddingWorkflow,
+      koedHome,
+      staleAfterSeconds: 3_600,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+
+    await expect(targetService.processOnce()).resolves.toEqual({
+      outbox: false,
+      inbox: true
+    });
+    expect(applyCapturedSessionSyncPackage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        package: expect.objectContaining({
+          changes: [],
+          summaryNodes
+        })
+      })
+    );
+    expect(
+      targetRepository.advanceContinuousGrantRepresentations
+    ).toHaveBeenCalledWith({
+      remoteReplicaId: targetReplicaId,
+      sourceRevision: persisted.upload.toCursor
+    });
+    expect(embedSources).toHaveBeenCalledWith(
+      [
+        {
+          sourceType: "memory_node",
+          sourceId: "12121212-1212-4212-8212-121212121212"
+        }
+      ],
+      expect.objectContaining({ beforeBatch: expect.any(Function) })
+    );
+
+    summaryNodes.splice(0, summaryNodes.length);
+    persisted = undefined;
+    await expect(service.processOnce()).resolves.toEqual({
+      outbox: true,
+      inbox: false
+    });
+    const emptySnapshotPackage = requirePersistedPackage();
+    expect(emptySnapshotPackage.upload.packageManifest).toMatchObject({
+      recordCount: 0,
+      summaryRevisionHash: crossIdentitySyncDigest([])
+    });
+    expect(emptySnapshotPackage.chunks).toHaveLength(1);
+    const emptySnapshotChunk = await decryptEncryptedJsonPackage(
+      privateProvider,
+      emptySnapshotPackage.chunks[0]!.encryptedPayload
+    );
+    expect(isCapturedSessionSyncChunkV1(emptySnapshotChunk)).toBe(true);
+    expect(emptySnapshotChunk).toMatchObject({
+      package: {
+        changes: [],
+        summaryNodes: [],
+        summaryRevisionHash: crossIdentitySyncDigest([])
+      }
+    });
+  });
+
+  it("rejects a validly encrypted package whose summary content was tampered", async () => {
+    const relationshipId = queueEntry().syncRelationshipId;
+    const packageId = "33333333-3333-4333-8333-333333333333";
+    const sourceDeploymentId = "44444444-4444-4444-8444-444444444444";
+    const targetDeploymentId = "55555555-5555-4555-8555-555555555555";
+    const sourceReplicaId = "66666666-6666-4666-8666-666666666666";
+    const targetReplicaId = "77777777-7777-4777-8777-777777777777";
+    const policyManifest = { sourceBoundary: "captured_session" };
+    const consentManifest = { consented: true };
+    const summaryNodes = [summaryNodeFixture(9)];
+    const syncPackage: CapturedSessionSyncPackageV1 = {
+      format: CAPTURED_SESSION_SYNC_FORMAT,
+      formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+      policyVersion: CAPTURED_SESSION_SYNC_POLICY_VERSION,
+      packageId,
+      relationshipId,
+      logicalMemoryId: "88888888-8888-4888-8888-888888888888",
+      sourceDeploymentId,
+      sourceUserId: "source-user",
+      sourceReplicaId,
+      targetDeploymentId,
+      targetUserId: "target-user",
+      targetReplicaId,
+      packageSequence: 1,
+      fromCursor: 5,
+      toCursor: 5,
+      createdAt: "2026-07-13T00:00:00.000Z",
+      consentDigest: crossIdentitySyncDigest(consentManifest),
+      policyDigest: crossIdentitySyncDigest(policyManifest),
+      summaryRevisionHash: crossIdentitySyncDigest(summaryNodes),
+      session: {
+        originSessionId: "99999999-9999-4999-8999-999999999999",
+        externalSessionId: null,
+        sourceRuntime: "codex",
+        captureMethod: "transcript",
+        capturedAt: "2026-07-13T00:00:00.000Z",
+        title: null,
+        sourceAdapterVersion: null
+      },
+      changes: [],
+      summaryNodes
+    };
+    const tamperedPackage = {
+      ...syncPackage,
+      summaryNodes: [
+        { ...syncPackage.summaryNodes[0]!, summaryText: "Tampered in transit" }
+      ]
+    };
+    const packageDigest = crossIdentitySyncDigest(syncPackage);
+    const chunk: CapturedSessionSyncChunkV1 = {
+      format: CAPTURED_SESSION_SYNC_FORMAT,
+      formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+      packageId,
+      relationshipId,
+      packageSequence: 1,
+      fromCursor: 5,
+      toCursor: 5,
+      chunkIndex: 0,
+      chunkCount: 1,
+      packageDigest,
+      package: tamperedPackage
+    };
+    const root = createLocalTestKeyEnvelopeEncryptionProvider(
+      randomBytes(32).toString("base64")
+    );
+    const recipient = await generateRecipientKeyMaterial(root, {
+      keyId: "sync-recipient:summary-target",
+      keyVersion: 1
+    });
+    const encryptedPayload = await createEncryptedJsonPackage(
+      createRecipientPublicKeyEnvelopeEncryptionProvider(recipient),
+      {
+        objectClass: "sync_package",
+        payload: chunk,
+        scope: { deploymentId: targetDeploymentId, tenantId: "target-user" },
+        provenance: { rowFamily: "sync_package", sourceId: packageId },
+        aad: { relationshipId, packageId }
+      }
+    );
+    const entry: SyncQueueEntryRecord = {
+      ...queueEntry(),
+      syncRelationshipId: relationshipId,
+      uploadSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      payloadManifest: { kind: "package" }
+    };
+    const applyCapturedSessionSyncPackage = vi.fn();
+    const failSyncQueueEntry = vi.fn().mockResolvedValue(true);
+    const repository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
+      markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
+      cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      claimSyncQueueEntry: vi
+        .fn()
+        .mockImplementation(({ queue }) =>
+          Promise.resolve(queue === "inbox" ? entry : null)
+        ),
+      renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+      getSyncPackageForService: vi.fn().mockResolvedValue({
+        upload: {
+          id: entry.uploadSessionId,
+          syncRelationshipId: relationshipId,
+          protocolPackageId: packageId,
+          state: "verified",
+          requestHash: crossIdentitySyncPackageRequestHash(syncPackage),
+          packageManifest: {
+            packageDigest,
+            recipientKeyId: recipient.keyId,
+            recipientKeyVersion: recipient.keyVersion,
+            recordCount: 1
+          },
+          packageChecksum: crossIdentitySyncDigest([encryptedPayload]),
+          sourceSequence: 1,
+          fromCursor: 5,
+          toCursor: 5,
+          totalBytes: 1,
+          expectedChunkCount: 1
+        },
+        chunks: [
+          {
+            chunkIndex: 0,
+            chunkChecksum: crossIdentitySyncDigest(encryptedPayload),
+            byteCount: 1,
+            encryptedPayload
+          }
+        ]
+      }),
+      getSyncTransportContext: vi.fn().mockResolvedValue({
+        relationship: {
+          side: "target",
+          localUserId: "target-user",
+          localReplicaId: targetReplicaId,
+          remoteReplicaId: sourceReplicaId,
+          policyManifest,
+          consentManifest
+        },
+        localDeploymentId: "local-deployment",
+        localProtocolDeploymentId: targetDeploymentId,
+        remoteProtocolDeploymentId: sourceDeploymentId,
+        remoteSubjectId: "source-user"
+      }),
+      authorizeTargetSyncProcessing: vi.fn().mockResolvedValue(true),
+      getSyncRecipientKey: vi.fn().mockResolvedValue(recipient),
+      applyCapturedSessionSyncPackage,
+      failSyncQueueEntry
+    } as unknown as MemorySourceRepository;
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-summary-target-"));
+    temporaryHomes.push(koedHome);
+    const service = createCrossIdentitySyncService({
+      repository,
+      recipientKeyEncryptionProvider: root,
+      embeddingWorkflow: {} as EmbeddingWorkflow,
+      koedHome,
+      staleAfterSeconds: 3_600,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+
+    await service.processOnce();
+
+    expect(applyCapturedSessionSyncPackage).not.toHaveBeenCalled();
+    expect(failSyncQueueEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queue: "inbox",
+        errorClass: "InvalidSyncPackageError",
+        terminal: true
+      })
+    );
   });
 });
 
@@ -746,7 +1344,7 @@ describe("Cross-Identity Sync freshness heartbeat", () => {
     } as unknown as MemorySourceRepository;
     const service = createCrossIdentitySyncService({
       repository,
-      rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      recipientKeyEncryptionProvider: {} as EnvelopeEncryptionProvider,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
       isSourceIdentityHealthy: () => true,
@@ -795,7 +1393,7 @@ describe("Cross-Identity Sync freshness heartbeat", () => {
     } as unknown as MemorySourceRepository;
     const service = createCrossIdentitySyncService({
       repository,
-      rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      recipientKeyEncryptionProvider: {} as EnvelopeEncryptionProvider,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
       isSourceIdentityHealthy: () => true,
@@ -856,11 +1454,12 @@ describe("Cross-Identity Sync inbox binding", () => {
       createdAt: "2026-07-13T00:00:00.000Z",
       consentDigest: crossIdentitySyncDigest(consentManifest),
       policyDigest: crossIdentitySyncDigest(policyManifest),
+      summaryRevisionHash: crossIdentitySyncDigest([]),
       session: {
         originSessionId: consentManifest.selectedSessionId,
         externalSessionId: null,
         sourceRuntime: "codex",
-        captureMethod: "hook",
+        captureMethod: "transcript",
         capturedAt: "2026-07-13T00:00:00.000Z",
         title: null,
         sourceAdapterVersion: null
@@ -873,7 +1472,8 @@ describe("Cross-Identity Sync inbox binding", () => {
           revisionHash: "c".repeat(64),
           event: null
         }
-      ]
+      ],
+      summaryNodes: []
     };
     const packageDigest = crossIdentitySyncDigest(syncPackage);
     const chunk: CapturedSessionSyncChunkV1 = {
@@ -984,7 +1584,7 @@ describe("Cross-Identity Sync inbox binding", () => {
     temporaryHomes.push(koedHome);
     const service = createCrossIdentitySyncService({
       repository,
-      rootEncryptionProvider: root,
+      recipientKeyEncryptionProvider: root,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
       staleAfterSeconds: 3_600,

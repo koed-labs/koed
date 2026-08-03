@@ -10,13 +10,34 @@ When changing the schema:
 2. Generate a migration with `pnpm --filter @koed/db migrate:generate`.
 3. Review the generated SQL in `packages/db/drizzle/`.
 4. Check migration metadata with `pnpm db:migrate:check`.
-5. Run a clean migration smoke test with `pnpm db:migrate:smoke`.
+5. Run the migration acceptance matrix with
+   `pnpm db:migrate:acceptance` (the `pnpm db:migrate:smoke` alias remains
+   available).
 
-`pnpm db:migrate:smoke` uses `DATABASE_URL` to connect to a Postgres server,
-creates a temporary database, runs the packaged Drizzle migrations, verifies the
-latest Drizzle journal timestamp was recorded, and drops the temporary database.
+`pnpm db:migrate:acceptance` uses `DATABASE_URL` to connect to a Postgres
+server and creates a separate disposable database for every acceptance case.
+It fails closed unless all of these cases pass:
+
+- a clean run of the full migration journal;
+- the exact populated current-main `0000` through `0012` schema upgraded by the
+  single current `0013`, with Personal Memory and Team/Workspace fixture data
+  retained;
+- transaction rollback and a successful retry after the migration statement is
+  cancelled mid-`0013`;
+- a real `pg_dump` backup before upgrade, `pg_restore` into a fresh database,
+  retained-data verification, and upgrade of the restored database;
+- an idempotent migration rerun with unchanged migration ledger, schema, and
+  retained data; and
+- executable alpha compatibility boundaries: current collaboration queries are
+  unavailable before `0013`, the discarded experimental Team Chat schema is
+  unavailable after it, and current-main-shaped stable writes remain valid
+  after the forward migration.
+
 The Postgres user in `DATABASE_URL` must be allowed to create and drop
-databases, and the server must have the `vector` extension available.
+databases. The server must have the `vector` extension available. Matching
+`pg_dump` and `pg_restore` binaries must be on `PATH`; use `PG_DUMP_BIN` and
+`PG_RESTORE_BIN` to select explicit binaries. Every disposable database is
+force-dropped in cleanup, including on failure.
 
 Do not add new migrations under `packages/db/src/migrations/`; that directory
 was replaced by the Drizzle migration folder.

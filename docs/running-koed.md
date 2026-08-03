@@ -28,6 +28,25 @@ For server/private VPS terminology and migration notes, see
 Codex bootstrap when needed, and keeps the startup screen visible until the
 system is ready.
 
+After a verified setup, Desktop resumes its managed local `koed-server` before
+loading the main window. A fresh or incomplete setup opens the guided setup
+without silently installing runtime or model assets. After explicit User
+confirmation, Desktop checks and runs the package, native runtime, embedding
+model, local services, Codex integration, and final verification stages in
+order. Completed stages are skipped. Only the active stage is shown as running,
+model download progress comes from transferred artifact bytes, and a failure
+stops the workflow with a retry that re-inspects local state. The automatic
+resume wait is bounded so broken local runtime state remains diagnosable from
+the app.
+
+The normal Desktop surface is a product UI rather than an operations dashboard.
+It keeps successful setup details collapsed, surfaces remediation only when
+needed, and leaves Personal available during Team outages. Team enrollment,
+reconnect, backend change, and failure-recovery behavior is documented in
+[Koed Desktop](desktop-ui.md). Advanced Diagnostics remains available for
+Operator troubleshooting without exposing reusable credentials to the
+renderer.
+
 `koed-server` owns `KOED_HOME`, runs API, Worker, and Explorer as supervised
 local app processes, and records runtime state under `KOED_HOME/run`. In
 external dependency mode, Docker Compose or another dependency launcher is
@@ -54,6 +73,15 @@ Use `identity rotate --json` only for explicit repair/replacement: it preserves 
 
 `stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Explorer, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
+API, Worker, Explorer, and the bundled-local native Embedding Service are
+essential managed children. After startup, an unexpected exit or process error
+from any one of them makes the supervisor stop the remaining managed children,
+stop owned bundled-local dependencies, remove its runtime ownership state, and
+exit nonzero. The supervisor does not restart individual children in-process;
+the deployment supervisor restarts the complete service set. SIGINT, SIGTERM,
+and an identity-bound `koed-server stop` request use the same idempotent cleanup
+path and exit cleanly.
+
 In a source checkout, the supervisor launches the built API, Worker, and Explorer
 Node entry points directly. Recorded process IDs therefore identify the service
 processes themselves, so stop and restart do not leave package-manager child
@@ -65,9 +93,27 @@ control-plane state for Desktop and headless scripts:
 ```bash
 node packages/koed-server/dist/cli.js upstream enroll start --id team-vps --json
 node packages/koed-server/dist/cli.js upstream enroll status --id team-vps --json
+node packages/koed-server/dist/cli.js upstream activate --id team-vps --json
 node packages/koed-server/dist/cli.js upstream enroll cancel --id team-vps --json
 node packages/koed-server/dist/cli.js upstream disconnect --id team-vps --json
 ```
+
+Desktop collaboration is carried by a separate authenticated local broker
+started and supervised with the local `koed-server`. Electron main launches the
+broker command internally and bridges its typed protocol to the allowlisted
+preload API; it is not an Operator-facing network service. The broker owns the
+active upstream connection, capability refresh, subscriptions, durable cursors,
+replay, reconnect, and protected Team-state clearing. Desktop remains usable
+for Personal notes, Personal channels, and Personal Memory when no Team backend
+is enrolled or the remote backend is unavailable.
+
+API and Worker must receive the same `KOED_TEAM_COLLABORATION_ENABLED` value.
+Changing it requires restarting both processes. Disabling it removes Team
+capabilities and Team routes/jobs while retaining Personal collaboration and
+Personal Memory. See [Configuration](configuration.md) for the exact disabled
+surface and required collaboration secrets. Desktop-managed local edges default
+the shared value to `true`; standalone server deployments remain disabled until
+the Operator enables them explicitly.
 
 `upstream enroll start` requires a registered upstream backend with fresh
 validated capabilities and at least one explicitly enabled route-policy family.
@@ -81,11 +127,138 @@ against the upstream backend before marking the local backend credential
 configured. Koed Desktop performs this reconciliation automatically while an
 enrollment is pending and shows the activation URL as a manual fallback when
 Linux/WSL host-browser integration is delayed or unavailable. `upstream
-disconnect` disables local upstream route families and marks the local enrollment
+activate` explicitly selects the enrolled backend used for remote routing in
+headless operation; enrollment alone does not replace an existing active
+backend. `upstream disconnect` disables local upstream route families and marks the local enrollment
 state revoked. These local mutations use a per-backend inter-process lock, with
 remote requests kept outside the locked mutation phase. Browser approval and
 upstream-side device credential revocation remain browser/session-mediated
 local-edge flows.
+
+## Personal Device Sync local data plane
+
+PDS local source publication is opt-in. Browser-authenticated PDS close/status/
+retry/pause routes require Authority, envelope encryption, configured secret
+reference runtime, relay, and current worker heartbeat. Headless runtime uses
+Operator-managed secret reference; Desktop host installs keychain adapter. No
+raw environment/config or API Token can supply group/private keys. Missing
+provider, limited Desktop adapter, expired authority context, or package
+incompatibility disables PDS transfer only; capture and Recall continue locally.
+
+Close locks Session, exact ordered items, policy/pause state, and origin sequence
+in one transaction. Crypto/envelope failure rolls all rows and sequence allocation
+back. Publication pause is durable and rechecked before relay network action;
+resume is explicit. Worker leases use fencing, bounded exponential retry, and
+quarantine permanent crypto/policy failures. Do not edit or append a closed
+source Session; start a new Captured Session. Replica source is read-only. Check local status through
+`GET /v1/personal-device-sync/groups/:groupId/local-status`; status is redacted
+and exposes only state counts/readiness, never package content, fingerprints,
+paths, or key references.
+
+### Personal Sync control commands
+
+`koed-server personal-sync` is bounded browser-session control-plane client;
+Authority owns group, policy, membership, current head, activation, relay, and
+worker outcome. Commands never report local enable/revoke success. Set only
+`PDS_CONTROL_URL` plus `PDS_BROWSER_SESSION_FD` (FD number, not session value).
+API Tokens and legacy credentials are rejected.
+
+```bash
+node packages/koed-server/dist/cli.js personal-sync status --json
+node packages/koed-server/dist/cli.js personal-sync join request \
+  --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync policy pause \
+  --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync policy resume \
+  --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync replica status \
+  --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync recovery-kit verify \
+  --recovery-kit "$HOME/koed-recovery-kit.json" --password-fd 3 --json
+```
+
+Pairing stores only redacted backend request IDs locally and shows challenge ID
+and short code. It is never discarded. Active-device, recovery, revoke, and
+conflict actions require exact pre-built signed transition data through
+protected FDs; Authority validates CAS/current head, countersigns, and exposes
+durable pending activation status. Arbitrary device IDs cannot succeed.
+
+`--password` is rejected. Pipe password bytes through stdin or supply a file
+descriptor; never put recovery passwords in arguments, environment, logs, or
+config. Recovery-kit descriptor is strict scrypt/AES-256-GCM with canonical
+metadata AAD, fixed salt/nonce/tag lengths, 0600 atomic fsync write, and
+symlink refusal. Desktop uses a local-only authenticated bridge to its
+platform-backed provider: Keychain on macOS, DPAPI on native Windows, verified
+Secret Service/KWallet on Linux, and a native Windows-host DPAPI helper for WSL
+where available.
+Electron's insecure `basic_text` fallback is rejected. Missing secure storage
+disables PDS only; Desktop never writes PDS secrets to plaintext state,
+configuration, or environment. Association and Remote Account Links alone
+synchronize nothing.
+
+### Same-network Desktop pairing
+
+After first-device Personal Device Group setup, open **Devices** on the
+Authority-hosting installation and choose **Pair another device**. Koed shows a
+QR code, copyable private-network link, eight-character comparison code, and
+expiry. The second Desktop may scan the QR, open the `koed-pair://` handoff, or
+paste the link under **Join with link**. Confirm that both devices show the same
+short code, then approve on the Authority-hosting installation. Joined devices
+are symmetric Personal Memory replicas, but V1 does not copy the Authority key
+or offer another invitation from those replicas.
+
+Pairing requires both devices to reach the inviting installation's private IPv4
+address on TCP port `3310`. The invitation lasts ten minutes, is invalidated
+after completion, and never transmits its secret in HTTP. Koed encrypts the
+ceremony at the application layer and then uses the existing signed PDS
+membership and encrypted relay protocol. Do not expose port `3310` to the
+public internet.
+
+After enrollment, Desktop keeps that private-network gateway available for
+certificate-authenticated encrypted replication and restores it when local
+services resume. Invitation routes remain invalidated after use. If the
+gateway cannot bind, Devices status reports the fault; Personal capture and
+Recall continue locally until replication connectivity is restored.
+
+For API-first validation, run `pnpm pds-fixture:validate` with `DATABASE_URL`
+set so its PostgreSQL stages execute. Against an isolated local-personal API
+whose test User has no existing Personal Device Group, run:
+
+```bash
+PDS_E2E_CONTROL_URL=http://127.0.0.1:<api-port> \
+PDS_E2E_BROWSER_COOKIE='<session-cookie>' \
+pnpm pds-pairing:e2e
+```
+
+For the required two-database enrollment/recovery gate, run two isolated
+`local_personal` APIs and additionally provide the joining API and its own local
+authentication:
+
+```bash
+PDS_E2E_CONTROL_URL=http://127.0.0.1:<device-a-api-port> \
+PDS_E2E_BROWSER_COOKIE='<device-a-session-cookie>' \
+PDS_E2E_JOINING_CONTROL_URL=http://127.0.0.1:<device-b-api-port> \
+PDS_E2E_JOINING_BROWSER_COOKIE='<device-b-session-cookie>' \
+pnpm pds-pairing:e2e
+```
+
+The command rejects identical API origins. It verifies that the signed joining
+state is independently reconciled and retained by Device B before its protected
+runtime is rebound to Device B's local User.
+
+An explicitly disposable API with public test registration may use
+`PDS_E2E_ALLOW_REGISTER=1` instead of a supplied cookie. Never enable that
+switch against a real User deployment. The command proves real Authority API
+genesis, encrypted LAN exchange, signed active-device approval, epoch-2
+activation on two isolated device identities, source refresh, relay binding,
+optional second-database local reconciliation, and one-time invitation
+invalidation. It emits no credentials. Desktop validation then proves the
+QR/link handoff, source-package data plane, and rendered states.
+
+Run `pnpm pds-fixture:validate` for deterministic shared-protocol crypto
+vectors plus control/recovery lifecycle tests. Fixture matrix explicitly labels
+DB-required Authority/relay/materialization and Projection/Recall cases rather
+than claiming in-process coverage for those seams.
 
 ## Project metadata discovery
 
@@ -125,11 +298,11 @@ Team Workspace link. Team Workspace identity still comes only from explicit
 Project linking, and Team access still requires Koed-owned Membership,
 Workspace Access, and Share Grant authorization.
 
-Future personal multi-device enrollment may use remote-alias overlap to
-automatically associate local Project contexts after both devices are bound to
-the same User. This build has no personal multi-device registry or sync path, so
-remote aliases remain evidence only. They cannot merge Personal Memory across
-deployments or create a Team Workspace link. `project forget
+Personal Device Sync may use remote-alias overlap to associate local Project
+contexts after both devices are active in the same Personal Device Group.
+Remote aliases remain evidence only: they cannot authorize membership, merge
+conflicting source histories silently, or create a Team Workspace link.
+`project forget
 --local-project-id <id>` removes the local Project record, including retained
 remote-alias history.
 
@@ -150,17 +323,43 @@ relationship status and redacted `/ops/status` sync metrics to diagnose queue
 lag, retries, stale replicas, and failure classes; do not inspect encrypted
 package rows as an operational workflow.
 
+`hasSynchronizedRevision` means at least one target revision completed; it may
+remain true while a newer revision is processing or after the sync relationship
+is revoked. Use `syncState` for current transfer and freshness state. Stale,
+processing, and partially available replicas are excluded from Recall. Sync
+revocation stops future packages but does not revoke a Share Grant; Share Grant
+revocation removes ordinary Team access, starts the independent grant-scoped
+retention clock, and does not delete the owner-private target replica. An
+untouched pending purge may be canceled by restoring the grant; claimed purge
+work cannot be restored.
+
+Target processing reconstructs authorized source records and creates fresh
+target-owned embeddings with the target Embedding Service. Source vectors and
+source-local Memory Node identities never cross the sync boundary. A complete
+summary snapshot revision atomically replaces its predecessor; an authoritative
+empty snapshot removes the prior target nodes and embeddings, while an
+Event-only package leaves the acknowledged summary snapshot unchanged.
+
 ## Personal Device Sync V1
 
-Personal Device Sync V1 is protocol-only in this build; no CLI command, API,
-relay, Authority, or automatic sync path is available. Do not configure
-Cross-Identity Sync to imitate it: hosted Cross-Identity Sync remains directed
-and uses separate identities and RSA recipient envelopes. Future PDS operation
-must use relay-required symmetric replicas, current `koed/pds/v1` only, and
-[Personal Device Sync Protocol V1](personal-device-sync-protocol.md). Local
-capture and Recall must continue during relay/Authority outage or equivocation
-freeze. Perfect same-path full-machine clone remains undetectable locally;
-remote collision detection and explicit re-enrollment are required.
+Browser-session PDS routes provide genesis, enrollment challenge, signed group
+transitions, key-bundle acknowledgement, scoped status/log/certificate/bundle
+retrieval, Personal Sync Policy, and Remote Account Link records. They require
+configured Authority signer. Bearer API Tokens and `Koed-Device` credentials are
+denied. Stale valid transitions return current signed head without rebasing or
+freezing; governance freezes only on verified Authority equivocation or durable
+integrity evidence. Membership epoch remains pending until every active device
+acknowledges its bound encrypted bundle. Remote Account Link accepts opaque
+proof token only and fails closed without server verifier. Tombstone and conflict-resolution routes accept only canonical, active-device or recovery-root authorized records and Authority-countersign final records. Browser sessions initiate requests but cannot authorize them; API Tokens and device credentials cannot initiate them. Device relay routes fetch opaque deletion floors before package service and submit signed tombstone ACKs only after durable local apply. Device revocation stops future key/package delivery, never erases plaintext already downloaded. PDS pause/revoke, local replica removal, Personal deletion, Team Share Grant revocation, Team retention, and hard purge remain separate operations.
+
+Control plane and relay are separate from directed hosted Cross-Identity Sync
+and its RSA envelopes. PDS remains `koed/pds/v1` only. Relay endpoints accept
+only certificate-plus-request-proof device authentication, initialize a signed
+transport, accept resumable encrypted chunks, commit checksums/digest without
+decrypting, serve recipient mailbox/chunks, accept signed ACKs, and maintain
+per-recipient/per-origin anti-entropy cursors. Policy defaults off and covers
+only future closed Captured Sessions. Materialization, Projection, embedding,
+and Recall remain device-local.
 
 ## KOED_HOME layout
 
@@ -216,6 +415,18 @@ pnpm env:setup
 docker compose --env-file .env -f examples/server-compose/docker-compose.yml up -d --build
 ```
 
+Keep the generated `.env` stable across Compose recreation and upgrades. The
+server receives separate general and owner-private encryption provider settings,
+along with persistent collaboration cursor and broker secrets, from that file.
+Changing them requires an explicit rotation or rewrap operation; silently
+regenerating them would make existing encrypted data or durable cursors unusable.
+
+The server Compose wrapper sets `restart: unless-stopped` on `koed-server`,
+Postgres, Redis, and the Embedding Service. Dependency containers therefore
+recover after unexpected exits, and a nonzero supervisor exit restarts the
+coherent API/Worker/Explorer set. Manual `docker compose stop` and `docker
+compose down` remain stopped until the Operator starts the stack again.
+
 The default local test endpoints are `http://localhost:3300` for the API and
 `http://localhost:5174` for Explorer. In a real private VPS or Team self-hosted
 deployment, put a reverse proxy/TLS boundary in front of `koed-server` and keep
@@ -250,6 +461,20 @@ native Koed-owned Postgres/pgvector and Embedding Service runtimes under
 `KOED_HOME` and default the API/Worker queue backend to `local`. Redis is not
 required for queues in this mode unless `WORK_QUEUE_BACKEND=bullmq` is
 explicitly set; with BullMQ, Redis is Operator-managed external infrastructure.
+The Postgres-backed local queue permits one Worker runtime at a time through a
+session-scoped database advisory lock. If that process exits unexpectedly, its
+database session releases the lock; the replacement Worker then immediately
+requeues interrupted jobs without consuming an attempt or waiting for their
+ordinary processing lease.
+
+Desktop keeps its generated Personal API Token across normal restarts. Startup
+validates the persisted token against the active local database and only
+replaces it when the token is missing, revoked, expired, or no longer present
+after a database reset.
+
+Desktop records completion of its first-run guide under the active `KOED_HOME`
+rather than browser storage, so the setup state is durable and isolated per
+local installation.
 
 Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, including `psql`, `pg_dump`, and `pg_restore` for backup/restore operations, and the Embedding Service needs `embedding-service/dist/index.js`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. Packaged native runtime assets no longer include Python standalone files or `embedding-service/.venv/bin/python`; `KOED_EMBEDDING_PYTHON_BIN` is not used by the supported bundled-local path. The README Quickstart builds the workspace, runs runtime install, and installs the embedding model as `pnpm local:setup`. Packaged Desktop also checks packaged app resources after `KOED_HOME/runtime`. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only; packaged mode rejects those fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
 
@@ -282,7 +507,7 @@ Then open `http://<WSL_IP>:<port>` for the API or Explorer. Native Windows packa
 
 ### Packaged Desktop first-run
 
-Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists `KOED_HOME/config/local-ports.json`, and checks `runtime status/install` plus `models status/install` before local startup continues. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
+Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
 
 `desktop:package` and `desktop:package:smoke:mac` build unsigned local smoke artifacts. `desktop:package:internal:mac` prepares unsigned macOS `dmg` and `zip` outputs for internal testing, including packaged native runtime assets when `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. New GitHub Releases upload these unsigned Desktop assets and checksums after packaged-native smoke passes. Signed/notarized release artifacts still require future Developer ID credential setup.
 

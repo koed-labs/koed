@@ -14,6 +14,8 @@ export interface ProjectTeamWorkspaceLink {
   projectRoot: string;
   teamWorkspaceId: string;
   backendId: string | null;
+  remotePrincipalId: string | null;
+  deviceCredentialId: string | null;
   localProjectId: string | null;
   projectDisplayName: string | null;
   createdAt: string;
@@ -95,6 +97,11 @@ const validateLocalProjectId = (value: unknown): string | null => {
   return /^lp_[a-f0-9]{16,64}$/i.test(trimmed) ? trimmed : null;
 };
 
+const validateIdentityId = (value: unknown): string | null =>
+  typeof value === "string" && uuidPattern.test(value.trim())
+    ? value.trim().toLowerCase()
+    : null;
+
 const normalizeLink = (
   value: Partial<ProjectTeamWorkspaceLink>
 ): ProjectTeamWorkspaceLink | null => {
@@ -106,6 +113,13 @@ const normalizeLink = (
   }
   const projectRoot = normalizeProjectRoot(value.projectRoot);
   const teamWorkspaceId = validateTeamWorkspaceId(value.teamWorkspaceId);
+  const backendId =
+    typeof value.backendId === "string"
+      ? validateBackendId(value.backendId)
+      : null;
+  const remotePrincipalId = validateIdentityId(value.remotePrincipalId);
+  const deviceCredentialId = validateIdentityId(value.deviceCredentialId);
+  if (backendId && (!remotePrincipalId || !deviceCredentialId)) return null;
   return {
     id:
       typeof value.id === "string"
@@ -113,10 +127,9 @@ const normalizeLink = (
         : linkIdForProjectRoot(projectRoot),
     projectRoot,
     teamWorkspaceId,
-    backendId:
-      typeof value.backendId === "string"
-        ? validateBackendId(value.backendId)
-        : null,
+    backendId,
+    remotePrincipalId: backendId ? remotePrincipalId : null,
+    deviceCredentialId: backendId ? deviceCredentialId : null,
     localProjectId: validateLocalProjectId(value.localProjectId),
     projectDisplayName:
       typeof value.projectDisplayName === "string" &&
@@ -184,6 +197,8 @@ export const linkProjectTeamWorkspace = (
     projectRoot: string;
     teamWorkspaceId: string;
     backendId?: string;
+    remotePrincipalId?: string;
+    deviceCredentialId?: string;
     localProjectId?: string;
     projectDisplayName?: string;
   },
@@ -194,6 +209,13 @@ export const linkProjectTeamWorkspace = (
   const projectRoot = normalizeProjectRoot(input.projectRoot);
   const teamWorkspaceId = validateTeamWorkspaceId(input.teamWorkspaceId);
   const backendId = validateBackendId(input.backendId);
+  const remotePrincipalId = validateIdentityId(input.remotePrincipalId);
+  const deviceCredentialId = validateIdentityId(input.deviceCredentialId);
+  if (backendId && (!remotePrincipalId || !deviceCredentialId)) {
+    throw new Error(
+      "Backend Project links require the remote principal and device credential identity."
+    );
+  }
   const store = readStore(paths, deps);
   const existing = store.links.find((link) => link.projectRoot === projectRoot);
   const link: ProjectTeamWorkspaceLink = {
@@ -201,6 +223,8 @@ export const linkProjectTeamWorkspace = (
     projectRoot,
     teamWorkspaceId,
     backendId,
+    remotePrincipalId: backendId ? remotePrincipalId : null,
+    deviceCredentialId: backendId ? deviceCredentialId : null,
     localProjectId:
       validateLocalProjectId(input.localProjectId) ??
       existing?.localProjectId ??
@@ -303,4 +327,67 @@ export const removeProjectTeamWorkspaceLink = (
     message: "Project Team Workspace link removed.",
     link: existing
   };
+};
+
+export const removeProjectTeamWorkspaceLinksForBackend = (
+  paths: KoedServerPaths,
+  backendId: string,
+  depsInput: ProjectTeamWorkspaceLinkDeps = {}
+): number => {
+  const deps = depsWithDefaults(depsInput);
+  const normalizedBackendId = validateBackendId(backendId);
+  if (!normalizedBackendId) return 0;
+  const store = readStore(paths, deps);
+  const links = store.links.filter(
+    (link) => link.backendId !== normalizedBackendId
+  );
+  const removed = store.links.length - links.length;
+  if (removed === 0) return 0;
+  writeStore(
+    paths,
+    {
+      schemaVersion: 2,
+      updatedAt: deps.now().toISOString(),
+      links
+    },
+    deps
+  );
+  return removed;
+};
+
+export const removeProjectTeamWorkspaceLinksForMismatchedBinding = (
+  paths: KoedServerPaths,
+  input: {
+    backendId: string;
+    remotePrincipalId: string;
+    deviceCredentialId: string;
+  },
+  depsInput: ProjectTeamWorkspaceLinkDeps = {}
+): number => {
+  const deps = depsWithDefaults(depsInput);
+  const backendId = validateBackendId(input.backendId);
+  const remotePrincipalId = validateIdentityId(input.remotePrincipalId);
+  const deviceCredentialId = validateIdentityId(input.deviceCredentialId);
+  if (!backendId || !remotePrincipalId || !deviceCredentialId) {
+    throw new Error("Project link binding is invalid.");
+  }
+  const store = readStore(paths, deps);
+  const nextLinks = store.links.filter(
+    (link) =>
+      link.backendId !== backendId ||
+      (link.remotePrincipalId === remotePrincipalId &&
+        link.deviceCredentialId === deviceCredentialId)
+  );
+  const removed = store.links.length - nextLinks.length;
+  if (removed === 0) return 0;
+  writeStore(
+    paths,
+    {
+      schemaVersion: 2,
+      updatedAt: deps.now().toISOString(),
+      links: nextLinks
+    },
+    deps
+  );
+  return removed;
 };

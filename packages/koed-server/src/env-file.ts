@@ -25,9 +25,12 @@ export const parseEnvFile = (content: string): Record<string, string> => {
   return values;
 };
 
-export const loadRepoEnv = (repoRoot: string): Record<string, string> => {
-  const envPath = process.env.KOED_ENV_PATH?.trim()
-    ? resolve(process.env.KOED_ENV_PATH)
+export const loadRepoEnv = (
+  repoRoot: string,
+  environment: NodeJS.ProcessEnv = process.env
+): Record<string, string> => {
+  const envPath = environment.KOED_ENV_PATH?.trim()
+    ? resolve(environment.KOED_ENV_PATH)
     : resolve(repoRoot, ".env");
   if (!existsSync(envPath)) {
     return {};
@@ -39,7 +42,7 @@ export const environmentWithRepoEnv = (
   repoRoot: string,
   environment: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv => ({
-  ...loadRepoEnv(repoRoot),
+  ...loadRepoEnv(repoRoot, environment),
   ...environment
 });
 

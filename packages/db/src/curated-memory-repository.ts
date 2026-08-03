@@ -54,7 +54,7 @@ export interface CuratedMemoryRepository {
   ): Promise<CuratedMemoryProposalRecord | null>;
   resolveCuratedMemoryProposalEvidence(
     actor: ActorContext,
-    input: { workspaceId?: string; sessionId?: string; exactQuote?: string }
+    input: { projectId?: string; sessionId?: string; exactQuote?: string }
   ): Promise<CuratedMemoryResolvedEvidence>;
   processCuratedMemoryProposal(
     actor: ActorContext,

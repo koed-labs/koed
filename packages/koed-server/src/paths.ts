@@ -27,6 +27,7 @@ export interface KoedServerPaths {
   projectMetadataPath: string;
   projectTeamWorkspaceLinksPath: string;
   upstreamEnrollmentsPath: string;
+  upstreamDisconnectCleanupPath: string;
   repoRoot: string;
 }
 
@@ -107,6 +108,11 @@ export const resolveKoedServerPaths = (
       koedHome,
       "run",
       "upstream-enrollments.json"
+    ),
+    upstreamDisconnectCleanupPath: resolve(
+      koedHome,
+      "run",
+      "upstream-disconnect-cleanup.json"
     ),
     repoRoot
   };

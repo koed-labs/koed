@@ -16,14 +16,22 @@ counts, and Conversation previews form the primary scanning hierarchy; local
 paths, Git identity, discovery provenance, and manual assignment controls sit
 in secondary disclosures.
 
-Opening a Captured Session loads its Memory Events directly from the local API
-and renders the raw Conversation inside the Desktop process. Desktop owns the
-selected Project and Captured Session; it does not pass selection or API Token
-credentials through an Explorer URL. Desktop and Explorer share the
-virtualized timeline contract, so long Conversations retain bounded rendering
-and older-event pagination without coupling their navigation shells. Persisted
-Project discovery metadata is merged with captured Memory activity locally, so
-a discovered Project can remain visible before its first Captured Session.
+Opening a Captured Session loads its Memory Events through an exact, typed
+Electron IPC operation and renders the raw Conversation inside the Desktop.
+The managed `koed-server` supervisor provisions and rotates the reusable
+Personal API Token through the active runtime database and token pepper.
+Electron main retains that supervisor-owned credential in memory, rereads it
+after an unauthorized response, derives the loopback local API authority, and
+performs the allowlisted Project graph, Memory Event page, and Captured Session
+Project-assignment requests. Preload validates each operation and result in
+both directions. The renderer receives domain data and typed loaders/callbacks
+only; it never receives an API Token, Authorization header, API base URL,
+generic request path, or remote authority for these Personal Memory operations.
+Desktop and Explorer share the virtualized timeline contract, so long
+Conversations retain bounded rendering and older-event pagination without
+coupling their navigation shells. Persisted Project discovery metadata is
+merged with captured Memory activity locally, so a discovered Project can
+remain visible before its first Captured Session.
 Settings includes a collapsed, optional Team Backend setup/readiness
 disclosure. Users paste only a plain HTTP(S) Team Backend origin; URLs with
 credentials, query strings, or fragments are rejected before invoking the
@@ -123,11 +131,13 @@ Packaged Desktop bundled-local startup asks `koed-server` to allocate local
 ports automatically. The first successful allocation is persisted under
 `KOED_HOME/config/local-ports.json` so subsequent Desktop launches keep stable
 API, Explorer, Postgres, and Embedding Service ports while avoiding common
-local development or Docker port collisions. During first-run bundled-local
-setup, Desktop also calls `koed-server models status --kind embedding --json`
-and `koed-server models install --kind embedding --json` so the embedding model
-is verified or repaired under `KOED_HOME/models` before local startup
-continues.
+local development or Docker port collisions. First-run setup inspects package,
+runtime, model, service, Codex integration, and final verification state before
+making changes. After one explicit confirmation, Desktop runs only incomplete
+stages in order and stops at the first failure. The model stage reports actual
+downloaded and total bytes from the pinned artifact response before checksum
+verification. Retrying re-inspects local state and resumes from the first
+incomplete stage.
 
 Desktop also compares the active local API URL/token with the supported Codex
 MCP and Capture Hook configuration in `~/.codex/config.toml` and

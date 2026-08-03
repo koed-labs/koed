@@ -1,29 +1,50 @@
 import {
   LegendList,
   type LegendListRef,
-  type LegendListRenderItemProps
+  type LegendListRenderItemProps,
+  type ViewToken
 } from "@legendapp/list/react";
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 
 export type TimelineItem = {
   id: string;
-  timestamp: string;
+  timestamp?: string;
+};
+
+export type TimelineVisibleRange<T extends TimelineItem> = {
+  endIndex: number;
+  endItem: T;
+  startIndex: number;
+  startItem: T;
+  visibleItems: readonly T[];
 };
 
 export function VirtualizedTimeline<T extends TimelineItem>({
+  ariaLabel,
   className,
   estimatedItemHeight = 156,
   events,
   hasOlderEvents,
+  hasNewerEvents = false,
+  onAtEndChange,
   onLoadOlder,
+  onLoadNewer,
+  onPageLoadError,
+  onVisibleRangeChange,
   renderEvent,
   threadKey
 }: {
+  ariaLabel?: string;
   className?: string;
   estimatedItemHeight?: number;
   events: T[];
   hasOlderEvents: boolean;
+  hasNewerEvents?: boolean;
+  onAtEndChange?: (atEnd: boolean) => void;
   onLoadOlder: () => Promise<void> | void;
+  onLoadNewer?: () => Promise<void> | void;
+  onPageLoadError?: (error: unknown, direction: "newer" | "older") => void;
+  onVisibleRangeChange?: (range: TimelineVisibleRange<T> | null) => void;
   renderEvent: (event: T) => ReactNode;
   threadKey: string;
 }) {
@@ -32,9 +53,22 @@ export function VirtualizedTimeline<T extends TimelineItem>({
   const hasOlderEventsRef = useRef(hasOlderEvents);
   const isPinnedToEndRef = useRef(true);
   const olderLoadInFlightRef = useRef(false);
+  const newerLoadInFlightRef = useRef(false);
   const previousEventCountRef = useRef(events.length);
   const latestRenderedEventIdRef = useRef<string | null>(null);
   const scrollToEndFrameRefs = useRef<number[]>([]);
+  const lastReportedAtEndRef = useRef<boolean | null>(null);
+  const callbackRef = useRef({
+    onAtEndChange,
+    onVisibleRangeChange
+  });
+  callbackRef.current = { onAtEndChange, onVisibleRangeChange };
+
+  const reportAtEnd = useCallback((atEnd: boolean) => {
+    if (lastReportedAtEndRef.current === atEnd) return;
+    lastReportedAtEndRef.current = atEnd;
+    callbackRef.current.onAtEndChange?.(atEnd);
+  }, []);
 
   const renderItem = useCallback(
     ({ item }: LegendListRenderItemProps<T>) => renderEvent(item),
@@ -77,8 +111,11 @@ export function VirtualizedTimeline<T extends TimelineItem>({
   useEffect(() => {
     olderLoadArmedRef.current = true;
     olderLoadInFlightRef.current = false;
+    newerLoadInFlightRef.current = false;
     previousEventCountRef.current = 0;
     latestRenderedEventIdRef.current = null;
+    lastReportedAtEndRef.current = null;
+    callbackRef.current.onVisibleRangeChange?.(null);
     scrollToEndAfterLayout();
     return cancelScrollToEndFrames;
   }, [cancelScrollToEndFrames, scrollToEndAfterLayout, threadKey]);
@@ -121,7 +158,30 @@ export function VirtualizedTimeline<T extends TimelineItem>({
     if (!state) return;
     if (!state.isStartReached) olderLoadArmedRef.current = true;
     isPinnedToEndRef.current = state.isAtEnd;
-  }, []);
+    reportAtEnd(state.isAtEnd);
+  }, [reportAtEnd]);
+
+  const handleViewableItemsChanged = useCallback(
+    ({ viewableItems }: { viewableItems: Array<ViewToken<T>> }) => {
+      const visible = viewableItems
+        .filter((token) => token.isViewable && token.index >= 0)
+        .sort((left, right) => left.index - right.index);
+      const first = visible[0];
+      const last = visible.at(-1);
+      callbackRef.current.onVisibleRangeChange?.(
+        first && last
+          ? {
+              endIndex: last.index,
+              endItem: last.item,
+              startIndex: first.index,
+              startItem: first.item,
+              visibleItems: visible.map((token) => token.item)
+            }
+          : null
+      );
+    },
+    []
+  );
 
   const handleStartReached = useCallback(() => {
     if (
@@ -133,18 +193,35 @@ export function VirtualizedTimeline<T extends TimelineItem>({
     }
     olderLoadArmedRef.current = false;
     olderLoadInFlightRef.current = true;
-    void Promise.resolve(onLoadOlder()).finally(() => {
-      olderLoadInFlightRef.current = false;
-      window.requestAnimationFrame(() => {
-        const state = listRef.current?.getState?.();
-        const isScrollable =
-          state && state.contentLength > state.scrollLength + 1;
-        olderLoadArmedRef.current = Boolean(
-          hasOlderEventsRef.current && (!state?.isStartReached || !isScrollable)
-        );
+    void Promise.resolve()
+      .then(() => onLoadOlder())
+      .catch((error: unknown) => onPageLoadError?.(error, "older"))
+      .finally(() => {
+        olderLoadInFlightRef.current = false;
+        window.requestAnimationFrame(() => {
+          const state = listRef.current?.getState?.();
+          const isScrollable =
+            state && state.contentLength > state.scrollLength + 1;
+          olderLoadArmedRef.current = Boolean(
+            hasOlderEventsRef.current &&
+            (!state?.isStartReached || !isScrollable)
+          );
+        });
       });
-    });
-  }, [hasOlderEvents, onLoadOlder]);
+  }, [hasOlderEvents, onLoadOlder, onPageLoadError]);
+
+  const handleEndReached = useCallback(() => {
+    if (!hasNewerEvents || !onLoadNewer || newerLoadInFlightRef.current) {
+      return;
+    }
+    newerLoadInFlightRef.current = true;
+    void Promise.resolve()
+      .then(() => onLoadNewer())
+      .catch((error: unknown) => onPageLoadError?.(error, "newer"))
+      .finally(() => {
+        newerLoadInFlightRef.current = false;
+      });
+  }, [hasNewerEvents, onLoadNewer, onPageLoadError]);
 
   return (
     <LegendList<T>
@@ -157,11 +234,17 @@ export function VirtualizedTimeline<T extends TimelineItem>({
       initialScrollAtEnd
       maintainScrollAtEnd
       maintainScrollAtEndThreshold={0.1}
-      maintainVisibleContentPosition
+      maintainVisibleContentPosition={{ data: true, size: true }}
       onScroll={handleScroll}
       onStartReached={handleStartReached}
       onStartReachedThreshold={0.25}
+      onEndReached={handleEndReached}
+      onEndReachedThreshold={0.25}
+      onViewableItemsChanged={handleViewableItemsChanged}
+      viewabilityConfig={{ itemVisiblePercentThreshold: 1 }}
       className={className}
+      role="list"
+      aria-label={ariaLabel}
       ListHeaderComponent={listHeader}
       ListFooterComponent={listFooter}
     />

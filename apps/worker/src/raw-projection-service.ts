@@ -31,6 +31,17 @@ interface HistoricalBatchResult {
   report: ProjectionReport;
 }
 
+interface ProjectionWakeClient {
+  query(sql: string): Promise<unknown>;
+  on(
+    event: "notification",
+    listener: (message: { channel: string; payload?: string }) => void
+  ): void;
+  on(event: "error", listener: (error: Error) => void): void;
+  removeAllListeners(): void;
+  release(): void;
+}
+
 export interface RawProjectionServiceConfig {
   actorLimit: number;
   batchLimit: number;
@@ -60,9 +71,9 @@ export interface RawProjectionServiceConfig {
   getHistoricalAdmissionHealth(): Promise<HistoricalAdmissionHealth>;
   recoverProjectedMemoryEventProcessing(): Promise<number>;
   historicalImport: HistoricalImportBatchConfig;
-  intervalMs: number;
   logger: Logger;
   repository: MemorySourceRepository;
+  wakePool?: { connect(): Promise<ProjectionWakeClient> };
 }
 
 export interface RawProjectionService {
@@ -196,7 +207,7 @@ const reconcileTerminalHistoricalLcmJobs = async (
 
 const reconcileLcmCompactionJobs = async (
   config: RawProjectionServiceConfig
-): Promise<void> => {
+): Promise<boolean> => {
   const scopes = await config.repository.listPendingLcmDispatchScopes({
     limit: config.actorLimit
   });
@@ -235,11 +246,12 @@ const reconcileLcmCompactionJobs = async (
       "could not enqueue pending LCM compaction scope"
     );
   }
+  return results.some((result) => result.status === "rejected");
 };
 
 const reconcileEmbeddingJobs = async (
   config: RawProjectionServiceConfig
-): Promise<void> => {
+): Promise<boolean> => {
   const sources = await config.repository.listSourcesNeedingEmbeddings(
     config.batchLimit
   );
@@ -273,6 +285,7 @@ const reconcileEmbeddingJobs = async (
       "could not enqueue pending embedding source"
     );
   }
+  return results.some((result) => result.status === "rejected");
 };
 
 const runHistoricalBatch = async (
@@ -352,37 +365,20 @@ const logRebuildReport = (
   );
 };
 
-const createRawProjectionServiceHandle = (
-  run: () => Promise<void>,
-  intervalMs: number,
-  getTimer: () => ReturnType<typeof setInterval> | null,
-  setTimer: (timer: ReturnType<typeof setInterval> | null) => void,
-  getCurrentRun: () => Promise<void> | null
-): RawProjectionService => ({
-  run,
-  start() {
-    if (getTimer()) {
-      return;
-    }
-    setTimer(setInterval(() => void run(), intervalMs));
-    void run();
-  },
-  async stop() {
-    const timer = getTimer();
-    if (timer) {
-      clearInterval(timer);
-      setTimer(null);
-    }
-    await getCurrentRun();
-  }
-});
-
 export const createRawProjectionService = (
   config: RawProjectionServiceConfig
 ): RawProjectionService => {
   let currentRun: Promise<void> | null = null;
-  let timer: ReturnType<typeof setInterval> | null = null;
   let activeHistoricalBatches = 0;
+  let processingRequested = false;
+  let runAgain = false;
+  let stopped = false;
+  let wakeClient: ProjectionWakeClient | null = null;
+  let wakeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let wakeReconnectAttempt = 0;
+  let dueTimer: ReturnType<typeof setTimeout> | null = null;
+  let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let recoveryAttempt = 0;
 
   const runOnce = async () => {
     try {
@@ -411,9 +407,9 @@ export const createRawProjectionService = (
         }
       );
       const rebuild = await processRebuildActors(config);
-      await reconcileEmbeddingJobs(config);
+      const embeddingAdmissionFailed = await reconcileEmbeddingJobs(config);
       await reconcileTerminalHistoricalLcmJobs(config);
-      await reconcileLcmCompactionJobs(config);
+      const lcmAdmissionFailed = await reconcileLcmCompactionJobs(config);
       logHistoricalDecision(
         config.logger,
         historical.decision,
@@ -422,6 +418,19 @@ export const createRawProjectionService = (
       );
       logProjectionReport(config.logger, live, historical.report);
       logRebuildReport(config.logger, rebuild);
+      const nextRebuildDueAt =
+        await config.repository.getNextSemanticMemoryRebuildDueAt();
+      return {
+        continueImmediately:
+          live.projected > 0 ||
+          historical.report.projected > 0 ||
+          rebuild.jobs > 0,
+        nextRebuildDueAt,
+        recoveryNeeded:
+          embeddingAdmissionFailed ||
+          lcmAdmissionFailed ||
+          (backlog.historicalImportRows > 0 && !historical.decision.admitted)
+      };
     } catch (error) {
       config.logger.warn(
         {
@@ -433,25 +442,145 @@ export const createRawProjectionService = (
         },
         "raw conversation projection catch-up failed"
       );
+      throw error;
     }
   };
 
   const run = (): Promise<void> => {
     if (!currentRun) {
-      currentRun = runOnce().finally(() => {
-        currentRun = null;
-      });
+      currentRun = runOnce()
+        .then(() => undefined)
+        .finally(() => {
+          currentRun = null;
+        });
     }
     return currentRun;
   };
 
-  return createRawProjectionServiceHandle(
+  const requestProcessing = (): void => {
+    if (stopped) return;
+    if (currentRun) {
+      runAgain = true;
+      return;
+    }
+    if (processingRequested) return;
+    processingRequested = true;
+    queueMicrotask(() => {
+      processingRequested = false;
+      if (stopped || currentRun) {
+        if (currentRun) runAgain = true;
+        return;
+      }
+      currentRun = runOnce()
+        .then((result) => {
+          recoveryAttempt = 0;
+          if (!result.recoveryNeeded && recoveryTimer) {
+            clearTimeout(recoveryTimer);
+            recoveryTimer = null;
+          }
+          if (dueTimer) clearTimeout(dueTimer);
+          dueTimer = null;
+          if (result.nextRebuildDueAt) {
+            const delayMs = Math.min(
+              Math.max(result.nextRebuildDueAt.getTime() - Date.now(), 0),
+              2_147_483_647
+            );
+            dueTimer = setTimeout(requestProcessing, delayMs);
+            dueTimer.unref?.();
+          }
+          if (result.recoveryNeeded && !recoveryTimer) {
+            recoveryTimer = setTimeout(() => {
+              recoveryTimer = null;
+              requestProcessing();
+            }, 1_000);
+            recoveryTimer.unref?.();
+          }
+          if (result.continueImmediately) runAgain = true;
+        })
+        .catch(() => {
+          if (stopped || recoveryTimer) return;
+          const delayMs = Math.min(250 * 2 ** recoveryAttempt, 10_000);
+          recoveryAttempt += 1;
+          recoveryTimer = setTimeout(() => {
+            recoveryTimer = null;
+            requestProcessing();
+          }, delayMs);
+          recoveryTimer.unref?.();
+        })
+        .finally(() => {
+          currentRun = null;
+          if (runAgain) {
+            runAgain = false;
+            requestProcessing();
+          }
+        });
+    });
+  };
+
+  const scheduleWakeReconnect = (): void => {
+    if (stopped || wakeReconnectTimer) return;
+    const delayMs = Math.min(250 * 2 ** wakeReconnectAttempt, 10_000);
+    wakeReconnectAttempt += 1;
+    wakeReconnectTimer = setTimeout(() => {
+      wakeReconnectTimer = null;
+      void connectWakeClient();
+    }, delayMs);
+    wakeReconnectTimer.unref?.();
+  };
+
+  const connectWakeClient = async (): Promise<void> => {
+    if (stopped || wakeClient || !config.wakePool) return;
+    try {
+      const client = await config.wakePool.connect();
+      if (stopped) {
+        client.release();
+        return;
+      }
+      wakeClient = client;
+      await client.query("listen koed_projection_work");
+      wakeReconnectAttempt = 0;
+      client.on("notification", (message) => {
+        if (message.channel === "koed_projection_work") requestProcessing();
+      });
+      client.on("error", () => {
+        if (wakeClient === client) wakeClient = null;
+        client.removeAllListeners();
+        client.release();
+        scheduleWakeReconnect();
+      });
+      requestProcessing();
+    } catch {
+      scheduleWakeReconnect();
+    }
+  };
+
+  return {
     run,
-    config.intervalMs,
-    () => timer,
-    (value) => {
-      timer = value;
+    start() {
+      stopped = false;
+      void connectWakeClient();
+      requestProcessing();
     },
-    () => currentRun
-  );
+    async stop() {
+      stopped = true;
+      processingRequested = false;
+      runAgain = false;
+      if (wakeReconnectTimer) clearTimeout(wakeReconnectTimer);
+      wakeReconnectTimer = null;
+      if (dueTimer) clearTimeout(dueTimer);
+      dueTimer = null;
+      if (recoveryTimer) clearTimeout(recoveryTimer);
+      recoveryTimer = null;
+      if (wakeClient) {
+        const client = wakeClient;
+        wakeClient = null;
+        client.removeAllListeners();
+        await client
+          .query("unlisten koed_projection_work")
+          .catch(() => undefined);
+        client.release();
+      }
+      await currentRun;
+    }
+  };
 };

@@ -79,8 +79,8 @@ describe("Curated Memory review settings", () => {
       } as NodeJS.ProcessEnv)
     ).toMatchObject({
       provider: "codex",
-      model: "gpt-5.4-mini",
-      reasoningEffort: "medium",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
       timeoutMs: 90000,
       maxAttempts: 2
     });
@@ -163,11 +163,11 @@ lineReader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } });
-    send({ id: 9001, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan", namespace: "koed_memory", tool: "scan", arguments: { query: "MVP recall flow", search_domain: "project", workspace_id: "/repo/koed" } } });
+    send({ id: 9001, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan", namespace: "koed_memory", tool: "scan", arguments: { query: "MVP recall flow", search_domain: "project", project_id: "/repo/koed" } } });
     return;
   }
   if (message.id === 9001) {
-    send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-search", namespace: "koed_memory", tool: "search", arguments: { query: "MVP recall flow", stage: "leaf_search", search_domain: "project", workspace_id: "/repo/koed", limit: 1 } } });
+    send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-search", namespace: "koed_memory", tool: "search", arguments: { query: "MVP recall flow", stage: "leaf_search", search_domain: "project", project_id: "/repo/koed", limit: 1 } } });
     return;
   }
   if (message.id === 9002) {
@@ -684,27 +684,25 @@ describe("Project Team Workspace mapping", () => {
 });
 
 describe("MemoryApiClient", () => {
-  it("uses a scoped local-edge credential instead of the Personal API Token for upstream operations", async () => {
+  it("uses a scoped local-edge credential instead of the Personal API Token for typed Team Memory search", async () => {
     let authorization = "";
+    let requestUrl = "";
     const apiUrl = await createApi((request, response) => {
       authorization = request.headers.authorization ?? "";
+      requestUrl = request.url ?? "";
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ hits: [] }));
     });
     const client = new MemoryApiClient({ apiUrl, apiToken: "personal-token" });
 
-    await client.upstreamOperation(
-      {
-        upstreamBackendId: "team-vps",
-        operationFamily: "team_workspace_read",
-        method: "POST",
-        path: "/v1/memory/search",
-        body: { query: "team" }
-      },
+    await client.teamMemorySearch(
+      "team-vps",
+      { query: "team", team_workspace_id: randomUUID() },
       "Koed-Device local-key:local-secret"
     );
 
     expect(authorization).toBe("Koed-Device local-key:local-secret");
+    expect(requestUrl).toBe("/v1/local-edge/team-memory/search");
   });
 
   it("loads the public backend capability contract", async () => {
@@ -787,7 +785,7 @@ describe("MemoryApiClient", () => {
     expect(result.defaultAnswerScope).toBe("personal");
     expect(result.exposedTools).toContain("memory_intake_propose");
     expect(result.localLcmSummaryDiagnostics.pendingCount).toBe(3);
-    expect(result.localCuratedMemoryReviewWorker.model).toBe("gpt-5.4-mini");
+    expect(result.localCuratedMemoryReviewWorker.model).toBe("gpt-5.6-luna");
     expect(result.localCuratedMemoryReviewDiagnostics.running).toBe(false);
     expect(result.localMemoryAnswerWorker.defaultResponseDetail).toBe(
       "answer_only"
@@ -916,7 +914,11 @@ describe("MemoryApiClient", () => {
 
 describe("LCM summary background service", () => {
   it("resolves a prompt budget above the default leaf token threshold", () => {
-    expect(resolveLcmSummaryWorkerConfig({}).maxPromptTokens).toBe(48_000);
+    expect(resolveLcmSummaryWorkerConfig({})).toMatchObject({
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+      maxPromptTokens: 48_000
+    });
   });
 
   it("resolves conservative default cadence", () => {
@@ -1281,7 +1283,7 @@ describe("LCM summary background service", () => {
           client: new MemoryApiClient({ apiUrl, apiToken: "cmt_test" }),
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "/repo/koed",
+          projectId: "/repo/koed",
           teamWorkspaceId,
           limit: 10,
           config: {
@@ -1305,7 +1307,7 @@ describe("LCM summary background service", () => {
           expect.objectContaining({
             retrieval_scope: "personal",
             team_workspace_id: teamWorkspaceId,
-            workspace_id: "/repo/koed"
+            project_id: "/repo/koed"
           })
         ])
       );
@@ -1329,7 +1331,7 @@ describe("LCM summary background service", () => {
             event: {
               id: eventId,
               sessionId,
-              workspaceId: "/repo/koed",
+              projectId: "/repo/koed",
               visibility: "personal"
             }
           })
@@ -1427,7 +1429,7 @@ describe("LCM summary background service", () => {
     const client = new MemoryApiClient({ apiUrl, apiToken: "cmt_test" });
 
     await client.capturePersonalEvent({
-      workspaceId: "/repo/koed",
+      projectId: "/repo/koed",
       sessionId,
       actor: "user",
       eventType: "user_prompt",
@@ -1468,7 +1470,7 @@ describe("LCM summary background service", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "project",
-          workspaceId: "/repo/koed",
+          projectId: "/repo/koed",
           limit: 10,
           config: {
             ...resolveMemoryAnswerWorkerConfig({

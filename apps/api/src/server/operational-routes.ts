@@ -536,6 +536,25 @@ export const registerOperationalRoutes = (
       return null;
     }
   };
+  const pdsRelayCapability = async () => {
+    const secureKeyProvider = context.personalDeviceSync.secureKeyProvider;
+    if (
+      !context.personalDeviceSync.authoritySigner ||
+      !secureKeyProvider ||
+      (secureKeyProvider.isReady && !(await secureKeyProvider.isReady()))
+    ) {
+      return "unavailable" as const;
+    }
+    try {
+      const repository = requireRepository();
+      await repository.getPdsRelayOperationalStatus();
+      return (await repository.isPdsWorkerReady())
+        ? ("available" as const)
+        : ("unavailable" as const);
+    } catch {
+      return "unavailable" as const;
+    }
+  };
   const crossIdentitySyncCapability = async () => {
     if (
       applicationLayerEncryptionCapability(
@@ -729,7 +748,15 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: await crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability(),
+        conversationSourceReplication:
+          applicationLayerEncryptionCapability(
+            options.envelopeEncryptionProvider
+          ) === "unavailable"
+            ? "unavailable"
+            : "available",
+        teamCollaborationEnabled: config.teamCollaborationEnabled,
+        personalDeviceSync: await pdsRelayCapability()
       },
       "public"
     )
@@ -740,7 +767,7 @@ export const registerOperationalRoutes = (
     const query = capabilitiesAuthenticatedQuerySchema.parse(request.query);
     let entitlement: CommercialEntitlementInput | null = null;
     let billing: CommercialBillingInput | null = null;
-    if (query.teamId) {
+    if (query.teamId && config.teamCollaborationEnabled) {
       const repo = requireRepository();
       const gate = await repo.getTeamEntitlementGate(
         { userId: user.id },
@@ -775,7 +802,15 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: await crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability(),
+        conversationSourceReplication:
+          applicationLayerEncryptionCapability(
+            options.envelopeEncryptionProvider
+          ) === "unavailable"
+            ? "unavailable"
+            : "available",
+        teamCollaborationEnabled: config.teamCollaborationEnabled,
+        personalDeviceSync: await pdsRelayCapability()
       },
       "authenticated",
       entitlement,
@@ -1037,6 +1072,15 @@ export const registerOperationalRoutes = (
       Boolean(config.ops.alertWebhookToken)
     );
     try {
+      const relay = await repo.getPdsRelayOperationalStatus();
+      components.pdsRelay = {
+        status: relay.transports.expired > 0 ? "degraded" : "ok",
+        details: { ...relay }
+      };
+    } catch {
+      components.pdsRelay = { status: "error" };
+    }
+    try {
       const sync = await repo.getCrossIdentitySyncOperationalStatus();
       components.crossIdentitySync = {
         status:
@@ -1278,7 +1322,7 @@ export const registerOperationalRoutes = (
     const event = await capturePersonalEvent({
       repository: repo,
       requesterContext,
-      workspaceId: "koed-self-hosted-console",
+      projectId: "koed-self-hosted-console",
       actor: "user",
       eventType: "console_smoke_test",
       content,

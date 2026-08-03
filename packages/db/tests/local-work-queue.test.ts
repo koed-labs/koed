@@ -144,6 +144,9 @@ describe("local work queue repository", () => {
       expect.stringContaining("set status = 'completed'"),
       [1, "lock-1"]
     );
+    expect(String(pool.query.mock.calls[0]?.[0] ?? "")).toContain(
+      "last_error = null"
+    );
     expect(pool.query).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining("set status = case when $3::boolean"),
@@ -219,6 +222,61 @@ describeDb("local work queue priority integration", () => {
         queueName
       ]);
       await pool.end();
+    }
+  });
+
+  it("excludes concurrent local queue runtimes and requeues interrupted work immediately", async () => {
+    const firstPool = createDbPool();
+    const secondPool = createDbPool();
+    const firstRepository = createLocalWorkQueueRepository(firstPool);
+    const secondRepository = createLocalWorkQueueRepository(secondPool);
+    const queueName = `restart-${randomUUID()}`;
+    let firstLease: Awaited<
+      ReturnType<typeof firstRepository.tryAcquireRuntimeLease>
+    > | null = null;
+    let replacementLease: Awaited<
+      ReturnType<typeof secondRepository.tryAcquireRuntimeLease>
+    > | null = null;
+    try {
+      await firstRepository.enqueue({
+        queueName,
+        jobName: "interrupted",
+        data: {},
+        maxAttempts: 1
+      });
+      const interrupted = await firstRepository.claim({
+        queueName,
+        leaseMs: 600_000
+      });
+      expect(interrupted?.attemptCount).toBe(1);
+
+      firstLease = await firstRepository.tryAcquireRuntimeLease();
+      expect(firstLease).not.toBeNull();
+      await expect(
+        secondRepository.tryAcquireRuntimeLease()
+      ).resolves.toBeNull();
+
+      await firstLease?.release();
+      firstLease = null;
+      replacementLease = await secondRepository.tryAcquireRuntimeLease();
+      expect(replacementLease).not.toBeNull();
+      await expect(replacementLease?.requeueAbandonedJobs()).resolves.toBe(1);
+
+      const retried = await secondRepository.claim({
+        queueName,
+        leaseMs: 600_000
+      });
+      expect(retried?.jobName).toBe("interrupted");
+      expect(retried?.attemptCount).toBe(1);
+    } finally {
+      await firstLease?.release();
+      await replacementLease?.release();
+      await firstPool.query(
+        "delete from local_work_queue where queue_name = $1",
+        [queueName]
+      );
+      await firstPool.end();
+      await secondPool.end();
     }
   });
 });

@@ -29,7 +29,7 @@ export interface MemoryQuestionRepository {
       origin?: MemoryQuestionOrigin;
       retrievalScope?: MemoryQuestionRetrievalScope;
       searchDomain: MemoryQuestionSearchDomain;
-      workspaceId?: string;
+      projectId?: string;
       projectName?: string;
       projectPath?: string;
       sessionId?: string;
@@ -45,7 +45,7 @@ export interface MemoryQuestionRepository {
       origin?: MemoryQuestionOrigin;
       retrievalScope?: MemoryQuestionRetrievalScope;
       searchDomain: MemoryQuestionSearchDomain;
-      workspaceId?: string;
+      projectId?: string;
       projectName?: string;
       projectPath?: string;
       sessionId?: string;
@@ -74,7 +74,7 @@ export interface MemoryQuestionRepository {
       query?: string;
       searchDomain?: MemoryQuestionSearchDomain;
       status?: MemoryQuestionStatus;
-      workspaceId?: string;
+      projectId?: string;
       sessionId?: string;
       limit?: number;
       offset?: number;
@@ -135,7 +135,7 @@ type MemoryQuestionShellRow = {
   origin: MemoryQuestionOrigin;
   retrieval_scope: MemoryQuestionRetrievalScope;
   search_domain: MemoryQuestionSearchDomain;
-  workspace_id: string | null;
+  project_id: string | null;
   project_name: string | null;
   project_path: string | null;
   session_id: string | null;
@@ -241,7 +241,7 @@ const mapMemoryQuestionShell = (
   origin: row.origin,
   retrievalScope: row.retrieval_scope,
   searchDomain: row.search_domain,
-  workspaceId: row.workspace_id,
+  projectId: row.project_id,
   projectName: row.project_name,
   projectPath: row.project_path,
   sessionId: row.session_id,
@@ -479,7 +479,7 @@ export const createMemoryQuestionRepository = (
           origin,
           retrieval_scope,
           search_domain,
-          workspace_id,
+          project_id,
           project_name,
           project_path,
           session_id,
@@ -491,7 +491,7 @@ export const createMemoryQuestionRepository = (
         values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         returning
           id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-          workspace_id, project_name, project_path, session_id, thread_id,
+          project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, local_memory_worker_config,
           response, status, created_at, updated_at, answered_at,
@@ -504,7 +504,7 @@ export const createMemoryQuestionRepository = (
             input.origin ?? "explorer",
             input.retrievalScope ?? "personal",
             input.searchDomain,
-            input.workspaceId ?? null,
+            input.projectId ?? null,
             input.projectName ?? null,
             input.projectPath ?? null,
             input.sessionId ?? null,
@@ -565,7 +565,7 @@ export const createMemoryQuestionRepository = (
           origin,
           retrieval_scope,
           search_domain,
-          workspace_id,
+          project_id,
           project_name,
           project_path,
           session_id,
@@ -591,7 +591,7 @@ export const createMemoryQuestionRepository = (
         )
         returning
           id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-          workspace_id, project_name, project_path, session_id, thread_id,
+          project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, local_memory_worker_config,
           response, status, created_at, updated_at, answered_at,
@@ -604,7 +604,7 @@ export const createMemoryQuestionRepository = (
             input.origin ?? "explorer",
             input.retrievalScope ?? "personal",
             input.searchDomain,
-            input.workspaceId ?? null,
+            input.projectId ?? null,
             input.projectName ?? null,
             input.projectPath ?? null,
             input.sessionId ?? null,
@@ -719,7 +719,7 @@ export const createMemoryQuestionRepository = (
           `
           select
             id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-            workspace_id, project_name, project_path, session_id, thread_id,
+            project_id, project_name, project_path, session_id, thread_id,
             thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
             error_message, status, created_at, updated_at, answered_at,
             processing_started_at, processing_lease_until, attempt_count,
@@ -729,7 +729,7 @@ export const createMemoryQuestionRepository = (
           where owner_user_id = $1
             and visibility = 'personal'
             and ($2::memory_search_domain is null or search_domain = $2)
-            and ($3::text is null or workspace_id = $3)
+            and ($3::text is null or project_id = $3)
             and ($4::uuid is null or session_id = $4)
             and ($8::memory_question_status is null or status = $8)
             and (
@@ -746,7 +746,7 @@ export const createMemoryQuestionRepository = (
           [
             actor.userId,
             input.searchDomain ?? null,
-            input.workspaceId ?? null,
+            input.projectId ?? null,
             input.sessionId ?? null,
             queryText,
             rawLimit,
@@ -795,7 +795,7 @@ export const createMemoryQuestionRepository = (
         `
         select
           id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-          workspace_id, project_name, project_path, session_id, thread_id,
+          project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
           error_message, status, created_at, updated_at, answered_at,
           processing_started_at, processing_lease_until, attempt_count,
@@ -805,7 +805,7 @@ export const createMemoryQuestionRepository = (
         where owner_user_id = $1
           and visibility = 'personal'
           and ($2::memory_search_domain is null or search_domain = $2)
-          and ($3::text is null or workspace_id = $3)
+          and ($3::text is null or project_id = $3)
           and ($4::uuid is null or session_id = $4)
           and ($8::memory_question_status is null or status = $8)
           and (
@@ -822,7 +822,7 @@ export const createMemoryQuestionRepository = (
         [
           actor.userId,
           input.searchDomain ?? null,
-          input.workspaceId ?? null,
+          input.projectId ?? null,
           input.sessionId ?? null,
           searchText,
           limit,
@@ -873,7 +873,7 @@ export const createMemoryQuestionRepository = (
         returning
           question.id, question.owner_user_id,
           question.visibility, question.origin, question.retrieval_scope, question.search_domain,
-          question.workspace_id, question.project_name, question.project_path,
+          question.project_id, question.project_name, question.project_path,
           question.session_id, question.thread_id, question.thread_name,
           question.query, question.answer_markdown, question.error_message,
           question.evidence, question.citations, question.retrieval,
@@ -904,7 +904,7 @@ export const createMemoryQuestionRepository = (
         `
         select
           id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-          workspace_id, project_name, project_path, session_id, thread_id,
+          project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, local_memory_worker_config,
           response, status,
@@ -975,7 +975,7 @@ export const createMemoryQuestionRepository = (
           )
         returning
           id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-          workspace_id, project_name, project_path, session_id, thread_id,
+          project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, local_memory_worker_config,
           response, status,

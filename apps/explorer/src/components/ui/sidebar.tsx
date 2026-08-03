@@ -3,20 +3,22 @@ import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
 import { PanelLeftCloseIcon, PanelLeftIcon } from "lucide-react";
 import * as React from "react";
-import { cn } from "~/lib/cn";
-import { Button } from "~/components/ui/button";
-import { Input } from "~/components/ui/input";
-import { ScrollArea } from "~/components/ui/scroll-area";
-import { Separator } from "~/components/ui/separator";
 import {
+  Button,
+  cn,
+  Input,
+  ScrollArea,
+  Separator,
   Sheet,
   SheetDescription,
   SheetHeader,
   SheetPopup,
-  SheetTitle
-} from "~/components/ui/sheet";
-import { Skeleton } from "~/components/ui/skeleton";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+  SheetTitle,
+  Skeleton,
+  Tooltip,
+  TooltipPopup,
+  TooltipTrigger
+} from "@koed/ui";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import {
   finiteNumberLocalStorageCodec,

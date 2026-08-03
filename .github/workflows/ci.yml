@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_DB: koed
           POSTGRES_USER: koed
@@ -80,10 +80,13 @@ jobs:
       - name: Check DB migration files
         run: pnpm db:migrate:check
 
-      - name: Smoke DB migrations
+      - name: Run DB migration acceptance matrix
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
-        run: pnpm db:migrate:smoke
+          KOED_CI_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          PG_DUMP_BIN: .github/scripts/pg-dump-service.sh
+          PG_RESTORE_BIN: .github/scripts/pg-restore-service.sh
+        run: pnpm db:migrate:acceptance
 
       - name: Lint
         run: pnpm lint
@@ -100,6 +103,12 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
           KOED_TEST_REDIS_URL: redis://127.0.0.1:6379
         run: pnpm test
+
+      - name: Enforce required non-empty test suites
+        env:
+          DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+          REDIS_URL: redis://127.0.0.1:6379
+        run: pnpm test:required-suites
 
   build:
     name: Build

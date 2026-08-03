@@ -30,6 +30,10 @@ import {
 import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
+import {
+  applyActiveRuntimeUrls,
+  readActiveRuntimeState
+} from "./runtime-state.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 export interface KoedServerSetupCodexResult {
@@ -51,88 +55,6 @@ type SpawnSyncLike = (
   args: string[],
   options?: Parameters<typeof nodeSpawnSync>[2]
 ) => SpawnSyncReturns<string>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const validHttpUrl = (value: unknown): value is string => {
-  if (typeof value !== "string") return false;
-  try {
-    return ["http:", "https:"].includes(new URL(value).protocol);
-  } catch {
-    return false;
-  }
-};
-
-const validProcessMap = (value: unknown): boolean =>
-  value === undefined ||
-  (isRecord(value) &&
-    Object.values(value).every(
-      (pid) => typeof pid === "number" && Number.isInteger(pid) && pid >= 0
-    ));
-
-const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
-  if (!isRecord(value)) return false;
-  const validRuntimeMode =
-    value.runtimeMode === undefined ||
-    value.runtimeMode === "local-personal" ||
-    value.runtimeMode === "external" ||
-    value.runtimeMode === "developer";
-  const validDependencyMode =
-    value.dependencyMode === undefined ||
-    value.dependencyMode === "bundled-local" ||
-    value.dependencyMode === "external";
-  return (
-    typeof value.pid === "number" &&
-    Number.isInteger(value.pid) &&
-    value.pid > 0 &&
-    typeof value.startedAt === "string" &&
-    !Number.isNaN(Date.parse(value.startedAt)) &&
-    typeof value.repoRoot === "string" &&
-    Boolean(value.repoRoot.trim()) &&
-    validHttpUrl(value.apiUrl) &&
-    validHttpUrl(value.explorerUrl) &&
-    Array.isArray(value.services) &&
-    value.services.every((service) => typeof service === "string") &&
-    validRuntimeMode &&
-    validDependencyMode &&
-    validProcessMap(value.processes)
-  );
-};
-
-const readRuntimeState = (
-  path: string,
-  readFileSync: typeof nodeReadFileSync = nodeReadFileSync
-): KoedServerRuntimeState | null => {
-  try {
-    const parsed: unknown = JSON.parse(String(readFileSync(path, "utf8")));
-    return validRuntimeState(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-};
-
-const readActiveRuntimeState = (
-  path: string,
-  readFileSync: typeof nodeReadFileSync,
-  checkPid: (pid: number) => boolean
-): KoedServerRuntimeState | null => {
-  const runtime = readRuntimeState(path, readFileSync);
-  return runtime && checkPid(runtime.pid) ? runtime : null;
-};
-
-const applyActiveRuntimeUrls = (
-  environment: NodeJS.ProcessEnv,
-  runtime: KoedServerRuntimeState | null
-): NodeJS.ProcessEnv => ({
-  ...environment,
-  ...(runtime?.apiUrl && !environment.MEMORY_API_URL
-    ? { MEMORY_API_URL: runtime.apiUrl }
-    : {}),
-  ...(runtime?.explorerUrl && !environment.KOED_EXPLORER_URL
-    ? { KOED_EXPLORER_URL: runtime.explorerUrl }
-    : {})
-});
 
 export interface KoedServerSetupOptions {
   environment?: NodeJS.ProcessEnv;
@@ -194,38 +116,19 @@ const configureCodexIntegration = ({
   const appServerBinary = environment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
   const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
   const codexConfigPath = resolve(
-    environment.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
+    environment.CODEX_CONFIG_PATH ??
+      `${environment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
   );
-  const hookConfigPath = resolve(
-    environment.MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed/config.json`
-  );
-  const hookRequestTimeoutMs = Number.parseInt(
-    environment.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS ?? "1500",
-    10
-  );
-
-  mkdirSync(dirname(hookConfigPath), { recursive: true, mode: 0o700 });
-  writeFileSync(
-    hookConfigPath,
-    `${JSON.stringify(
-      {
-        apiUrl,
-        apiToken,
-        captureEnabled: true,
-        requestTimeoutMs:
-          Number.isFinite(hookRequestTimeoutMs) && hookRequestTimeoutMs > 0
-            ? hookRequestTimeoutMs
-            : 1500
-      },
-      null,
-      2
-    )}\n`,
-    { mode: 0o600 }
-  );
-
   const markerStart = "# >>> koed";
   const markerEnd = "# <<< koed";
-  const hookCommand = `${nodeCommand} ${runtime.captureHook} --config ${hookConfigPath}`;
+  const hookCommand = [
+    nodeCommand,
+    runtime.captureHook,
+    "--koed-home",
+    paths.koedHome
+  ]
+    .map(tomlString)
+    .join(" ");
   const hookEvents = [
     ["SessionStart", 10],
     ["UserPromptSubmit", 10],
@@ -278,8 +181,7 @@ ${markerEnd}
       `Detected API URL: ${apiUrl}`,
       `Detected Node command: ${nodeCommand}`,
       `Detected Codex app-server binary: ${appServerBinary}`,
-      `Wrote Codex MCP config: ${codexConfigPath}`,
-      `Wrote Capture Hook config: ${hookConfigPath}`
+      `Wrote Codex MCP config: ${codexConfigPath}`
     ].join("\n")
   };
 };

@@ -92,9 +92,31 @@ binary path when needed; the default is correct for normal Codex installs.
 
 The Transcript Watcher owns automatic-capture correctness for externally managed Codex Conversations. `koed-server` supervises the `@koed/mcp-server` command `watch-codex-transcripts` after its startup readiness check when a local API Token is available; the watcher keeps retrying through bounded rescans if the API is still recovering. It stops the watcher before the API. Developer and local-personal runtime modes enable it by default; external runtime mode requires `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` explicitly.
 
-By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when `CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default with a platform path-delimited list of explicit transcript roots. It combines filesystem notification hints with bounded 15-second rescans, so unsupported or missed notifications do not create permanent gaps.
+By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when
+`CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default
+with a platform path-delimited list of explicit transcript roots. Filesystem
+notifications enqueue the exact changed transcript ahead of other work.
+Supported Capture Hook signals coalesce additional wakeups without carrying
+content. Known active transcripts are serviced before bounded discovery, and
+discovery traverses timestamped Codex paths newest-first. The watcher does not
+poll: a missed filesystem notification is recovered by the next Hook signal,
+source event, explicit verification, or process restart through the same
+idempotent source cursor.
 
-The TypeScript Supported Capture Hook remains the low-latency signal and high-confidence completion-evidence path. It uses the same `MEMORY_API_URL` and `MEMORY_API_TOKEN` values as the MCP Server and Transcript Watcher. A Hook invocation writes a content-free local wake hint; missing, duplicate, delayed, or reordered Hook signals cannot gap or duplicate capture. Transcript JSONL, not Hook payload content, remains the source of truth.
+The TypeScript Supported Capture Hook is only a low-latency signal. It receives
+no API credentials and reads only bounded source-routing and lifecycle fields
+from stdin. Ordinary events write a private timestamp wake hint. `Stop` and
+`SubagentStop` additionally write an atomic boundary timestamp under hashed
+session/path identities together with the exact complete JSONL byte frontier
+observed by the Hook. The matching watcher journals through that frontier,
+persists one idempotent `codex-hook-signal-v1` lifecycle control for the active
+transcript turn, and only then processes newer bytes. The control is
+content-free and cannot render or embed by itself. No prompt, response, tool
+payload, raw path, or session identifier is retained in the signal files.
+Missing signals can delay a fallback turn seal until later transcript evidence
+arrives; duplicate, delayed, or reordered signals cannot seal a later frontier
+or create duplicate content. Transcript JSONL remains the only content,
+provider item identity, and chronology source of truth.
 
 If you install the package binary, use:
 
@@ -119,48 +141,46 @@ SubagentStart
 SubagentStop
 ```
 
-`SubagentStop` captures from Codex's child `agent_transcript_path` when present, so thread-spawned subagent final messages are stored under the child conversation instead of the parent conversation.
+Parent and child transcripts are discovered independently. Provider session metadata in each journaled transcript preserves child identity and parent linkage; Hook payload paths are never trusted as content locations.
 
-Capture Hook settings:
+Discovery registers a transcript through one local API-token-authenticated
+operation. Koed applies Capture Policy and atomically converges the Personal
+Captured Session with its source-journal artifact before any segment can be
+consumed. Capture Hook invocations only wake the watcher; they neither submit
+content nor create Captured Sessions themselves.
+
+Transcript Watcher settings:
 
 ```text
-MEMORY_HOOK_STRICT=false
-MEMORY_HOOK_API_REQUEST_TIMEOUT_MS=1500
-MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD=3
-MEMORY_HOOK_BREAKER_COOLDOWN_MS=60000
-MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES=4000000
-MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS=60000
-MEMORY_HOOK_TRIGGER_LCM_SUMMARY=true
-MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=10000
-MEMORY_HOOK_LCM_SUMMARY_LIMIT=2
-MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
+MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true
+MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS=200
+MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN=4000
+MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN=200
+MEMORY_CODEX_TRANSCRIPT_MAX_BYTES_PER_BATCH=1048576
 ```
 
 ## Experimental Koed-managed threads
 
 The MCP package also exports a local `CodexManagedConversationSession` for the
 app-server-first ingestion experiment. It owns a persistent stdio app-server
-thread, stores completed typed items promptly, and reconciles the generated
-JSONL rollout into the same canonical records before sealing each turn. It can
+thread and journals generated JSONL before consuming it into the same canonical
+records and sealing each turn. It can
 resume an existing provider thread and Koed Captured Session after restart.
 Its isolated Codex home is durable under `KOED_HOME`; the rollout and atomic
-ingestion checkpoint must be retained for the managed Captured Session's
+database-backed journal consumer cursor must be retained for the managed Captured Session's
 lifetime and removed only through explicit managed-home cleanup.
 An exclusive process lease prevents concurrent coordinators from using the same
 home and includes operating-system process-start identity so PID reuse cannot
 adopt a stale lease. Managed subagent `thread/started` events create linked
 child Captured Sessions and reconcile each child rollout separately. Normal
-shutdown releases the lease without deleting the rollout. Hook
-signals also capture a transcript byte boundary: foreground and detached reads
-cannot consume a later turn that happened to be appended while processing the
-signal. `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES` bounds synchronous
-history scanning; remaining exact pages are handled by detached catch-up.
+shutdown releases the lease without deleting the rollout. Managed terminal
+boundaries are held until their journaled records project successfully, so a
+later turn cannot be folded into an earlier seal.
 
 There is no Desktop or Explorer entry point for this experiment. It does not
 attach to external Codex processes and does not replace the supported Transcript
 Watcher. Existing Codex CLI and native-app conversations are captured from
-transcript growth; Capture Hook signals provide low-latency wakeups and
-completion evidence.
+transcript growth; Capture Hook signals only reduce watcher latency.
 
 Codex hook configuration should include `Stop` as well as prompt/tool hooks. If
 Codex asks you to review or trust changed hooks after editing `config.toml`,
@@ -180,8 +200,10 @@ Verify the local Capture Hook from the checkout:
 MEMORY_API_URL=http://localhost:3300 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
 ```
 
-This command enables personal capture, invokes the same TypeScript Capture Hook
-with a fresh session marker, and searches Koed for the captured marker. After
+This command starts an isolated Transcript Watcher, writes a fresh Codex JSONL
+fixture, invokes the same content-free TypeScript Capture Hook signals, and
+requires a separately embedded user event plus one embedded agent-turn bundle
+containing the tool call, tool result, and final response. After
 that, start a fresh Codex session and ask it to check memory access through the
 `koed-selfhost` MCP server.
 

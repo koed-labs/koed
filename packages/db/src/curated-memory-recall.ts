@@ -92,13 +92,13 @@ export const createCuratedMemoryRecallMethods = ({
                   select 1
                   from (${scopedEvidenceSql}) scoped_source
                   where $5 in (
-                    scoped_source.ci_workspace_id,
-                    scoped_source.ci_stable_workspace_id,
-                    scoped_source.ci_workspace_path,
-                    scoped_source.me_workspace_id,
-                    scoped_source.me_workspace_path,
-                    scoped_source.node_workspace_id,
-                    scoped_source.node_workspace_path
+                    scoped_source.ci_project_id,
+                    scoped_source.ci_stable_project_id,
+                    scoped_source.ci_project_path,
+                    scoped_source.me_project_id,
+                    scoped_source.me_project_path,
+                    scoped_source.node_project_id,
+                    scoped_source.node_project_path
                   )
                 )
               )
@@ -113,7 +113,7 @@ export const createCuratedMemoryRecallMethods = ({
           currentOnly,
           input.searchDomain ?? "global",
           input.sessionId ?? null,
-          input.workspaceId ?? null,
+          input.projectId ?? null,
           input.sourceAfter ?? null,
           input.sourceBefore ?? null
         ]
@@ -192,13 +192,13 @@ export const createCuratedMemoryRecallMethods = ({
                 select 1
                 from (${scopedEvidenceSql}) scoped_source
                 where $6 in (
-                  scoped_source.ci_workspace_id,
-                  scoped_source.ci_stable_workspace_id,
-                  scoped_source.ci_workspace_path,
-                  scoped_source.me_workspace_id,
-                  scoped_source.me_workspace_path,
-                  scoped_source.node_workspace_id,
-                  scoped_source.node_workspace_path
+                  scoped_source.ci_project_id,
+                  scoped_source.ci_stable_project_id,
+                  scoped_source.ci_project_path,
+                  scoped_source.me_project_id,
+                  scoped_source.me_project_path,
+                  scoped_source.node_project_id,
+                  scoped_source.node_project_path
                 )
               )
             )
@@ -214,7 +214,7 @@ export const createCuratedMemoryRecallMethods = ({
         patterns,
         input.searchDomain ?? "global",
         input.sessionId ?? null,
-        input.workspaceId ?? null,
+        input.projectId ?? null,
         positiveLimit(input.limit, 10),
         input.sourceAfter ?? null,
         input.sourceBefore ?? null
@@ -303,7 +303,7 @@ export const createCuratedMemoryRecallMethods = ({
         content?: string;
         contentEncrypted?: boolean;
         metadata?: Record<string, unknown>;
-        workspaceId?: string;
+        projectId?: string;
       } | null;
       me_created_at: Date | null;
       me_captured_at: Date | null;
@@ -450,9 +450,9 @@ export const createCuratedMemoryRecallMethods = ({
         });
         sources.push({
           id: row.conversation_item_id,
-          workspaceId:
-            typeof row.ci_metadata?.workspaceId === "string"
-              ? row.ci_metadata.workspaceId
+          projectId:
+            typeof row.ci_metadata?.projectId === "string"
+              ? row.ci_metadata.projectId
               : typeof row.ci_metadata?.projectPath === "string"
                 ? row.ci_metadata.projectPath
                 : "curated-memory",
@@ -523,9 +523,9 @@ export const createCuratedMemoryRecallMethods = ({
         });
         sources.push({
           id: row.memory_event_id,
-          workspaceId:
-            typeof payload?.workspaceId === "string"
-              ? payload.workspaceId
+          projectId:
+            typeof payload?.projectId === "string"
+              ? payload.projectId
               : "curated-memory",
           sessionId: row.me_session_id,
           turnId: row.me_turn_id,
@@ -582,7 +582,7 @@ export const createCuratedMemoryRecallMethods = ({
         });
         sources.push({
           id: row.lcm_node_id,
-          workspaceId: "curated-memory",
+          projectId: "curated-memory",
           sessionId: null,
           turnId: null,
           actor: "agent",

@@ -1,4 +1,5 @@
 import type { MemorySourceRepository } from "@koed/db";
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { createRawProjectionService } from "./raw-projection-service.js";
 
@@ -67,15 +68,18 @@ const serviceOptions = (repository: MemorySourceRepository) => ({
   getHistoricalAdmissionHealth: vi.fn().mockResolvedValue(healthy),
   recoverProjectedMemoryEventProcessing: vi.fn().mockResolvedValue(0),
   historicalImport: batchConfig,
-  intervalMs: 1_000,
   logger: logger() as ReturnType<typeof logger> &
     Parameters<typeof createRawProjectionService>[0]["logger"],
-  repository
+  repository,
+  wakePool: undefined as
+    | Parameters<typeof createRawProjectionService>[0]["wakePool"]
+    | undefined
 });
 
 const withProjectionDefaults = (repository: Record<string, unknown>) =>
   ({
     getConversationProjectionBacklog: vi.fn().mockResolvedValue(emptyBacklog),
+    getNextSemanticMemoryRebuildDueAt: vi.fn().mockResolvedValue(null),
     listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([]),
     listHistoricalImportSourcesNeedingLcmFinalization: vi
       .fn()
@@ -85,6 +89,38 @@ const withProjectionDefaults = (repository: Record<string, unknown>) =>
   }) as unknown as MemorySourceRepository;
 
 describe("raw projection service", () => {
+  it("runs on startup and database notifications without interval polling", async () => {
+    const repository = withProjectionDefaults({
+      listConversationProjectionActors: vi.fn().mockResolvedValue([]),
+      listSemanticMemoryRebuildActors: vi.fn().mockResolvedValue([])
+    });
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn().mockResolvedValue({}),
+      release: vi.fn()
+    });
+    const options = serviceOptions(repository);
+    options.wakePool = {
+      connect: vi.fn().mockResolvedValue(client)
+    };
+    const service = createRawProjectionService(options);
+
+    service.start();
+    await vi.waitFor(() => {
+      expect(client.query).toHaveBeenCalledWith("listen koed_projection_work");
+      expect(repository.listConversationProjectionActors).toHaveBeenCalled();
+    });
+    vi.mocked(repository.listConversationProjectionActors).mockClear();
+
+    client.emit("notification", { channel: "koed_projection_work" });
+    await vi.waitFor(() => {
+      expect(repository.listConversationProjectionActors).toHaveBeenCalled();
+    });
+
+    await service.stop();
+    expect(client.query).toHaveBeenCalledWith("unlisten koed_projection_work");
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
   it("enqueues independent jobs according to projection flags", async () => {
     const repository = withProjectionDefaults({
       listConversationProjectionActors: vi
@@ -332,6 +368,7 @@ const createHistoricalRepository = () => ({
     historicalImportBytes: 1000,
     interactiveQuestionRows: 0
   }),
+  getNextSemanticMemoryRebuildDueAt: vi.fn().mockResolvedValue(null),
   listConversationProjectionActors: vi.fn(({ limit, workClass }) =>
     Promise.resolve(
       (workClass === "live_capture_projection"
@@ -360,7 +397,6 @@ const createHistoricalService = (
     repository as unknown as MemorySourceRepository
   );
   options.batchLimit = 1000;
-  options.intervalMs = 60_000;
   options.getHistoricalAdmissionHealth = vi.fn().mockResolvedValue(health);
   const service = createRawProjectionService(options);
   return { service, repository, options };
