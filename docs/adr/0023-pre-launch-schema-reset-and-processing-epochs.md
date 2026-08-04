@@ -58,7 +58,7 @@ These terms are architecture mechanics, not new User-facing product language, so
 
 ### Reset first-release names
 
-Koed will still reset alpha-era externally consumed payload and user-memory processing labels to clean release-V1 baselines before first external release. This includes the active canonical conversation JSON envelope, public capability schema, Projection display label, LCM processing display label, embedding display label, and retrieval/reranking display label.
+Koed will still reset alpha-era externally consumed payload and user-memory processing labels to clean release-V1 baselines before first external release. This includes the active canonical conversation JSON envelope, public capability schema, Projection display label, LCM processing display label, embedding display label, and retrieval/reranking display label. Release capability V1 must carry forward all current capability-schema-6 collaboration, shared-memory, and realtime semantics; reset naming never drops a current capability gate or consumer.
 
 Already coherent first-version contracts remain V1 and are not renumbered, including HTTP route namespace V1, `lcm-semantic-summary-v1`, Directed Hosted Cross-Identity Sync V1, frozen `koed/pds/v1`, source adapter V1 contracts, encryption envelope versions, package schemas, and log schemas.
 
@@ -91,7 +91,7 @@ Koed keeps separate ownership and upgrade rules for:
 - processing compatibility identities and generation sets;
 - cryptographic epochs such as PDS `current_epoch`.
 
-No global application version replaces those namespaces. PDS governance is separate canonical security, identity, consent, and lifecycle control, not processing state. The frozen `koed/pds/v1` signed manifests and package bytes remain unchanged. V1 uses its implemented fixed operational Authority/Relay host topology; its consolidated persistence baseline is Drizzle migration `0020_zippy_apocalypse`. PDS cryptographic epochs such as `current_epoch` are not Processing epochs.
+No global application version replaces those namespaces. PDS governance is separate canonical security, identity, consent, and lifecycle control, not processing state. Frozen `koed/pds/v1` source manifests and package bytes remain unchanged. Separately signed `koed/pds-artifact/v1` portable artifacts retain their artifact-specific compatibility contracts and hashes; they never alter source bytes. V1 uses its implemented fixed operational Authority/Relay host topology; its consolidated persistence baseline is Drizzle migration `0020_zippy_apocalypse`. PDS cryptographic epochs such as `current_epoch` are not Processing epochs.
 
 ### Deterministic compatibility identities
 
@@ -176,7 +176,7 @@ Rollback must not regress canonical source, deletion floors, revocation state, s
 
 - Directed Hosted Cross-Identity Sync and Personal Device Sync remain distinct protocols.
 - Capability discovery publishes supported source/payload/protocol ranges and coarse derivation readiness.
-- PDS peers do not need matching local processing identities. They need the exact frozen `koed/pds/v1` source/package contract and local derivation readiness. Processing identities and readiness are never added to the signed V1 source manifest or package bytes; capability discovery carries coarse local readiness out of band.
+- PDS peers do not need matching local processing identities to exchange frozen `koed/pds/v1` source packages; processing identities and readiness are never added to signed source-manifest bytes. A receiver reuses separately signed `koed/pds-artifact/v1` Memory Event, embedding, or LCM Node artifacts only after exact validation of that artifact's signed compatibility contract and source binding. Missing or incompatible artifacts are excluded and locally regenerated from canonical source. Capability discovery carries only coarse local readiness out of band.
 - Team sharing changes authorization, not ownership. Any published generation must enforce authorization and lifecycle closure before ranking or expansion.
 
 ### Minimal Operator-visible behavior for V1
@@ -238,6 +238,6 @@ Deferred. It is broader than needed for the minimum no-outage contract and intro
 
 Rejected. Disposable alpha stores should reset, but canonical source, lineage, authorization, lifecycle, encryption, and sync state need an explicit preservation path.
 
-### Replicate derived data across backends
+### Replicate all derived data across backends
 
-Rejected as default. It couples receivers to sender processing identities and conflicts with the local-derivation rule for PDS and Directed Hosted Cross-Identity Sync.
+Rejected as default. It couples receivers to sender processing identities and conflicts with local derivation. PDS portable artifacts remain an explicit exception: only allowlisted, separately signed artifacts with exact source binding and compatibility contracts may be reused; incompatible or unavailable artifacts rebuild locally from canonical source.
