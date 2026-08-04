@@ -95,10 +95,11 @@ const run = (label, command, args, options = {}) => {
 const deploy = (filter, runtimeRoot, to) =>
   run(`Deploy ${filter}`, "pnpm", [
     ...(filter === "@koed/koed-server" ? ["--config.node-linker=hoisted"] : []),
+    "--config.inject-workspace-packages=true",
     "--filter",
     filter,
     "deploy",
-    "--legacy",
+    "--frozen-lockfile",
     "--prod",
     resolve(runtimeRoot, to)
   ]);
@@ -314,9 +315,11 @@ const writeDeterministicTarGz = ({ sourceDir, packageDirName, tarPath }) => {
     if (linkname && Buffer.byteLength(linkname) > 100) {
       pax.linkpath = linkname;
     }
+    let paxEntryIndex;
     if (Object.keys(pax).length > 0) {
       const content = paxContent(pax);
-      const headerPath = `PaxHeaders/${String(paxIndex).padStart(6, "0")}`;
+      paxEntryIndex = String(paxIndex).padStart(6, "0");
+      const headerPath = `PaxHeaders/${paxEntryIndex}`;
       paxIndex += 1;
       blocks.push(
         tarHeader({
@@ -328,7 +331,7 @@ const writeDeterministicTarGz = ({ sourceDir, packageDirName, tarPath }) => {
         padded(content)
       );
     }
-    const headerPath = pax.path ? basename(archivePath) : archivePath;
+    const headerPath = pax.path ? `PaxEntries/${paxEntryIndex}` : archivePath;
     if (entry.type === "directory") {
       blocks.push(
         tarHeader({
