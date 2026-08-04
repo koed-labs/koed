@@ -76,8 +76,8 @@ in this package.
 
 ## License and Attribution
 
-Koed Explorer is licensed under the GNU Affero General Public License version 3
-only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
+Koed Explorer is licensed under the Apache License 2.0 (`Apache-2.0`). See the
+repository [LICENSE](../../LICENSE).
 
 Koed Explorer was forked from and inspired by
 [T3 Code](https://github.com/pingdotgg/t3code), an MIT-licensed project by

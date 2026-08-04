@@ -5,7 +5,7 @@
   "description": "Electron control surface for Koed local personal installs.",
   "author": "Koed",
   "private": true,
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {

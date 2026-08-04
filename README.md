@@ -143,12 +143,13 @@ See [docs/upgrades.md](docs/upgrades.md) for upgrade guidance.
 
 ## License
 
-Koed is licensed under the GNU Affero General Public License version 3 only
-(`AGPL-3.0-only`). See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md),
-and [docs/license.md](docs/license.md). See
+Koed is licensed under the Apache License 2.0 (`Apache-2.0`). See
+[LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and
+[docs/license.md](docs/license.md). Apache-2.0 is also offered for Koed's
+repository history; existing AGPL grants remain valid. See
 [Commercial Feature Boundary](docs/commercial-feature-boundary.md) for the
-launch recommendation on public distribution, Team Self-Hosted, hosted-only
-services, and managed add-ons.
+public distribution, Team Self-Hosted, hosted-only services, and managed
+add-ons.
 
 ## Learn More
 

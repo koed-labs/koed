@@ -66,7 +66,7 @@ Recalled memory evidence plus citation and retrieval metadata handed to an AI cl
 _Avoid_: Answer, summary, search result
 
 **Koed**:
-The AGPL-licensed Koed distribution for operator-managed memory
+The Apache-2.0-licensed Koed distribution for operator-managed memory
 infrastructure.
 _Avoid_: Koed Cloud, hosted Koed, open-source Koed as a separate product name
 
