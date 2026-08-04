@@ -114,14 +114,6 @@ const ValidationApp = () => {
 };
 
 const collaborationFixture = (): CollaborationSnapshot => {
-  const activeTeamPresence = {
-    mode: "auto" as const,
-    manualStatus: "available" as const,
-    activityLevel: "active" as const,
-    lastActivityAt: timestamp,
-    nextTransitionAt: null,
-    preferenceVersion: 1
-  };
   const currentUser = {
     id: uuid(10),
     displayName: maxDisplayName("Mark"),
@@ -132,17 +124,25 @@ const collaborationFixture = (): CollaborationSnapshot => {
     id: uuid(11),
     displayName: maxDisplayName("Alice Chen"),
     presence: "available" as const,
-    membershipState: "enabled" as const,
-    teamPresence: activeTeamPresence
+    membershipState: "enabled" as const
   };
   const teamPrincipal = {
     ...currentUser,
     id: uuid(23)
   };
-  const teamPrincipalWithPresence = {
-    ...teamPrincipal,
-    teamPresence: activeTeamPresence
-  };
+  const teamPerson = (person: typeof currentUser) => ({
+    ...person,
+    teamPresence: {
+      mode: "auto" as const,
+      manualStatus: "available" as const,
+      activityLevel: "active" as const,
+      lastActivityAt: timestamp,
+      nextTransitionAt: new Date(
+        new Date(timestamp).getTime() + 5 * 60_000
+      ).toISOString(),
+      preferenceVersion: 1
+    }
+  });
   const participant = (person: typeof currentUser) => ({
     id: person.id,
     displayName: person.displayName,
@@ -266,7 +266,7 @@ const collaborationFixture = (): CollaborationSnapshot => {
       role: "owner" as const,
       lifecycle: "active" as const,
       unreadCount: teamIndex % 7 === 0 ? 3 : 0,
-      people: [teamPrincipalWithPresence, teammate],
+      people: [teamPerson(teamPrincipal), teamPerson(teammate)],
       directMessages: [],
       workspaces,
       version: 1
@@ -397,7 +397,9 @@ const resultFor = (
               acknowledgedEventId: command.input.eventId,
               subscriptionVersion: command.input.expectedSubscriptionVersion + 1
             }
-          : {};
+          : command.command === "collaboration.report_team_activity"
+            ? { acceptedTeamIds: command.input.teamIds }
+            : {};
   return collaborationCommandResultSchema.parse({
     contractVersion: COLLABORATION_CONTRACT_VERSION,
     requestId: command.requestId,
@@ -415,11 +417,16 @@ const ChatValidationApp = () => {
         const browserWindow = window as Window & {
           __koedBrowserCommandCount?: number;
           __koedBrowserCommands?: string[];
+          __koedBrowserUserCommands?: string[];
         };
-        browserWindow.__koedBrowserCommandCount =
-          (browserWindow.__koedBrowserCommandCount ?? 0) + 1;
         browserWindow.__koedBrowserCommands ??= [];
         browserWindow.__koedBrowserCommands.push(command.command);
+        if (command.command !== "collaboration.report_team_activity") {
+          browserWindow.__koedBrowserUserCommands ??= [];
+          browserWindow.__koedBrowserUserCommands.push(command.command);
+          browserWindow.__koedBrowserCommandCount =
+            browserWindow.__koedBrowserUserCommands.length;
+        }
         if (command.command === "collaboration.select") {
           await new Promise<void>((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(() => resolve()))

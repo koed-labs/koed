@@ -667,6 +667,50 @@ const remoteEvent = (
   update: messageUpdate(eventId, "team")
 });
 
+const remotePresenceEvent = (
+  eventId: string,
+  cursor: string,
+  personId = remotePrincipalA
+) => ({
+  protocolVersion: COLLABORATION_CONTRACT_VERSION,
+  eventId,
+  cursor,
+  type: "team_presence_changed",
+  occurredAt: "2026-07-17T00:01:00.000Z",
+  subscription: { id: remoteSubscriptionId },
+  resource: {
+    scope: "team",
+    type: "team_member_presence",
+    id: personId,
+    teamId: teamA,
+    teamWorkspaceId: null,
+    threadId: null,
+    messageId: null,
+    sharedSessionId: null,
+    shareGrantId: null,
+    logicalMemoryId: null
+  },
+  actor: { principalId: personId },
+  update: {
+    type: "team_person_upserted",
+    teamId: teamA,
+    person: {
+      id: personId,
+      displayName: "Remote member",
+      presence: "away",
+      membershipState: "enabled",
+      teamPresence: {
+        mode: "manual",
+        manualStatus: "do_not_disturb",
+        activityLevel: null,
+        lastActivityAt: null,
+        nextTransitionAt: null,
+        preferenceVersion: 2
+      }
+    }
+  }
+});
+
 const personalOutboxEvent = (
   eventId = eventA,
   cursor = 13
@@ -1726,6 +1770,80 @@ describe("local collaboration realtime broker", () => {
     expect(JSON.stringify(payload)).not.toContain(remoteSubscriptionId);
     expect(onRemoteNavigationInvalidated).toHaveBeenCalledTimes(1);
     expect(onRemoteNavigationInvalidated).toHaveBeenCalledWith("backend-a");
+  });
+
+  it("forwards Team Presence updates through the local edge without requiring a snapshot", async () => {
+    const harness = await createHarness({
+      stream: () =>
+        sseResponse([
+          {
+            event: "collaboration_event",
+            data: remotePresenceEvent(eventA, eventCursorA)
+          }
+        ])
+    });
+    harnesses.push(harness);
+    const { body } = await createSnapshot(harness);
+    await acknowledgeSnapshot(harness, body);
+    const { response } = await openLocalStream(harness, body.subscription.id);
+    const stream = await readStream(response);
+
+    expect(brokerFrames(stream)).toContainEqual(
+      expect.objectContaining({
+        type: "update",
+        family: "team_presence_changed",
+        update: expect.objectContaining({
+          type: "team_person_upserted",
+          teamId: teamA,
+          person: expect.objectContaining({
+            id: remotePrincipalA,
+            presence: "away",
+            teamPresence: expect.objectContaining({
+              mode: "manual",
+              manualStatus: "do_not_disturb",
+              preferenceVersion: 2
+            })
+          })
+        })
+      })
+    );
+    expect(
+      brokerFrames(stream).some(
+        (event) =>
+          event.type === "control" && event.reason === "requires_snapshot"
+      )
+    ).toBe(false);
+  });
+
+  it("rejects Team Presence updates outside the authorized person resource", async () => {
+    const spoofed = remotePresenceEvent(eventA, eventCursorA);
+    spoofed.update.person.id = remotePrincipalB;
+    const harness = await createHarness({
+      stream: () =>
+        sseResponse([
+          {
+            event: "collaboration_event",
+            data: spoofed
+          }
+        ])
+    });
+    harnesses.push(harness);
+    const { body } = await createSnapshot(harness);
+    await acknowledgeSnapshot(harness, body);
+    const { response } = await openLocalStream(harness, body.subscription.id);
+    const frames = brokerFrames(await readStream(response));
+
+    expect(frames.some((frame) => frame.type === "update")).toBe(false);
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: "connection",
+        connection: expect.objectContaining({ state: "unavailable" })
+      })
+    );
+    expect(harness.pool.rows[0]).toMatchObject({
+      remoteCursor: snapshotCursor,
+      lastAcknowledgedEventId: null
+    });
   });
 
   it("accepts the complete remote envelope and preserves Shared Session identity", async () => {

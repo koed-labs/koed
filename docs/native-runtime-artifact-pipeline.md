@@ -72,11 +72,18 @@ The builder verifies each archive by SHA-256, assembles the deterministic `koed-
 
 ## CI
 
-`.github/workflows/ci.yml` uses one macOS job to build the macOS arm64 native runtime on every pull request, extract and validate the completed tarball, upload the runtime artifact, and consume the same extracted runtime in the packaged Desktop native smoke. This release-equivalent macOS path catches relocation, signing, app, and DMG integrity failures before merge without starting a second macOS runner. The Linux x64 native runtime job remains manual because it is expensive and should run on dependency bumps or explicit review; its artifacts target glibc 2.35+ and should be built on Ubuntu 22.04 or an equivalent baseline image.
+`.github/workflows/ci.yml` runs native macOS validation only after static checks, tests, and the normal build succeed. Packaging/runtime-relevant pull requests restore a source-, script-, platform-, architecture-, and Xcode-keyed native payload, regenerate current provenance and checksums, validate it fail closed, and consume it in an unpacked-app packaged Desktop smoke. This path skips DMG/ZIP generation and routine artifact uploads. Documentation-only pull requests do not allocate a macOS runner, and the `full-ci` label forces the app-only smoke when the path policy needs an override.
 
-The uploaded native runtime artifact contains the runtime tarball, sidecar SHA-256, and provenance metadata. CI extracts the completed tarball into a separate temporary directory before validation, which exercises the same relocation boundary as a consumer. For pull requests and manual macOS artifact builds, that job then sets `KOED_NATIVE_RUNTIME_SOURCE_DIR` to the validated extraction, builds unsigned Desktop DMG/ZIP artifacts, runs the full packaged smoke against the built app, and uploads `koed-desktop-macos-arm64-unsigned` for internal testing. Uploading the runtime before Desktop packaging keeps the validated runtime available if a later Desktop step fails. The existing `packaged-desktop-smoke` job remains a separate missing-assets negative smoke and does not set `KOED_NATIVE_RUNTIME_SOURCE_DIR`.
+Pull requests restore the completed native payload without cache-write
+permission. `.github/workflows/native-runtime-cache.yml` is the only native
+payload writer: trusted default-branch push, scheduled, and manual runs restore
+and validate the immutable cache entry, cold-build it on a miss, and save it
+only after validation. Source archives and compiler work directories are not
+shared; the cached unit is the completed `koed-runtime/` tree.
 
-The release workflow uses the same macOS native-runtime and Desktop packaging path when it creates a new GitHub Release, then uploads the unsigned DMG/ZIP and checksum file as release assets. See `docs/desktop-internal-artifacts.md` for artifact download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
+The `changeset-release/main` pull request, weekly schedule, and manual `full` or `clean-install` dispatch use an independent cold native build. CI extracts the completed tarball into a separate temporary directory before validation, which exercises the same relocation boundary as a consumer. That full path builds and verifies the app, DMG, ZIP, and block maps, but does not publish its validation outputs. The Linux x64 native runtime job remains manual because it is expensive and should run on dependency bumps or explicit review; its assets target glibc 2.35+ and should be built on Ubuntu 22.04 or an equivalent baseline image.
+
+The release workflow independently rebuilds the macOS native runtime and Desktop package from the exact merged release commit, uploads the unsigned DMG/ZIP and checksum file, verifies the complete required asset set, and publishes the draft only after validation succeeds. See `docs/ci-validation.md` for the complete tier policy and `docs/desktop-internal-artifacts.md` for release artifact install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
 
 ## Desktop consumption
 

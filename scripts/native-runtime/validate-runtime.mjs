@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  boundedMap,
   collectPlatformBinaries,
   listRuntimeFiles,
   macLoaderIssues
@@ -44,6 +46,46 @@ const run = (command, args, options = {}) => {
     stderr: result.stderr ?? "",
     error: result.error?.message
   };
+};
+
+const execFileAsync = promisify(execFile);
+
+const runAsync = async (command, args, options = {}) => {
+  try {
+    const result = await execFileAsync(command, args, {
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      ...options
+    });
+    return {
+      command: [command, ...args].join(" "),
+      status: 0,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? ""
+    };
+  } catch (error) {
+    return {
+      command: [command, ...args].join(" "),
+      status: error?.code === "ENOENT" ? 1 : (error?.code ?? 1),
+      stdout: error?.stdout ?? "",
+      stderr: error?.stderr ?? "",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+};
+
+const timedPhase = async (timings, label, work) => {
+  console.error(`[native-runtime-validation] ${label} started`);
+  const startedAt = performance.now();
+  try {
+    return await work();
+  } finally {
+    const durationMs = Math.round(performance.now() - startedAt);
+    timings[label] = durationMs;
+    console.error(
+      `[native-runtime-validation] ${label} finished in ${durationMs}ms`
+    );
+  }
 };
 
 const failOnBad = (entry) => {
@@ -93,13 +135,21 @@ const validateExecutables = (runtimeRoot) =>
     ];
   });
 
-const validateMacLoaders = (runtimeRoot) => {
+const validateMacLoaders = async (runtimeRoot) => {
   const runtimeFiles = listRuntimeFiles(runtimeRoot);
-  return collectPlatformBinaries({
+  const binaries = collectPlatformBinaries({
     runtimeRoot,
     platform: "darwin"
-  }).map((file) => {
-    const result = run("otool", ["-L", file]);
+  });
+  const concurrency = Math.max(
+    1,
+    Number.parseInt(
+      process.env.KOED_LOADER_VALIDATION_CONCURRENCY ?? "6",
+      10
+    ) || 6
+  );
+  return boundedMap(binaries, concurrency, async (file) => {
+    const result = await runAsync("otool", ["-L", file]);
     const output = `${result.stdout}\n${result.stderr}`;
     const issues = macLoaderIssues({
       file,
@@ -282,19 +332,36 @@ const validatePackagedProvider = (runtimeRoot) => {
   }
 };
 
-const runValidation = (options) => {
+const runValidation = async (options) => {
   const runtimeRoot = resolve(options.runtimeRoot);
   if (!existsSync(runtimeRoot))
     throw new Error(`runtime root missing: ${runtimeRoot}`);
-  const executables = validateExecutables(runtimeRoot);
+  const timings = {};
+  const executables = await timedPhase(
+    timings,
+    "executable verification",
+    async () => validateExecutables(runtimeRoot)
+  );
   const loaders =
     options.platform === "darwin"
-      ? validateMacLoaders(runtimeRoot)
+      ? await timedPhase(timings, "bounded loader verification", async () =>
+          validateMacLoaders(runtimeRoot)
+        )
       : options.platform === "linux"
-        ? validateLinuxLoaders(runtimeRoot)
+        ? await timedPhase(timings, "loader verification", async () =>
+            validateLinuxLoaders(runtimeRoot)
+          )
         : [];
-  const postgresExtensions = validatePostgresExtensions(runtimeRoot);
-  const packagedProvider = validatePackagedProvider(runtimeRoot);
+  const postgresExtensions = await timedPhase(
+    timings,
+    "PostgreSQL extension verification",
+    async () => validatePostgresExtensions(runtimeRoot)
+  );
+  const packagedProvider = await timedPhase(
+    timings,
+    "packaged provider verification",
+    async () => validatePackagedProvider(runtimeRoot)
+  );
   const errors = [
     ...executables
       .filter((entry) => !entry.ok)
@@ -319,6 +386,7 @@ const runValidation = (options) => {
     loaders,
     postgresExtensions,
     packagedProvider,
+    timings,
     errors
   };
 };
@@ -331,7 +399,7 @@ try {
     );
     process.exit(0);
   }
-  const result = runValidation(options);
+  const result = await runValidation(options);
   if (options.json) console.log(JSON.stringify(result, null, 2));
   else if (!result.ok) console.error(result.errors.join("\n"));
   else console.log("Native runtime validation passed.");

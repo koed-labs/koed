@@ -42,6 +42,8 @@ export interface LocalMemoryAgentFlowSettings {
   concurrency?: number;
   maxPromptTokens?: number;
   appServerBinary: string;
+  modelAvailable: boolean;
+  modelError: string | null;
 }
 
 export interface LocalMemoryAgentModelOption {
@@ -50,6 +52,7 @@ export interface LocalMemoryAgentModelOption {
   model: string;
   label: string;
   description?: string | null;
+  available: boolean;
   isDefault?: boolean;
   defaultReasoningEffort?: string | null;
   supportedReasoningEfforts: Array<{

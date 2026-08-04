@@ -1,13 +1,33 @@
 # License
 
-Koed is licensed under the GNU Affero General Public License version 3 only (`AGPL-3.0-only`). See [../LICENSE](../LICENSE).
+Koed is licensed under the Apache License 2.0 (`Apache-2.0`). See
+[../LICENSE](../LICENSE).
 
-AGPL-3.0-only is an OSI-approved open source license with network copyleft obligations. If someone modifies Koed and makes that modified version available to users over a network, the AGPL requires them to offer those users access to the corresponding source code.
+Koed Labs offers the Koed repository contents and repository history under
+Apache-2.0, including versions previously distributed under `AGPL-3.0-only`.
+This is an additional license grant: existing AGPL licenses and the rights
+already received under them remain valid and are not revoked.
 
-Koed Labs may offer separate commercial licenses for organizations that need different terms, including for proprietary modified SaaS products. Public AGPL recipients keep their AGPL rights for the versions they receive.
+Apache-2.0 is an OSI-approved permissive open source license. It permits use,
+modification, and distribution in source or object form, including in
+proprietary products, subject to its license, notice, attribution, and
+modified-file requirements. It also includes an express patent grant from
+contributors under the terms stated in the license. It does not require
+operators of modified network services to publish their source code.
 
-The product and hosted-service boundary is documented in [Commercial Feature Boundary](commercial-feature-boundary.md). Team Self-Hosted is treated as a self-operated deployment mode, not as a paid boundary by itself.
+The license covers the Koed-authored repository contents unless a file or
+component says otherwise. Third-party software and assets retain their own
+licenses and notices. In particular, Koed Explorer preserves its T3 Code
+upstream MIT notice in
+[Third-Party Notices](../apps/explorer/THIRD_PARTY_NOTICES.md).
 
-Contributor licensing matters for this dual-license model. Koed Labs should accept non-trivial external code contributions only when the contributor has signed terms granting Koed Labs the rights needed to use, modify, sublicense, and relicense the contribution, including under commercial terms. See [../CONTRIBUTING.md](../CONTRIBUTING.md).
+The product and hosted-service boundary is documented in
+[Commercial Feature Boundary](commercial-feature-boundary.md). Team
+Self-Hosted is treated as a self-operated deployment mode, not as a paid
+boundary by itself. Koed Labs may charge for hosted services, support,
+enterprise agreements, managed infrastructure, and other commercial offerings;
+those offerings do not reduce the rights granted for Apache-2.0 releases.
 
-Third-party dependencies keep their own licenses. Koed Labs' commercial licensing terms cannot override obligations imposed by dependency licenses.
+Contributions are handled as described in
+[CONTRIBUTING.md](../CONTRIBUTING.md). Do not submit code or other material that
+you do not have the right to contribute.

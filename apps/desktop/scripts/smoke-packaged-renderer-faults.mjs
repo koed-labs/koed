@@ -1,4 +1,4 @@
-/* global clearTimeout, fetch, setTimeout, WebSocket */
+/* global AbortSignal, clearTimeout, fetch, setTimeout, WebSocket */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +6,77 @@ import { resolve } from "node:path";
 
 const delay = (ms) =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+
+const childExited = (child) =>
+  child.exitCode !== null || child.signalCode !== null;
+
+const waitForChildExit = (child, timeoutMs) => {
+  if (childExited(child)) return Promise.resolve(true);
+  return new Promise((resolveExit) => {
+    let settled = false;
+    function finish(exited) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolveExit(exited);
+    }
+    function onExit() {
+      finish(true);
+    }
+    const timer = setTimeout(
+      () => finish(childExited(child)),
+      Math.max(1, timeoutMs)
+    );
+    child.once("exit", onExit);
+    if (childExited(child)) finish(true);
+  });
+};
+
+export const terminateChild = async (child, graceMs = 2_000) => {
+  if (childExited(child)) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, graceMs)) return;
+  child.kill("SIGKILL");
+  if (!(await waitForChildExit(child, graceMs))) {
+    throw new Error("Packaged Electron did not exit after SIGKILL.");
+  }
+};
+
+export const waitForRendererTarget = async ({
+  debuggingPort,
+  readChildExit,
+  startupTimeoutMs = 30_000,
+  requestTimeoutMs = 1_000,
+  fetchImpl = fetch,
+  now = Date.now,
+  delayImpl = delay
+}) => {
+  const startupDeadline = now() + startupTimeoutMs;
+  while (now() < startupDeadline && !readChildExit()) {
+    const remainingMs = startupDeadline - now();
+    try {
+      const targets = await fetchImpl(
+        `http://127.0.0.1:${debuggingPort}/json/list`,
+        {
+          signal: AbortSignal.timeout(
+            Math.max(1, Math.min(requestTimeoutMs, remainingMs))
+          )
+        }
+      ).then((response) => response.json());
+      const target = targets.find(
+        (item) => item.type === "page" && item.webSocketDebuggerUrl
+      );
+      if (target) return target;
+    } catch {
+      // Chromium may not be listening yet, or a request may reach its bounded
+      // timeout while the renderer starts.
+    }
+    const delayMs = Math.min(50, startupDeadline - now());
+    if (delayMs > 0) await delayImpl(delayMs);
+  }
+  return undefined;
+};
 
 const appendOutputTail = (current, chunk) =>
   `${current}${String(chunk)}`.slice(-32_768);
@@ -121,22 +192,10 @@ export const smokePackagedRendererFaults = async ({
   });
   let cdp;
   try {
-    let target;
-    const startupDeadline = Date.now() + 30_000;
-    while (Date.now() < startupDeadline && !childExit) {
-      try {
-        const targets = await fetch(
-          `http://127.0.0.1:${debuggingPort}/json/list`
-        ).then((response) => response.json());
-        target = targets.find(
-          (item) => item.type === "page" && item.webSocketDebuggerUrl
-        );
-        if (target) break;
-      } catch {
-        // The packaged Chromium endpoint is not listening yet.
-      }
-      await delay(50);
-    }
+    const target = await waitForRendererTarget({
+      debuggingPort,
+      readChildExit: () => childExit
+    });
     if (!target) {
       const exitDetail = childExit
         ? ` Electron exited with code ${String(childExit.code)} and signal ${String(childExit.signal)}.`
@@ -362,7 +421,7 @@ export const smokePackagedRendererFaults = async ({
     };
   } finally {
     cdp?.close();
-    if (!child.killed) child.kill("SIGTERM");
+    await terminateChild(child);
     rmSync(userDataDir, { recursive: true, force: true });
   }
 };

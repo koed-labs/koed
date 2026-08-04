@@ -391,6 +391,10 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommands?.length ?? 0`
       );
+    const teamSelectionUserCommandIndex =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.length ?? 0`
+      );
     await window.webContents.executeJavaScript(
       `window.__koedRenderProfiles = []`
     );
@@ -407,6 +411,10 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
       );
+    const teamSelectionUserCommands =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.slice(${teamSelectionUserCommandIndex}) ?? []`
+      );
     const teamSwitchProfiles = await window.webContents.executeJavaScript(
       `window.__koedRenderProfiles ?? []`
     );
@@ -421,9 +429,15 @@ const run = async () => {
       "collaboration.mark_delivered",
       "collaboration.report_team_activity"
     ]);
+    assert.deepEqual(teamSelectionUserCommands, [
+      "collaboration.select",
+      "collaboration.list_invitations",
+      "collaboration.mark_delivered"
+    ]);
     assert.equal(
       afterTeamSelectionCommandCount - teamSelectionCommandCount,
-      teamSelectionCommands.length
+      teamSelectionUserCommands.length,
+      JSON.stringify({ teamSelectionCommands, teamSelectionUserCommands })
     );
     assert.ok(
       teamSwitchFrameMs < 100,
@@ -437,6 +451,10 @@ const run = async () => {
     const workspaceSelectionCommandIndex =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommands?.length ?? 0`
+      );
+    const workspaceSelectionUserCommandIndex =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.length ?? 0`
       );
     const workspaceSelectionFrameMs = await window.webContents
       .executeJavaScript(`(() => {
@@ -459,14 +477,26 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommands?.slice(${workspaceSelectionCommandIndex}) ?? []`
       );
+    const workspaceSelectionUserCommands =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.slice(${workspaceSelectionUserCommandIndex}) ?? []`
+      );
     assert.deepEqual(workspaceSelectionCommands, [
       "collaboration.select",
       "collaboration.mark_delivered",
       "collaboration.report_team_activity"
     ]);
+    assert.deepEqual(workspaceSelectionUserCommands, [
+      "collaboration.select",
+      "collaboration.mark_delivered"
+    ]);
     assert.equal(
       afterWorkspaceSelectionCommandCount - workspaceSelectionCommandCount,
-      workspaceSelectionCommands.length
+      workspaceSelectionUserCommands.length,
+      JSON.stringify({
+        workspaceSelectionCommands,
+        workspaceSelectionUserCommands
+      })
     );
     assert.ok(
       workspaceSelectionFrameMs < 100,

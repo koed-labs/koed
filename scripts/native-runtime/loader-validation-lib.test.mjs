@@ -4,9 +4,25 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+  boundedMap,
   collectPlatformBinaries,
   macLoaderIssues
 } from "./loader-validation-lib.mjs";
+
+test("bounded work preserves input order when tasks finish out of order", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const result = await boundedMap([30, 5, 15, 1], 2, async (delay, index) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
+    active -= 1;
+    return index;
+  });
+
+  assert.deepEqual(result, [0, 1, 2, 3]);
+  assert.equal(maximumActive, 2);
+});
 
 const runtimeRoot = "/tmp/koed-runtime";
 const postgres = `${runtimeRoot}/postgres/bin/postgres`;

@@ -718,6 +718,7 @@ export function PeopleView({
       (team.role !== "owner" || enabledOwners <= 1);
     return (
       <select
+        className="collab-member-role"
         aria-label={`Role for ${person.displayName}`}
         value={management.role}
         disabled={Boolean(busyKey) || protectedOwner}
@@ -1117,7 +1118,7 @@ export function PeopleView({
                     {canChangeTarget && !isCurrent ? (
                       <button
                         type="button"
-                        className="danger-secondary"
+                        className="danger-secondary collab-member-disable"
                         disabled={Boolean(busyKey) || targetLastOwner}
                         title={
                           targetLastOwner
@@ -3085,9 +3086,8 @@ function MainContent({
   }
   if (
     team &&
-    snapshot.connection.state !== "live" &&
-    snapshot.connection.state !== "connecting" &&
-    snapshot.connection.state !== "reconnecting"
+    (snapshot.connection.state === "disconnected" ||
+      snapshot.connection.state === "access_revoked")
   ) {
     return (
       <StateView

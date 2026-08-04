@@ -908,6 +908,82 @@ describe("desktop collaboration broker", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("uses the active runtime API URL instead of a stale automatic port", async () => {
+    const koedHome = tempRoot();
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "11111111-1111-4111-8111-111111111111",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    writeFileSync(resolve(koedHome, ".env"), "API_HOST_PORT=3300\n");
+    writeFileSync(
+      resolve(koedHome, "config/local-ports.json"),
+      `${JSON.stringify({ api: "43300" })}\n`
+    );
+    mkdirSync(resolve(koedHome, "run"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "run/koed-server.json"),
+      `${JSON.stringify({
+        pid: process.pid,
+        startedAt: "2026-07-31T07:00:44.560Z",
+        repoRoot: koedHome,
+        apiUrl: "http://localhost:3300",
+        explorerUrl: "http://localhost:5174",
+        runtimeMode: "developer",
+        dependencyMode: "bundled-local",
+        automaticPorts: false,
+        services: ["api"],
+        processes: { api: process.pid }
+      })}\n`
+    );
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (url, init) => {
+        expect(String(url)).toBe(
+          "http://localhost:3300/v1/local-edge/collaboration/command"
+        );
+        const body = JSON.parse(String(init?.body)) as {
+          command: { requestId: string; command: string };
+        };
+        return Response.json({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: body.command.requestId,
+          command: body.command.command,
+          ok: true,
+          data: { snapshot }
+        });
+      });
+    const broker = createDesktopCollaborationBroker({
+      environment: {
+        KOED_AUTO_PORTS: "1",
+        KOED_HOME: koedHome,
+        KOED_REPO_ROOT: koedHome,
+        KOED_DESKTOP_COLLABORATION_BROKER_SESSION_TOKEN: sessionToken
+      },
+      fetch: fetchMock,
+      sendMessage: vi.fn()
+    });
+
+    await broker.handleMessage({
+      protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      sessionToken,
+      type: "command",
+      envelopeId: "68ffde92-7980-4a48-b29a-d9bd85a22f3f",
+      ownerId: "renderer-active-runtime",
+      command: collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: "868ae5ae-fcbe-4e17-9d83-14a97d5f92a6",
+        command: "collaboration.load",
+        input: {}
+      })
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("refreshes active backend capabilities before the cache expires", async () => {
     vi.useFakeTimers();
     const startedAt = new Date("2026-07-18T08:30:00.000Z");

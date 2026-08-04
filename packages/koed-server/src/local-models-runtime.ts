@@ -358,11 +358,19 @@ export const installLocalModel = async (
   }
 
   renameSync(tempPath, manifest.modelPath);
-  const status = await collectLocalModelStatus(paths, kind, environment);
+  const sizeBytes = statSync(manifest.modelPath).size;
+  const status: LocalModelStatus = {
+    state: "installed",
+    message: `${manifest.key} model is installed and checksum verified.`,
+    modelPath: manifest.modelPath,
+    sizeBytes,
+    sha256: actual,
+    manifest
+  };
   onProgress?.({
-    completedBytes: status.sizeBytes ?? completedBytes,
+    completedBytes: sizeBytes,
     phase: "complete",
-    totalBytes: status.sizeBytes ?? totalBytes
+    totalBytes: sizeBytes
   });
-  return { ok: status.state === "installed", ...status };
+  return { ok: true, ...status };
 };

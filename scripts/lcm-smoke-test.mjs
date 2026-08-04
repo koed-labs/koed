@@ -61,7 +61,7 @@ const projectId = `lcm-smoke-${marker}`;
 const summaryModel =
   args.get("summary-model") ??
   process.env.LCM_SMOKE_SUMMARY_MODEL ??
-  "gpt-5.4-mini";
+  "gpt-5.6-luna";
 const summaryReasoningEffort =
   args.get("summary-reasoning-effort") ??
   process.env.LCM_SMOKE_SUMMARY_REASONING_EFFORT ??

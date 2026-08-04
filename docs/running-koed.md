@@ -533,7 +533,7 @@ Packaged Desktop smoke now exercises the packaged Electron bundle with a tempora
 pnpm desktop:package:smoke:mac -- --missing-assets --json
 ```
 
-When packaged native assets are staged, omit `--missing-assets` to let smoke install packaged runtime assets, start the daemon, and reach a healthy local stack. See `docs/desktop-internal-artifacts.md` for CI-uploaded unsigned DMG/ZIP download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
+When packaged native assets are staged, omit `--missing-assets` to let smoke install packaged runtime assets, start the daemon, and reach a healthy local stack. See `docs/desktop-internal-artifacts.md` for unsigned GitHub Release DMG/ZIP download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 

@@ -7,6 +7,7 @@ import {
   COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS,
   COLLABORATION_RECONNECT_WINDOW_MS,
   COLLABORATION_RENDERER_MAX_PENDING_BYTES,
+  collaborationCommandReturnsSnapshot,
   collaborationCommandResultSchema,
   collaborationDeliveryIdSchema,
   collaborationRendererCommandSchema,
@@ -469,11 +470,22 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     string,
     Map<string, CollaborationSelection>
   >();
+  const activeTeamIds = new Map<string, string | null>();
+  const snapshotRequestGenerations = new Map<string, number>();
   const authorityGenerations = new Map<string, number>();
   let preferredBackendId: string | undefined;
 
   const authorityGeneration = (ownerId: string): number =>
     authorityGenerations.get(ownerId) ?? 0;
+
+  const commandAffectsActiveSelection = (
+    command: CollaborationRendererCommand
+  ): boolean =>
+    collaborationCommandReturnsSnapshot(command.command) &&
+    !(
+      command.command === "collaboration.select" &&
+      command.input.navigationIntent === "prewarm"
+    );
 
   const invalidateAuthority = (
     ownerId: string,
@@ -536,6 +548,13 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     }
     if (eventInvalidatesSelection(parsed)) {
       invalidateAuthority(subscription.ownerId, subscription.teamId);
+    }
+    if (
+      parsed.type === "connection" &&
+      parsed.connection.state !== "access_revoked" &&
+      activeTeamIds.get(subscription.ownerId) !== subscription.teamId
+    ) {
+      return;
     }
     subscription.emit(parsed);
   };
@@ -1247,6 +1266,15 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     command: CollaborationRendererCommand,
     context: CollaborationTransportContext
   ): Promise<CollaborationCommandResult> => {
+    const snapshotRequestGeneration = commandAffectsActiveSelection(command)
+      ? (snapshotRequestGenerations.get(context.ownerId) ?? 0) + 1
+      : null;
+    if (snapshotRequestGeneration !== null) {
+      snapshotRequestGenerations.set(
+        context.ownerId,
+        snapshotRequestGeneration
+      );
+    }
     const requestAuthorityGeneration = authorityGeneration(context.ownerId);
     const existing =
       "subscriptionId" in command.input
@@ -1340,10 +1368,22 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       if (result.ok && result.command === "collaboration.disconnect_backend") {
         invalidateAuthority(context.ownerId);
       }
-      if (result.ok && "snapshot" in result.data) {
-        rememberTeamSelection(
+      if (
+        result.ok &&
+        "snapshot" in result.data &&
+        snapshotRequestGeneration !== null &&
+        snapshotRequestGenerations.get(context.ownerId) ===
+          snapshotRequestGeneration
+      ) {
+        const parsedSnapshot = collaborationSnapshotSchema.parse(
+          result.data.snapshot
+        );
+        rememberTeamSelection(context.ownerId, parsedSnapshot.selection);
+        activeTeamIds.set(
           context.ownerId,
-          collaborationSnapshotSchema.parse(result.data.snapshot).selection
+          "teamId" in parsedSnapshot.selection
+            ? parsedSnapshot.selection.teamId
+            : null
         );
       }
       return result;
@@ -1359,6 +1399,8 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       if (subscription.ownerId === ownerId) stopSubscription(subscription.id);
     }
     latestTeamSelections.delete(ownerId);
+    activeTeamIds.delete(ownerId);
+    snapshotRequestGenerations.delete(ownerId);
     authorityGenerations.delete(ownerId);
   };
 
@@ -1367,6 +1409,8 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       stopSubscription(subscription.id);
     }
     latestTeamSelections.clear();
+    activeTeamIds.clear();
+    snapshotRequestGenerations.clear();
     authorityGenerations.clear();
   };
 

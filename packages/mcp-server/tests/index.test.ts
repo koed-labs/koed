@@ -79,8 +79,8 @@ describe("Curated Memory review settings", () => {
       } as NodeJS.ProcessEnv)
     ).toMatchObject({
       provider: "codex",
-      model: "gpt-5.4-mini",
-      reasoningEffort: "medium",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
       timeoutMs: 90000,
       maxAttempts: 2
     });
@@ -785,7 +785,7 @@ describe("MemoryApiClient", () => {
     expect(result.defaultAnswerScope).toBe("personal");
     expect(result.exposedTools).toContain("memory_intake_propose");
     expect(result.localLcmSummaryDiagnostics.pendingCount).toBe(3);
-    expect(result.localCuratedMemoryReviewWorker.model).toBe("gpt-5.4-mini");
+    expect(result.localCuratedMemoryReviewWorker.model).toBe("gpt-5.6-luna");
     expect(result.localCuratedMemoryReviewDiagnostics.running).toBe(false);
     expect(result.localMemoryAnswerWorker.defaultResponseDetail).toBe(
       "answer_only"
@@ -914,7 +914,11 @@ describe("MemoryApiClient", () => {
 
 describe("LCM summary background service", () => {
   it("resolves a prompt budget above the default leaf token threshold", () => {
-    expect(resolveLcmSummaryWorkerConfig({}).maxPromptTokens).toBe(48_000);
+    expect(resolveLcmSummaryWorkerConfig({})).toMatchObject({
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+      maxPromptTokens: 48_000
+    });
   });
 
   it("resolves conservative default cadence", () => {

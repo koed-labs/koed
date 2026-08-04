@@ -2,13 +2,16 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   readlinkSync,
   realpathSync,
   rmSync,
@@ -65,7 +68,17 @@ const run = (command, args, options = {}) => {
 
 const sha256File = (path) => {
   const hash = createHash("sha256");
-  hash.update(readFileSync(path));
+  const descriptor = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    closeSync(descriptor);
+  }
   return hash.digest("hex");
 };
 
@@ -163,6 +176,17 @@ const firstChildDir = (dir) => {
   return dir;
 };
 
+export const isLlamaRuntimeFile = (file) => {
+  const name = basename(file);
+  return (
+    name === "llama-server" ||
+    name === "LICENSE" ||
+    /\.dylib$/i.test(name) ||
+    /\.so(?:\.\d+)*$/i.test(name) ||
+    name === "ggml-metal.metal"
+  );
+};
+
 const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "llama.cpp");
@@ -176,15 +200,46 @@ const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
     throw new Error("llama.cpp archive did not contain llama-server.");
   const target = resolve(runtimeRoot, "llama.cpp");
   rmSync(target, { recursive: true, force: true });
-  mkdirSync(dirname(target), { recursive: true });
-  cpSync(unpackedRoot, target, {
-    recursive: true,
-    preserveTimestamps: true,
-    dereference: true
-  });
+  mkdirSync(target, { recursive: true });
+  const runtimeFiles = listFiles(unpackedRoot)
+    .filter(isLlamaRuntimeFile)
+    .sort();
+  for (const file of runtimeFiles) {
+    const destination = resolve(target, basename(file));
+    if (
+      existsSync(destination) &&
+      realpathSync(file) !== realpathSync(destination)
+    ) {
+      throw new Error(
+        `llama.cpp runtime archive contains duplicate runtime filename ${basename(file)}.`
+      );
+    }
+    copyFileSync(file, destination);
+  }
   materializeAbsoluteSymlinks(target);
   chmodIfExists(resolve(target, "llama-server"));
-  return { archive, llamaServer: resolve(target, "llama-server") };
+  if (!existsSync(resolve(target, "llama-server"))) {
+    throw new Error(
+      "Could not stage llama-server at the packaged runtime root."
+    );
+  }
+  return {
+    archive,
+    llamaServer: resolve(target, "llama-server"),
+    stagedFiles: runtimeFiles.map((file) => basename(file))
+  };
+};
+
+const timedPhase = (timings, label, work) => {
+  console.error(`[native-runtime] ${label} started`);
+  const startedAt = performance.now();
+  try {
+    return work();
+  } finally {
+    const durationMs = Math.round(performance.now() - startedAt);
+    timings[label] = durationMs;
+    console.error(`[native-runtime] ${label} finished in ${durationMs}ms`);
+  }
 };
 
 const relocateMacosPostgresLibraries = (postgresRoot) => {
@@ -491,34 +546,43 @@ export const procureRuntime = ({
     : resolve(repoRoot, ".cache", "native-runtime");
   rmSync(resolvedRuntimeRoot, { recursive: true, force: true });
   mkdirSync(resolvedRuntimeRoot, { recursive: true });
+  const timings = {};
 
   const postgres =
     sources.postgres.kind === "source"
-      ? buildPostgresSource({
-          source: sources.postgres,
-          opensslSource: sources.openssl,
-          runtimeRoot: resolvedRuntimeRoot,
-          cacheDir: resolvedCacheDir,
-          workDir: resolvedWorkDir
-        })
-      : stagePostgresArchive({
-          source: sources.postgres,
-          runtimeRoot: resolvedRuntimeRoot,
-          cacheDir: resolvedCacheDir,
-          workDir: resolvedWorkDir
-        });
-  const pgvector = buildPgvector({
-    source: sources.pgvector,
-    runtimeRoot: resolvedRuntimeRoot,
-    cacheDir: resolvedCacheDir,
-    workDir: resolvedWorkDir
-  });
-  const llamaCpp = stageLlama({
-    source: sources.llamaCpp,
-    runtimeRoot: resolvedRuntimeRoot,
-    cacheDir: resolvedCacheDir,
-    workDir: resolvedWorkDir
-  });
+      ? timedPhase(timings, "OpenSSL and PostgreSQL build", () =>
+          buildPostgresSource({
+            source: sources.postgres,
+            opensslSource: sources.openssl,
+            runtimeRoot: resolvedRuntimeRoot,
+            cacheDir: resolvedCacheDir,
+            workDir: resolvedWorkDir
+          })
+        )
+      : timedPhase(timings, "PostgreSQL archive staging", () =>
+          stagePostgresArchive({
+            source: sources.postgres,
+            runtimeRoot: resolvedRuntimeRoot,
+            cacheDir: resolvedCacheDir,
+            workDir: resolvedWorkDir
+          })
+        );
+  const pgvector = timedPhase(timings, "pgvector build", () =>
+    buildPgvector({
+      source: sources.pgvector,
+      runtimeRoot: resolvedRuntimeRoot,
+      cacheDir: resolvedCacheDir,
+      workDir: resolvedWorkDir
+    })
+  );
+  const llamaCpp = timedPhase(timings, "llama.cpp runtime staging", () =>
+    stageLlama({
+      source: sources.llamaCpp,
+      runtimeRoot: resolvedRuntimeRoot,
+      cacheDir: resolvedCacheDir,
+      workDir: resolvedWorkDir
+    })
+  );
   const result = {
     ok: true,
     sourcesPath: resolvedSourcesPath,
@@ -527,6 +591,7 @@ export const procureRuntime = ({
     architecture: architecture ?? sources.architecture,
     cacheDir: resolvedCacheDir,
     workDir: resolvedWorkDir,
+    timings,
     components: { postgres, pgvector, llamaCpp }
   };
   return result;
