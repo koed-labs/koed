@@ -19,7 +19,7 @@ export type DesktopCommand =
   | "open_logs";
 
 const defaultTimeoutMs: Record<DesktopCommand, number> = {
-  status: 15_000,
+  status: 135_000,
   doctor: 90_000,
   setup_codex: 120_000,
   repair_codex: 120_000,

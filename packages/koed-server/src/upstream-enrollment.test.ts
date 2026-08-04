@@ -574,6 +574,380 @@ describe("upstream enrollment orchestration", () => {
     });
   });
 
+  it("authenticates replacement enrollment as an exact predecessor rotation", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const original = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "original-enrollment",
+      fetch: enrollmentFetch()
+    });
+    const predecessorReference = original.enrollment!.credential.reference!;
+    const predecessorAuthorization = readUpstreamCredentialAuthorization(
+      paths.koedHome,
+      predecessorReference
+    );
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: predecessorReference
+      };
+    });
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch("pending", true)
+    });
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = { status: "not_configured" };
+    });
+
+    let rotationRequest:
+      | { authorization: string | null; credentialId: string | null }
+      | undefined;
+    const replacement = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "replacement-enrollment",
+      fetch: async (input, init) => {
+        const url =
+          typeof input === "string" || input instanceof URL ? input : input.url;
+        if (
+          init?.method === "POST" &&
+          new URL(String(url)).pathname ===
+            "/v1/local-edge/device-enrollments/challenges"
+        ) {
+          const body = JSON.parse(String(init.body ?? "{}")) as {
+            rotate_credential_id?: unknown;
+          };
+          const headers = new Headers(init.headers);
+          rotationRequest = {
+            authorization: headers.get("authorization"),
+            credentialId:
+              typeof body.rotate_credential_id === "string"
+                ? body.rotate_credential_id
+                : null
+          };
+        }
+        return enrollmentFetch("pending", true)(input, init);
+      }
+    });
+
+    expect(replacement).toMatchObject({
+      ok: true,
+      state: "pending",
+      enrollment: { requestId: "replacement-enrollment" }
+    });
+    expect(rotationRequest).toEqual({
+      authorization: predecessorAuthorization,
+      credentialId: remoteDeviceCredentialId
+    });
+
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:03:00.000Z"),
+      fetch: enrollmentFetch("approved", true)
+    });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
+    ).toBeNull();
+  });
+
+  it("rotates an exchanged credential when the browser-enrollable policy expands", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const original = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "original-policy-enrollment",
+      fetch: enrollmentFetch()
+    });
+    const predecessorReference = original.enrollment!.credential.reference!;
+    const predecessorAuthorization = readUpstreamCredentialAuthorization(
+      paths.koedHome,
+      predecessorReference
+    );
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: predecessorReference
+      };
+    });
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch("pending", true)
+    });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      admin: "enabled"
+    });
+
+    let rotationRequest:
+      | {
+          authorization: string | null;
+          credentialId: string | null;
+          operationFamilies: unknown;
+        }
+      | undefined;
+    const expanded = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "expanded-policy-enrollment",
+      fetch: async (input, init) => {
+        const url =
+          typeof input === "string" || input instanceof URL ? input : input.url;
+        if (
+          init?.method === "POST" &&
+          new URL(String(url)).pathname ===
+            "/v1/local-edge/device-enrollments/challenges"
+        ) {
+          const body = JSON.parse(String(init.body ?? "{}")) as {
+            rotate_credential_id?: unknown;
+            requested_operation_families?: unknown;
+          };
+          const headers = new Headers(init.headers);
+          rotationRequest = {
+            authorization: headers.get("authorization"),
+            credentialId:
+              typeof body.rotate_credential_id === "string"
+                ? body.rotate_credential_id
+                : null,
+            operationFamilies: body.requested_operation_families
+          };
+        }
+        return enrollmentFetch("pending", true)(input, init);
+      }
+    });
+
+    expect(expanded).toMatchObject({
+      ok: true,
+      state: "pending",
+      enrollment: {
+        requestId: "expanded-policy-enrollment",
+        requestedOperationFamilies: [
+          "team_workspace_read",
+          "team_chat_read",
+          "team_chat_write",
+          "action_grant"
+        ]
+      }
+    });
+    expect(rotationRequest).toEqual({
+      authorization: predecessorAuthorization,
+      credentialId: remoteDeviceCredentialId,
+      operationFamilies: [
+        "team_workspace_read",
+        "team_chat_read",
+        "team_chat_write",
+        "action_grant"
+      ]
+    });
+  });
+
+  it.each(["denied", "expired"] as const)(
+    "keeps the active predecessor when replacement enrollment is %s",
+    async (terminalState) => {
+      const paths = await registerValidatedBackend();
+      updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+        teamWorkspaceRead: "enabled"
+      });
+      const original = await startUpstreamEnrollment(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+        randomId: () => `original-${terminalState}`,
+        fetch: enrollmentFetch()
+      });
+      const predecessorReference = original.enrollment!.credential.reference!;
+      updateRegistry(paths, (registry) => {
+        registry.backends[0]!.credential = {
+          status: "configured",
+          reference: predecessorReference
+        };
+      });
+      await getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:01:00.000Z"),
+        fetch: enrollmentFetch("pending", true)
+      });
+      const predecessorLocal = readLocalEdgeClientCredentialAuthorization(
+        paths.koedHome,
+        "team-vps"
+      );
+      updateRegistry(paths, (registry) => {
+        registry.backends[0]!.credential = { status: "not_configured" };
+      });
+      const replacement = await startUpstreamEnrollment(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:02:00.000Z"),
+        randomId: () => `replacement-${terminalState}`,
+        fetch: enrollmentFetch("pending", true)
+      });
+      expect(replacement.state).toBe("pending");
+      expect(replacement.backend?.credential).toEqual({
+        status: "configured",
+        reference: predecessorReference
+      });
+      const stored = JSON.parse(
+        readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+      ) as { enrollments: Array<{ credentialReference: string }> };
+      const replacementReference =
+        stored.enrollments.at(-1)!.credentialReference;
+
+      const result = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:03:00.000Z"),
+        fetch: enrollmentFetch(terminalState, false)
+      });
+
+      expect(result).toMatchObject({
+        state: terminalState,
+        backend: {
+          credential: { status: "configured", reference: predecessorReference }
+        }
+      });
+      expect(
+        readUpstreamCredentialAuthorization(
+          paths.koedHome,
+          predecessorReference
+        )
+      ).not.toBeNull();
+      expect(
+        readUpstreamCredentialAuthorization(
+          paths.koedHome,
+          replacementReference
+        )
+      ).toBeNull();
+      expect(
+        readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+      ).toEqual(predecessorLocal);
+      const terminalStore = JSON.parse(
+        readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+      ) as {
+        enrollments: Array<{
+          state: string;
+          deviceCredentialId?: string;
+          principalUserId?: string;
+        }>;
+      };
+      expect(terminalStore.enrollments[0]).toMatchObject({
+        state: "exchanged",
+        deviceCredentialId: remoteDeviceCredentialId,
+        principalUserId: remotePrincipalUserId
+      });
+      expect(readUpstreamEnrollmentBinding(paths, "team-vps")).toMatchObject({
+        deviceCredentialId: remoteDeviceCredentialId,
+        principalUserId: remotePrincipalUserId
+      });
+    }
+  );
+
+  it("keeps the active predecessor when replacement enrollment is canceled", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const original = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "original-canceled-rotation",
+      fetch: enrollmentFetch()
+    });
+    const predecessorReference = original.enrollment!.credential.reference!;
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: predecessorReference
+      };
+    });
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch("pending", true)
+    });
+    const predecessorLocal = readLocalEdgeClientCredentialAuthorization(
+      paths.koedHome,
+      "team-vps"
+    );
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = { status: "not_configured" };
+    });
+    const replacement = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "replacement-canceled-rotation",
+      fetch: enrollmentFetch("pending", true)
+    });
+    expect(replacement.state).toBe("pending");
+    expect(replacement.backend?.credential).toEqual({
+      status: "configured",
+      reference: predecessorReference
+    });
+
+    const result = await cancelUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:03:00.000Z")
+    });
+
+    expect(result).toMatchObject({
+      state: "canceled",
+      backend: {
+        credential: { status: "configured", reference: predecessorReference }
+      }
+    });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
+    ).not.toBeNull();
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+    ).toEqual(predecessorLocal);
+    expect(readUpstreamEnrollmentBinding(paths, "team-vps")).not.toBeNull();
+  });
+
+  it("fails closed when a stored predecessor cannot be verified for rotation", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const original = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "unavailable-predecessor",
+      fetch: enrollmentFetch()
+    });
+    const predecessorReference = original.enrollment!.credential.reference!;
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: predecessorReference
+      };
+    });
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:30.000Z"),
+      fetch: enrollmentFetch("pending", true)
+    });
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = { status: "not_configured" };
+    });
+    const challengeRequest = vi.fn();
+    const restarted = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: async (input, init) => {
+        const url =
+          typeof input === "string" || input instanceof URL ? input : input.url;
+        const pathname = new URL(String(url)).pathname;
+        if (pathname === "/v1/local-edge/device-credentials/status") {
+          return response(false, 503, { error: "temporarily unavailable" });
+        }
+        if (
+          init?.method === "POST" &&
+          pathname === "/v1/local-edge/device-enrollments/challenges"
+        ) {
+          challengeRequest();
+        }
+        return enrollmentFetch()(input, init);
+      }
+    });
+
+    expect(original.ok).toBe(true);
+    expect(restarted).toMatchObject({
+      ok: false,
+      state: "failed",
+      message:
+        "Could not verify the existing upstream device credential required for authenticated rotation. Retry when the Team Backend is available."
+    });
+    expect(challengeRequest).not.toHaveBeenCalled();
+  });
+
   it("fails exchanged enrollment if backend credential is reset", async () => {
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {

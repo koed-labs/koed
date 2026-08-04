@@ -4,16 +4,23 @@ import {
   calculateConversationSourceDiscoveryRequestHash,
   calculateConversationSourceDiscoveryScopeHash,
   collaborationActionGrantIntentSchema,
+  collaborationApprovalReviewSchema,
+  collaborationApprovalTierSchema,
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
-  sharedMemoryConsentActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
-  sharedMemoryRepresentationActionGrantBinding,
+  sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
-  sharedMemoryShareActionGrantBinding,
+  sharedMemoryShareBundleActionGrantBinding,
   type CollaborationActionGrantIntent
 } from "@koed/shared";
 import { z } from "zod";
+
+import {
+  resolveActionApprovalPolicy,
+  type ActionApprovalPolicy,
+  type ActionApprovalPolicyContext
+} from "./approval-policy.js";
 
 import {
   confirmLegalHoldReleaseSchema,
@@ -196,11 +203,13 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
-      action: z.literal("shared_memory.consent"),
-      consentId: uuidSchema,
+      action: z.literal("shared_memory.share"),
+      mutationId: uuidSchema,
+      logicalGrantId: uuidSchema,
       logicalMemoryId: uuidSchema,
       teamId: uuidSchema,
       teamWorkspaceId: uuidSchema,
+      consentId: uuidSchema,
       previewId: uuidSchema,
       mode: createSourceOwnerConsentSchema.shape.mode,
       allowedRepresentations:
@@ -210,17 +219,6 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable()
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("shared_memory.share"),
-      mutationId: uuidSchema,
-      logicalGrantId: uuidSchema,
-      logicalMemoryId: uuidSchema,
-      teamId: uuidSchema,
-      teamWorkspaceId: uuidSchema,
-      consentId: uuidSchema
     })
     .strict(),
   z
@@ -238,13 +236,21 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("shared_memory.change_representation"),
       mutationId: uuidSchema,
+      logicalMemoryId: uuidSchema,
       teamId: uuidSchema,
       teamWorkspaceId: uuidSchema,
       shareGrantId: uuidSchema,
       consentId: uuidSchema,
+      previewId: uuidSchema,
       representation: createSharedMemoryPreviewSchema.shape.representation,
       expectedGrantVersion:
-        selectGrantRepresentationSchema.shape.expectedGrantVersion
+        selectGrantRepresentationSchema.shape.expectedGrantVersion,
+      mode: createSourceOwnerConsentSchema.shape.mode,
+      allowedRepresentations:
+        createSourceOwnerConsentSchema.shape.allowedRepresentations,
+      previewRevision: z.number().int().safe().positive(),
+      previewHash: z.string().regex(/^[a-f0-9]{64}$/),
+      expiresAt: z.string().datetime({ offset: true }).nullable()
     })
     .strict(),
   z
@@ -305,6 +311,7 @@ export const highRiskActionGrantCreateRequestSchema = z
 
 export const highRiskActionGrantStatusStateSchema = z.enum([
   "pending",
+  "review_required",
   "approved",
   "consumed",
   "denied",
@@ -318,22 +325,51 @@ export const highRiskActionGrantRemoteStatusSchema = z
     version: z.literal(1),
     actionGrant: z.object({ id: uuidSchema }).strict(),
     selector: uuidSchema,
+    approvalTier: collaborationApprovalTierSchema,
+    review: collaborationApprovalReviewSchema.nullable(),
     state: highRiskActionGrantStatusStateSchema,
     activationPath: activationPathSchema.nullable(),
     expiresAt: z.string().datetime({ offset: true })
   })
   .strict()
   .superRefine((status, context) => {
-    const pending = status.state === "pending";
-    if (pending !== (status.activationPath !== null)) {
+    if ((status.approvalTier === "direct") !== (status.review === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["review"],
+        message:
+          status.approvalTier === "direct"
+            ? "Direct Action Grants must not carry confirmation copy"
+            : "Reviewed Action Grants require authoritative confirmation copy"
+      });
+    }
+    const browserPending = status.state === "pending";
+    if (browserPending !== (status.activationPath !== null)) {
       context.addIssue({
         code: "custom",
         path: ["activationPath"],
-        message: pending
+        message: browserPending
           ? "Pending Action Grants require an activation path"
           : "Approved or terminal Action Grants must not expose an activation path"
       });
       return;
+    }
+    if (browserPending && status.approvalTier !== "step_up") {
+      context.addIssue({
+        code: "custom",
+        path: ["approvalTier"],
+        message: "Only Step-up grants may expose browser activation"
+      });
+    }
+    if (
+      status.state === "review_required" &&
+      status.approvalTier !== "native_review"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["approvalTier"],
+        message: "Native review is required for review_required state"
+      });
     }
     if (
       status.activationPath !== null &&
@@ -355,6 +391,173 @@ export const highRiskActionGrantRemoteEnvelopeSchema = z
 export type HighRiskActionGrantIntent = z.infer<
   typeof highRiskActionGrantIntentSchema
 >;
+
+export type HighRiskActionName = HighRiskActionGrantIntent["action"];
+export type HighRiskApprovalContextKind =
+  | "invitation_acceptance"
+  | "team"
+  | "workspace"
+  | "members"
+  | "revoked_invitation"
+  | "managed_conversation"
+  | "entitlement"
+  | "billing_seats"
+  | "representation_grant"
+  | "revoked_grant"
+  | "shared_memory_source";
+
+const highRiskActionDefinitionMetadata = {
+  "team.create": { operationFamily: "admin", context: [] },
+  "team.invite.accept": {
+    operationFamily: "admin",
+    context: ["invitation_acceptance", "team", "workspace"]
+  },
+  "team.member.role_update": {
+    operationFamily: "admin",
+    context: ["team", "members"]
+  },
+  "team.member.disable": {
+    operationFamily: "admin",
+    context: ["team", "members"]
+  },
+  "team.leave": { operationFamily: "admin", context: ["team"] },
+  "team.invite.create": {
+    operationFamily: "admin",
+    context: ["team", "workspace"]
+  },
+  "team.invite.revoke": {
+    operationFamily: "admin",
+    context: ["team", "revoked_invitation"]
+  },
+  "team.entitlement.update": {
+    operationFamily: "admin",
+    context: ["team", "entitlement"]
+  },
+  "team.billing_seats.update": {
+    operationFamily: "admin",
+    context: ["team", "billing_seats"]
+  },
+  "team.workspace.create": {
+    operationFamily: "admin",
+    context: ["team"]
+  },
+  "team.workspace.archive": {
+    operationFamily: "admin",
+    context: ["team", "workspace"]
+  },
+  "team.workspace.restore": {
+    operationFamily: "admin",
+    context: ["team", "workspace"]
+  },
+  "team.workspace.access_update": {
+    operationFamily: "admin",
+    context: ["team", "workspace", "members"]
+  },
+  "team.retention.delete_request": {
+    operationFamily: "admin",
+    context: ["team"]
+  },
+  "team.legal_hold.place": {
+    operationFamily: "admin",
+    context: ["team"]
+  },
+  "team.legal_hold.release_request": {
+    operationFamily: "admin",
+    context: ["team"]
+  },
+  "team.legal_hold.release_confirm": {
+    operationFamily: "admin",
+    context: ["team"]
+  },
+  "shared_memory.preview": {
+    operationFamily: "share_grant_management",
+    context: []
+  },
+  "shared_memory.share": {
+    operationFamily: "share_grant_management",
+    context: ["team", "workspace", "shared_memory_source"]
+  },
+  "shared_memory.revoke": {
+    operationFamily: "share_grant_management",
+    context: ["team", "workspace", "revoked_grant", "shared_memory_source"]
+  },
+  "shared_memory.change_representation": {
+    operationFamily: "share_grant_management",
+    context: [
+      "team",
+      "workspace",
+      "representation_grant",
+      "shared_memory_source"
+    ]
+  },
+  "conversation_source.discover": {
+    operationFamily: "source_download",
+    context: []
+  },
+  "conversation_source.download": {
+    operationFamily: "source_download",
+    context: []
+  },
+  "managed_conversation.handoff": {
+    operationFamily: "managed_execution",
+    context: ["managed_conversation"]
+  },
+  "managed_conversation.fork": {
+    operationFamily: "managed_execution",
+    context: ["managed_conversation"]
+  }
+} as const satisfies Record<
+  HighRiskActionName,
+  {
+    operationFamily:
+      | "admin"
+      | "share_grant_management"
+      | "source_download"
+      | "managed_execution";
+    context: readonly HighRiskApprovalContextKind[];
+  }
+>;
+
+type HighRiskActionDefinitionCatalog = {
+  [TAction in HighRiskActionName]: (typeof highRiskActionDefinitionMetadata)[TAction] & {
+    resolveOperation(input: {
+      clientRequestId: string;
+      intent: HighRiskActionGrantIntent;
+      resolveWorkspaceTeamId?: (
+        teamWorkspaceId: string
+      ) => Promise<string | null>;
+      resolveLegalHoldTeamId?: (holdId: string) => Promise<string | null>;
+    }): ReturnType<typeof resolveHighRiskActionGrantOperation>;
+    resolvePolicy(
+      intent: HighRiskActionGrantIntent,
+      context?: ActionApprovalPolicyContext
+    ): ActionApprovalPolicy;
+  };
+};
+
+export const highRiskActionDefinitions = Object.fromEntries(
+  Object.entries(highRiskActionDefinitionMetadata).map(([action, metadata]) => [
+    action,
+    {
+      ...metadata,
+      resolveOperation: (
+        input: Parameters<typeof resolveHighRiskActionGrantOperation>[0]
+      ) => {
+        if (input.intent.action !== action) return null;
+        return resolveHighRiskActionGrantOperation(input);
+      },
+      resolvePolicy: (
+        intent: HighRiskActionGrantIntent,
+        context?: ActionApprovalPolicyContext
+      ) => {
+        if (intent.action !== action) {
+          throw new Error("Approval action definition mismatch");
+        }
+        return resolveActionApprovalPolicy(intent, context);
+      }
+    }
+  ])
+) as HighRiskActionDefinitionCatalog;
 
 export interface HighRiskActionGrantOperation {
   operationFamily:
@@ -438,14 +641,7 @@ export const highRiskActionGrantOperationFamilyForIntent = (
   | "share_grant_management"
   | "source_download"
   | "managed_execution" =>
-  intent.action === "conversation_source.download" ||
-  intent.action === "conversation_source.discover"
-    ? "source_download"
-    : intent.action.startsWith("managed_conversation.")
-      ? "managed_execution"
-      : intent.action.startsWith("shared_memory.")
-        ? "share_grant_management"
-        : "admin";
+  highRiskActionDefinitions[intent.action].operationFamily;
 
 export const highRiskActionGrantIntentFromCollaborationIntent = (
   backendBaseUrl: string,
@@ -556,14 +752,16 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             allowedRepresentations: intent.allowedRepresentations
           }
         : null;
-    case "collaboration.consent_shared_memory":
+    case "collaboration.share_memory":
       return resolved?.sharedMemoryPreviewId
         ? {
-            action: "shared_memory.consent",
-            consentId: intent.consentId,
+            action: "shared_memory.share",
+            mutationId: intent.mutationId,
+            logicalGrantId: intent.logicalGrantId,
             logicalMemoryId: intent.logicalMemoryId,
             teamId: intent.teamId,
             teamWorkspaceId: intent.workspaceId,
+            consentId: intent.consentId,
             previewId: resolved.sharedMemoryPreviewId,
             mode: intent.mode,
             allowedRepresentations: intent.allowedRepresentations,
@@ -573,16 +771,6 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             expiresAt: intent.expiresAt
           }
         : null;
-    case "collaboration.share_memory":
-      return {
-        action: "shared_memory.share",
-        mutationId: intent.mutationId,
-        logicalGrantId: intent.logicalGrantId,
-        logicalMemoryId: intent.logicalMemoryId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.workspaceId,
-        consentId: intent.consentId
-      };
     case "collaboration.revoke_shared_memory":
       return {
         action: "shared_memory.revoke",
@@ -594,16 +782,25 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         reasonCode: intent.reasonCode
       };
     case "collaboration.change_shared_memory_representation":
-      return {
-        action: "shared_memory.change_representation",
-        mutationId: intent.mutationId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.workspaceId,
-        shareGrantId: intent.shareGrantId,
-        consentId: intent.consentId,
-        representation: intent.representation,
-        expectedGrantVersion: intent.expectedGrantVersion
-      };
+      return resolved?.sharedMemoryPreviewId
+        ? {
+            action: "shared_memory.change_representation",
+            mutationId: intent.mutationId,
+            logicalMemoryId: intent.logicalMemoryId,
+            teamId: intent.teamId,
+            teamWorkspaceId: intent.workspaceId,
+            shareGrantId: intent.shareGrantId,
+            consentId: intent.consentId,
+            previewId: resolved.sharedMemoryPreviewId,
+            representation: intent.representation,
+            expectedGrantVersion: intent.expectedGrantVersion,
+            mode: intent.mode,
+            allowedRepresentations: intent.allowedRepresentations,
+            previewRevision: intent.previewRevision,
+            previewHash: intent.previewHash,
+            expiresAt: intent.expiresAt
+          }
+        : null;
     case "collaboration.managed_conversation_handoff":
       return {
         action: "managed_conversation.handoff",
@@ -919,13 +1116,15 @@ export const resolveHighRiskActionGrantOperation = (input: {
         representation: intent.representation,
         allowedRepresentations: intent.allowedRepresentations
       });
-    case "shared_memory.consent":
-      return sharedMemoryConsentActionGrantBinding({
+    case "shared_memory.share":
+      return sharedMemoryShareBundleActionGrantBinding({
         referenceId: clientRequestId,
-        consentId: intent.consentId,
+        mutationId: intent.mutationId,
+        logicalGrantId: intent.logicalGrantId,
         logicalMemoryId: intent.logicalMemoryId,
         teamId: intent.teamId,
         teamWorkspaceId: intent.teamWorkspaceId,
+        consentId: intent.consentId,
         previewId: intent.previewId,
         mode: intent.mode,
         allowedRepresentations: intent.allowedRepresentations,
@@ -933,16 +1132,6 @@ export const resolveHighRiskActionGrantOperation = (input: {
         previewRevision: intent.previewRevision,
         previewHash: intent.previewHash,
         expiresAt: intent.expiresAt
-      });
-    case "shared_memory.share":
-      return sharedMemoryShareActionGrantBinding({
-        referenceId: clientRequestId,
-        mutationId: intent.mutationId,
-        logicalGrantId: intent.logicalGrantId,
-        logicalMemoryId: intent.logicalMemoryId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.teamWorkspaceId,
-        consentId: intent.consentId
       });
     case "shared_memory.revoke":
       return sharedMemoryRevokeActionGrantBinding({
@@ -955,15 +1144,22 @@ export const resolveHighRiskActionGrantOperation = (input: {
         reasonCode: intent.reasonCode
       });
     case "shared_memory.change_representation":
-      return sharedMemoryRepresentationActionGrantBinding({
+      return sharedMemoryRepresentationBundleActionGrantBinding({
         referenceId: clientRequestId,
         mutationId: intent.mutationId,
+        logicalMemoryId: intent.logicalMemoryId,
         teamId: intent.teamId,
         teamWorkspaceId: intent.teamWorkspaceId,
         shareGrantId: intent.shareGrantId,
         consentId: intent.consentId,
+        previewId: intent.previewId,
         representation: intent.representation,
-        expectedGrantVersion: intent.expectedGrantVersion
+        expectedGrantVersion: intent.expectedGrantVersion,
+        mode: intent.mode,
+        allowedRepresentations: intent.allowedRepresentations,
+        previewRevision: intent.previewRevision,
+        previewHash: intent.previewHash,
+        expiresAt: intent.expiresAt
       });
     case "conversation_source.discover":
       return {

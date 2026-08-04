@@ -20,6 +20,7 @@ import {
   deleteCollaborationActionGrantCustody,
   clearCollaborationPendingTeamSends,
   deleteCollaborationPendingSend,
+  readCollaborationActionGrantCustodyCommitmentHash,
   readCollaborationActionGrantCustodyStatus,
   listCollaborationPendingSends,
   DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES,
@@ -802,6 +803,18 @@ describe("collaboration Action Grant custody", () => {
     deviceCredentialId,
     principalUserId
   } as const;
+  const reviewedAccess = {
+    ...access,
+    approvalTier: "step_up" as const,
+    review: {
+      version: 1 as const,
+      title: "Approve this action?",
+      description: "Review the exact action binding.",
+      consequence: "The bound action may execute.",
+      confirmLabel: "Approve",
+      details: []
+    }
+  };
 
   const resolveInput = {
     ...access,
@@ -822,10 +835,23 @@ describe("collaboration Action Grant custody", () => {
     expect(stored.secret).toBe(secretSentinel);
     expect(stored.commitmentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(
+      JSON.parse(
+        readFileSync(
+          resolve(koedHome, "secrets", "upstream-credentials.json"),
+          "utf8"
+        )
+      ).actionGrants[referenceId]
+    ).toMatchObject({
+      lifecycle: "unclassified",
+      approvalTier: null,
+      review: null,
+      state: null
+    });
+    expect(
       updateCollaborationActionGrantCustodyStatus(
         koedHome,
         {
-          ...access,
+          ...reviewedAccess,
           state: "pending",
           activationUrl: `${deploymentBaseUrl}/approve/action-grants/${referenceId}`
         },
@@ -838,7 +864,7 @@ describe("collaboration Action Grant custody", () => {
     expect(
       updateCollaborationActionGrantCustodyStatus(
         koedHome,
-        { ...access, state: "approved" },
+        { ...reviewedAccess, state: "approved" },
         fixedDeps("2026-07-17T02:01:00.000Z")
       )
     ).toMatchObject({
@@ -877,7 +903,7 @@ describe("collaboration Action Grant custody", () => {
     storeGrant(koedHome);
     updateCollaborationActionGrantCustodyStatus(
       koedHome,
-      { ...access, state: "approved" },
+      { ...reviewedAccess, state: "approved" },
       fixedDeps("2026-07-17T02:01:00.000Z")
     );
 
@@ -914,12 +940,12 @@ describe("collaboration Action Grant custody", () => {
     storeGrant(koedHome);
     updateCollaborationActionGrantCustodyStatus(
       koedHome,
-      { ...access, state: "approved" },
+      { ...reviewedAccess, state: "approved" },
       fixedDeps("2026-07-17T02:01:00.000Z")
     );
 
     expect(
-      readCollaborationActionGrantCustodyStatus(
+      readCollaborationActionGrantCustodyCommitmentHash(
         koedHome,
         access,
         fixedDeps("2026-07-17T02:06:00.000Z")
@@ -993,7 +1019,7 @@ describe("collaboration Action Grant custody", () => {
       readCollaborationActionGrantCustodyStatus(koedHome, access, fixedDeps())
     ).toBeNull();
     expect(
-      readCollaborationActionGrantCustodyStatus(
+      readCollaborationActionGrantCustodyCommitmentHash(
         koedHome,
         {
           ...access,
@@ -1003,7 +1029,7 @@ describe("collaboration Action Grant custody", () => {
         },
         fixedDeps()
       )
-    ).toMatchObject({ actionGrant: { id: otherReferenceId } });
+    ).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("fails closed on malformed Action Grant custody without rewriting unrelated encrypted state", () => {
@@ -1110,7 +1136,7 @@ describe("collaboration Action Grant custody", () => {
       storeGrant(koedHome);
       updateCollaborationActionGrantCustodyStatus(
         koedHome,
-        { ...access, state: "approved" },
+        { ...reviewedAccess, state: "approved" },
         fixedDeps("2026-07-17T02:01:00.000Z")
       );
 
@@ -1155,7 +1181,7 @@ describe("collaboration Action Grant custody", () => {
     });
     updateCollaborationActionGrantCustodyStatus(
       koedHome,
-      { ...access, state: "approved" },
+      { ...reviewedAccess, state: "approved" },
       fixedDeps("2026-07-17T02:01:00.000Z")
     );
 
@@ -1292,7 +1318,12 @@ describe("credential store cross-process serialization", () => {
     await runContendedPair(
       "action-transition",
       "approve-grant-held",
-      { ...actionGrantAccess, state: "approved" },
+      {
+        ...actionGrantAccess,
+        state: "approved",
+        approvalTier: "direct",
+        review: null
+      },
       "consume-grant",
       { ...actionGrantAccess, state: "consumed" }
     );

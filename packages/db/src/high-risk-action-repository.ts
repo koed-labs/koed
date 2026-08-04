@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  collaborationApprovalReviewSchema,
   highRiskActionGrantCommitment,
+  type CollaborationApprovalReview,
+  type CollaborationApprovalTier,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
@@ -67,6 +70,8 @@ export interface HighRiskOperationBinding {
 export interface HighRiskActionGrantBindingRecord extends HighRiskOperationBinding {
   id: string;
   selector: string;
+  approvalTier: CollaborationApprovalTier;
+  review: CollaborationApprovalReview | null;
   state: HighRiskActionGrantState;
   createdAt: string;
   expiresAt: string;
@@ -80,6 +85,8 @@ export interface CreateHighRiskActionGrantInput extends HighRiskOperationBinding
     | "share_grant_management"
     | "sync"
     | "managed_execution";
+  approvalTier: CollaborationApprovalTier;
+  review: CollaborationApprovalReview | null;
 }
 
 export interface GetHighRiskActionGrantInput {
@@ -109,6 +116,10 @@ export interface DecideHighRiskBrowserActivationInput {
   userSessionId: string;
   freshlyAuthenticatedAt: Date;
   decision: "approve" | "deny";
+}
+
+export interface DecideNativeActionReviewInput extends GetHighRiskActionGrantInput {
+  decision: "approve";
 }
 
 export interface HighRiskMutationReceipt<TBody> {
@@ -168,6 +179,9 @@ export interface HighRiskActionRepository {
   ): Promise<HighRiskActionGrantBindingRecord | null>;
   decideBrowserActivation(
     input: DecideHighRiskBrowserActivationInput
+  ): Promise<HighRiskActionGrantBindingRecord | null>;
+  decideNativeActionReview(
+    input: DecideNativeActionReviewInput
   ): Promise<HighRiskActionGrantBindingRecord | null>;
   executeActionGrant<TBody>(
     input: ExecuteHighRiskActionGrantInput<TBody>
@@ -305,7 +319,7 @@ const confirmationAuditMetadata = (
       action: row.action,
       targetId: row.targetId
     },
-    extra
+    { approvalTier: row.approvalTier, ...extra }
   );
 
 const grantAuditMetadata = (
@@ -370,6 +384,10 @@ const mapBindingRecord = (
 ): HighRiskActionGrantBindingRecord => ({
   id: confirmation.clientRequestId,
   selector: confirmation.selector,
+  approvalTier: confirmation.approvalTier,
+  review: confirmation.reviewSummary
+    ? collaborationApprovalReviewSchema.parse(confirmation.reviewSummary)
+    : null,
   state: apiStateFromRows(confirmation, grant),
   ownerUserId: confirmation.ownerUserId,
   deviceCredentialId: confirmation.deviceCredentialId,
@@ -694,7 +712,77 @@ export const createHighRiskActionRepository = (
     confirmation.targetId === input.targetId &&
     confirmation.scopeHash === input.scopeHash &&
     confirmation.requestHash === input.requestHash &&
-    confirmation.secretCommitment === input.grantCommitment;
+    confirmation.secretCommitment === input.grantCommitment &&
+    confirmation.approvalTier === input.approvalTier;
+
+  const issueActionGrant = async (
+    tx: KoedDb,
+    confirmation: BrowserConfirmationRow
+  ): Promise<ActionGrantRow> => {
+    const [grant] = await tx
+      .insert(highRiskDeviceActionGrants)
+      .values({
+        confirmationId: confirmation.id,
+        deviceCredentialId: confirmation.deviceCredentialId,
+        ownerUserId: confirmation.ownerUserId,
+        upstreamBackendId: confirmation.upstreamBackendId,
+        teamId: confirmation.teamId,
+        operationFamily: confirmation.operationFamily,
+        action: confirmation.action,
+        targetId: confirmation.targetId,
+        scopeHash: confirmation.scopeHash,
+        requestHash: confirmation.requestHash,
+        secretCommitment: confirmation.secretCommitment,
+        expiresAt: sql`least(
+          ${confirmation.expiresAt},
+          now() + (${actionGrantTtlMs}::bigint * interval '1 millisecond')
+        )`
+      })
+      .returning();
+    if (!grant) {
+      throw new Error("Action Grant issuance did not return a record");
+    }
+    return grant;
+  };
+
+  const issueApprovedActionGrant = async (
+    tx: KoedDb,
+    input: {
+      confirmation: BrowserConfirmationRow;
+      actorUserId: string;
+      confirmationAuditAction?:
+        | "high_risk.browser_confirmation.approved"
+        | "high_risk.native_review.approved";
+    }
+  ): Promise<HighRiskActionGrantBindingRecord> => {
+    const grant = await issueActionGrant(tx, input.confirmation);
+    if (input.confirmationAuditAction) {
+      await insertAudit(tx, {
+        actorUserId: input.actorUserId,
+        ownerUserId: input.confirmation.ownerUserId,
+        teamId: input.confirmation.teamId,
+        action: input.confirmationAuditAction,
+        targetTable: "high_risk_browser_confirmations",
+        targetId: input.confirmation.id,
+        metadata: confirmationAuditMetadata(input.confirmation, {
+          actionGrantId: grant.id
+        })
+      });
+    }
+    await insertAudit(tx, {
+      actorUserId: input.actorUserId,
+      ownerUserId: grant.ownerUserId,
+      teamId: grant.teamId,
+      action: "high_risk.action_grant.issued",
+      targetTable: "high_risk_device_action_grants",
+      targetId: grant.id,
+      metadata: grantAuditMetadata(grant, {
+        approvalTier: input.confirmation.approvalTier
+      })
+    });
+    await notifyActionGrantWithDb(tx, input.confirmation.clientRequestId);
+    return mapBindingRecord(input.confirmation, grant);
+  };
 
   return {
     async createActionGrant(input) {
@@ -702,6 +790,21 @@ export const createHighRiskActionRepository = (
       validateGrantCommitment(input.grantCommitment);
       validateOperationBinding(input);
       validateCredentialOperationFamily(input);
+      if (
+        input.approvalTier !== "direct" &&
+        input.approvalTier !== "native_review" &&
+        input.approvalTier !== "step_up"
+      ) {
+        throw new Error("Action approval tier is invalid");
+      }
+      const review = input.review
+        ? collaborationApprovalReviewSchema.parse(input.review)
+        : null;
+      if ((input.approvalTier === "direct") !== (review === null)) {
+        throw new Error(
+          "Direct actions must omit review copy and reviewed actions must include it"
+        );
+      }
       const createdAt = new Date();
 
       return db.transaction(async (tx) => {
@@ -754,6 +857,11 @@ export const createHighRiskActionRepository = (
             scopeHash: input.scopeHash,
             requestHash: input.requestHash,
             secretCommitment: input.grantCommitment,
+            approvalTier: input.approvalTier,
+            reviewSummary: review,
+            ...(input.approvalTier === "direct"
+              ? { state: "approved" as const, decidedAt: createdAt }
+              : {}),
             createdAt,
             expiresAt: new Date(createdAt.getTime() + confirmationTtlMs)
           })
@@ -787,7 +895,13 @@ export const createHighRiskActionRepository = (
           metadata: confirmationAuditMetadata(confirmation!)
         });
 
-        return mapBindingRecord(confirmation!, null);
+        if (confirmation!.approvalTier !== "direct") {
+          return mapBindingRecord(confirmation!, null);
+        }
+        return issueApprovedActionGrant(tx, {
+          confirmation: confirmation!,
+          actorUserId: input.ownerUserId
+        });
       });
     },
 
@@ -976,7 +1090,8 @@ export const createHighRiskActionRepository = (
         .where(
           and(
             eq(highRiskBrowserConfirmations.selector, input.selector),
-            eq(highRiskBrowserConfirmations.ownerUserId, input.ownerUserId)
+            eq(highRiskBrowserConfirmations.ownerUserId, input.ownerUserId),
+            eq(highRiskBrowserConfirmations.approvalTier, "step_up")
           )
         )
         .limit(1);
@@ -1029,6 +1144,7 @@ export const createHighRiskActionRepository = (
         const current = existing[0];
         if (
           !current ||
+          current.confirmation.approvalTier !== "step_up" ||
           current.confirmation.state !== "pending" ||
           current.grant !== null ||
           current.confirmation.expiresAt.getTime() <= Date.now()
@@ -1093,50 +1209,59 @@ export const createHighRiskActionRepository = (
           return null;
         }
 
-        const [grant] = await tx
-          .insert(highRiskDeviceActionGrants)
-          .values({
-            confirmationId: confirmation.id,
-            deviceCredentialId: confirmation.deviceCredentialId,
-            ownerUserId: confirmation.ownerUserId,
-            upstreamBackendId: confirmation.upstreamBackendId,
-            teamId: confirmation.teamId,
-            operationFamily: confirmation.operationFamily,
-            action: confirmation.action,
-            targetId: confirmation.targetId,
-            scopeHash: confirmation.scopeHash,
-            requestHash: confirmation.requestHash,
-            secretCommitment: confirmation.secretCommitment,
-            expiresAt: sql`least(
-              ${confirmation.expiresAt},
-              now() + (${actionGrantTtlMs}::bigint * interval '1 millisecond')
-            )`
-          })
+        return issueApprovedActionGrant(tx, {
+          confirmation,
+          actorUserId: input.ownerUserId,
+          confirmationAuditAction: "high_risk.browser_confirmation.approved"
+        });
+      });
+    },
+
+    async decideNativeActionReview(input) {
+      return db.transaction(async (tx) => {
+        const current = await selectConfirmationWithGrant(tx, input);
+        if (
+          !current ||
+          current.confirmation.approvalTier !== "native_review" ||
+          current.confirmation.state !== "pending" ||
+          current.grant !== null ||
+          current.confirmation.expiresAt.getTime() <= Date.now()
+        ) {
+          return null;
+        }
+
+        const [confirmation] = await tx
+          .update(highRiskBrowserConfirmations)
+          .set({ decidedAt: sql`now()`, state: "approved" })
+          .where(
+            and(
+              eq(
+                highRiskBrowserConfirmations.clientRequestId,
+                input.clientRequestId
+              ),
+              eq(highRiskBrowserConfirmations.ownerUserId, input.ownerUserId),
+              eq(
+                highRiskBrowserConfirmations.deviceCredentialId,
+                input.deviceCredentialId
+              ),
+              eq(
+                highRiskBrowserConfirmations.upstreamBackendId,
+                input.upstreamBackendId
+              ),
+              eq(highRiskBrowserConfirmations.approvalTier, "native_review"),
+              eq(highRiskBrowserConfirmations.state, "pending"),
+              isNull(highRiskBrowserConfirmations.decidedAt),
+              gt(highRiskBrowserConfirmations.expiresAt, sql`now()`)
+            )
+          )
           .returning();
+        if (!confirmation) return null;
 
-        await insertAudit(tx, {
+        return issueApprovedActionGrant(tx, {
+          confirmation,
           actorUserId: input.ownerUserId,
-          ownerUserId: confirmation.ownerUserId,
-          teamId: confirmation.teamId,
-          action: "high_risk.browser_confirmation.approved",
-          targetTable: "high_risk_browser_confirmations",
-          targetId: confirmation.id,
-          metadata: confirmationAuditMetadata(confirmation, {
-            actionGrantId: grant!.id
-          })
+          confirmationAuditAction: "high_risk.native_review.approved"
         });
-        await insertAudit(tx, {
-          actorUserId: input.ownerUserId,
-          ownerUserId: grant!.ownerUserId,
-          teamId: grant!.teamId,
-          action: "high_risk.action_grant.issued",
-          targetTable: "high_risk_device_action_grants",
-          targetId: grant!.id,
-          metadata: grantAuditMetadata(grant!)
-        });
-        await notifyActionGrantWithDb(tx, confirmation.clientRequestId);
-
-        return mapBindingRecord(confirmation, grant!);
       });
     },
 

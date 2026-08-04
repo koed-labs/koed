@@ -3548,7 +3548,9 @@ export const registerCollaborationCommandRoute = (
                   input.command.input.intent.intent ===
                     "collaboration.preview_shared_memory" ||
                   input.command.input.intent.intent ===
-                    "collaboration.consent_shared_memory"
+                    "collaboration.share_memory" ||
+                  input.command.input.intent.intent ===
+                    "collaboration.change_shared_memory_representation"
                 ) {
                   return ["share_grant_management"] as const;
                 }

@@ -206,6 +206,8 @@ export {
   collaborationActionGrantIntentSchema,
   collaborationActionGrantReferenceSchema,
   collaborationActionGrantStatusSchema,
+  collaborationApprovalReviewSchema,
+  collaborationApprovalTierSchema,
   collaborationBackendIdentitySchema,
   collaborationCommandResultSchema,
   collaborationConnectionEventSchema,
@@ -265,6 +267,8 @@ export type {
   CollaborationActionGrantIntent,
   CollaborationActionGrantReference,
   CollaborationActionGrantStatus,
+  CollaborationApprovalReview,
+  CollaborationApprovalTier,
   CollaborationBackendIdentity,
   CollaborationCommandResult,
   CollaborationConnection,
@@ -412,6 +416,7 @@ export {
   deleteUpstreamCredentialSecret,
   desktopLocalCredentialReferenceFor,
   localEdgeClientCredentialReferenceFor,
+  markCollaborationActionGrantCustodyAmbiguous,
   parseUpstreamCredentialReference,
   readCollaborationActionGrantCustodyCommitmentHash,
   readCollaborationActionGrantCustodyStatus,
@@ -438,8 +443,10 @@ export {
   sharedMemoryGrantManagementRequestHash,
   sharedMemoryGrantManagementScopeHash,
   sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryShareBundleActionGrantBinding,
   sharedMemoryShareActionGrantBinding
 } from "./shared-memory-action-grant.js";
 export type {

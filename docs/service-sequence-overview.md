@@ -269,8 +269,15 @@ tests, and future route review. It distinguishes:
   accept either a browser session or a scoped enrolled device credential.
   Browser session is the preferred identity for interactive Team operations.
   Device-mediated administration requires the narrow `action_grant` family
-  plus an exact, short-lived, browser-confirmed Action Grant; the device
-  credential never receives reusable `admin` authority.
+  plus an exact, short-lived Action Grant. The Team Backend selects Direct,
+  Native review, or independently authenticated browser Step-up from the
+  allowlisted action and authoritative current state; the device credential
+  never receives reusable `admin` authority.
+  For a reviewed Managed Conversation handoff or fork, the enrolled target
+  runner obtains its exact source-download authorization through the validated
+  operation route without a second interactive approval. That authorization
+  remains bound to the initiating operation, source generation, target
+  deployment, segment boundary, recipient key, and target device credential.
 - `conditional_team_session_or_device`: personal recall/graph routes that
   accept an API Token only for personal scope and require a browser session or
   scoped enrolled device credential before a Team Workspace request can fail

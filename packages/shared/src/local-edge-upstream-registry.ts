@@ -193,11 +193,13 @@ export const readLocalEdgeUpstreamEnrollmentBinding = (
         ) {
           return false;
         }
-        return (candidate as Record<string, unknown>).backendId === backendId;
+        const enrollment = candidate as Record<string, unknown>;
+        return (
+          enrollment.backendId === backendId && enrollment.state === "exchanged"
+        );
       });
     if (
       !record ||
-      record.state !== "exchanged" ||
       typeof record.requestId !== "string" ||
       !record.requestId.trim() ||
       typeof record.deviceCredentialId !== "string" ||

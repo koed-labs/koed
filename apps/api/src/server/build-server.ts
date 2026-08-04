@@ -898,6 +898,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerHighRiskRoutes(app, {
     requireRepository,
+    hashSecret,
     authenticateSessionContext: authHelpers.authenticateSessionContext,
     authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,
     rateLimit: {

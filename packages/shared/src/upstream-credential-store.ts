@@ -21,7 +21,11 @@ import {
 import { dirname, resolve } from "node:path";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import {
+  collaborationApprovalReviewSchema,
+  collaborationApprovalTierSchema,
   collaborationSafeErrorSchema,
+  type CollaborationApprovalReview,
+  type CollaborationApprovalTier,
   type CollaborationSafeError
 } from "./collaboration-contract.js";
 import { highRiskActionGrantCommitmentHash } from "./high-risk-action-grant-commitment.js";
@@ -98,6 +102,7 @@ export type CollaborationActionGrantMethod =
   | "DELETE";
 export type CollaborationActionGrantState =
   | "pending"
+  | "review_required"
   | "approved"
   | "consumed"
   | "denied"
@@ -146,6 +151,8 @@ export interface CollaborationActionGrantResolveInput extends CollaborationActio
 export interface CollaborationActionGrantStatusRecord {
   version: 1;
   actionGrant: { id: string };
+  approvalTier: CollaborationApprovalTier;
+  review: CollaborationApprovalReview | null;
   state: CollaborationActionGrantState;
   activationUrl: string | null;
   expiresAt: string;
@@ -189,18 +196,43 @@ interface StoredActionGrantMetadata {
   expiresAt: string;
 }
 
-interface StoredActionGrantRecord {
+interface StoredActionGrantRecordBase {
   schemaVersion: 1;
   referenceId: string;
   commitmentHash: string;
-  state: CollaborationActionGrantState;
-  activationUrl: string | null;
-  ambiguousUntil: string | null;
   createdAt: string;
   updatedAt: string;
   metadata: StoredActionGrantMetadata;
   envelope: StoredSecretEnvelope;
 }
+
+type StoredActionGrantRecord = StoredActionGrantRecordBase &
+  (
+    | {
+        lifecycle: "unclassified";
+        approvalTier: null;
+        review: null;
+        state: null;
+        activationUrl: null;
+        ambiguousUntil: null;
+      }
+    | {
+        lifecycle: "classified";
+        approvalTier: CollaborationApprovalTier;
+        review: CollaborationApprovalReview | null;
+        state: CollaborationActionGrantState;
+        activationUrl: string | null;
+        ambiguousUntil: null;
+      }
+    | {
+        lifecycle: "ambiguous";
+        approvalTier: CollaborationApprovalTier | null;
+        review: CollaborationApprovalReview | null;
+        state: CollaborationActionGrantState | null;
+        activationUrl: string | null;
+        ambiguousUntil: string;
+      }
+  );
 
 export interface CollaborationPendingSendInput {
   ownerId: string;
@@ -1860,6 +1892,7 @@ const actionGrantSecretPattern = /^hrg_[A-Za-z0-9_-]{43}$/;
 const sha256HexPattern = /^[a-f0-9]{64}$/;
 const actionGrantStateSet = new Set<CollaborationActionGrantState>([
   "pending",
+  "review_required",
   "approved",
   "consumed",
   "denied",
@@ -2018,13 +2051,18 @@ const createActionGrantSecret = (deps: ResolvedStoreDeps): string => {
 
 const actionGrantStatusRecord = (
   record: StoredActionGrantRecord
-): CollaborationActionGrantStatusRecord => ({
-  version: 1,
-  actionGrant: { id: record.referenceId },
-  state: record.state,
-  activationUrl: record.activationUrl,
-  expiresAt: record.metadata.expiresAt
-});
+): CollaborationActionGrantStatusRecord | null =>
+  record.approvalTier === null || record.state === null
+    ? null
+    : {
+        version: 1,
+        actionGrant: { id: record.referenceId },
+        approvalTier: record.approvalTier,
+        review: record.review,
+        state: record.state,
+        activationUrl: record.activationUrl,
+        expiresAt: record.metadata.expiresAt
+      };
 
 const storedString = (value: unknown, field: string): string => {
   if (typeof value !== "string") {
@@ -2061,11 +2099,14 @@ const parseStoredActionGrantRecord = (
       storedString(metadata.deploymentBaseUrl, "deploymentBaseUrl")
     );
     const parsedReferenceId = validateActionGrantReferenceId(referenceId);
-    const stateRaw = storedString(record.state, "state");
-    if (!actionGrantStateSet.has(stateRaw as CollaborationActionGrantState)) {
-      return null;
-    }
-    const state = stateRaw as CollaborationActionGrantState;
+    const stateRaw = record.state;
+    const state =
+      stateRaw === null
+        ? null
+        : actionGrantStateSet.has(stateRaw as CollaborationActionGrantState)
+          ? (stateRaw as CollaborationActionGrantState)
+          : null;
+    if (stateRaw !== null && state === null) return null;
     const commitmentHash = storedString(
       record.commitmentHash,
       "commitmentHash"
@@ -2074,25 +2115,72 @@ const parseStoredActionGrantRecord = (
       return null;
     }
     const ambiguousUntilRaw = record.ambiguousUntil;
+    const lifecycle =
+      record.lifecycle === "unclassified" ||
+      record.lifecycle === "classified" ||
+      record.lifecycle === "ambiguous"
+        ? record.lifecycle
+        : ambiguousUntilRaw !== null
+          ? "ambiguous"
+          : record.review !== null || (state !== null && state !== "pending")
+            ? "classified"
+            : "unclassified";
     const activationUrl = validateActionGrantActivationUrl(
       record.activationUrl === null
         ? null
         : storedString(record.activationUrl, "activationUrl"),
       deployment.origin
     );
-    const parsed: StoredActionGrantRecord = {
+    const classification =
+      lifecycle === "unclassified"
+        ? {
+            lifecycle,
+            approvalTier: null,
+            review: null,
+            state: null,
+            activationUrl: null,
+            ambiguousUntil: null
+          }
+        : {
+            lifecycle,
+            approvalTier:
+              record.approvalTier === null
+                ? null
+                : collaborationApprovalTierSchema.parse(record.approvalTier),
+            review:
+              record.review === null
+                ? null
+                : collaborationApprovalReviewSchema.parse(record.review),
+            state,
+            activationUrl,
+            ambiguousUntil:
+              ambiguousUntilRaw === null
+                ? null
+                : validateCanonicalTimestamp(
+                    storedString(ambiguousUntilRaw, "ambiguousUntil"),
+                    "ambiguousUntil"
+                  )
+          };
+    if (
+      lifecycle === "classified" &&
+      (classification.approvalTier === null ||
+        classification.state === null ||
+        classification.ambiguousUntil !== null)
+    ) {
+      return null;
+    }
+    if (
+      lifecycle === "ambiguous" &&
+      (classification.ambiguousUntil === null ||
+        (classification.approvalTier === null) !==
+          (classification.state === null))
+    ) {
+      return null;
+    }
+    const base = {
       schemaVersion: 1,
       referenceId: parsedReferenceId,
       commitmentHash,
-      state,
-      activationUrl,
-      ambiguousUntil:
-        ambiguousUntilRaw === null
-          ? null
-          : validateCanonicalTimestamp(
-              storedString(ambiguousUntilRaw, "ambiguousUntil"),
-              "ambiguousUntil"
-            ),
       createdAt: validateCanonicalTimestamp(
         storedString(record.createdAt, "createdAt"),
         "createdAt"
@@ -2182,6 +2270,10 @@ const parseStoredActionGrantRecord = (
         )
       }
     };
+    const parsed = {
+      ...base,
+      ...classification
+    } as StoredActionGrantRecord;
     if (
       !sha256HexPattern.test(parsed.metadata.bodyHash) ||
       !sha256HexPattern.test(parsed.metadata.requestHash) ||
@@ -2285,7 +2377,6 @@ export const storeCollaborationActionGrantCustody = (
   referenceId: string;
   secret: string;
   commitmentHash: string;
-  status: CollaborationActionGrantStatusRecord;
 } => {
   const resolvedDeps = depsWithDefaults(deps);
   const referenceId = validateActionGrantReferenceId(input.referenceId);
@@ -2358,7 +2449,10 @@ export const storeCollaborationActionGrantCustody = (
       schemaVersion: 1,
       referenceId,
       commitmentHash,
-      state: "pending",
+      lifecycle: "unclassified",
+      approvalTier: null,
+      review: null,
+      state: null,
       activationUrl: null,
       ambiguousUntil: null,
       createdAt: now,
@@ -2379,8 +2473,7 @@ export const storeCollaborationActionGrantCustody = (
       result: {
         referenceId,
         secret,
-        commitmentHash,
-        status: actionGrantStatusRecord(record)
+        commitmentHash
       },
       changed: true
     };
@@ -2443,11 +2536,50 @@ export const readCollaborationActionGrantCustodyCommitmentHash = (
   });
 };
 
+export const markCollaborationActionGrantCustodyAmbiguous = (
+  koedHome: string,
+  input: CollaborationActionGrantAccessInput & { ambiguousUntil: string },
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): boolean => {
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(koedHome, resolvedDeps, (store) => {
+    const record = readParsedActionGrantRecord(store, input.referenceId);
+    if (!record) return { result: false, changed: false };
+    if (!validateActionGrantAccess(record, input)) {
+      deleteActionGrantRecord(store, record.referenceId);
+      store.updatedAt = resolvedDeps.now().toISOString();
+      return { result: false, changed: true };
+    }
+    const nowIso = resolvedDeps.now().toISOString();
+    const ambiguousUntil = validateCanonicalTimestamp(
+      input.ambiguousUntil,
+      "ambiguousUntil"
+    );
+    if (ambiguousUntil <= nowIso) return { result: false, changed: false };
+    const ambiguous: StoredActionGrantRecord = {
+      ...record,
+      lifecycle: "ambiguous",
+      approvalTier: record.approvalTier,
+      review: record.review,
+      state: record.state,
+      activationUrl: record.activationUrl,
+      ambiguousUntil,
+      updatedAt: nowIso
+    };
+    store.actionGrants[record.referenceId] = ambiguous;
+    store.updatedAt = nowIso;
+    return { result: true, changed: true };
+  });
+};
+
 export const updateCollaborationActionGrantCustodyStatus = (
   koedHome: string,
-  input:
+  input: {
+    approvalTier?: CollaborationApprovalTier;
+    review?: CollaborationApprovalReview | null;
+  } & (
     | (CollaborationActionGrantAccessInput & {
-        state: "pending";
+        state: "pending" | "review_required";
         activationUrl: string | null;
         ambiguousUntil?: string | null;
         expiresAt?: string;
@@ -2459,9 +2591,13 @@ export const updateCollaborationActionGrantCustodyStatus = (
         expiresAt?: string;
       })
     | (CollaborationActionGrantAccessInput & {
-        state: Exclude<CollaborationActionGrantState, "pending" | "approved">;
+        state: Exclude<
+          CollaborationActionGrantState,
+          "pending" | "review_required" | "approved"
+        >;
         expiresAt?: string;
-      }),
+      })
+  ),
   deps: UpstreamCredentialSecretStoreDeps = {}
 ): CollaborationActionGrantStatusRecord | null => {
   const resolvedDeps = depsWithDefaults(deps);
@@ -2474,6 +2610,19 @@ export const updateCollaborationActionGrantCustodyStatus = (
       return { result: null, changed: true };
     }
     const nowIso = resolvedDeps.now().toISOString();
+    const approvalTier = input.approvalTier ?? record.approvalTier;
+    const review =
+      input.review === undefined
+        ? record.review
+        : input.review
+          ? collaborationApprovalReviewSchema.parse(input.review)
+          : null;
+    if (
+      approvalTier === null ||
+      (approvalTier === "direct") !== (review === null)
+    ) {
+      return { result: null, changed: false };
+    }
     if (
       input.state === "consumed" ||
       input.state === "denied" ||
@@ -2488,6 +2637,8 @@ export const updateCollaborationActionGrantCustodyStatus = (
       const status: CollaborationActionGrantStatusRecord = {
         version: 1,
         actionGrant: { id: record.referenceId },
+        approvalTier,
+        review,
         state: input.state,
         activationUrl: null,
         expiresAt
@@ -2510,6 +2661,8 @@ export const updateCollaborationActionGrantCustodyStatus = (
       ...record.metadata
     } satisfies StoredActionGrantMetadata;
     record.state = input.state;
+    record.approvalTier = approvalTier;
+    record.review = review;
     record.activationUrl =
       input.state === "pending"
         ? input.activationUrl === null
@@ -2556,6 +2709,7 @@ export const updateCollaborationActionGrantCustodyStatus = (
       }
     }
     record.ambiguousUntil = ambiguousUntil;
+    record.lifecycle = ambiguousUntil ? "ambiguous" : "classified";
     record.updatedAt = nowIso;
     store.actionGrants[record.referenceId] = record;
     store.updatedAt = nowIso;

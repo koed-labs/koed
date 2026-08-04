@@ -185,3 +185,36 @@ outbox failures fail closed. The route and credential rules are enumerated in
 [Team Collaboration Action And Credential Matrix](team-collaboration-action-credential-matrix.md),
 and the complete service boundary is in
 [Team Collaboration Architecture](team-collaboration.md).
+
+## Tiered Desktop Action Approval
+
+Koed separates exact Action Grant issuance from the User-facing approval
+ceremony. The Team Backend owns an exhaustive action policy and persists the
+selected `direct`, `native_review`, or `step_up` tier with display-safe review
+copy. The renderer and local edge cannot request or downgrade a tier. Direct
+and Native review address mistakes; Step-up is the independent boundary for a
+compromised renderer, trust establishment, privilege escalation, material
+access expansion/removal, commercial changes, and governance actions.
+
+Every tier retains device/backend binding, exact scope and request hashes,
+short expiry, one-use consumption, replay protection, authoritative execution
+checks, and audit. Browser activation routes accept only stored Step-up grants.
+Terminal browser results are inert, render before any permitted close attempt,
+and expose neither reusable credentials nor Action Grant secrets. See
+[ADR 0024](adr/0024-tiered-desktop-action-approval.md).
+
+Managed Conversation handoff and fork source downloads do not create a second
+interactive ceremony. The enrolled target runner may mint a short-lived exact
+download authorization only through its validated handoff or fork route. The
+authorization persists that initiating operation identity alongside the source
+generation, target deployment, segment boundary, recipient key, and device
+credential. Every segment request revalidates that the initiating operation is
+still active and still binds the same source and target, so cancellation or a
+terminal failure immediately invalidates the capability. Standalone or
+exceptional source downloads remain Step-up.
+
+Upstream credential rotation is a replacement transaction. The active
+credential and Local-Edge Client Credential remain authoritative while a
+replacement challenge is pending. Approval commits the swap and retires the
+predecessor; denial, expiry, or cancellation deletes only the pending material
+and leaves the active connection configured.

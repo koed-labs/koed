@@ -53,6 +53,7 @@ import type {
   TeamBillingSeatStateRecord,
   TeamBillingSeatSyncStatus,
   TeamInviteRecord,
+  TeamInviteReviewRecord,
   TeamInviteLifecycle,
   TeamEntitlementGateRecord,
   TeamEntitlementStatus,
@@ -733,9 +734,10 @@ export const createTeamAccessRepository = (
     );
   };
 
-  const getDefaultTeamWorkspaceForUpdate = async (
+  const getTeamWorkspaceForUpdate = async (
     tx: TeamAccessTransaction,
-    teamId: string
+    teamId: string,
+    teamWorkspaceId: string
   ) => {
     const rows = await tx
       .select({
@@ -743,8 +745,12 @@ export const createTeamAccessRepository = (
         lifecycle: teamWorkspaces.lifecycle
       })
       .from(teamWorkspaces)
-      .where(eq(teamWorkspaces.teamId, teamId))
-      .orderBy(teamWorkspaces.createdAt, teamWorkspaces.id)
+      .where(
+        and(
+          eq(teamWorkspaces.teamId, teamId),
+          eq(teamWorkspaces.id, teamWorkspaceId)
+        )
+      )
       .limit(1)
       .for("update");
 
@@ -3146,9 +3152,10 @@ export const createTeamAccessRepository = (
         ) {
           return null;
         }
-        const defaultWorkspace = await getDefaultTeamWorkspaceForUpdate(
+        const defaultWorkspace = await getTeamWorkspaceForUpdate(
           tx,
-          input.teamId
+          input.teamId,
+          input.defaultTeamWorkspaceId
         );
         if (
           !defaultWorkspace ||
@@ -3274,6 +3281,45 @@ export const createTeamAccessRepository = (
       return rows[0] ? mapInviteRecord(rows[0]) : null;
     },
 
+    async getPendingTeamInviteReviewByTokenHash(
+      tokenHash: string
+    ): Promise<TeamInviteReviewRecord | null> {
+      const rows = await db
+        .select({
+          invite: teamInvites,
+          team: teams,
+          defaultWorkspace: teamWorkspaces
+        })
+        .from(teamInvites)
+        .innerJoin(teams, eq(teams.id, teamInvites.teamId))
+        .innerJoin(
+          teamWorkspaces,
+          eq(teamWorkspaces.id, teamInvites.defaultTeamWorkspaceId)
+        )
+        .where(
+          and(
+            eq(teamInvites.tokenHash, tokenHash),
+            eq(teamInvites.lifecycle, "pending"),
+            gt(teamInvites.expiresAt, sql`now()`),
+            eq(teams.lifecycle, "active"),
+            eq(teamWorkspaces.lifecycle, "active")
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      return row
+        ? {
+            invite: mapInviteRecord(row.invite),
+            team: mapTeamRecord(row.team),
+            defaultWorkspace: {
+              id: row.defaultWorkspace.id,
+              name: row.defaultWorkspace.name,
+              lifecycle: row.defaultWorkspace.lifecycle
+            }
+          }
+        : null;
+    },
+
     async acceptTeamInvite(input: {
       tokenHash: string;
       userId: string;
@@ -3323,9 +3369,10 @@ export const createTeamAccessRepository = (
             return null;
           }
 
-          const defaultWorkspace = await getDefaultTeamWorkspaceForUpdate(
+          const defaultWorkspace = await getTeamWorkspaceForUpdate(
             tx,
-            inviteRow.teamId
+            inviteRow.teamId,
+            inviteRow.defaultTeamWorkspaceId
           );
           if (
             !defaultWorkspace ||

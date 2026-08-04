@@ -140,9 +140,20 @@ const limits = () => ({ ...COLLABORATION_DEFAULT_LIMITS });
 
 const actionGrant = () => ({ id: ids.actionGrant });
 
+const approvalReview = () => ({
+  version: 1 as const,
+  title: "Create Team?",
+  description: "Review the exact Team creation request.",
+  consequence: "A new Team will be created.",
+  confirmLabel: "Create Team",
+  details: []
+});
+
 const pendingActionGrantStatus = () => ({
   version: 1 as const,
   actionGrant: actionGrant(),
+  approvalTier: "step_up" as const,
+  review: approvalReview(),
   state: "pending" as const,
   activationUrl:
     "https://team.example.test/koed/v1/high-risk/browser-activations/00000000-0000-4000-8000-000000000018",
@@ -225,25 +236,6 @@ const preview = () => ({
   itemCount: 1,
   items: [previewItem()],
   nextCursor: null
-});
-
-const consent = () => ({
-  id: ids.consent,
-  logicalMemoryId: ids.logicalMemory,
-  teamId: ids.team,
-  workspaceId: ids.workspace,
-  mode: "continuous" as const,
-  state: "active" as const,
-  version: 1,
-  allowedRepresentations: ["memory_events", "lcm_leaves"] as const,
-  selectedRepresentation: "memory_events" as const,
-  previewRevision: 1,
-  previewHash: "b".repeat(64),
-  sourceRevision: 1,
-  createdAt: timestamp,
-  updatedAt: timestamp,
-  activatedAt: timestamp,
-  revokedAt: null
 });
 
 const grant = () => ({
@@ -797,22 +789,6 @@ describe("collaboration renderer commands", () => {
         }
       },
       {
-        command: "collaboration.consent_shared_memory",
-        input: {
-          consentId: ids.consent,
-          logicalMemoryId: ids.logicalMemory,
-          teamId: ids.team,
-          workspaceId: ids.workspace,
-          mode: "continuous",
-          allowedRepresentations: ["memory_events", "lcm_leaves"],
-          selectedRepresentation: "memory_events",
-          previewRevision: 1,
-          previewHash: "b".repeat(64),
-          expiresAt: null,
-          actionGrant: actionGrant()
-        }
-      },
-      {
         command: "collaboration.share_memory",
         input: {
           mutationId: ids.mutation,
@@ -821,6 +797,12 @@ describe("collaboration renderer commands", () => {
           teamId: ids.team,
           workspaceId: ids.workspace,
           consentId: ids.consent,
+          mode: "continuous",
+          allowedRepresentations: ["memory_events", "lcm_leaves"],
+          selectedRepresentation: "memory_events",
+          previewRevision: 1,
+          previewHash: "b".repeat(64),
+          expiresAt: null,
           actionGrant: actionGrant()
         }
       },
@@ -840,12 +822,18 @@ describe("collaboration renderer commands", () => {
         command: "collaboration.change_shared_memory_representation",
         input: {
           mutationId: ids.mutation,
+          logicalMemoryId: ids.logicalMemory,
           teamId: ids.team,
           workspaceId: ids.workspace,
           shareGrantId: ids.shareGrant,
           consentId: ids.consent,
           representation: "lcm_leaves",
           expectedGrantVersion: 1,
+          mode: "continuous",
+          allowedRepresentations: ["lcm_leaves"],
+          previewRevision: 1,
+          previewHash: "b".repeat(64),
+          expiresAt: null,
           actionGrant: actionGrant()
         }
       }
@@ -930,20 +918,6 @@ describe("collaboration renderer commands", () => {
         allowedRepresentations: ["memory_events", "lcm_leaves"]
       },
       {
-        intent: "collaboration.consent_shared_memory",
-        commandRequestId: ids.mutation,
-        consentId: ids.consent,
-        logicalMemoryId: ids.logicalMemory,
-        teamId: ids.team,
-        workspaceId: ids.workspace,
-        mode: "continuous",
-        allowedRepresentations: ["memory_events", "lcm_leaves"],
-        selectedRepresentation: "memory_events",
-        previewRevision: 1,
-        previewHash: "b".repeat(64),
-        expiresAt: null
-      },
-      {
         intent: "collaboration.share_memory",
         commandRequestId: ids.mutation,
         mutationId: ids.mutation,
@@ -951,7 +925,13 @@ describe("collaboration renderer commands", () => {
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        consentId: ids.consent
+        consentId: ids.consent,
+        mode: "continuous",
+        allowedRepresentations: ["memory_events", "lcm_leaves"],
+        selectedRepresentation: "memory_events",
+        previewRevision: 1,
+        previewHash: "b".repeat(64),
+        expiresAt: null
       },
       {
         intent: "collaboration.revoke_shared_memory",
@@ -967,12 +947,18 @@ describe("collaboration renderer commands", () => {
         intent: "collaboration.change_shared_memory_representation",
         commandRequestId: ids.mutation,
         mutationId: ids.mutation,
+        logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
         shareGrantId: ids.shareGrant,
         consentId: ids.consent,
         representation: "lcm_leaves",
-        expectedGrantVersion: 1
+        expectedGrantVersion: 1,
+        mode: "continuous",
+        allowedRepresentations: ["lcm_leaves"],
+        previewRevision: 1,
+        previewHash: "b".repeat(64),
+        expiresAt: null
       }
     ] as const) {
       expect(
@@ -1574,6 +1560,8 @@ describe("collaboration results and realtime", () => {
           status: {
             version: 1,
             actionGrant: actionGrant(),
+            approvalTier: "step_up",
+            review: approvalReview(),
             state: "canceled",
             activationUrl: null,
             expiresAt: timestamp
@@ -1661,10 +1649,6 @@ describe("collaboration results and realtime", () => {
       {
         command: "collaboration.load_shared_memory_preview_page",
         data: { preview: preview() }
-      },
-      {
-        command: "collaboration.consent_shared_memory",
-        data: { consent: consent() }
       },
       {
         command: "collaboration.share_memory",

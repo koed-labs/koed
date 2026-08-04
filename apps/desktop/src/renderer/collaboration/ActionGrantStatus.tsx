@@ -7,6 +7,7 @@ import { AlertTriangle, Check, Clock, LoaderCircle, X } from "lucide-react";
 
 const stateCopy: Record<CollaborationActionGrantProjection["state"], string> = {
   awaiting_approval: "Waiting for browser approval",
+  awaiting_review: "Waiting for your review",
   approved: "Approved",
   executing: "Applying approved change",
   completed: "Complete",
@@ -32,7 +33,8 @@ export function ActionGrantStatus({
           <span className="desktop-action-grant-icon">
             {grant.state === "completed" ? (
               <Check aria-hidden="true" />
-            ) : grant.state === "awaiting_approval" ? (
+            ) : grant.state === "awaiting_approval" ||
+              grant.state === "awaiting_review" ? (
               <Clock aria-hidden="true" />
             ) : grant.state === "approved" || grant.state === "executing" ? (
               <LoaderCircle aria-hidden="true" />
@@ -46,7 +48,9 @@ export function ActionGrantStatus({
             <strong>{grant.operation}</strong>
             <small>{stateCopy[grant.state]}</small>
           </span>
-          {grant.state === "awaiting_approval" && client.cancelActionGrant ? (
+          {(grant.state === "awaiting_approval" ||
+            grant.state === "awaiting_review") &&
+          client.cancelActionGrant ? (
             <Button
               onClick={() => void client.cancelActionGrant?.(grant.id)}
               size="sm"

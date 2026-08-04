@@ -217,11 +217,15 @@ export const registerConversationSourceRestoreRoutes = (
           ? {
               ...custodyAccess,
               state: "approved",
+              approvalTier: remote.status.approvalTier,
+              review: remote.status.review,
               expiresAt: remote.status.expiresAt
             }
           : {
               ...custodyAccess,
               state: "pending",
+              approvalTier: remote.status.approvalTier,
+              review: remote.status.review,
               activationUrl,
               expiresAt: remote.status.expiresAt
             }
@@ -283,6 +287,8 @@ export const registerConversationSourceRestoreRoutes = (
       updateCollaborationActionGrantCustodyStatus(context.config.koedHome, {
         ...custodyAccess,
         state: "approved",
+        approvalTier: status.approvalTier,
+        review: status.review,
         expiresAt: status.expiresAt
       });
       const grant = resolveCollaborationActionGrantSecret(
@@ -465,11 +471,15 @@ export const registerConversationSourceRestoreRoutes = (
           ? {
               ...custodyAccess,
               state: "approved",
+              approvalTier: remote.status.approvalTier,
+              review: remote.status.review,
               expiresAt: remote.status.expiresAt
             }
           : {
               ...custodyAccess,
               state: "pending",
+              approvalTier: remote.status.approvalTier,
+              review: remote.status.review,
               activationUrl,
               expiresAt: remote.status.expiresAt
             }
@@ -568,6 +578,8 @@ export const registerConversationSourceRestoreRoutes = (
       updateCollaborationActionGrantCustodyStatus(context.config.koedHome, {
         ...custodyAccess,
         state: "approved",
+        approvalTier: status.approvalTier,
+        review: status.review,
         expiresAt: status.expiresAt
       });
       const grant = resolveCollaborationActionGrantSecret(

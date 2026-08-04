@@ -72,6 +72,13 @@ Supported mode fields:
   deletion reembedding, but does not start Cross-Identity Sync, retention purge,
   collaboration replay pruning, or other Team collaboration jobs. Restart both
   API and Worker after changing the value.
+- `KOED_DEVELOPER_TEAM_BACKEND_ENABLED`: an isolated local-testing switch that
+  lets the `developer` deployment profile truthfully advertise and serve the
+  Team backend capability foundation. It accepts only `true` or `false`,
+  defaults to `false`, requires `KOED_TEAM_COLLABORATION_ENABLED=true`, and is
+  ignored by every non-developer deployment profile. Do not enable it for a
+  production deployment. It does not relax the verified WorkOS/AuthKit identity
+  requirement for Team Self-Hosted or Koed-managed cloud.
 
 Authentication providers are part of the deployment capability contract.
 Private VPS and Team Self-Hosted profiles expose local session authentication;

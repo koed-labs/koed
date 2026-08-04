@@ -75,8 +75,10 @@ const buildFixture = async (options?: { enrollmentAvailable?: boolean }) => {
           version: 1,
           actionGrant: { id: request.clientRequestId },
           selector,
-          state: "pending",
-          activationPath: `/v1/high-risk/browser-activations/${selector}`,
+          approvalTier: "direct",
+          review: null,
+          state: "approved",
+          activationPath: null,
           expiresAt: new Date(Date.now() + 60_000).toISOString()
         }
       });
@@ -88,6 +90,8 @@ const buildFixture = async (options?: { enrollmentAvailable?: boolean }) => {
           version: 1,
           actionGrant: { id: requestId },
           selector: randomUUID(),
+          approvalTier: "direct",
+          review: null,
           state: "approved",
           activationPath: null,
           expiresAt: new Date(Date.now() + 60_000).toISOString()

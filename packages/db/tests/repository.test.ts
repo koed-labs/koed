@@ -10819,6 +10819,11 @@ describeDb("memory repository visibility", () => {
       )
     )?.find((candidate) => candidate.name === "General");
     expect(defaultWorkspace).toBeDefined();
+    const invitedWorkspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Invited Workspace" }
+    );
+    expect(invitedWorkspace).not.toBeNull();
 
     const existingTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
     const backendOriginHash = createHash("sha256")
@@ -10828,7 +10833,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         teamId: team.id,
-        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultTeamWorkspaceId: invitedWorkspace!.id,
         defaultWorkspaceAccess: "read",
         email: existingUserEmail.toUpperCase(),
         role: "member",
@@ -10839,7 +10844,7 @@ describeDb("memory repository visibility", () => {
     );
     expect(existingInvite).toMatchObject({
       teamId: team.id,
-      defaultTeamWorkspaceId: defaultWorkspace!.id,
+      defaultTeamWorkspaceId: invitedWorkspace!.id,
       defaultWorkspaceAccess: "read",
       email: existingUserEmail,
       normalizedEmail: existingUserEmail,
@@ -11122,7 +11127,16 @@ describeDb("memory repository visibility", () => {
     const managedMember = managementMembers?.find(
       (member) => member.userId === existingUser.id
     );
-    expect(managedMember?.workspaceAccess).toHaveLength(2);
+    expect(managedMember?.workspaceAccess).toHaveLength(3);
+    expect(
+      managedMember?.workspaceAccess.find(
+        (access) => access.teamWorkspaceId === invitedWorkspace!.id
+      )
+    ).toMatchObject({
+      userId: existingUser.id,
+      access: "read",
+      version: 1
+    });
     expect(
       managedMember?.workspaceAccess.find(
         (access) => access.teamWorkspaceId === defaultWorkspace!.id
@@ -11130,7 +11144,7 @@ describeDb("memory repository visibility", () => {
     ).toMatchObject({
       userId: existingUser.id,
       access: "read",
-      version: 2
+      version: 1
     });
     expect(
       managedMember?.workspaceAccess.find(

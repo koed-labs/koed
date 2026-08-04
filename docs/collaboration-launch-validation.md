@@ -122,10 +122,11 @@ fixture flow below does not reproduce.
    read, and open the active Electron shared session. Confirm Bob cannot read
    Cloud Workspace chat or Memory because his Cloud Workspace Access is
    disabled. Confirm Bob's Personal notes are visible only to Bob.
-3. **Carol, admin:** confirm the Alice/Bob direct message is absent. Exercise
-   one admin action through the browser-confirmed Action Grant flow; confirm a
-   stale, reused, or altered grant is rejected and the successful action is
-   audited once.
+3. **Carol, admin:** confirm the Alice/Bob direct message is absent. Exercise a
+   Direct additive action, a Native-review reversible action, and a Step-up
+   privilege/access-removal action. Confirm only Step-up opens the browser;
+   stale, reused, downgraded, or altered grants are rejected; and each
+   successful action is audited once.
 4. **David, member:** confirm the revoked Electron share is absent while his
    Personal source remains available to David. Confirm no revoked companion
    discussion or representation can be opened.

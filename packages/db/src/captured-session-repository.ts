@@ -46,6 +46,10 @@ export interface CapturedSessionRepository {
     actor: ActorContext,
     sessionId: string
   ): Promise<CapturedSessionSummaryRecord | null>;
+  getCapturedSessionSummaryByLogicalMemoryId(
+    actor: ActorContext,
+    logicalMemoryId: string
+  ): Promise<CapturedSessionSummaryRecord | null>;
   updateCapturedSessionTitle(
     actor: ActorContext,
     sessionId: string,
@@ -928,6 +932,33 @@ export const createCapturedSessionRepository = (
 
   async getCapturedSessionSummary(actor, sessionId) {
     return getCapturedSessionSummaryWithClient(pool, actor, sessionId);
+  },
+
+  async getCapturedSessionSummaryByLogicalMemoryId(actor, logicalMemoryId) {
+    const result = await pool.query<{ local_session_id: string }>(
+      `select logical.local_session_id
+         from logical_memories logical
+         join sessions session
+           on session.id = logical.local_session_id
+          and session.owner_user_id = logical.owner_user_id
+          and session.visibility = 'personal'
+          and session.invalidated_at is null
+          and session.personal_deleted_at is null
+        where logical.id = $2
+          and logical.owner_user_id = $1
+          and logical.owner_principal_id = $1
+          and logical.source_boundary = 'captured_session'
+          and logical.lifecycle in ('active', 'stale')
+        limit 1`,
+      [actor.userId, logicalMemoryId]
+    );
+    return result.rows[0]
+      ? getCapturedSessionSummaryWithClient(
+          pool,
+          actor,
+          result.rows[0].local_session_id
+        )
+      : null;
   },
 
   async listCapturedSessionsNeedingTitles(actor, input = {}) {

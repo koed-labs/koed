@@ -418,6 +418,12 @@ export interface AcceptedTeamInviteRecord {
   createdUser: boolean;
 }
 
+export interface TeamInviteReviewRecord {
+  invite: TeamInviteRecord;
+  team: TeamRecord;
+  defaultWorkspace: Pick<TeamWorkspaceRecord, "id" | "name" | "lifecycle">;
+}
+
 export interface ApiTokenRecord {
   id: string;
   ownerUserId: string;
@@ -851,6 +857,8 @@ export interface ConversationSourceDownloadAuthorizationRecord {
   deviceCredentialId: string;
   artifactId: string;
   recipientKey: Record<string, unknown>;
+  initiatingOperationKind: "handoff" | "fork" | null;
+  initiatingOperationId: string | null;
   firstSegmentIndex: number;
   lastSegmentIndex: number;
   createdAt: string;
@@ -1934,6 +1942,9 @@ export interface MemorySourceRepository
   getPendingTeamInviteByTokenHash(
     tokenHash: string
   ): Promise<TeamInviteRecord | null>;
+  getPendingTeamInviteReviewByTokenHash(
+    tokenHash: string
+  ): Promise<TeamInviteReviewRecord | null>;
   acceptTeamInvite(input: {
     tokenHash: string;
     userId: string;

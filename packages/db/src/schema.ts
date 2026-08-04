@@ -20,6 +20,7 @@ import {
   type AnyPgColumn
 } from "drizzle-orm/pg-core";
 import type {
+  CollaborationApprovalReview,
   EncryptedPayloadEnvelope,
   ManagedConversationTargetReadinessEvidence
 } from "@koed/shared";
@@ -344,6 +345,11 @@ export const highRiskConfirmationState = pgEnum(
   "high_risk_confirmation_state",
   ["pending", "approved", "denied", "expired", "revoked"]
 );
+export const actionApprovalTier = pgEnum("action_approval_tier", [
+  "direct",
+  "native_review",
+  "step_up"
+]);
 export const highRiskActionGrantState = pgEnum("high_risk_action_grant_state", [
   "active",
   "consumed",
@@ -2766,6 +2772,8 @@ export const conversationSourceDownloadAuthorizations = pgTable(
     recipientKey: jsonb("recipient_key")
       .$type<Record<string, unknown>>()
       .notNull(),
+    initiatingOperationKind: text("initiating_operation_kind"),
+    initiatingOperationId: uuid("initiating_operation_id"),
     capabilityHash: text("capability_hash").notNull().unique(),
     firstSegmentIndex: integer("first_segment_index").notNull(),
     lastSegmentIndex: integer("last_segment_index").notNull(),
@@ -2800,6 +2808,12 @@ export const conversationSourceDownloadAuthorizations = pgTable(
       "conversation_source_download_segment_range_check",
       sql`${table.firstSegmentIndex} >= 0
         and ${table.lastSegmentIndex} >= ${table.firstSegmentIndex} - 1`
+    ),
+    check(
+      "conversation_source_download_initiating_operation_check",
+      sql`((${table.initiatingOperationKind} is null and ${table.initiatingOperationId} is null)
+        or (${table.initiatingOperationKind} in ('handoff', 'fork')
+          and ${table.initiatingOperationId} is not null))`
     ),
     check(
       "conversation_source_download_lifecycle_check",
@@ -3841,6 +3855,10 @@ export const highRiskBrowserConfirmations = pgTable(
     scopeHash: text("scope_hash").notNull(),
     requestHash: text("request_hash").notNull(),
     secretCommitment: text("secret_commitment").notNull().unique(),
+    approvalTier: actionApprovalTier("approval_tier")
+      .notNull()
+      .default("step_up"),
+    reviewSummary: jsonb("review_summary").$type<CollaborationApprovalReview>(),
     state: highRiskConfirmationState("state").notNull().default("pending"),
     createdAt: now(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -3887,9 +3905,15 @@ export const highRiskBrowserConfirmations = pgTable(
         and ${table.secretCommitment} ~ '^v1:[0-9A-Fa-f]{64}$'`
     ),
     check(
+      "high_risk_confirmations_approval_review_check",
+      sql`((${table.approvalTier} = 'direct' and ${table.reviewSummary} is null)
+        or (${table.approvalTier} in ('native_review', 'step_up') and ${table.reviewSummary} is not null))`
+    ),
+    check(
       "high_risk_confirmations_time_check",
       sql`${table.expiresAt} > ${table.createdAt}
-        and (${table.decidedAt} is null or ${table.decisionFreshlyAuthenticatedAt} <= ${table.decidedAt})`
+        and (${table.decisionFreshlyAuthenticatedAt} is null
+          or ${table.decisionFreshlyAuthenticatedAt} <= ${table.decidedAt})`
     ),
     check(
       "high_risk_confirmations_lifecycle_check",
@@ -3901,14 +3925,26 @@ export const highRiskBrowserConfirmations = pgTable(
         and ${table.revokedAt} is null
       ) or (
         ${table.state} = 'approved'
-        and ${table.decisionUserSessionId} is not null
-        and ${table.decisionFreshlyAuthenticatedAt} is not null
+        and (
+          (${table.approvalTier} = 'step_up'
+            and ${table.decisionUserSessionId} is not null
+            and ${table.decisionFreshlyAuthenticatedAt} is not null)
+          or (${table.approvalTier} in ('direct', 'native_review')
+            and ${table.decisionUserSessionId} is null
+            and ${table.decisionFreshlyAuthenticatedAt} is null)
+        )
         and ${table.decidedAt} is not null
         and ${table.revokedAt} is null
       ) or (
         ${table.state} = 'denied'
-        and ${table.decisionUserSessionId} is not null
-        and ${table.decisionFreshlyAuthenticatedAt} is not null
+        and (
+          (${table.approvalTier} = 'step_up'
+            and ${table.decisionUserSessionId} is not null
+            and ${table.decisionFreshlyAuthenticatedAt} is not null)
+          or (${table.approvalTier} = 'native_review'
+            and ${table.decisionUserSessionId} is null
+            and ${table.decisionFreshlyAuthenticatedAt} is null)
+        )
         and ${table.decidedAt} is not null
         and ${table.revokedAt} is null
       ) or (

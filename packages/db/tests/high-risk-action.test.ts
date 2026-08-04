@@ -122,6 +122,15 @@ describeDb("high-risk action grants", () => {
       ...operation,
       clientRequestId,
       credentialOperationFamily: "action_grant",
+      approvalTier: "step_up",
+      review: {
+        version: 1,
+        title: "Approve this action?",
+        description: "Review the exact high-risk action binding.",
+        consequence: "The bound action may execute.",
+        confirmLabel: "Approve",
+        details: []
+      },
       grantCommitment: highRiskActionGrantCommitment(actionGrant)
     });
     return {
@@ -195,6 +204,98 @@ describeDb("high-risk action grants", () => {
     await expect(waiting).resolves.toMatchObject({ state: "approved" });
   });
 
+  it("emits equivalent issuance audits and notifications for every approval path", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const listener = await pool.connect();
+    const notified = new Set<string>();
+    listener.on("notification", (message) => {
+      if (
+        message.channel === "koed_high_risk_action_grants" &&
+        message.payload
+      ) {
+        notified.add(message.payload);
+      }
+    });
+    await listener.query("listen koed_high_risk_action_grants");
+    const review = {
+      version: 1 as const,
+      title: "Approve this action?",
+      description: "Review the exact high-risk action binding.",
+      consequence: "The bound action may execute.",
+      confirmLabel: "Approve",
+      details: []
+    };
+
+    try {
+      const directRequestId = randomUUID();
+      const direct = await repository.createActionGrant({
+        ...binding(fixture),
+        targetId: randomUUID(),
+        requestHash: hash("direct issuance"),
+        clientRequestId: directRequestId,
+        credentialOperationFamily: "action_grant",
+        approvalTier: "direct",
+        review: null,
+        grantCommitment: highRiskActionGrantCommitment(createGrantSecret())
+      });
+      expect(direct?.state).toBe("approved");
+
+      const browser = await createGrant(repository, fixture, {
+        ...binding(fixture),
+        targetId: randomUUID(),
+        requestHash: hash("browser issuance")
+      });
+      await repository.decideBrowserActivation({
+        selector: browser.selector!,
+        ownerUserId: fixture.userId,
+        userSessionId: fixture.userSessionId,
+        freshlyAuthenticatedAt: new Date(),
+        decision: "approve"
+      });
+
+      const nativeRequestId = randomUUID();
+      const native = await repository.createActionGrant({
+        ...binding(fixture),
+        targetId: randomUUID(),
+        requestHash: hash("native issuance"),
+        clientRequestId: nativeRequestId,
+        credentialOperationFamily: "action_grant",
+        approvalTier: "native_review",
+        review,
+        grantCommitment: highRiskActionGrantCommitment(createGrantSecret())
+      });
+      expect(native?.state).toBe("pending");
+      await repository.decideNativeActionReview({
+        clientRequestId: nativeRequestId,
+        ownerUserId: fixture.userId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        upstreamBackendId: fixture.upstreamBackendId
+      });
+
+      await delay(20);
+      expect(notified).toEqual(
+        new Set([directRequestId, browser.clientRequestId, nativeRequestId])
+      );
+      const audits = await pool.query<{ approval_tier: string }>(
+        `select metadata ->> 'approvalTier' as approval_tier
+           from audit_events
+          where owner_user_id = $1
+            and action = 'high_risk.action_grant.issued'
+          order by audit_sequence`,
+        [fixture.userId]
+      );
+      expect(audits.rows.map((row) => row.approval_tier).sort()).toEqual([
+        "direct",
+        "native_review",
+        "step_up"
+      ]);
+    } finally {
+      await listener.query("unlisten koed_high_risk_action_grants");
+      listener.release();
+    }
+  });
+
   it("returns one canonical confirmation for concurrent idempotent creation", async () => {
     const fixture = await createFixture();
     const repository = createRepository({ pool });
@@ -205,6 +306,15 @@ describeDb("high-risk action grants", () => {
       ...operation,
       clientRequestId,
       credentialOperationFamily: "action_grant" as const,
+      approvalTier: "step_up" as const,
+      review: {
+        version: 1 as const,
+        title: "Approve this action?",
+        description: "Review the exact high-risk action binding.",
+        consequence: "The bound action may execute.",
+        confirmLabel: "Approve",
+        details: []
+      },
       grantCommitment
     };
 
@@ -531,6 +641,8 @@ describeDb("high-risk action grants", () => {
       ...binding(fixture),
       clientRequestId: randomUUID(),
       credentialOperationFamily: "action_grant",
+      approvalTier: "direct",
+      review: null,
       grantCommitment: `v1:${hash(createGrantSecret())}`
     });
     expect(created).toBeNull();
@@ -544,6 +656,8 @@ describeDb("high-risk action grants", () => {
         ...binding(fixture),
         clientRequestId: randomUUID(),
         credentialOperationFamily: "action_grant",
+        approvalTier: "direct",
+        review: null,
         grantCommitment: `v1:${hash(createGrantSecret())}`
       })
     ).resolves.toBeNull();
