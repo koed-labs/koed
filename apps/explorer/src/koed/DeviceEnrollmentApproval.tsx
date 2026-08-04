@@ -34,7 +34,11 @@ type EnrollmentLoadState =
 
 const operationFamilyLabels: Record<string, string> = {
   admin: "Admin operations",
+  action_grant: "Browser-confirmed actions",
   capture_writes: "Capture writes",
+  managed_execution: "Managed Conversation execution",
+  personal_collaboration_read: "Personal collaboration read access",
+  personal_collaboration_write: "Personal collaboration write access",
   personal_memory_read: "Personal Memory recall",
   share_grant_management: "Share Grant management",
   sync: "Sync",
@@ -42,6 +46,16 @@ const operationFamilyLabels: Record<string, string> = {
   team_chat_write: "Team chat write access",
   team_workspace_read: "Team Workspace recall"
 };
+
+const operationFamilyLabel = (family: string): string =>
+  operationFamilyLabels[family] ??
+  family
+    .split(/[_.:-]+/)
+    .filter(Boolean)
+    .map((word, index) =>
+      index === 0 ? `${word.charAt(0).toUpperCase()}${word.slice(1)}` : word
+    )
+    .join(" ");
 
 const safeMetadataString = (
   metadata: Record<string, unknown>,
@@ -278,7 +292,7 @@ export function DeviceEnrollmentApproval({
             value={
               challenge?.requestedOperationFamilies.length
                 ? challenge.requestedOperationFamilies
-                    .map((family) => operationFamilyLabels[family] ?? family)
+                    .map(operationFamilyLabel)
                     .join(", ")
                 : "No operation families requested"
             }

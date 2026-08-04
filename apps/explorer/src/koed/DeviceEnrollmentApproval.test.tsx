@@ -139,4 +139,35 @@ describe("DeviceEnrollmentApproval", () => {
     expect(container.querySelector('input[type="email"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Session cookie required");
   });
+
+  it("shows readable names for every requested access family", async () => {
+    api.loadChallenge.mockResolvedValue({
+      ...challenge,
+      requestedOperationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write",
+        "team_workspace_read",
+        "team_chat_read",
+        "team_chat_write",
+        "share_grant_management",
+        "sync",
+        "managed_execution",
+        "action_grant",
+        "future_access_family"
+      ]
+    });
+    api.requireSession.mockResolvedValue(undefined);
+
+    await act(async () => {
+      root.render(<DeviceEnrollmentApproval challengeId="challenge-1" />);
+    });
+    await settle();
+
+    expect(container.textContent).toContain(
+      "Personal collaboration read access, Personal collaboration write access, Team Workspace recall, Team chat read access, Team chat write access, Share Grant management, Sync, Managed Conversation execution, Browser-confirmed actions, Future access family"
+    );
+    expect(container.textContent).not.toContain("personal_collaboration_read");
+    expect(container.textContent).not.toContain("managed_execution");
+    expect(container.textContent).not.toContain("action_grant");
+  });
 });
