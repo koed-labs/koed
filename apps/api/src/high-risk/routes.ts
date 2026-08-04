@@ -9,11 +9,10 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthHelpers, HashSecret } from "../auth/session.js";
 import type { RateLimitHandler } from "../infra/rate-limit.js";
 import {
-  highRiskActionDefinitions,
-  highRiskActionGrantOperationFamilyForIntent,
-  highRiskActionGrantRemoteEnvelopeSchema,
-  resolveHighRiskActionGrantOperation
-} from "./action-grant-protocol.js";
+  admitHighRiskActionGrant,
+  highRiskActionGrantOperationFamilyForIntent
+} from "./action-definitions.js";
+import { highRiskActionGrantRemoteEnvelopeSchema } from "./action-grant-protocol.js";
 import {
   createHighRiskActionGrantSchema,
   decideHighRiskBrowserActivationSchema,
@@ -22,14 +21,9 @@ import {
   highRiskActionGrantParamsSchema,
   highRiskBrowserActivationParamsSchema
 } from "./schemas.js";
-import {
-  resolveActionApprovalPolicy,
-  type ActionApprovalPolicyContext
-} from "./approval-policy.js";
 
 const HIGH_RISK_BODY_LIMIT_BYTES = 8 * 1024;
 const HIGH_RISK_ACTION_GRANT_WAIT_MS = 20_000;
-const MANAGED_TARGET_ESTABLISHMENT_MS = 24 * 60 * 60 * 1_000;
 
 type HighRiskRepository = Pick<
   MemorySourceRepository,
@@ -40,20 +34,24 @@ type HighRiskRepository = Pick<
   | "getBrowserActivation"
   | "decideBrowserActivation"
   | "decideNativeActionReview"
-  | "lookupLegalHoldTeamId"
-  | "getTeamWorkspaceAccess"
   | "listTeams"
-  | "listTeamWorkspaces"
-  | "listTeamManagementMembers"
-  | "getPendingTeamInviteReviewByTokenHash"
+  | "getTeamInviteAcceptanceReview"
+  | "getTeamInviteRevocationReview"
+  | "getTeamMembershipActionReview"
+  | "getTeamLeaveReview"
+  | "getTeamWorkspaceCreationReview"
+  | "getTeamWorkspaceLifecycleReview"
+  | "getTeamWorkspaceAccessUpdateReview"
+  | "getSharedMemoryPreviewAdmission"
+  | "getSharedMemoryShareReview"
+  | "getSharedMemoryRevokeReview"
+  | "getSharedMemoryRepresentationChangeReview"
   | "getManagedConversationExecution"
   | "listDeviceCredentials"
   | "getTeamEntitlementGate"
   | "getTeamBillingSeatState"
-  | "getCapturedSessionSummaryByLogicalMemoryId"
-  | "listOwnerGrants"
-  | "readGrantRepresentation"
-  | "listTeamInvites"
+  | "getLegalHoldApprovalReview"
+  | "getTeamInviteCreationReview"
 >;
 
 export interface HighRiskRouteContext {
@@ -143,18 +141,6 @@ const credentialOperationFamilyForGrant = (
         ? "managed_execution"
         : "share_grant_management";
 
-const resolveWorkspaceTeamIdForUser = async (
-  repository: HighRiskRepository,
-  userId: string,
-  teamWorkspaceId: string
-): Promise<string | null> => {
-  const access = await repository.getTeamWorkspaceAccess(
-    { userId },
-    teamWorkspaceId
-  );
-  return access?.teamId ?? null;
-};
-
 const statusResponse = (grant: HighRiskActionGrantBindingRecord) =>
   highRiskActionGrantRemoteEnvelopeSchema.parse({
     status: {
@@ -174,269 +160,6 @@ const statusResponse = (grant: HighRiskActionGrantBindingRecord) =>
       expiresAt: grant.expiresAt
     }
   });
-
-const approvalPolicyContext = async (
-  repository: HighRiskRepository,
-  userId: string,
-  upstreamBackendId: string,
-  currentDeviceInstanceId: string,
-  hashSecret: HashSecret,
-  operation: Awaited<ReturnType<typeof resolveHighRiskActionGrantOperation>>,
-  intent: Parameters<typeof resolveActionApprovalPolicy>[0]
-): Promise<ActionApprovalPolicyContext> => {
-  if (!operation) return {};
-  const actor = { userId };
-  const contextKinds = new Set(
-    highRiskActionDefinitions[intent.action].context
-  );
-  const inviteReview =
-    contextKinds.has("invitation_acceptance") &&
-    intent.action === "team.invite.accept"
-      ? await repository.getPendingTeamInviteReviewByTokenHash(
-          hashSecret(intent.body.inviteToken)
-        )
-      : null;
-  const teamId = operation.teamId ?? inviteReview?.invite.teamId ?? null;
-  const teams =
-    teamId && contextKinds.has("team") ? await repository.listTeams(actor) : [];
-  const team = teamId
-    ? teams.find((candidate) => candidate.id === teamId)
-    : undefined;
-  const workspaces =
-    teamId && contextKinds.has("workspace")
-      ? ((await repository.listTeamWorkspaces(actor, {
-          teamId,
-          includeArchived: true,
-          limit: 100
-        })) ?? [])
-      : [];
-  const workspaceId =
-    "teamWorkspaceId" in intent && typeof intent.teamWorkspaceId === "string"
-      ? intent.teamWorkspaceId
-      : intent.action === "team.invite.create"
-        ? intent.body.defaultTeamWorkspaceId
-        : intent.action === "team.invite.accept"
-          ? (inviteReview?.invite.defaultTeamWorkspaceId ?? null)
-          : null;
-  const workspace = workspaceId
-    ? workspaces.find((candidate) => candidate.id === workspaceId)
-    : undefined;
-  const members =
-    teamId && contextKinds.has("members")
-      ? ((await repository.listTeamManagementMembers(actor, teamId)) ?? [])
-      : [];
-  const targetUserId =
-    "userId" in intent && typeof intent.userId === "string"
-      ? intent.userId
-      : intent.action === "team.workspace.access_update"
-        ? intent.body.userId
-        : null;
-  const member = targetUserId
-    ? members.find((candidate) => candidate.userId === targetUserId)
-    : undefined;
-  const revokedInvitation =
-    contextKinds.has("revoked_invitation") &&
-    intent.action === "team.invite.revoke" &&
-    teamId
-      ? (
-          await repository.listTeamInvites(actor, {
-            teamId,
-            includeRevoked: false,
-            limit: 100
-          })
-        )?.invites.find((invite) => invite.id === intent.inviteId)
-      : null;
-  const currentWorkspaceAccess =
-    intent.action === "team.workspace.access_update" && workspaceId && member
-      ? (member.workspaceAccess.find(
-          (access) => access.teamWorkspaceId === workspaceId
-        )?.access ?? "disabled")
-      : undefined;
-  const managedContext =
-    contextKinds.has("managed_conversation") &&
-    (intent.action === "managed_conversation.handoff" ||
-      intent.action === "managed_conversation.fork")
-      ? await (async () => {
-          const [execution, credentials] = await Promise.all([
-            repository.getManagedConversationExecution(
-              actor,
-              intent.executionId
-            ),
-            repository.listDeviceCredentials(actor, { upstreamBackendId })
-          ]);
-          const active = credentials.filter(
-            (credential) =>
-              credential.revokedAt === null &&
-              (credential.expiresAt === null ||
-                Date.parse(credential.expiresAt) > Date.now()) &&
-              credential.operationFamilies.includes("sync") &&
-              credential.operationFamilies.includes("managed_execution")
-          );
-          const targets = active.filter(
-            (credential) =>
-              credential.deviceInstanceId === intent.body.targetDeviceId
-          );
-          const source = execution
-            ? active.find(
-                (credential) =>
-                  credential.deviceInstanceId === execution.runnerDeviceId
-              )
-            : undefined;
-          const deploymentIds = new Set(
-            targets.map(
-              (credential) => credential.metadata.protocolDeploymentId
-            )
-          );
-          const hasOneValidDeployment =
-            deploymentIds.size === 1 &&
-            typeof [...deploymentIds][0] === "string";
-          const target =
-            targets.length > 0 && hasOneValidDeployment
-              ? targets.reduce((oldest, candidate) =>
-                  Date.parse(candidate.createdAt) < Date.parse(oldest.createdAt)
-                    ? candidate
-                    : oldest
-                )
-              : undefined;
-          return {
-            targetDeviceTrusted:
-              Boolean(
-                execution &&
-                execution.state === "running" &&
-                execution.runnerDeviceId === currentDeviceInstanceId &&
-                target
-              ) &&
-              execution!.runnerDeviceId !== intent.body.targetDeviceId &&
-              Date.parse(target!.createdAt) <=
-                Date.now() - MANAGED_TARGET_ESTABLISHMENT_MS,
-            currentDevice: source?.deviceLabel ?? execution?.runnerDeviceId,
-            targetDevice: target?.deviceLabel ?? intent.body.targetDeviceId
-          };
-        })()
-      : null;
-  const entitlement =
-    contextKinds.has("entitlement") &&
-    intent.action === "team.entitlement.update" &&
-    teamId
-      ? await repository.getTeamEntitlementGate(actor, teamId)
-      : null;
-  const billingSeats =
-    contextKinds.has("billing_seats") &&
-    intent.action === "team.billing_seats.update" &&
-    teamId
-      ? await repository.getTeamBillingSeatState(actor, teamId)
-      : null;
-  const representationGrant =
-    contextKinds.has("representation_grant") &&
-    intent.action === "shared_memory.change_representation"
-      ? (
-          await repository.listOwnerGrants(actor, {
-            logicalMemoryId: intent.logicalMemoryId,
-            limit: 100,
-            offset: 0
-          })
-        ).entries.find((grant) => grant.id === intent.shareGrantId)
-      : null;
-  const revokedGrant =
-    contextKinds.has("revoked_grant") &&
-    intent.action === "shared_memory.revoke"
-      ? await repository.readGrantRepresentation(actor, {
-          shareGrantId: intent.shareGrantId
-        })
-      : null;
-  const sharedMemoryLogicalId =
-    intent.action === "shared_memory.share" ||
-    intent.action === "shared_memory.change_representation"
-      ? intent.logicalMemoryId
-      : intent.action === "shared_memory.revoke"
-        ? (revokedGrant?.grant.logicalMemoryId ?? null)
-        : null;
-  const sharedMemorySource =
-    contextKinds.has("shared_memory_source") && sharedMemoryLogicalId
-      ? await repository.getCapturedSessionSummaryByLogicalMemoryId(
-          actor,
-          sharedMemoryLogicalId
-        )
-      : null;
-  return {
-    ...(intent.action === "team.member.role_update"
-      ? { currentMemberRole: member?.role ?? null }
-      : {}),
-    ...(intent.action === "team.workspace.access_update"
-      ? { currentWorkspaceAccess: currentWorkspaceAccess ?? null }
-      : {}),
-    ...(intent.action === "conversation_source.discover"
-      ? { enrolledSyncRelationship: true }
-      : {}),
-    ...(managedContext
-      ? { targetDeviceTrusted: managedContext.targetDeviceTrusted }
-      : {}),
-    ...(intent.action === "team.entitlement.update"
-      ? { currentEntitlement: entitlement?.status ?? null }
-      : {}),
-    ...(intent.action === "team.billing_seats.update"
-      ? {
-          currentSeatLimit: billingSeats?.seatLimit ?? null,
-          currentBillableSeats: billingSeats?.billableSeatCount ?? null
-        }
-      : {}),
-    ...(intent.action === "team.retention.delete_request"
-      ? { currentTeamLifecycle: team?.lifecycle ?? null }
-      : {}),
-    ...(intent.action === "shared_memory.change_representation"
-      ? {
-          currentRepresentation:
-            representationGrant?.activeRepresentation ?? null
-        }
-      : {}),
-    ...(intent.action === "shared_memory.revoke"
-      ? {
-          currentRepresentation:
-            revokedGrant?.grant.activeRepresentation ?? null,
-          exactLogicalMemoryId: revokedGrant?.grant.logicalMemoryId ?? null
-        }
-      : {}),
-    display: {
-      ...(teamId
-        ? { team: inviteReview?.team.name ?? team?.name ?? teamId }
-        : {}),
-      ...(workspaceId
-        ? {
-            workspace:
-              inviteReview?.defaultWorkspace.name ??
-              workspace?.name ??
-              workspaceId
-          }
-        : {}),
-      ...(targetUserId
-        ? {
-            member: member?.displayName?.trim() || member?.email || targetUserId
-          }
-        : {}),
-      ...(inviteReview
-        ? {
-            invitation: `${inviteReview.invite.role} · ${inviteReview.invite.defaultWorkspaceAccess}`
-          }
-        : {}),
-      ...(revokedInvitation ? { invitation: revokedInvitation.email } : {}),
-      ...(managedContext
-        ? {
-            currentDevice: managedContext.currentDevice,
-            targetDevice: managedContext.targetDevice
-          }
-        : {}),
-      ...(intent.action === "shared_memory.change_representation"
-        ? { source: sharedMemorySource?.title ?? "Captured Session" }
-        : {}),
-      ...(intent.action === "shared_memory.share"
-        ? { source: sharedMemorySource?.title ?? "Captured Session" }
-        : {}),
-      ...(revokedGrant
-        ? { source: sharedMemorySource?.title ?? "Captured Session" }
-        : {})
-    }
-  };
-};
 
 const browserActivationResponse = (grant: HighRiskActionGrantBindingRecord) =>
   highRiskBrowserActivationEnvelopeSchema.parse({
@@ -478,34 +201,19 @@ export const registerHighRiskRoutes = (
       );
       requireOperationFamily(auth, credentialOperationFamily);
       const repository = context.requireRepository();
-      const definition = highRiskActionDefinitions[input.intent.action];
-      const operation = await definition.resolveOperation({
+      const admission = await admitHighRiskActionGrant({
+        repository,
+        userId: auth.user.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        currentDeviceInstanceId: auth.credential.deviceInstanceId,
         clientRequestId: input.clientRequestId,
-        intent: input.intent,
-        resolveWorkspaceTeamId: async (teamWorkspaceId) =>
-          resolveWorkspaceTeamIdForUser(
-            repository,
-            auth.user.id,
-            teamWorkspaceId
-          ),
-        resolveLegalHoldTeamId: async (holdId) =>
-          repository.lookupLegalHoldTeamId(holdId)
+        hashSecret: context.hashSecret,
+        intent: input.intent
       });
-      if (!operation) {
+      if (!admission) {
         throw forbidden();
       }
-      const policy = definition.resolvePolicy(
-        input.intent,
-        await approvalPolicyContext(
-          repository,
-          auth.user.id,
-          auth.credential.upstreamBackendId,
-          auth.credential.deviceInstanceId,
-          context.hashSecret,
-          operation,
-          input.intent
-        )
-      );
+      const { operation, policy } = admission;
       if (policy.disposition === "bundled_stage") {
         throw forbidden(
           "This action is authorized only within its reviewed workflow"

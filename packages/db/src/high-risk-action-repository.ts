@@ -28,6 +28,7 @@ import {
   highRiskBrowserConfirmations,
   highRiskDeviceActionGrants,
   legalHolds,
+  teams,
   userSessions
 } from "./schema.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
@@ -187,6 +188,13 @@ export interface HighRiskActionRepository {
     input: ExecuteHighRiskActionGrantInput<TBody>
   ): Promise<ExecutedHighRiskActionGrant<TBody> | null>;
   lookupLegalHoldTeamId(holdId: string): Promise<string | null>;
+  getLegalHoldApprovalReview(holdId: string): Promise<{
+    id: string;
+    teamId: string;
+    teamName: string;
+    scope: string;
+    state: "active" | "release_pending" | "released";
+  } | null>;
   expireBrowserConfirmations(): Promise<number>;
   expireActionGrants(): Promise<number>;
 }
@@ -1441,6 +1449,22 @@ export const createHighRiskActionRepository = (
         .where(eq(legalHolds.id, holdId))
         .limit(1);
       return row?.teamId ?? null;
+    },
+
+    async getLegalHoldApprovalReview(holdId) {
+      const [row] = await db
+        .select({
+          id: legalHolds.id,
+          teamId: legalHolds.teamId,
+          teamName: teams.name,
+          scope: legalHolds.scope,
+          state: legalHolds.state
+        })
+        .from(legalHolds)
+        .innerJoin(teams, eq(teams.id, legalHolds.teamId))
+        .where(eq(legalHolds.id, holdId))
+        .limit(1);
+      return row?.teamId ? { ...row, teamId: row.teamId } : null;
     },
 
     async expireBrowserConfirmations() {

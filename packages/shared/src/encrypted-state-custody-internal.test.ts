@@ -37,6 +37,7 @@ import {
   storeCollaborationActionGrantCustody,
   storeCollaborationPendingSend,
   storeDesktopLocalCredential,
+  storeEnrollmentCredentialCustody,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret,
   updateCollaborationActionGrantCustodyStatus,
@@ -44,7 +45,7 @@ import {
   upstreamCredentialReferenceFor,
   verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
-} from "./upstream-credential-store.js";
+} from "./encrypted-state-custody-internal.js";
 
 const temps: string[] = [];
 
@@ -122,6 +123,82 @@ const spawnConcurrencyChild = (
   );
 
 describe("upstream credential secret store", () => {
+  it("stages enrollment credential custody in one atomic encrypted replacement", () => {
+    const koedHome = tempHome();
+    const result = storeEnrollmentCredentialCustody(koedHome, {
+      upstream: {
+        backendId: "team-vps",
+        credentialKeyId: "device-key",
+        secret: "upstream-secret"
+      },
+      localEdgeClient: {
+        backendId: "team-vps",
+        secret: "local-edge-secret",
+        operationFamilies: ["team_workspace_read"]
+      }
+    });
+
+    expect(result.upstreamReference).toBe(
+      upstreamCredentialReferenceFor({
+        backendId: "team-vps",
+        credentialKeyId: "device-key"
+      })
+    );
+    expect(
+      readUpstreamCredentialAuthorization(koedHome, result.upstreamReference)
+    ).toBe("Koed-Device device-key:upstream-secret");
+    expect(
+      readLocalEdgeClientCredentialAuthorization(koedHome, "team-vps")
+    ).toMatchObject({
+      backendId: "team-vps",
+      operationFamilies: ["team_workspace_read"]
+    });
+    const persisted = readFileSync(
+      resolve(koedHome, "secrets", "upstream-credentials.json"),
+      "utf8"
+    );
+    expect(persisted).not.toContain("upstream-secret");
+    expect(persisted).not.toContain("local-edge-secret");
+  });
+
+  it("leaves neither enrollment credential staged when the atomic commit is interrupted", () => {
+    const koedHome = tempHome();
+    expect(() =>
+      storeEnrollmentCredentialCustody(
+        koedHome,
+        {
+          upstream: {
+            backendId: "team-vps",
+            credentialKeyId: "device-key",
+            secret: "upstream-secret"
+          },
+          localEdgeClient: {
+            backendId: "team-vps",
+            secret: "local-edge-secret",
+            operationFamilies: ["team_workspace_read"]
+          }
+        },
+        {
+          beforeStoreCommit: () => {
+            throw new Error("interrupted");
+          }
+        }
+      )
+    ).toThrow("interrupted");
+    expect(
+      readUpstreamCredentialAuthorization(
+        koedHome,
+        upstreamCredentialReferenceFor({
+          backendId: "team-vps",
+          credentialKeyId: "device-key"
+        })
+      )
+    ).toBeNull();
+    expect(
+      readLocalEdgeClientCredentialAuthorization(koedHome, "team-vps")
+    ).toBeNull();
+  });
+
   it("persists collaboration retry bodies encrypted with immutable send identity", () => {
     const koedHome = tempHome();
     const teamSend = {
@@ -831,17 +908,16 @@ describe("collaboration Action Grant custody", () => {
   it("stores only encrypted Action Grant secret custody and reuses it after restart", () => {
     const koedHome = tempHome();
     const stored = storeGrant(koedHome);
+    const persisted = JSON.parse(
+      readFileSync(
+        resolve(koedHome, "secrets", "upstream-credentials.json"),
+        "utf8"
+      )
+    ) as { actionGrants: Record<string, unknown> };
 
     expect(stored.secret).toBe(secretSentinel);
     expect(stored.commitmentHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(
-      JSON.parse(
-        readFileSync(
-          resolve(koedHome, "secrets", "upstream-credentials.json"),
-          "utf8"
-        )
-      ).actionGrants[referenceId]
-    ).toMatchObject({
+    expect(persisted.actionGrants[referenceId]).toMatchObject({
       lifecycle: "unclassified",
       approvalTier: null,
       review: null,

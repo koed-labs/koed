@@ -24,6 +24,7 @@ const ids = {
   staleSession: randomUUID(),
   activeDevice: randomUUID(),
   team: randomUUID(),
+  workspace: randomUUID(),
   target: randomUUID()
 };
 
@@ -160,7 +161,157 @@ const buildServer = async (overrides?: {
     listTeams: vi.fn(async () => []),
     listTeamWorkspaces: vi.fn(async () => []),
     listTeamManagementMembers: vi.fn(async () => []),
-    getPendingTeamInviteReviewByTokenHash: vi.fn(async () => null),
+    getTeamInviteCreationReview: vi.fn(async () => null),
+    getTeamInviteAcceptanceReview: vi.fn(async () => ({
+      invite: {
+        role: "member",
+        defaultWorkspaceAccess: "read"
+      },
+      team: { name: "Koed Team" },
+      defaultWorkspace: { name: "Product" },
+      effectiveRole: "member"
+    })),
+    getTeamInviteRevocationReview: vi.fn(async () => ({
+      managerRole: "admin",
+      team: { id: ids.team, name: "Koed Team" },
+      invite: {
+        id: ids.target,
+        email: "member@example.test",
+        role: "member",
+        version: 1,
+        lifecycle: "pending"
+      }
+    })),
+    getTeamMembershipActionReview: vi.fn(async () => ({
+      managerRole: "admin",
+      team: { id: ids.team, name: "Koed Team" },
+      member: {
+        userId: ids.target,
+        role: "member",
+        status: "enabled",
+        version: 1,
+        disabledAt: null,
+        email: "bob@example.test",
+        displayName: "Bob"
+      },
+      activeOwnerCount: 1
+    })),
+    getTeamLeaveReview: vi.fn(async () => ({
+      team: { id: ids.team, name: "Koed Team" },
+      membership: {
+        userId: ids.alice,
+        role: "member",
+        status: "enabled",
+        version: 3,
+        disabledAt: null
+      },
+      activeOwnerCount: 1
+    })),
+    getTeamWorkspaceCreationReview: vi.fn(async () => ({
+      managerRole: "admin",
+      team: { id: ids.team, name: "Koed Team" }
+    })),
+    getTeamWorkspaceLifecycleReview: vi.fn(async (_actor, input) => ({
+      managerRole: "admin",
+      team: { id: ids.team, name: "Koed Team" },
+      workspace: {
+        id: input.teamWorkspaceId,
+        name: "Product",
+        version: 1,
+        lifecycle: input.lifecycle
+      }
+    })),
+    getTeamWorkspaceAccessUpdateReview: vi.fn(async (_actor, input) => ({
+      managerRole: "admin",
+      team: { id: ids.team, name: "Koed Team" },
+      workspace: {
+        id: input.teamWorkspaceId,
+        name: "Product",
+        version: 1,
+        lifecycle: "active"
+      },
+      member: {
+        userId: input.userId,
+        email: "bob@example.test",
+        displayName: "Bob"
+      },
+      currentAccess: "write",
+      currentAccessVersion: 1
+    })),
+    getSharedMemoryPreviewAdmission: vi.fn(async (_actor, input) => ({
+      source: {
+        logicalMemoryId: input.logicalMemoryId,
+        title: "Captured Session",
+        ownerPrincipalId: ids.alice
+      },
+      team: { id: input.teamId, name: "Koed Team" },
+      workspace: { id: input.teamWorkspaceId, name: "Product" },
+      remoteReplicaId: input.remoteReplicaId,
+      representation: input.representation,
+      requestedAllowedRepresentations: input.allowedRepresentations,
+      effectivePolicyIntersection: input.allowedRepresentations,
+      sourceOwnerPolicyWillChange: false
+    })),
+    getSharedMemoryShareReview: vi.fn(async (_actor, input) => ({
+      source: {
+        logicalMemoryId: input.logicalMemoryId,
+        title: "Captured Session",
+        ownerPrincipalId: ids.alice
+      },
+      team: { id: input.teamId, name: "Koed Team" },
+      workspace: { id: input.teamWorkspaceId, name: "Product" },
+      preview: {
+        previewId: input.preview.previewId,
+        previewHash: input.preview.previewHash,
+        previewRevision: input.previewRevision,
+        remoteReplicaId: ids.target,
+        representation: input.selectedRepresentation,
+        sourceRevision: 1
+      },
+      effectivePolicyIntersection: input.allowedRepresentations
+    })),
+    getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
+      source: {
+        logicalMemoryId: ids.target,
+        title: "Captured Session"
+      },
+      team: { id: input.teamId, name: "Koed Team" },
+      workspace: { id: input.teamWorkspaceId, name: "Product" },
+      grant: {
+        id: input.shareGrantId,
+        grantVersion: input.expectedGrantVersion,
+        lifecycle: "active" as const,
+        activeRepresentation: "lcm_rollups" as const
+      }
+    })),
+    getSharedMemoryRepresentationChangeReview: vi.fn(async (_actor, input) => ({
+      source: {
+        logicalMemoryId: input.logicalMemoryId,
+        title: "Captured Session",
+        ownerPrincipalId: ids.alice
+      },
+      team: { id: input.teamId, name: "Koed Team" },
+      workspace: { id: input.teamWorkspaceId, name: "Product" },
+      preview: {
+        previewId: input.preview.previewId,
+        previewHash: input.preview.previewHash,
+        previewRevision: input.previewRevision,
+        remoteReplicaId: ids.target,
+        representation: input.representation,
+        sourceRevision: 1
+      },
+      effectivePolicyIntersection: input.allowedRepresentations,
+      grant: {
+        id: input.shareGrantId,
+        logicalMemoryId: input.logicalMemoryId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        grantVersion: input.expectedGrantVersion,
+        lifecycle: "active" as const,
+        activeRepresentation: "lcm_rollups" as const
+      },
+      willReactivate: false
+    })),
     getManagedConversationExecution: vi.fn(async () => null),
     listDeviceCredentials: vi.fn(async () => []),
     getTeamEntitlementGate: vi.fn(async () => null),
@@ -351,6 +502,111 @@ describe("high-risk action grant routes", () => {
     await fixture.app.close();
   });
 
+  it("admits Team invitation creation with authoritative manager and Workspace review", async () => {
+    const reviewLookup = vi.fn(async () => ({
+      managerRole: "admin" as const,
+      team: { id: ids.team, name: "Koed Team" },
+      defaultWorkspace: {
+        id: ids.workspace,
+        name: "Product",
+        lifecycle: "active" as const
+      }
+    }));
+    const fixture = await buildServer({
+      repository: { getTeamInviteCreationReview: reviewLookup }
+    });
+    const body = {
+      defaultTeamWorkspaceId: ids.workspace,
+      defaultWorkspaceAccess: "read",
+      email: "member@example.test",
+      role: "member",
+      ttlHours: 72
+    };
+
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/high-risk/action-grants",
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: {
+        version: 1,
+        clientRequestId: randomUUID(),
+        grantCommitment: `v1:${"c".repeat(64)}`,
+        intent: { action: "team.invite.create", teamId: ids.team, body }
+      }
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(jsonBody(response)).toMatchObject({
+      status: {
+        approvalTier: "native_review",
+        state: "review_required",
+        activationPath: null,
+        review: {
+          title: "Invite member@example.test?",
+          confirmLabel: "Create invitation",
+          details: [
+            { label: "Team", value: "Koed Team" },
+            { label: "Recipient", value: "member@example.test" },
+            { label: "Role", value: "member" },
+            { label: "Default Workspace", value: "Product" },
+            { label: "Workspace Access", value: "read" },
+            { label: "Expires after", value: "72 hours" }
+          ]
+        }
+      }
+    });
+    expect(reviewLookup).toHaveBeenCalledWith(
+      { userId: ids.alice },
+      {
+        teamId: ids.team,
+        defaultTeamWorkspaceId: ids.workspace,
+        role: "member"
+      }
+    );
+    expect(fixture.repository.listTeams).not.toHaveBeenCalled();
+    expect(fixture.repository.listTeamWorkspaces).not.toHaveBeenCalled();
+    expect(fixture.repository.createActionGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationFamily: "admin",
+        action: "team.invite.create",
+        teamId: ids.team,
+        targetId: ids.workspace,
+        approvalTier: "native_review",
+        review: expect.objectContaining({ confirmLabel: "Create invitation" })
+      })
+    );
+    await fixture.app.close();
+  });
+
+  it("fails Team invitation creation closed before issuing a grant when context is incomplete", async () => {
+    const fixture = await buildServer();
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/high-risk/action-grants",
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: {
+        version: 1,
+        clientRequestId: randomUUID(),
+        grantCommitment: `v1:${"c".repeat(64)}`,
+        intent: {
+          action: "team.invite.create",
+          teamId: ids.team,
+          body: {
+            defaultTeamWorkspaceId: ids.workspace,
+            defaultWorkspaceAccess: "read",
+            email: "member@example.test",
+            role: "member",
+            ttlHours: 72
+          }
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(fixture.repository.createActionGrant).not.toHaveBeenCalled();
+    await fixture.app.close();
+  });
+
   it("persists Native review, exposes no browser activation, and binds the native decision", async () => {
     const nativeGrant = {
       ...binding,
@@ -450,12 +706,13 @@ describe("high-risk action grant routes", () => {
         defaultWorkspaceAccess: "write" as const
       },
       team: { name: "Koed Engineering" },
-      defaultWorkspace: { name: "Platform" }
+      defaultWorkspace: { name: "Platform" },
+      effectiveRole: "member" as const
     }));
     const fixture = await buildServer({
       hashSecret: (secret) =>
         createHash("sha256").update(`${pepper}${secret}`).digest("hex"),
-      repository: { getPendingTeamInviteReviewByTokenHash: lookup }
+      repository: { getTeamInviteAcceptanceReview: lookup }
     });
 
     const response = await fixture.app.inject({
@@ -474,7 +731,7 @@ describe("high-risk action grant routes", () => {
     });
 
     expect(response.statusCode, response.body).toBe(201);
-    expect(lookup).toHaveBeenCalledWith(expectedHash);
+    expect(lookup).toHaveBeenCalledWith({ userId: ids.alice }, expectedHash);
     expect(jsonBody(response)).toMatchObject({
       status: {
         review: {
@@ -806,15 +1063,23 @@ describe("high-risk action grant routes", () => {
     const fixture = await buildServer({
       deviceOperationFamilies: ["share_grant_management"],
       repository: {
-        getCapturedSessionSummaryByLogicalMemoryId: vi.fn(async () => ({
-          sessionId: randomUUID(),
-          logicalMemoryId,
-          title: "Quarterly planning with Platform",
-          projectName: "koed",
-          updatedAt: new Date(now).toISOString(),
-          eventCount: 12,
-          hasSynchronizedRevision: true,
-          syncState: "ready" as const
+        getSharedMemoryShareReview: vi.fn(async (_actor, input) => ({
+          source: {
+            logicalMemoryId,
+            title: "Quarterly planning with Platform",
+            ownerPrincipalId: ids.alice
+          },
+          team: { id: input.teamId, name: "Koed Team" },
+          workspace: { id: input.teamWorkspaceId, name: "Product" },
+          preview: {
+            previewId: input.preview.previewId,
+            previewHash: input.preview.previewHash,
+            previewRevision: input.previewRevision,
+            remoteReplicaId: ids.target,
+            representation: input.selectedRepresentation,
+            sourceRevision: 1
+          },
+          effectivePolicyIntersection: input.allowedRepresentations
         }))
       }
     });

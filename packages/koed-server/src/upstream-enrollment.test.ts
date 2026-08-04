@@ -299,6 +299,217 @@ describe("upstream enrollment orchestration", () => {
     expect(blockedFetch).not.toHaveBeenCalled();
   });
 
+  it("persists a non-authoritative prepared transaction before the remote challenge request", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const pendingChallenge = deferredChallengeCreationFetch();
+    const startPromise = startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "durable-before-remote",
+      fetch: pendingChallenge.fetch
+    });
+
+    await pendingChallenge.requested;
+    const persisted = JSON.parse(
+      readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+    ) as {
+      enrollments: Array<{
+        requestId: string;
+        state: string;
+        activeCredentialReference?: string;
+        pendingCredentialReference?: string;
+        transactionState: {
+          id: string;
+          generation: number;
+          kind: string;
+          phase: string;
+        };
+      }>;
+    };
+    expect(persisted.enrollments.at(-1)).toMatchObject({
+      requestId: "durable-before-remote",
+      state: "pending",
+      transactionState: {
+        id: "durable-before-remote",
+        generation: 1,
+        kind: "initial",
+        phase: "awaiting_remote"
+      }
+    });
+    expect(persisted.enrollments.at(-1)?.pendingCredentialReference).toMatch(
+      /^keychain:\/\/koed-upstream\/team-vps\//
+    );
+    expect(persisted.enrollments.at(-1)).not.toHaveProperty(
+      "activeCredentialReference"
+    );
+    expect(readUpstreamEnrollmentBinding(paths, "team-vps")).toBeNull();
+
+    pendingChallenge.release();
+    await expect(startPromise).resolves.toMatchObject({
+      ok: true,
+      state: "pending"
+    });
+  });
+
+  it.each([
+    "stage_upstream_credential",
+    "stage_local_client_credential",
+    "stage_registry_credential",
+    "commit_prepared_state"
+  ])("compensates an interrupted %s boundary on retry", async (boundary) => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    let injected = false;
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => `interrupted-${boundary}`,
+      fetch: enrollmentFetch(),
+      beforeEnrollmentEffect: (candidate) => {
+        if (!injected && candidate === boundary) {
+          injected = true;
+          throw new Error(`interrupted at ${boundary}`);
+        }
+      }
+    });
+
+    expect(started).toMatchObject({ ok: false, state: "failed" });
+    const interrupted = JSON.parse(
+      readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+    ) as {
+      enrollments: Array<{
+        transactionState: { phase: string; pendingEffect: string | null };
+      }>;
+    };
+    expect(interrupted.enrollments.at(-1)?.transactionState).toEqual(
+      expect.objectContaining({
+        phase: "recovery_required",
+        pendingEffect: "stage_pending_custody"
+      })
+    );
+
+    const recovered = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch()
+    });
+    expect(recovered).toMatchObject({
+      ok: false,
+      state: "failed",
+      backend: { credential: { status: "not_configured" } },
+      enrollment: {
+        failureReason: "prepared_effect_compensated",
+        credential: { status: "not_configured" }
+      }
+    });
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+    ).toBeNull();
+    expect(
+      readUpstreamCredentialAuthorization(
+        paths.koedHome,
+        started.enrollment?.credential.reference
+      )
+    ).toBeNull();
+
+    await expect(
+      getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:02:00.000Z"),
+        fetch: enrollmentFetch()
+      })
+    ).resolves.toMatchObject({ state: "failed" });
+  });
+
+  it.each([
+    "abort_delete_pending_credential",
+    "abort_delete_local_client_credential",
+    "abort_clear_registry_credential",
+    "commit_enrollment_state"
+  ])("resumes an interrupted %s abort idempotently", async (boundary) => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => `abort-${boundary}`,
+      fetch: enrollmentFetch()
+    });
+    let injected = false;
+    await expect(
+      getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:01:00.000Z"),
+        fetch: enrollmentFetch("denied", false),
+        beforeEnrollmentEffect: (candidate) => {
+          if (!injected && candidate === boundary) {
+            injected = true;
+            throw new Error(`interrupted at ${boundary}`);
+          }
+        }
+      })
+    ).rejects.toThrow(`interrupted at ${boundary}`);
+
+    await expect(
+      getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:02:00.000Z"),
+        fetch: enrollmentFetch("denied", false)
+      })
+    ).resolves.toMatchObject({
+      state: "denied",
+      backend: { credential: { status: "not_configured" } }
+    });
+    await expect(
+      getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:03:00.000Z"),
+        fetch: enrollmentFetch("denied", false)
+      })
+    ).resolves.toMatchObject({ state: "denied" });
+  });
+
+  it.each(["commit_registry_credential", "commit_enrollment_state"])(
+    "resumes an interrupted %s commit idempotently",
+    async (boundary) => {
+      const paths = await registerValidatedBackend();
+      updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+        teamWorkspaceRead: "enabled"
+      });
+      await startUpstreamEnrollment(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+        randomId: () => `commit-${boundary}`,
+        fetch: enrollmentFetch()
+      });
+      let injected = false;
+      const interrupted = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:01:00.000Z"),
+        fetch: enrollmentFetch("pending", true),
+        beforeEnrollmentEffect: (candidate) => {
+          if (!injected && candidate === boundary) {
+            injected = true;
+            throw new Error(`interrupted at ${boundary}`);
+          }
+        }
+      }).catch((error: unknown) => error);
+      if (boundary === "commit_registry_credential") {
+        expect(interrupted).toMatchObject({ ok: false, state: "pending" });
+      } else {
+        expect(interrupted).toBeInstanceOf(Error);
+      }
+
+      await expect(
+        getUpstreamEnrollmentStatus(paths, "team-vps", {
+          now: () => new Date("2026-01-01T00:02:00.000Z"),
+          fetch: enrollmentFetch("pending", true)
+        })
+      ).resolves.toMatchObject({
+        ok: true,
+        state: "exchanged"
+      });
+      expect(readUpstreamEnrollmentBinding(paths, "team-vps")).not.toBeNull();
+    }
+  );
+
   it("fails closed until capabilities are fresh and route policy is explicit", async () => {
     const paths = await registerValidatedBackend();
 
@@ -643,10 +854,221 @@ describe("upstream enrollment orchestration", () => {
       credentialId: remoteDeviceCredentialId
     });
 
+    const pendingStore = JSON.parse(
+      readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+    ) as {
+      enrollments: Array<{
+        activeCredentialReference?: string;
+        pendingCredentialReference?: string;
+        transactionState: {
+          id: string;
+          generation: number;
+          kind: string;
+          phase: string;
+        };
+      }>;
+    };
+    expect(pendingStore.enrollments.at(-1)).toMatchObject({
+      activeCredentialReference: predecessorReference,
+      transactionState: {
+        id: "replacement-enrollment",
+        generation: 2,
+        kind: "replacement",
+        phase: "awaiting_remote"
+      }
+    });
+    expect(pendingStore.enrollments.at(-1)?.pendingCredentialReference).toMatch(
+      /^keychain:\/\/koed-upstream\/team-vps\//
+    );
+
+    const commitEffects: string[] = [];
     await getUpstreamEnrollmentStatus(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:03:00.000Z"),
+      fetch: enrollmentFetch("approved", true),
+      beforeEnrollmentEffect: (boundary) => commitEffects.push(boundary)
+    });
+    expect(commitEffects).toEqual([
+      "commit_local_client_credential",
+      "commit_registry_credential",
+      "commit_delete_predecessor_credential",
+      "commit_enrollment_state"
+    ]);
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
+    ).toBeNull();
+    const committedStore = JSON.parse(
+      readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+    ) as {
+      enrollments: Array<{
+        activeCredentialReference?: string;
+        pendingCredentialReference?: string;
+        transactionState: { phase: string; kind: string };
+      }>;
+    };
+    expect(committedStore.enrollments.at(-1)).toMatchObject({
+      transactionState: { phase: "committed", kind: "replacement" }
+    });
+    expect(
+      committedStore.enrollments.at(-1)?.activeCredentialReference
+    ).toMatch(/^keychain:\/\/koed-upstream\/team-vps\//);
+    expect(committedStore.enrollments.at(-1)).not.toHaveProperty(
+      "pendingCredentialReference"
+    );
+  });
+
+  it("recovers a replacement interrupted after successor commit without deleting it", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const original = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "recovery-original",
+      fetch: enrollmentFetch()
+    });
+    const predecessorReference = original.enrollment!.credential.reference!;
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: predecessorReference
+      };
+    });
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch("pending", true)
+    });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      admin: "enabled"
+    });
+    await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "recovery-replacement",
+      fetch: enrollmentFetch("pending", true)
+    });
+    const pendingStore = JSON.parse(
+      readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+    ) as {
+      enrollments: Array<{ pendingCredentialReference?: string }>;
+    };
+    const successorReference =
+      pendingStore.enrollments.at(-1)!.pendingCredentialReference!;
+    let injected = false;
+
+    const interrupted = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:03:00.000Z"),
+      fetch: enrollmentFetch("approved", true),
+      beforeEnrollmentEffect: (boundary) => {
+        if (!injected && boundary === "commit_delete_predecessor_credential") {
+          injected = true;
+          throw new Error("interrupted predecessor cleanup");
+        }
+      }
+    });
+    expect(interrupted).toMatchObject({ ok: false, state: "pending" });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, successorReference)
+    ).not.toBeNull();
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
+    ).not.toBeNull();
+
+    const recovered = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:04:00.000Z"),
       fetch: enrollmentFetch("approved", true)
     });
+    expect(recovered).toMatchObject({ ok: true, state: "exchanged" });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, successorReference)
+    ).not.toBeNull();
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
+    ).toBeNull();
+    expect(readUpstreamEnrollmentBinding(paths, "team-vps")).toMatchObject({
+      enrollmentId: "recovery-replacement"
+    });
+
+    await expect(
+      getUpstreamEnrollmentStatus(paths, "team-vps", {
+        now: () => new Date("2026-01-01T00:05:00.000Z"),
+        fetch: enrollmentFetch("approved", true)
+      })
+    ).resolves.toMatchObject({ state: "exchanged" });
+  });
+
+  it("does not cancel an active successor while its local commit requires recovery", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const original = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "cancel-recovery-original",
+      fetch: enrollmentFetch()
+    });
+    const predecessorReference = original.enrollment!.credential.reference!;
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: predecessorReference
+      };
+    });
+    await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: enrollmentFetch("pending", true)
+    });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled",
+      admin: "enabled"
+    });
+    await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z"),
+      randomId: () => "cancel-recovery-replacement",
+      fetch: enrollmentFetch("pending", true)
+    });
+    const pendingStore = JSON.parse(
+      readFileSync(paths.upstreamEnrollmentsPath, "utf8")
+    ) as {
+      enrollments: Array<{ pendingCredentialReference?: string }>;
+    };
+    const successorReference =
+      pendingStore.enrollments.at(-1)!.pendingCredentialReference!;
+    let injected = false;
+    const interrupted = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:03:00.000Z"),
+      fetch: enrollmentFetch("approved", true),
+      beforeEnrollmentEffect: (boundary) => {
+        if (!injected && boundary === "commit_registry_credential") {
+          injected = true;
+          throw new Error("interrupted registry commit");
+        }
+      }
+    });
+    expect(interrupted).toMatchObject({ ok: false, state: "pending" });
+
+    const canceled = await cancelUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:04:00.000Z")
+    });
+    expect(canceled).toMatchObject({
+      ok: false,
+      state: "pending"
+    });
+    expect(canceled.message).toContain("must recover");
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, successorReference)
+    ).not.toBeNull();
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
+    ).not.toBeNull();
+
+    const recovered = await getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:05:00.000Z"),
+      fetch: enrollmentFetch("approved", true)
+    });
+    expect(recovered).toMatchObject({ ok: true, state: "exchanged" });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, successorReference)
+    ).not.toBeNull();
     expect(
       readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
     ).toBeNull();
@@ -1364,7 +1786,7 @@ describe("upstream enrollment orchestration", () => {
     ).not.toBeNull();
   });
 
-  it("does not persist a new enrollment after a concurrent disconnect", async () => {
+  it("does not let a late challenge response revive a durably prepared enrollment after disconnect", async () => {
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
       teamWorkspaceRead: "enabled"
@@ -1387,7 +1809,7 @@ describe("upstream enrollment orchestration", () => {
     await expect(startPromise).resolves.toMatchObject({
       ok: true,
       state: "revoked",
-      enrollment: { requestId: "disconnect-record", state: "revoked" }
+      enrollment: { requestId: "enrollment-starting", state: "revoked" }
     });
     expect(
       readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")

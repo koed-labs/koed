@@ -1228,6 +1228,126 @@ describeDb("Shared Memory repository", () => {
     await pool.end();
   });
 
+  it("resolves exact read-only Shared Memory approval context and fails closed on ownership", async () => {
+    const fixture = await createWorkspaceFixture();
+    const sourceFixture = await createSource(fixture, 1, "approval-context");
+    const admission = await repository.getSharedMemoryPreviewAdmission(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: sourceFixture.logicalMemoryId,
+        remoteReplicaId: sourceFixture.remoteReplicaId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "lcm_rollups",
+        allowedRepresentations: allRepresentations
+      }
+    );
+    expect(admission).toMatchObject({
+      source: { logicalMemoryId: sourceFixture.logicalMemoryId },
+      team: { id: fixture.teamId },
+      workspace: { id: fixture.teamWorkspaceId },
+      remoteReplicaId: sourceFixture.remoteReplicaId,
+      representation: "lcm_rollups",
+      sourceOwnerPolicyWillChange: true
+    });
+    await expect(
+      repository.getSharedMemoryPreviewAdmission(actor(fixture.managerUserId), {
+        logicalMemoryId: sourceFixture.logicalMemoryId,
+        remoteReplicaId: sourceFixture.remoteReplicaId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "lcm_rollups",
+        allowedRepresentations: allRepresentations
+      })
+    ).resolves.toBeNull();
+
+    const preview = await createPersistedPreview(
+      fixture,
+      sourceFixture,
+      "lcm_rollups"
+    );
+    const shareReview = await repository.getSharedMemoryShareReview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: sourceFixture.logicalMemoryId,
+        logicalGrantId: randomUUID(),
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        consentId: randomUUID(),
+        preview,
+        previewRevision: preview.previewRevision,
+        selectedRepresentation: "lcm_rollups",
+        allowedRepresentations: allRepresentations,
+        expiresAt: null
+      }
+    );
+    expect(shareReview).toMatchObject({
+      source: { logicalMemoryId: sourceFixture.logicalMemoryId },
+      preview: {
+        previewId: preview.previewId,
+        previewHash: preview.previewHash,
+        previewRevision: preview.previewRevision,
+        representation: "lcm_rollups"
+      }
+    });
+
+    const grant = await createGrant(fixture, { label: "approval-grant" });
+    const revokeReview = await repository.getSharedMemoryRevokeReview(
+      actor(fixture.ownerUserId),
+      {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion
+      }
+    );
+    expect(revokeReview).toMatchObject({
+      source: { logicalMemoryId: grant.logicalMemoryId },
+      grant: {
+        id: grant.shareGrantId,
+        grantVersion: grant.grantVersion,
+        lifecycle: "active"
+      }
+    });
+    await expect(
+      repository.getSharedMemoryRevokeReview(actor(fixture.managerUserId), {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion
+      })
+    ).resolves.toBeNull();
+
+    const replacementPreview = await createPersistedPreview(
+      fixture,
+      grant,
+      "lcm_leaves"
+    );
+    const representationReview =
+      await repository.getSharedMemoryRepresentationChangeReview(
+        actor(fixture.ownerUserId),
+        {
+          logicalMemoryId: grant.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          shareGrantId: grant.shareGrantId,
+          expectedGrantVersion: grant.grantVersion,
+          preview: replacementPreview,
+          previewRevision: replacementPreview.previewRevision,
+          representation: "lcm_leaves",
+          allowedRepresentations: allRepresentations,
+          expiresAt: null
+        }
+      );
+    expect(representationReview).toMatchObject({
+      grant: {
+        id: grant.shareGrantId,
+        activeRepresentation: "memory_events"
+      },
+      willReactivate: false
+    });
+  });
+
   it("encrypts synchronized conversation item metadata and transport payloads", async () => {
     const fixture = await createWorkspaceFixture();
     const secret = `cross-sync-secret-${randomUUID()}`;
@@ -3343,6 +3463,15 @@ describeDb("Shared Memory repository", () => {
     const fixture = await createWorkspaceFixture();
     const grant = await createGrant(fixture, { label: "share-authority" });
     await materialize(fixture, grant, { label: "share-authority" });
+    await expect(
+      repository.revokeShareGrant(actor(fixture.managerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        reasonCode: "manager_must_not_revoke",
+        authority: authority(fixture, "manager")
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
     const replacement = await createConsent(fixture, grant, {
       representation: "lcm_leaves",
       mode: "continuous",

@@ -11,7 +11,6 @@ import {
   readLocalEdgeClientCredentialAuthorization,
   RemoteRequestTimeoutError,
   RemoteResponseLimitError,
-  resolveCollaborationActionGrantSecret,
   sharedMemoryConsentSchema,
   sharedMemoryGrantSchema,
   sharedMemoryPreviewActionGrantBinding,
@@ -37,6 +36,10 @@ import {
   type LocalEdgeUpstreamBackend,
   type LocalEdgeUpstreamRegistry
 } from "./upstream-routing.js";
+import {
+  createCollaborationActionGrantLifecycle,
+  type CollaborationActionGrantLifecycle
+} from "./collaboration-action-grant-lifecycle.js";
 import { openOpaqueCursor, sealOpaqueCursor } from "./opaque-cursor.js";
 
 const RESPONSE_LIMIT_BYTES = 2 * 1_024 * 1_024;
@@ -390,7 +393,7 @@ export interface CollaborationSharedMemoryControlOptions {
   readDesktopCredential?: DesktopCredentialReader;
   readLocalEdgeClientCredential?: LocalEdgeCredentialReader;
   readUpstreamRegistry?: (path: string) => LocalEdgeUpstreamRegistry;
-  resolveActionGrantSecret?: typeof resolveCollaborationActionGrantSecret;
+  actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
 }
 
 type SharedDesktopCredentialApi = {
@@ -936,9 +939,10 @@ const resolveProtectedActionGrant = (
   if (!("actionGrant" in command.input)) {
     throw new ControlFailure("permission_denied");
   }
-  const resolveSecret =
-    options.resolveActionGrantSecret ?? resolveCollaborationActionGrantSecret;
-  const secret = resolveSecret(options.koedHome, {
+  const lifecycle =
+    options.actionGrantLifecycle ??
+    createCollaborationActionGrantLifecycle({ koedHome: options.koedHome });
+  const secret = lifecycle.resolve({
     referenceId: command.input.actionGrant.id,
     backendId: authority.backendId,
     deploymentBaseUrl: authority.backend.baseUrl,

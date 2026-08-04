@@ -626,10 +626,12 @@ const createFixture = (
         }
       ]
     }),
-    resolveActionGrantSecret: () =>
-      overrides.actionGrantSecret === undefined
-        ? "hrg_00000000000000000000000000000000"
-        : overrides.actionGrantSecret
+    actionGrantLifecycle: {
+      resolve: () =>
+        overrides.actionGrantSecret === undefined
+          ? "hrg_00000000000000000000000000000000"
+          : overrides.actionGrantSecret
+    }
   };
 
   return {

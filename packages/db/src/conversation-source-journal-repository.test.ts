@@ -81,7 +81,7 @@ describe("conversation source download authorization", () => {
     expect(sql).toContain("fork.state = 'source_attested'");
     expect(sql).not.toMatch(/handoff\.state in \([^)]*'failed'/s);
     expect(sql).not.toMatch(/handoff\.state in \([^)]*'quarantined'/s);
-    expect(query.mock.calls.map((call) => call[1])).toEqual([
+    expect(query.mock.calls.map((call): unknown => call[1])).toEqual([
       [ownerUserId, authorizationId, credentialId, capabilityHash],
       [ownerUserId, authorizationId, credentialId, capabilityHash],
       [ownerUserId, authorizationId, credentialId, capabilityHash]

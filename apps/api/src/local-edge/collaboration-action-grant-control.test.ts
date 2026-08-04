@@ -759,6 +759,43 @@ describe("collaboration Action Grant control", () => {
     ).toBeNull();
   });
 
+  it.each(["consumed", "denied", "revoked", "expired", "canceled"] as const)(
+    "applies authoritative %s polling cleanup through the shared lifecycle",
+    async (state) => {
+      const terminal = approvedStatus(approvedExpiresAt);
+      terminal.status.state = state;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(pendingStatus(expiresAt)))
+        .mockResolvedValueOnce(jsonResponse(terminal));
+      const fixture = createFixture({ fetch: fetchMock });
+
+      await fixture.control.dispatch(requestCommand(), fixture.context);
+      const polled = await fixture.control.dispatch(
+        pollCommand(),
+        fixture.context
+      );
+
+      expect(polled).toMatchObject({
+        ok: true,
+        data: { status: { state } }
+      });
+      expect(
+        readCollaborationActionGrantCustodyStatus(
+          fixture.koedHome,
+          {
+            referenceId: ids.actionGrant,
+            backendId: "team-vps",
+            deploymentBaseUrl: "https://team.example.test/koed",
+            deviceCredentialId: ids.device,
+            principalUserId: ids.principal
+          },
+          { now: () => fixture.nowRef.value }
+        )
+      ).toBeNull();
+    }
+  );
+
   it("retains only a bounded ambiguous-response window on malformed polling", async () => {
     const nowRef = { value: new Date(startIso) };
     const fetchMock = vi

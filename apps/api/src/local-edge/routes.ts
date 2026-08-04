@@ -409,6 +409,7 @@ export const registerLocalEdgeRoutes = (
     requireCollaborationRepository: requireRepository,
     resolveActiveLocalUser: (userId) => requireRepository().getUser(userId),
     actionGrantControl: context.collaboration.actionGrantControl,
+    actionGrantLifecycle: context.collaboration.actionGrantLifecycle,
     sharedMemoryControl: context.collaboration.sharedMemoryControl,
     subscribeRemoteNavigationInvalidation:
       context.collaboration.subscribeNavigationInvalidation,

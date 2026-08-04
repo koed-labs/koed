@@ -28,7 +28,6 @@ import {
   fetchBoundedJsonObject,
   isLoopbackHostname,
   readLocalEdgeClientCredentialAuthorization,
-  resolveCollaborationActionGrantSecret,
   RemoteRequestTimeoutError,
   RemoteResponseLimitError,
   type CollaborationCommandResult,
@@ -57,6 +56,10 @@ import {
   collaborationActionGrantControlCommandNames,
   type CollaborationActionGrantControl
 } from "./collaboration-action-grant-control.js";
+import {
+  createCollaborationActionGrantLifecycle,
+  type CollaborationActionGrantLifecycle
+} from "./collaboration-action-grant-lifecycle.js";
 import {
   collaborationCommandScope,
   desktopCollaborationOperationFamily,
@@ -164,6 +167,7 @@ interface CollaborationCommandRouteOptions {
     SourceSyncRelationshipRepository;
   resolveActiveLocalUser: (userId: string) => Promise<ActiveLocalUser | null>;
   actionGrantControl?: CollaborationActionGrantControl;
+  actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
   sharedMemoryControl?: CollaborationSharedMemoryControl;
   readPreHandler?: RateLimitHandler;
   writePreHandler?: RateLimitHandler;
@@ -2915,6 +2919,9 @@ export const registerCollaborationCommandRoute = (
     options.verifyDesktopLocalCredential ?? verifyStoredDesktopLocalCredential;
   const readRegistry =
     options.readUpstreamRegistry ?? readLocalEdgeUpstreamRegistry;
+  const actionGrantLifecycle =
+    options.actionGrantLifecycle ??
+    createCollaborationActionGrantLifecycle({ koedHome: options.koedHome });
   const routeOptions = { bodyLimit: COMMAND_BODY_LIMIT_BYTES };
   const remoteNavigationCache = new Map<
     string,
@@ -3675,7 +3682,7 @@ export const registerCollaborationCommandRoute = (
             ),
             resolveActionGrantSecret: (binding) =>
               Promise.resolve(
-                resolveCollaborationActionGrantSecret(options.koedHome, {
+                actionGrantLifecycle.resolve({
                   referenceId: binding.reference.id,
                   backendId: binding.backendId,
                   deploymentBaseUrl: context.backend.baseUrl,

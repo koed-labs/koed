@@ -13,6 +13,7 @@ import type { ApiServerConfig } from "./config.js";
 import type { WorkosAuthKitClient } from "../auth/workos.js";
 import type { CollaborationAdmissionController } from "../collaboration/admission.js";
 import type { CollaborationActionGrantControl } from "../local-edge/collaboration-action-grant-control.js";
+import type { CollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import type { CollaborationSharedMemoryControl } from "../local-edge/collaboration-shared-memory-control.js";
 import type {
   PdsAuthoritySigner,
@@ -31,6 +32,7 @@ export interface ApiRouteContext {
   rateLimit: Record<RateLimitName, RateLimitHandler>;
   collaboration: {
     admission: CollaborationAdmissionController;
+    actionGrantLifecycle?: CollaborationActionGrantLifecycle;
     actionGrantControl?: CollaborationActionGrantControl;
     sharedMemoryControl?: CollaborationSharedMemoryControl;
     subscribeNavigationInvalidation?: (

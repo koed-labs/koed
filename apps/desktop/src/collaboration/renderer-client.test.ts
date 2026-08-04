@@ -1266,6 +1266,95 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
+  it("cancels Team invitation creation from the authoritative Native review", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const review = {
+      version: 1 as const,
+      title: "Invite member@example.test?",
+      description: "Review the exact invitation before it is issued.",
+      consequence: "The recipient can join with read access.",
+      confirmLabel: "Create invitation",
+      details: [
+        { label: "Team", value: "Koed Team" },
+        { label: "Workspace", value: "Product" }
+      ]
+    };
+    const confirmNativeReview = vi.fn(async () => false);
+    const client = createCollaborationRendererClient(mock.bridge, {
+      confirmNativeReview
+    });
+    await client.load();
+    const defaultCommand = mock.command.getMockImplementation();
+    if (!defaultCommand) throw new Error("Expected collaboration mock");
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.request_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: ids.actionGrant },
+              approvalTier: "native_review",
+              review,
+              state: "review_required",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      if (command.command === "collaboration.confirm_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: command.input.actionGrant,
+              approvalTier: "native_review",
+              review,
+              state: "canceled",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      return defaultCommand(command);
+    });
+
+    await expect(
+      client.createInvitation({
+        teamId: ids.team,
+        email: "member@example.test",
+        role: "member",
+        defaultWorkspaceId: ids.workspace,
+        defaultWorkspaceAccess: "read",
+        ttlHours: 72
+      })
+    ).rejects.toMatchObject({ code: "permission_denied" });
+
+    expect(confirmNativeReview).toHaveBeenCalledWith(review);
+    expect(
+      mock.command.mock.calls.find(
+        ([command]) => command.command === "collaboration.confirm_action_grant"
+      )?.[0]
+    ).toMatchObject({
+      input: { actionGrant: { id: ids.actionGrant }, decision: "cancel" }
+    });
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.create_invitation"
+      )
+    ).toBe(false);
+    client.dispose();
+  });
+
   it("retries an ambiguous approved mutation with the same exact request", async () => {
     const mock = createBridge();
     const client = createCollaborationRendererClient(mock.bridge);
