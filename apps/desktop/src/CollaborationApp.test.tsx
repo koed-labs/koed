@@ -1548,6 +1548,51 @@ describe("CollaborationApp", () => {
     });
   });
 
+  it("discards Workspace Access drafts when switching directly between Teams", async () => {
+    const starting = baseSnapshot();
+    const managedSecondTeam = {
+      ...starting.navigation.teams[0]!,
+      id: ids.teamTwo,
+      name: "Beta Team",
+      directMessages: [],
+      workspaces: starting.navigation.teams[0]!.workspaces.map((workspace) => ({
+        ...workspace,
+        channels: [],
+        sharedMemory: []
+      }))
+    };
+    const managedTeams = collaborationSnapshotSchema.parse({
+      ...starting,
+      navigation: {
+        ...starting.navigation,
+        teams: [starting.navigation.teams[0]!, managedSecondTeam]
+      }
+    });
+    const client = await render(
+      createClient(
+        viewFor(managedTeams, { kind: "team_people", teamId: ids.team })
+      )
+    );
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Launch Plans access for Riley Jones"]'
+        )!,
+        "write"
+      )
+    );
+    expect(document.body.textContent).toContain("1 pending access change");
+
+    await act(async () => {
+      await client.select({ kind: "team_people", teamId: ids.teamTwo });
+    });
+
+    expect(document.body.textContent).toContain("Beta Team");
+    expect(document.body.textContent).not.toContain("pending access change");
+    expect(document.body.textContent).not.toContain("Review and apply");
+  });
+
   it("keeps only unapplied Workspace Access changes after a partial failure", async () => {
     const client = createClient();
     vi.mocked(client.setWorkspaceAccess)

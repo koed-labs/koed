@@ -3128,6 +3128,7 @@ function MainContent({
     case "team_people":
       return (
         <PeopleView
+          key={snapshot.view.teamId}
           client={client}
           snapshot={snapshot}
           onSelectWorkspace={(selectedWorkspaceId) => {

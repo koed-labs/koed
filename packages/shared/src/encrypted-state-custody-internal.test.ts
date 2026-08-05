@@ -921,7 +921,30 @@ describe("collaboration Action Grant custody", () => {
       lifecycle: "unclassified",
       approvalTier: null,
       review: null,
-      state: null
+      state: "pending",
+      approvalState: null
+    });
+    expect(
+      updateCollaborationActionGrantCustodyStatus(
+        koedHome,
+        {
+          ...reviewedAccess,
+          approvalTier: "native_review",
+          state: "review_required",
+          activationUrl: null
+        },
+        fixedDeps("2026-07-17T02:00:20.000Z")
+      )
+    ).toMatchObject({ state: "review_required" });
+    const reviewRequiredStore = JSON.parse(
+      readFileSync(
+        resolve(koedHome, "secrets", "upstream-credentials.json"),
+        "utf8"
+      )
+    ) as { actionGrants: Record<string, unknown> };
+    expect(reviewRequiredStore.actionGrants[referenceId]).toMatchObject({
+      state: "pending",
+      approvalState: "review_required"
     });
     expect(
       updateCollaborationActionGrantCustodyStatus(
@@ -972,6 +995,44 @@ describe("collaboration Action Grant custody", () => {
         fixedDeps("2026-07-17T02:02:00.000Z")
       )
     ).toBe(secretSentinel);
+  });
+
+  it("upgrades Action Grant records written before the compatibility fields", () => {
+    const koedHome = tempHome();
+    const stored = storeGrant(koedHome);
+    const storePath = resolve(koedHome, "secrets", "upstream-credentials.json");
+    const persisted = JSON.parse(readFileSync(storePath, "utf8")) as {
+      actionGrants: Record<string, Record<string, unknown>>;
+    };
+    persisted.actionGrants[referenceId]!.state = null;
+    delete persisted.actionGrants[referenceId]!.approvalState;
+    writeFileSync(storePath, `${JSON.stringify(persisted)}\n`, "utf8");
+
+    expect(
+      readCollaborationActionGrantCustodyCommitmentHash(
+        koedHome,
+        access,
+        fixedDeps("2026-07-17T02:00:10.000Z")
+      )
+    ).toBe(stored.commitmentHash);
+    expect(
+      updateCollaborationActionGrantCustodyStatus(
+        koedHome,
+        {
+          ...reviewedAccess,
+          state: "pending",
+          activationUrl: `${deploymentBaseUrl}/approve/action-grants/${referenceId}`
+        },
+        fixedDeps("2026-07-17T02:00:20.000Z")
+      )
+    ).toMatchObject({ state: "pending" });
+    const upgraded = JSON.parse(readFileSync(storePath, "utf8")) as {
+      actionGrants: Record<string, Record<string, unknown>>;
+    };
+    expect(upgraded.actionGrants[referenceId]).toMatchObject({
+      state: "pending",
+      approvalState: "pending"
+    });
   });
 
   it("fails closed on ciphertext or metadata tampering", () => {

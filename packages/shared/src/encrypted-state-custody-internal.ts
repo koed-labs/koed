@@ -203,13 +203,19 @@ interface StoredActionGrantRecordBase {
   envelope: StoredSecretEnvelope;
 }
 
+type StoredLegacyActionGrantState = Exclude<
+  CollaborationActionGrantState,
+  "review_required"
+>;
+
 type StoredActionGrantRecord = StoredActionGrantRecordBase &
   (
     | {
         lifecycle: "unclassified";
         approvalTier: null;
         review: null;
-        state: null;
+        state: "pending";
+        approvalState: null;
         activationUrl: null;
         ambiguousUntil: null;
       }
@@ -217,7 +223,8 @@ type StoredActionGrantRecord = StoredActionGrantRecordBase &
         lifecycle: "classified";
         approvalTier: CollaborationApprovalTier;
         review: CollaborationApprovalReview | null;
-        state: CollaborationActionGrantState;
+        state: StoredLegacyActionGrantState;
+        approvalState: CollaborationActionGrantState;
         activationUrl: string | null;
         ambiguousUntil: null;
       }
@@ -225,7 +232,8 @@ type StoredActionGrantRecord = StoredActionGrantRecordBase &
         lifecycle: "ambiguous";
         approvalTier: CollaborationApprovalTier | null;
         review: CollaborationApprovalReview | null;
-        state: CollaborationActionGrantState | null;
+        state: StoredLegacyActionGrantState;
+        approvalState: CollaborationActionGrantState | null;
         activationUrl: string | null;
         ambiguousUntil: string;
       }
@@ -1589,6 +1597,20 @@ const actionGrantStateSet = new Set<CollaborationActionGrantState>([
   "expired",
   "canceled"
 ]);
+const legacyActionGrantStateSet = new Set<StoredLegacyActionGrantState>([
+  "pending",
+  "approved",
+  "consumed",
+  "denied",
+  "revoked",
+  "expired",
+  "canceled"
+]);
+
+const legacyCompatibleActionGrantState = (
+  state: CollaborationActionGrantState | null
+): StoredLegacyActionGrantState =>
+  state === null || state === "review_required" ? "pending" : state;
 const actionGrantOperationFamilySet =
   new Set<CollaborationActionGrantOperationFamily>([
     "admin",
@@ -1741,14 +1763,14 @@ const createActionGrantSecret = (deps: ResolvedStoreDeps): string => {
 const actionGrantStatusRecord = (
   record: StoredActionGrantRecord
 ): CollaborationActionGrantStatusRecord | null =>
-  record.approvalTier === null || record.state === null
+  record.approvalTier === null || record.approvalState === null
     ? null
     : {
         version: 1,
         actionGrant: { id: record.referenceId },
         approvalTier: record.approvalTier,
         review: record.review,
-        state: record.state,
+        state: record.approvalState,
         activationUrl: record.activationUrl,
         expiresAt: record.metadata.expiresAt
       };
@@ -1788,14 +1810,29 @@ const parseStoredActionGrantRecord = (
       storedString(metadata.deploymentBaseUrl, "deploymentBaseUrl")
     );
     const parsedReferenceId = validateActionGrantReferenceId(referenceId);
-    const stateRaw = record.state;
-    const state =
-      stateRaw === null
+    const storedStateRaw = record.state;
+    const storedState =
+      storedStateRaw === null
+        ? "pending"
+        : legacyActionGrantStateSet.has(
+              storedStateRaw as StoredLegacyActionGrantState
+            )
+          ? (storedStateRaw as StoredLegacyActionGrantState)
+          : storedStateRaw === "review_required"
+            ? "pending"
+            : null;
+    if (storedState === null) return null;
+    const approvalStateRaw =
+      "approvalState" in record ? record.approvalState : storedStateRaw;
+    const approvalState =
+      approvalStateRaw === null
         ? null
-        : actionGrantStateSet.has(stateRaw as CollaborationActionGrantState)
-          ? (stateRaw as CollaborationActionGrantState)
+        : actionGrantStateSet.has(
+              approvalStateRaw as CollaborationActionGrantState
+            )
+          ? (approvalStateRaw as CollaborationActionGrantState)
           : null;
-    if (stateRaw !== null && state === null) return null;
+    if (approvalStateRaw !== null && approvalState === null) return null;
     const commitmentHash = storedString(
       record.commitmentHash,
       "commitmentHash"
@@ -1811,7 +1848,8 @@ const parseStoredActionGrantRecord = (
         ? record.lifecycle
         : ambiguousUntilRaw !== null
           ? "ambiguous"
-          : record.review !== null || (state !== null && state !== "pending")
+          : record.review !== null ||
+              (approvalState !== null && approvalState !== "pending")
             ? "classified"
             : "unclassified";
     const activationUrl = validateActionGrantActivationUrl(
@@ -1826,7 +1864,8 @@ const parseStoredActionGrantRecord = (
             lifecycle,
             approvalTier: null,
             review: null,
-            state: null,
+            state: "pending" as const,
+            approvalState: null,
             activationUrl: null,
             ambiguousUntil: null
           }
@@ -1840,7 +1879,8 @@ const parseStoredActionGrantRecord = (
               record.review === null
                 ? null
                 : collaborationApprovalReviewSchema.parse(record.review),
-            state,
+            state: legacyCompatibleActionGrantState(approvalState),
+            approvalState,
             activationUrl,
             ambiguousUntil:
               ambiguousUntilRaw === null
@@ -1853,7 +1893,7 @@ const parseStoredActionGrantRecord = (
     if (
       lifecycle === "classified" &&
       (classification.approvalTier === null ||
-        classification.state === null ||
+        classification.approvalState === null ||
         classification.ambiguousUntil !== null)
     ) {
       return null;
@@ -1862,7 +1902,7 @@ const parseStoredActionGrantRecord = (
       lifecycle === "ambiguous" &&
       (classification.ambiguousUntil === null ||
         (classification.approvalTier === null) !==
-          (classification.state === null))
+          (classification.approvalState === null))
     ) {
       return null;
     }
@@ -1972,7 +2012,7 @@ const parseStoredActionGrantRecord = (
     ) {
       return null;
     }
-    if (parsed.state !== "pending" && activationUrl !== null) {
+    if (parsed.approvalState !== "pending" && activationUrl !== null) {
       return null;
     }
     if (
@@ -2043,11 +2083,11 @@ const pruneTerminalActionGrantRecords = (
     if (
       !record ||
       recordIsExpired(record, now) ||
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled" ||
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled" ||
       (record.ambiguousUntil !== null &&
         Date.parse(record.ambiguousUntil) <= now.getTime())
     ) {
@@ -2141,7 +2181,8 @@ export const storeCollaborationActionGrantCustody = (
       lifecycle: "unclassified",
       approvalTier: null,
       review: null,
-      state: null,
+      state: "pending",
+      approvalState: null,
       activationUrl: null,
       ambiguousUntil: null,
       createdAt: now,
@@ -2182,11 +2223,11 @@ export const readCollaborationActionGrantCustodyStatus = (
     if (
       !validateActionGrantAccess(record, input) ||
       recordIsExpired(record, now) ||
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled" ||
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled" ||
       (record.ambiguousUntil !== null &&
         Date.parse(record.ambiguousUntil) <= now.getTime())
     ) {
@@ -2211,11 +2252,11 @@ export const readCollaborationActionGrantCustodyCommitmentHash = (
     if (
       !validateActionGrantAccess(record, input) ||
       recordIsExpired(record, now) ||
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled"
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled"
     ) {
       deleteActionGrantRecord(store, record.referenceId);
       store.updatedAt = now.toISOString();
@@ -2251,6 +2292,7 @@ export const markCollaborationActionGrantCustodyAmbiguous = (
       approvalTier: record.approvalTier,
       review: record.review,
       state: record.state,
+      approvalState: record.approvalState,
       activationUrl: record.activationUrl,
       ambiguousUntil,
       updatedAt: nowIso
@@ -2349,7 +2391,8 @@ export const updateCollaborationActionGrantCustodyStatus = (
     const previousMetadata = {
       ...record.metadata
     } satisfies StoredActionGrantMetadata;
-    record.state = input.state;
+    record.state = legacyCompatibleActionGrantState(input.state);
+    record.approvalState = input.state;
     record.approvalTier = approvalTier;
     record.review = review;
     record.activationUrl =
@@ -2459,17 +2502,17 @@ export const resolveCollaborationActionGrantSecret = (
     const accessMatches = validateActionGrantAccess(record, input);
     const expired = recordIsExpired(record, now);
     const terminal =
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled";
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled";
     if (!accessMatches || expired || terminal) {
       deleteActionGrantRecord(store, record.referenceId);
       store.updatedAt = now.toISOString();
       return { result: null, changed: true };
     }
-    if (record.state !== "approved") {
+    if (record.approvalState !== "approved") {
       return { result: null, changed: false };
     }
     if (

@@ -33,6 +33,7 @@ const seats = {
 const repository = () => ({
   getTeamEntitlementGate: vi.fn(async () => gate as never),
   getTeamBillingSeatState: vi.fn(async () => seats as never),
+  getTeamMembership: vi.fn(async () => ({ role: "owner" }) as never),
   listTeams: vi.fn(async () => [team] as never),
   getLegalHoldApprovalReview: vi.fn(async () => ({
     id: ids.hold,
@@ -96,6 +97,20 @@ describe("commercial and governance action definitions", () => {
         }
       }
     });
+  });
+
+  it("rejects commercial governance admission for a Team admin", async () => {
+    const repo = repository();
+    repo.getTeamMembership.mockResolvedValue({ role: "admin" } as never);
+    const intent = {
+      action: "team.entitlement.update",
+      teamId: ids.team,
+      body: { expectedVersion: 4, status: "suspended", reason: "policy" }
+    } as const satisfies HighRiskActionGrantIntent;
+
+    await expect(admit(intent, repo)).rejects.toBeInstanceOf(
+      ActionApprovalPolicyError
+    );
   });
 
   it("binds Team deletion to exact lifecycle and version with Step-up", async () => {

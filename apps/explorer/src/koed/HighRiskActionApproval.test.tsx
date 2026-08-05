@@ -165,6 +165,48 @@ describe("HighRiskActionApproval", () => {
     expect(api.login).not.toHaveBeenCalled();
   });
 
+  it("keeps an initial lookup failure open and lets the User retry", async () => {
+    const openerDescriptor = Object.getOwnPropertyDescriptor(window, "opener");
+    Object.defineProperty(window, "opener", {
+      configurable: true,
+      value: {}
+    });
+    api.loadActivation
+      .mockRejectedValueOnce(new Error("Status endpoint unavailable"))
+      .mockResolvedValueOnce(activation);
+
+    await act(async () => {
+      root.render(
+        <HighRiskActionApproval selector={activation.status.selector} />
+      );
+    });
+    await settle();
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    expect(container.textContent).toContain("no decision was submitted");
+    expect(container.textContent).toContain("Retry action lookup");
+    expect(window.close).not.toHaveBeenCalled();
+
+    const retry = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Retry action lookup")
+    );
+    await act(async () => retry!.click());
+    await settle();
+
+    expect(api.loadActivation).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Create a Team");
+    if (openerDescriptor) {
+      Object.defineProperty(window, "opener", openerDescriptor);
+    } else {
+      Object.defineProperty(window, "opener", {
+        configurable: true,
+        value: null
+      });
+    }
+  });
+
   it("requires reauthentication again when the session is no longer fresh", async () => {
     api.loadActivation.mockResolvedValue(activation);
     api.loadProviders.mockResolvedValue(["local"]);

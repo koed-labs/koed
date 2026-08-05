@@ -298,12 +298,15 @@ recovery, schema parsing, and durable atomic replacement. Public code consumes
 separate upstream/Desktop credential custody, Local-Edge Client Credential
 custody, pending Team-send persistence, and Action Grant custody capabilities;
 the generic transaction core is not a package export. All four capabilities
-continue to read and write the existing schema-version-1 file and key paths, so
-this refactor requires no data migration and remains rollback-compatible with a
-previous binary. Unknown, malformed, or undecryptable state fails closed rather
-than falling back to plaintext or a weaker store. Enrollment may declare an
-explicit cross-domain transaction so its upstream credential and Local-Edge
-Client Credential are staged in one replacement.
+continue to read and write the existing schema-version-1 file and key paths.
+Action Grant custody keeps its legacy `state` field inside the vocabulary a
+previous binary accepts and records the current approval lifecycle separately,
+so unclassified and Native-review records remain rollback-readable as legacy
+`pending` state without losing their current semantics. This requires no data
+migration. Unknown, malformed, or undecryptable state fails closed rather than
+falling back to plaintext or a weaker store. Enrollment may declare an explicit
+cross-domain transaction so its upstream credential and Local-Edge Client
+Credential are staged in one replacement.
 
 Supported commands:
 

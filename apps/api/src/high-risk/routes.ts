@@ -50,6 +50,7 @@ type HighRiskRepository = Pick<
   | "listDeviceCredentials"
   | "getTeamEntitlementGate"
   | "getTeamBillingSeatState"
+  | "getTeamMembership"
   | "getLegalHoldApprovalReview"
   | "getTeamInviteCreationReview"
 >;

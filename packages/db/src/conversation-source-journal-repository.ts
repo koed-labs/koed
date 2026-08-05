@@ -3312,7 +3312,8 @@ export const createConversationSourceJournalRepository = (
                   from managed_conversation_handoffs handoff
                  where handoff.id = download_auth.initiating_operation_id
                    and handoff.owner_user_id = download_auth.owner_user_id
-                   and handoff.target_device_id = credential.device_instance_id
+                   and handoff.target_device_id::text =
+                         credential.device_instance_id
                    and handoff.target_deployment_id::text =
                          download_auth.recipient_key ->> 'targetDeploymentId'
                    and handoff.source_generation_id =
@@ -3334,7 +3335,8 @@ export const createConversationSourceJournalRepository = (
                   from managed_conversation_forks fork
                  where fork.id = download_auth.initiating_operation_id
                    and fork.owner_user_id = download_auth.owner_user_id
-                   and fork.target_device_id = credential.device_instance_id
+                   and fork.target_device_id::text =
+                         credential.device_instance_id
                    and fork.target_deployment_id::text =
                          download_auth.recipient_key ->> 'targetDeploymentId'
                    and fork.parent_source_generation_id =

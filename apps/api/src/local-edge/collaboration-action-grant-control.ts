@@ -337,6 +337,9 @@ const mapPermanentFailure = (status: number): ControlFailure => {
   return new ControlFailure("internal_error");
 };
 
+const decisionResponseMayBeAmbiguous = (status: number): boolean =>
+  status >= 500;
+
 const hasDeviceContext = (
   context: CollaborationActionGrantControlContext
 ): context is CollaborationActionGrantControlContext & {
@@ -619,6 +622,9 @@ export const createCollaborationActionGrantControl = (
               body: { decision: "approve" }
             });
             if (!remote.ok) {
+              if (decisionResponseMayBeAmbiguous(remote.status)) {
+                lifecycle.markAmbiguous(context, status.actionGrant, status);
+              }
               return failure(command, mapPermanentFailure(remote.status));
             }
             const next = lifecycle.acceptRemote(

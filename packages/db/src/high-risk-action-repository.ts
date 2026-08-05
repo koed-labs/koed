@@ -21,6 +21,7 @@ import { createManagedConversationForkRepository } from "./managed-conversation-
 import { createManagedConversationRepository } from "./managed-conversation-repository.js";
 import { createManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
+import { createSavepointPool } from "./savepoint-pool.js";
 import {
   auditEvents,
   deviceCredentials,
@@ -410,77 +411,12 @@ const mapBindingRecord = (
   expiresAt: timestampIso(grant?.expiresAt ?? confirmation.expiresAt)
 });
 
-const queryText = (
-  input: string | { text: string } | undefined
-): string | null => {
-  if (typeof input === "string") return input;
-  if (input && typeof input === "object" && "text" in input) {
-    return typeof input.text === "string" ? input.text : null;
-  }
-  return null;
-};
-
-const createSavepointPool = (client: pg.PoolClient): pg.Pool => {
-  let depth = 0;
-  const emptyQueryResult = (): pg.QueryResult<pg.QueryResultRow> => ({
-    command: "OK",
-    rowCount: null,
-    oid: 0,
-    fields: [],
-    rows: []
-  });
-  const savepointClient = {
-    async query(
-      ...args: Parameters<pg.PoolClient["query"]>
-    ): Promise<pg.QueryResult<pg.QueryResultRow>> {
-      const [input, params] = args;
-      const text = queryText(input)?.trim().toLowerCase();
-      if (text === "begin") {
-        depth += 1;
-        await client.query(`savepoint koed_high_risk_${depth}`);
-        return emptyQueryResult();
-      }
-      if (text === "commit") {
-        if (depth > 0) {
-          await client.query(`release savepoint koed_high_risk_${depth}`);
-          depth -= 1;
-        }
-        return emptyQueryResult();
-      }
-      if (text === "rollback") {
-        if (depth > 0) {
-          await client.query(`rollback to savepoint koed_high_risk_${depth}`);
-          depth -= 1;
-        }
-        return emptyQueryResult();
-      }
-      return params === undefined
-        ? client.query(input as string)
-        : client.query(input as string, params as never);
-    },
-    release() {}
-  };
-
-  return {
-    connect() {
-      return Promise.resolve(savepointClient as pg.PoolClient);
-    },
-    query(
-      ...args: Parameters<pg.Pool["query"]>
-    ): Promise<pg.QueryResult<pg.QueryResultRow>> {
-      return savepointClient.query(
-        ...(args as Parameters<pg.PoolClient["query"]>)
-      );
-    }
-  } as unknown as pg.Pool;
-};
-
 const buildScopedRepositories = (
   client: pg.PoolClient,
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider,
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider
 ) => {
-  const savepointPool = createSavepointPool(client);
+  const savepointPool = createSavepointPool(client, "high_risk");
   return {
     team: createTeamAccessRepository(savepointPool, {
       envelopeEncryptionProvider
@@ -1106,8 +1042,8 @@ export const createHighRiskActionRepository = (
     },
 
     async decideBrowserActivation(input) {
-      const createdAt = new Date();
-      ensureFreshTimestamp(input.freshlyAuthenticatedAt, createdAt);
+      const decidedAt = new Date();
+      ensureFreshTimestamp(input.freshlyAuthenticatedAt, decidedAt);
 
       return db.transaction(async (tx) => {
         const [session] = await tx
@@ -1163,7 +1099,7 @@ export const createHighRiskActionRepository = (
             .set({
               decisionUserSessionId: input.userSessionId,
               decisionFreshlyAuthenticatedAt: input.freshlyAuthenticatedAt,
-              decidedAt: sql`now()`,
+              decidedAt,
               state: "denied"
             })
             .where(
@@ -1197,7 +1133,7 @@ export const createHighRiskActionRepository = (
           .set({
             decisionUserSessionId: input.userSessionId,
             decisionFreshlyAuthenticatedAt: input.freshlyAuthenticatedAt,
-            decidedAt: sql`now()`,
+            decidedAt,
             state: "approved"
           })
           .where(

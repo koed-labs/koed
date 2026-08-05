@@ -78,15 +78,18 @@ never authoritative inputs.
 
 ## Why the repository seam owns bundle invariants
 
-`createSourceOwnerConsent`, `createShareGrant`, `selectGrantRepresentation`,
-`revokeShareGrant`, and `materializeGrantRepresentation` in
-`packages/db/src/shared-memory-repository.ts` each run through
-`withTransaction`. They lock the relevant consent/grant/representation or
-retention scope, re-read current ownership and policy, enforce optimistic
-versions and idempotency, and commit lifecycle/outbox effects together. Tests in
-`packages/db/tests/shared-memory-repository.test.ts` cover stale sync,
-destination uniqueness, concurrent retries, exact revocation replay, policy
-changes, and encrypted materialization.
+`createShareBundle` and `changeRepresentationBundle` in
+`packages/db/src/shared-memory-repository.ts` own the outer transaction for the
+consent plus Share Grant or representation mutation. Their component repository
+operations use nested savepoints, so a failed or mismatched second stage rolls
+back the consent as well for both browser-session and device Action Grant
+execution. The individual revoke and materialization operations retain their
+own transaction boundaries. All of these paths lock the relevant
+consent/grant/representation or retention scope, re-read current ownership and
+policy, and enforce optimistic versions and idempotency. Tests in
+`packages/db/tests/shared-memory-repository.test.ts` cover bundle rollback,
+stale sync, destination uniqueness, concurrent retries, exact revocation replay,
+policy changes, and encrypted materialization.
 
 `apps/api/src/local-edge/collaboration-shared-memory-control.ts` has a different
 job. Its preview, share, representation-change, revoke, and pagination handlers

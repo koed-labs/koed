@@ -116,6 +116,22 @@ const approvedStatus = (expiresAt: string) => ({
   }
 });
 
+const nativeStatus = (
+  expiresAt: string,
+  state: "review_required" | "approved"
+) => ({
+  status: {
+    version: 1,
+    actionGrant: { id: ids.actionGrant },
+    selector: ids.selector,
+    approvalTier: "native_review",
+    review: approvalReview,
+    state,
+    activationPath: null,
+    expiresAt
+  }
+});
+
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -236,6 +252,15 @@ describe("collaboration Action Grant control", () => {
     parsedCommand({
       command: "collaboration.cancel_action_grant",
       input: { actionGrant: { id: ids.actionGrant } }
+    });
+
+  const confirmCommand = () =>
+    parsedCommand({
+      command: "collaboration.confirm_action_grant",
+      input: {
+        actionGrant: { id: ids.actionGrant },
+        decision: "approve"
+      }
     });
 
   it("creates a pending Action Grant without exposing secrets or credentials to the renderer", async () => {
@@ -647,6 +672,46 @@ describe("collaboration Action Grant control", () => {
       context: fixture.context
     });
     expect(secret).toMatch(/^hrg_[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("reconciles a Native-review approval after a retryable decision response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(nativeStatus(expiresAt, "review_required"))
+      )
+      .mockResolvedValueOnce(jsonResponse({ error: "gateway timeout" }, 502))
+      .mockResolvedValueOnce(
+        jsonResponse(nativeStatus(approvedExpiresAt, "approved"))
+      );
+    const fixture = createFixture({ fetch: fetchMock });
+
+    await fixture.control.dispatch(requestCommand(), fixture.context);
+    const confirmation = await fixture.control.dispatch(
+      confirmCommand(),
+      fixture.context
+    );
+    expect(confirmation).toMatchObject({
+      ok: false,
+      error: { code: "temporarily_unavailable", retryable: true }
+    });
+
+    const reconciled = await fixture.control.dispatch(
+      pollCommand(),
+      fixture.context
+    );
+    expect(reconciled).toMatchObject({
+      ok: true,
+      data: {
+        status: {
+          approvalTier: "native_review",
+          state: "approved"
+        }
+      }
+    });
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain(
+      `/v1/high-risk/action-grants/${ids.actionGrant}/await`
+    );
   });
 
   it("deletes local custody when secret resolution input is tampered", async () => {

@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile
@@ -20,6 +21,14 @@ import {
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
+
+const trustedTargetRoot = async (): Promise<string> => {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "koed-workspace-target-"))
+  );
+  roots.push(root);
+  return root;
+};
 
 const git = (cwd: string, ...args: string[]) =>
   execFileAsync("git", args, { cwd, encoding: "utf8" });
@@ -52,8 +61,7 @@ describe("Development Workspace Snapshot", () => {
     await writeFile(join(source, "untracked.txt"), "local only\n", "utf8");
 
     const snapshot = await createDevelopmentWorkspaceSnapshot(source);
-    const targetRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
-    roots.push(targetRoot);
+    const targetRoot = await trustedTargetRoot();
     const target = join(targetRoot, "restored");
     await expect(
       materializeDevelopmentWorkspaceSnapshot(snapshot, target, targetRoot)
@@ -88,8 +96,7 @@ describe("Development Workspace Snapshot", () => {
     await rm(join(source, "tracked.txt"));
 
     const snapshot = await createDevelopmentWorkspaceSnapshot(source);
-    const targetRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
-    roots.push(targetRoot);
+    const targetRoot = await trustedTargetRoot();
     const target = join(targetRoot, "restored");
     await expect(
       materializeDevelopmentWorkspaceSnapshot(snapshot, target, targetRoot)
@@ -128,8 +135,7 @@ describe("Development Workspace Snapshot", () => {
       "ssh://git@git.example.invalid/acme/project.git"
     );
     const snapshot = await createDevelopmentWorkspaceSnapshot(source);
-    const targetRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
-    roots.push(targetRoot);
+    const targetRoot = await trustedTargetRoot();
     const target = join(targetRoot, "restored");
 
     await materializeDevelopmentWorkspaceSnapshot(snapshot, target, targetRoot);
@@ -175,8 +181,7 @@ describe("Development Workspace Snapshot", () => {
     await rm(join(source, ".env"));
     const snapshot = await createDevelopmentWorkspaceSnapshot(source);
     snapshot.bundleBase64 = `${snapshot.bundleBase64.slice(0, -4)}AAAA`;
-    const targetRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
-    roots.push(targetRoot);
+    const targetRoot = await trustedTargetRoot();
     await expect(
       materializeDevelopmentWorkspaceSnapshot(
         snapshot,
@@ -238,8 +243,7 @@ describe("Development Workspace Snapshot", () => {
   it("never overwrites an existing destination", async () => {
     const source = await repository();
     const snapshot = await createDevelopmentWorkspaceSnapshot(source);
-    const targetRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
-    roots.push(targetRoot);
+    const targetRoot = await trustedTargetRoot();
     const target = join(targetRoot, "existing");
     await mkdir(target);
     await expect(
@@ -298,8 +302,7 @@ describe("Development Workspace Snapshot", () => {
     await writeFile(join(linked, "untracked.txt"), "linked local\n", "utf8");
 
     const snapshot = await createDevelopmentWorkspaceSnapshot(linked);
-    const targetRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
-    roots.push(targetRoot);
+    const targetRoot = await trustedTargetRoot();
     const target = join(targetRoot, "restored");
     await materializeDevelopmentWorkspaceSnapshot(snapshot, target, targetRoot);
 
@@ -350,9 +353,9 @@ describe("Development Workspace Snapshot", () => {
   it("rejects a destination reached through a symlinked directory", async () => {
     const source = await repository();
     const snapshot = await createDevelopmentWorkspaceSnapshot(source);
-    const trustedRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
+    const trustedRoot = await trustedTargetRoot();
     const outside = await mkdtemp(join(tmpdir(), "koed-workspace-outside-"));
-    roots.push(trustedRoot, outside);
+    roots.push(outside);
     await symlink(outside, join(trustedRoot, "redirect"));
 
     await expect(
@@ -368,8 +371,7 @@ describe("Development Workspace Snapshot", () => {
     const source = await repository();
     await writeFile(join(source, "untracked.txt"), "local\n", "utf8");
     const snapshot = await createDevelopmentWorkspaceSnapshot(source);
-    const targetRoot = await mkdtemp(join(tmpdir(), "koed-workspace-target-"));
-    roots.push(targetRoot);
+    const targetRoot = await trustedTargetRoot();
 
     await expect(
       materializeDevelopmentWorkspaceSnapshot(

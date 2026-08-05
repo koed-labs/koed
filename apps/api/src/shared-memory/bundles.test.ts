@@ -23,15 +23,11 @@ const grant = {
 const actor = { userId: "00000000-0000-4000-8000-000000000006" };
 
 describe("Shared Memory bundle invariants", () => {
-  it("returns no partial share bundle when authoritative consent mismatches", async () => {
-    const createShareGrant = vi.fn();
+  it("delegates share creation to the repository-owned transaction", async () => {
+    const createShareBundleRepository = vi.fn(async () => ({ consent, grant }));
     const repository = {
-      createSourceOwnerConsent: vi.fn(async () => ({
-        ...consent,
-        logicalMemoryId: "00000000-0000-4000-8000-000000000099"
-      })),
-      createShareGrant,
-      selectGrantRepresentation: vi.fn()
+      createShareBundle: createShareBundleRepository,
+      changeRepresentationBundle: vi.fn()
     };
 
     await expect(
@@ -40,18 +36,21 @@ describe("Shared Memory bundle invariants", () => {
         grant: {} as never,
         expected
       })
-    ).resolves.toBeNull();
-    expect(createShareGrant).not.toHaveBeenCalled();
+    ).resolves.toEqual({ consent, grant });
+    expect(createShareBundleRepository).toHaveBeenCalledWith(actor, {
+      consent: {},
+      grant: {},
+      expected
+    });
   });
 
-  it("propagates a grant failure so the enclosing transaction cannot commit the consent alone", async () => {
+  it("propagates a repository transaction failure", async () => {
     const failure = new Error("grant write failed");
     const repository = {
-      createSourceOwnerConsent: vi.fn(async () => consent),
-      createShareGrant: vi.fn(async () => {
+      createShareBundle: vi.fn(async () => {
         throw failure;
       }),
-      selectGrantRepresentation: vi.fn()
+      changeRepresentationBundle: vi.fn()
     };
 
     await expect(
@@ -63,11 +62,14 @@ describe("Shared Memory bundle invariants", () => {
     ).rejects.toBe(failure);
   });
 
-  it("checks replacement consent and final representation as one domain result", async () => {
+  it("delegates representation change to the repository-owned transaction", async () => {
+    const changeRepresentationBundleRepository = vi.fn(async () => ({
+      consent,
+      grant
+    }));
     const repository = {
-      createSourceOwnerConsent: vi.fn(async () => consent),
-      createShareGrant: vi.fn(),
-      selectGrantRepresentation: vi.fn(async () => grant)
+      createShareBundle: vi.fn(),
+      changeRepresentationBundle: changeRepresentationBundleRepository
     };
 
     await expect(
@@ -77,17 +79,10 @@ describe("Shared Memory bundle invariants", () => {
         expected: { ...expected, representation: "lcm_rollups" }
       })
     ).resolves.toEqual({ consent, grant });
-
-    repository.selectGrantRepresentation.mockResolvedValueOnce({
-      ...grant,
-      activeRepresentation: "memory_events"
+    expect(changeRepresentationBundleRepository).toHaveBeenCalledWith(actor, {
+      consent: {},
+      representation: {},
+      expected: { ...expected, representation: "lcm_rollups" }
     });
-    await expect(
-      changeRepresentationBundle(repository as never, actor, {
-        consent: {} as never,
-        representation: {} as never,
-        expected: { ...expected, representation: "lcm_rollups" }
-      })
-    ).resolves.toBeNull();
   });
 });

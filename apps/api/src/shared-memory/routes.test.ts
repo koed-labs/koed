@@ -433,6 +433,25 @@ const createFixture = () => {
       grantVersion += 1;
       return grantRecord();
     },
+    async createShareBundle(actor, input) {
+      const consent = await repository.createSourceOwnerConsent(
+        actor,
+        input.consent
+      );
+      const grant = await repository.createShareGrant(actor, input.grant);
+      return { consent, grant };
+    },
+    async changeRepresentationBundle(actor, input) {
+      const consent = await repository.createSourceOwnerConsent(
+        actor,
+        input.consent
+      );
+      const grant = await repository.selectGrantRepresentation(
+        actor,
+        input.representation
+      );
+      return { consent, grant };
+    },
     async revokeShareGrant(actor, input) {
       repositoryCalls += 1;
       if (actor.userId !== ids.alice || input.shareGrantId !== ids.grant) {

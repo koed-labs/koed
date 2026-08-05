@@ -28,6 +28,7 @@ type ApprovalPageState =
   | HighRiskBrowserActivationState
   | "unauthenticated"
   | "unreconciled"
+  | "invalid"
   | "unknown"
   | "error";
 
@@ -39,6 +40,7 @@ const terminalStates = new Set<ApprovalPageState>([
   "canceled",
   "expired",
   "unreconciled",
+  "invalid",
   "unknown",
   "error"
 ]);
@@ -50,8 +52,8 @@ const autoCloseStates = new Set<ApprovalPageState>([
   "revoked",
   "canceled",
   "expired",
-  "unknown",
-  "error"
+  "invalid",
+  "unknown"
 ]);
 
 const authenticationRequired = (message: string): boolean => {
@@ -103,7 +105,7 @@ export function HighRiskActionApproval({
         loaded.status.review === null
       ) {
         setActivation(null);
-        setState("error");
+        setState("invalid");
         setError(
           "This confirmation is missing authoritative approval details. No decision was submitted."
         );
@@ -429,7 +431,7 @@ export function HighRiskActionApproval({
                 {copy.button}
               </Button>
             </div>
-          ) : state === "unreconciled" ? (
+          ) : state === "unreconciled" || state === "error" ? (
             <div className="flex justify-end">
               <Button
                 onClick={() => void loadActivation()}
@@ -437,7 +439,9 @@ export function HighRiskActionApproval({
                 variant="outline"
               >
                 <RefreshCwIcon className="size-4" />
-                Check decision status
+                {state === "unreconciled"
+                  ? "Check decision status"
+                  : "Retry action lookup"}
               </Button>
             </div>
           ) : null}
@@ -520,8 +524,10 @@ function stateMessage(state: ApprovalPageState): string {
       return "Outcome unknown — Koed has not confirmed whether your decision was recorded. This window will remain open.";
     case "unknown":
       return "Unavailable — this confirmation is unknown or no longer available. You can safely close this window and return to Koed.";
+    case "invalid":
+      return "Unavailable — this confirmation is incomplete and no decision can be submitted from this page. You can safely close this window and return to Koed.";
     case "error":
-      return "Failed — this confirmation could not be completed and no decision can be submitted from this page. You can safely close this window and return to Koed.";
+      return "Action lookup failed — no decision was submitted. Retry the lookup before closing this window.";
     case "loading":
       return "Loading confirmation.";
     case "pending":

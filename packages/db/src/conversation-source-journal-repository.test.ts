@@ -66,7 +66,7 @@ describe("conversation source download authorization", () => {
     expect(sql).toContain("download_auth.expires_at > now()");
     expect(sql).toContain("handoff.id = download_auth.initiating_operation_id");
     expect(sql).toContain(
-      "handoff.target_device_id = credential.device_instance_id"
+      "handoff.target_device_id::text =\n                         credential.device_instance_id"
     );
     expect(sql).toContain(
       "download_auth.recipient_key ->> 'targetDeploymentId'"
@@ -75,6 +75,9 @@ describe("conversation source download authorization", () => {
       "handoff.source_generation_id =\n                         artifact.source_generation_id"
     );
     expect(sql).toContain("fork.id = download_auth.initiating_operation_id");
+    expect(sql).toContain(
+      "fork.target_device_id::text =\n                         credential.device_instance_id"
+    );
     expect(sql).toContain(
       "fork.parent_source_generation_id =\n                         artifact.source_generation_id"
     );

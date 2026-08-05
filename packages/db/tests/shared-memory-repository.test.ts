@@ -1405,6 +1405,116 @@ describeDb("Shared Memory repository", () => {
     }
   });
 
+  it("rolls back browser consent when bundled Share Grant creation fails", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1);
+    await putOwnerPolicy(fixture, source);
+    const preview = await createPersistedPreview(
+      fixture,
+      source,
+      "memory_events",
+      1,
+      "atomic-share-bundle"
+    );
+    const consentId = randomUUID();
+
+    await expect(
+      repository.createShareBundle(actor(fixture.ownerUserId), {
+        consent: {
+          consentId,
+          preview,
+          mode: "continuous",
+          allowedRepresentations: allRepresentations,
+          selectedRepresentation: "memory_events",
+          authority: authority(fixture)
+        },
+        grant: {
+          mutationId: randomUUID(),
+          logicalGrantId: "not-a-uuid",
+          consentId,
+          authority: authority(fixture)
+        },
+        expected: {
+          consentId,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          previewId: preview.previewId,
+          previewRevision: preview.previewRevision,
+          previewHash: preview.previewHash
+        }
+      })
+    ).rejects.toThrow("logicalGrantId must be a UUID");
+
+    const persisted = await pool.query(
+      "select 1 from source_owner_representation_consents where id=$1",
+      [consentId]
+    );
+    expect(persisted.rowCount).toBe(0);
+  });
+
+  it("rolls back replacement consent when bundled representation change conflicts", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture);
+    const preview = await createPersistedPreview(
+      fixture,
+      grant,
+      "lcm_leaves",
+      grant.currentRevision,
+      "atomic-representation-bundle"
+    );
+    const consentId = randomUUID();
+
+    await expect(
+      repository.changeRepresentationBundle(actor(fixture.ownerUserId), {
+        consent: {
+          consentId,
+          preview,
+          mode: "continuous",
+          allowedRepresentations: allRepresentations,
+          selectedRepresentation: "lcm_leaves",
+          authority: authority(fixture)
+        },
+        representation: {
+          mutationId: randomUUID(),
+          shareGrantId: grant.shareGrantId,
+          consentId,
+          representation: "lcm_leaves",
+          expectedGrantVersion: grant.grantVersion + 100,
+          authority: authority(fixture)
+        },
+        expected: {
+          consentId,
+          logicalMemoryId: grant.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          previewId: preview.previewId,
+          previewRevision: preview.previewRevision,
+          previewHash: preview.previewHash,
+          representation: "lcm_leaves"
+        }
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+
+    const consent = await pool.query(
+      "select 1 from source_owner_representation_consents where id=$1",
+      [consentId]
+    );
+    const persistedGrant = await pool.query<{
+      active_representation: string;
+      grant_version: number;
+    }>(
+      `select active_representation,grant_version
+         from team_session_share_grants where id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(consent.rowCount).toBe(0);
+    expect(persistedGrant.rows[0]).toMatchObject({
+      active_representation: "memory_events",
+      grant_version: grant.grantVersion
+    });
+  });
+
   it("binds explicit consent to the exact redacted preview and source owner", async () => {
     const fixture = await createWorkspaceFixture();
     const source = await createSource(fixture, 3);

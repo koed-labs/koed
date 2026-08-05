@@ -35,6 +35,7 @@ type GovernanceRepository = Pick<
   MemorySourceRepository,
   | "getTeamEntitlementGate"
   | "getTeamBillingSeatState"
+  | "getTeamMembership"
   | "listTeams"
   | "getLegalHoldApprovalReview"
 >;
@@ -193,11 +194,28 @@ const loadManagedTeam = async (
   return { team, gate };
 };
 
+const loadOwnerManagedTeam = async (
+  input: GovernanceAdmissionInput,
+  teamId: string
+) => {
+  const [managed, membership] = await Promise.all([
+    loadManagedTeam(input, teamId),
+    input.repository.getTeamMembership({ userId: input.userId }, teamId)
+  ]);
+  if (!membership || membership.role !== "owner") {
+    return unavailable("Team commercial governance action");
+  }
+  return managed;
+};
+
 const entitlementDefinition = {
   operationFamily: "admin" as const,
   async admit(input: GovernanceAdmissionInput) {
     if (input.intent.action !== "team.entitlement.update") return null;
-    const { team, gate } = await loadManagedTeam(input, input.intent.teamId);
+    const { team, gate } = await loadOwnerManagedTeam(
+      input,
+      input.intent.teamId
+    );
     if (gate.version !== input.intent.body.expectedVersion) {
       unavailable("Team entitlement change");
     }
@@ -223,7 +241,7 @@ const billingDefinition = {
   async admit(input: GovernanceAdmissionInput) {
     if (input.intent.action !== "team.billing_seats.update") return null;
     const [{ team }, seats] = await Promise.all([
-      loadManagedTeam(input, input.intent.teamId),
+      loadOwnerManagedTeam(input, input.intent.teamId),
       input.repository.getTeamBillingSeatState(
         { userId: input.userId },
         input.intent.teamId

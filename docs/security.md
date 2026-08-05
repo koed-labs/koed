@@ -236,10 +236,12 @@ by the exact source-owned Share Grant and deliberately remains possible after
 destination access, policy, sync, consent, or representation availability is
 lost.
 
-Commercial and governance definitions resolve current Team-management
-authority, lifecycle, and exact optimistic version before issuing a grant.
-Entitlement, billing-seat policy, Team deletion, legal-hold placement, and both
-legal-hold release stages remain Step-up. Legal-hold release admission reads the
+Commercial entitlement and billing-seat definitions require current Team owner
+authority at admission as well as execution, then bind lifecycle and the exact
+optimistic version before issuing a grant. Other governance definitions resolve
+their operation-specific Team-management authority. Entitlement, billing-seat
+policy, Team deletion, legal-hold placement, and both legal-hold release stages
+remain Step-up. Legal-hold release admission reads the
 exact hold, Team, scope, and current stage, so the release request and release
 confirmation cannot authorize one another or a different hold.
 
@@ -301,5 +303,8 @@ envelopes, owner-only key and state files, bounded ownership-token lock,
 directory-synced atomic replacement, and fail-closed corruption behavior.
 Cross-domain writes must name their exact domains; initial enrollment uses this
 edge to make upstream and Local-Edge Client Credential staging all-or-nothing.
-The persisted format did not change, so no migration or weaker rollback format
-exists.
+Action Grant records keep the legacy `state` field within the state vocabulary
+understood by previous binaries and store the extended approval lifecycle in a
+separate field. An unclassified or Native-review record therefore remains
+readable as legacy `pending` state during rollback, while current binaries retain
+the exact lifecycle. No migration or weaker rollback format exists.

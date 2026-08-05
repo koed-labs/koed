@@ -37,6 +37,7 @@ export type HighRiskActionDefinitionRepository = Pick<
   | "listDeviceCredentials"
   | "getTeamEntitlementGate"
   | "getTeamBillingSeatState"
+  | "getTeamMembership"
   | "listTeams"
   | "getLegalHoldApprovalReview"
 >;

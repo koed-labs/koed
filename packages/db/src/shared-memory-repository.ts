@@ -36,6 +36,7 @@ import {
   lockShareGrantRetentionScopeWithClient,
   scheduleShareGrantRevocationRetentionWithClient
 } from "./retention-lifecycle-repository.js";
+import { createSavepointPool } from "./savepoint-pool.js";
 
 export const SHARED_MEMORY_AUTHORITY = SHARED_MEMORY_AUTHORITY_ACTION;
 
@@ -423,6 +424,56 @@ export interface SharedMemoryRevokeReviewRecord extends SharedMemoryReviewDestin
   >;
 }
 
+export interface SharedMemoryCreateConsentInput {
+  consentId: string;
+  preview: SharedSourcePreviewReference;
+  mode: SharedMemoryConsentMode;
+  allowedRepresentations: SharedMemoryRepresentation[];
+  selectedRepresentation: SharedMemoryRepresentation;
+  expiresAt?: string | null;
+  authority: SharedMemoryAuthorityContext;
+}
+
+export interface SharedMemoryCreateGrantInput {
+  mutationId: string;
+  logicalGrantId: string;
+  consentId: string;
+  authority: SharedMemoryAuthorityContext;
+}
+
+export interface SharedMemorySelectRepresentationInput {
+  mutationId: string;
+  shareGrantId: string;
+  consentId: string;
+  representation: SharedMemoryRepresentation;
+  expectedGrantVersion: number;
+  authority: SharedMemoryAuthorityContext;
+}
+
+export interface SharedMemoryConsentBinding {
+  logicalMemoryId: string;
+  teamId: string;
+  teamWorkspaceId: string;
+  previewId: string;
+  previewRevision: number;
+  previewHash: string;
+}
+
+export interface SharedMemoryCreateShareBundleInput {
+  consent: SharedMemoryCreateConsentInput;
+  grant: SharedMemoryCreateGrantInput;
+  expected: SharedMemoryConsentBinding & { consentId: string };
+}
+
+export interface SharedMemoryChangeRepresentationBundleInput {
+  consent: SharedMemoryCreateConsentInput;
+  representation: SharedMemorySelectRepresentationInput;
+  expected: SharedMemoryConsentBinding & {
+    consentId: string;
+    representation: SharedMemoryRepresentation;
+  };
+}
+
 export interface SharedMemoryRepository {
   getSharedMemoryPreviewAdmission(
     actor: ActorContext,
@@ -519,36 +570,30 @@ export interface SharedMemoryRepository {
   ): Promise<SharedMemoryPolicyRecord>;
   createSourceOwnerConsent(
     actor: ActorContext,
-    input: {
-      consentId: string;
-      preview: SharedSourcePreviewReference;
-      mode: SharedMemoryConsentMode;
-      allowedRepresentations: SharedMemoryRepresentation[];
-      selectedRepresentation: SharedMemoryRepresentation;
-      expiresAt?: string | null;
-      authority: SharedMemoryAuthorityContext;
-    }
+    input: SharedMemoryCreateConsentInput
   ): Promise<SharedMemoryConsentRecord>;
   createShareGrant(
     actor: ActorContext,
-    input: {
-      mutationId: string;
-      logicalGrantId: string;
-      consentId: string;
-      authority: SharedMemoryAuthorityContext;
-    }
+    input: SharedMemoryCreateGrantInput
   ): Promise<SharedMemoryGrantRecord>;
   selectGrantRepresentation(
     actor: ActorContext,
-    input: {
-      mutationId: string;
-      shareGrantId: string;
-      consentId: string;
-      representation: SharedMemoryRepresentation;
-      expectedGrantVersion: number;
-      authority: SharedMemoryAuthorityContext;
-    }
+    input: SharedMemorySelectRepresentationInput
   ): Promise<SharedMemoryGrantRecord>;
+  createShareBundle(
+    actor: ActorContext,
+    input: SharedMemoryCreateShareBundleInput
+  ): Promise<{
+    consent: SharedMemoryConsentRecord;
+    grant: SharedMemoryGrantRecord;
+  } | null>;
+  changeRepresentationBundle(
+    actor: ActorContext,
+    input: SharedMemoryChangeRepresentationBundleInput
+  ): Promise<{
+    consent: SharedMemoryConsentRecord;
+    grant: SharedMemoryGrantRecord;
+  } | null>;
   revokeShareGrant(
     actor: ActorContext,
     input: {
@@ -1346,6 +1391,33 @@ const withTransaction = async <T>(
     client.release();
   }
 };
+
+class SharedMemoryBundleInvariantError extends Error {}
+
+const consentMatchesBinding = (
+  consent: SharedMemoryConsentRecord,
+  expected: SharedMemoryConsentBinding
+): boolean =>
+  consent.logicalMemoryId === expected.logicalMemoryId &&
+  consent.teamId === expected.teamId &&
+  consent.teamWorkspaceId === expected.teamWorkspaceId &&
+  consent.previewId === expected.previewId &&
+  consent.previewRevision === expected.previewRevision &&
+  consent.previewHash === expected.previewHash;
+
+const grantMatchesBinding = (
+  grant: SharedMemoryGrantRecord,
+  expected: SharedMemoryConsentBinding & {
+    consentId: string;
+    representation?: SharedMemoryRepresentation;
+  }
+): boolean =>
+  grant.logicalMemoryId === expected.logicalMemoryId &&
+  grant.teamId === expected.teamId &&
+  grant.teamWorkspaceId === expected.teamWorkspaceId &&
+  grant.consentId === expected.consentId &&
+  (expected.representation === undefined ||
+    grant.activeRepresentation === expected.representation);
 
 const requireWorkspaceAccess = async (
   client: SqlClient,
@@ -5265,6 +5337,61 @@ export const createSharedMemoryRepository = (
         }
         return mapPolicy(inserted.rows[0] as Row, "workspace");
       });
+    },
+
+    async createShareBundle(actor, input) {
+      try {
+        return await withTransaction(pool, async (client) => {
+          const repository = createSharedMemoryRepository(
+            createSavepointPool(client, "shared_memory_bundle"),
+            options
+          );
+          const consent = await repository.createSourceOwnerConsent(
+            actor,
+            input.consent
+          );
+          if (!consentMatchesBinding(consent, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          const grant = await repository.createShareGrant(actor, input.grant);
+          if (!grantMatchesBinding(grant, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          return { consent, grant };
+        });
+      } catch (error) {
+        if (error instanceof SharedMemoryBundleInvariantError) return null;
+        throw error;
+      }
+    },
+
+    async changeRepresentationBundle(actor, input) {
+      try {
+        return await withTransaction(pool, async (client) => {
+          const repository = createSharedMemoryRepository(
+            createSavepointPool(client, "shared_memory_bundle"),
+            options
+          );
+          const consent = await repository.createSourceOwnerConsent(
+            actor,
+            input.consent
+          );
+          if (!consentMatchesBinding(consent, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          const grant = await repository.selectGrantRepresentation(
+            actor,
+            input.representation
+          );
+          if (!grantMatchesBinding(grant, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          return { consent, grant };
+        });
+      } catch (error) {
+        if (error instanceof SharedMemoryBundleInvariantError) return null;
+        throw error;
+      }
     },
 
     async createSourceOwnerConsent(actor, input) {
