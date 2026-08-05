@@ -153,7 +153,7 @@ describe("commercial and governance action definitions", () => {
       teamName: team.name,
       scope: "team",
       state: "release_pending"
-    });
+    } as never);
     const confirmed = await admit(confirm, repo);
 
     expect(placed).toMatchObject({ policy: { disposition: "step_up" } });
@@ -185,7 +185,7 @@ describe("commercial and governance action definitions", () => {
       ActionApprovalPolicyError
     );
     const repo = repository();
-    repo.getLegalHoldApprovalReview.mockResolvedValueOnce(null);
+    repo.getLegalHoldApprovalReview.mockResolvedValueOnce(null as never);
     await expect(
       admit(
         {

@@ -270,7 +270,8 @@ describeDb("high-risk action grants", () => {
         clientRequestId: nativeRequestId,
         ownerUserId: fixture.userId,
         deviceCredentialId: fixture.deviceCredentialId,
-        upstreamBackendId: fixture.upstreamBackendId
+        upstreamBackendId: fixture.upstreamBackendId,
+        decision: "approve"
       });
 
       await delay(20);
@@ -344,6 +345,15 @@ describeDb("high-risk action grants", () => {
       ...operation,
       clientRequestId,
       credentialOperationFamily: "action_grant" as const,
+      approvalTier: "step_up" as const,
+      review: {
+        version: 1 as const,
+        title: "Approve this action?",
+        description: "Review the exact high-risk action binding.",
+        consequence: "The bound action may execute.",
+        confirmLabel: "Approve",
+        details: []
+      },
       grantCommitment
     });
 

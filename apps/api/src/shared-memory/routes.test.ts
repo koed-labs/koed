@@ -325,6 +325,18 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async getSharedMemoryPreviewAdmission() {
+      return null;
+    },
+    async getSharedMemoryShareReview() {
+      return null;
+    },
+    async getSharedMemoryRepresentationChangeReview() {
+      return null;
+    },
+    async getSharedMemoryRevokeReview() {
+      return null;
+    },
     async rewrapTeamRepresentationChunkBatch() {
       return {
         processedRows: 0,

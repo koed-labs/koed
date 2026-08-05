@@ -152,7 +152,7 @@ describe("internal encrypted-state transaction core", () => {
       storePath: initial.storePath,
       keyPath: initial.keyPath,
       keySalt: "test-only-v1",
-      createEmpty: initial.core.read,
+      createEmpty: () => initial.core.read(),
       parse: (raw) => raw as FixtureState,
       deps: {
         beforeStoreCommit: () => {

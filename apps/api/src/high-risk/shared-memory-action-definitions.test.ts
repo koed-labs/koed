@@ -289,22 +289,23 @@ describe("Shared Memory action definitions", () => {
     const increase = await admit(representationIntent("memory_events"));
     const repo = repository();
     repo.getSharedMemoryRepresentationChangeReview.mockImplementationOnce(
-      async (_actor, input) => ({
-        ...(await repository().getSharedMemoryRepresentationChangeReview(
-          _actor,
-          input
-        ))!,
-        grant: {
-          id: input.shareGrantId,
-          logicalMemoryId: input.logicalMemoryId,
-          teamId: input.teamId,
-          teamWorkspaceId: input.teamWorkspaceId,
-          grantVersion: input.expectedGrantVersion,
-          lifecycle: "revoked" as const,
-          activeRepresentation: "lcm_leaves" as const
-        },
-        willReactivate: true
-      })
+      async (_actor, input) =>
+        ({
+          ...(await repository().getSharedMemoryRepresentationChangeReview(
+            _actor,
+            input
+          ))!,
+          grant: {
+            id: input.shareGrantId,
+            logicalMemoryId: input.logicalMemoryId,
+            teamId: input.teamId,
+            teamWorkspaceId: input.teamWorkspaceId,
+            grantVersion: input.expectedGrantVersion,
+            lifecycle: "revoked" as const,
+            activeRepresentation: "lcm_leaves" as const
+          },
+          willReactivate: true
+        }) as never
     );
     const reactivation = await admit(representationIntent("lcm_leaves"), repo);
 
@@ -341,7 +342,7 @@ describe("Shared Memory action definitions", () => {
 
   it("fails closed on missing review state and exposes no standalone consent action", async () => {
     const repo = repository();
-    repo.getSharedMemoryShareReview.mockResolvedValueOnce(null);
+    repo.getSharedMemoryShareReview.mockResolvedValueOnce(null as never);
 
     await expect(
       admit(shareIntent("lcm_rollups"), repo)

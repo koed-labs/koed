@@ -74,13 +74,18 @@ const handoff = {
 } as const satisfies HighRiskActionGrantIntent;
 
 const recipientKey = {
-  algorithm: "x25519-aes-256-gcm" as const,
+  algorithm: "RSA-OAEP-SHA256" as const,
   keyId: randomUUID(),
   keyVersion: 1,
   publicJwk: {
-    kty: "OKP" as const,
-    crv: "X25519" as const,
-    x: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    kty: "RSA" as const,
+    n: "test-modulus",
+    e: "AQAB",
+    alg: "RSA-OAEP-256" as const,
+    key_ops: ["encrypt"] as ["encrypt"],
+    ext: true as const,
+    kid: "source-download-recipient",
+    use: "enc" as const
   }
 };
 

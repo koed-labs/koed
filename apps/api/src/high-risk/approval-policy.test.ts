@@ -234,13 +234,18 @@ const matrixCases: Array<{
       targetDeploymentId: uuid(11),
       firstSegmentIndex: 0,
       recipientKey: {
-        algorithm: "x25519-aes-256-gcm",
+        algorithm: "RSA-OAEP-SHA256",
         keyId: uuid(12),
         keyVersion: 1,
         publicJwk: {
-          kty: "OKP",
-          crv: "X25519",
-          x: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          kty: "RSA",
+          n: "test-modulus",
+          e: "AQAB",
+          alg: "RSA-OAEP-256",
+          key_ops: ["encrypt"],
+          ext: true,
+          kid: uuid(12),
+          use: "enc"
         }
       }
     },

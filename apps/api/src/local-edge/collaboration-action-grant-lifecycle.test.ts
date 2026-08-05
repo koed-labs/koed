@@ -38,7 +38,8 @@ const selector = "00000000-0000-4000-8000-000000000009";
 
 const backend = {
   id: "team-vps",
-  baseUrl: "https://team.example.test/koed"
+  baseUrl: "https://team.example.test/koed",
+  routePolicy: {}
 };
 
 const context = {

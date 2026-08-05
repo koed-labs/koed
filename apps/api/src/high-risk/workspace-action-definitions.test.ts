@@ -206,7 +206,7 @@ describe("Workspace action definitions", () => {
         { teamWorkspaceId: ids.workspace, userId: ids.member }
       ))!,
       currentAccess: "read"
-    });
+    } as never);
     const expansion = await admit(
       { ...base, body: { ...base.body, access: "write" } },
       repo
@@ -241,7 +241,7 @@ describe("Workspace action definitions", () => {
 
   it("fails closed for missing, stale, or mismatched Workspace context", async () => {
     const repo = repository();
-    repo.getTeamWorkspaceLifecycleReview.mockResolvedValueOnce(null);
+    repo.getTeamWorkspaceLifecycleReview.mockResolvedValueOnce(null as never);
     await expect(
       admit(
         {

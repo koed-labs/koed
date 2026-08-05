@@ -159,7 +159,6 @@ const buildServer = async (overrides?: {
       approvalTier: "native_review"
     })),
     listTeams: vi.fn(async () => []),
-    listTeamWorkspaces: vi.fn(async () => []),
     listTeamManagementMembers: vi.fn(async () => []),
     getTeamInviteCreationReview: vi.fn(async () => null),
     getTeamInviteAcceptanceReview: vi.fn(async () => ({
@@ -564,7 +563,6 @@ describe("high-risk action grant routes", () => {
       }
     );
     expect(fixture.repository.listTeams).not.toHaveBeenCalled();
-    expect(fixture.repository.listTeamWorkspaces).not.toHaveBeenCalled();
     expect(fixture.repository.createActionGrant).toHaveBeenCalledWith(
       expect.objectContaining({
         operationFamily: "admin",
@@ -698,17 +696,20 @@ describe("high-risk action grant routes", () => {
       .update(`${pepper}${inviteToken}`)
       .digest("hex");
     const workspaceId = randomUUID();
-    const lookup = vi.fn(async () => ({
-      invite: {
-        teamId: ids.team,
-        defaultTeamWorkspaceId: workspaceId,
-        role: "member" as const,
-        defaultWorkspaceAccess: "write" as const
-      },
-      team: { name: "Koed Engineering" },
-      defaultWorkspace: { name: "Platform" },
-      effectiveRole: "member" as const
-    }));
+    const lookup = vi.fn(
+      async () =>
+        ({
+          invite: {
+            teamId: ids.team,
+            defaultTeamWorkspaceId: workspaceId,
+            role: "member" as const,
+            defaultWorkspaceAccess: "write" as const
+          },
+          team: { name: "Koed Engineering" },
+          defaultWorkspace: { name: "Platform" },
+          effectiveRole: "member" as const
+        }) as never
+    );
     const fixture = await buildServer({
       hashSecret: (secret) =>
         createHash("sha256").update(`${pepper}${secret}`).digest("hex"),
@@ -806,29 +807,32 @@ describe("high-risk action grant routes", () => {
       const fixture = await buildServer({
         deviceOperationFamilies: ["managed_execution"],
         repository: {
-          getManagedConversationExecution: vi.fn(async () => ({
-            id: ids.target,
-            ownerUserId: ids.alice,
-            projectId: randomUUID(),
-            provider: "codex",
-            state: executionState,
-            stateVersion: 1,
-            executionGeneration: 1,
-            runnerDeploymentId: randomUUID(),
-            runnerDeviceId,
-            runnerId: "runner-1",
-            runnerLeaseExpiresAt: null,
-            logicalSessionId: null,
-            providerThreadId: null,
-            providerCliVersion: null,
-            sourceGenerationId: null,
-            lastErrorCode: null,
-            createdAt: new Date(now - 48 * 60 * 60 * 1_000).toISOString(),
-            updatedAt: new Date(now).toISOString(),
-            startedAt: new Date(now - 48 * 60 * 60 * 1_000).toISOString(),
-            quiescedAt: null,
-            stoppedAt: null
-          })),
+          getManagedConversationExecution: vi.fn(
+            async () =>
+              ({
+                id: ids.target,
+                ownerUserId: ids.alice,
+                projectId: randomUUID(),
+                provider: "codex",
+                state: executionState,
+                stateVersion: 1,
+                executionGeneration: 1,
+                runnerDeploymentId: randomUUID(),
+                runnerDeviceId,
+                runnerId: "runner-1",
+                runnerLeaseExpiresAt: null,
+                logicalSessionId: null,
+                providerThreadId: null,
+                providerCliVersion: null,
+                sourceGenerationId: null,
+                lastErrorCode: null,
+                createdAt: new Date(now - 48 * 60 * 60 * 1_000).toISOString(),
+                updatedAt: new Date(now).toISOString(),
+                startedAt: new Date(now - 48 * 60 * 60 * 1_000).toISOString(),
+                quiescedAt: null,
+                stoppedAt: null
+              }) as never
+          ),
           listDeviceCredentials: vi.fn(async () =>
             targetAgesMs.map((age, index) =>
               managedTargetCredential({

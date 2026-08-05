@@ -223,7 +223,7 @@ describe("Team and membership action definitions", () => {
         displayName: "Member Name"
       },
       activeOwnerCount: 2
-    });
+    } as never);
     const decreased = await admit(
       { ...promotion, body: { role: "member", expectedVersion: 7 } },
       repository
@@ -335,7 +335,7 @@ describe("Team and membership action definitions", () => {
         disabledAt: null
       },
       activeOwnerCount: 1
-    });
+    } as never);
     await expect(admit(intent, repository)).rejects.toBeInstanceOf(
       ActionApprovalPolicyError
     );
@@ -343,7 +343,9 @@ describe("Team and membership action definitions", () => {
 
   it("fails closed for missing invitation and stale membership context", async () => {
     const repository = baseRepository();
-    repository.getTeamInviteAcceptanceReview.mockResolvedValueOnce(null);
+    repository.getTeamInviteAcceptanceReview.mockResolvedValueOnce(
+      null as never
+    );
     await expect(
       admit(
         {
