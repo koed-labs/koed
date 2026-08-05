@@ -2581,8 +2581,8 @@ const cleanupTeamDatabaseRows = async (
        team_threads as (
          select id from collaboration_threads where team_id = $1
        ),
-       deleted_read_states as (
-         delete from collaboration_read_states
+       deleted_receipt_states as (
+         delete from collaboration_receipt_states
           where thread_id in (select id from team_threads)
           returning 1
        ),
@@ -2594,6 +2594,16 @@ const cleanupTeamDatabaseRows = async (
        deleted_messages as (
          delete from collaboration_messages
           where team_id = $1
+          returning 1
+       ),
+       deleted_audience_members as (
+         delete from collaboration_thread_audience_members
+          where thread_id in (select id from team_threads)
+          returning 1
+       ),
+       deleted_audiences as (
+         delete from collaboration_thread_audiences
+          where thread_id in (select id from team_threads)
           returning 1
        ),
        deleted_threads as (
@@ -2611,18 +2621,22 @@ const cleanupTeamDatabaseRows = async (
           returning 1
        )
      select
-       (select count(*) from deleted_read_states)::bigint as read_states,
+       (select count(*) from deleted_receipt_states)::bigint as receipt_states,
        (select count(*) from deleted_participants)::bigint as participants,
        (select count(*) from deleted_messages)::bigint as messages,
+       (select count(*) from deleted_audience_members)::bigint as audience_members,
+       (select count(*) from deleted_audiences)::bigint as audiences,
        (select count(*) from deleted_threads)::bigint as threads,
        (select count(*) from updated_workspaces)::bigint as workspaces`,
     [teamId, observedAt]
   );
   return {
     removedRecordCount:
-      sumCount(result.rows, "read_states") +
+      sumCount(result.rows, "receipt_states") +
       sumCount(result.rows, "participants") +
       sumCount(result.rows, "messages") +
+      sumCount(result.rows, "audience_members") +
+      sumCount(result.rows, "audiences") +
       sumCount(result.rows, "threads") +
       sumCount(result.rows, "workspaces"),
     removedByteCount: 0
@@ -3413,9 +3427,21 @@ const cleanupShareGrantDatabaseRows = async (
       and team_id = $2 and team_workspace_id = $3`;
   const counts: number[] = [];
   for (const table of [
-    "collaboration_read_states",
+    "collaboration_receipt_states",
     "collaboration_participants",
     "collaboration_messages"
+  ] as const) {
+    const removed = await client.query(
+      `delete from ${table}
+        where thread_id in (${targetThreads})
+        returning 1`,
+      [target.shareGrantId, target.teamId, target.teamWorkspaceId]
+    );
+    counts.push(removed.rowCount ?? 0);
+  }
+  for (const table of [
+    "collaboration_thread_audience_members",
+    "collaboration_thread_audiences"
   ] as const) {
     const removed = await client.query(
       `delete from ${table}

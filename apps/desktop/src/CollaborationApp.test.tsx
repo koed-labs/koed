@@ -177,6 +177,17 @@ const person = (id: string, displayName: string) => ({
   presence: "available" as const,
   membershipState: "enabled" as const
 });
+const teamPerson = (value: ReturnType<typeof person>) => ({
+  ...value,
+  teamPresence: {
+    mode: "auto" as const,
+    manualStatus: "available" as const,
+    activityLevel: "active" as const,
+    lastActivityAt: at,
+    nextTransitionAt: "2026-07-17T08:35:00.001Z",
+    preferenceVersion: 1
+  }
+});
 const mark = person(ids.mark, "Mark Fixture");
 const remoteMark = person(ids.remoteMark, "Mark Fixture");
 const alex = person(ids.alex, "Alex Chen");
@@ -195,7 +206,7 @@ const managedPerson = (
   access: "disabled" | "read" | "write" = "write",
   version = 1
 ) => ({
-  ...value,
+  ...teamPerson(value),
   management: {
     membershipId: `${ids.membership.slice(0, -1)}${
       value.id === ids.remoteMark ? "1" : value.id === ids.alex ? "2" : "3"
@@ -312,6 +323,7 @@ const message = (
   editedAt: null,
   deletedAt: null,
   delivery,
+  recipientStatus: delivery === "sent" ? "sent" : null,
   failure:
     delivery === "failed"
       ? {
@@ -470,7 +482,7 @@ const baseSnapshot = (): CollaborationSnapshot =>
           membershipVersion: 1,
           lifecycle: "active",
           unreadCount: 0,
-          people: [remoteMark],
+          people: [teamPerson(remoteMark)],
           directMessages: [],
           workspaces: [],
           version: 1
@@ -841,6 +853,23 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       access: input.access,
       version: (input.expectedVersion ?? 0) + 1
     })),
+    setTeamPresence: vi.fn(async (input) => {
+      const person = current.navigation.teams
+        .find((team) => team.id === input.teamId)!
+        .people.find(
+          (candidate) => candidate.id === current.navigation.teamPrincipal?.id
+        )!;
+      return {
+        ...person,
+        teamPresence: {
+          ...person.teamPresence,
+          mode: input.mode,
+          manualStatus: input.manualStatus,
+          preferenceVersion: input.expectedVersion + 1
+        }
+      };
+    }),
+    reportTeamActivity: vi.fn(async (teamIds) => teamIds),
     createPersonalChannel: vi.fn(async () => current),
     renameThread: vi.fn(async ({ thread, name }) =>
       updatePersonalChannel({
@@ -920,6 +949,7 @@ const createClient = (initial = baseSnapshot()): MockClient => {
     }),
     retryMessage: vi.fn(async (input) => client.sendMessage(input)),
     markRead: vi.fn(async () => current),
+    markDelivered: vi.fn(async () => current),
     loadMessagePage: vi.fn(async () => current),
     loadSharedSourcePage: vi.fn(async () => current),
     listOwnedSharedMemoryGrants: vi.fn(async () => []),
@@ -1070,6 +1100,7 @@ describe("CollaborationApp", () => {
     container.remove();
     delete window.koedDesktop;
     vi.restoreAllMocks();
+    vi.useRealTimers();
     (
       globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = false;
@@ -1169,6 +1200,50 @@ describe("CollaborationApp", () => {
       await localStatusStore.refresh();
     });
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledOnce());
+  });
+
+  it("refreshes local health when collaboration becomes live", async () => {
+    const initial = {
+      ...baseSnapshot(),
+      connection: {
+        ...baseSnapshot().connection,
+        state: "unavailable" as const,
+        connectedAt: null
+      }
+    };
+    const client = createClient(collaborationSnapshotSchema.parse(initial));
+    const localStatusStore = new DesktopStatusStore();
+    const refresh = vi
+      .spyOn(localStatusStore, "refresh")
+      .mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(
+        <App
+          collaborationClient={client}
+          onboardingComplete
+          statusStoreOverride={localStatusStore}
+        />
+      );
+    });
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      client.emit(
+        {
+          ...requireCurrent(client),
+          connection: {
+            ...requireCurrent(client).connection,
+            state: "live",
+            connectedAt: "2026-07-23T00:01:00.000Z"
+          }
+        },
+        undefined,
+        "connection"
+      );
+    });
+
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
   });
 
   it("keeps an onboarded device in the app shell while services recover", async () => {
@@ -1498,11 +1573,18 @@ describe("CollaborationApp", () => {
                 role: "member",
                 membershipVersion: 3,
                 people: team.people.map(
-                  ({ id, displayName, presence, membershipState }) => ({
+                  ({
                     id,
                     displayName,
                     presence,
-                    membershipState
+                    membershipState,
+                    teamPresence
+                  }) => ({
+                    id,
+                    displayName,
+                    presence,
+                    membershipState,
+                    teamPresence
                   })
                 )
               }
@@ -1514,11 +1596,18 @@ describe("CollaborationApp", () => {
         people:
           selected.view.kind === "team_people"
             ? selected.view.people.map(
-                ({ id, displayName, presence, membershipState }) => ({
+                ({
                   id,
                   displayName,
                   presence,
-                  membershipState
+                  membershipState,
+                  teamPresence
+                }) => ({
+                  id,
+                  displayName,
+                  presence,
+                  membershipState,
+                  teamPresence
                 })
               )
             : []
@@ -1544,6 +1633,171 @@ describe("CollaborationApp", () => {
       teamId: ids.team,
       expectedVersion: 3
     });
+  });
+
+  it("renders Team presence and lets the current User choose one manual status", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const setPresence = (
+      person: CollaborationSnapshot["navigation"]["teams"][number]["people"][number]
+    ) =>
+      person.id === ids.remoteMark
+        ? {
+            ...person,
+            presence: "available" as const,
+            teamPresence: {
+              mode: "manual" as const,
+              manualStatus: "available" as const,
+              activityLevel: null,
+              lastActivityAt: null,
+              nextTransitionAt: null,
+              preferenceVersion: 7
+            }
+          }
+        : person.id === ids.riley
+          ? {
+              ...person,
+              presence: "away" as const,
+              teamPresence: {
+                mode: "manual" as const,
+                manualStatus: "out_of_office" as const,
+                activityLevel: null,
+                lastActivityAt: null,
+                nextTransitionAt: null,
+                preferenceVersion: 2
+              }
+            }
+          : person;
+    const presenceSnapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      navigation: {
+        ...selected.navigation,
+        teams: selected.navigation.teams.map((team) =>
+          team.id === ids.team
+            ? { ...team, people: team.people.map(setPresence) }
+            : team
+        )
+      },
+      view:
+        selected.view.kind === "team_people"
+          ? { ...selected.view, people: selected.view.people.map(setPresence) }
+          : selected.view
+    });
+    const client = await render(createClient(presenceSnapshot));
+
+    const auto = document.body.querySelector<HTMLInputElement>(
+      '.collab-presence-auto input[type="checkbox"]'
+    );
+    expect(auto?.checked).toBe(false);
+    expect(
+      document.body.querySelector('[title="Out of office"]')
+    ).not.toBeNull();
+    expect(
+      document.body
+        .querySelector<HTMLButtonElement>('button[aria-label="Available"]')
+        ?.getAttribute("aria-pressed")
+    ).toBe("true");
+
+    await click(container, "Do not disturb");
+    expect(client.setTeamPresence).toHaveBeenCalledWith({
+      teamId: ids.team,
+      mode: "manual",
+      manualStatus: "do_not_disturb",
+      expectedVersion: 7
+    });
+  });
+
+  it("advances automatic Team presence through every threshold without another server event", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(at));
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.teamTwo
+    });
+    await render(createClient(selected));
+
+    expect(document.body.querySelector('[title="Active"]')).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+    });
+    expect(
+      document.body.querySelector('[title="Recently active"]')
+    ).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
+    });
+    expect(document.body.querySelector('[title="Idle"]')).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(90 * 60 * 1000);
+    });
+    expect(document.body.querySelector('[title="Inactive"]')).not.toBeNull();
+    expect(
+      document.body.querySelector(".collab-person-identity > span")?.textContent
+    ).toContain("offline");
+  });
+
+  it("renders pushed activity against the current clock", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.parse(at) + 3 * 60 * 60 * 1000));
+    const client = createClient(
+      viewFor(baseSnapshot(), {
+        kind: "team_people",
+        teamId: ids.teamTwo
+      })
+    );
+    await render(client);
+    expect(document.body.querySelector('[title="Inactive"]')).not.toBeNull();
+
+    const current = requireCurrent(client);
+    const activityAt = new Date(Date.now()).toISOString();
+    const updatePeople = (
+      people: CollaborationSnapshot["navigation"]["teams"][number]["people"]
+    ) =>
+      people.map((person) => ({
+        ...person,
+        presence: "available" as const,
+        teamPresence: {
+          ...person.teamPresence,
+          activityLevel: "active" as const,
+          lastActivityAt: activityAt,
+          nextTransitionAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+        }
+      }));
+    await act(async () =>
+      client.emit({
+        ...current,
+        navigation: {
+          ...current.navigation,
+          teams: current.navigation.teams.map((team) =>
+            team.id === ids.teamTwo
+              ? { ...team, people: updatePeople(team.people) }
+              : team
+          )
+        },
+        view:
+          current.view.kind === "team_people"
+            ? { ...current.view, people: updatePeople(current.view.people) }
+            : current.view
+      })
+    );
+
+    expect(document.body.querySelector('[title="Active"]')).not.toBeNull();
+  });
+
+  it("reports foreground activity when an already-focused view mounts", async () => {
+    const client = await render();
+
+    await vi.waitFor(() =>
+      expect(client.reportTeamActivity).toHaveBeenCalledWith([
+        ids.team,
+        ids.teamTwo
+      ])
+    );
   });
 
   it("shows safe denied and conflict states without exposing internal errors", async () => {
@@ -1673,6 +1927,33 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).not.toContain(
       "Collaboration is temporarily unavailable."
     );
+  });
+
+  it("keeps cached Team People visible during a transient outage", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const client = await render(createClient(selected));
+
+    await act(async () =>
+      client.emit(
+        {
+          ...requireCurrent(client),
+          connection: {
+            ...requireCurrent(client).connection,
+            state: "unavailable",
+            connectedAt: null
+          }
+        },
+        "Collaboration is temporarily unavailable.",
+        "connection"
+      )
+    );
+
+    expect(document.body.textContent).toContain("Members");
+    expect(document.body.textContent).toContain("Alex Chen");
+    expect(document.body.textContent).not.toContain("Team unavailable");
   });
 
   it("clears a transient stream announcement after verified live activity", async () => {
@@ -1910,6 +2191,53 @@ describe("CollaborationApp", () => {
         ?.getAttribute("data-rendered-count")
     ).toBe("100");
     expect(document.body.textContent).toContain("Long thread message 100");
+  });
+
+  it("renders sender receipts as sent, delivered to everyone, and read by everyone", async () => {
+    const messages = (["sent", "delivered", "read"] as const).map(
+      (recipientStatus, index) => ({
+        ...message(
+          uuid(1_200 + index),
+          ids.notes,
+          `Receipt ${recipientStatus}`,
+          mark
+        ),
+        sequence: index + 1,
+        recipientStatus
+      })
+    );
+    const selected = baseSnapshot();
+    const receiptNotes = { ...notes(), latestSequence: messages.length };
+    await render(
+      createClient(
+        collaborationSnapshotSchema.parse({
+          ...selected,
+          navigation: {
+            ...selected.navigation,
+            personal: {
+              ...selected.navigation.personal,
+              notesToSelf: receiptNotes
+            }
+          },
+          view: {
+            kind: "thread",
+            thread: receiptNotes,
+            messages: page(ids.notes, messages)
+          }
+        })
+      )
+    );
+
+    expect(document.querySelectorAll('[aria-label="Sent"]')).toHaveLength(1);
+    expect(
+      document.querySelectorAll('[aria-label="Delivered to everyone"]')
+    ).toHaveLength(1);
+    expect(
+      document.querySelectorAll('[aria-label="Read by everyone"]')
+    ).toHaveLength(1);
+    expect(
+      document.querySelector('.collab-recipient-status[data-status="read"]')
+    ).not.toBeNull();
   });
 
   it("replaces Team and Workspace content for suspended, deleting, revoked, and archived lifecycles", async () => {

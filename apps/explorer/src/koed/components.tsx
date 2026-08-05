@@ -548,6 +548,7 @@ function AgentFlowSettingsCard({
               {modelOptions.map((option) => (
                 <option key={option.id} value={option.model}>
                   {option.label}
+                  {option.available ? "" : " (unavailable)"}
                 </option>
               ))}
             </select>
@@ -622,8 +623,18 @@ function AgentFlowSettingsCard({
               {error}
             </div>
           ) : null}
+          {!error && flow.modelError ? (
+            <div className="rounded border border-destructive/30 bg-destructive/8 px-2 py-1 text-destructive-foreground">
+              {flow.modelError} Select an available model to recover this flow.
+            </div>
+          ) : null}
           <Button
-            disabled={!localAgentReady || saving || !draft.model}
+            disabled={
+              !localAgentReady ||
+              saving ||
+              !draft.model ||
+              !selectedModel?.available
+            }
             onClick={() => {
               void save();
             }}
@@ -940,7 +951,7 @@ function ManualAgentSelect({
               <span className="flex min-w-0 flex-col">
                 <span className="truncate text-xs">{option.label}</span>
                 <span className="truncate text-muted-foreground text-[11px]">
-                  Codex
+                  {option.available ? "Codex" : "Unavailable"}
                 </span>
               </span>
             </SelectItem>

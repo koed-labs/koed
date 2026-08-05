@@ -250,6 +250,11 @@ const seedAlphaResetFixture = async (pool, provider) => {
   const ownerUserId = randomUUID();
   const workspaceId = randomUUID();
   const sessionId = randomUUID();
+  const turnId = randomUUID();
+  const messageId = randomUUID();
+  const toolEventId = randomUUID();
+  const memoryEventId = randomUUID();
+  const memoryNodeId = randomUUID();
   const conversationItemId = randomUUID();
   const importRunId = randomUUID();
   const importSourceId = randomUUID();
@@ -280,7 +285,7 @@ const seedAlphaResetFixture = async (pool, provider) => {
         codex_transcript_path, idempotency_key, source_hash
       )
       values (
-        $1, $2, $3, 'personal', $4, $4, 'codex-cli', 'api',
+        $1, $2, $3, 'personal', $4, $4, 'codex-cli', 'hook',
         $5, $6, $6
       )
     `,
@@ -292,6 +297,68 @@ const seedAlphaResetFixture = async (pool, provider) => {
       sourcePath,
       `alpha-reset-session-${sessionId}`
     ]
+  );
+  await pool.query(
+    `
+      insert into turns (
+        id, session_id, owner_user_id, visibility, source_runtime,
+        capture_method
+      )
+      values ($1, $2, $3, 'personal', 'codex-cli', 'hook')
+    `,
+    [turnId, sessionId, ownerUserId]
+  );
+  await pool.query(
+    `
+      insert into messages (
+        id, session_id, turn_id, owner_user_id, visibility, role, content,
+        source_runtime, capture_method
+      )
+      values (
+        $1, $2, $3, $4, 'personal', 'assistant',
+        'Legacy Capture Hook message.', 'codex-cli', 'hook'
+      )
+    `,
+    [messageId, sessionId, turnId, ownerUserId]
+  );
+  await pool.query(
+    `
+      insert into tool_events (
+        id, session_id, turn_id, message_id, owner_user_id, visibility,
+        tool_name, source_runtime, capture_method
+      )
+      values (
+        $1, $2, $3, $4, $5, 'personal',
+        'legacy_hook_fixture', 'codex-cli', 'hook'
+      )
+    `,
+    [toolEventId, sessionId, turnId, messageId, ownerUserId]
+  );
+  await pool.query(
+    `
+      insert into memory_events (
+        id, owner_user_id, visibility, event_type, source_runtime,
+        capture_method, session_id, turn_id, message_id, tool_event_id
+      )
+      values (
+        $1, $2, 'personal', 'captured', 'codex-cli',
+        'hook', $3, $4, $5, $6
+      )
+    `,
+    [memoryEventId, ownerUserId, sessionId, turnId, messageId, toolEventId]
+  );
+  await pool.query(
+    `
+      insert into memory_nodes (
+        id, owner_user_id, visibility, kind, summary_text,
+        source_runtime, capture_method
+      )
+      values (
+        $1, $2, 'personal', 'leaf',
+        'Legacy Capture Hook summary.', 'codex-cli', 'hook'
+      )
+    `,
+    [memoryNodeId, ownerUserId]
   );
   await pool.query(
     `
@@ -406,6 +473,11 @@ const seedAlphaResetFixture = async (pool, provider) => {
     ownerUserId,
     workspaceId,
     sessionId,
+    turnId,
+    messageId,
+    toolEventId,
+    memoryEventId,
+    memoryNodeId,
     conversationItemId,
     importRunId,
     importSourceId,
@@ -447,6 +519,14 @@ const verifyAlphaResetUpgrade = async (pool, fixture) => {
           from conversation_items
           where id = $1 and owner_user_id = $2 and session_id = $3
         ) as retained_text,
+        jsonb_build_object(
+          'sessions', (select capture_method::text from sessions where id = $3),
+          'turns', (select capture_method::text from turns where id = $6),
+          'messages', (select capture_method::text from messages where id = $7),
+          'tool_events', (select capture_method::text from tool_events where id = $8),
+          'memory_events', (select capture_method::text from memory_events where id = $9),
+          'memory_nodes', (select capture_method::text from memory_nodes where id = $10)
+        ) as upgraded_capture_methods,
         (
           select encryption_scope
           from memory_replicas
@@ -463,7 +543,12 @@ const verifyAlphaResetUpgrade = async (pool, fixture) => {
       fixture.ownerUserId,
       fixture.sessionId,
       fixture.sourceReplicaId,
-      fixture.targetReplicaId
+      fixture.targetReplicaId,
+      fixture.turnId,
+      fixture.messageId,
+      fixture.toolEventId,
+      fixture.memoryEventId,
+      fixture.memoryNodeId
     ]
   );
   const expected = {
@@ -476,6 +561,14 @@ const verifyAlphaResetUpgrade = async (pool, fixture) => {
     segments: 0,
     cursors: 0,
     retained_text: fixture.retainedText,
+    upgraded_capture_methods: {
+      sessions: "transcript",
+      turns: "transcript",
+      messages: "transcript",
+      tool_events: "transcript",
+      memory_events: "transcript",
+      memory_nodes: "transcript"
+    },
     source_encryption_scope: null,
     target_encryption_scope: null
   };

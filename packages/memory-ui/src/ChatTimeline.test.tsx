@@ -222,6 +222,32 @@ describe("ChatTimeline", () => {
     ]);
   });
 
+  it("treats a non-scrollable timeline as being at its end", async () => {
+    const onAtEndChange = vi.fn();
+    await act(async () =>
+      root.render(
+        createElement(ChatTimeline<Message>, baseProps({ onAtEndChange }))
+      )
+    );
+
+    listMock.getState.mockReturnValue({
+      contentLength: 500,
+      isAtEnd: false,
+      isStartReached: true,
+      scrollLength: 500
+    });
+    act(() => {
+      listMock.props?.onScroll?.();
+      listMock.props?.onViewableItemsChanged?.({
+        changed: [],
+        viewableItems: []
+      });
+    });
+
+    expect(onAtEndChange).toHaveBeenCalledTimes(1);
+    expect(onAtEndChange).toHaveBeenLastCalledWith(true);
+  });
+
   it("jumps to the unread divider and falls back to the end", async () => {
     const handle = createRef<ChatTimelineHandle>();
     await act(async () =>

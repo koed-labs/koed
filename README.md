@@ -27,7 +27,9 @@ need them.
 - Homebrew for the source-checkout bundled-local runtime install. Packaged
   Desktop can use packaged native runtime assets; external dependency mode does
   not require Homebrew.
-- Codex installed and signed in.
+- Codex CLI `0.144.0` or newer installed and signed in. Koed validates configured
+  synthesis models against Codex app-server `model/list`; the default
+  `gpt-5.6-luna` model is unavailable in older releases.
 
 If you are on Windows, run Koed inside WSL as Linux tooling. Keep `KOED_HOME`
 and checkout paths on Linux filesystem paths inside WSL; native Windows
@@ -141,12 +143,13 @@ See [docs/upgrades.md](docs/upgrades.md) for upgrade guidance.
 
 ## License
 
-Koed is licensed under the GNU Affero General Public License version 3 only
-(`AGPL-3.0-only`). See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md),
-and [docs/license.md](docs/license.md). See
+Koed is licensed under the Apache License 2.0 (`Apache-2.0`). See
+[LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and
+[docs/license.md](docs/license.md). Apache-2.0 is also offered for Koed's
+repository history; existing AGPL grants remain valid. See
 [Commercial Feature Boundary](docs/commercial-feature-boundary.md) for the
-launch recommendation on public distribution, Team Self-Hosted, hosted-only
-services, and managed add-ons.
+public distribution, Team Self-Hosted, hosted-only services, and managed
+add-ons.
 
 ## Learn More
 
@@ -159,6 +162,7 @@ services, and managed add-ons.
 - [Backup and restore](docs/backup-restore.md)
 - [Hosted backups](docs/hosted-backups.md)
 - [Upgrades](docs/upgrades.md)
+- [CI and release validation](docs/ci-validation.md)
 - [Codex integration](docs/codex-integration.md)
 - [Claude Code integration](docs/claude-code-integration.md)
 - [Curated Memory](docs/curated-memory.md)

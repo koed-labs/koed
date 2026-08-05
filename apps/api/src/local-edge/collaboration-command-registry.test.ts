@@ -114,6 +114,13 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     teamOperation: true,
     teamResultMatcher: true
   },
+  "collaboration.mark_delivered": {
+    scope: "dynamic",
+    desktop: write,
+    personalOperation: true,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
   "collaboration.load_message_page": {
     scope: "dynamic",
     desktop: read,
@@ -161,6 +168,17 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.change_shared_memory_representation": {
     scope: "team",
     desktop: write
+  },
+  "collaboration.set_team_presence": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
+  "collaboration.report_team_activity": {
+    scope: "team",
+    desktop: write,
+    teamOperation: true
   },
   "collaboration.subscribe": { scope: "dynamic", desktop: read },
   "collaboration.unsubscribe": { scope: "unsupported", desktop: write },
@@ -285,6 +303,20 @@ describe("collaboration command registry", () => {
       body: { messageId },
       resultKey: "readState"
     });
+    const personalMarkDelivered = command("collaboration.mark_delivered", {
+      thread: { scope: "personal", threadId },
+      messageId
+    });
+    expect(desktopCollaborationOperationFamily(personalMarkDelivered)).toBe(
+      write
+    );
+    expect(personalCollaborationOperationFor(personalMarkDelivered)).toEqual({
+      operationFamily: read,
+      method: "PUT",
+      path: `/v1/collaboration/personal/threads/${threadId}/delivery-state`,
+      body: { messageId },
+      resultKey: "readState"
+    });
 
     const createChannel = command("collaboration.create_workspace_channel", {
       teamId,
@@ -318,5 +350,34 @@ describe("collaboration command registry", () => {
         topic: "Launch"
       })
     ).toBe(false);
+
+    const setPresence = command("collaboration.set_team_presence", {
+      teamId,
+      mode: "manual",
+      manualStatus: "do_not_disturb",
+      expectedVersion: 2
+    });
+    expect(teamCollaborationOperationFor(setPresence)).toEqual({
+      operationFamily: "team_chat_read",
+      method: "PUT",
+      path: `/v1/teams/${teamId}/presence/me`,
+      body: {
+        mode: "manual",
+        manualStatus: "do_not_disturb",
+        expectedVersion: 2
+      },
+      resultKey: "person"
+    });
+
+    const reportActivity = command("collaboration.report_team_activity", {
+      teamIds: [teamId]
+    });
+    expect(teamCollaborationOperationFor(reportActivity)).toEqual({
+      operationFamily: "team_chat_read",
+      method: "POST",
+      path: "/v1/teams/presence/activity",
+      body: { teamIds: [teamId] },
+      resultKey: "acceptedTeamIds"
+    });
   });
 });

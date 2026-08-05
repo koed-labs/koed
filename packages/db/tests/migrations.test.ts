@@ -85,3 +85,24 @@ describe("historical priority migration chain", () => {
     expect(migrationSql).toContain("memory_nodes_work_class_check");
   });
 });
+
+describe("collaboration receipt migration", () => {
+  it("keeps legacy message audiences unknown instead of inferring current access", async () => {
+    const migrationSql = await readDrizzleFile(
+      "0021_workable_the_renegades.sql"
+    );
+    const audienceBackfill = migrationSql.slice(
+      migrationSql.indexOf("INSERT INTO collaboration_thread_audiences"),
+      migrationSql.indexOf("UPDATE collaboration_receipt_states")
+    );
+
+    expect(audienceBackfill).toContain(
+      "koed:collaboration:audience-members:v1\\n[]"
+    );
+    expect(audienceBackfill).not.toContain("team_memberships");
+    expect(audienceBackfill).not.toContain("team_workspace_access_grants");
+    expect(audienceBackfill).not.toContain(
+      "collaboration_thread_audience_members"
+    );
+  });
+});

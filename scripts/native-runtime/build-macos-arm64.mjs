@@ -30,6 +30,7 @@ const parseArgs = (argv) => {
     else if (value === "--sources") options.sourcesPath = argv[++i];
     else if (value === "--out-dir") options.outDir = argv[++i];
     else if (value === "--version") options.version = argv[++i];
+    else if (value === "--no-archive") options.noArchive = true;
     else if (value === "--allow-host-mismatch")
       options.allowHostMismatch = true;
     else if (value === "--help" || value === "-h") options.help = true;
@@ -108,11 +109,19 @@ const copySourceRuntime = ({
   return { sourceDir: resolved };
 };
 
-const writeProvenance = ({ outDir, runtimeRoot, version, sourceDir }) => {
+const writeProvenance = ({
+  outDir,
+  runtimeRoot,
+  version,
+  sourceDir,
+  noArchive
+}) => {
   const provenance = {
     schemaVersion: 1,
     artifact: { platform: "macos", architecture: "arm64", version },
-    strategy: "koed-verified-runtime-tarball",
+    strategy: noArchive
+      ? "koed-verified-runtime-staging"
+      : "koed-verified-runtime-tarball",
     sourceDir: sourceDir ? resolve(sourceDir) : undefined,
     sources: readSources().sources,
     generatedAt: new Date().toISOString(),
@@ -153,11 +162,23 @@ const archive = ({ outDir, version }) => {
   };
 };
 
+const timedPhase = (timings, label, work) => {
+  console.error(`[native-runtime] ${label} started`);
+  const startedAt = performance.now();
+  try {
+    return work();
+  } finally {
+    const durationMs = Math.round(performance.now() - startedAt);
+    timings[label] = durationMs;
+    console.error(`[native-runtime] ${label} finished in ${durationMs}ms`);
+  }
+};
+
 const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     console.log(
-      "Usage: native-runtime:build:macos-arm64 -- [--source-dir <koed-runtime>] [--sources <sources.json>] [--out-dir <dir>] [--version <version>] [--json]"
+      "Usage: native-runtime:build:macos-arm64 -- [--source-dir <koed-runtime>] [--sources <sources.json>] [--out-dir <dir>] [--version <version>] [--no-archive] [--json]"
     );
     return;
   }
@@ -169,39 +190,57 @@ const main = () => {
     mkdtempSync(resolve(tmpdir(), "koed-native-runtime-"));
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(runtimeRoot, { recursive: true });
-  const procurement = copySourceRuntime({
-    sourceDir: options.sourceDir,
-    runtimeRoot,
-    sourcesPath: options.sourcesPath,
-    workDir
-  });
-  prunePythonEmbeddingRuntimeFiles(runtimeRoot);
-  const nativeAssets = writeRuntimeAssetManifest({
-    runtimeRoot,
-    platform: "macos",
-    architecture: "arm64"
-  });
+  const timings = {};
+  const procurement = timedPhase(timings, "runtime payload procurement", () =>
+    copySourceRuntime({
+      sourceDir: options.sourceDir,
+      runtimeRoot,
+      sourcesPath: options.sourcesPath,
+      workDir
+    })
+  );
+  const nativeAssets = timedPhase(
+    timings,
+    "payload pruning and manifest generation",
+    () => {
+      prunePythonEmbeddingRuntimeFiles(runtimeRoot);
+      return writeRuntimeAssetManifest({
+        runtimeRoot,
+        platform: "macos",
+        architecture: "arm64"
+      });
+    }
+  );
   if (nativeAssets.length === 0)
     throw new Error(
       "No native runtime assets were staged; refusing to publish empty artifact."
     );
-  writeProvenance({
-    outDir,
-    runtimeRoot,
-    version: options.version,
-    sourceDir: options.sourceDir
-  });
-  const artifact = archive({ outDir, version: options.version });
+  timedPhase(timings, "current provenance generation", () =>
+    writeProvenance({
+      outDir,
+      runtimeRoot,
+      version: options.version,
+      sourceDir: options.sourceDir,
+      noArchive: options.noArchive
+    })
+  );
+  const artifact = options.noArchive
+    ? null
+    : timedPhase(timings, "archive and checksum generation", () =>
+        archive({ outDir, version: options.version })
+      );
   const result = {
     ok: true,
     outDir,
     runtimeRoot,
     nativeAssets,
     artifact,
-    procurement
+    procurement,
+    timings
   };
   if (options.json) console.log(JSON.stringify(result, null, 2));
-  else console.log(`Built ${artifact.tarPath}`);
+  else if (artifact) console.log(`Built ${artifact.tarPath}`);
+  else console.log(`Staged ${runtimeRoot} without an archive.`);
 };
 
 main();

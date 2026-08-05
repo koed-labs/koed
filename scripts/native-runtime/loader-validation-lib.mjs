@@ -50,6 +50,22 @@ export const collectPlatformBinaries = ({ runtimeRoot, platform }) => [
   )
 ];
 
+export const boundedMap = async (values, concurrency, map) => {
+  const results = new Array(values.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await map(values[index], index);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, worker)
+  );
+  return results;
+};
+
 const parseMacDependencies = (output) =>
   output
     .split("\n")

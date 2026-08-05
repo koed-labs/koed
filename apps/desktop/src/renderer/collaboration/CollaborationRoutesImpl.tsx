@@ -10,7 +10,10 @@ import {
   type SharedMemoryRepresentation,
   type SharedMemorySession,
   type SharedMemorySourceItem,
-  type SharedMemorySourcePage
+  type SharedMemorySourcePage,
+  TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  coarsePresenceFromTeamPresence,
+  deriveTeamPresenceSnapshot
 } from "@koed/shared/collaboration";
 import {
   LcmSummaryFrame,
@@ -22,11 +25,13 @@ import {
 import { Dialog, DialogPopup } from "@koed/ui";
 import {
   Archive,
+  BellOff,
   BookOpen,
   Check,
   Clipboard,
   ChevronRight,
   CircleAlert,
+  CircleCheck,
   CloudOff,
   FileText,
   FolderKanban,
@@ -41,6 +46,7 @@ import {
   RefreshCw,
   RotateCcw,
   ToolCase,
+  Umbrella,
   UserPlus,
   UsersRound,
   X
@@ -418,11 +424,119 @@ export function PeopleView({
   const [busyKey, setBusyKey] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [presenceNow, setPresenceNow] = useState(() => Date.now());
+  const effectivePresenceNow = Math.max(presenceNow, Date.now());
   const [createdInvitation, setCreatedInvitation] = useState<{
     invitation: CollaborationInvitation;
     invitationUrl: string | null;
     copied: boolean;
   } | null>(null);
+  const presenceStatusLabels = new Map(
+    snapshot.teamPresenceStatusCatalogue.statuses.map((status) => [
+      status.key,
+      status.label
+    ])
+  );
+  const presenceStatusChoices = (
+    [
+      ["available", CircleCheck],
+      ["do_not_disturb", BellOff],
+      ["out_of_office", Umbrella]
+    ] as const
+  ).flatMap(([status, Icon]) => {
+    const label = presenceStatusLabels.get(status);
+    return label ? [[status, Icon, label] as const] : [];
+  });
+
+  useEffect(() => {
+    const nextTransition = view.people
+      .map(
+        (person) =>
+          deriveTeamPresenceSnapshot(
+            {
+              mode: person.teamPresence.mode,
+              manualStatus: person.teamPresence.manualStatus,
+              lastActivityAt: person.teamPresence.lastActivityAt,
+              preferenceVersion: person.teamPresence.preferenceVersion
+            },
+            effectivePresenceNow
+          ).nextTransitionAt
+      )
+      .filter((value): value is string => Boolean(value))
+      .map(Date.parse)
+      .filter((value) => Number.isFinite(value) && value > effectivePresenceNow)
+      .sort((left, right) => left - right)[0];
+    if (!nextTransition) return;
+    const now = Date.now();
+    const timer = window.setTimeout(
+      () => setPresenceNow(Date.now()),
+      Math.max(1, nextTransition - now)
+    );
+    return () => window.clearTimeout(timer);
+  }, [effectivePresenceNow, view.people]);
+
+  const presenceAt = (person: CollaborationTeamPerson) => {
+    return deriveTeamPresenceSnapshot(
+      {
+        mode: person.teamPresence.mode,
+        manualStatus: person.teamPresence.manualStatus,
+        lastActivityAt: person.teamPresence.lastActivityAt,
+        preferenceVersion: person.teamPresence.preferenceVersion
+      },
+      effectivePresenceNow
+    );
+  };
+
+  const activityLevelAt = (
+    person: CollaborationTeamPerson
+  ): "active" | "recently_active" | "idle" | "inactive" | null => {
+    return presenceAt(person).activityLevel;
+  };
+
+  const presenceLabel = (person: CollaborationTeamPerson): string => {
+    if (person.teamPresence.mode === "manual") {
+      return (
+        presenceStatusLabels.get(person.teamPresence.manualStatus) ??
+        "Unknown status"
+      );
+    }
+    const activity = activityLevelAt(person);
+    return activity === "active"
+      ? "Active"
+      : activity === "recently_active"
+        ? "Recently active"
+        : activity === "idle"
+          ? "Idle"
+          : "Inactive";
+  };
+
+  const presenceIcon = (person: CollaborationTeamPerson) => {
+    const label = presenceLabel(person);
+    if (
+      person.teamPresence.mode === "manual" &&
+      person.teamPresence.manualStatus === "unknown"
+    ) {
+      return <CircleAlert aria-label={label} />;
+    }
+    if (
+      person.teamPresence.mode === "manual" &&
+      person.teamPresence.manualStatus === "do_not_disturb"
+    ) {
+      return <BellOff aria-label={label} />;
+    }
+    if (
+      person.teamPresence.mode === "manual" &&
+      person.teamPresence.manualStatus === "out_of_office"
+    ) {
+      return <Umbrella aria-label={label} />;
+    }
+    return (
+      <CircleCheck
+        aria-label={label}
+        data-activity={activityLevelAt(person) ?? "manual"}
+      />
+    );
+  };
 
   const loadInvitations = useCallback(
     async (cursor: string | null = null) => {
@@ -589,6 +703,7 @@ export function PeopleView({
       (team.role !== "owner" || enabledOwners <= 1);
     return (
       <select
+        className="collab-member-role"
         aria-label={`Role for ${person.displayName}`}
         value={management.role}
         disabled={Boolean(busyKey) || protectedOwner}
@@ -760,12 +875,99 @@ export function PeopleView({
                       {initials(person.displayName)}
                     </span>
                     <div className="collab-person-identity">
-                      <strong>{person.displayName}</strong>
+                      <strong>
+                        <span
+                          className="collab-presence-icon"
+                          title={presenceLabel(person)}
+                        >
+                          {presenceIcon(person)}
+                        </span>
+                        {person.displayName}
+                      </strong>
                       <span>
-                        {management?.email ?? person.presence}
+                        {management?.email ??
+                          coarsePresenceFromTeamPresence(presenceAt(person))}
                         {isCurrent ? " · You" : ""}
                       </span>
                     </div>
+                    {isCurrent ? (
+                      <div
+                        className="collab-presence-controls"
+                        aria-label="Your Team presence"
+                      >
+                        <label className="collab-presence-auto">
+                          <input
+                            type="checkbox"
+                            checked={person.teamPresence.mode === "auto"}
+                            disabled={Boolean(busyKey)}
+                            onChange={(event) =>
+                              void runOperation(
+                                "presence-mode",
+                                () =>
+                                  client.setTeamPresence({
+                                    teamId: team.id,
+                                    mode: event.currentTarget.checked
+                                      ? "auto"
+                                      : "manual",
+                                    manualStatus:
+                                      person.teamPresence.manualStatus ===
+                                      "unknown"
+                                        ? (presenceStatusChoices[0]?.[0] ??
+                                          "available")
+                                        : person.teamPresence.manualStatus,
+                                    expectedVersion:
+                                      person.teamPresence.preferenceVersion
+                                  }),
+                                "Your presence could not be changed."
+                              )
+                            }
+                          />
+                          <span>Auto</span>
+                        </label>
+                        <div className="collab-presence-choices">
+                          {presenceStatusChoices.map(
+                            ([status, Icon, label]) => (
+                              <button
+                                key={status}
+                                type="button"
+                                className={
+                                  person.teamPresence.mode === "manual" &&
+                                  person.teamPresence.manualStatus === status
+                                    ? "selected"
+                                    : ""
+                                }
+                                aria-label={label}
+                                aria-pressed={
+                                  person.teamPresence.mode === "manual" &&
+                                  person.teamPresence.manualStatus === status
+                                }
+                                title={label}
+                                disabled={
+                                  Boolean(busyKey) ||
+                                  person.teamPresence.mode === "auto"
+                                }
+                                onClick={() =>
+                                  void runOperation(
+                                    `presence-${status}`,
+                                    () =>
+                                      client.setTeamPresence({
+                                        teamId: team.id,
+                                        mode: "manual",
+                                        manualStatus: status,
+                                        expectedVersion:
+                                          person.teamPresence.preferenceVersion
+                                      }),
+                                    "Your presence could not be changed."
+                                  )
+                                }
+                              >
+                                <Icon aria-hidden="true" />
+                              </button>
+                            )
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
                     {roleControl(person)}
                     {person.membershipState === "disabled" ? (
                       <span className="collab-member-state">Disabled</span>
@@ -827,7 +1029,7 @@ export function PeopleView({
                     {canChangeTarget && !isCurrent ? (
                       <button
                         type="button"
-                        className="danger-secondary"
+                        className="danger-secondary collab-member-disable"
                         disabled={Boolean(busyKey) || targetLastOwner}
                         title={
                           targetLastOwner
@@ -1570,6 +1772,10 @@ export function SharedSessionView({
           </header>
           <RouteThreadTimeline
             client={client}
+            currentUserId={
+              snapshot.navigation.teamPrincipal?.id ??
+              snapshot.navigation.personalOwner.id
+            }
             label={title}
             markdownAdapters={markdownAdapters}
             page={companion.messages}
@@ -2790,9 +2996,8 @@ function MainContent({
   }
   if (
     team &&
-    snapshot.connection.state !== "live" &&
-    snapshot.connection.state !== "connecting" &&
-    snapshot.connection.state !== "reconnecting"
+    (snapshot.connection.state === "disconnected" ||
+      snapshot.connection.state === "access_revoked")
   ) {
     return (
       <StateView
@@ -2953,6 +3158,44 @@ export function CollaborationRoutes({
   selectionFailure = null,
   snapshot
 }: CollaborationRoutesProps) {
+  const lastActivityReportAt = useRef(0);
+
+  useEffect(() => {
+    const teamIds = snapshot.navigation.teams
+      .filter((team) => team.lifecycle === "active")
+      .map((team) => team.id);
+    if (teamIds.length === 0) return;
+    const report = () => {
+      if (
+        document.visibilityState !== "visible" ||
+        Date.now() - lastActivityReportAt.current <
+          TEAM_ACTIVITY_WRITE_THROTTLE_MS
+      ) {
+        return;
+      }
+      lastActivityReportAt.current = Date.now();
+      void client.reportTeamActivity(teamIds).catch(() => {
+        lastActivityReportAt.current = 0;
+      });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") report();
+    };
+    window.addEventListener("pointerdown", report, { capture: true });
+    window.addEventListener("keydown", report, { capture: true });
+    window.addEventListener("focus", report);
+    document.addEventListener("visibilitychange", onVisibility);
+    if (document.visibilityState === "visible" && document.hasFocus()) {
+      report();
+    }
+    return () => {
+      window.removeEventListener("pointerdown", report, { capture: true });
+      window.removeEventListener("keydown", report, { capture: true });
+      window.removeEventListener("focus", report);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [client, snapshot.navigation.teams]);
+
   useEffect(() => {
     drafts.reconcileAuthorized?.((authority) => {
       const thread = threadForDraftAuthority(snapshot, authority);

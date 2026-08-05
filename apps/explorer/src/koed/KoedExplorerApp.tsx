@@ -382,6 +382,13 @@ function KoedExplorerMain() {
       ),
     [localAgentSettings]
   );
+  const manualAgentReady = Boolean(
+    localAgentReady &&
+    manualWorkerConfig?.model.trim() &&
+    localAgentSettings?.modelOptions.some(
+      (option) => option.model === manualWorkerConfig.model && option.available
+    )
+  );
   const setManualWorkerConfig = useCallback(
     (value: ManualMemoryQuestionWorkerConfig) => {
       setManualWorkerConfigState(value);
@@ -610,7 +617,7 @@ function KoedExplorerMain() {
       });
       return;
     }
-    if (!localAgentReady || !manualWorkerConfig?.model.trim()) {
+    if (!manualAgentReady || !manualWorkerConfig?.model.trim()) {
       setToast({
         tone: "destructive",
         message:
@@ -1127,7 +1134,7 @@ function KoedExplorerMain() {
               <MemoryComposer
                 disabled={askingMemory}
                 canAsk={
-                  localAgentReady &&
+                  manualAgentReady &&
                   !sessionScopeUnavailable &&
                   submittedMemoryQuestion.length > 0
                 }

@@ -920,6 +920,7 @@ const validatedRuntimeSecret = (
   };
   createPdsSessionPackageRuntimeContext({
     authorityPublicKey: candidate.authority.publicKey,
+    authorityKeyId: candidate.authority.keyId,
     groupId: candidate.groupId,
     authorityHead: candidate.authority.head,
     currentEpoch: candidate.groupSecrets.currentEpoch,
@@ -1483,6 +1484,7 @@ const status = async (
   }
   const verified = createPdsSessionPackageRuntimeContext({
     authorityPublicKey: runtime.authority.publicKey,
+    authorityKeyId: runtime.authority.keyId,
     groupId: runtime.groupId,
     authorityHead: runtime.authority.head,
     currentEpoch: runtime.groupSecrets.currentEpoch,

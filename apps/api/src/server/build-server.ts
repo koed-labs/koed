@@ -751,6 +751,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       repository: collaborationRepository,
       materializationRepository: repository,
       sharedMemoryRepository: repository,
+      teamPresenceRepository: repository,
       pool,
       corsOrigins,
       backendIdentity: deployment.protocolDeploymentId,

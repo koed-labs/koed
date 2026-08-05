@@ -3,6 +3,7 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { performance } from "node:perf_hooks";
 import {
   prunePythonEmbeddingRuntimeFiles,
   writeRuntimeAssetManifest
@@ -15,6 +16,7 @@ const runtimeRoot = resolve(desktopRoot, ".koed-runtime");
 
 const run = (label, command, args) => {
   console.log(`> ${label}`);
+  const startedAt = performance.now();
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     stdio: "inherit"
@@ -25,6 +27,9 @@ const run = (label, command, args) => {
   if (result.status !== 0) {
     throw new Error(`${label} failed with ${result.status ?? 1}`);
   }
+  console.log(
+    `< ${label} finished in ${Math.round(performance.now() - startedAt)}ms`
+  );
 };
 
 const deploy = (filter, to) =>

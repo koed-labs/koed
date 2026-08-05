@@ -3,8 +3,11 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  closeSync,
+  openSync,
   mkdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -161,6 +164,23 @@ const assetFiles = (entry: PackagedRuntimeAssetManifestEntry): string[] =>
 
 const executableModeOk = (path: string): boolean =>
   (statSync(path).mode & 0o111) !== 0;
+
+const updateHashFromFile = (
+  hash: ReturnType<typeof createHash>,
+  path: string
+): void => {
+  const descriptor = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    closeSync(descriptor);
+  }
+};
 
 const run = (
   command: string,
@@ -339,7 +359,7 @@ export const sha256PackagedRuntimeFiles = (
     if (stat.isDirectory()) continue;
     hash.update(file.replaceAll("\\", "/"));
     hash.update("\0");
-    hash.update(readFileSync(absolute));
+    updateHashFromFile(hash, absolute);
     hash.update("\0");
   }
   return hash.digest("hex");
@@ -499,7 +519,8 @@ const assetStatus = (
   root: string | undefined,
   asset: PackagedRuntimeAssetManifestEntry,
   platform: string,
-  spawnSync: SpawnSyncLike
+  spawnSync: SpawnSyncLike,
+  knownSourceSha256?: string
 ): PackagedRuntimeAssetStatus => {
   const expectedSha = normalizeSha256(asset.sha256);
   const sourceRoot = assetSourceRoot(root, asset);
@@ -513,7 +534,7 @@ const assetStatus = (
   );
   const sourceSha256 =
     sourceRoot && missingSource.length === 0
-      ? sha256PackagedRuntimeFiles(sourceRoot, files)
+      ? (knownSourceSha256 ?? sha256PackagedRuntimeFiles(sourceRoot, files))
       : undefined;
   const installedSha256 =
     missingInstalled.length === 0
@@ -599,10 +620,11 @@ const statusFromAssets = (
   };
 };
 
-export const collectPackagedRuntimeStatus = (
+const collectPackagedRuntimeStatusInternal = (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  dependencies: PackagedRuntimeDependencies = {}
+  dependencies: PackagedRuntimeDependencies = {},
+  knownSourceSha256: ReadonlyMap<string, string> = new Map()
 ): PackagedRuntimeStatus => {
   const root = resolvePackagedKoedRuntimeRoot(environment);
   const platform = dependencies.platform ?? process.platform;
@@ -669,10 +691,24 @@ export const collectPackagedRuntimeStatus = (
     loaded.path,
     root,
     matching.map((asset) =>
-      assetStatus(paths, root, asset, platform, spawnSync)
+      assetStatus(
+        paths,
+        root,
+        asset,
+        platform,
+        spawnSync,
+        knownSourceSha256.get(asset.id)
+      )
     )
   );
 };
+
+export const collectPackagedRuntimeStatus = (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv = process.env,
+  dependencies: PackagedRuntimeDependencies = {}
+): PackagedRuntimeStatus =>
+  collectPackagedRuntimeStatusInternal(paths, environment, dependencies);
 
 const copyAsset = (
   paths: KoedServerPaths,
@@ -746,8 +782,18 @@ export const installPackagedRuntime = (
     )}\n`,
     { mode: 0o600 }
   );
+  const verifiedSourceSha256 = new Map(
+    before.assets.flatMap((asset) =>
+      asset.sourceSha256 ? [[asset.id, asset.sourceSha256] as const] : []
+    )
+  );
   return {
-    ...collectPackagedRuntimeStatus(paths, environment, dependencies),
+    ...collectPackagedRuntimeStatusInternal(
+      paths,
+      environment,
+      dependencies,
+      verifiedSourceSha256
+    ),
     copiedPaths
   };
 };

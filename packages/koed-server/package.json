@@ -2,7 +2,7 @@
   "name": "@koed/koed-server",
   "version": "0.4.4",
   "private": true,
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "koed-server": "dist/cli.js"

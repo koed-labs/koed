@@ -4,16 +4,15 @@ Thanks for your interest in Koed Self-Hosted.
 
 ## License
 
-Koed Self-Hosted is licensed under the GNU Affero General Public License
-version 3 only (`AGPL-3.0-only`). By contributing to this repository, you agree
-that your contribution may be distributed as part of Koed Self-Hosted under
-`AGPL-3.0-only`.
+Koed is licensed under the Apache License 2.0 (`Apache-2.0`). Unless you
+explicitly state otherwise, contributions intentionally submitted for inclusion
+in Koed are provided under `Apache-2.0`, subject to any separate contributor
+agreement you have executed with Koed Labs.
 
-Koed Labs may also offer separate commercial licenses for Koed Self-Hosted.
 Before accepting non-trivial external code contributions, Koed Labs requires a
-signed contributor agreement that grants Koed Labs the rights needed to use,
-modify, sublicense, and relicense the contribution, including under commercial
-terms.
+signed contributor agreement confirming that the contributor has the rights
+needed to submit the contribution and granting Koed Labs the rights needed to
+use, modify, sublicense, and relicense it.
 
 Do not submit code that you do not have the right to contribute.
 

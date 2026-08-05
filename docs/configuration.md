@@ -477,8 +477,8 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   Team collaboration is disabled because Personal broker commands and
   subscriptions remain available.
 - `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Only `codex` is supported.
-- `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.4-mini`.
-- `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `medium`.
+- `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.6-luna`.
+- `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `low`.
 - `MEMORY_CURATED_REVIEW_TIMEOUT_MS`: maximum duration of one local review call. Default `90000`.
 - `MEMORY_CURATED_REVIEW_MAX_ATTEMPTS`: maximum review attempts before a non-stale worker failure becomes a rejection. Default `2`.
 - `MEMORY_CURATED_REVIEW_MAX_PROMPT_TOKENS`: maximum complete review-bundle size. Oversized evidence fails closed instead of being truncated. Default `24000`.
@@ -695,8 +695,8 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_BRIDGE_PORT`: local answer bridge port used by the Explorer. Default `3210`.
 - `MEMORY_ANSWER_BRIDGE_CORS_ORIGINS`: comma-separated browser origins allowed to call the local answer bridge.
 - `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Default and only supported value: `codex`.
-- `MEMORY_ANSWER_MODEL`: Codex model for MCP Memory Answer synthesis.
-- `MEMORY_ANSWER_REASONING_EFFORT`: Codex reasoning effort for MCP Memory Answer synthesis.
+- `MEMORY_ANSWER_MODEL`: Codex model for MCP Memory Answer synthesis. Default `gpt-5.6-luna`.
+- `MEMORY_ANSWER_REASONING_EFFORT`: Codex reasoning effort for MCP Memory Answer synthesis. Default `low`.
 - `MEMORY_ANSWER_TIMEOUT_MS`: timeout for each local MCP Memory Answer app-server turn.
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
@@ -710,8 +710,8 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS`: bridge-level retry cap for older pending question rows without per-question max attempts.
 - `MEMORY_QUESTION_ANSWER_LOCAL_LEASE_SECONDS`: short renewable lease used when the local bridge claims a pending manual Memory Question.
 - `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary synthesis. Default and only supported value: `codex`.
-- `MEMORY_LCM_SUMMARY_MODEL`: Codex model for LCM Summary synthesis.
-- `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: Codex reasoning effort for LCM Summary synthesis.
+- `MEMORY_LCM_SUMMARY_MODEL`: Codex model for LCM Summary synthesis. Default `gpt-5.6-luna`.
+- `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: Codex reasoning effort for LCM Summary synthesis. Default `low`.
 - `MEMORY_LCM_SUMMARY_TIMEOUT_MS`: timeout for each local LCM Summary app-server turn.
 - `MEMORY_LCM_SUMMARY_MAX_ATTEMPTS`: maximum local LCM Summary synthesis attempts.
 - `MEMORY_LCM_SUMMARY_RETRY_DELAY_MS`: delay between local LCM Summary retry attempts.

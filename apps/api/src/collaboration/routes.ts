@@ -816,6 +816,50 @@ export const registerCollaborationRoutes = (
         return { readState };
       }
     );
+
+    app.put(
+      `${basePath}/delivery-state`,
+      { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+      async (request) => {
+        const user =
+          scope === "personal"
+            ? await authenticatePersonalCollaboration(
+                request,
+                context,
+                "personal_collaboration_read"
+              )
+            : await authenticateTeamCollaboration(
+                request,
+                context,
+                "team_chat_read"
+              );
+        const params = parseScopedParams(request.params);
+        const input = advanceCollaborationReadStateSchema.parse(request.body);
+        const repository = context.requireCollaborationRepository();
+        if (scope === "personal") {
+          await requirePersonalThread(
+            repository,
+            user.id,
+            params.threadId,
+            true
+          );
+        } else {
+          await requireTeamThread(
+            repository,
+            user.id,
+            params.teamId!,
+            params.threadId,
+            true
+          );
+        }
+        const readState = await repository.advanceDeliveryState(
+          { userId: user.id },
+          { threadId: params.threadId, ...input }
+        );
+        if (!readState) throw forbidden();
+        return { readState };
+      }
+    );
   };
 
   registerThreadMessageRoutes(

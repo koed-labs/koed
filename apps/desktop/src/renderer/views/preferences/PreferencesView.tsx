@@ -435,7 +435,7 @@ function AboutSection({
         </div>
         <div>
           <dt>License</dt>
-          <dd>GNU Affero General Public License v3.0</dd>
+          <dd>Apache License 2.0</dd>
         </div>
       </dl>
       <section aria-labelledby="koed-acknowledgements-title">

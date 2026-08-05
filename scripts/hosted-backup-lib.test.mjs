@@ -356,7 +356,13 @@ test("hosted backup uses Docker Compose Postgres tools for local Compose databas
       const script = postgresScriptForCall(args, options);
       if (script.includes("restore sentinel seed")) {
         assert.match(script, /insert into collaboration_threads/);
+        assert.match(script, /insert into collaboration_thread_audiences/);
+        assert.match(
+          script,
+          /insert into collaboration_thread_audience_members/
+        );
         assert.match(script, /insert into collaboration_messages/);
+        assert.match(script, /provenance_marker, audience_version/);
         assert.match(script, /insert into encrypted_field_payloads/);
         assert.match(script, /insert into collaboration_outbox/);
         return { stdout: "", stderr: "" };

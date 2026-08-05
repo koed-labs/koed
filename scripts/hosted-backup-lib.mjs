@@ -1198,11 +1198,36 @@ values (
   2
 );
 
+insert into collaboration_thread_audiences (
+  thread_id, version, member_set_hash
+)
+values (
+  ${sqlLiteral(sentinel.thread.id)}::uuid,
+  1,
+  encode(
+    digest(
+      E'koed:collaboration:audience-members:v1\\n'
+        || jsonb_build_array(${sqlLiteral(sentinel.ownerUserId)}::text)::text,
+      'sha256'
+    ),
+    'hex'
+  )
+);
+
+insert into collaboration_thread_audience_members (
+  thread_id, audience_version, user_id
+)
+values (
+  ${sqlLiteral(sentinel.thread.id)}::uuid,
+  1,
+  ${sqlLiteral(sentinel.ownerUserId)}::uuid
+);
+
 insert into collaboration_messages (
   id, thread_id, thread_sequence, scope, personal_owner_user_id,
   sender_kind, sender_principal_id, sender_user_id, idempotency_key_hash,
   request_hash, body_marker, metadata_marker, provenance_kind,
-  provenance_id, provenance_marker
+  provenance_id, provenance_marker, audience_version
 )
 values (
   ${sqlLiteral(sentinel.message.id)}::uuid,
@@ -1215,7 +1240,7 @@ values (
   ${sqlLiteral(collaborationMessageBodyMarker)},
   ${sqlLiteral(collaborationMessageMetadataMarker)},
   'encrypted', ${sqlLiteral(sentinel.message.provenanceId)},
-  ${sqlLiteral(collaborationMessageProvenanceMarker)}
+  ${sqlLiteral(collaborationMessageProvenanceMarker)}, 1
 );
 
 insert into encrypted_field_payloads (

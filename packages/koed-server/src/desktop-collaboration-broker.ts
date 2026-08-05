@@ -48,6 +48,10 @@ import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import { resolveKoedServerPaths, type KoedServerPaths } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
 import {
+  applyActiveRuntimeUrls,
+  readActiveRuntimeState
+} from "./runtime-state.js";
+import {
   removeProjectTeamWorkspaceLinksForBackend,
   removeProjectTeamWorkspaceLinksForMismatchedBinding
 } from "./project-team-workspace-links.js";
@@ -863,7 +867,10 @@ export const createDesktopCollaborationBroker = (
         if (requiresTeamBackend && !backendId) return Promise.resolve(null);
         return Promise.resolve({
           apiUrl: resolveApiUrl(
-            applyPersistedLocalPorts(paths, environment, { force: true }),
+            applyActiveRuntimeUrls(
+              applyPersistedLocalPorts(paths, environment, { force: true }),
+              readActiveRuntimeState(paths.runtimeStatePath)
+            ),
             repoEnv
           ).replace(/\/$/, ""),
           backendId,

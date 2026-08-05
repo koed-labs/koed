@@ -407,6 +407,7 @@ const createCollaborationFixture = () => {
         id: randomUUID(),
         threadId: input.threadId,
         threadSequence: threadMessages.length + 1,
+        audienceVersion: 1,
         scope: thread.scope,
         personalOwnerUserId: thread.personalOwnerUserId,
         teamId: thread.teamId,
@@ -415,6 +416,7 @@ const createCollaborationFixture = () => {
         senderPrincipalId: actor.userId,
         senderUserId: actor.userId,
         senderDisplayName: users.get(actor.userId)?.displayName ?? null,
+        recipientStatus: "sent",
         bodyText: input.bodyText,
         metadata: {},
         provenance: { kind: "user_message", id: randomUUID() },
@@ -458,8 +460,33 @@ const createCollaborationFixture = () => {
       return {
         threadId: input.threadId,
         userId: actor.userId,
+        lastDeliveredMessageId: message.id,
+        lastDeliveredSequence: message.threadSequence,
+        lastDeliveredAt: iso,
         lastReadMessageId: message.id,
         lastReadSequence: message.threadSequence,
+        lastReadAt: iso,
+        unreadCount: 0,
+        version: 1,
+        updatedAt: iso
+      };
+    },
+    async advanceDeliveryState(actor, input) {
+      if (!authorizedThread(actor, input.threadId, "read", true)) return null;
+      const message = messages
+        .get(input.threadId)
+        ?.find((candidate) => candidate.id === input.messageId);
+      if (!message) return null;
+      return {
+        threadId: input.threadId,
+        userId: actor.userId,
+        lastDeliveredMessageId: message.id,
+        lastDeliveredSequence: message.threadSequence,
+        lastDeliveredAt: iso,
+        lastReadMessageId: null,
+        lastReadSequence: 0,
+        lastReadAt: null,
+        unreadCount: message.senderUserId === actor.userId ? 0 : 1,
         version: 1,
         updatedAt: iso
       };
@@ -1020,6 +1047,21 @@ describe("collaboration HTTP routes", () => {
     expect(jsonBody<{ readState: { lastReadSequence: number } }>(read)).toEqual(
       expect.objectContaining({
         readState: expect.objectContaining({ lastReadSequence: 1 })
+      })
+    );
+
+    const delivered = await app.inject({
+      method: "PUT",
+      url: `${baseUrl}/delivery-state`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: { messageId: message.id }
+    });
+    expect(delivered.statusCode).toBe(200);
+    expect(
+      jsonBody<{ readState: { lastDeliveredSequence: number } }>(delivered)
+    ).toEqual(
+      expect.objectContaining({
+        readState: expect.objectContaining({ lastDeliveredSequence: 1 })
       })
     );
 

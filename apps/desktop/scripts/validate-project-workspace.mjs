@@ -282,7 +282,7 @@ const run = async () => {
     assert.equal(chat.composerVisible, true);
     assert.equal(chat.shellOverflow, false);
     assert.equal(chat.sourceCount, 1);
-    assert.equal(chat.messageCount, 1);
+    assert.equal(chat.messageCount, 2);
     assert.equal(chat.selectedTeamCount, 1);
     assert.equal(chat.teamTabStops, 1);
     assert.equal(chat.teamCount, 50);
@@ -369,6 +369,10 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
       );
+    const teamSelectionCommandsBefore =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.length ?? 0`
+      );
     await window.webContents.executeJavaScript(
       `window.__koedRenderProfiles = []`
     );
@@ -385,11 +389,18 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
       );
+    const teamSelectionCommands = await window.webContents.executeJavaScript(
+      `window.__koedBrowserUserCommands?.slice(${teamSelectionCommandsBefore}) ?? []`
+    );
     const teamSwitchProfiles = await window.webContents.executeJavaScript(
       `window.__koedRenderProfiles ?? []`
     );
     // Team activation selects People and loads its authorized invitation page.
-    assert.equal(afterTeamSelectionCommandCount - teamSelectionCommandCount, 2);
+    assert.equal(
+      afterTeamSelectionCommandCount - teamSelectionCommandCount,
+      2,
+      JSON.stringify(teamSelectionCommands)
+    );
     assert.ok(
       teamSwitchFrameMs < 100,
       JSON.stringify({ teamSwitchFrameMs, teamSwitchProfiles })
@@ -398,6 +409,10 @@ const run = async () => {
     const workspaceSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
+      );
+    const workspaceSelectionCommandsBefore =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.length ?? 0`
       );
     const workspaceSelectionFrameMs = await window.webContents
       .executeJavaScript(`(() => {
@@ -416,9 +431,14 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
       );
+    const workspaceSelectionCommands =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.slice(${workspaceSelectionCommandsBefore}) ?? []`
+      );
     assert.equal(
       afterWorkspaceSelectionCommandCount - workspaceSelectionCommandCount,
-      1
+      1,
+      JSON.stringify(workspaceSelectionCommands)
     );
     assert.ok(
       workspaceSelectionFrameMs < 100,

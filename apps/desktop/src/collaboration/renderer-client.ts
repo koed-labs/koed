@@ -22,6 +22,7 @@ import {
   type CollaborationSelection,
   type CollaborationSnapshot,
   type CollaborationSubscription,
+  type CollaborationTeamPerson,
   type CollaborationThread,
   type CollaborationThreadReference,
   type CollaborationWorkspace,
@@ -198,6 +199,13 @@ export interface CollaborationRendererClient {
     access: "disabled" | "read" | "write";
     expectedVersion: number | null;
   }): Promise<CollaborationWorkspaceAccess>;
+  setTeamPresence(input: {
+    teamId: string;
+    mode: "auto" | "manual";
+    manualStatus: "available" | "do_not_disturb" | "out_of_office";
+    expectedVersion: number;
+  }): Promise<CollaborationTeamPerson>;
+  reportTeamActivity(teamIds: string[]): Promise<string[]>;
   createPersonalChannel(input: {
     name: string;
     topic: string | null;
@@ -241,6 +249,10 @@ export interface CollaborationRendererClient {
     body: string;
   }): Promise<CollaborationSnapshot>;
   markRead(input: {
+    thread: CollaborationThreadReference;
+    messageId: string;
+  }): Promise<CollaborationSnapshot>;
+  markDelivered(input: {
     thread: CollaborationThreadReference;
     messageId: string;
   }): Promise<CollaborationSnapshot>;
@@ -324,6 +336,8 @@ export interface CollaborationRendererClient {
 
 const AUTHORITATIVE_SNAPSHOT_RECOVERY_MAX_ATTEMPTS = 5;
 const AUTHORITATIVE_SNAPSHOT_RECOVERY_BASE_DELAY_MS = 250;
+const DELIVERY_RECEIPT_RETRY_BASE_DELAY_MS = 250;
+const DELIVERY_RECEIPT_RETRY_MAX_DELAY_MS = 30_000;
 const SHARED_SESSION_RECOVERY_TTL_MS = 5 * 60 * 1_000;
 const SELECTION_VIEW_CACHE_LIMIT = 32;
 const SELECTION_VIEW_CACHE_RETENTION_MS = 15 * 60 * 1_000;
@@ -1045,11 +1059,57 @@ const applyReadState = (
 ): CollaborationSnapshot => {
   const next = mapThread(snapshot, readState.threadId, (thread) => ({
     ...thread,
-    unreadCount: 0,
+    unreadCount: readState.unreadCount,
     lastReadMessageId: readState.messageId,
     lastReadSequence: readState.sequence
   }));
-  return applyCompanionUnreadCount(next, readState.threadId, 0);
+  return applyCompanionUnreadCount(
+    next,
+    readState.threadId,
+    readState.unreadCount
+  );
+};
+
+const applyMessageReceipts = (
+  snapshot: CollaborationSnapshot,
+  threadId: string,
+  receipts: Array<{
+    messageId: string;
+    recipientStatus: "sent" | "delivered" | "read";
+  }>
+): CollaborationSnapshot => {
+  const byId = new Map(
+    receipts.map((receipt) => [receipt.messageId, receipt.recipientStatus])
+  );
+  const apply = (page: CollaborationMessagePage): CollaborationMessagePage => ({
+    ...page,
+    items: page.items.map((message) => {
+      const recipientStatus = byId.get(message.id);
+      return recipientStatus ? { ...message, recipientStatus } : message;
+    })
+  });
+  if (snapshot.view.kind === "thread" && snapshot.view.thread.id === threadId) {
+    return {
+      ...snapshot,
+      view: { ...snapshot.view, messages: apply(snapshot.view.messages) }
+    };
+  }
+  if (
+    snapshot.view.kind === "shared_session" &&
+    snapshot.view.companion.thread.id === threadId
+  ) {
+    return {
+      ...snapshot,
+      view: {
+        ...snapshot.view,
+        companion: {
+          ...snapshot.view.companion,
+          messages: apply(snapshot.view.companion.messages)
+        }
+      }
+    };
+  }
+  return snapshot;
 };
 
 const applyPersonalMemoryEntry = (
@@ -1277,6 +1337,17 @@ export const createCollaborationRendererClient = (
   let snapshot: CollaborationSnapshot | null = null;
   let disposed = false;
   let connectedRemoteUrl: string | null = null;
+  const appliedReceiptVersions = new Map<string, number>();
+  const pendingDeliveryReceipts = new Map<
+    string,
+    {
+      attempt: number;
+      messageId: string;
+      sequence: number;
+      thread: CollaborationThreadReference;
+      timer: ReturnType<typeof setTimeout> | null;
+    }
+  >();
   const listeners = new Set<CollaborationClientListener>();
   const actionGrantProjections = new CollaborationActionGrantProjectionStore();
   const selectionViews = new CollaborationSelectionViewCache(
@@ -1395,6 +1466,36 @@ export const createCollaborationRendererClient = (
     seenDeliveryOrder.length = 0;
   };
 
+  const applyAuthoritativeReadState = (
+    current: CollaborationSnapshot,
+    readState: CollaborationReadState
+  ): CollaborationSnapshot => {
+    const appliedVersion = appliedReceiptVersions.get(readState.threadId) ?? 0;
+    if (readState.version < appliedVersion) return current;
+    appliedReceiptVersions.set(readState.threadId, readState.version);
+    return applyReadState(current, readState);
+  };
+
+  const clearPendingTeamDeliveryReceipts = (teamId?: string) => {
+    for (const [threadId, pending] of pendingDeliveryReceipts) {
+      if (
+        pending.thread.scope !== "team" ||
+        (teamId && pending.thread.teamId !== teamId)
+      ) {
+        continue;
+      }
+      if (pending.timer) clearTimeout(pending.timer);
+      pendingDeliveryReceipts.delete(threadId);
+    }
+  };
+
+  const clearPendingDeliveryReceipts = () => {
+    for (const pending of pendingDeliveryReceipts.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+    }
+    pendingDeliveryReceipts.clear();
+  };
+
   const publishTrusted = async (
     next: CollaborationSnapshot,
     update: CollaborationClientUpdate,
@@ -1437,6 +1538,7 @@ export const createCollaborationRendererClient = (
     if (!snapshot) return;
     clearTeamSelectionViews(teamId);
     clearTeamDeliveryHistory();
+    clearPendingTeamDeliveryReceipts(teamId);
     const selectedTeamId = teamIdForSelection(snapshot.selection);
     const shouldHydratePersonal = selectedTeamId === teamId;
     const next = {
@@ -1461,6 +1563,7 @@ export const createCollaborationRendererClient = (
     if (!snapshot) return;
     clearTeamSelectionViews();
     clearTeamDeliveryHistory();
+    clearPendingTeamDeliveryReceipts();
     const selectedTeamId = teamIdForSelection(snapshot.selection);
     const shouldHydratePersonal = selectedTeamId !== null;
     const next = {
@@ -1524,6 +1627,75 @@ export const createCollaborationRendererClient = (
         input
       })
     );
+
+  const deliverPendingReceipt = async (threadId: string): Promise<void> => {
+    const pending = pendingDeliveryReceipts.get(threadId);
+    if (!pending || disposed) return;
+    pending.timer = null;
+    try {
+      const result = await command("collaboration.mark_delivered", {
+        thread: pending.thread,
+        messageId: pending.messageId
+      });
+      if (
+        !result.ok ||
+        result.command !== "collaboration.mark_delivered" ||
+        pendingDeliveryReceipts.get(threadId) !== pending
+      ) {
+        return;
+      }
+      pendingDeliveryReceipts.delete(threadId);
+      await publish(
+        applyAuthoritativeReadState(requireSnapshot(), result.data.readState),
+        { kind: "command" }
+      );
+    } catch (error) {
+      if (
+        disposed ||
+        pendingDeliveryReceipts.get(threadId) !== pending ||
+        (error instanceof CollaborationClientError && !error.retryable)
+      ) {
+        pendingDeliveryReceipts.delete(threadId);
+        return;
+      }
+      pending.attempt += 1;
+      const retryAfterMs =
+        error instanceof CollaborationClientError ? error.retryAfterMs : null;
+      const delay = Math.min(
+        Math.max(
+          retryAfterMs ??
+            DELIVERY_RECEIPT_RETRY_BASE_DELAY_MS *
+              2 ** Math.min(pending.attempt - 1, 7),
+          DELIVERY_RECEIPT_RETRY_BASE_DELAY_MS
+        ),
+        DELIVERY_RECEIPT_RETRY_MAX_DELAY_MS
+      );
+      pending.timer = setTimeout(() => {
+        void deliverPendingReceipt(threadId);
+      }, delay);
+    }
+  };
+
+  const scheduleDeliveryReceipt = (message: CollaborationMessage) => {
+    const current = pendingDeliveryReceipts.get(message.threadId);
+    if (current && current.sequence >= message.sequence) return;
+    if (current?.timer) clearTimeout(current.timer);
+    pendingDeliveryReceipts.set(message.threadId, {
+      attempt: 0,
+      messageId: message.id,
+      sequence: message.sequence,
+      thread:
+        message.scope === "personal"
+          ? { scope: "personal", threadId: message.threadId }
+          : {
+              scope: "team",
+              teamId: message.teamId!,
+              threadId: message.threadId
+            },
+      timer: null
+    });
+    void deliverPendingReceipt(message.threadId);
+  };
 
   const unsubscribeSubscriptionId = async (subscriptionId: string) => {
     const request = collaborationRendererCommandSchema.parse({
@@ -1606,7 +1778,8 @@ export const createCollaborationRendererClient = (
         }
         const pending = selectionViews.coordinate(candidate.selection, () =>
           command("collaboration.select", {
-            selection: candidate.selection
+            selection: candidate.selection,
+            navigationIntent: "prewarm"
           })
             .then((result) => {
               if (
@@ -1967,6 +2140,53 @@ export const createCollaborationRendererClient = (
     );
   };
 
+  const applyTeamPersonUpdate = (
+    current: CollaborationSnapshot,
+    teamId: string,
+    person: CollaborationTeamPerson
+  ): CollaborationSnapshot => {
+    const upsertPerson = (people: CollaborationTeamPerson[]) => {
+      const existingIndex = people.findIndex(
+        (candidate) => candidate.id === person.id
+      );
+      if (existingIndex === -1) return [...people, person];
+      const existing = people[existingIndex]!;
+      if (
+        existing.teamPresence.preferenceVersion >
+        person.teamPresence.preferenceVersion
+      ) {
+        return people;
+      }
+      return people.map((candidate, index) =>
+        index === existingIndex
+          ? {
+              ...candidate,
+              ...person,
+              management: person.management ?? candidate.management
+            }
+          : candidate
+      );
+    };
+    return {
+      ...current,
+      navigation: {
+        ...current.navigation,
+        teams: current.navigation.teams.map((team) =>
+          team.id !== teamId
+            ? team
+            : { ...team, people: upsertPerson(team.people) }
+        )
+      },
+      view:
+        current.view.kind === "team_people" && current.view.teamId === teamId
+          ? {
+              ...current.view,
+              people: upsertPerson(current.view.people)
+            }
+          : current.view
+    };
+  };
+
   const applyUpdate = async (
     event: Extract<CollaborationRendererEvent, { type: "update" }>
   ) => {
@@ -2019,8 +2239,14 @@ export const createCollaborationRendererClient = (
         }
         break;
       }
-      case "read_state_updated":
-        next = applyReadState(next, update.readState);
+      case "receipt_state_updated":
+        next = applyAuthoritativeReadState(next, update.readState);
+        break;
+      case "message_receipts_updated":
+        next = applyMessageReceipts(next, update.threadId, update.receipts);
+        break;
+      case "team_person_upserted":
+        next = applyTeamPersonUpdate(next, update.teamId, update.person);
         break;
       case "shared_session_upserted": {
         clearSharedSessionSelectionView(update.session.id);
@@ -2195,6 +2421,17 @@ export const createCollaborationRendererClient = (
       announcementId: announcement ? event.eventId : undefined,
       realtimeUpdate: update
     });
+    if (update.type === "message_created") {
+      const currentPrincipalIds = new Set([
+        next.navigation.personalOwner.id,
+        ...(next.navigation.teamPrincipal
+          ? [next.navigation.teamPrincipal.id]
+          : [])
+      ]);
+      if (!currentPrincipalIds.has(update.message.sender.id)) {
+        scheduleDeliveryReceipt(update.message);
+      }
+    }
     if (
       update.type === "navigation_snapshot" ||
       update.type === "shared_session_upserted"
@@ -2258,8 +2495,15 @@ export const createCollaborationRendererClient = (
       const backendChanged =
         snapshot.connection.backendId !== null &&
         event.connection.backendId !== snapshot.connection.backendId;
+      const recoveredSelectedTeamStream =
+        becameLive &&
+        (snapshot.connection.state === "reconnecting" ||
+          snapshot.connection.state === "unavailable") &&
+        teamIdForSelection(snapshot.selection) !== null;
       const requiresLiveRecovery =
-        becameLive && !backendChanged && snapshot.navigation.teams.length === 0;
+        becameLive &&
+        !backendChanged &&
+        (snapshot.navigation.teams.length === 0 || recoveredSelectedTeamStream);
       if (
         backendChanged ||
         event.connection.state === "disconnected" ||
@@ -2521,7 +2765,11 @@ export const createCollaborationRendererClient = (
     return snapshot;
   };
 
-  const applyCommandSnapshot = async (next: CollaborationSnapshot) => {
+  const applyCommandSnapshot = async (
+    next: CollaborationSnapshot,
+    isCurrent: () => boolean = () => true
+  ) => {
+    if (!isCurrent()) return requireSnapshot();
     const backendChanged =
       snapshot?.connection.backendId !== null &&
       snapshot?.connection.backendId !== undefined &&
@@ -2535,16 +2783,26 @@ export const createCollaborationRendererClient = (
       pendingSharedSessionRecovery = null;
       dropPendingDeliveries();
       await resetSubscriptions();
+      if (!isCurrent()) return requireSnapshot();
       await purgeAllTeams(next.connection, undefined, false);
+      if (!isCurrent()) return requireSnapshot();
     }
+    if (!isCurrent()) return requireSnapshot();
     await publishValidated(next, { kind: "command" });
+    if (!isCurrent()) return requireSnapshot();
     await syncTeamSubscription(next.selection);
+    if (!isCurrent()) return requireSnapshot();
     void prewarmSharedSessionViews(next.navigation);
     startSharedSourceBackfill(next);
     return requireSnapshot();
   };
 
   reloadAuthoritativeSnapshot = async (preferredSelection) => {
+    const recoverySelectionRequestGeneration = ++selectionRequestGeneration;
+    const recoverySelectionIntentGeneration = selectionIntentGeneration;
+    const recoveryIsCurrent = () =>
+      recoverySelectionRequestGeneration === selectionRequestGeneration &&
+      recoverySelectionIntentGeneration === selectionIntentGeneration;
     const selectedSharedSession =
       snapshot?.selection.kind === "shared_session" ? snapshot.selection : null;
     if (selectedSharedSession) {
@@ -2561,11 +2819,13 @@ export const createCollaborationRendererClient = (
       attempt += 1
     ) {
       try {
-        const result = await command("collaboration.load", {});
+        const result = await command("collaboration.load", {
+          forceRemoteNavigation: true
+        });
         if (!result.ok || result.command !== "collaboration.load") {
           throw new Error("Unexpected collaboration result.");
         }
-        loaded = await applyCommandSnapshot(result.data.snapshot);
+        loaded = result.data.snapshot;
         break;
       } catch (error) {
         if (
@@ -2588,6 +2848,11 @@ export const createCollaborationRendererClient = (
       }
     }
     if (!loaded) throw new Error("Authoritative snapshot recovery failed.");
+    if (!recoveryIsCurrent()) {
+      await subscribeScope({ scope: "personal" });
+      return;
+    }
+    let resolved = loaded;
     const preferredTeamId = recoverySelection
       ? teamIdForSelection(recoverySelection)
       : null;
@@ -2596,23 +2861,48 @@ export const createCollaborationRendererClient = (
       preferredTeamId &&
       loaded.navigation.teams.some((team) => team.id === preferredTeamId)
     ) {
-      if (
-        selectionIdentity(loaded.selection) !==
-        selectionIdentity(recoverySelection)
-      ) {
-        try {
-          await select(recoverySelection, true);
-          if (recoverySelection.kind === "shared_session") {
-            pendingSharedSessionRecovery = null;
-          }
-        } catch {
-          if (recoverySelection.kind === "shared_session") {
-            rememberSharedSessionSelection(recoverySelection);
-          }
-          await select({ kind: "team_people", teamId: preferredTeamId }, true);
+      try {
+        const selected = await command("collaboration.select", {
+          selection: recoverySelection
+        });
+        if (!selected.ok || selected.command !== "collaboration.select") {
+          throw new Error("Unexpected collaboration result.");
         }
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
+        resolved = selected.data.snapshot;
+        if (recoverySelection.kind === "shared_session") {
+          pendingSharedSessionRecovery = null;
+        }
+      } catch {
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
+        if (recoverySelection.kind === "shared_session") {
+          rememberSharedSessionSelection(recoverySelection);
+        }
+        const fallbackSelection = {
+          kind: "team_people" as const,
+          teamId: preferredTeamId
+        };
+        const fallback = await command("collaboration.select", {
+          selection: fallbackSelection
+        });
+        if (!fallback.ok || fallback.command !== "collaboration.select") {
+          throw new Error("Unexpected collaboration result.");
+        }
+        if (!recoveryIsCurrent()) {
+          await subscribeScope({ scope: "personal" });
+          return;
+        }
+        resolved = fallback.data.snapshot;
       }
     }
+    await applyCommandSnapshot(resolved, recoveryIsCurrent);
+    if (!recoveryIsCurrent()) return;
     await subscribeScope({ scope: "personal" });
     if (snapshot) {
       await publish(snapshot, { kind: "command", announcement: "" });
@@ -2637,7 +2927,10 @@ export const createCollaborationRendererClient = (
         warmed &&
         selectionIdentity(warmed.selection) === selectionIdentity(selection)
       ) {
-        return applyCommandSnapshot(warmed);
+        return applyCommandSnapshot(
+          warmed,
+          () => generation === selectionRequestGeneration
+        );
       }
     }
     const shell = snapshot ? optimisticSelection(snapshot, selection) : null;
@@ -2657,7 +2950,10 @@ export const createCollaborationRendererClient = (
         throw new Error("Unexpected collaboration result.");
       }
       if (generation !== selectionRequestGeneration) return requireSnapshot();
-      return applyCommandSnapshot(result.data.snapshot);
+      return applyCommandSnapshot(
+        result.data.snapshot,
+        () => generation === selectionRequestGeneration
+      );
     } catch (cause) {
       if (
         generation === selectionRequestGeneration &&
@@ -2723,17 +3019,23 @@ export const createCollaborationRendererClient = (
     return select(selectionForThread(thread));
   };
 
+  const loadSnapshot = async (
+    forceRemoteNavigation = false
+  ): Promise<CollaborationSnapshot> => {
+    pendingSharedSessionRecovery = null;
+    const result = await command("collaboration.load", {
+      forceRemoteNavigation
+    });
+    if (!result.ok || result.command !== "collaboration.load") {
+      throw new Error("Unexpected collaboration result.");
+    }
+    await applyCommandSnapshot(result.data.snapshot);
+    await subscribeScope({ scope: "personal" });
+    return requireSnapshot();
+  };
+
   return {
-    async load() {
-      pendingSharedSessionRecovery = null;
-      const result = await command("collaboration.load", {});
-      if (!result.ok || result.command !== "collaboration.load") {
-        throw new Error("Unexpected collaboration result.");
-      }
-      await applyCommandSnapshot(result.data.snapshot);
-      await subscribeScope({ scope: "personal" });
-      return requireSnapshot();
-    },
+    load: loadSnapshot,
     current: () => snapshot,
     currentRemoteUrl: () => connectedRemoteUrl,
     currentSelection: () =>
@@ -3097,6 +3399,53 @@ export const createCollaborationRendererClient = (
       );
       return result.data.access;
     },
+    async setTeamPresence(input) {
+      try {
+        const result = await command("collaboration.set_team_presence", input);
+        if (
+          !result.ok ||
+          result.command !== "collaboration.set_team_presence"
+        ) {
+          throw new Error("Unexpected collaboration result.");
+        }
+        if (snapshot) {
+          await publish(
+            applyTeamPersonUpdate(snapshot, input.teamId, result.data.person),
+            { kind: "command" }
+          );
+        }
+        return result.data.person;
+      } catch (error) {
+        if (
+          error instanceof CollaborationClientError &&
+          error.code === "conflict"
+        ) {
+          try {
+            const currentSelection = snapshot?.selection;
+            if (currentSelection && reloadAuthoritativeSnapshot) {
+              await reloadAuthoritativeSnapshot(currentSelection);
+            } else {
+              await loadSnapshot(true);
+            }
+          } catch {
+            // Preserve the original optimistic-write conflict for the caller.
+          }
+        }
+        throw error;
+      }
+    },
+    async reportTeamActivity(teamIds) {
+      const result = await command("collaboration.report_team_activity", {
+        teamIds
+      });
+      if (
+        !result.ok ||
+        result.command !== "collaboration.report_team_activity"
+      ) {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.acceptedTeamIds;
+    },
     async createPersonalChannel(input) {
       const result = await command(
         "collaboration.create_personal_channel",
@@ -3246,9 +3595,21 @@ export const createCollaborationRendererClient = (
       if (!result.ok || result.command !== "collaboration.mark_read") {
         throw new Error("Unexpected collaboration result.");
       }
-      await publish(applyReadState(requireSnapshot(), result.data.readState), {
-        kind: "command"
-      });
+      await publish(
+        applyAuthoritativeReadState(requireSnapshot(), result.data.readState),
+        { kind: "command" }
+      );
+      return requireSnapshot();
+    },
+    async markDelivered(input) {
+      const result = await command("collaboration.mark_delivered", input);
+      if (!result.ok || result.command !== "collaboration.mark_delivered") {
+        throw new Error("Unexpected collaboration result.");
+      }
+      await publish(
+        applyAuthoritativeReadState(requireSnapshot(), result.data.readState),
+        { kind: "command" }
+      );
       return requireSnapshot();
     },
     async loadMessagePage(input) {
@@ -3506,6 +3867,8 @@ export const createCollaborationRendererClient = (
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearPendingDeliveryReceipts();
+      appliedReceiptVersions.clear();
       eventQueue.dispose();
       removeBridgeListener();
       listeners.clear();

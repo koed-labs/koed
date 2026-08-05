@@ -14,6 +14,7 @@ import type {
 } from "@koed/shared/collaboration";
 import {
   Check,
+  CheckCheck,
   Clipboard,
   LoaderCircle,
   MoreHorizontal,
@@ -147,11 +148,13 @@ const toTimelineMessage = (message: CollaborationMessage): TimelineMessage => ({
 function MessageRow({
   adapters,
   message,
-  compact
+  compact,
+  outgoing
 }: {
   adapters: MarkdownPlatformAdapters;
   compact: boolean;
   message: CollaborationMessage;
+  outgoing: boolean;
 }) {
   const actionsRef = useRef<HTMLDetailsElement | null>(null);
   return (
@@ -204,9 +207,31 @@ function MessageRow({
         </details>
         <footer>
           {message.delivery === "queued" ? <span>Sending...</span> : null}
-          {message.delivery === "sent" ? (
-            <span>
-              <Check aria-hidden="true" /> Sent
+          {message.delivery === "sent" && outgoing ? (
+            <span
+              className="collab-recipient-status"
+              data-status={message.recipientStatus ?? "sent"}
+              title={
+                message.recipientStatus === "read"
+                  ? "Read by everyone"
+                  : message.recipientStatus === "delivered"
+                    ? "Delivered to everyone"
+                    : "Sent"
+              }
+              aria-label={
+                message.recipientStatus === "read"
+                  ? "Read by everyone"
+                  : message.recipientStatus === "delivered"
+                    ? "Delivered to everyone"
+                    : "Sent"
+              }
+            >
+              {message.recipientStatus === "sent" ||
+              message.recipientStatus === null ? (
+                <Check aria-hidden="true" />
+              ) : (
+                <CheckCheck aria-hidden="true" />
+              )}
             </span>
           ) : null}
           {message.delivery === "failed" ? (
@@ -239,6 +264,7 @@ function TimelineDivider({
 
 export function ThreadTimeline({
   client,
+  currentUserId,
   label,
   markdownAdapters,
   page,
@@ -246,6 +272,7 @@ export function ThreadTimeline({
   thread
 }: {
   client: CollaborationRendererClient;
+  currentUserId: string;
   label: string;
   markdownAdapters: MarkdownPlatformAdapters;
   page: CollaborationMessagePage;
@@ -261,15 +288,13 @@ export function ThreadTimeline({
     () => page.items.map(toTimelineMessage),
     [page.items]
   );
-  const firstUnreadMessageId =
-    thread.unreadCount > 0
-      ? (page.items.find(
-          (message) => message.sequence > thread.lastReadSequence
-        )?.id ?? null)
-      : null;
   const unreadMessages = page.items.filter(
-    (message) => message.sequence > thread.lastReadSequence
+    (message) =>
+      message.sequence > thread.lastReadSequence &&
+      message.sender.id !== currentUserId
   );
+  const firstUnreadMessageId =
+    thread.unreadCount > 0 ? (unreadMessages[0]?.id ?? null) : null;
   const finalUnreadMessageId =
     thread.unreadCount > 0 && !page.hasNewer
       ? (unreadMessages.at(-1)?.id ?? null)
@@ -286,6 +311,21 @@ export function ThreadTimeline({
       }),
     [client, thread.id]
   );
+
+  const latestDeliveredCandidate =
+    !page.hasNewer && page.items.length > 0
+      ? (page.items.at(-1)?.id ?? null)
+      : null;
+
+  useEffect(() => {
+    if (!latestDeliveredCandidate) return;
+    void client
+      .markDelivered({
+        thread: collaborationThreadReference(thread),
+        messageId: latestDeliveredCandidate
+      })
+      .catch(() => undefined);
+  }, [client, latestDeliveredCandidate, thread.id]);
 
   useEffect(() => {
     const updateFocus = () => setFocusRevision((value) => value + 1);
@@ -395,6 +435,7 @@ export function ThreadTimeline({
               adapters={markdownAdapters}
               compact={row.position !== "first" && row.position !== "only"}
               message={row.message}
+              outgoing={row.message.sender.id === currentUserId}
             />
           )}
           threadKey={thread.id}
@@ -656,6 +697,7 @@ export function ThreadRoute({
       </header>
       <ThreadTimeline
         client={client}
+        currentUserId={principalIdForThread(snapshot, thread)}
         label={title}
         markdownAdapters={markdownAdapters}
         page={page}

@@ -26,6 +26,7 @@ import {
   COLLABORATION_RENDERER_MAX_PENDING_BYTES,
   COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
   collaborationRendererEventSchema,
+  collaborationTeamPersonSchema,
   collaborationThreadSchema,
   COLLABORATION_NAME_MAX_CODE_POINTS,
   personalMemoryEntrySchema,
@@ -41,6 +42,7 @@ import {
   collaborationRealtimeSnapshotSchema,
   collaborationRealtimeStreamQuerySchema
 } from "./schemas.js";
+import { publicTeamRosterMember } from "../team/presence.js";
 
 const protocolVersion = collaborationRealtimeProtocolVersion;
 const cursorPrefix = "crt1.";
@@ -95,7 +97,7 @@ type RealtimeSubscriptionBinding = {
 type CursorPayload = {
   kind: "koed_collaboration_realtime_cursor";
   version: 1;
-  protocolVersion: 1;
+  protocolVersion: typeof protocolVersion;
   backendIdentityHash: string;
   principalIdHash: string;
   clientInstanceHash: string;
@@ -163,6 +165,10 @@ export interface CollaborationRealtimeServiceOptions {
     SharedMemoryRepository,
     "readGrantRepresentation"
   > | null;
+  teamPresenceRepository?: Pick<
+    import("@koed/db").MemorySourceRepository,
+    "getTeamRosterMember"
+  > | null;
   pool: ListenPool | null;
   corsOrigins: Set<string>;
   backendIdentity: string;
@@ -201,11 +207,13 @@ const requiredOperationFamiliesForEvent = (
     case "team_lifecycle":
     case "team_membership_access":
       return ["admin"];
+    case "team_presence_changed":
+      return ["team_workspace_read"];
     case "workspace_lifecycle_access":
       return ["team_workspace_read"];
     case "thread_lifecycle":
     case "message_created":
-    case "read_state_updated":
+    case "receipt_state_updated":
       return ["team_chat_read"];
     case "share_grant_lifecycle":
       return ["share_grant_management"];
@@ -656,19 +664,26 @@ const rendererMessageFromRecord = (
       editedAt: null,
       deletedAt: null,
       delivery: "sent",
+      recipientStatus: message.recipientStatus,
       failure: null
     }
   };
 };
 
-const rendererReadStateFromRecord = (
+const rendererReceiptStateFromRecord = (
   readState: CollaborationReadStateRecord
 ): RendererUpdate => ({
-  type: "read_state_updated",
+  type: "receipt_state_updated",
   readState: {
     threadId: readState.threadId,
+    deliveredMessageId: readState.lastDeliveredMessageId,
+    deliveredSequence: readState.lastDeliveredSequence,
+    deliveredAt: readState.lastDeliveredAt,
     messageId: readState.lastReadMessageId,
     sequence: readState.lastReadSequence,
+    readAt: readState.lastReadAt,
+    unreadCount: readState.unreadCount,
+    version: readState.version,
     updatedAt: readState.updatedAt
   }
 });
@@ -835,31 +850,77 @@ const materializeEvent = async (
       update = rendererMessageFromRecord(message, client.user);
       break;
     }
-    case "read_state_updated": {
-      if (event.actorPrincipalId !== client.actor.userId) {
-        return { action: "skip" };
-      }
+    case "receipt_state_updated": {
       if (
         !materializationRepository ||
         !event.threadId ||
-        event.resourceType !== "collaboration_read_state"
+        !event.messageId ||
+        event.resourceType !== "collaboration_receipt_state"
       ) {
         return { action: "requires_snapshot" };
       }
-      const readState = await materializationRepository.getReadStateForRealtime(
-        client.actor,
-        {
-          threadId: event.threadId
+      if (event.actorPrincipalId === client.actor.userId) {
+        const readState =
+          await materializationRepository.getReceiptStateForRealtime(
+            client.actor,
+            { threadId: event.threadId }
+          );
+        if (
+          !readState ||
+          readState.userId !== client.actor.userId ||
+          readState.threadId !== event.threadId
+        ) {
+          return { action: "requires_snapshot" };
         }
-      );
+        update = rendererReceiptStateFromRecord(readState);
+      } else {
+        const receipts =
+          await materializationRepository.listMessageReceiptsForRealtime(
+            client.actor,
+            {
+              threadId: event.threadId,
+              throughMessageId: event.messageId
+            }
+          );
+        if (receipts === null) return { action: "requires_snapshot" };
+        if (receipts.length === 0) return { action: "skip" };
+        update = {
+          type: "message_receipts_updated",
+          threadId: event.threadId,
+          receipts
+        };
+      }
+      break;
+    }
+    case "team_presence_changed": {
       if (
-        !readState ||
-        readState.userId !== client.actor.userId ||
-        readState.threadId !== event.threadId
+        !options.teamPresenceRepository ||
+        event.scope !== "team" ||
+        !event.teamId ||
+        event.resourceType !== "team_member_presence"
       ) {
         return { action: "requires_snapshot" };
       }
-      update = rendererReadStateFromRecord(readState);
+      const member = await options.teamPresenceRepository.getTeamRosterMember(
+        client.actor,
+        event.teamId,
+        event.resourceId
+      );
+      if (!member) return { action: "skip" };
+      const publicMember = publicTeamRosterMember(member);
+      const person = collaborationTeamPersonSchema.safeParse({
+        id: member.userId,
+        displayName: member.displayName?.trim() || "Team member",
+        presence: publicMember.presence,
+        teamPresence: publicMember.teamPresence,
+        membershipState: "enabled"
+      });
+      if (!person.success) return { action: "requires_snapshot" };
+      update = {
+        type: "team_person_upserted",
+        teamId: event.teamId,
+        person: person.data
+      };
       break;
     }
     case "thread_lifecycle":
@@ -878,16 +939,16 @@ const materializeEvent = async (
         update = message
           ? rendererMessageFromRecord(message, client.user)
           : null;
-      } else if (event.resourceType === "collaboration_read_state") {
+      } else if (event.resourceType === "collaboration_receipt_state") {
         if (event.actorPrincipalId !== client.actor.userId) {
           return { action: "skip" };
         }
         const readState =
-          await materializationRepository?.getReadStateForRealtime(
+          await materializationRepository?.getReceiptStateForRealtime(
             client.actor,
             { threadId: event.threadId }
           );
-        update = readState ? rendererReadStateFromRecord(readState) : null;
+        update = readState ? rendererReceiptStateFromRecord(readState) : null;
       } else if (
         event.resourceType === "collaboration_thread" &&
         event.resourceId === event.threadId

@@ -11,7 +11,6 @@ import {
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
 import {
-  checkCodexAppServerAvailability,
   listCodexAppServerModels,
   type CodexAppServerModelOption
 } from "./codex-app-server-runner.js";
@@ -638,7 +637,7 @@ const publicLcmSummaryConfig = (
 
 const publicModelOptions = (
   models: CodexAppServerModelOption[],
-  fallbackModel: string
+  configuredModels: string[]
 ) => {
   const visible = models.filter((model) => !model.hidden);
   const options = visible.length > 0 ? visible : models;
@@ -648,23 +647,50 @@ const publicModelOptions = (
     model: model.model,
     label: model.label,
     description: model.description ?? null,
+    available: true,
     isDefault: model.isDefault,
     defaultReasoningEffort: model.defaultReasoningEffort ?? null,
     supportedReasoningEfforts: model.supportedReasoningEfforts
   }));
-  if (!mapped.some((option) => option.model === fallbackModel)) {
+  for (const configuredModel of new Set(configuredModels)) {
+    if (mapped.some((option) => option.model === configuredModel)) {
+      continue;
+    }
+    const exposedModel = models.find(
+      (option) =>
+        option.id === configuredModel || option.model === configuredModel
+    );
     mapped.push({
       provider: "codex" as const,
-      id: fallbackModel,
-      model: fallbackModel,
-      label: fallbackModel,
-      description: null,
+      id: exposedModel?.id ?? configuredModel,
+      model: exposedModel?.model ?? configuredModel,
+      label: exposedModel?.label ?? configuredModel,
+      description: exposedModel?.description ?? null,
+      available: exposedModel !== undefined,
       isDefault: mapped.length === 0,
-      defaultReasoningEffort: null,
-      supportedReasoningEfforts: []
+      defaultReasoningEffort: exposedModel?.defaultReasoningEffort ?? null,
+      supportedReasoningEfforts: exposedModel?.supportedReasoningEfforts ?? []
     });
   }
   return mapped;
+};
+
+const modelReadiness = (
+  models: CodexAppServerModelOption[],
+  model: string,
+  clientAvailable: boolean
+) => {
+  const available =
+    clientAvailable &&
+    models.some((option) => option.id === model || option.model === model);
+  return {
+    modelAvailable: available,
+    modelError: available
+      ? null
+      : clientAvailable
+        ? `Codex app-server does not expose the configured model "${model}".${model === "gpt-5.6-luna" ? " GPT-5.6 Luna requires Codex CLI 0.144.0 or newer." : ""}`
+        : "Codex app-server model availability could not be verified."
+  };
 };
 
 export const localMemoryAgentSettings = async (
@@ -693,47 +719,34 @@ export const localMemoryAgentSettings = async (
       localMemoryAgentSettingFor(storedSettings, "curated_memory_review")
     )
   );
-  const representativeCodexConfig = manualMemoryAnswer;
   let modelListError: string | null = null;
-  const codexAvailability =
-    representativeCodexConfig.provider === "codex"
-      ? await checkCodexAppServerAvailability({
-          appServerBinary: representativeCodexConfig.appServerBinary,
-          model: representativeCodexConfig.model,
-          cwd: representativeCodexConfig.cwd,
-          env: representativeCodexConfig.env
-        })
-      : {
-          available: false,
-          error: `Unsupported local AI Client provider: ${representativeCodexConfig.provider}`
-        };
-  let modelOptions: ReturnType<typeof publicModelOptions>;
-  if (codexAvailability.available) {
-    try {
-      modelOptions = publicModelOptions(
-        await listCodexAppServerModels({
-          appServerBinary: representativeCodexConfig.appServerBinary,
-          model: representativeCodexConfig.model,
-          cwd: representativeCodexConfig.cwd,
-          env: representativeCodexConfig.env
-        }),
-        representativeCodexConfig.model
-      );
-    } catch (error) {
-      modelListError = error instanceof Error ? error.message : String(error);
-      modelOptions = publicModelOptions([], representativeCodexConfig.model);
-    }
-  } else {
-    modelOptions = publicModelOptions([], representativeCodexConfig.model);
+  let models: CodexAppServerModelOption[] = [];
+  try {
+    models = await listCodexAppServerModels({
+      appServerBinary: manualMemoryAnswer.appServerBinary,
+      model: manualMemoryAnswer.model,
+      cwd: manualMemoryAnswer.cwd,
+      env: manualMemoryAnswer.env,
+      includeHidden: true
+    });
+  } catch (error) {
+    modelListError = error instanceof Error ? error.message : String(error);
   }
+  const codexAvailable = modelListError === null;
+  const modelOptions = publicModelOptions(models, [
+    manualMemoryAnswer.model,
+    mcpMemoryAnswer.model,
+    lcmSummary.model,
+    curatedMemoryReview.model
+  ]);
 
   return {
     aiClients: [
       {
         id: "codex",
         label: "Codex",
-        status: codexAvailability.available ? "ready" : "unavailable",
-        error: codexAvailability.error ?? modelListError ?? null
+        status: codexAvailable ? "ready" : "unavailable",
+        error: modelListError
       }
     ],
     modelOptions,
@@ -741,15 +754,18 @@ export const localMemoryAgentSettings = async (
     flows: {
       mcpMemoryAnswer: {
         ...publicMemoryAnswerConfig(mcpMemoryAnswer),
+        ...modelReadiness(models, mcpMemoryAnswer.model, codexAvailable),
         source: localMemoryAgentSettingFor(storedSettings, "mcp_memory_answer")
           ? "db"
           : "env"
       },
       manualMemoryAnswer: {
-        ...publicMemoryAnswerConfig(manualMemoryAnswer)
+        ...publicMemoryAnswerConfig(manualMemoryAnswer),
+        ...modelReadiness(models, manualMemoryAnswer.model, codexAvailable)
       },
       lcmSummary: {
         ...publicLcmSummaryConfig(lcmSummary),
+        ...modelReadiness(models, lcmSummary.model, codexAvailable),
         source: localMemoryAgentSettingFor(storedSettings, "lcm_summary")
           ? "db"
           : "env"
@@ -760,6 +776,7 @@ export const localMemoryAgentSettings = async (
         reasoningEffort: curatedMemoryReview.reasoningEffort,
         timeoutMs: curatedMemoryReview.timeoutMs,
         maxAttempts: curatedMemoryReview.maxAttempts,
+        ...modelReadiness(models, curatedMemoryReview.model, codexAvailable),
         source: localMemoryAgentSettingFor(
           storedSettings,
           "curated_memory_review"

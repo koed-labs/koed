@@ -124,6 +124,7 @@ const fixture = (
   const epoch = "3";
   const groupId = relayId("group-alpha");
   const authorityHead = Buffer.alloc(32, 7).toString("base64url");
+  const authorityKeyId = relayId("authority-key");
   const certificate = (
     deviceId: string,
     signingKeyId: string,
@@ -149,7 +150,7 @@ const fixture = (
     return canonicalizePdsJson({
       ...unsigned,
       authoritySignature: {
-        keyId: relayId("authority-key"),
+        keyId: authorityKeyId,
         signature: signPdsRecord(
           "membership-certificate",
           unsigned,
@@ -204,6 +205,7 @@ const fixture = (
     .map(({ certificate: value }) => value);
   const runtime = createPdsSessionPackageRuntimeContext({
     authorityPublicKey: authority.publicKey,
+    authorityKeyId,
     groupId,
     authorityHead,
     currentEpoch: epoch,
@@ -422,6 +424,26 @@ describe("PDS origin-signed session package", () => {
       createPdsSessionPackageRuntimeContext({
         ...forged,
         now: new Date(forged.now)
+      })
+    ).toThrow("certificate");
+    const attackerKeyId = structuredClone(productionFixture.runtime);
+    const attackerCertificate = JSON.parse(
+      Buffer.from(attackerKeyId.servingCertificate).toString("utf8")
+    ) as {
+      authoritySignature: { keyId: string; signature: string };
+      [key: string]: unknown;
+    };
+    attackerKeyId.servingCertificate = canonicalizePdsJson({
+      ...attackerCertificate,
+      authoritySignature: {
+        ...attackerCertificate.authoritySignature,
+        keyId: relayId("attacker-authority")
+      }
+    });
+    expect(() =>
+      createPdsSessionPackageRuntimeContext({
+        ...attackerKeyId,
+        now: new Date(attackerKeyId.now)
       })
     ).toThrow("certificate");
     const pathId = structuredClone(productionFixture.runtime);

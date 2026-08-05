@@ -164,17 +164,28 @@ Threads retain stable IDs, normalized keys, lifecycle timestamps, archive
 state, activity time, and optimistic versions. Archive hides a thread or
 Workspace from normal navigation without physically deleting retained content.
 
-### Messages And Read State
+### Messages, Unread State, And Receipts
 
 - A Team Chat Message has a stable ID, thread and scope, sender identity and
   kind, encrypted body, server-authoritative timestamps, a client idempotency
-  key, and a monotonically increasing thread sequence.
+  key, a monotonically increasing thread sequence, and the immutable audience
+  version that applied when it was sent.
 - Repeating an idempotent send produces one stored message and one logical
   realtime event. Reusing a key for different content is a conflict.
 - Edit and deletion lifecycle fields are reserved but do not create message
   edit or User-deletion behavior.
-- Read state is private per User and thread and advances monotonically by a
-  validated cursor from that thread.
+- Delivery and read state are private per User and thread and advance
+  monotonically by validated cursors from that thread. Read also advances
+  delivery.
+- Unread counts exclude the current User's own messages and come from
+  authoritative server state.
+- An outgoing message exposes only an aggregate status: sent, delivered to
+  every original recipient, or read by every original recipient. Koed does not
+  disclose individual recipient activity.
+- Thread audiences are versioned only when authorized membership changes, so
+  historical receipt meaning does not change when members join or leave.
+- Receipt changes are delivered through the durable realtime stream without
+  polling.
 - Removed or unauthorized Users cannot send messages, read history, update read
   state, or receive realtime activity.
 

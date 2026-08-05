@@ -300,6 +300,7 @@ const createPdsWorkerRuntimeFromSecret = (
   try {
     const runtime = createPdsSessionPackageRuntimeContext({
       authorityPublicKey: secret.authority.publicKey,
+      authorityKeyId: secret.authority.keyId,
       groupId: secret.groupId,
       authorityHead: secret.authority.head,
       currentEpoch: secret.groupSecrets.currentEpoch,
@@ -328,6 +329,7 @@ const createPdsWorkerRuntimeFromSecret = (
       if (!servingCertificate) throw new Error("PdsCryptoAuthorityError");
       return createPdsSessionPackageRuntimeContext({
         authorityPublicKey: secret.authority.publicKey,
+        authorityKeyId: secret.authority.keyId,
         groupId: secret.groupId,
         authorityHead: secret.authority.head,
         currentEpoch: secret.groupSecrets.currentEpoch,

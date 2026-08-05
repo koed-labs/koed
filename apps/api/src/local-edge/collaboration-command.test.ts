@@ -114,6 +114,7 @@ const teamMessage = {
   editedAt: null,
   deletedAt: null,
   delivery: "sent" as const,
+  recipientStatus: "sent" as const,
   failure: null
 };
 
@@ -263,8 +264,14 @@ const groupDirectMessageThread = {
 
 const readState = {
   threadId: ids.thread,
+  deliveredMessageId: ids.message,
+  deliveredSequence: 1,
+  deliveredAt: iso,
   messageId: ids.message,
   sequence: 1,
+  readAt: iso,
+  unreadCount: 0,
+  version: 1,
   updatedAt: iso
 };
 
@@ -642,6 +649,7 @@ const personalMessageRecord = (
         : ids.clientMessage,
   threadId: ids.personalThread,
   threadSequence: sequence,
+  audienceVersion: 1,
   scope: "personal",
   personalOwnerUserId: ids.actor,
   teamId: null,
@@ -650,6 +658,7 @@ const personalMessageRecord = (
   senderPrincipalId: ids.actor,
   senderUserId: ids.actor,
   senderDisplayName: "Alice",
+  recipientStatus: "sent",
   bodyText: `message ${sequence}`,
   metadata: {},
   provenance: { kind: "user", id: ids.actor },
@@ -772,8 +781,29 @@ const createPersonalRepository = (): CommandRepository => {
         ? {
             threadId: input.threadId,
             userId: actor.userId,
+            lastDeliveredMessageId: input.messageId,
+            lastDeliveredSequence: 1,
+            lastDeliveredAt: iso,
             lastReadMessageId: input.messageId,
             lastReadSequence: 1,
+            lastReadAt: iso,
+            unreadCount: 0,
+            version: 1,
+            updatedAt: iso
+          }
+        : null,
+    advanceDeliveryState: async (actor, input) =>
+      ownedThread(actor, input.threadId)
+        ? {
+            threadId: input.threadId,
+            userId: actor.userId,
+            lastDeliveredMessageId: input.messageId,
+            lastDeliveredSequence: 1,
+            lastDeliveredAt: iso,
+            lastReadMessageId: null,
+            lastReadSequence: 0,
+            lastReadAt: null,
+            unreadCount: 1,
             version: 1,
             updatedAt: iso
           }
@@ -827,7 +857,7 @@ const createPersonalRepository = (): CommandRepository => {
       actor.userId === ids.actor && input.scope === "personal"
         ? {
             id: ids.request,
-            protocolVersion: 1,
+            protocolVersion: COLLABORATION_CONTRACT_VERSION,
             scope: "personal",
             personalOwnerUserId: ids.actor,
             teamId: null,
@@ -874,7 +904,10 @@ const resultPayloadFor = (
   ) {
     return { message: teamMessage };
   }
-  if (command.command === "collaboration.mark_read") {
+  if (
+    command.command === "collaboration.mark_read" ||
+    command.command === "collaboration.mark_delivered"
+  ) {
     return { readState };
   }
   if (command.command === "collaboration.start_direct_message") {
@@ -1071,6 +1104,10 @@ type LoadTestResult = {
   command: string;
   data: {
     snapshot: {
+      teamPresenceStatusCatalogue: {
+        version: number;
+        statuses: Array<{ key: string; label: string }>;
+      };
       navigation: {
         personalOwner: { id: string };
         teamPrincipal: { id: string } | null;
@@ -1078,7 +1115,10 @@ type LoadTestResult = {
           id: string;
           role: string;
           directMessages: Array<{ id: string }>;
-          people: Array<{ id: string }>;
+          people: Array<{
+            id: string;
+            teamPresence: { manualStatus: string };
+          }>;
           workspaces: Array<{
             id: string;
             access: string;
@@ -1112,6 +1152,18 @@ const parseResult = (body: string): unknown => parseResultAs<unknown>(body);
 const parseCommand = (command: unknown): CollaborationRendererCommand =>
   collaborationCommandValidator.parse(command) as CollaborationRendererCommand;
 
+const remotePresence = {
+  presence: "available" as const,
+  teamPresence: {
+    mode: "auto" as const,
+    manualStatus: "available" as const,
+    activityLevel: "active" as const,
+    lastActivityAt: "2026-07-01T00:00:00.000Z",
+    nextTransitionAt: "2026-07-01T00:05:00.001Z",
+    preferenceVersion: 1
+  }
+};
+
 const remoteNavigationPayload = (input?: {
   threads?: unknown[];
   workspaces?: unknown[];
@@ -1120,6 +1172,14 @@ const remoteNavigationPayload = (input?: {
     id: ids.remotePrincipal,
     email: "remote-alice@example.test",
     displayName: "Remote Alice"
+  },
+  teamPresenceStatusCatalogue: {
+    version: 1,
+    statuses: [
+      { key: "available", label: "Available" },
+      { key: "do_not_disturb", label: "Do not disturb" },
+      { key: "out_of_office", label: "Out of office" }
+    ]
   },
   teams: [
     {
@@ -1136,13 +1196,13 @@ const remoteNavigationPayload = (input?: {
           userId: ids.remotePrincipal,
           displayName: "Remote Alice",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         },
         {
           userId: ids.participant,
           displayName: "Bob",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         }
       ],
       threads: input?.threads ?? [
@@ -1215,13 +1275,13 @@ const remoteCompositionResponse = (call: FetchCall): Response => {
           userId: ids.remotePrincipal,
           displayName: "Remote Alice",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         },
         {
           userId: ids.participant,
           displayName: "Bob",
           status: "enabled",
-          presence: "unknown"
+          ...remotePresence
         }
       ]
     });
@@ -1425,6 +1485,20 @@ const supportedMappings: Array<{
     },
     method: "PUT",
     path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/read-state`,
+    body: { messageId: ids.message }
+  },
+  {
+    command: {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.mark_delivered",
+      input: {
+        thread: { scope: "team", teamId: ids.team, threadId: ids.thread },
+        messageId: ids.message
+      }
+    },
+    method: "PUT",
+    path: `/koed/v1/collaboration/teams/${ids.team}/threads/${ids.thread}/delivery-state`,
     body: { messageId: ids.message }
   },
   {
@@ -2349,6 +2423,68 @@ describe("local-edge collaboration command route", () => {
     }
   });
 
+  it("keeps a future remote Presence status from invalidating Team navigation", async () => {
+    const harness = createHarness({
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        if (path === "/v1/teams/navigation") {
+          const payload = remoteNavigationPayload();
+          return Response.json({
+            ...payload,
+            teamPresenceStatusCatalogue: {
+              version: 2,
+              statuses: [
+                ...payload.teamPresenceStatusCatalogue.statuses,
+                { key: "heads_down", label: "Heads down" }
+              ]
+            },
+            teams: payload.teams.map((team) => ({
+              ...team,
+              members: team.members.map((member, index) =>
+                index === 0
+                  ? {
+                      ...member,
+                      teamPresence: {
+                        ...member.teamPresence,
+                        manualStatus: "heads_down"
+                      }
+                    }
+                  : member
+              )
+            }))
+          });
+        }
+        return remoteCompositionResponse(call);
+      }
+    });
+    const result = parseResultAs<LoadTestResult>(
+      (
+        await injectPersonalCommand(harness.app, {
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: randomUUID(),
+          command: "collaboration.load",
+          input: {}
+        } as CollaborationRendererCommand)
+      ).body
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok || result.command !== "collaboration.load") {
+      throw new Error("Expected collaboration.load success");
+    }
+    expect(
+      result.data.snapshot.navigation.teams[0]?.people[0]?.teamPresence
+        .manualStatus
+    ).toBe("unknown");
+    expect(result.data.snapshot.teamPresenceStatusCatalogue.version).toBe(2);
+    expect(
+      result.data.snapshot.teamPresenceStatusCatalogue.statuses
+    ).toContainEqual({
+      key: "heads_down",
+      label: "Heads down"
+    });
+  });
+
   it("reuses Team navigation until an authoritative realtime event invalidates it", async () => {
     const harness = createHarness({ response: remoteCompositionResponse });
     const load = () =>
@@ -2367,9 +2503,65 @@ describe("local-edge collaboration command route", () => {
     expect((await load()).statusCode).toBe(200);
     expect(navigationReads()).toBe(1);
 
+    const authoritative = await injectPersonalCommand(harness.app, {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.load",
+      input: { forceRemoteNavigation: true }
+    } as CollaborationRendererCommand);
+    expect(authoritative.statusCode).toBe(200);
+    expect(navigationReads()).toBe(2);
+
     harness.invalidateRemoteNavigation();
     expect((await load()).statusCode).toBe(200);
-    expect(navigationReads()).toBe(2);
+    expect(navigationReads()).toBe(3);
+  });
+
+  it("does not let a forced Team navigation refresh reuse an older in-flight read", async () => {
+    let releaseFirstNavigation!: (response: Response) => void;
+    const firstNavigation = new Promise<Response>((resolve) => {
+      releaseFirstNavigation = resolve;
+    });
+    let navigationReads = 0;
+    let firstNavigationStarted!: () => void;
+    const navigationStarted = new Promise<void>((resolve) => {
+      firstNavigationStarted = resolve;
+    });
+    const harness = createHarness({
+      response: (call) => {
+        const path = new URL(call.url).pathname.replace(/^\/koed/, "");
+        if (path !== "/v1/teams/navigation") {
+          return remoteCompositionResponse(call);
+        }
+        navigationReads += 1;
+        if (navigationReads === 1) {
+          firstNavigationStarted();
+          return firstNavigation;
+        }
+        return remoteCompositionResponse(call);
+      }
+    });
+    const load = (forceRemoteNavigation = false) =>
+      injectPersonalCommand(harness.app, {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load",
+        input: forceRemoteNavigation ? { forceRemoteNavigation: true } : {}
+      } as CollaborationRendererCommand);
+
+    const initial = load();
+    await navigationStarted;
+    const forced = load(true);
+    releaseFirstNavigation(
+      Response.json({
+        ...remoteNavigationPayload(),
+        snapshotRevision: "remote-before-write"
+      })
+    );
+
+    expect((await initial).statusCode).toBe(200);
+    expect((await forced).statusCode).toBe(200);
+    expect(navigationReads).toBe(2);
   });
 
   it("does not advertise remote Team navigation when Team collaboration is disabled", async () => {
@@ -2717,6 +2909,7 @@ describe("local-edge collaboration command route", () => {
               version: 1,
               email: "remote-alice@example.test",
               displayName: "Remote Alice",
+              ...remotePresence,
               workspaceAccess: [
                 {
                   teamWorkspaceId: ids.workspace,
@@ -3481,6 +3674,83 @@ describe("local-edge collaboration command route", () => {
     expect(harness.calls).toHaveLength(0);
   });
 
+  it.each([
+    {
+      command: {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.set_team_presence",
+        input: {
+          teamId: ids.team,
+          mode: "auto",
+          manualStatus: "available",
+          expectedVersion: 1
+        }
+      } as CollaborationRendererCommand,
+      response: {
+        person: {
+          userId: ids.remotePrincipal,
+          displayName: "Remote Alice",
+          status: "enabled",
+          ...remotePresence
+        }
+      }
+    },
+    {
+      command: {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.report_team_activity",
+        input: { teamIds: [ids.team] }
+      } as CollaborationRendererCommand,
+      response: { acceptedTeamIds: [ids.team] }
+    }
+  ])(
+    "authorizes $command.command with the documented Team read credential family",
+    async ({ command, response: upstreamResponse }) => {
+      const harness = createHarness({
+        localFamilies: ["team_workspace_read", "team_chat_read"],
+        response: () => Response.json(upstreamResponse)
+      });
+      const response = await injectCommand(harness.app, command);
+
+      expect(parseResult(response.body)).toMatchObject({ ok: true });
+      expect(harness.calls).toHaveLength(1);
+    }
+  );
+
+  it.each([
+    {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.set_team_presence",
+      input: {
+        teamId: ids.team,
+        mode: "auto",
+        manualStatus: "available",
+        expectedVersion: 1
+      }
+    },
+    {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: ids.request,
+      command: "collaboration.report_team_activity",
+      input: { teamIds: [ids.team] }
+    }
+  ] as CollaborationRendererCommand[])(
+    "rejects $command when the enrolled credential lacks Team read authority",
+    async (command) => {
+      const harness = createHarness({ localFamilies: ["team_chat_write"] });
+      const response = await injectCommand(harness.app, command);
+
+      expect(parseResult(response.body)).toMatchObject({
+        ok: false,
+        error: { code: "permission_denied" }
+      });
+      expect(harness.calls).toHaveLength(0);
+    }
+  );
+
   it("strictly rejects extra fields and malicious backend identifiers", async () => {
     const harness = createHarness();
     const command = supportedMappings[0]!.command;
@@ -3707,6 +3977,8 @@ describe("local-edge collaboration command route", () => {
       senderPrincipalId: ids.participant,
       senderUserId: ids.participant,
       senderDisplayName: null,
+      audienceVersion: 1,
+      recipientStatus: "sent",
       bodyText: "hello",
       metadata: {},
       provenance: { kind: "user", id: ids.participant },
@@ -3716,8 +3988,13 @@ describe("local-edge collaboration command route", () => {
     const canonicalReadState = {
       threadId: ids.thread,
       userId: ids.actor,
+      lastDeliveredMessageId: ids.message,
+      lastDeliveredSequence: 1,
+      lastDeliveredAt: iso,
       lastReadMessageId: ids.message,
       lastReadSequence: 1,
+      lastReadAt: iso,
+      unreadCount: 0,
       version: 1,
       updatedAt: iso
     };

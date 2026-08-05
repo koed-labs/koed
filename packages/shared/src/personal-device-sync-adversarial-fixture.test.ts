@@ -197,6 +197,7 @@ class Authority {
     const recipients = this.active().map((member) => this.certificate(member));
     return createPdsSessionPackageRuntimeContext({
       authorityPublicKey: this.authority.publicKey,
+      authorityKeyId: this.authorityKeyId,
       groupId: this.groupId,
       authorityHead: this.head,
       currentEpoch: this.epoch,
@@ -920,6 +921,7 @@ describe("PDS adversarial deterministic in-memory fixture", () => {
           world.authority.certificate(alpha, "2026-07-15T00:00:00.000Z")
         ),
         world.authority.authority.publicKey,
+        world.authority.authorityKeyId,
         NOW
       )
     ).toBe(false);
@@ -931,6 +933,7 @@ describe("PDS adversarial deterministic in-memory fixture", () => {
     expect(() =>
       createPdsSessionPackageRuntimeContext({
         authorityPublicKey: world.authority.authority.publicKey,
+        authorityKeyId: world.authority.authorityKeyId,
         groupId: world.authority.groupId,
         authorityHead: world.authority.head,
         currentEpoch: world.authority.epoch,

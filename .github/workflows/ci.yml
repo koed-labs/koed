@@ -2,17 +2,25 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches:
       - main
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
-      build_native_runtime_macos_arm64:
-        description: Build macOS arm64 native runtime artifact
-        type: boolean
-        default: false
+      validation_level:
+        description: Additional packaged Desktop validation
+        type: choice
+        options:
+          - standard
+          - app-only
+          - full
+          - clean-install
+        default: standard
       build_native_runtime_linux_x64:
-        description: Build Linux x64 native runtime artifact
+        description: Also build and validate the Linux x64 native runtime
         type: boolean
         default: false
 
@@ -23,11 +31,83 @@ concurrency:
   group: ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  NODE_VERSION: 24.13.1
+  PNPM_VERSION: 11.1.2
+  EMBEDDING_MODEL_SHA256: 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
+
 jobs:
-  verify:
-    name: Format, Typecheck, Test
+  changes:
+    name: Select CI validation tier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      packaging_relevant: ${{ steps.policy.outputs.packaging_relevant }}
+      changesets_release_pr: ${{ steps.policy.outputs.changesets_release_pr }}
+      force_full_ci: ${{ steps.policy.outputs.force_full_ci }}
+      trusted_skip_packaged: ${{ steps.policy.outputs.trusted_skip_packaged }}
+      run_app_smoke: ${{ steps.policy.outputs.run_app_smoke }}
+      run_full_validation: ${{ steps.policy.outputs.run_full_validation }}
+      clean_model_install: ${{ steps.policy.outputs.clean_model_install }}
+      run_linux_native: ${{ steps.policy.outputs.run_linux_native }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate tested CI policy
+        id: policy
+        env:
+          KOED_TRUSTED_PACKAGED_CI_SKIP_SHA: ${{ vars.KOED_TRUSTED_PACKAGED_CI_SKIP_SHA }}
+        run: node .github/scripts/ci-policy.mjs
+
+  static-checks:
+    name: Static checks
+    needs: changes
     runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
-    timeout-minutes: 10
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check env examples are synced
+        run: pnpm env:sync:check
+
+      - name: Check formatting
+        run: pnpm fmt:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck production sources
+        run: pnpm typecheck
+
+      - name: Typecheck test sources
+        run: pnpm typecheck:test
+
+  tests:
+    name: Tests
+    needs: static-checks
+    runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: 20
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -59,23 +139,17 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          version: 11.1.2
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: 24.13.1
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Check env examples are synced
-        run: pnpm env:sync:check
-
-      - name: Check formatting
-        run: pnpm fmt:check
 
       - name: Check DB migration files
         run: pnpm db:migrate:check
@@ -87,15 +161,6 @@ jobs:
           PG_DUMP_BIN: .github/scripts/pg-dump-service.sh
           PG_RESTORE_BIN: .github/scripts/pg-restore-service.sh
         run: pnpm db:migrate:acceptance
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Typecheck tests
-        run: pnpm typecheck:test
 
       - name: Test
         env:
@@ -112,6 +177,7 @@ jobs:
 
   build:
     name: Build
+    needs: static-checks
     runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 20
 
@@ -122,19 +188,19 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          version: 11.1.2
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: 24.13.1
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
+      - name: Build workspace
         run: pnpm build
 
       - name: Build standalone koed-server package
@@ -143,24 +209,14 @@ jobs:
           SOURCE_DATE_EPOCH: 0
         run: pnpm koed-server:package -- --platform linux --arch x64 --json
 
-      - name: Upload standalone koed-server package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: koed-server-package-linux-x64
-          path: |
-            dist/koed-server-package/linux-x64/*.tar.gz
-            dist/koed-server-package/linux-x64/*.sha256
-            dist/koed-server-package/linux-x64/koed-server-*/koed-server-package-manifest.json
-            dist/koed-server-package/linux-x64/koed-server-*/README.txt
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-
-  native-runtime-macos-arm64:
-    name: Native runtime and Packaged Desktop native smoke
+  relevant-packaged-smoke:
+    name: Relevant packaged Desktop app smoke
+    needs:
+      - changes
+      - build
+    if: needs.changes.outputs.run_app_smoke == 'true' && needs.build.result == 'success'
     runs-on: macos-14
-    timeout-minutes: 90
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.build_native_runtime_macos_arm64)
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -169,13 +225,13 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          version: 11.1.2
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: 24.13.1
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
@@ -184,71 +240,89 @@ jobs:
       - name: Build koed-server CLI
         run: pnpm --filter @koed/koed-server build
 
-      - name: Build native runtime artifact
-        env:
-          KOED_NATIVE_RUNTIME_VERSION: ${{ github.sha }}
-        run: pnpm native-runtime:build:macos-arm64 -- --json
+      - name: Fingerprint native toolchain
+        id: toolchain
+        run: echo "fingerprint=$(xcodebuild -version | shasum -a 256 | awk '{print $1}')" >> "${GITHUB_OUTPUT}"
 
-      - name: Extract native runtime artifact for relocation validation
-        run: |
-          set -euo pipefail
-          runtime_root="${RUNNER_TEMP}/koed-native-runtime-validation"
-          mkdir -p "${runtime_root}"
-          tarball="$(find dist/native-runtime/macos-arm64 -name 'koed-native-runtime-macos-arm64-*.tar.gz' -print -quit)"
-          test -n "${tarball}"
-          tar -xzf "${tarball}" -C "${runtime_root}"
-          test -d "${runtime_root}/koed-runtime"
-
-      - name: Validate native runtime artifact
-        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-validation/koed-runtime" --platform darwin --json
-
-      - name: Upload native runtime artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Restore verified native runtime payload
+        id: native-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
-          name: koed-native-runtime-macos-arm64
-          path: |
-            dist/native-runtime/macos-arm64/*.tar.gz
-            dist/native-runtime/macos-arm64/*.sha256
-            dist/native-runtime/macos-arm64/provenance.json
-          retention-days: 7
-          compression-level: 0
+          path: ${{ runner.temp }}/koed-native-runtime-cache/macos-arm64/koed-runtime
+          key: native-runtime-payload-v3-macos-arm64-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('scripts/native-runtime/sources.macos-arm64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-macos-arm64.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/native-runtime/validate-runtime.mjs', 'scripts/native-runtime-copy.mjs') }}
 
-      - name: Build unsigned Desktop artifacts
+      - name: Build native runtime payload on cache miss
+        if: steps.native-cache.outputs.cache-hit != 'true'
         env:
-          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-validation/koed-runtime
-        run: pnpm desktop:package:internal:mac
+          KOED_NATIVE_RUNTIME_VERSION: cache-seed
+        run: |
+          pnpm native-runtime:build:macos-arm64 -- --out-dir "${RUNNER_TEMP}/koed-native-runtime-cache-build" --json
+          mkdir -p "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64"
+          ditto "${RUNNER_TEMP}/koed-native-runtime-cache-build/koed-runtime" "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64/koed-runtime"
 
-      - name: Verify Desktop artifact code integrity
-        run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app --dmg release/Koed-*-arm64.dmg
+      - name: Verify cached native payload fail closed
+        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64/koed-runtime" --platform darwin --json
 
-      - name: Packaged Desktop native smoke
-        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+      - name: Stage current runtime manifest and provenance
+        run: pnpm native-runtime:build:macos-arm64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/macos-arm64/koed-runtime" --version "${GITHUB_SHA}" --no-archive --json
+
+      - name: Build ad-hoc-signed unpacked Desktop app
+        env:
+          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ github.workspace }}/dist/native-runtime/macos-arm64/koed-runtime
+        run: pnpm desktop:package:mac
+
+      - name: Verify Desktop app code integrity
+        run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app
+
+      - name: Restore pinned embedding model
+        id: model-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf
+          key: embedding-model-${{ env.EMBEDDING_MODEL_SHA256 }}
+
+      - name: Install pinned embedding model on cache miss
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        env:
+          KOED_HOME: ${{ runner.temp }}/koed-model-cache
+          KOED_DEPENDENCY_MODE: bundled-local
+        run: node packages/koed-server/dist/cli.js models install --kind embedding --json
+
+      - name: Verify cached embedding model fail closed
+        env:
+          KOED_HOME: ${{ runner.temp }}/koed-model-cache
+          KOED_DEPENDENCY_MODE: bundled-local
+        run: |
+          model="${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+          test -f "${model}"
+          test "$(shasum -a 256 "${model}" | awk '{print $1}')" = "${EMBEDDING_MODEL_SHA256}"
+          node packages/koed-server/dist/cli.js models status --kind embedding --json
+
+      - name: Run packaged Desktop native smoke
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --embedding-model-source "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+
+      - name: Run packaged Desktop missing-asset smoke
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --missing-assets --mask-native-assets --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
       - name: Upload packaged Desktop smoke diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: koed-desktop-macos-arm64-smoke-diagnostics
+          name: koed-desktop-app-smoke-diagnostics
           path: ${{ runner.temp }}/koed-desktop-smoke-diagnostics
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload unsigned Desktop artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: koed-desktop-macos-arm64-unsigned
-          path: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-
-  native-runtime-linux-x64:
-    name: Native runtime Linux x64
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    if: github.event_name == 'workflow_dispatch' && inputs.build_native_runtime_linux_x64
+  release-candidate-validation:
+    name: Full release-candidate Desktop validation
+    needs:
+      - changes
+      - static-checks
+      - tests
+      - build
+    if: needs.changes.outputs.run_full_validation == 'true'
+    runs-on: macos-14
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -257,13 +331,144 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          version: 11.1.2
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: 24.13.1
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build koed-server CLI
+        run: pnpm --filter @koed/koed-server build
+
+      - name: Cold-build native runtime artifact
+        env:
+          KOED_NATIVE_RUNTIME_VERSION: ${{ github.sha }}
+        run: pnpm native-runtime:build:macos-arm64 -- --json
+
+      - name: Extract native runtime for relocation validation
+        run: |
+          validation_root="${RUNNER_TEMP}/koed-native-runtime-validation"
+          mkdir -p "${validation_root}"
+          tarball="$(find dist/native-runtime/macos-arm64 -name 'koed-native-runtime-macos-arm64-*.tar.gz' -print -quit)"
+          test -n "${tarball}"
+          tar -xzf "${tarball}" -C "${validation_root}"
+          test -d "${validation_root}/koed-runtime"
+
+      - name: Validate native runtime artifact
+        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-validation/koed-runtime" --platform darwin --json
+
+      - name: Build unsigned Desktop app, DMG, ZIP, and block maps
+        env:
+          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-validation/koed-runtime
+        run: pnpm desktop:package:internal:mac
+
+      - name: Verify distribution outputs exist
+        run: |
+          test -n "$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.dmg' -print -quit)"
+          test -n "$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.zip' -print -quit)"
+          test "$(find apps/desktop/release -maxdepth 1 -name '*.blockmap' | wc -l | tr -d ' ')" -ge 2
+
+      - name: Verify Desktop app and mounted DMG
+        run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app --dmg release/Koed-*-arm64.dmg
+
+      - name: Restore pinned model for network-independent validation
+        id: full-model-cache
+        if: needs.changes.outputs.clean_model_install != 'true'
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf
+          key: embedding-model-${{ env.EMBEDDING_MODEL_SHA256 }}
+
+      - name: Install pinned model on cache miss
+        if: needs.changes.outputs.clean_model_install != 'true' && steps.full-model-cache.outputs.cache-hit != 'true'
+        env:
+          KOED_HOME: ${{ runner.temp }}/koed-model-cache
+          KOED_DEPENDENCY_MODE: bundled-local
+        run: node packages/koed-server/dist/cli.js models install --kind embedding --json
+
+      - name: Verify cached model fail closed
+        if: needs.changes.outputs.clean_model_install != 'true'
+        env:
+          KOED_HOME: ${{ runner.temp }}/koed-model-cache
+          KOED_DEPENDENCY_MODE: bundled-local
+        run: |
+          model="${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+          test -f "${model}"
+          test "$(shasum -a 256 "${model}" | awk '{print $1}')" = "${EMBEDDING_MODEL_SHA256}"
+          node packages/koed-server/dist/cli.js models status --kind embedding --json
+
+      - name: Run complete packaged Desktop smoke with cached model
+        if: needs.changes.outputs.clean_model_install != 'true'
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --embedding-model-source "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+
+      - name: Run clean external model installation smoke
+        if: needs.changes.outputs.clean_model_install == 'true'
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --export-embedding-model "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+
+      - name: Verify clean-installed model before caching
+        if: needs.changes.outputs.clean_model_install == 'true'
+        run: |
+          model="${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+          test -f "${model}"
+          test "$(shasum -a 256 "${model}" | awk '{print $1}')" = "${EMBEDDING_MODEL_SHA256}"
+
+      - name: Save clean-installed model for ordinary PR smoke
+        if: needs.changes.outputs.clean_model_install == 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf
+          key: embedding-model-${{ env.EMBEDDING_MODEL_SHA256 }}
+
+      - name: Report distribution artifact sizes
+        run: |
+          du -h apps/desktop/release/Koed-*-arm64.dmg apps/desktop/release/Koed-*-arm64.zip
+          {
+            echo "### Release-candidate artifact sizes"
+            echo '```text'
+            du -h apps/desktop/release/Koed-*-arm64.dmg apps/desktop/release/Koed-*-arm64.zip
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload full-validation diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-full-validation-diagnostics
+          path: ${{ runner.temp }}/koed-desktop-smoke-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
+
+  native-runtime-linux-x64:
+    name: Native runtime Linux x64
+    needs:
+      - changes
+      - static-checks
+      - tests
+      - build
+    if: needs.changes.outputs.run_linux_native == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
@@ -283,40 +488,34 @@ jobs:
       - name: Validate native runtime artifact
         run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json
 
-      - name: Upload native runtime artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: koed-native-runtime-linux-x64
-          path: |
-            dist/native-runtime/linux-x64/*.tar.gz
-            dist/native-runtime/linux-x64/*.sha256
-            dist/native-runtime/linux-x64/provenance.json
-          retention-days: 7
-          compression-level: 0
-
-  packaged-desktop-smoke:
-    name: Packaged Desktop smoke
-    runs-on: macos-14
-    timeout-minutes: 25
+  ci-required:
+    name: CI required
+    if: always()
+    needs:
+      - changes
+      - static-checks
+      - tests
+      - build
+      - relevant-packaged-smoke
+      - release-candidate-validation
+      - native-runtime-linux-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
 
     steps:
-      - name: Checkout
+      - name: Checkout policy evaluator
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 11.1.2
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24.13.1
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Packaged Desktop missing-asset smoke
-        run: pnpm desktop:package:smoke:mac -- --json --missing-assets
+      - name: Verify required and conditional results
+        env:
+          RUN_APP_SMOKE: ${{ needs.changes.outputs.run_app_smoke }}
+          RUN_FULL_VALIDATION: ${{ needs.changes.outputs.run_full_validation }}
+          RUN_LINUX_NATIVE: ${{ needs.changes.outputs.run_linux_native }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          STATIC_CHECKS_RESULT: ${{ needs.static-checks.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          APP_SMOKE_RESULT: ${{ needs.relevant-packaged-smoke.result }}
+          FULL_VALIDATION_RESULT: ${{ needs.release-candidate-validation.result }}
+          LINUX_NATIVE_RESULT: ${{ needs.native-runtime-linux-x64.result }}
+        run: node .github/scripts/ci-required.mjs

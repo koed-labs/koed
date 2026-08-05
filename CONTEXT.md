@@ -66,7 +66,7 @@ Recalled memory evidence plus citation and retrieval metadata handed to an AI cl
 _Avoid_: Answer, summary, search result
 
 **Koed**:
-The AGPL-licensed Koed distribution for operator-managed memory
+The Apache-2.0-licensed Koed distribution for operator-managed memory
 infrastructure.
 _Avoid_: Koed Cloud, hosted Koed, open-source Koed as a separate product name
 
@@ -132,6 +132,12 @@ _Avoid_: Health failure, pending count, summarization error
 **Personal Memory**:
 Memory visible only to the owning user.
 _Avoid_: Private memory, individual memory
+
+**Team Presence**:
+A Team-scoped indication of a User's manually selected availability or coarse
+recent foreground activity. It does not describe agent, worker, sync, or
+background-service activity.
+_Avoid_: Agent status, read receipt, exact activity log
 
 **Project**:
 A local AI-client or code context such as a repository, working directory,

@@ -136,8 +136,9 @@
 
 .desktop-rail-badge {
   position: absolute;
-  inset-block-start: -3px;
-  inset-inline-end: -5px;
+  inset-block-start: 0;
+  inset-inline-end: 0;
+  z-index: 1;
   min-inline-size: 17px;
   block-size: 17px;
   padding-inline: 4px;

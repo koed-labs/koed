@@ -4,19 +4,17 @@ Koed CI can produce unsigned macOS Desktop DMG/ZIP artifacts for internal instal
 
 ## Build in CI
 
-Every pull request runs the combined macOS arm64 native-runtime and packaged Desktop native-smoke job. To build the same artifacts from another ref, run the `CI` workflow manually with `build_native_runtime_macos_arm64=true`.
+Ordinary pull requests do not upload unsigned distribution artifacts. Relevant
+pull requests build and smoke only the unpacked `.app`; the Changesets release
+pull request and manual/scheduled full validation build DMG/ZIP outputs for
+validation but do not publish those candidate files.
 
-The workflow:
-
-1. builds `koed-native-runtime-macos-arm64`;
-2. extracts and validates the completed tarball at the consumer boundary;
-3. uploads the validated runtime artifact before Desktop packaging;
-4. sets `KOED_NATIVE_RUNTIME_SOURCE_DIR` to the validated extraction;
-5. builds unsigned `dmg` and `zip` Desktop artifacts;
-6. runs packaged Desktop native smoke against the built app;
-7. uploads `koed-desktop-macos-arm64-unsigned`.
-
-The uploaded Desktop artifact contains `Koed-<version>-arm64.dmg` and `Koed-<version>-arm64.zip` from `apps/desktop/release/`.
+The post-merge `Release` workflow is the authority for downloadable unsigned
+Desktop artifacts. It cold-builds and validates the native runtime from the
+exact release commit, packages and verifies the app and mounted DMG, runs the
+complete packaged native smoke, and uploads the checksummed DMG/ZIP only while
+the GitHub release remains a draft. See `docs/ci-validation.md` for dispatch
+options and pull-request routing.
 
 ## GitHub Release assets
 
@@ -35,7 +33,9 @@ These GitHub Release assets are still unsigned and not notarized until the signi
 
 ## Install/open manually
 
-Download `koed-desktop-macos-arm64-unsigned` from the completed workflow run.
+Download the `Koed-<version>-arm64.dmg` or `Koed-<version>-arm64.zip` asset,
+along with `koed-desktop-macos-arm64-unsigned.sha256`, from the GitHub Release
+for the version under test.
 
 DMG path:
 

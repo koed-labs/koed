@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   rmSync,
-  readFileSync,
+  readSync,
   statSync,
   writeFileSync
 } from "node:fs";
@@ -26,8 +28,22 @@ export const listFiles = (root, dir = root) =>
 
 export const sha256File = (path) => {
   const hash = createHash("sha256");
-  hash.update(readFileSync(path));
+  updateHashFromFile(hash, path);
   return hash.digest("hex");
+};
+
+const updateHashFromFile = (hash, path) => {
+  const descriptor = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    closeSync(descriptor);
+  }
 };
 
 export const sha256Files = (root, files) => {
@@ -37,7 +53,7 @@ export const sha256Files = (root, files) => {
     if (statSync(path).isDirectory()) continue;
     hash.update(file.replaceAll("\\", "/"));
     hash.update("\0");
-    hash.update(readFileSync(path));
+    updateHashFromFile(hash, path);
     hash.update("\0");
   }
   return hash.digest("hex");

@@ -1,6 +1,7 @@
 import { parseCanonicalPdsJson } from "@koed/shared";
 import { describe, expect, it } from "vitest";
 import {
+  pdsCanonicalRelayRecipients,
   pdsRedactedRelayReceipt,
   pdsRelayDeliveryRecipients
 } from "./personal-device-sync-relay-repository.js";
@@ -22,6 +23,12 @@ describe("Personal Device Sync relay receipts", () => {
       ciphertextBytes: "2048",
       recipientCount: "2"
     });
+  });
+
+  it("canonicalizes unordered database recipient IDs before snapshot checks", () => {
+    expect(
+      pdsCanonicalRelayRecipients(["z-device", "A-device", "a-device"])
+    ).toEqual(["A-device", "a-device", "z-device"]);
   });
 
   it("delivers to peers without making the serving device ACK itself", () => {

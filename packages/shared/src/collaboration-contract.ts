@@ -1,7 +1,16 @@
 import { z } from "zod";
+import {
+  teamManualStatuses,
+  teamPresenceStatusCatalogue
+} from "./team-presence.js";
+export {
+  TEAM_ACTIVITY_WRITE_THROTTLE_MS,
+  coarsePresenceFromTeamPresence,
+  deriveTeamPresenceSnapshot
+} from "./team-presence.js";
 import { assertSecureHttpTransport } from "./http-transport-security.js";
 
-export const COLLABORATION_CONTRACT_VERSION = 1;
+export const COLLABORATION_CONTRACT_VERSION = 3;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -529,8 +538,61 @@ const collaborationPersonManagementSchema = z
   })
   .strict();
 
+const teamPresenceStatusKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9_]*$/);
+
+const collaborationTeamManualStatusSchema = z.union([
+  z.enum(teamManualStatuses),
+  teamPresenceStatusKeySchema.transform(() => "unknown" as const)
+]);
+
+export const collaborationTeamPresenceStatusCatalogueSchema = z
+  .object({
+    version: positiveVersionSchema,
+    statuses: z
+      .array(
+        z
+          .object({
+            key: teamPresenceStatusKeySchema,
+            label: z.string().trim().min(1).max(80)
+          })
+          .strict()
+      )
+      .min(1)
+      .max(32)
+  })
+  .strict()
+  .superRefine((catalogue, context) => {
+    const keys = catalogue.statuses.map((status) => status.key);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["statuses"],
+        message: "Team Presence status catalogue keys must be unique"
+      });
+    }
+  });
+
 export const collaborationTeamPersonSchema = collaborationPersonSchema
-  .extend({ management: collaborationPersonManagementSchema.optional() })
+  .extend({
+    teamPresence: z
+      .object({
+        mode: z.enum(["auto", "manual"]),
+        manualStatus: collaborationTeamManualStatusSchema,
+        activityLevel: z
+          .enum(["active", "recently_active", "idle", "inactive"])
+          .nullable(),
+        lastActivityAt: collaborationTimestampSchema.nullable(),
+        nextTransitionAt: collaborationTimestampSchema.nullable(),
+        preferenceVersion: positiveVersionSchema
+      })
+      .strict(),
+    management: collaborationPersonManagementSchema.optional()
+  })
   .strict()
   .superRefine((person, context) => {
     if (
@@ -690,6 +752,7 @@ export const collaborationMessageSchema = z
     editedAt: z.null(),
     deletedAt: z.null(),
     delivery: z.enum(["queued", "sent", "failed"]),
+    recipientStatus: z.enum(["sent", "delivered", "read"]).nullable(),
     failure: collaborationSafeErrorSchema.nullable()
   })
   .strict()
@@ -709,6 +772,13 @@ export const collaborationMessageSchema = z
         code: "custom",
         path: ["failure"],
         message: "Only failed messages may carry a safe failure"
+      });
+    }
+    if (message.delivery !== "sent" && message.recipientStatus !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["recipientStatus"],
+        message: "Only sent messages may carry a recipient status"
       });
     }
   });
@@ -787,9 +857,57 @@ export const collaborationDurableSendSchema = z
 export const collaborationReadStateSchema = z
   .object({
     threadId: z.uuid(),
+    deliveredMessageId: z.uuid().nullable(),
+    deliveredSequence: nonNegativeSequenceSchema,
+    deliveredAt: collaborationTimestampSchema.nullable(),
     messageId: z.uuid().nullable(),
     sequence: nonNegativeSequenceSchema,
+    readAt: collaborationTimestampSchema.nullable(),
+    unreadCount: nonNegativeSequenceSchema,
+    version: positiveVersionSchema,
     updatedAt: collaborationTimestampSchema
+  })
+  .strict()
+  .superRefine((state, context) => {
+    const deliveryIsEmpty =
+      state.deliveredMessageId === null &&
+      state.deliveredSequence === 0 &&
+      state.deliveredAt === null;
+    const deliveryIsComplete =
+      state.deliveredMessageId !== null &&
+      state.deliveredSequence > 0 &&
+      state.deliveredAt !== null;
+    if (!deliveryIsEmpty && !deliveryIsComplete) {
+      context.addIssue({
+        code: "custom",
+        path: ["deliveredMessageId"],
+        message: "Delivered receipt fields must be empty or complete"
+      });
+    }
+    const readIsEmpty =
+      state.messageId === null && state.sequence === 0 && state.readAt === null;
+    const readIsComplete =
+      state.messageId !== null && state.sequence > 0 && state.readAt !== null;
+    if (!readIsEmpty && !readIsComplete) {
+      context.addIssue({
+        code: "custom",
+        path: ["messageId"],
+        message: "Read receipt fields must be empty or complete"
+      });
+    }
+    if (state.deliveredSequence < state.sequence) {
+      context.addIssue({
+        code: "custom",
+        path: ["deliveredSequence"],
+        message: "Delivered sequence cannot trail the read sequence"
+      });
+    }
+  });
+
+export const collaborationMessageReceiptSchema = z
+  .object({
+    messageId: z.uuid(),
+    recipientStatus: z.enum(["sent", "delivered", "read"])
   })
   .strict();
 
@@ -1264,6 +1382,13 @@ export const collaborationSnapshotSchema = z
     generatedAt: collaborationTimestampSchema,
     connection: collaborationConnectionSchema,
     limits: collaborationLimitsSchema,
+    teamPresenceStatusCatalogue:
+      collaborationTeamPresenceStatusCatalogueSchema.default(() => ({
+        version: teamPresenceStatusCatalogue.version,
+        statuses: teamPresenceStatusCatalogue.statuses.map((status) => ({
+          ...status
+        }))
+      })),
     outbox: z.array(collaborationDurableSendSchema).max(1_000).optional(),
     navigation: collaborationNavigationSchema,
     selection: collaborationSelectionSchema,
@@ -1796,9 +1921,12 @@ const expectedVersionInputShape = { expectedVersion: positiveVersionSchema };
 
 export const collaborationRendererCommandSchema = z
   .discriminatedUnion("command", [
-    command("collaboration.load", {}),
+    command("collaboration.load", {
+      forceRemoteNavigation: z.boolean().optional()
+    }),
     command("collaboration.select", {
-      selection: collaborationSelectionSchema
+      selection: collaborationSelectionSchema,
+      navigationIntent: z.enum(["foreground", "prewarm"]).optional()
     }),
     command("collaboration.connect_backend", {
       remoteUrl: collaborationRemoteBackendUrlSchema
@@ -1850,6 +1978,15 @@ export const collaborationRendererCommandSchema = z
         COLLABORATION_MAX_DM_PARTICIPANTS - 1
       )
     }),
+    command("collaboration.set_team_presence", {
+      teamId: z.uuid(),
+      mode: z.enum(["auto", "manual"]),
+      manualStatus: z.enum(["available", "do_not_disturb", "out_of_office"]),
+      expectedVersion: positiveVersionSchema
+    }),
+    command("collaboration.report_team_activity", {
+      teamIds: distinctUuidArray(1, 50)
+    }),
     command("collaboration.rename_thread", {
       thread: collaborationThreadReferenceSchema,
       name: collaborationNameSchema,
@@ -1879,6 +2016,10 @@ export const collaborationRendererCommandSchema = z
       body: collaborationMessageBodySchema
     }),
     command("collaboration.mark_read", {
+      thread: collaborationThreadReferenceSchema,
+      messageId: z.uuid()
+    }),
+    command("collaboration.mark_delivered", {
       thread: collaborationThreadReferenceSchema,
       messageId: z.uuid()
     }),
@@ -2116,12 +2257,35 @@ const successResult = <const TName extends string, T extends z.ZodType>(
 
 const emptyResultDataSchema = z.object({}).strict();
 
-const snapshotResultCommands = [
+const directSnapshotResultCommands = [
   "collaboration.load",
   "collaboration.select",
   "collaboration.reconnect_backend",
   "collaboration.disconnect_backend"
 ] as const;
+
+const createdResourceSnapshotResultCommands = [
+  "collaboration.create_team",
+  "collaboration.join_team",
+  "collaboration.create_workspace"
+] as const;
+
+const connectBackendSnapshotResultCommand =
+  "collaboration.connect_backend" as const;
+
+export const collaborationSnapshotResultCommands = [
+  ...directSnapshotResultCommands,
+  connectBackendSnapshotResultCommand,
+  ...createdResourceSnapshotResultCommands
+] as const;
+
+const collaborationSnapshotResultCommandSet = new Set<string>(
+  collaborationSnapshotResultCommands
+);
+
+export const collaborationCommandReturnsSnapshot = (
+  commandName: string
+): boolean => collaborationSnapshotResultCommandSet.has(commandName);
 
 const threadResultCommands = [
   "collaboration.create_notes_to_self",
@@ -2135,7 +2299,10 @@ const threadResultCommands = [
   "collaboration.restore_thread"
 ] as const;
 
-const snapshotSuccessSchemas = snapshotResultCommands.map((name) =>
+const snapshotSuccessSchemas = [
+  ...directSnapshotResultCommands,
+  ...createdResourceSnapshotResultCommands
+].map((name) =>
   successResult(
     name,
     z.object({ snapshot: collaborationSnapshotSchema }).strict()
@@ -2146,18 +2313,15 @@ const threadSuccessSchemas = threadResultCommands.map((name) =>
 );
 
 const commandNameSchema = z.enum([
-  ...snapshotResultCommands,
-  "collaboration.connect_backend",
+  ...collaborationSnapshotResultCommands,
   "collaboration.request_action_grant",
   "collaboration.await_action_grant",
   "collaboration.cancel_action_grant",
-  "collaboration.create_team",
-  "collaboration.join_team",
-  "collaboration.create_workspace",
   ...threadResultCommands,
   "collaboration.send_message",
   "collaboration.retry_message",
   "collaboration.mark_read",
+  "collaboration.mark_delivered",
   "collaboration.load_message_page",
   "collaboration.load_shared_source_page",
   "collaboration.create_invitation",
@@ -2169,6 +2333,8 @@ const commandNameSchema = z.enum([
   "collaboration.archive_workspace",
   "collaboration.restore_workspace",
   "collaboration.set_workspace_access",
+  "collaboration.set_team_presence",
+  "collaboration.report_team_activity",
   "collaboration.list_owned_shared_memory_grants",
   "collaboration.prepare_shared_memory_source",
   "collaboration.pause_shared_memory_sync",
@@ -2199,7 +2365,7 @@ export const collaborationCommandResultSchema = z.union([
   ...snapshotSuccessSchemas,
   ...threadSuccessSchemas,
   successResult(
-    "collaboration.connect_backend",
+    connectBackendSnapshotResultCommand,
     z
       .object({
         backend: collaborationBackendIdentitySchema,
@@ -2229,18 +2395,6 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ status: collaborationActionGrantStatusSchema }).strict()
   ),
   successResult(
-    "collaboration.create_team",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
-  successResult(
-    "collaboration.join_team",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
-  successResult(
-    "collaboration.create_workspace",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
-  successResult(
     "collaboration.send_message",
     z.union([
       z.object({ durableSend: collaborationDurableSendSchema }).strict(),
@@ -2256,6 +2410,10 @@ export const collaborationCommandResultSchema = z.union([
   ),
   successResult(
     "collaboration.mark_read",
+    z.object({ readState: collaborationReadStateSchema }).strict()
+  ),
+  successResult(
+    "collaboration.mark_delivered",
     z.object({ readState: collaborationReadStateSchema }).strict()
   ),
   successResult(
@@ -2306,6 +2464,14 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.set_workspace_access",
     z.object({ access: collaborationWorkspaceAccessSchema }).strict()
+  ),
+  successResult(
+    "collaboration.set_team_presence",
+    z.object({ person: collaborationTeamPersonSchema }).strict()
+  ),
+  successResult(
+    "collaboration.report_team_activity",
+    z.object({ acceptedTeamIds: z.array(z.uuid()).max(50) }).strict()
   ),
   successResult(
     "collaboration.list_owned_shared_memory_grants",
@@ -2393,7 +2559,7 @@ const realtimeResourceSchema = z
     }
   });
 
-const rendererUpdateSchema = z.discriminatedUnion("type", [
+export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("navigation_snapshot"),
@@ -2417,8 +2583,24 @@ const rendererUpdateSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
-      type: z.literal("read_state_updated"),
+      type: z.literal("receipt_state_updated"),
       readState: collaborationReadStateSchema
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("message_receipts_updated"),
+      threadId: z.uuid(),
+      receipts: z
+        .array(collaborationMessageReceiptSchema)
+        .max(COLLABORATION_RENDERED_ROW_MAX_COUNT)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("team_person_upserted"),
+      teamId: z.uuid(),
+      person: collaborationTeamPersonSchema
     })
     .strict(),
   z
@@ -2479,10 +2661,11 @@ const rendererUpdateSchema = z.discriminatedUnion("type", [
 export const collaborationRealtimeEventFamilySchema = z.enum([
   "team_lifecycle",
   "team_membership_access",
+  "team_presence_changed",
   "workspace_lifecycle_access",
   "thread_lifecycle",
   "message_created",
-  "read_state_updated",
+  "receipt_state_updated",
   "share_grant_lifecycle",
   "representation_changed",
   "memory_event_available",
@@ -2602,17 +2785,18 @@ const realtimeUpdateDeliverySchema = z
     occurredAt: collaborationTimestampSchema,
     family: collaborationRealtimeEventFamilySchema,
     resource: realtimeResourceSchema,
-    update: rendererUpdateSchema
+    update: collaborationRendererUpdateSchema
   })
   .strict()
   .superRefine((delivery, context) => {
     const { family, resource, update } = delivery;
     const allowedUpdateTypes: Record<
       z.infer<typeof collaborationRealtimeEventFamilySchema>,
-      ReadonlySet<z.infer<typeof rendererUpdateSchema>["type"]>
+      ReadonlySet<z.infer<typeof collaborationRendererUpdateSchema>["type"]>
     > = {
       team_lifecycle: new Set(["navigation_snapshot"]),
       team_membership_access: new Set(["navigation_snapshot"]),
+      team_presence_changed: new Set(["team_person_upserted"]),
       workspace_lifecycle_access: new Set(["navigation_snapshot"]),
       thread_lifecycle: new Set([
         "thread_upserted",
@@ -2620,7 +2804,10 @@ const realtimeUpdateDeliverySchema = z
         "shared_session_upserted"
       ]),
       message_created: new Set(["message_created"]),
-      read_state_updated: new Set(["read_state_updated"]),
+      receipt_state_updated: new Set([
+        "receipt_state_updated",
+        "message_receipts_updated"
+      ]),
       share_grant_lifecycle: new Set([
         "shared_session_upserted",
         "shared_session_removed"
@@ -2643,7 +2830,7 @@ const realtimeUpdateDeliverySchema = z
       ]),
       shared_session_discussion_activity: new Set([
         "message_created",
-        "read_state_updated",
+        "receipt_state_updated",
         "thread_upserted"
       ]),
       personal_memory_changed: new Set(["personal_memory_upserted"]),
@@ -2708,13 +2895,23 @@ const realtimeUpdateDeliverySchema = z
       });
     }
     if (
-      update.type === "read_state_updated" &&
+      update.type === "receipt_state_updated" &&
       update.readState.threadId !== resource.threadId
     ) {
       context.addIssue({
         code: "custom",
         path: ["update", "readState"],
         message: "Realtime read state must match its authorized thread"
+      });
+    }
+    if (
+      update.type === "message_receipts_updated" &&
+      update.threadId !== resource.threadId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["update", "threadId"],
+        message: "Realtime message receipts must match their authorized thread"
       });
     }
     if (
