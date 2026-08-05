@@ -40,8 +40,11 @@ The adapter exposes two intentionally distinct measurements. Per-chunk counts
 come from llama-server's tokenizer without model-added special tokens and are
 persisted with the embedding. Request-level measured tokens come from the
 embedding execution response and include its prompt-token overhead; capacity
-profiles and throughput telemetry use that execution total. Equality between
-the two is neither required nor expected.
+profiles and throughput telemetry use that execution total when the runtime
+provides it. If a supported llama-server response omits usage metadata, the
+Worker uses the sum of the response's validated per-chunk tokenizer counts so
+semantic ingestion and calibration remain available. Equality between the two
+measurements is neither required nor expected.
 
 One versioned capacity profile identifies a stable worker pool, processing
 epoch, compatible model artifact, runtime configuration, hardware class, and
@@ -58,9 +61,13 @@ adapter-measured token count, and duration records, never fixture text.
 Capacity identity includes the bounded deployment pool key, model key and
 artifact hash, embedding processing epoch and contract, runtime settings that
 materially affect throughput, backend class, and a non-reversible hardware
-fingerprint. A material identity change invalidates old measurements from that
-pool instead of silently reusing their throughput. It does not invalidate an
-independent pool. PostgreSQL advisory leases ensure only one Worker replica
+fingerprint. Non-CPU backends also bind that fingerprint to a non-reversible
+hash of llama-server's device listing; if the listing cannot be established,
+capacity identity and historical admission fail closed. The Worker verifies
+that the service-reported model and dimensions exactly match its configured
+embedding contract before reusing a profile. A material identity change
+invalidates old measurements from that pool instead of silently reusing their
+throughput. It does not invalidate an independent pool. PostgreSQL advisory leases ensure only one Worker replica
 calibrates a given pool at a time. Active compatible pool rates aggregate into
 the deployment capacity snapshot. Workers heartbeat their active profile in
 PostgreSQL; a profile whose pool has stopped heartbeating expires from active
@@ -116,7 +123,8 @@ of 5 input tokens per second solely to communicate a low-confidence ETA range.
 The fallback never opens historical auto-admission. Per-Captured-Session ETA
 adds its own pending estimated tokens to higher-priority live/normal semantic
 work and newer historical work ahead of that source. No source content is read
-to calculate this position.
+to calculate this position. Source ETAs aggregate only active profiles for the
+current model key, dimensions, and processing epoch.
 
 Historical source status keeps projection-tokenizer estimates and
 adapter-measured completion tokens as separate quantities. It persists the

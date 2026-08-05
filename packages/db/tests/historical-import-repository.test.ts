@@ -1226,6 +1226,20 @@ describeDb("journal-backed historical import repository", () => {
       "test_identity"
     );
     await capacity.replaceActiveProfile(capacityProfile, "test_replaced");
+    const incompatibleProfileKey = createHash("sha256")
+      .update(randomUUID())
+      .digest("hex");
+    await capacity.replaceActiveProfile(
+      {
+        ...capacityProfile,
+        poolKey: "incompatible-pool",
+        profileKey: incompatibleProfileKey,
+        modelKey: "incompatible-model",
+        embeddingDimensions: 384,
+        measuredTokensPerSecond: 1_000_000
+      },
+      "incompatible_test_profile"
+    );
 
     const imported = await repo.ingestHistoricalImportBatch(
       { userId: owner.id },

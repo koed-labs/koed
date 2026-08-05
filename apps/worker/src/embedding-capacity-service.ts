@@ -24,6 +24,7 @@ type CapacityIdentity = {
   runtimeVersion: string;
   backendClass: "cpu" | "metal" | "cuda" | "unknown";
   hardwareFingerprint: string;
+  acceleratorFingerprint: string | null;
   settingsFingerprint: string;
   runtimeSettings: Record<string, string | number | boolean | null>;
 };
@@ -49,7 +50,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-const safeIdentity = (payload: unknown): CapacityIdentity => {
+const safeIdentity = (
+  payload: unknown,
+  expected: Pick<WorkerEnvConfig, "embeddingVersion" | "embeddingDimensions">
+): CapacityIdentity => {
   if (!isRecord(payload) || !isRecord(payload.runtimeSettings)) {
     throw new Error("Embedding capacity identity is invalid");
   }
@@ -63,10 +67,22 @@ const safeIdentity = (payload: unknown): CapacityIdentity => {
     !["cpu", "metal", "cuda", "unknown"].includes(String(backendClass)) ||
     typeof payload.hardwareFingerprint !== "string" ||
     !/^[0-9a-f]{64}$/.test(payload.hardwareFingerprint) ||
+    (backendClass === "cpu"
+      ? payload.acceleratorFingerprint !== null
+      : typeof payload.acceleratorFingerprint !== "string" ||
+        !/^[0-9a-f]{64}$/.test(payload.acceleratorFingerprint)) ||
     typeof payload.settingsFingerprint !== "string" ||
     !/^[0-9a-f]{64}$/.test(payload.settingsFingerprint)
   ) {
     throw new Error("Embedding capacity identity is invalid");
+  }
+  if (
+    payload.modelKey !== expected.embeddingVersion ||
+    payload.dimensions !== expected.embeddingDimensions
+  ) {
+    throw new Error(
+      "Embedding capacity identity does not match the configured embedding contract"
+    );
   }
   return payload as unknown as CapacityIdentity;
 };
@@ -141,7 +157,7 @@ export const createEmbeddingCapacityService = (config: {
           `Embedding capacity identity failed with ${response.status}`
         );
       }
-      return safeIdentity(payload);
+      return safeIdentity(payload, config.env);
     })().catch((error) => {
       identityPromise = null;
       throw error;
@@ -166,6 +182,7 @@ export const createEmbeddingCapacityService = (config: {
       runtimeVersion: current.runtimeVersion,
       backendClass: current.backendClass,
       hardwareFingerprint: current.hardwareFingerprint,
+      acceleratorFingerprint: current.acceleratorFingerprint,
       settingsFingerprint: current.settingsFingerprint
     });
   };

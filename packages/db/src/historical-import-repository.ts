@@ -172,7 +172,9 @@ type SourceRow = {
   updated_at: Date;
 };
 
-const SOURCE_SELECT = `
+const sourceSelect = (): string => {
+  const embedding = currentEmbeddingConfig();
+  return `
   source.id, source.run_id, source.owner_user_id, source.state,
   source.artifact_id, source.ai_client,
   artifact.source_kind,
@@ -205,7 +207,9 @@ const SOURCE_SELECT = `
     where profile.state = 'usable'
       and profile.invalidated_at is null
       and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
-      and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}')
+      and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}'
+      and profile.model_key = '${embedding.model}'
+      and profile.embedding_dimensions = ${embedding.dimensions})
     as capacity_tokens_per_second,
   (select case
       when count(*) = 0 then null
@@ -216,7 +220,9 @@ const SOURCE_SELECT = `
     where profile.state = 'usable'
       and profile.invalidated_at is null
       and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
-      and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}')
+      and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}'
+      and profile.model_key = '${embedding.model}'
+      and profile.embedding_dimensions = ${embedding.dimensions})
     as capacity_calibration_mode,
   source.oldest_embedded_source_time, source.newest_embedded_source_time,
   source.lcm_eligible_event_count, source.lcm_completed_event_count,
@@ -226,6 +232,7 @@ const SOURCE_SELECT = `
   source.skipped_at, source.completed_at, source.failed_at,
   source.last_observed_at, source.created_at, source.updated_at
 `;
+};
 
 const SOURCE_JOINS = `
   from historical_import_sources source
@@ -531,7 +538,7 @@ const sourceQuery = async (
   values: unknown[]
 ): Promise<HistoricalImportSourceRecord | null> => {
   const result = await client.query<SourceRow>(
-    `select ${SOURCE_SELECT} ${SOURCE_JOINS}
+    `select ${sourceSelect()} ${SOURCE_JOINS}
       where source.owner_user_id = $1 and ${predicate}
       limit 1`,
     [ownerUserId, ...values]
@@ -1445,7 +1452,7 @@ export const createHistoricalImportRepository = (
     await refreshRunCounters(pool, actor.userId, runId);
     const refreshedRun = await getRun(pool, actor, runId);
     const sources = await pool.query<SourceRow>(
-      `select ${SOURCE_SELECT} ${SOURCE_JOINS}
+      `select ${sourceSelect()} ${SOURCE_JOINS}
         where source.owner_user_id = $1 and source.run_id = $2
         order by source.discovered_at, source.id`,
       [actor.userId, runId]

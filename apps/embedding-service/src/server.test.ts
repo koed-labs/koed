@@ -3,6 +3,7 @@ import { createEmbeddingLogger } from "./logging.js";
 import { EmbeddingRuntime } from "./runtime.js";
 import type { EmbedResponse, RerankResponse } from "./schemas.js";
 import {
+  capacityHardwareIdentity,
   createEmbeddingService,
   createNodeHttpServer,
   listenNodeHttpServer
@@ -70,6 +71,35 @@ const json = async (response: Response) =>
 const logger = () => createEmbeddingLogger("critical", () => undefined);
 
 describe("Embedding Service routes", () => {
+  it("changes non-CPU hardware identity when the accelerator changes", async () => {
+    const config = testConfig({ backendClass: "cuda" });
+    const first = await capacityHardwareIdentity(
+      config,
+      async () => "CUDA0: device-a"
+    );
+    const second = await capacityHardwareIdentity(
+      config,
+      async () => "CUDA0: device-b"
+    );
+
+    expect(first.acceleratorFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(second.acceleratorFingerprint).not.toBe(
+      first.acceleratorFingerprint
+    );
+    expect(second.hardwareFingerprint).not.toBe(first.hardwareFingerprint);
+  });
+
+  it("fails non-CPU capacity identity closed without a device listing", async () => {
+    const config = testConfig({ backendClass: "metal" });
+
+    await expect(
+      capacityHardwareIdentity(config, async () => null)
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      detail: "embedding accelerator identity is unavailable"
+    });
+  });
+
   it("rejects HTTP bind failures through the awaited startup path", async () => {
     const service = {
       handle: async () => new Response(null, { status: 204 })
@@ -182,6 +212,7 @@ describe("Embedding Service routes", () => {
       runtimeVersion: "llama-server-test",
       backendClass: "cpu"
     });
+    expect(payload.acceleratorFingerprint).toBeNull();
     expect(payload.hardwareFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(payload.settingsFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(payload)).not.toContain("/models/embedding.gguf");

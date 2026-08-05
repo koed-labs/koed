@@ -9,7 +9,7 @@ import {
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExpandedMemoryNode,
   MemoryActor,
@@ -5102,6 +5102,35 @@ const createFakeEmbeddingCapacityRepository =
   });
 
 describe("api health", () => {
+  it("closes every memory job queue producer during shutdown", async () => {
+    const closeByQueue = new Map<string, ReturnType<typeof vi.fn>>();
+    const memoryJobQueueFactory = ((name: string) => {
+      const close = vi.fn().mockResolvedValue(undefined);
+      closeByQueue.set(name, close);
+      return {
+        add: vi.fn(),
+        getJobCounts: vi.fn().mockResolvedValue({}),
+        getOldestPendingAgeMs: vi.fn().mockResolvedValue(null),
+        close
+      };
+    }) as NonNullable<BuildServerOptions["memoryJobQueueFactory"]>;
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      memoryJobQueueFactory
+    });
+
+    await app.close();
+
+    expect([...closeByQueue.keys()]).toEqual([
+      "memory-embed",
+      "lcm-compact",
+      "lcm-embed"
+    ]);
+    for (const close of closeByQueue.values()) {
+      expect(close).toHaveBeenCalledOnce();
+    }
+  });
+
   it("invalidates graph cache for embedding updates without broadcasting them", () => {
     const embeddingPayload = {
       id: randomUUID(),

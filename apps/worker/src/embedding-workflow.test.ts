@@ -85,6 +85,42 @@ const jsonResponse = (body: Record<string, unknown>, status = 200) => {
 };
 
 describe("embedding workflow", () => {
+  it("uses validated chunk token counts when usage metadata is absent", async () => {
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
+      replaceSourceEmbeddings: vi
+        .fn()
+        .mockResolvedValue({ ids: ["embedding-1"], inserted: true })
+    } as unknown as MemorySourceRepository;
+    const workflow = createEmbeddingWorkflow({
+      env: workerEnv,
+      fetchFn: vi.fn().mockResolvedValue(
+        jsonResponse({
+          model: "test-embedding-model",
+          dimensions: 3,
+          measuredTokens: null,
+          vectors: [[1, 2, 3]],
+          chunks: [
+            {
+              inputIndex: 0,
+              chunkIndex: 0,
+              chunkCount: 1,
+              tokenCount: 7,
+              text: "Source text",
+              vector: [1, 2, 3]
+            }
+          ]
+        })
+      ),
+      repository: () => repository
+    });
+
+    await expect(
+      workflow.embedSource("memory_event", "event-1")
+    ).resolves.toMatchObject({ measuredTokens: 7, inserted: true });
+  });
+
   it("stores validated embedding chunks without prefixing source text", async () => {
     const getEmbeddableSource = vi.fn().mockResolvedValue(source);
     const replaceSourceEmbeddings = vi.fn();

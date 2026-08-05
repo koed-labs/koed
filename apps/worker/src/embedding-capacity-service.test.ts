@@ -30,6 +30,7 @@ const identity = {
   runtimeVersion: "test-runtime",
   backendClass: "cpu",
   hardwareFingerprint: "b".repeat(64),
+  acceleratorFingerprint: null,
   settingsFingerprint: "c".repeat(64),
   runtimeSettings: { llamaNThreads: 4, llamaParallel: 1 }
 };
@@ -124,6 +125,46 @@ describe("embedding capacity service", () => {
           .mock.calls.map(([input]) => input)
       )
     ).not.toContain("synthetic fixture");
+    service.stop();
+  });
+
+  it("calibrates from chunk token counts when usage metadata is absent", async () => {
+    const repository = createRepository();
+    const fetchFn = vi
+      .fn()
+      .mockImplementation(async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/capacity/identity")) {
+          return jsonResponse(identity);
+        }
+        return jsonResponse({
+          model: "qwen3-0.6b",
+          dimensions: 1024,
+          measuredTokens: null,
+          vectors: [Array(1024).fill(0.01)],
+          chunks: [
+            {
+              inputIndex: 0,
+              chunkIndex: 0,
+              chunkCount: 1,
+              tokenCount: 100,
+              text: "synthetic fixture",
+              vector: Array(1024).fill(0.01)
+            }
+          ]
+        });
+      });
+    const service = createEmbeddingCapacityService({
+      env,
+      repository,
+      logger,
+      fetchFn
+    });
+
+    await expect(service.calibrate("quick")).resolves.toMatchObject({
+      measuredTokenCount: 400,
+      sampleCount: 4,
+      state: "usable"
+    });
     service.stop();
   });
 
@@ -223,6 +264,26 @@ describe("embedding capacity service", () => {
     service.stop();
   });
 
+  it("rejects a non-CPU identity without an accelerator fingerprint", async () => {
+    const service = createEmbeddingCapacityService({
+      env,
+      repository: createRepository(),
+      logger,
+      fetchFn: vi.fn().mockResolvedValue(
+        jsonResponse({
+          ...identity,
+          backendClass: "cuda",
+          acceleratorFingerprint: null
+        })
+      )
+    });
+
+    await expect(service.profileKey()).rejects.toThrow(
+      "Embedding capacity identity is invalid"
+    );
+    service.stop();
+  });
+
   it("fails historical readiness closed when no usable profile exists", async () => {
     const repository = createRepository();
     const service = createEmbeddingCapacityService({
@@ -235,6 +296,34 @@ describe("embedding capacity service", () => {
     await expect(service.hasUsableProfile()).resolves.toBe(false);
     service.stop();
   });
+
+  it.each([
+    ["model", { modelKey: "different-model" }],
+    ["dimensions", { dimensions: 384 }]
+  ])(
+    "rejects a service identity with mismatched %s",
+    async (_label, change) => {
+      const repository = createRepository();
+      const service = createEmbeddingCapacityService({
+        env,
+        repository,
+        logger,
+        fetchFn: vi.fn().mockResolvedValue(
+          jsonResponse({
+            ...identity,
+            ...change
+          })
+        )
+      });
+
+      await expect(service.profileKey()).rejects.toThrow(
+        "does not match the configured embedding contract"
+      );
+      await expect(service.hasUsableProfile()).resolves.toBe(false);
+      expect(repository.heartbeatProfile).not.toHaveBeenCalled();
+      service.stop();
+    }
+  );
 
   it("recovers when the embedding identity is unavailable during startup", async () => {
     const repository = createRepository();

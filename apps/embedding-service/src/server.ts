@@ -5,7 +5,9 @@ import {
   type ServerResponse
 } from "node:http";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { arch, cpus, platform, release, totalmem } from "node:os";
+import { promisify } from "node:util";
 import {
   HttpError,
   embeddingTokenAuthStatus,
@@ -25,6 +27,7 @@ import {
 } from "./logging.js";
 import { normalizeEmbeddingPriority } from "./priority-scheduler.js";
 import type { EmbeddingRuntime } from "./runtime.js";
+import { llamaServerEnvironment } from "./llama-server.js";
 import { validateEmbedRequest, validateRerankRequest } from "./schemas.js";
 
 export interface EmbeddingService {
@@ -93,7 +96,7 @@ export const createEmbeddingService = (
             request.method === "GET" &&
             url.pathname === "/capacity/identity"
           ) {
-            return handleCapacityIdentity(config, request, requestId);
+            return await handleCapacityIdentity(config, request, requestId);
           }
           if (request.method === "POST" && url.pathname === "/embed") {
             return await handleEmbed(
@@ -151,12 +154,72 @@ export const createEmbeddingService = (
 const stableHash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-const handleCapacityIdentity = (
+const execFileAsync = promisify(execFile);
+
+const acceleratorListing = async (
+  config: EmbeddingServiceEnv
+): Promise<string | null> => {
+  if (config.backendClass === "cpu") return null;
+  let output: { stdout: string; stderr: string };
+  try {
+    output = await execFileAsync(config.llamaServerBinary, ["--list-devices"], {
+      encoding: "utf8",
+      env: llamaServerEnvironment(config.llamaServerBinary),
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024
+    });
+  } catch {
+    throw new HttpError(503, "embedding accelerator identity is unavailable");
+  }
+  const listing = `${output.stdout}\n${output.stderr}`
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!listing) {
+    throw new HttpError(503, "embedding accelerator identity is unavailable");
+  }
+  return listing;
+};
+
+export const capacityHardwareIdentity = async (
+  config: EmbeddingServiceEnv,
+  listAccelerators: (
+    config: EmbeddingServiceEnv
+  ) => Promise<string | null> = acceleratorListing
+): Promise<{
+  hardwareFingerprint: string;
+  acceleratorFingerprint: string | null;
+}> => {
+  const listing = await listAccelerators(config);
+  if (config.backendClass !== "cpu" && !listing) {
+    throw new HttpError(503, "embedding accelerator identity is unavailable");
+  }
+  const acceleratorFingerprint = listing
+    ? stableHash({ backendClass: config.backendClass, listing })
+    : null;
+  return {
+    acceleratorFingerprint,
+    hardwareFingerprint: stableHash({
+      platform: platform(),
+      release: release(),
+      arch: arch(),
+      cpuModels: cpus()
+        .map((cpu) => cpu.model)
+        .sort(),
+      cpuCount: cpus().length,
+      totalMemoryBytes: totalmem(),
+      backendClass: config.backendClass,
+      acceleratorFingerprint
+    })
+  };
+};
+
+const handleCapacityIdentity = async (
   config: EmbeddingServiceEnv,
   request: Request,
   requestId: string
-): Response => {
+): Promise<Response> => {
   requireInternalToken(config, headerValue(request, "x-koed-embedding-token"));
+  const hardwareIdentity = await capacityHardwareIdentity(config);
   const runtimeSettings = {
     batchLimit: config.batchLimit,
     embeddingMaxTokens: config.embeddingMaxTokens,
@@ -174,17 +237,7 @@ const handleCapacityIdentity = (
       runtimeKind: "llama-server",
       runtimeVersion: config.runtimeVersion,
       backendClass: config.backendClass,
-      hardwareFingerprint: stableHash({
-        platform: platform(),
-        release: release(),
-        arch: arch(),
-        cpuModels: cpus()
-          .map((cpu) => cpu.model)
-          .sort(),
-        cpuCount: cpus().length,
-        totalMemoryBytes: totalmem(),
-        backendClass: config.backendClass
-      }),
+      ...hardwareIdentity,
       settingsFingerprint: stableHash(runtimeSettings),
       runtimeSettings
     },

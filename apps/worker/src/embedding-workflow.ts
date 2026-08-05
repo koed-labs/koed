@@ -105,9 +105,10 @@ const parseEmbeddingResponse = (
   if (
     model !== expectedModel ||
     dimensions !== expectedDimensions ||
-    typeof measuredTokens !== "number" ||
-    !Number.isSafeInteger(measuredTokens) ||
-    measuredTokens < 0 ||
+    (measuredTokens !== null &&
+      (typeof measuredTokens !== "number" ||
+        !Number.isSafeInteger(measuredTokens) ||
+        measuredTokens < 0)) ||
     !isVectorArray(vectors) ||
     vectors.length === 0 ||
     vectors.some((vector) => vector.length !== expectedDimensions)
@@ -157,7 +158,9 @@ const parseEmbeddingResponse = (
   return {
     model,
     dimensions: expectedDimensions,
-    measuredTokens,
+    measuredTokens:
+      measuredTokens ??
+      normalizedChunks.reduce((total, chunk) => total + chunk.tokenCount, 0),
     vectors,
     chunks: normalizedChunks
   };

@@ -149,6 +149,8 @@ export interface BuildServerOptions {
   collaborationRepository?: CollaborationRepository;
   retentionRepository?: RetentionLifecycleRepository;
   embeddingCapacityRepository?: EmbeddingCapacityRepository;
+  /** Test-only queue factory injection. Production uses createMemoryJobQueue. */
+  memoryJobQueueFactory?: typeof createMemoryJobQueue;
   runMemoryJobsInlineForTests?: boolean;
   rateLimitStore?: RateLimitStore;
   cacheProvider?: CacheProvider;
@@ -349,8 +351,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       environment: process.env
     });
   }
+  const memoryJobQueueFactory =
+    options.memoryJobQueueFactory ?? createMemoryJobQueue;
   const createQueue = <TJobData>(name: string) =>
-    createMemoryJobQueue<TJobData>(name, {
+    memoryJobQueueFactory<TJobData>(name, {
       backend: config.queueBackend,
       redisUrl: config.redisUrl,
       pool
@@ -432,6 +436,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     await Promise.all([
       embeddingQueue?.close(),
       compactionQueue?.close(),
+      lcmEmbeddingQueue?.close(),
       rateLimitStore.close?.(),
       cacheProvider.close?.(),
       localEdgeSecureFetch?.close()
