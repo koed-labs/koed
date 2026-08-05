@@ -4,6 +4,7 @@ import type {
   PersonalDesktopProject,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
+import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import { GitFork, LoaderCircle, MonitorSmartphone, Send } from "lucide-react";
 import {
   useCallback,
@@ -60,6 +61,7 @@ export type PersonalMemoryWorkspaceProps = {
   assignSessionProject?: PersonalDesktopApi["assignSessionProject"];
   managedConversationRevision?: number;
   managedConversations?: ManagedConversationDesktopApi | null;
+  markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
   onSessionProjectAssigned?: (input: {
@@ -522,6 +524,7 @@ function StoreConversation({
   authorizeManagedConversationTransfer,
   managedConversationRevision,
   managedConversations,
+  markdownAdapters,
   pendingCanonicalConversation,
   onInspectEvent,
   project,
@@ -531,6 +534,7 @@ function StoreConversation({
   authorizeManagedConversationTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
   managedConversationRevision: number;
   managedConversations?: ManagedConversationDesktopApi | null;
+  markdownAdapters?: MarkdownPlatformAdapters;
   pendingCanonicalConversation: boolean;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   project: PersonalDesktopProject;
@@ -566,6 +570,7 @@ function StoreConversation({
     <div className="personal-conversation-shell">
       <div className="personal-conversation-timeline">
         <NativeConversationSurface
+          markdownAdapters={markdownAdapters}
           model={model}
           onInspectEvent={
             onInspectEvent
@@ -1170,6 +1175,7 @@ function SessionDetail({
   candidates,
   managedConversationRevision,
   managedConversations,
+  markdownAdapters,
   onAssigned,
   onInspectEvent,
   onNavigate,
@@ -1187,6 +1193,7 @@ function SessionDetail({
   candidates: readonly WorkspaceShareCandidate[];
   managedConversationRevision: number;
   managedConversations?: ManagedConversationDesktopApi | null;
+  markdownAdapters?: MarkdownPlatformAdapters;
   onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
   onInspectEvent?: PersonalMemoryWorkspaceProps["onInspectEvent"];
   onNavigate: PersonalMemoryWorkspaceProps["onNavigate"];
@@ -1249,6 +1256,7 @@ function SessionDetail({
           }
           managedConversationRevision={managedConversationRevision}
           managedConversations={managedConversations}
+          markdownAdapters={markdownAdapters}
           onInspectEvent={onInspectEvent}
           pendingCanonicalConversation={pendingCanonicalConversation}
           project={project}
@@ -1265,6 +1273,7 @@ export function PersonalMemoryWorkspace({
   authorizeManagedConversationTransfer,
   managedConversationRevision = 0,
   managedConversations,
+  markdownAdapters,
   onInspectEvent,
   onNavigate,
   onSessionProjectAssigned,
@@ -1371,6 +1380,7 @@ export function PersonalMemoryWorkspace({
             candidates={workspaceCandidates}
             managedConversationRevision={managedConversationRevision}
             managedConversations={managedConversations}
+            markdownAdapters={markdownAdapters}
             onAssigned={onSessionProjectAssigned}
             onInspectEvent={onInspectEvent}
             onNavigate={onNavigate}

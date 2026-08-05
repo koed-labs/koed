@@ -1,22 +1,44 @@
-export type DesktopConversationEvent = {
-  id: string;
-  actor: string | null;
-  eventType: string;
-  timestamp: string;
-  sourceEventTime: string | null;
-  sourceSequence: number | null;
-  content?: string;
-  contentFull?: string;
-  contentPreview: string;
-  rawContent?: string;
-  invalidatedAt: string | null;
-  metadata: Record<string, unknown>;
-};
+import type { PersonalDesktopConversationEvent } from "@koed/shared/personal-desktop";
+import { parseSourcePatch, type SourcePatchDetails } from "@koed/memory-ui";
+
+export type DesktopConversationEvent = PersonalDesktopConversationEvent;
+
+export type DesktopToolDisplay = NonNullable<
+  DesktopConversationEvent["toolDisplay"]
+>;
 
 export type ConversationCursor = Pick<
   DesktopConversationEvent,
   "id" | "sourceSequence" | "timestamp"
 >;
+
+const approvalReviewDisplayIdMarker = ":approval-display:";
+
+export function approvalReviewSourceEventId(eventId: string): string | null {
+  const marker = eventId.indexOf(approvalReviewDisplayIdMarker);
+  return marker > 0 ? eventId.slice(0, marker) : null;
+}
+
+export function expandConversationDisplayEvents(
+  events: readonly DesktopConversationEvent[]
+): DesktopConversationEvent[] {
+  return events.flatMap((event) => {
+    const display = event.transcriptDisplay;
+    if (!display) return [event];
+    return display.segments.map((segment, index) => ({
+      id: `${event.id}${approvalReviewDisplayIdMarker}${segment.sequence}:${index}`,
+      actor: segment.kind === "message" ? segment.actor : "tool",
+      eventType: `codex_transcript_${segment.kind}`,
+      timestamp: event.timestamp,
+      sourceEventTime: event.sourceEventTime,
+      sourceSequence: segment.sequence,
+      content: segment.content,
+      contentPreview: segment.content.slice(0, 16_384),
+      invalidatedAt: event.invalidatedAt,
+      metadata: segment.kind === "message" ? {} : { toolName: segment.toolName }
+    }));
+  });
+}
 
 export type DesktopConversationTimelineItem =
   | {
@@ -36,34 +58,92 @@ export function conversationEventText(event: DesktopConversationEvent): string {
   return (event.content ?? event.contentPreview ?? "").trim();
 }
 
-export type ConversationEventPatch = {
-  sourceText: string;
-  summary: string;
+const humanizeToolName = (value: string): string => {
+  const label = value.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  return label
+    ? label.charAt(0).toLocaleUpperCase() + label.slice(1)
+    : "Tool call";
 };
 
-const patchFilePattern =
-  /^(?:\*{3} (?:Add|Delete|Update) File: [^\n]+|diff --git [^\n]+)$/gmu;
+export function conversationEventToolDisplay(
+  event: DesktopConversationEvent
+): DesktopToolDisplay {
+  if (event.toolDisplay) return event.toolDisplay;
+  const toolName = event.metadata.toolName;
+  const name = typeof toolName === "string" ? toolName : "";
+  const searchableName = name.toLocaleLowerCase().replace(/[_-]+/gu, " ");
+  const kind: DesktopToolDisplay["kind"] =
+    /\b(exec|shell|bash|terminal|command|run)\b/u.test(searchableName)
+      ? "command"
+      : /\b(write|edit|patch|save|change|diff)\b/u.test(searchableName)
+        ? "file_change"
+        : /\b(read|open|cat|view|file)\b/u.test(searchableName)
+          ? "file_read"
+          : /\b(search|find|grep|rg|list)\b/u.test(searchableName)
+            ? "search"
+            : "tool";
+  const fallbackLabels: Record<DesktopToolDisplay["kind"], string> = {
+    command: "Ran command",
+    file_change: "Changed files",
+    file_read: "Read file",
+    search: "Searched files",
+    tool: name ? humanizeToolName(name) : "Tool call"
+  };
+  return {
+    kind,
+    label: fallbackLabels[kind],
+    preview:
+      conversationEventText(event).split(/\r?\n/u)[0] || "No preview available",
+    ...(name ? { toolName: name } : {})
+  };
+}
+
+const activityLabel = (
+  kind: DesktopToolDisplay["kind"],
+  count: number
+): string => {
+  const labels: Record<DesktopToolDisplay["kind"], [string, string]> = {
+    command: ["command", "commands"],
+    file_change: ["file change", "file changes"],
+    file_read: ["file read", "file reads"],
+    search: ["search", "searches"],
+    tool: ["other tool", "other tools"]
+  };
+  return `${count} ${labels[kind][count === 1 ? 0 : 1]}`;
+};
+
+export function summarizeToolActivity(
+  events: readonly DesktopConversationEvent[]
+): string {
+  const order: DesktopToolDisplay["kind"][] = [
+    "command",
+    "file_change",
+    "file_read",
+    "search",
+    "tool"
+  ];
+  const counts = new Map<DesktopToolDisplay["kind"], number>();
+  for (const event of events) {
+    const kind = conversationEventToolDisplay(event).kind;
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return order
+    .flatMap((kind) => {
+      const count = counts.get(kind) ?? 0;
+      return count ? [activityLabel(kind, count)] : [];
+    })
+    .join(" · ");
+}
+
+export type ConversationEventPatch = SourcePatchDetails;
 
 export function conversationEventPatch(
   event: DesktopConversationEvent
 ): ConversationEventPatch | null {
-  const toolName =
-    typeof event.metadata.toolName === "string"
-      ? event.metadata.toolName.toLocaleLowerCase()
-      : "";
-  const sourceText = conversationEventText(event);
-  const patchLike =
-    toolName.includes("patch") ||
-    sourceText.includes("*** Begin Patch") ||
-    /^diff --git /mu.test(sourceText);
-  if (!patchLike || !sourceText) return null;
-  const fileCount = new Set(sourceText.match(patchFilePattern) ?? []).size;
-  return {
-    sourceText,
-    summary: fileCount
-      ? `${fileCount} ${fileCount === 1 ? "file" : "files"} changed`
-      : "Source diff"
-  };
+  const display = conversationEventToolDisplay(event);
+  const sourceText = display.patchSource ?? conversationEventText(event);
+  if (display.kind !== "file_change" && !display.patchSource) return null;
+  return parseSourcePatch(sourceText);
 }
 
 export function compareConversationEvents(

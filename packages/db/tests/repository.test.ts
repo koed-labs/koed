@@ -15613,6 +15613,51 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("normalizes native Codex guardian lineage in Captured Session graph rows", async () => {
+    const alice = await repo.createUser({
+      email: `alice-native-guardian-${randomUUID()}@example.com`
+    });
+    const parentExternalSessionId = `parent-${randomUUID()}`;
+    const guardianExternalSessionId = `guardian-${randomUUID()}`;
+    await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: parentExternalSessionId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        metadata: { threadName: "Canonical parent Conversation" }
+      }
+    );
+    await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: guardianExternalSessionId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        metadata: {
+          threadName:
+            "The following is the Codex agent history added since your last approval assessment",
+          thread_source: "subagent",
+          parent_thread_id: parentExternalSessionId,
+          source: { subagent: { other: "guardian" } }
+        }
+      }
+    );
+
+    const projects = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const guardian = projects
+      .flatMap((project) => project.threads)
+      .find((thread) => thread.id === guardianExternalSessionId);
+
+    expect(guardian).toMatchObject({
+      threadKind: "subagent",
+      parentThreadId: parentExternalSessionId
+    });
+  });
+
   it("seeds explicit projection policy rows while allowing independent display and recall policy", async () => {
     const rows = await pool.query<{
       transcript_type: string;
@@ -16558,7 +16603,20 @@ describeDb("memory repository visibility", () => {
               projectName: "Live Prompt Dedupe Project",
               transcriptByteOffset: 6,
               transcriptItemDiscriminator: "primary:codex_transcript_user",
-              transcriptType: "user_message"
+              transcriptType: "user_message",
+              approvalReviewTranscriptDisplay: {
+                kind: "approval_review",
+                version: 1,
+                truncated: false,
+                segments: [
+                  {
+                    kind: "message",
+                    sequence: 1,
+                    actor: "user",
+                    content: "Where should duplicate prompts render?"
+                  }
+                ]
+              }
             }
           }
         ]
@@ -16623,6 +16681,12 @@ describeDb("memory repository visibility", () => {
       "Where should duplicate prompts render?"
     ]);
     expect(events[0]?.sourceSequence).toBe(12);
+    expect(events[0]?.metadata).toMatchObject({
+      approvalReviewTranscriptDisplay: {
+        kind: "approval_review",
+        segments: [{ kind: "message", sequence: 1, actor: "user" }]
+      }
+    });
     expect(rawRows.rows).toHaveLength(1);
     const transcriptRawRow = rawRows.rows.find(
       (row) => row.source_record_type === "event_msg"

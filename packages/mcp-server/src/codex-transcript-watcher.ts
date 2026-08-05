@@ -728,6 +728,19 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
         idempotencyKey: sha256(`watcher-session:${identity.sessionId}`),
         metadata: {
           ...identity.context.transcriptMetadata,
+          threadKind: identity.context.threadKind,
+          ...(identity.context.parentThreadId
+            ? { parentThreadId: identity.context.parentThreadId }
+            : {}),
+          ...(identity.context.parentSessionId
+            ? { parentSessionId: identity.context.parentSessionId }
+            : {}),
+          ...(identity.context.parentExternalSessionId
+            ? {
+                parentExternalSessionId:
+                  identity.context.parentExternalSessionId
+              }
+            : {}),
           ...(sourceProject
             ? {
                 localProjectId: sourceProject.localProjectId,

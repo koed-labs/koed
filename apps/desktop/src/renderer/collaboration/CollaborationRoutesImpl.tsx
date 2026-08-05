@@ -19,6 +19,7 @@ import {
   LcmSummaryFrame,
   MemoryEventFrame,
   MemorySourceParts,
+  SecureMarkdown,
   VirtualizedTimeline,
   type MarkdownPlatformAdapters
 } from "@koed/memory-ui";
@@ -1399,7 +1400,32 @@ export function SharedMemoryIndex({
   );
 }
 
-function SourceItemRow({ item }: { item: SharedMemorySourceItem }) {
+function SharedSourceMarkdown({
+  markdownAdapters,
+  source
+}: {
+  markdownAdapters: MarkdownPlatformAdapters;
+  source: string;
+}) {
+  return (
+    <SecureMarkdown
+      adapters={markdownAdapters}
+      className="shared-memory-markdown"
+      source={source}
+      oversizedFallback={
+        <p role="alert">This source item is too large to display safely.</p>
+      }
+    />
+  );
+}
+
+function SourceItemRow({
+  item,
+  markdownAdapters
+}: {
+  item: SharedMemorySourceItem;
+  markdownAdapters: MarkdownPlatformAdapters;
+}) {
   if (item.representation === "memory_events") {
     return (
       <MemoryEventFrame
@@ -1417,7 +1443,15 @@ function SourceItemRow({ item }: { item: SharedMemorySourceItem }) {
         scope="workspace"
       >
         <MemorySourceParts
-          parts={item.sourceItems}
+          parts={item.sourceItems.map((source) => ({
+            ...source,
+            body: (
+              <SharedSourceMarkdown
+                markdownAdapters={markdownAdapters}
+                source={source.body}
+              />
+            )
+          }))}
           renderIcon={(source) =>
             source.sourceKind === "tool_call" ||
             source.sourceKind === "tool_result" ? (
@@ -1435,7 +1469,12 @@ function SourceItemRow({ item }: { item: SharedMemorySourceItem }) {
       occurredAt={item.occurredAt}
       representation={item.representation}
       sourceCount={item.sourceCount}
-      summary={<p>{item.summaryText}</p>}
+      summary={
+        <SharedSourceMarkdown
+          markdownAdapters={markdownAdapters}
+          source={item.summaryText}
+        />
+      }
       timeLabel={formatTime(item.occurredAt)}
     />
   );
@@ -1443,10 +1482,12 @@ function SourceItemRow({ item }: { item: SharedMemorySourceItem }) {
 
 function SourceTimeline({
   client,
+  markdownAdapters,
   page,
   session
 }: {
   client: CollaborationRendererClient;
+  markdownAdapters: MarkdownPlatformAdapters;
   page: SharedMemorySourcePage;
   session: SharedMemorySession;
 }) {
@@ -1536,7 +1577,13 @@ function SourceTimeline({
           hasNewerEvents={page.hasNewer}
           onLoadOlder={() => loadPage("older")}
           onLoadNewer={() => loadPage("newer")}
-          renderEvent={(item) => <SourceItemRow key={item.id} item={item} />}
+          renderEvent={(item) => (
+            <SourceItemRow
+              key={item.id}
+              item={item}
+              markdownAdapters={markdownAdapters}
+            />
+          )}
           threadKey={`${session.id}:${session.representation}`}
         />
       ) : null}
@@ -1731,7 +1778,12 @@ export function SharedSessionView({
             <strong>{representationLabel(session.representation)}</strong>
             <span>{representationStateLabel(session.representationState)}</span>
           </header>
-          <SourceTimeline client={client} page={source} session={session} />
+          <SourceTimeline
+            client={client}
+            markdownAdapters={markdownAdapters}
+            page={source}
+            session={session}
+          />
         </section>
         <div
           className="collab-divider"
@@ -1803,11 +1855,13 @@ const SHARED_MEMORY_REPRESENTATIONS = [
 function SharedMemoryOwnerModal({
   client,
   entry,
+  markdownAdapters,
   snapshot,
   onClose
 }: {
   client: CollaborationRendererClient;
   entry: PersonalMemoryEntry;
+  markdownAdapters: MarkdownPlatformAdapters;
   snapshot: CollaborationSnapshot;
   onClose: () => void;
 }) {
@@ -2248,7 +2302,11 @@ function SharedMemoryOwnerModal({
             </div>
             <ol className="collab-source-list collab-preview-list">
               {preview.items.map((item) => (
-                <SourceItemRow key={item.id} item={item} />
+                <SourceItemRow
+                  key={item.id}
+                  item={item}
+                  markdownAdapters={markdownAdapters}
+                />
               ))}
             </ol>
             {preview.nextCursor ? (
@@ -2441,12 +2499,14 @@ function SharedMemoryOwnerModal({
 
 function ModalLayer({
   client,
+  markdownAdapters,
   modal,
   snapshot,
   onClose,
   onOpen
 }: {
   client: CollaborationRendererClient;
+  markdownAdapters: MarkdownPlatformAdapters;
   modal: CollaborationModalState;
   snapshot: CollaborationSnapshot;
   onClose: () => void;
@@ -2505,6 +2565,7 @@ function ModalLayer({
       <SharedMemoryOwnerModal
         client={client}
         entry={entry}
+        markdownAdapters={markdownAdapters}
         snapshot={snapshot}
         onClose={onClose}
       />
@@ -3257,12 +3318,14 @@ export function CollaborationRoutes({
 export function CollaborationModalLayer({
   client,
   localPersonalSessionIds = new Set<string>(),
+  markdownAdapters,
   modal,
   onModalChange,
   snapshot
 }: {
   client: CollaborationRendererClient;
   localPersonalSessionIds?: ReadonlySet<string>;
+  markdownAdapters: MarkdownPlatformAdapters;
   modal: CollaborationModalState | null;
   onModalChange: (modal: CollaborationModalState | null) => void;
   snapshot: CollaborationSnapshot;
@@ -3283,6 +3346,7 @@ export function CollaborationModalLayer({
         ("threadId" in authorizedModal ? authorizedModal.threadId : "")
       }
       client={client}
+      markdownAdapters={markdownAdapters}
       modal={authorizedModal}
       snapshot={snapshot}
       onClose={() => onModalChange(null)}

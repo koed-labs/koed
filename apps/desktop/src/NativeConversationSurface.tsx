@@ -1,6 +1,7 @@
 import {
   MemoryEventFrame,
   SecureMarkdown,
+  SourceDiff,
   VirtualizedTimeline,
   threadSelectionKey,
   type MarkdownPlatformAdapters
@@ -10,8 +11,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   conversationEventPatch,
   conversationEventText,
+  conversationEventToolDisplay,
+  approvalReviewSourceEventId,
+  expandConversationDisplayEvents,
   groupConversationEvents,
   mergeConversationEvents,
+  summarizeToolActivity,
   type ConversationCursor,
   type DesktopConversationEvent,
   type DesktopConversationTimelineItem
@@ -55,14 +60,17 @@ export type NativeConversationSurfaceProps =
     });
 
 function eventActorLabel(event: DesktopConversationEvent): string {
+  if (event.approvalDecisionDisplay) return "Auto approval";
   if (event.actor === "user") return "You";
   if (event.actor === "assistant") return "AI Client";
   if (event.actor === "tool") {
-    const toolName = event.metadata.toolName;
-    return typeof toolName === "string" ? toolName : "Tool";
+    return conversationEventToolDisplay(event).toolName ?? "Tool";
   }
   return event.actor || event.eventType || "Memory Event";
 }
+
+const approvalLevelLabel = (value: "low" | "medium" | "high"): string =>
+  value.charAt(0).toLocaleUpperCase() + value.slice(1);
 
 function eventTime(value: string): string {
   const date = new Date(value);
@@ -117,12 +125,65 @@ function ConversationEventRow({
   const tone =
     event.actor === "user" ? "user" : event.actor === "tool" ? "tool" : "agent";
   const patch = conversationEventPatch(event);
+  const toolDisplay =
+    event.actor === "tool" ? conversationEventToolDisplay(event) : null;
+  const approvalDecision = event.approvalDecisionDisplay;
   const metadata = (
     <>
       <time dateTime={event.timestamp}>{eventTime(event.timestamp)}</time>
       <InvalidationLabel event={event} />
     </>
   );
+
+  if (approvalDecision) {
+    const allowed = approvalDecision.outcome === "allow";
+    return (
+      <div
+        className="native-event-wrap"
+        data-invalidated={event.invalidatedAt ? "true" : undefined}
+      >
+        <MemoryEventFrame
+          actions={
+            <EventActions event={event} onInspectEvent={onInspectEvent} />
+          }
+          className={`native-conversation-event native-approval-decision ${allowed ? "allow" : "deny"}`}
+          contentType="approval_decision"
+          header={
+            <>
+              <span
+                className={`native-event-avatar approval ${allowed ? "allow" : "deny"}`}
+                aria-label={allowed ? "Allowed" : "Denied"}
+                role="img"
+              >
+                {allowed ? "✓" : "!"}
+              </span>
+              <span className="native-event-heading">
+                <span className="native-approval-title">
+                  <strong>Auto approval</strong>
+                  <span
+                    className="native-approval-signal"
+                    data-level={approvalDecision.riskLevel}
+                  >
+                    Risk · {approvalLevelLabel(approvalDecision.riskLevel)}
+                  </span>
+                  <span className="native-approval-signal authorization">
+                    Authorization ·{" "}
+                    {approvalLevelLabel(approvalDecision.userAuthorization)}
+                  </span>
+                </span>
+              </span>
+            </>
+          }
+          metadata={metadata}
+          scope="personal"
+        >
+          <div className="native-approval-body">
+            <p>{approvalDecision.rationale}</p>
+          </div>
+        </MemoryEventFrame>
+      </div>
+    );
+  }
 
   if (event.actor === "tool") {
     return (
@@ -136,11 +197,19 @@ function ConversationEventRow({
               T
             </span>
             <span className="native-event-heading">
-              <strong>{actor}</strong>
-              <small>{eventTime(event.timestamp)}</small>
+              <strong>{toolDisplay?.label ?? actor}</strong>
+              <small>
+                {[
+                  toolDisplay?.toolName,
+                  eventTime(event.timestamp),
+                  toolDisplay?.status
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </small>
             </span>
             <span className="native-tool-preview">
-              {patch?.summary ?? text.split("\n")[0] ?? "Tool activity"}
+              {patch?.summary ?? toolDisplay?.preview ?? "Tool activity"}
             </span>
             <InvalidationLabel event={event} />
           </summary>
@@ -150,15 +219,17 @@ function ConversationEventRow({
             }
             className="native-tool-event-frame"
             contentType={patch ? "diff" : "tool"}
-            header={actor}
+            header={toolDisplay?.label ?? actor}
             metadata={metadata}
             scope="personal"
           >
+            {toolDisplay?.callId ? (
+              <span className="native-tool-call-id" title={toolDisplay.callId}>
+                Call {toolDisplay.callId}
+              </span>
+            ) : null}
             {patch ? (
-              <details className="native-diff-disclosure">
-                <summary>{patch.summary}</summary>
-                <pre>{patch.sourceText}</pre>
-              </details>
+              <SourceDiff details={patch} sourceText={patch.sourceText} />
             ) : (
               <pre>
                 {text || "Tool activity captured without displayable content."}
@@ -212,12 +283,7 @@ function ToolActivityGroup({
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (event: DesktopConversationEvent) => void;
 }) {
-  const toolNames = [
-    ...new Set(events.map(eventActorLabel).filter((name) => name !== "Tool"))
-  ];
-  const summary = toolNames.length
-    ? toolNames.slice(0, 3).join(", ")
-    : "Commands and tool calls";
+  const summary = summarizeToolActivity(events) || "Commands and tool calls";
   const invalidatedCount = events.filter((event) => event.invalidatedAt).length;
   return (
     <div className="native-event-wrap">
@@ -270,11 +336,25 @@ function ConversationPresentation({
 }) {
   const visibleEvents = useMemo(
     () =>
-      model.events.filter(
+      expandConversationDisplayEvents(model.events).filter(
         (event) =>
           event.actor === "tool" || conversationEventText(event).length > 0
       ),
     [model.events]
+  );
+  const sourceEventsById = useMemo(
+    () => new Map(model.events.map((event) => [event.id, event])),
+    [model.events]
+  );
+  const inspectEvent = useCallback(
+    (event: DesktopConversationEvent) => {
+      if (!onInspectEvent) return;
+      const sourceId = approvalReviewSourceEventId(event.id);
+      onInspectEvent(
+        (sourceId ? sourceEventsById.get(sourceId) : undefined) ?? event
+      );
+    },
+    [onInspectEvent, sourceEventsById]
   );
   const timelineItems = useMemo(
     () => groupConversationEvents(visibleEvents),
@@ -286,16 +366,16 @@ function ConversationPresentation({
         <ToolActivityGroup
           events={item.events}
           markdownAdapters={markdownAdapters}
-          onInspectEvent={onInspectEvent}
+          onInspectEvent={onInspectEvent ? inspectEvent : undefined}
         />
       ) : (
         <ConversationEventRow
           event={item.event}
           markdownAdapters={markdownAdapters}
-          onInspectEvent={onInspectEvent}
+          onInspectEvent={onInspectEvent ? inspectEvent : undefined}
         />
       ),
-    [markdownAdapters, onInspectEvent]
+    [inspectEvent, markdownAdapters, onInspectEvent]
   );
 
   if (

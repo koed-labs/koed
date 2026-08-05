@@ -36,6 +36,48 @@ Captured Sessions and Shared Memory are stored Memory, not chat:
 
 ![Personal Captured Session](assets/desktop-ui/personal-memory.png)
 
+## Rich Content And Agent Activity
+
+Personal Captured Session Memory Events and Team Chat messages use the same
+secure GFM presentation. It supports headings, nested ordered and unordered
+lists, task lists, strikethrough, blockquotes, tables, inline code, and fenced
+code. Long code lines and tables scroll inside their own bounded surfaces. A
+fenced code block includes a keyboard-accessible copy control with visible
+success or failure feedback. Copy and external-link actions always use the
+Desktop platform adapters.
+
+Tool Memory Events use a display-safe projection created by trusted Desktop
+main-process code. The renderer can receive only a semantic category, label,
+bounded preview, allowlisted tool name, status, call identifier, and optional
+source patch. It does not receive arbitrary event metadata, credentials,
+authorization headers, URLs, or remote authority. Consecutive tools remain in
+one **Agent activity** group whose summary identifies commands, file reads,
+searches, file changes, and other tools.
+
+Codex guardian decisions with the exact bounded approval-result shape render as
+an **Auto approval** row. A leading status icon communicates the outcome, with
+compact risk and User authorization signals aligned beside the title and the
+rationale presented as prose below. Arbitrary JSON does not receive this
+treatment, and Inspect continues to resolve to the original Memory Event.
+
+When a Codex approval-review prompt contains a serialized transcript, Desktop
+receives a bounded display-only projection from trusted code. Nested messages
+and tools enter the same top-level rich message and Agent activity timeline as
+ordinary captured records; ingestion provenance does not select a second card
+style. When the approval-review guardian has its referenced parent
+Conversation, Desktop suppresses the duplicate guardian Captured Session and
+shows the canonical parent Conversation. The bounded projection remains a
+fallback for orphaned or legacy records. Projected rows are presentation only
+and do not become independent Memory Events or recall evidence; the original
+approval request remains retained as inspectable source provenance.
+
+File-changing tool events recognize Codex patches and standard unified diffs.
+Desktop reports per-file additions and deletions, keeps file headers visible,
+and permits one file body to be expanded at a time. Unsupported patches keep a
+bounded, explained raw-text fallback so no captured content is silently lost.
+
+![Personal source changes](assets/desktop-ui/personal-formatting-diffs.png)
+
 ## Core Workflows
 
 ### Connect A Personal Device
@@ -108,6 +150,11 @@ parallel. At narrow widths it becomes accessible **Source** and
 - snapshot or continuous mode;
 - current, pending, stale, unavailable, or revoked state; and
 - destination Team and Workspace.
+
+Memory Event bodies and LCM summaries use the same secure rich-text renderer in
+the Shared Memory route and the source-owner consent preview. This keeps
+headings, lists, tables, links, and fenced code consistent before and after a
+source is shared.
 
 Only an authorized source-owner flow can change representation or revoke the
 Share Grant. Higher-fidelity cached content is purged immediately when the
@@ -221,3 +268,14 @@ reconnect/replay/backpressure, authorization loss, and protected-state purge.
 The Team SaaS synthetic fixture covers backend authorization and Shared Memory
 truth. See [Collaboration Launch Validation](collaboration-launch-validation.md)
 for the broader launch workflow.
+
+The Explorer retirement parity fixture also covers nested and oversized
+Markdown, every tool category, grouped activity, multi-file and malformed
+patches, keyboard focus, light and dark themes, 200% zoom, reduced motion,
+forced colors, and the 10,000-event performance budgets. Desktop does not
+import or embed the Explorer in its rendering path, and no active
+Explorer-only formatting dependency remains. Explorer's dormant
+syntax-highlighting selectors and file-link-chip styles are optional net-new
+Desktop work, not retirement blockers. Operational Explorer packaging and
+health references can be removed separately when the legacy service itself is
+retired.

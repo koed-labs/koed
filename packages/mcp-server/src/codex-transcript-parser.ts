@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { splitCodexIdePrompt } from "@koed/core";
+import { approvalReviewTranscriptDisplayFromText } from "@koed/shared/personal-desktop";
 import {
   adaptCodexTranscriptV1,
   type CodexTranscriptObservation
@@ -786,6 +787,10 @@ const extractPrimaryTranscriptItem = (
   if (!content.trim()) {
     return null;
   }
+  const approvalReviewTranscriptDisplay =
+    item.type === "user_message"
+      ? approvalReviewTranscriptDisplayFromText(content)
+      : undefined;
 
   return {
     actor,
@@ -797,6 +802,9 @@ const extractPrimaryTranscriptItem = (
       transcriptType: item.type,
       transcriptParentType: raw.type,
       transcriptId: item.id,
+      ...(approvalReviewTranscriptDisplay
+        ? { approvalReviewTranscriptDisplay }
+        : {}),
       ...(asString(item.phase) ? { phase: asString(item.phase) } : {})
     }
   };

@@ -436,6 +436,16 @@
   background: var(--background);
 }
 
+.native-approval-decision {
+  border-color: color-mix(in oklab, var(--success) 34%, var(--border));
+  background: color-mix(in oklab, var(--success) 7%, var(--background));
+}
+
+.native-approval-decision.deny {
+  border-color: color-mix(in oklab, var(--destructive) 38%, var(--border));
+  background: color-mix(in oklab, var(--destructive) 7%, var(--background));
+}
+
 .native-conversation-event > header,
 .native-tool-event-frame > header {
   display: flex;
@@ -478,6 +488,16 @@
   color: var(--warning-foreground);
 }
 
+.native-event-avatar.approval {
+  background: color-mix(in oklab, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.native-event-avatar.approval.deny {
+  background: color-mix(in oklab, var(--destructive) 16%, transparent);
+  color: var(--destructive);
+}
+
 .native-conversation-event > div,
 .native-tool-event-frame > div {
   min-inline-size: 0;
@@ -498,6 +518,61 @@
   font-size: 0.84rem;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+.native-approval-title {
+  display: flex;
+  min-inline-size: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.native-approval-signal {
+  display: inline-flex;
+  min-block-size: 1.35rem;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.native-approval-body {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.native-approval-body p {
+  max-inline-size: 68ch;
+  margin: 0;
+  color: var(--foreground);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.native-approval-signal {
+  padding-inline: 0.5rem;
+  background: color-mix(in oklab, var(--muted) 72%, transparent);
+  color: var(--muted-foreground);
+  font-weight: 650;
+}
+
+.native-approval-signal[data-level="medium"] {
+  border-color: color-mix(in oklab, var(--warning) 42%, var(--border));
+  color: var(--warning);
+}
+
+.native-approval-signal[data-level="high"] {
+  border-color: color-mix(in oklab, var(--destructive) 42%, var(--border));
+  color: var(--destructive);
+}
+
+.native-approval-signal.authorization {
+  border-color: color-mix(in oklab, var(--memory) 34%, var(--border));
+  color: var(--memory);
 }
 
 .native-tool-event,
@@ -546,6 +621,15 @@
   font-size: 0.7rem;
 }
 
+.native-tool-call-id {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .native-tool-preview,
 .native-tool-group small {
   overflow: hidden;
@@ -554,8 +638,7 @@
 }
 
 .native-tool-preview,
-.native-tool-event pre,
-.native-diff-disclosure pre {
+.native-tool-event pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -571,8 +654,7 @@
   background: var(--background);
 }
 
-.native-tool-event pre,
-.native-diff-disclosure pre {
+.native-tool-event pre {
   max-block-size: 22rem;
   margin: 0;
   overflow: auto;
@@ -581,17 +663,6 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.native-diff-disclosure {
-  min-inline-size: 0;
-}
-
-.native-diff-disclosure > summary {
-  margin-block-end: 0.5rem;
-  cursor: pointer;
-  color: var(--muted-foreground);
-  font-size: 0.75rem;
 }
 
 .native-tool-group-icon {
@@ -703,5 +774,12 @@
 @media (prefers-reduced-motion: reduce) {
   .native-tool-group-disclosure {
     transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .native-approval-decision,
+  .native-approval-signal {
+    border-color: CanvasText;
   }
 }

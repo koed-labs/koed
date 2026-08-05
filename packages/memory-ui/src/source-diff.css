@@ -1,0 +1,123 @@
+.memory-source-diff,
+.memory-source-diff-fallback {
+  min-inline-size: 0;
+}
+
+.memory-source-diff-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.55rem;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+}
+
+.memory-source-diff-summary strong {
+  color: var(--foreground);
+  font-weight: 650;
+}
+
+.memory-source-diff-additions {
+  color: var(--success-foreground, #227447);
+}
+
+.memory-source-diff-deletions {
+  color: var(--destructive);
+}
+
+.memory-source-diff-files {
+  display: grid;
+  min-inline-size: 0;
+  gap: 0.5rem;
+}
+
+.memory-source-diff-file {
+  min-inline-size: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--background);
+}
+
+.memory-source-diff-toggle {
+  display: inline-grid;
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  flex: 0 0 1.75rem;
+  place-items: center;
+  border: 0;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.memory-source-diff-toggle span {
+  font-size: 1.15rem;
+  line-height: 1;
+  transition: transform 140ms ease-out;
+}
+
+.memory-source-diff-toggle[aria-expanded="true"] span {
+  transform: rotate(90deg);
+}
+
+.memory-source-diff-toggle:hover,
+.memory-source-diff-toggle:focus-visible {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.memory-source-diff-toggle:active {
+  transform: scale(0.96);
+}
+
+.memory-source-diff-fallback {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: color-mix(in oklab, var(--muted) 72%, var(--background));
+}
+
+.memory-source-diff-fallback p {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border-block-end: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+}
+
+.memory-source-diff-fallback pre {
+  max-block-size: 28rem;
+  margin: 0;
+  overflow: auto;
+  padding: 0.75rem;
+  color: var(--foreground);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  overflow-wrap: normal;
+  white-space: pre;
+  word-break: normal;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-source-diff-toggle span {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .memory-source-diff-file,
+  .memory-source-diff-fallback {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: auto;
+  }
+
+  .memory-source-diff-additions,
+  .memory-source-diff-deletions {
+    color: CanvasText;
+  }
+}

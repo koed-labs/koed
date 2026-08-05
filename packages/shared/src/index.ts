@@ -138,6 +138,11 @@ export type {
 } from "./local-edge-upstream-registry.js";
 
 export {
+  approvalDecisionDisplaySchema,
+  approvalReviewTranscriptDisplayFromText,
+  approvalReviewTranscriptDisplaySchema,
+  approvalReviewTranscriptSegmentSchema,
+  isApprovalReviewTranscriptEnvelopeText,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT,
   PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
@@ -157,6 +162,9 @@ export {
   personalDesktopSessionProjectInputSchema
 } from "./personal-desktop-contract.js";
 export type {
+  ApprovalDecisionDisplay,
+  ApprovalReviewTranscriptDisplay,
+  ApprovalReviewTranscriptSegment,
   PersonalDesktopApi,
   PersonalDesktopConversationCursor,
   PersonalDesktopConversationEvent,

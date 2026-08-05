@@ -1,0 +1,321 @@
+.memory-markdown {
+  min-inline-size: 0;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.memory-markdown > :first-child {
+  margin-block-start: 0;
+}
+
+.memory-markdown > :last-child {
+  margin-block-end: 0;
+}
+
+.memory-markdown p,
+.memory-markdown ul,
+.memory-markdown ol,
+.memory-markdown blockquote,
+.memory-markdown .memory-markdown-code-block,
+.memory-markdown .memory-markdown-table-scroll {
+  margin-block: 0.65rem;
+}
+
+.memory-markdown h1,
+.memory-markdown h2,
+.memory-markdown h3,
+.memory-markdown h4,
+.memory-markdown h5,
+.memory-markdown h6 {
+  margin-block: 1rem 0.45rem;
+  color: var(--foreground);
+  font-weight: 650;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.memory-markdown h1 {
+  font-size: 1.35em;
+  letter-spacing: -0.015em;
+}
+
+.memory-markdown h2 {
+  font-size: 1.2em;
+  letter-spacing: -0.01em;
+}
+
+.memory-markdown h3,
+.memory-markdown h4,
+.memory-markdown h5,
+.memory-markdown h6 {
+  font-size: 1em;
+}
+
+.memory-markdown p {
+  white-space: normal;
+}
+
+.memory-markdown ul,
+.memory-markdown ol {
+  padding-inline-start: 1.35rem;
+}
+
+.memory-markdown ul {
+  list-style: disc;
+}
+
+.memory-markdown ol {
+  list-style: decimal;
+}
+
+.memory-markdown ul ul {
+  list-style: circle;
+}
+
+.memory-markdown ul ul ul {
+  list-style: square;
+}
+
+.memory-markdown ol ol {
+  list-style: lower-alpha;
+}
+
+.memory-markdown ol ol ol {
+  list-style: lower-roman;
+}
+
+.memory-markdown li + li {
+  margin-block-start: 0.25rem;
+}
+
+.memory-markdown li > ul,
+.memory-markdown li > ol {
+  margin-block: 0.25rem;
+}
+
+.memory-markdown .contains-task-list {
+  padding-inline-start: 0;
+  list-style: none;
+}
+
+.memory-markdown .task-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.memory-markdown .task-list-item input {
+  inline-size: 0.9rem;
+  block-size: 0.9rem;
+  flex: 0 0 auto;
+  accent-color: var(--primary);
+}
+
+.memory-markdown blockquote {
+  border-inline-start: 2px solid var(--border);
+  padding-inline-start: 0.8rem;
+  color: var(--muted-foreground);
+}
+
+.memory-markdown blockquote > :first-child {
+  margin-block-start: 0;
+}
+
+.memory-markdown blockquote > :last-child {
+  margin-block-end: 0;
+}
+
+.memory-markdown :not(pre) > code {
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  background: color-mix(in oklab, var(--muted) 88%, var(--background));
+  padding: 0.08rem 0.32rem;
+  color: var(--foreground);
+  font-size: 0.88em;
+  line-height: 1.25;
+}
+
+.memory-markdown-external-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, currentColor 42%, transparent);
+  text-underline-offset: 0.13em;
+}
+
+.memory-markdown-external-link:hover {
+  text-decoration-color: currentColor;
+}
+
+.memory-markdown-external-link:active {
+  opacity: 0.72;
+}
+
+.memory-markdown-image-alt {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.08rem 0.35rem;
+  color: var(--muted-foreground);
+  font-size: 0.88em;
+}
+
+.memory-markdown-code-block {
+  position: relative;
+  min-inline-size: 0;
+}
+
+.memory-markdown-code-block pre {
+  max-inline-size: 100%;
+  max-block-size: 28rem;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  background: color-mix(in oklab, var(--muted) 82%, var(--background));
+  padding: 0.8rem 4.75rem 0.8rem 0.9rem;
+  color: var(--foreground);
+  font-size: 0.88em;
+  line-height: 1.55;
+  overflow-wrap: normal;
+  tab-size: 2;
+  white-space: pre;
+  word-break: normal;
+}
+
+.memory-markdown-code-block pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+.memory-markdown-copy-code {
+  position: absolute;
+  inset-block-start: 0.5rem;
+  inset-inline-end: 0.5rem;
+  z-index: 1;
+  min-block-size: 1.75rem;
+  padding-inline: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: color-mix(in oklab, var(--background) 90%, transparent);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  opacity: 1;
+  transition:
+    color 120ms ease-out,
+    border-color 120ms ease-out,
+    background-color 120ms ease-out,
+    opacity 120ms ease-out,
+    transform 100ms ease-out;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .memory-markdown-copy-code[data-state="idle"] {
+    opacity: 0.28;
+  }
+
+  .memory-markdown-code-block:hover .memory-markdown-copy-code,
+  .memory-markdown-code-block:focus-within .memory-markdown-copy-code {
+    opacity: 1;
+  }
+}
+
+.memory-markdown-copy-code:hover,
+.memory-markdown-copy-code:focus-visible {
+  border-color: color-mix(in oklab, var(--foreground) 34%, var(--border));
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.memory-markdown-copy-code:active {
+  transform: scale(0.96);
+}
+
+.memory-markdown-copy-code[data-state="copied"] {
+  color: var(--success-foreground, var(--foreground));
+}
+
+.memory-markdown-copy-code[data-state="failed"] {
+  border-color: var(--destructive);
+  color: var(--destructive);
+}
+
+.memory-markdown-table-scroll {
+  max-inline-size: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+}
+
+.memory-markdown table {
+  inline-size: 100%;
+  min-inline-size: max-content;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+
+.memory-markdown th,
+.memory-markdown td {
+  padding: 0.42rem 0.55rem;
+  border-block-end: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.memory-markdown th {
+  background: color-mix(in oklab, var(--muted) 75%, var(--background));
+  color: var(--foreground);
+  font-weight: 650;
+}
+
+.memory-markdown tr:last-child td {
+  border-block-end: 0;
+}
+
+.memory-markdown hr {
+  margin-block: 1rem;
+  border: 0;
+  border-block-start: 1px solid var(--border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-markdown-copy-code {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .memory-markdown-external-link {
+    color: LinkText;
+  }
+
+  .memory-markdown-code-block pre,
+  .memory-markdown-copy-code,
+  .memory-markdown-table-scroll,
+  .memory-markdown :not(pre) > code {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: auto;
+  }
+
+  .memory-markdown-copy-code:focus-visible,
+  .memory-markdown-table-scroll:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}

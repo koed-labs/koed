@@ -1,8 +1,11 @@
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  approvalReviewTranscriptDisplayFromText,
+  approvalReviewTranscriptDisplaySchema,
   collaborationRendererCommandSchema,
   fetchBoundedJsonObject,
+  isApprovalReviewTranscriptEnvelopeText,
   isLoopbackHostname,
   readDesktopLocalCredentialAuthorization,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -55,6 +58,7 @@ import {
   type DesktopSetupActionResult,
   type DesktopSetupCheck
 } from "./setup-workflow.js";
+import { buildPersonalApprovalDisplay } from "./personal-approval-display.js";
 import {
   resolvePersonalDevicePairingPort,
   startPersonalDevicePairingServer,
@@ -74,6 +78,7 @@ import {
   PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
   type PersonalDevicePairingProgress
 } from "../ipc/personal-device-pairing-protocol.js";
+import { buildPersonalToolDisplay } from "./personal-tool-display.js";
 
 export interface DesktopCommandContext {
   ownerId: string;
@@ -389,29 +394,63 @@ const personalProjectsData = (payload: Record<string, unknown>) => {
   return personalDesktopProjectsDataSchema.parse({
     projects: projects.map((projectValue) => {
       const project = objectValue(projectValue) ?? {};
-      const threads = Array.isArray(project.threads) ? project.threads : [];
+      const threadValues = Array.isArray(project.threads)
+        ? project.threads
+        : [];
+      const threads = threadValues.map((threadValue) => {
+        const thread = objectValue(threadValue) ?? {};
+        return {
+          id: thread.id,
+          name: thread.name,
+          sessionId: thread.sessionId,
+          sourceAiClient: thread.sourceAiClient,
+          projectId: thread.projectId,
+          projectName: thread.projectName,
+          projectPath: thread.projectPath,
+          projectAssignmentSource: thread.projectAssignmentSource,
+          eventCount: thread.eventCount,
+          invalidatedCount: thread.invalidatedCount,
+          latestAt: thread.latestAt,
+          sample: thread.sample,
+          threadKind: thread.threadKind,
+          parentThreadId: thread.parentThreadId,
+          parentSessionId: thread.parentSessionId
+        };
+      });
+      const threadIds = new Set(
+        threads.flatMap((thread) =>
+          typeof thread.id === "string" ? [thread.id] : []
+        )
+      );
+      const visibleThreads = threads.filter((thread) => {
+        const parentThreadId =
+          typeof thread.parentThreadId === "string"
+            ? thread.parentThreadId
+            : null;
+        const hasVisibleParent =
+          parentThreadId !== null && threadIds.has(parentThreadId);
+        const approvalReviewEnvelope = [thread.name, thread.sample].some(
+          (value) =>
+            typeof value === "string" &&
+            isApprovalReviewTranscriptEnvelopeText(value)
+        );
+        return !(
+          thread.threadKind === "subagent" &&
+          hasVisibleParent &&
+          approvalReviewEnvelope
+        );
+      });
       return {
         id: project.id,
         name: project.name,
         path: project.path,
-        eventCount: project.eventCount,
-        threads: threads.map((threadValue) => {
-          const thread = objectValue(threadValue) ?? {};
-          return {
-            id: thread.id,
-            name: thread.name,
-            sessionId: thread.sessionId,
-            sourceAiClient: thread.sourceAiClient,
-            projectId: thread.projectId,
-            projectName: thread.projectName,
-            projectPath: thread.projectPath,
-            projectAssignmentSource: thread.projectAssignmentSource,
-            eventCount: thread.eventCount,
-            invalidatedCount: thread.invalidatedCount,
-            latestAt: thread.latestAt,
-            sample: thread.sample
-          };
-        })
+        eventCount: visibleThreads.reduce(
+          (total, thread) =>
+            total +
+            (typeof thread.eventCount === "number" ? thread.eventCount : 0),
+          0
+        ),
+        threads: visibleThreads
       };
     })
   });
@@ -426,6 +465,39 @@ const personalEventsData = (payload: Record<string, unknown>) => {
     events: events.map((eventValue) => {
       const event = objectValue(eventValue) ?? {};
       const metadata = objectValue(event.metadata);
+      const toolDisplay = buildPersonalToolDisplay({
+        actor: event.actor,
+        content: event.content,
+        contentPreview: event.contentPreview,
+        metadata
+      });
+      const approvalDecisionDisplay = buildPersonalApprovalDisplay({
+        actor: event.actor,
+        content: event.content
+      });
+      const transcriptDisplay =
+        approvalReviewTranscriptDisplaySchema.safeParse(
+          metadata?.approvalReviewTranscriptDisplay
+        ).data ??
+        (typeof event.content === "string"
+          ? (approvalReviewTranscriptDisplayFromText(event.content) ??
+            (isApprovalReviewTranscriptEnvelopeText(event.content)
+              ? {
+                  kind: "approval_review" as const,
+                  version: 1 as const,
+                  truncated: true,
+                  segments: [
+                    {
+                      kind: "message" as const,
+                      sequence: 0,
+                      actor: "agent" as const,
+                      content:
+                        "This approval-review history is incomplete and cannot be displayed safely."
+                    }
+                  ]
+                }
+              : undefined))
+          : undefined);
       return {
         id: event.id,
         actor: event.actor,
@@ -438,10 +510,12 @@ const personalEventsData = (payload: Record<string, unknown>) => {
           : {}),
         contentPreview: event.contentPreview,
         invalidatedAt: event.invalidatedAt,
-        metadata:
-          typeof metadata?.toolName === "string"
-            ? { toolName: metadata.toolName }
-            : {}
+        ...(approvalDecisionDisplay ? { approvalDecisionDisplay } : {}),
+        ...(transcriptDisplay ? { transcriptDisplay } : {}),
+        ...(toolDisplay ? { toolDisplay } : {}),
+        metadata: toolDisplay?.toolName
+          ? { toolName: toolDisplay.toolName }
+          : {}
       };
     })
   });

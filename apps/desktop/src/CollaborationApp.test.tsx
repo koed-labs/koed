@@ -25,7 +25,10 @@ import type {
 } from "./collaboration/renderer-client.js";
 import { CollaborationClientError } from "./collaboration/renderer-client.js";
 import { App } from "./renderer/App.js";
-import { CollaborationRoutes } from "./renderer/collaboration/CollaborationRoutes.js";
+import {
+  CollaborationModalLayer,
+  CollaborationRoutes
+} from "./renderer/collaboration/CollaborationRoutes.js";
 import { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 import { DraftStore } from "./renderer/state/drafts.js";
 import type { KoedServerStatus } from "./types.js";
@@ -120,13 +123,6 @@ vi.mock("@koed/memory-ui", async (importOriginal) => {
         </div>
       );
     },
-    SecureMarkdown: ({
-      className,
-      source
-    }: {
-      className?: string;
-      source: string;
-    }) => <p className={className}>{source}</p>,
     VirtualizedTimeline: ({
       ariaLabel,
       className,
@@ -349,6 +345,16 @@ const page = (
   items
 });
 
+const richSharedSource = `## Source formatting
+
+| Surface | State |
+| --- | --- |
+| Shared Memory | Ready |
+
+\`\`\`sh
+pnpm typecheck
+\`\`\``;
+
 const sourceItem = (
   representation: SharedMemoryRepresentation
 ): SharedMemorySourceItem =>
@@ -363,7 +369,7 @@ const sourceItem = (
             id: uuid(202),
             sourceKind: "tool_result",
             occurredAt: at,
-            body: "Typecheck completed without errors.",
+            body: richSharedSource,
             actorName: "Codex",
             toolName: "typecheck",
             toolCallId: "call-typecheck-correlation"
@@ -2057,6 +2063,156 @@ describe("CollaborationApp", () => {
     expect(writeClipboard).toHaveBeenCalledWith(
       "Check the Shared Memory split view."
     );
+  });
+
+  it("renders rich Team Chat Markdown through the shared secure renderer", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
+    if (selected.view.kind !== "thread") {
+      throw new Error("Expected a Team Chat thread fixture");
+    }
+    const body = `## Release checklist
+
+- Parent
+  - Nested
+- [x] Rendered
+
+> Keep the authority boundary visible.
+
+| Surface | State |
+| --- | --- |
+| Team Chat | Ready |
+
+[Docs](https://koed.example/docs)
+
+\`\`\`sh
+pnpm test
+\`\`\``;
+    const richSnapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      view: {
+        ...selected.view,
+        messages: page(ids.channel, [message(uuid(410), ids.channel, body)])
+      }
+    });
+    const writeClipboard = vi.fn(async () => undefined);
+    const openExternal = vi.fn(async () => undefined);
+
+    await act(async () =>
+      root.render(
+        <CollaborationRoutes
+          client={createClient(richSnapshot)}
+          drafts={new DraftStore()}
+          markdownAdapters={{ openExternal, writeClipboard }}
+          modal={null}
+          onModalChange={vi.fn()}
+          onRequestSelection={vi.fn()}
+          snapshot={richSnapshot}
+        />
+      )
+    );
+
+    expect(container.querySelector(".memory-markdown h2")).not.toBeNull();
+    expect(container.querySelector(".memory-markdown table")).not.toBeNull();
+    expect(
+      container.querySelector(".memory-markdown blockquote")
+    ).not.toBeNull();
+    expect(container.querySelector('input[type="checkbox"]')).not.toBeNull();
+
+    const copy = container.querySelector<HTMLButtonElement>(
+      '.memory-markdown-copy-code[aria-label="Copy code"]'
+    );
+    await act(async () => copy?.click());
+    await vi.waitFor(() =>
+      expect(writeClipboard).toHaveBeenCalledWith("pnpm test")
+    );
+
+    const external = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Open external link: Docs"]'
+    );
+    await act(async () => external?.click());
+    expect(openExternal).toHaveBeenCalledWith("https://koed.example/docs");
+  });
+
+  it("renders rich Markdown across the Shared Memory source view", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "shared_session",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      sharedSessionId: ids.eventSession
+    });
+    const writeClipboard = vi.fn(async () => undefined);
+
+    await act(async () =>
+      root.render(
+        <CollaborationRoutes
+          client={createClient(selected)}
+          drafts={new DraftStore()}
+          markdownAdapters={{
+            openExternal: vi.fn(async () => undefined),
+            writeClipboard
+          }}
+          modal={null}
+          onModalChange={vi.fn()}
+          onRequestSelection={vi.fn()}
+          snapshot={selected}
+        />
+      )
+    );
+
+    const source = container.querySelector(".collab-source-event");
+    expect(source?.querySelector(".memory-markdown h2")).not.toBeNull();
+    expect(source?.querySelector(".memory-markdown table")).not.toBeNull();
+    const copy = source?.querySelector<HTMLButtonElement>(
+      '.memory-markdown-copy-code[aria-label="Copy code"]'
+    );
+    await act(async () => copy?.click());
+    expect(writeClipboard).toHaveBeenCalledWith("pnpm typecheck");
+  });
+
+  it("renders the same rich Shared Memory source in the consent preview", async () => {
+    const snapshot = baseSnapshot();
+    const client = createClient(snapshot);
+    const writeClipboard = vi.fn(async () => undefined);
+
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          markdownAdapters={{
+            openExternal: vi.fn(async () => undefined),
+            writeClipboard
+          }}
+          modal={{
+            kind: "share_personal_memory",
+            sessionId: snapshot.navigation.personal.memory[0]!.id
+          }}
+          onModalChange={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Review source")
+    );
+    await click(container, "Review source");
+    await vi.waitFor(() =>
+      expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
+    );
+
+    const preview = document.body.querySelector(".collab-preview-list");
+    expect(preview?.querySelector(".memory-markdown h2")).not.toBeNull();
+    expect(preview?.querySelector(".memory-markdown table")).not.toBeNull();
+    const copy = preview?.querySelector<HTMLButtonElement>(
+      '.memory-markdown-copy-code[aria-label="Copy code"]'
+    );
+    await act(async () => copy?.click());
+    expect(writeClipboard).toHaveBeenCalledWith("pnpm typecheck");
   });
 
   it("does not send when Enter confirms an IME composition", async () => {

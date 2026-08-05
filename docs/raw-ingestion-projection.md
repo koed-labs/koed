@@ -89,6 +89,23 @@ and historical consumers then parse those retained bytes into canonical raw
 items before Projection selects records for display, Memory Events, embedding,
 and LCM. None writes semantic `memory_events` directly.
 
+Codex approval-review prompts can contain a serialized transcript inside one
+authoritative `user_message`. The trusted transcript adapter recognizes only
+the explicit Codex approval-review envelope and records a bounded display
+projection of its message, tool-call, and tool-result segments. The enclosing
+User Memory Event remains the only canonical semantic item: nested segments do
+not receive independent identity, chronology, recall, embedding, or LCM
+authority. Approval-review guardians preserve their provider parent-thread
+relationship. The Transcript Watcher normalizes Codex's native snake-case
+subagent and parent-thread fields when it registers the Captured Session, while
+the graph projection also recognizes the native fields on existing records.
+Desktop can therefore suppress the duplicate guardian Captured Session when
+the canonical parent Conversation is present and use the bounded projection
+only as a hook-style display fallback for orphaned or legacy data. An incomplete
+approval envelope receives a bounded unavailable-history row instead of raw
+synthetic prompt text. The original outer message remains retained as raw
+provenance.
+
 The Supported Capture Hook never supplies conversation content or provider item
 identity. It writes a private wake timestamp and, for Stop events, a matched
 boundary under hashed source-routing identities containing only the observation

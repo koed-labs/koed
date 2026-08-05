@@ -740,6 +740,7 @@ export function App({
             }
             managedConversationRevision={managedConversationRevision}
             managedConversations={managedConversations}
+            markdownAdapters={collaboration.markdownAdapters}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);
@@ -1021,6 +1022,7 @@ export function App({
           <CollaborationModalLayer
             client={client}
             localPersonalSessionIds={localPersonalSessionIds}
+            markdownAdapters={collaboration.markdownAdapters}
             modal={collaboration.modal}
             onModalChange={collaboration.setModal}
             snapshot={snapshot}

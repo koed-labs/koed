@@ -470,7 +470,6 @@
   font-size: 10px;
 }
 
-.collab-message-content p,
 .collab-source-event p,
 .memory-lcm-summary p {
   font-size: 13px;
@@ -478,6 +477,11 @@
   margin: 2px 0 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.collab-source-event .memory-markdown p,
+.memory-lcm-summary .memory-markdown p {
+  white-space: normal;
 }
 
 .collab-message-content footer {
@@ -1024,6 +1028,17 @@
 
 .collab-source-event > header {
   grid-column: 1 / -1;
+}
+
+.collab-source-event > div {
+  grid-column: 1 / -1;
+  min-inline-size: 0;
+}
+
+.memory-source-parts,
+.memory-source-part > div,
+.shared-memory-markdown {
+  min-inline-size: 0;
 }
 
 .memory-source-part {

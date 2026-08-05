@@ -367,6 +367,9 @@ importers:
 
   packages/memory-ui:
     dependencies:
+      '@pierre/diffs':
+        specifier: ^1.2.5
+        version: 1.2.7(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@legendapp/list':
         specifier: 3.0.0-beta.44
         version: 3.0.0-beta.44(react-dom@19.2.6(react@19.2.6))(react@19.2.6)

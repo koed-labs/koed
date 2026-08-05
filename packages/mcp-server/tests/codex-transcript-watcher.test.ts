@@ -432,6 +432,40 @@ describe("Codex Transcript Watcher source journal", () => {
     });
   });
 
+  it("stores normalized lineage for native Codex guardian sessions", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root);
+    const parentThreadId = "019fd15a-eaf3-7ea3-94e3-451dac881974";
+    writeFileSync(
+      transcript,
+      line({
+        timestamp: "2099-01-01T00:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "019fd173-d3cd-7753-84a4-421d8010f356",
+          cwd: "/tmp/project",
+          timestamp: "2099-01-01T00:00:00.000Z",
+          thread_source: "subagent",
+          parent_thread_id: parentThreadId,
+          source: { subagent: { other: "guardian" } }
+        }
+      })
+    );
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+
+    await watcher.scanNow();
+    appendFileSync(transcript, line(userRecord("approval history")));
+    await watcher.scanNow();
+
+    expect(client.sourceSessions.at(-1)).toMatchObject({
+      metadata: {
+        threadKind: "subagent",
+        parentThreadId
+      }
+    });
+  });
+
   it("starts an existing transcript at the activation frontier", async () => {
     const root = temporaryDirectory();
     const transcript = transcriptPath(root);

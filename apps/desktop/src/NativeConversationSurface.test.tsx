@@ -11,51 +11,59 @@ import type {
 } from "./desktop-conversation.js";
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
 
-vi.mock("@koed/memory-ui", () => ({
-  MemoryEventFrame: ({
-    actions,
-    children,
-    header,
-    metadata
-  }: {
-    actions?: ReactNode;
-    children: ReactNode;
-    header: ReactNode;
-    metadata?: ReactNode;
-  }) => (
-    <article>
-      <header>{header}</header>
-      {actions}
-      {children}
-      <footer>{metadata}</footer>
-    </article>
-  ),
-  SecureMarkdown: ({ source }: { source: string }) => <div>{source}</div>,
-  threadSelectionKey: (thread: { id: string; projectId: string }) =>
-    `${thread.projectId}:${thread.id}`,
-  VirtualizedTimeline: ({
-    events,
-    hasOlderEvents,
-    onLoadOlder,
-    renderEvent
-  }: {
-    events: DesktopConversationTimelineItem[];
-    hasOlderEvents: boolean;
-    onLoadOlder: () => Promise<void> | void;
-    renderEvent: (event: DesktopConversationTimelineItem) => ReactNode;
-  }) => (
-    <div data-testid="timeline">
-      {events.map((event) => (
-        <div key={event.id}>{renderEvent(event)}</div>
-      ))}
-      {hasOlderEvents ? (
-        <button type="button" onClick={() => void onLoadOlder()}>
-          Load older test page
-        </button>
-      ) : null}
-    </div>
-  )
-}));
+vi.mock("@koed/memory-ui", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@koed/memory-ui")>();
+  return {
+    ...actual,
+    MemoryEventFrame: ({
+      actions,
+      children,
+      className,
+      header,
+      metadata
+    }: {
+      actions?: ReactNode;
+      children: ReactNode;
+      className?: string;
+      header: ReactNode;
+      metadata?: ReactNode;
+    }) => (
+      <article className={className}>
+        <header>{header}</header>
+        {actions}
+        {children}
+        <footer>{metadata}</footer>
+      </article>
+    ),
+    VirtualizedTimeline: ({
+      events,
+      hasOlderEvents,
+      onLoadOlder,
+      renderEvent
+    }: {
+      events: DesktopConversationTimelineItem[];
+      hasOlderEvents: boolean;
+      onLoadOlder: () => Promise<void> | void;
+      renderEvent: (event: DesktopConversationTimelineItem) => ReactNode;
+    }) => (
+      <div data-testid="timeline">
+        {events.map((event) => (
+          <div key={event.id}>{renderEvent(event)}</div>
+        ))}
+        {hasOlderEvents ? (
+          <button type="button" onClick={() => void onLoadOlder()}>
+            Load older test page
+          </button>
+        ) : null}
+      </div>
+    )
+  };
+});
+
+const markdownAdapters = {
+  openExternal: vi.fn(async () => undefined),
+  writeClipboard: vi.fn(async () => undefined)
+};
 
 const thread: DesktopThreadGroup = {
   id: "thread-1",
@@ -93,6 +101,7 @@ describe("NativeConversationSurface", () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -108,12 +117,17 @@ describe("NativeConversationSurface", () => {
   async function renderSurface(
     loadEventsPage: NonNullable<
       Parameters<typeof NativeConversationSurface>[0]["loadEventsPage"]
+    >,
+    onInspectEvent?: NonNullable<
+      Parameters<typeof NativeConversationSurface>[0]["onInspectEvent"]
     >
   ) {
     await act(async () => {
       root.render(
         <NativeConversationSurface
           loadEventsPage={loadEventsPage}
+          markdownAdapters={markdownAdapters}
+          onInspectEvent={onInspectEvent}
           thread={thread}
         />
       );
@@ -136,11 +150,166 @@ describe("NativeConversationSurface", () => {
     });
   });
 
+  it("renders rich Markdown and copies fenced code through the Desktop adapter", async () => {
+    const source = `# Captured decision
+
+- Parent
+  1. Nested
+- [x] Verified
+
+> Evidence remains attached.
+
+| Surface | State |
+| --- | --- |
+| Desktop | Ready |
+
+[Safe](https://koed.example/docs) [Unsafe](javascript:alert(1))
+
+\`\`\`ts
+const ready = true;
+\`\`\``;
+    const loadEventsPage = vi.fn().mockResolvedValue([event("rich", source)]);
+
+    await renderSurface(loadEventsPage);
+    await vi.waitFor(() =>
+      expect(container.querySelector(".memory-markdown h1")).not.toBeNull()
+    );
+
+    expect(container.querySelector(".memory-markdown table")).not.toBeNull();
+    expect(
+      container.querySelector(".memory-markdown blockquote")
+    ).not.toBeNull();
+    expect(container.querySelector('input[type="checkbox"]')).not.toBeNull();
+    expect(
+      container.querySelector('button[aria-label="Open external link: Safe"]')
+    ).not.toBeNull();
+    expect(container.querySelector('button[aria-label*="Unsafe"]')).toBeNull();
+
+    const copy = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Copy code"]'
+    );
+    copy?.focus();
+    expect(document.activeElement).toBe(copy);
+    await act(async () => copy?.click());
+    await vi.waitFor(() =>
+      expect(markdownAdapters.writeClipboard).toHaveBeenCalledWith(
+        "const ready = true;"
+      )
+    );
+    expect(copy?.textContent).toBe("Copied");
+  });
+
+  it("renders Codex Auto Approval decisions as semantic status and rationale", async () => {
+    const raw = JSON.stringify({
+      risk_level: "medium",
+      user_authorization: "high",
+      outcome: "allow",
+      rationale: "The requested command is bounded and local."
+    });
+    const approvalEvent: DesktopConversationEvent = {
+      ...event("auto-approval", raw),
+      actor: "agent",
+      approvalDecisionDisplay: {
+        kind: "auto_approval",
+        version: 1,
+        riskLevel: "medium",
+        userAuthorization: "high",
+        outcome: "allow",
+        rationale: "The requested command is bounded and local."
+      }
+    };
+
+    await renderSurface(vi.fn().mockResolvedValue([approvalEvent]), vi.fn());
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Auto approval")
+    );
+
+    expect(
+      container.querySelector(".native-approval-decision.allow")
+    ).not.toBeNull();
+    expect(container.querySelector(".native-approval-outcome")).toBeNull();
+    expect(container.querySelector('[aria-label="Allowed"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Codex guardian decision");
+    expect(container.textContent).toContain("Risk · Medium");
+    expect(container.textContent).toContain("Authorization · High");
+    const heading = container.querySelector(".native-approval-title");
+    expect(heading?.querySelectorAll(".native-approval-signal")).toHaveLength(
+      2
+    );
+    expect(container.textContent).toContain(
+      "The requested command is bounded and local."
+    );
+    expect(container.textContent).not.toContain('"risk_level"');
+    expect(
+      container.querySelector(
+        'button[aria-label="Inspect Auto approval event"]'
+      )
+    ).not.toBeNull();
+  });
+
+  it("renders approval-review transcript segments through the normal message and tool presentation", async () => {
+    const source =
+      "The following is the Codex agent history whose request action you are assessing. TRANSCRIPT START ... TRANSCRIPT END";
+    const approvalEvent: DesktopConversationEvent = {
+      ...event("approval-review", source),
+      actor: "user",
+      transcriptDisplay: {
+        kind: "approval_review",
+        version: 1,
+        truncated: false,
+        segments: [
+          {
+            kind: "message",
+            sequence: 1,
+            actor: "user",
+            content: "## Requested change\n\n- Keep the formatting"
+          },
+          {
+            kind: "message",
+            sequence: 2,
+            actor: "agent",
+            content: "I will inspect the renderer."
+          },
+          {
+            kind: "tool_call",
+            sequence: 3,
+            toolName: "exec",
+            content: "pnpm test"
+          },
+          {
+            kind: "tool_result",
+            sequence: 4,
+            toolName: "exec",
+            content: "Tests passed"
+          }
+        ]
+      }
+    };
+
+    await renderSurface(vi.fn().mockResolvedValue([approvalEvent]));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Requested change")
+    );
+
+    expect(container.querySelector(".native-event-content h2")).not.toBeNull();
+    expect(
+      container.querySelector(".native-tool-group")?.textContent
+    ).toContain("2 activity items");
+    expect(container.textContent).not.toContain("Approval review transcript");
+    expect(container.textContent).not.toContain(source);
+  });
+
   it("supports focus and interaction with a labelled tool activity disclosure", async () => {
     const tool = (id: string, toolName: string): DesktopConversationEvent => ({
       ...event(id, `Raw output from ${toolName}`),
       actor: "tool",
-      metadata: { toolName }
+      metadata: { toolName },
+      toolDisplay: {
+        kind: toolName === "exec" ? "command" : "file_change",
+        label: toolName === "exec" ? "Ran command" : "Changed files",
+        preview: `Preview from ${toolName}`,
+        toolName
+      }
     });
     const loadEventsPage = vi
       .fn()
@@ -161,7 +330,7 @@ describe("NativeConversationSurface", () => {
     expect(summary?.textContent).toContain("Agent activity");
     expect(summary?.textContent).toContain("2 activity items");
     expect(summary?.tabIndex).toBe(0);
-    expect(group?.textContent).toContain("exec, apply_patch");
+    expect(group?.textContent).toContain("1 command · 1 file change");
     expect(group?.textContent).toContain("Raw output from exec");
 
     summary?.focus();
@@ -185,6 +354,7 @@ describe("NativeConversationSurface", () => {
     await act(async () => {
       root.render(
         <NativeConversationSurface
+          markdownAdapters={markdownAdapters}
           model={{
             error: "",
             events: [changed],

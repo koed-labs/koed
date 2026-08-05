@@ -149,7 +149,7 @@ function CopyCodeButton({
   code: string;
   onActionError?: SecureMarkdownProps["onActionError"];
 }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -163,30 +163,46 @@ function CopyCodeButton({
 
   return (
     <button
-      aria-label={copied ? "Code copied" : "Copy code"}
+      aria-label={
+        state === "copied"
+          ? "Code copied"
+          : state === "failed"
+            ? "Copy code failed. Try again"
+            : "Copy code"
+      }
       className="memory-markdown-copy-code"
+      data-state={state}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
+        setState("idle");
         void runAdapterAction(
           "copy",
           () => adapters.writeClipboard(code),
           onActionError
         ).then((succeeded) => {
-          if (!succeeded) return;
-          setCopied(true);
+          setState(succeeded ? "copied" : "failed");
           if (resetTimerRef.current !== null) {
             clearTimeout(resetTimerRef.current);
           }
-          resetTimerRef.current = setTimeout(() => {
-            setCopied(false);
-            resetTimerRef.current = null;
-          }, 1_200);
+          resetTimerRef.current = setTimeout(
+            () => {
+              setState("idle");
+              resetTimerRef.current = null;
+            },
+            succeeded ? 1_200 : 2_400
+          );
         });
       }}
       type="button"
     >
-      {copied ? "Copied" : "Copy"}
+      <span aria-live="polite">
+        {state === "copied"
+          ? "Copied"
+          : state === "failed"
+            ? "Copy failed"
+            : "Copy"}
+      </span>
     </button>
   );
 }
@@ -273,6 +289,13 @@ export function SecureMarkdown({
             <pre {...props}>{children}</pre>
           </div>
         );
+      },
+      table({ children, ...props }) {
+        return (
+          <div className="memory-markdown-table-scroll" tabIndex={0}>
+            <table {...props}>{children}</table>
+          </div>
+        );
       }
     }),
     [adapters, maxUrlLength, onActionError]
@@ -280,14 +303,17 @@ export function SecureMarkdown({
 
   if (!validation.ok) {
     return (
-      <div className={className} role="alert">
+      <div
+        className={["memory-markdown", className].filter(Boolean).join(" ")}
+        role="alert"
+      >
         {oversizedFallback ?? "This message is too large to display safely."}
       </div>
     );
   }
 
   return (
-    <div className={className}>
+    <div className={["memory-markdown", className].filter(Boolean).join(" ")}>
       <ReactMarkdown
         components={components}
         remarkPlugins={[remarkGfm]}
