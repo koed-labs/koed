@@ -4,9 +4,17 @@ import {
   SourceDiff,
   VirtualizedTimeline,
   threadSelectionKey,
-  type MarkdownPlatformAdapters
+  type MarkdownPlatformAdapters,
+  type MemoryPresentationScope
 } from "@koed/memory-ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 
 import {
   conversationEventPatch,
@@ -22,6 +30,7 @@ import {
   type DesktopConversationTimelineItem
 } from "./desktop-conversation.js";
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
+import "./renderer/views/personal/personal-memory.css";
 
 const initialEventLimit = 50;
 const olderEventLimit = 500;
@@ -113,11 +122,13 @@ function InvalidationLabel({ event }: { event: DesktopConversationEvent }) {
 function ConversationEventRow({
   event,
   markdownAdapters,
-  onInspectEvent
+  onInspectEvent,
+  scope
 }: {
   event: DesktopConversationEvent;
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (event: DesktopConversationEvent) => void;
+  scope: MemoryPresentationScope;
 }) {
   const text = conversationEventText(event);
   if (!text && event.actor !== "tool") return null;
@@ -175,7 +186,7 @@ function ConversationEventRow({
             </>
           }
           metadata={metadata}
-          scope="personal"
+          scope={scope}
         >
           <div className="native-approval-body">
             <p>{approvalDecision.rationale}</p>
@@ -221,7 +232,7 @@ function ConversationEventRow({
             contentType={patch ? "diff" : "tool"}
             header={toolDisplay?.label ?? actor}
             metadata={metadata}
-            scope="personal"
+            scope={scope}
           >
             {toolDisplay?.callId ? (
               <span className="native-tool-call-id" title={toolDisplay.callId}>
@@ -258,7 +269,7 @@ function ConversationEventRow({
           </>
         }
         metadata={metadata}
-        scope="personal"
+        scope={scope}
       >
         {markdownAdapters ? (
           <SecureMarkdown
@@ -277,11 +288,13 @@ function ConversationEventRow({
 function ToolActivityGroup({
   events,
   markdownAdapters,
-  onInspectEvent
+  onInspectEvent,
+  scope
 }: {
   events: DesktopConversationEvent[];
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (event: DesktopConversationEvent) => void;
+  scope: MemoryPresentationScope;
 }) {
   const summary = summarizeToolActivity(events) || "Commands and tool calls";
   const invalidatedCount = events.filter((event) => event.invalidatedAt).length;
@@ -314,11 +327,139 @@ function ToolActivityGroup({
               key={event.id}
               markdownAdapters={markdownAdapters}
               onInspectEvent={onInspectEvent}
+              scope={scope}
             />
           ))}
         </div>
       </details>
     </div>
+  );
+}
+
+export function ConversationRows({
+  events,
+  markdownAdapters,
+  scope = "personal"
+}: {
+  events: readonly DesktopConversationEvent[];
+  markdownAdapters?: MarkdownPlatformAdapters;
+  scope?: MemoryPresentationScope;
+}) {
+  const timelineItems = groupConversationEvents(
+    expandConversationDisplayEvents(events).filter(
+      (event) =>
+        event.actor === "tool" || conversationEventText(event).length > 0
+    )
+  );
+  return (
+    <>
+      {timelineItems.map((item) => (
+        <Fragment key={item.id}>
+          {item.kind === "tool-group" ? (
+            <ToolActivityGroup
+              events={item.events}
+              markdownAdapters={markdownAdapters}
+              scope={scope}
+            />
+          ) : (
+            <ConversationEventRow
+              event={item.event}
+              markdownAdapters={markdownAdapters}
+              scope={scope}
+            />
+          )}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
+export function ConversationTimeline({
+  ariaLabel,
+  className = "native-timeline-scroll",
+  events,
+  hasNewerEvents = false,
+  hasOlderEvents,
+  markdownAdapters,
+  onInspectEvent,
+  onLoadNewer,
+  onLoadOlder,
+  scope = "personal",
+  threadKey
+}: {
+  ariaLabel?: string;
+  className?: string;
+  events: readonly DesktopConversationEvent[];
+  hasNewerEvents?: boolean;
+  hasOlderEvents: boolean;
+  markdownAdapters?: MarkdownPlatformAdapters;
+  onInspectEvent?: (event: DesktopConversationEvent) => void;
+  onLoadNewer?: () => Promise<void> | void;
+  onLoadOlder: () => Promise<void> | void;
+  scope?: MemoryPresentationScope;
+  threadKey: string;
+}) {
+  const visibleEvents = useMemo(
+    () =>
+      expandConversationDisplayEvents(events).filter(
+        (event) =>
+          event.actor === "tool" || conversationEventText(event).length > 0
+      ),
+    [events]
+  );
+  const sourceEventsById = useMemo(
+    () => new Map(events.map((event) => [event.id, event])),
+    [events]
+  );
+  const inspectEvent = useCallback(
+    (event: DesktopConversationEvent) => {
+      if (!onInspectEvent) return;
+      const sourceId = approvalReviewSourceEventId(event.id);
+      onInspectEvent(
+        (sourceId ? sourceEventsById.get(sourceId) : undefined) ?? event
+      );
+    },
+    [onInspectEvent, sourceEventsById]
+  );
+  const timelineItems = useMemo(
+    () => groupConversationEvents(visibleEvents),
+    [visibleEvents]
+  );
+  const renderEvent = useCallback(
+    (item: DesktopConversationTimelineItem) => (
+      <Fragment key={item.id}>
+        {item.kind === "tool-group" ? (
+          <ToolActivityGroup
+            events={item.events}
+            markdownAdapters={markdownAdapters}
+            onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+            scope={scope}
+          />
+        ) : (
+          <ConversationEventRow
+            event={item.event}
+            markdownAdapters={markdownAdapters}
+            onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+            scope={scope}
+          />
+        )}
+      </Fragment>
+    ),
+    [inspectEvent, markdownAdapters, onInspectEvent, scope]
+  );
+
+  return (
+    <VirtualizedTimeline
+      ariaLabel={ariaLabel}
+      className={className}
+      events={timelineItems}
+      hasNewerEvents={hasNewerEvents}
+      hasOlderEvents={hasOlderEvents}
+      onLoadNewer={onLoadNewer}
+      onLoadOlder={onLoadOlder}
+      renderEvent={renderEvent}
+      threadKey={threadKey}
+    />
   );
 }
 
@@ -367,12 +508,14 @@ function ConversationPresentation({
           events={item.events}
           markdownAdapters={markdownAdapters}
           onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+          scope="personal"
         />
       ) : (
         <ConversationEventRow
           event={item.event}
           markdownAdapters={markdownAdapters}
           onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+          scope="personal"
         />
       ),
     [inspectEvent, markdownAdapters, onInspectEvent]

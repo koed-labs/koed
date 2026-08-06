@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
+  buildConversationApprovalDisplay,
+  buildConversationToolDisplay,
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages,
@@ -1045,7 +1047,30 @@ const mapSourceItems = (
             body: text.body,
             actorName: null,
             toolName: text.toolName,
-            toolCallId: text.toolCallId
+            toolCallId: text.toolCallId,
+            ...(sourceKind === "agent_message"
+              ? {
+                  approvalDecisionDisplay: buildConversationApprovalDisplay({
+                    actor: "assistant",
+                    content: text.body
+                  })
+                }
+              : {}),
+            ...(sourceKind === "tool_call" || sourceKind === "tool_result"
+              ? {
+                  toolDisplay: buildConversationToolDisplay({
+                    actor: "tool",
+                    content: text.body,
+                    contentPreview: text.body.slice(0, 16_384),
+                    metadata: {
+                      toolName: text.toolName,
+                      toolCallId: text.toolCallId,
+                      input: item.content.payload,
+                      rawTranscriptPayload: item.content.payload
+                    }
+                  })
+                }
+              : {})
           }
         ]
       });

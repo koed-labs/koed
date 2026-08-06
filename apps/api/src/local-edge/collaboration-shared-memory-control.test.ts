@@ -772,6 +772,79 @@ describe("collaboration Shared Memory control", () => {
     expect(persisted).not.toHaveProperty("backend");
   });
 
+  it("projects trusted Shared Memory activity with Personal display metadata", async () => {
+    const patch =
+      "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old\n+new\n*** End Patch";
+    const fixture = createFixture({
+      previewItems: [
+        {
+          itemType: "tool_call" as const,
+          schemaVersion: 1 as const,
+          sourceId: uuidFor(150),
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 4,
+          occurredAt: iso,
+          content: {
+            toolName: "apply_patch",
+            toolCallId: "call-shared-patch",
+            payload: { input: patch }
+          }
+        },
+        {
+          itemType: "assistant_message" as const,
+          schemaVersion: 1 as const,
+          sourceId: uuidFor(151),
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 4,
+          occurredAt: iso,
+          content: {
+            text: JSON.stringify({
+              outcome: "allow",
+              rationale: "The patch is within the requested scope.",
+              risk_level: "low",
+              user_authorization: "medium"
+            })
+          }
+        }
+      ]
+    });
+
+    const result = await fixture.control.dispatch(previewCommand(), context());
+    if (
+      !result?.ok ||
+      result.command !== "collaboration.preview_shared_memory"
+    ) {
+      throw new Error("preview failed");
+    }
+
+    expect(result.data.preview.items[0]).toMatchObject({
+      sourceItems: [
+        {
+          sourceKind: "tool_call",
+          toolDisplay: {
+            kind: "file_change",
+            label: "Changed files",
+            callId: "call-shared-patch",
+            patchSource: patch
+          }
+        }
+      ]
+    });
+    expect(result.data.preview.items[1]).toMatchObject({
+      sourceItems: [
+        {
+          sourceKind: "agent_message",
+          approvalDecisionDisplay: {
+            kind: "auto_approval",
+            outcome: "allow",
+            riskLevel: "low",
+            userAuthorization: "medium"
+          }
+        }
+      ]
+    });
+  });
+
   it("keeps an LCM preview local and retryable until the exact summary snapshot is synced", async () => {
     const prepareLocalLcmRepresentation = vi.fn(async () => "pending" as const);
     const fixture = createFixture({ prepareLocalLcmRepresentation });

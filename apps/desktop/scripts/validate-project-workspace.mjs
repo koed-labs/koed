@@ -196,7 +196,7 @@ const inspectChat = async (window) =>
       tabsDisplay: tabs && getComputedStyle(tabs).display,
       composerVisible: Boolean(composer),
       shellOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-      sourceCount: document.querySelectorAll('.collab-source-list [role="listitem"]').length,
+      sourceCount: document.querySelectorAll('.shared-conversation-timeline .native-conversation-event').length,
       messageCount: document.querySelectorAll('.collab-message-list [role="listitem"]').length,
       selectedTeamCount: document.querySelectorAll('.desktop-team-rail .desktop-rail-button[aria-current="page"]').length,
       teamTabStops: [...document.querySelectorAll('.desktop-team-rail .desktop-rail-button')]
@@ -218,10 +218,10 @@ const inspectChat = async (window) =>
       richCodeCount: document.querySelectorAll('.collab-message .memory-markdown-code-block').length,
       richCodeScrollable: [...document.querySelectorAll('.collab-message .memory-markdown-code-block pre')]
         .some((element) => element.scrollWidth > element.clientWidth),
-      sharedSourceHeadingCount: document.querySelectorAll('.collab-source-event .memory-markdown h1, .collab-source-event .memory-markdown h2').length,
-      sharedSourceTableCount: document.querySelectorAll('.collab-source-event .memory-markdown table').length,
-      sharedSourceCodeCount: document.querySelectorAll('.collab-source-event .memory-markdown-code-block').length,
-      sharedSourceBodyWidth: document.querySelector('.collab-source-event > div')?.getBoundingClientRect().width ?? 0,
+      sharedSourceHeadingCount: document.querySelectorAll('.shared-conversation-timeline .memory-markdown h1, .shared-conversation-timeline .memory-markdown h2').length,
+      sharedSourceTableCount: document.querySelectorAll('.shared-conversation-timeline .memory-markdown table').length,
+      sharedSourceCodeCount: document.querySelectorAll('.shared-conversation-timeline .memory-markdown-code-block').length,
+      sharedSourceBodyWidth: document.querySelector('.shared-conversation-timeline .native-conversation-event > div')?.getBoundingClientRect().width ?? 0,
       teamRailScrollTop: teamRail?.scrollTop ?? 0,
       addTeamFullyVisible: Boolean(
         addTeamRect && railRect &&

@@ -71,6 +71,16 @@ fallback for orphaned or legacy records. Projected rows are presentation only
 and do not become independent Memory Events or recall evidence; the original
 approval request remains retained as inspectable source provenance.
 
+An authorized Shared Memory Events representation enters that same conversation
+presentation. The local edge adapts the already-redacted representation items
+to the User, AI Client, Agent activity, source-diff, and Auto approval display
+contract before they reach React. It does not read the owner's canonical
+Personal Memory rows to do so. This local projection keeps the presentation
+compatible with older Team backends while preserving the Shared Memory
+authorization and representation boundary. LCM leaf and rollup representations
+remain summary presentations rather than being made to look like source
+conversations.
+
 File-changing tool events recognize Codex patches and standard unified diffs.
 Desktop reports per-file additions and deletions, keeps file headers visible,
 and permits one file body to be expanded at a time. Unsupported patches keep a

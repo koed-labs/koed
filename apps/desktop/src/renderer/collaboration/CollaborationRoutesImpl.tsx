@@ -67,6 +67,11 @@ import {
   CollaborationClientError,
   type CollaborationRendererClient
 } from "../../collaboration/renderer-client.js";
+import { sharedMemoryConversationEvents } from "../../collaboration/shared-memory-conversation.js";
+import {
+  ConversationRows,
+  ConversationTimeline
+} from "../../NativeConversationSurface.js";
 import {
   MessageComposer as RouteMessageComposer,
   ThreadRoute,
@@ -1505,6 +1510,7 @@ function SourceTimeline({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const rows = page.items;
+  const conversationEvents = sharedMemoryConversationEvents(rows);
   if (session.sourceState === "loading") {
     return (
       <StateView
@@ -1579,24 +1585,39 @@ function SourceTimeline({
         <div className="collab-empty-inline">No source items available.</div>
       ) : null}
       {rows.length > 0 ? (
-        <VirtualizedTimeline
-          ariaLabel={`${representationLabel(session.representation)} source items`}
-          className="collab-source-list collab-virtual-list"
-          estimatedItemHeight={132}
-          events={rows}
-          hasOlderEvents={page.hasOlder}
-          hasNewerEvents={page.hasNewer}
-          onLoadOlder={() => loadPage("older")}
-          onLoadNewer={() => loadPage("newer")}
-          renderEvent={(item) => (
-            <SourceItemRow
-              key={item.id}
-              item={item}
-              markdownAdapters={markdownAdapters}
-            />
-          )}
-          threadKey={`${session.id}:${session.representation}`}
-        />
+        session.representation === "memory_events" ? (
+          <ConversationTimeline
+            ariaLabel="Memory Events source items"
+            className="collab-source-list collab-virtual-list native-timeline-scroll shared-conversation-timeline"
+            events={conversationEvents}
+            hasOlderEvents={page.hasOlder}
+            hasNewerEvents={page.hasNewer}
+            markdownAdapters={markdownAdapters}
+            onLoadOlder={() => loadPage("older")}
+            onLoadNewer={() => loadPage("newer")}
+            scope="workspace"
+            threadKey={`${session.id}:${session.representation}`}
+          />
+        ) : (
+          <VirtualizedTimeline
+            ariaLabel={`${representationLabel(session.representation)} source items`}
+            className="collab-source-list collab-virtual-list"
+            estimatedItemHeight={132}
+            events={rows}
+            hasOlderEvents={page.hasOlder}
+            hasNewerEvents={page.hasNewer}
+            onLoadOlder={() => loadPage("older")}
+            onLoadNewer={() => loadPage("newer")}
+            renderEvent={(item) => (
+              <SourceItemRow
+                key={item.id}
+                item={item}
+                markdownAdapters={markdownAdapters}
+              />
+            )}
+            threadKey={`${session.id}:${session.representation}`}
+          />
+        )
       ) : null}
       {page.hasNewer ? (
         <div className="collab-history-control collab-newer-control">
@@ -2321,15 +2342,25 @@ function SharedMemoryOwnerModal({
                 {preview.itemCount} {preview.itemCount === 1 ? "item" : "items"}
               </span>
             </div>
-            <ol className="collab-source-list collab-preview-list">
-              {preview.items.map((item) => (
-                <SourceItemRow
-                  key={item.id}
-                  item={item}
+            {preview.representation === "memory_events" ? (
+              <div className="collab-preview-list shared-conversation-preview">
+                <ConversationRows
+                  events={sharedMemoryConversationEvents(preview.items)}
                   markdownAdapters={markdownAdapters}
+                  scope="workspace"
                 />
-              ))}
-            </ol>
+              </div>
+            ) : (
+              <ol className="collab-source-list collab-preview-list">
+                {preview.items.map((item) => (
+                  <SourceItemRow
+                    key={item.id}
+                    item={item}
+                    markdownAdapters={markdownAdapters}
+                  />
+                ))}
+              </ol>
+            )}
             {preview.nextCursor ? (
               <button
                 type="button"

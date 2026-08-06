@@ -159,7 +159,8 @@ export {
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectDataSchema,
-  personalDesktopSessionProjectInputSchema
+  personalDesktopSessionProjectInputSchema,
+  personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
 export type {
   ApprovalDecisionDisplay,
@@ -312,6 +313,13 @@ export type {
   SharedMemorySourceItem,
   SharedMemorySourcePage
 } from "./collaboration-contract.js";
+
+export {
+  buildConversationApprovalDisplay,
+  buildConversationToolDisplay,
+  type ConversationApprovalDisplay,
+  type ConversationToolDisplay
+} from "./conversation-display.js";
 
 export {
   fetchWithTimeout,

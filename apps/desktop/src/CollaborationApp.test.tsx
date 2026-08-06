@@ -367,12 +367,12 @@ const sourceItem = (
         sourceItems: [
           {
             id: uuid(202),
-            sourceKind: "tool_result",
+            sourceKind: "user_message",
             occurredAt: at,
             body: richSharedSource,
-            actorName: "Codex",
-            toolName: "typecheck",
-            toolCallId: "call-typecheck-correlation"
+            actorName: "You",
+            toolName: null,
+            toolCallId: null
           }
         ]
       }
@@ -2252,7 +2252,14 @@ pnpm test
       )
     );
 
-    const source = container.querySelector(".collab-source-event");
+    const source = container.querySelector(".shared-conversation-timeline");
+    expect(
+      source?.querySelector(
+        '.native-conversation-event.user[data-memory-scope="workspace"]'
+      )
+    ).not.toBeNull();
+    expect(source?.textContent).toContain("You");
+    expect(source?.querySelector(".collab-source-event")).toBeNull();
     expect(source?.querySelector(".memory-markdown h2")).not.toBeNull();
     expect(source?.querySelector(".memory-markdown table")).not.toBeNull();
     const copy = source?.querySelector<HTMLButtonElement>(
@@ -2260,6 +2267,125 @@ pnpm test
     );
     await act(async () => copy?.click());
     expect(writeClipboard).toHaveBeenCalledWith("pnpm typecheck");
+  });
+
+  it("uses the Personal conversation presentation for Shared Memory activity", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "shared_session",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      sharedSessionId: ids.eventSession
+    });
+    if (selected.view.kind !== "shared_session") {
+      throw new Error("Expected a Shared Memory fixture");
+    }
+    const activityItem: SharedMemorySourceItem = {
+      id: uuid(420),
+      representation: "memory_events",
+      sequence: 1,
+      occurredAt: at,
+      sourceItems: [
+        {
+          id: uuid(421),
+          sourceKind: "user_message",
+          occurredAt: at,
+          body: "Please check the release.",
+          actorName: null,
+          toolName: null,
+          toolCallId: null
+        },
+        {
+          id: uuid(422),
+          sourceKind: "tool_call",
+          occurredAt: at,
+          body: '{"cmd":"pnpm test"}',
+          actorName: null,
+          toolName: "exec_command",
+          toolCallId: "call-release",
+          toolDisplay: {
+            kind: "command",
+            label: "Ran command",
+            preview: "pnpm test",
+            toolName: "exec_command",
+            callId: "call-release"
+          }
+        },
+        {
+          id: uuid(423),
+          sourceKind: "tool_result",
+          occurredAt: at,
+          body: "All tests passed.",
+          actorName: null,
+          toolName: "exec_command",
+          toolCallId: "call-release",
+          toolDisplay: {
+            kind: "command",
+            label: "Ran command",
+            preview: "All tests passed.",
+            toolName: "exec_command",
+            callId: "call-release",
+            status: "completed"
+          }
+        },
+        {
+          id: uuid(424),
+          sourceKind: "agent_message",
+          occurredAt: at,
+          body: '{"outcome":"allow"}',
+          actorName: null,
+          toolName: null,
+          toolCallId: null,
+          approvalDecisionDisplay: {
+            kind: "auto_approval",
+            version: 1,
+            riskLevel: "low",
+            userAuthorization: "medium",
+            outcome: "allow",
+            rationale: "The command is within the requested release check."
+          }
+        }
+      ]
+    };
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      view: {
+        ...selected.view,
+        source: {
+          ...selected.view.source,
+          items: [activityItem]
+        }
+      }
+    });
+
+    await act(async () =>
+      root.render(
+        <CollaborationRoutes
+          client={createClient(snapshot)}
+          drafts={new DraftStore()}
+          markdownAdapters={{
+            openExternal: vi.fn(async () => undefined),
+            writeClipboard: vi.fn(async () => undefined)
+          }}
+          modal={null}
+          onModalChange={vi.fn()}
+          onRequestSelection={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+
+    const source = container.querySelector(".shared-conversation-timeline");
+    expect(
+      source?.querySelector(".native-conversation-event.user")
+    ).not.toBeNull();
+    expect(source?.querySelector(".native-tool-group")?.textContent).toContain(
+      "2 activity items"
+    );
+    expect(
+      source?.querySelector(".native-approval-decision")?.textContent
+    ).toContain("Auto approval");
+    expect(source?.textContent).toContain("Risk · Low");
+    expect(source?.textContent).toContain("Authorization · Medium");
   });
 
   it("renders the same rich Shared Memory source in the consent preview", async () => {

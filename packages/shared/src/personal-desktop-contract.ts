@@ -66,6 +66,18 @@ export const approvalDecisionDisplaySchema = z
   })
   .strict();
 
+export const personalDesktopToolDisplaySchema = z
+  .object({
+    kind: z.enum(["command", "file_change", "file_read", "search", "tool"]),
+    label: z.string().trim().min(1).max(80),
+    preview: z.string().max(2_048),
+    toolName: z.string().max(256).optional(),
+    status: z.string().max(64).optional(),
+    callId: z.string().max(512).optional(),
+    patchSource: z.string().max(1_048_576).optional()
+  })
+  .strict();
+
 type ApprovalReviewTranscriptHeader = {
   actor?: "user" | "agent";
   contentStart: number;
@@ -229,18 +241,7 @@ export const personalDesktopConversationEventSchema = z
     invalidatedAt: timestampSchema.nullable(),
     approvalDecisionDisplay: approvalDecisionDisplaySchema.optional(),
     transcriptDisplay: approvalReviewTranscriptDisplaySchema.optional(),
-    toolDisplay: z
-      .object({
-        kind: z.enum(["command", "file_change", "file_read", "search", "tool"]),
-        label: z.string().trim().min(1).max(80),
-        preview: z.string().max(2_048),
-        toolName: z.string().max(256).optional(),
-        status: z.string().max(64).optional(),
-        callId: z.string().max(512).optional(),
-        patchSource: z.string().max(1_048_576).optional()
-      })
-      .strict()
-      .optional(),
+    toolDisplay: personalDesktopToolDisplaySchema.optional(),
     metadata: z
       .object({
         toolName: z.string().max(256).optional()
