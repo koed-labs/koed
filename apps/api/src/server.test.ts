@@ -9310,6 +9310,28 @@ describe("account and access flows", () => {
     expect(cookieHeader(rejectedInviteAccept)).toBe("");
   });
 
+  it("rejects a malformed stored password hash without failing the request", async () => {
+    const repository = createFakeRepository();
+    await repository.createUser({
+      email: "fixture-login@example.com",
+      passwordHash: "team-saas-fixture-v1:password-not-for-login"
+    });
+    const app = await buildServer({ repository });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: {
+        email: "fixture-login@example.com",
+        password: "password123"
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "Invalid email or password" });
+  });
+
   it("does not treat root-level API_CORS_ORIGINS as an API process setting", async () => {
     process.env.CORS_ORIGINS = "http://console.example.test";
     process.env.API_CORS_ORIGINS = "http://legacy.example.test";

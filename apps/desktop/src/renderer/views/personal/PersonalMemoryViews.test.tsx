@@ -452,6 +452,17 @@ describe("PersonalMemoryWorkspace", () => {
       ],
       source: {
         entryId: sessionId,
+        localEntry: {
+          id: sessionId,
+          logicalMemoryId: null,
+          title: "Captured Session 1",
+          projectName: "Very long Project name",
+          updatedAt: "2026-07-23T00:00:00.000Z",
+          preview: "Useful session preview 1",
+          eventCount: 1_000,
+          hasSynchronizedRevision: false,
+          syncState: "not_started"
+        },
         logicalMemoryId: null,
         sessionId,
         syncState: "not_started"

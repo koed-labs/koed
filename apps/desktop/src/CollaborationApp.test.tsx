@@ -1208,6 +1208,94 @@ describe("CollaborationApp", () => {
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledOnce());
   });
 
+  it("opens sharing for a local Captured Session before collaboration convergence", async () => {
+    const localSessionId = uuid(307);
+    const current = baseSnapshot();
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...current,
+      navigation: {
+        ...current.navigation,
+        personal: {
+          ...current.navigation.personal,
+          memory: []
+        }
+      }
+    });
+    const client = createClient(snapshot);
+    const personalMemoryApi: PersonalDesktopApi = {
+      assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      listProjects: vi.fn<PersonalDesktopApi["listProjects"]>(async () => [
+        {
+          id: "koed-project",
+          name: "koed",
+          path: "/workspace/koed",
+          eventCount: 2,
+          threads: [
+            {
+              id: "local-thread",
+              name: "Local sharing regression",
+              sessionId: localSessionId,
+              sourceAiClient: "codex-cli",
+              projectId: "koed-project",
+              projectName: "koed",
+              projectPath: "/workspace/koed",
+              projectAssignmentSource: "detected",
+              eventCount: 2,
+              invalidatedCount: 0,
+              latestAt: "2026-08-05T12:00:00.000Z",
+              sample: "A local Captured Session awaiting Team preparation."
+            }
+          ]
+        }
+      ]),
+      loadEventPage: vi.fn(async () => []),
+      subscribe: vi.fn(() => () => undefined)
+    };
+
+    await act(async () =>
+      root.render(
+        <App
+          collaborationClient={client}
+          onboardingComplete
+          personalMemoryApi={personalMemoryApi}
+          statusReadyOverride
+        />
+      )
+    );
+
+    await vi.waitFor(() =>
+      expect(container.querySelector(".personal-project-row")).not.toBeNull()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".personal-project-row")
+        ?.click()
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector(".personal-session-row")).not.toBeNull()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".personal-session-row")
+        ?.click()
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector(".personal-share-button")).not.toBeNull()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".personal-share-button")
+        ?.click()
+    );
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Review source")
+    );
+    expect(document.body.textContent).not.toContain(
+      "Personal Memory unavailable"
+    );
+  });
+
   it("refreshes local health when collaboration becomes live", async () => {
     const initial = {
       ...baseSnapshot(),
@@ -2213,6 +2301,132 @@ pnpm test
     );
     await act(async () => copy?.click());
     expect(writeClipboard).toHaveBeenCalledWith("pnpm typecheck");
+  });
+
+  it("opens sharing on the first active writable Workspace", async () => {
+    const current = baseSnapshot();
+    const team = current.navigation.teams[0]!;
+    const writableWorkspace = team.workspaces[0]!;
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...current,
+      navigation: {
+        ...current.navigation,
+        teams: [
+          {
+            ...team,
+            workspaces: [
+              {
+                ...writableWorkspace,
+                id: uuid(309),
+                name: "Read-only archive",
+                access: "read",
+                channels: [],
+                sharedMemory: []
+              },
+              writableWorkspace
+            ]
+          },
+          ...current.navigation.teams.slice(1)
+        ]
+      }
+    });
+    const client = createClient(snapshot);
+
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          markdownAdapters={{
+            openExternal: vi.fn(async () => undefined),
+            writeClipboard: vi.fn(async () => undefined)
+          }}
+          modal={{
+            kind: "share_personal_memory",
+            sessionId: snapshot.navigation.personal.memory[0]!.id
+          }}
+          onModalChange={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Review source")
+    );
+    const workspaceSelect = document.body.querySelectorAll("select")[1];
+    expect(workspaceSelect?.value).toBe(writableWorkspace.id);
+    expect(document.body.textContent).not.toContain("Read-only archive");
+  });
+
+  it("prepares a local Captured Session before collaboration convergence", async () => {
+    const localSessionId = uuid(305);
+    const current = baseSnapshot();
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...current,
+      navigation: {
+        ...current.navigation,
+        personal: {
+          ...current.navigation.personal,
+          memory: []
+        }
+      }
+    });
+    const client = createClient(snapshot);
+    const prepared = {
+      id: localSessionId,
+      logicalMemoryId: uuid(306),
+      title: "Local Captured Session",
+      projectName: "koed",
+      updatedAt: at,
+      preview: "A session available only in Personal Memory.",
+      eventCount: 2,
+      hasSynchronizedRevision: true,
+      syncState: "ready" as const
+    };
+    vi.mocked(client.prepareSharedMemorySource).mockResolvedValue(prepared);
+
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          markdownAdapters={{
+            openExternal: vi.fn(async () => undefined),
+            writeClipboard: vi.fn(async () => undefined)
+          }}
+          modal={{
+            kind: "share_personal_memory",
+            sessionId: localSessionId,
+            localEntry: {
+              ...prepared,
+              logicalMemoryId: null,
+              hasSynchronizedRevision: false,
+              syncState: "not_started"
+            }
+          }}
+          onModalChange={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Review source")
+    );
+    expect(document.body.textContent).not.toContain(
+      "Personal Memory unavailable"
+    );
+
+    await click(container, "Review source");
+
+    await vi.waitFor(() =>
+      expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
+    );
+    expect(client.prepareSharedMemorySource).toHaveBeenCalledWith({
+      sessionId: localSessionId
+    });
+    expect(client.previewSharedMemory).toHaveBeenCalledWith(
+      expect.objectContaining({ logicalMemoryId: prepared.logicalMemoryId })
+    );
   });
 
   it("does not send when Enter confirms an IME composition", async () => {

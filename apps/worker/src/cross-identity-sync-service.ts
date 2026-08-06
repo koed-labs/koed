@@ -6,6 +6,7 @@ import {
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
+  CAPTURED_SESSION_SYNC_MAX_CHUNKS,
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES,
@@ -79,7 +80,8 @@ const packagePartitions = (
   base: CapturedSessionSyncPackageV1,
   changes: CapturedSessionSyncChangeV1[],
   summaryNodes: CapturedSessionSyncPackageV1["summaryNodes"],
-  summarySnapshotIncluded: boolean
+  summarySnapshotIncluded: boolean,
+  partitionByteCount: (partition: CapturedSessionSyncPackageV1) => number
 ): CapturedSessionSyncPackageV1[] => {
   const partitions: CapturedSessionSyncPackageV1[] = [];
   const records = [
@@ -109,9 +111,8 @@ const packagePartitions = (
       record.kind === "summaryNode"
         ? [...currentSummaryNodes, record.summaryNode]
         : currentSummaryNodes;
-    const bytes = Buffer.byteLength(
-      JSON.stringify(partition(candidateChanges, candidateSummaryNodes)),
-      "utf8"
+    const bytes = partitionByteCount(
+      partition(candidateChanges, candidateSummaryNodes)
     );
     if (
       bytes > CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES &&
@@ -121,9 +122,8 @@ const packagePartitions = (
       currentChanges = record.kind === "change" ? [record.change] : [];
       currentSummaryNodes =
         record.kind === "summaryNode" ? [record.summaryNode] : [];
-      const singleRecordBytes = Buffer.byteLength(
-        JSON.stringify(partition(currentChanges, currentSummaryNodes)),
-        "utf8"
+      const singleRecordBytes = partitionByteCount(
+        partition(currentChanges, currentSummaryNodes)
       );
       if (singleRecordBytes > CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES) {
         throw new InvalidSyncPackageError(
@@ -473,27 +473,48 @@ export const createCrossIdentitySyncService = (options: {
       throw new InvalidSyncPackageError("Source sync package is invalid");
     }
     const packageDigest = crossIdentitySyncDigest(base);
+    const chunkPayload = (
+      partition: CapturedSessionSyncPackageV1,
+      chunkIndex: number,
+      chunkCount: number
+    ): CapturedSessionSyncChunkV1 => ({
+      format: CAPTURED_SESSION_SYNC_FORMAT,
+      formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+      packageId,
+      relationshipId,
+      packageSequence: sequence,
+      fromCursor: delta.fromCursor,
+      toCursor,
+      chunkIndex,
+      chunkCount,
+      packageDigest,
+      package: partition
+    });
     const partitions = packagePartitions(
       base,
       selectedChanges,
       selectedSummaryNodes,
-      delta.summarySnapshotIncluded
+      delta.summarySnapshotIncluded,
+      (partition) =>
+        Buffer.byteLength(
+          JSON.stringify(
+            chunkPayload(
+              partition,
+              CAPTURED_SESSION_SYNC_MAX_CHUNKS - 1,
+              CAPTURED_SESSION_SYNC_MAX_CHUNKS
+            )
+          ),
+          "utf8"
+        )
     );
+    if (partitions.length > CAPTURED_SESSION_SYNC_MAX_CHUNKS) {
+      throw new InvalidSyncPackageError(
+        "Cross-Identity Sync package exceeds the chunk limit"
+      );
+    }
     const encrypted = await Promise.all(
       partitions.map(async (partition, chunkIndex) => {
-        const chunk: CapturedSessionSyncChunkV1 = {
-          format: CAPTURED_SESSION_SYNC_FORMAT,
-          formatVersion: CAPTURED_SESSION_SYNC_FORMAT_VERSION,
-          packageId,
-          relationshipId,
-          packageSequence: sequence,
-          fromCursor: delta.fromCursor,
-          toCursor,
-          chunkIndex,
-          chunkCount: partitions.length,
-          packageDigest,
-          package: partition
-        };
+        const chunk = chunkPayload(partition, chunkIndex, partitions.length);
         return createEncryptedJsonPackage(provider, {
           objectClass: "sync_package",
           payload: chunk,
@@ -1183,45 +1204,57 @@ export const createCrossIdentitySyncService = (options: {
   };
 
   const processOnce = async () => {
-    const sourceIdentityHealthy = isSourceIdentityHealthy();
     await options.repository.recordCrossIdentitySyncWorkerHeartbeat(
       workerInstanceId
     );
-    if (
-      sourceIdentityHealthy &&
-      Date.now() - lastHeartbeatScanAt >= freshnessScanIntervalMs
-    ) {
-      const due = await options.repository.listDueSourceSyncHeartbeats({
-        dueWithinSeconds: Math.max(1, Math.floor(options.staleAfterSeconds / 2))
-      });
-      for (const heartbeat of due) {
-        const payloadManifest = {
-          kind: "heartbeat",
-          sourceCursor: heartbeat.sourceCursor,
-          targetProcessingCursor: heartbeat.targetProcessingCursor,
-          packageSequence: heartbeat.packageSequence
+    return withLeaseHeartbeat({
+      leaseMs: 30_000,
+      renew: () =>
+        options.repository.recordCrossIdentitySyncWorkerHeartbeat(
+          workerInstanceId
+        ),
+      operation: async () => {
+        const sourceIdentityHealthy = isSourceIdentityHealthy();
+        if (
+          sourceIdentityHealthy &&
+          Date.now() - lastHeartbeatScanAt >= freshnessScanIntervalMs
+        ) {
+          const due = await options.repository.listDueSourceSyncHeartbeats({
+            dueWithinSeconds: Math.max(
+              1,
+              Math.floor(options.staleAfterSeconds / 2)
+            )
+          });
+          for (const heartbeat of due) {
+            const payloadManifest = {
+              kind: "heartbeat",
+              sourceCursor: heartbeat.sourceCursor,
+              targetProcessingCursor: heartbeat.targetProcessingCursor,
+              packageSequence: heartbeat.packageSequence
+            };
+            await options.repository.enqueueSyncOutboxEntry({
+              syncRelationshipId: heartbeat.relationshipId,
+              idempotencyKey: `heartbeat:${heartbeat.staleAfter}`,
+              requestHash: crossIdentitySyncDigest(payloadManifest),
+              payloadManifest
+            });
+          }
+          lastHeartbeatScanAt = Date.now();
+        }
+        if (Date.now() - lastStaleCheckAt >= freshnessScanIntervalMs) {
+          await options.repository.markOverdueSyncRelationshipsStale();
+          lastStaleCheckAt = Date.now();
+        }
+        if (Date.now() - lastCleanupAt >= 60 * 60 * 1_000) {
+          await options.repository.cleanupCrossIdentitySyncState();
+          lastCleanupAt = Date.now();
+        }
+        return {
+          outbox: await processOutbox(),
+          inbox: await processInbox()
         };
-        await options.repository.enqueueSyncOutboxEntry({
-          syncRelationshipId: heartbeat.relationshipId,
-          idempotencyKey: `heartbeat:${heartbeat.staleAfter}`,
-          requestHash: crossIdentitySyncDigest(payloadManifest),
-          payloadManifest
-        });
       }
-      lastHeartbeatScanAt = Date.now();
-    }
-    if (Date.now() - lastStaleCheckAt >= freshnessScanIntervalMs) {
-      await options.repository.markOverdueSyncRelationshipsStale();
-      lastStaleCheckAt = Date.now();
-    }
-    if (Date.now() - lastCleanupAt >= 60 * 60 * 1_000) {
-      await options.repository.cleanupCrossIdentitySyncState();
-      lastCleanupAt = Date.now();
-    }
-    return {
-      outbox: await processOutbox(),
-      inbox: await processInbox()
-    };
+    });
   };
   const schedule = () => {
     if (!running) return;

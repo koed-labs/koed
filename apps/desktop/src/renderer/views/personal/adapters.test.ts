@@ -9,8 +9,16 @@ import {
 } from "./adapters.js";
 
 const thread = {
+  eventCount: 2,
+  latestAt: "2026-08-05T12:00:00.000Z",
+  name: "Local capture",
+  projectName: "koed",
+  sample: "Share preview",
   sessionId: "00000000-0000-4000-8000-000000000001"
-} satisfies Pick<PersonalDesktopProjectThread, "sessionId">;
+} satisfies Pick<
+  PersonalDesktopProjectThread,
+  "eventCount" | "latestAt" | "name" | "projectName" | "sample" | "sessionId"
+>;
 
 const candidate = (
   workspaceId: string,
@@ -46,17 +54,31 @@ describe("Personal Memory collaboration adapters", () => {
 
     expect(source).toEqual({
       entryId: "entry-1",
+      localEntry: null,
       logicalMemoryId: "logical-1",
       sessionId: thread.sessionId,
       syncState: "ready"
     });
     expect(personalMemorySharingSource(thread, [])).toEqual({
       entryId: thread.sessionId,
+      localEntry: {
+        id: thread.sessionId,
+        logicalMemoryId: null,
+        title: thread.name,
+        projectName: thread.projectName,
+        updatedAt: thread.latestAt,
+        preview: thread.sample,
+        eventCount: thread.eventCount,
+        hasSynchronizedRevision: false,
+        syncState: "not_started"
+      },
       logicalMemoryId: null,
       sessionId: thread.sessionId,
       syncState: "not_started"
     });
-    expect(personalMemorySharingSource({ sessionId: null }, [])).toBeNull();
+    expect(
+      personalMemorySharingSource({ ...thread, sessionId: null }, [])
+    ).toBeNull();
   });
 
   it("accepts only current writable authorized Workspace destinations", () => {

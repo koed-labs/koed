@@ -2,6 +2,7 @@ import type {
   PersonalDesktopProjectThread,
   PersonalDesktopSessionProjectInput
 } from "@koed/shared/personal-desktop";
+import type { PersonalMemoryEntry } from "@koed/shared";
 
 export type PersonalMemorySharingRecord = {
   entryId: string;
@@ -20,6 +21,7 @@ export type PersonalMemorySharingRecord = {
 
 export type PersonalMemorySharingSource = {
   entryId: string;
+  localEntry: PersonalMemoryEntry | null;
   logicalMemoryId: string | null;
   sessionId: string;
   syncState: PersonalMemorySharingRecord["syncState"];
@@ -53,7 +55,10 @@ export type ShareToWorkspaceRequest = {
 };
 
 export const personalMemorySharingSource = (
-  thread: Pick<PersonalDesktopProjectThread, "sessionId">,
+  thread: Pick<
+    PersonalDesktopProjectThread,
+    "eventCount" | "latestAt" | "name" | "projectName" | "sample" | "sessionId"
+  >,
   records: readonly PersonalMemorySharingRecord[]
 ): PersonalMemorySharingSource | null => {
   if (!thread.sessionId) return null;
@@ -63,6 +68,17 @@ export const personalMemorySharingSource = (
   if (!record) {
     return {
       entryId: thread.sessionId,
+      localEntry: {
+        id: thread.sessionId,
+        logicalMemoryId: null,
+        title: thread.name.trim() || "Untitled session",
+        projectName: thread.projectName,
+        updatedAt: thread.latestAt,
+        preview: thread.sample,
+        eventCount: thread.eventCount,
+        hasSynchronizedRevision: false,
+        syncState: "not_started"
+      },
       logicalMemoryId: null,
       sessionId: thread.sessionId,
       syncState: "not_started"
@@ -70,6 +86,7 @@ export const personalMemorySharingSource = (
   }
   return {
     entryId: record.entryId,
+    localEntry: null,
     logicalMemoryId: record.logicalMemoryId,
     sessionId: record.sessionId,
     syncState: record.syncState

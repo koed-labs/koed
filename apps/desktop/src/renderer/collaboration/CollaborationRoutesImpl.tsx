@@ -92,13 +92,16 @@ export type CollaborationModalState =
     }
   | { kind: "workspace_channel"; teamId: string; workspaceId: string }
   | { kind: "direct_message"; teamId: string; group: boolean }
-  | { kind: "share_personal_memory"; sessionId: string }
+  | {
+      kind: "share_personal_memory";
+      localEntry?: PersonalMemoryEntry;
+      sessionId: string;
+    }
   | { kind: "connection" };
 
 export const modalIsAuthorized = (
   modal: CollaborationModalState,
-  snapshot: CollaborationSnapshot,
-  localPersonalSessionIds: ReadonlySet<string>
+  snapshot: CollaborationSnapshot
 ): boolean => {
   if (modal.kind === "edit_personal_channel") {
     return snapshot.navigation.personal.channels.some(
@@ -124,10 +127,18 @@ export const modalIsAuthorized = (
     );
   }
   if (modal.kind === "share_personal_memory") {
+    const snapshotEntry = snapshot.navigation.personal.memory.some(
+      (entry) => entry.id === modal.sessionId
+    );
+    const localEntry = modal.localEntry;
     return (
-      localPersonalSessionIds.has(modal.sessionId) ||
-      snapshot.navigation.personal.memory.some(
-        (entry) => entry.id === modal.sessionId
+      snapshotEntry ||
+      Boolean(
+        localEntry &&
+        localEntry.id === modal.sessionId &&
+        localEntry.logicalMemoryId === null &&
+        !localEntry.hasSynchronizedRevision &&
+        localEntry.syncState === "not_started"
       )
     );
   }
@@ -1852,6 +1863,14 @@ const SHARED_MEMORY_REPRESENTATIONS = [
   "lcm_rollups"
 ] as const satisfies readonly SharedMemoryRepresentation[];
 
+const firstWritableWorkspace = (
+  team: CollaborationSnapshot["navigation"]["teams"][number] | null | undefined
+) =>
+  team?.workspaces.find(
+    (workspace) =>
+      workspace.lifecycle === "active" && workspace.access === "write"
+  ) ?? null;
+
 function SharedMemoryOwnerModal({
   client,
   entry,
@@ -1868,11 +1887,11 @@ function SharedMemoryOwnerModal({
   const availableTeams = snapshot.navigation.teams.filter(
     (team) => team.lifecycle === "active"
   );
-  const initialTeam = availableTeams[0] ?? null;
-  const initialWorkspace =
-    initialTeam?.workspaces.find(
-      (workspace) => workspace.lifecycle === "active"
-    ) ?? null;
+  const initialTeam =
+    availableTeams.find((team) => firstWritableWorkspace(team)) ??
+    availableTeams[0] ??
+    null;
+  const initialWorkspace = firstWritableWorkspace(initialTeam);
   const [teamId, setTeamId] = useState(initialTeam?.id ?? "");
   const [workspaceId, setWorkspaceId] = useState(initialWorkspace?.id ?? "");
   const [representation, setRepresentation] =
@@ -2000,9 +2019,11 @@ function SharedMemoryOwnerModal({
     });
 
   const beginNewShare = () => {
-    const team = availableTeams[0] ?? null;
-    const workspace =
-      team?.workspaces.find((item) => item.lifecycle === "active") ?? null;
+    const team =
+      availableTeams.find((candidate) => firstWritableWorkspace(candidate)) ??
+      availableTeams[0] ??
+      null;
+    const workspace = firstWritableWorkspace(team);
     setTeamId(team?.id ?? "");
     setWorkspaceId(workspace?.id ?? "");
     setRepresentation("memory_events");
@@ -2364,9 +2385,7 @@ function SharedMemoryOwnerModal({
                           );
                           setTeamId(event.currentTarget.value);
                           setWorkspaceId(
-                            nextTeam?.workspaces.find(
-                              (workspace) => workspace.lifecycle === "active"
-                            )?.id ?? ""
+                            firstWritableWorkspace(nextTeam)?.id ?? ""
                           );
                           setPreview(null);
                         }}
@@ -2558,9 +2577,10 @@ function ModalLayer({
   ) : null;
 
   if (modal.kind === "share_personal_memory") {
-    const entry = snapshot.navigation.personal.memory.find(
-      (candidate) => candidate.id === modal.sessionId
-    );
+    const entry =
+      snapshot.navigation.personal.memory.find(
+        (candidate) => candidate.id === modal.sessionId
+      ) ?? modal.localEntry;
     return entry ? (
       <SharedMemoryOwnerModal
         client={client}
@@ -3317,23 +3337,19 @@ export function CollaborationRoutes({
 
 export function CollaborationModalLayer({
   client,
-  localPersonalSessionIds = new Set<string>(),
   markdownAdapters,
   modal,
   onModalChange,
   snapshot
 }: {
   client: CollaborationRendererClient;
-  localPersonalSessionIds?: ReadonlySet<string>;
   markdownAdapters: MarkdownPlatformAdapters;
   modal: CollaborationModalState | null;
   onModalChange: (modal: CollaborationModalState | null) => void;
   snapshot: CollaborationSnapshot;
 }) {
   const authorizedModal =
-    modal && modalIsAuthorized(modal, snapshot, localPersonalSessionIds)
-      ? modal
-      : null;
+    modal && modalIsAuthorized(modal, snapshot) ? modal : null;
   useEffect(() => {
     if (modal && !authorizedModal) onModalChange(null);
   }, [authorizedModal, modal, onModalChange]);
@@ -3343,7 +3359,8 @@ export function CollaborationModalLayer({
       key={
         authorizedModal.kind +
         ("teamId" in authorizedModal ? authorizedModal.teamId : "") +
-        ("threadId" in authorizedModal ? authorizedModal.threadId : "")
+        ("threadId" in authorizedModal ? authorizedModal.threadId : "") +
+        ("sessionId" in authorizedModal ? authorizedModal.sessionId : "")
       }
       client={client}
       markdownAdapters={markdownAdapters}

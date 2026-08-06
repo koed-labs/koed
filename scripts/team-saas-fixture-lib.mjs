@@ -1737,7 +1737,10 @@ export const seedFixture = async (client, runtime) => {
           on conflict (id) do update set
             email = excluded.email,
             display_name = excluded.display_name,
-            password_hash = excluded.password_hash,
+            password_hash = case
+              when users.password_hash like '$argon2%' then users.password_hash
+              else null
+            end,
             disabled_at = excluded.disabled_at,
             disabled_reason = excluded.disabled_reason,
             deleted_at = null,
@@ -1747,7 +1750,7 @@ export const seedFixture = async (client, runtime) => {
           user.id,
           user.email,
           user.displayName,
-          `${FIXTURE_VERSION}:password-not-for-login`,
+          null,
           user.disabled ? new Date(FIXTURE_STATE_AT) : null,
           user.disabled ? "fixture_disabled_user" : null
         ]

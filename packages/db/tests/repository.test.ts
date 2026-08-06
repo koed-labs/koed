@@ -6926,10 +6926,30 @@ describeDb("memory repository visibility", () => {
     expect(claimedOutbox?.claimToken).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
+    await expect(
+      encryptedRepo.activateSourceSyncRelationship({
+        relationshipId: ids.relationshipId,
+        localUserId: owner.id
+      })
+    ).resolves.toMatchObject({ state: "created" });
+    await expect(
+      encryptedRepo.renewSyncQueueLease({
+        queue: "outbox",
+        id: outboxEntry.id,
+        claimToken: claimedOutbox!.claimToken!,
+        leaseMs: 30_000
+      })
+    ).resolves.toBe(true);
     await encryptedRepo.markSourceSyncProcessing({
       relationshipId: ids.relationshipId,
       packageId: randomUUID()
     });
+    await expect(
+      encryptedRepo.activateSourceSyncRelationship({
+        relationshipId: ids.relationshipId,
+        localUserId: owner.id
+      })
+    ).resolves.toMatchObject({ state: "processing" });
     await encryptedRepo.deferSyncQueueEntry({
       queue: "outbox",
       id: outboxEntry.id,
@@ -6953,7 +6973,7 @@ describeDb("memory repository visibility", () => {
       leaseMs: 30_000
     });
     await pool.query(
-      "update sync_outbox_entries set lease_expires_at=now()-interval '1 second' where id=$1",
+      "update sync_outbox_entries set lease_expires_at=null where id=$1",
       [outboxEntry.id]
     );
     const replacementClaim = await encryptedRepo.claimSyncQueueEntry({

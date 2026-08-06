@@ -50,6 +50,18 @@ const firstForwardedForAddress = (value: unknown): string | undefined => {
   return value.split(",")[0]?.trim() || undefined;
 };
 
+const passwordMatches = async (
+  passwordHash: string | null | undefined,
+  password: string
+): Promise<boolean> => {
+  if (!passwordHash) return false;
+  try {
+    return await argon2.verify(passwordHash, password);
+  } catch {
+    return false;
+  }
+};
+
 export const registerAuthRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
@@ -155,8 +167,8 @@ export const registerAuthRoutes = (
       const user = await repo.findUserByEmail(input.email);
 
       if (
-        !user?.passwordHash ||
-        !(await argon2.verify(user.passwordHash, input.password))
+        !user ||
+        !(await passwordMatches(user.passwordHash, input.password))
       ) {
         return reply.status(401).send({ error: "Invalid email or password" });
       }

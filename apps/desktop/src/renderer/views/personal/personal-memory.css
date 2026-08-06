@@ -570,7 +570,7 @@
   color: var(--destructive);
 }
 
-.native-approval-signal.authorization {
+.native-approval-signal.authority {
   border-color: color-mix(in oklab, var(--memory) 34%, var(--border));
   color: var(--memory);
 }

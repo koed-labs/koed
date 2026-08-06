@@ -166,7 +166,7 @@ function ConversationEventRow({
                   >
                     Risk · {approvalLevelLabel(approvalDecision.riskLevel)}
                   </span>
-                  <span className="native-approval-signal authorization">
+                  <span className="native-approval-signal authority">
                     Authorization ·{" "}
                     {approvalLevelLabel(approvalDecision.userAuthorization)}
                   </span>

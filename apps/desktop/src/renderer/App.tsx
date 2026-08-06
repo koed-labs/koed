@@ -296,7 +296,6 @@ export function App({
   const [commandOpen, setCommandOpen] = useState(false);
   const [managedConversationRevision, setManagedConversationRevision] =
     useState(0);
-  const [personalMemoryRevision, setPersonalMemoryRevision] = useState(0);
   const initialSelectionApplied = useRef(
     !initialCollaborationSelection || Boolean(client.current())
   );
@@ -304,15 +303,6 @@ export function App({
     () =>
       personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
     [personalMemoryApi]
-  );
-  const localPersonalSessionIds = useMemo(
-    () =>
-      new Set(
-        [...(personalMemoryStore?.current().threadsByKey.values() ?? [])]
-          .map(({ sessionId }) => sessionId)
-          .filter((sessionId): sessionId is string => Boolean(sessionId))
-      ),
-    [personalMemoryRevision, personalMemoryStore]
   );
   const desktopStatus = useDesktopStatus(activeStatusStore);
   const localSetupReady =
@@ -388,14 +378,6 @@ export function App({
       unsubscribe();
     };
   }, []);
-
-  useEffect(
-    () =>
-      personalMemoryStore?.subscribe(() => {
-        setPersonalMemoryRevision((revision) => revision + 1);
-      }),
-    [personalMemoryStore]
-  );
 
   useEffect(
     () =>
@@ -771,7 +753,8 @@ export function App({
             onShareToWorkspace={({ source }) => {
               collaboration.setModal({
                 kind: "share_personal_memory",
-                sessionId: source.sessionId
+                sessionId: source.sessionId,
+                ...(source.localEntry ? { localEntry: source.localEntry } : {})
               });
             }}
             route={personalMemoryRoute(route)}
@@ -1021,7 +1004,6 @@ export function App({
         <Suspense fallback={null}>
           <CollaborationModalLayer
             client={client}
-            localPersonalSessionIds={localPersonalSessionIds}
             markdownAdapters={collaboration.markdownAdapters}
             modal={collaboration.modal}
             onModalChange={collaboration.setModal}
