@@ -511,6 +511,14 @@ describeDb("high-risk action grants", () => {
       body: { ok: true },
       replayed: false
     });
+    await expect(
+      repository.getActionGrant({
+        clientRequestId,
+        ownerUserId: fixture.userId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        upstreamBackendId: fixture.upstreamBackendId
+      })
+    ).resolves.toMatchObject({ state: "consumed" });
 
     const replay = await repository.executeActionGrant({
       ...operation,
@@ -777,5 +785,77 @@ describeDb("high-risk action grants", () => {
         })
       })
     ).toBeNull();
+  });
+
+  it("cancels only the request bound to the selected device and backend", async () => {
+    const fixture = await createFixture();
+    const db = createDb(pool);
+    const [otherDevice] = await db
+      .insert(deviceCredentials)
+      .values({
+        ownerUserId: fixture.userId,
+        credentialKeyId: `high-risk-${randomUUID()}`,
+        upstreamBackendId: fixture.upstreamBackendId,
+        deviceInstanceId: `device-${randomUUID()}`,
+        lineageId: randomUUID(),
+        verifierKind: "secret_hash",
+        verifierHash: hash(randomUUID()),
+        operationFamilies: ["action_grant"]
+      })
+      .returning({ id: deviceCredentials.id });
+    const repository = createRepository({ pool });
+    const clientRequestId = randomUUID();
+    const firstBinding = binding(fixture);
+    const secondBinding = {
+      ...firstBinding,
+      deviceCredentialId: otherDevice!.id
+    };
+
+    await expect(
+      repository.createActionGrant({
+        ...firstBinding,
+        clientRequestId,
+        credentialOperationFamily: "action_grant",
+        approvalTier: "direct",
+        review: null,
+        grantCommitment: highRiskActionGrantCommitment(createGrantSecret())
+      })
+    ).resolves.toMatchObject({ state: "approved" });
+    await expect(
+      repository.createActionGrant({
+        ...secondBinding,
+        clientRequestId,
+        credentialOperationFamily: "action_grant",
+        approvalTier: "direct",
+        review: null,
+        grantCommitment: highRiskActionGrantCommitment(createGrantSecret())
+      })
+    ).resolves.toMatchObject({ state: "approved" });
+
+    await expect(
+      repository.cancelActionGrant({
+        clientRequestId,
+        ownerUserId: fixture.userId,
+        deviceCredentialId: otherDevice!.id,
+        upstreamBackendId: fixture.upstreamBackendId,
+        reasonCode: "user_cancelled"
+      })
+    ).resolves.toBe(true);
+    await expect(
+      repository.getActionGrant({
+        clientRequestId,
+        ownerUserId: fixture.userId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        upstreamBackendId: fixture.upstreamBackendId
+      })
+    ).resolves.toMatchObject({ state: "approved" });
+    await expect(
+      repository.getActionGrant({
+        clientRequestId,
+        ownerUserId: fixture.userId,
+        deviceCredentialId: otherDevice!.id,
+        upstreamBackendId: fixture.upstreamBackendId
+      })
+    ).resolves.toMatchObject({ state: "revoked" });
   });
 });

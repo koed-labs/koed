@@ -23,6 +23,7 @@ export type UpstreamEnrollmentTransactionState =
 export type UpstreamEnrollmentTransactionEffect =
   | "none"
   | "stage_pending_custody"
+  | "compensate_pending_custody"
   | "record_challenge"
   | "commit_successor"
   | "abort_pending"
@@ -59,6 +60,25 @@ export interface UpstreamEnrollmentTransactionDecision {
   effect: UpstreamEnrollmentTransactionEffect;
   temporary: boolean;
 }
+
+type ActiveUpstreamEnrollmentTransactionEffect = Exclude<
+  UpstreamEnrollmentTransactionEffect,
+  "none"
+>;
+
+export const executeUpstreamEnrollmentTransactionEffect = <T>(
+  decision: UpstreamEnrollmentTransactionDecision,
+  handlers: Partial<Record<ActiveUpstreamEnrollmentTransactionEffect, () => T>>
+): T | null => {
+  if (decision.effect === "none") return null;
+  const handler = handlers[decision.effect];
+  if (!handler) {
+    throw new Error(
+      `Enrollment transaction effect ${decision.effect} has no handler.`
+    );
+  }
+  return handler();
+};
 
 const decision = (
   current: UpstreamEnrollmentTransactionSnapshot,
@@ -123,8 +143,24 @@ export const decideUpstreamEnrollmentTransaction = (
   }
 
   if (event.type === "recover") {
-    if (current.phase !== "recovery_required" || !current.pendingEffect) {
+    if (!current.pendingEffect) {
       return decision(current, {});
+    }
+    if (current.phase !== "recovery_required") {
+      return current.phase === "prepared" ||
+        current.phase === "awaiting_remote" ||
+        current.phase === "committing" ||
+        current.phase === "aborting"
+        ? decision(current, {}, current.pendingEffect)
+        : decision(current, {});
+    }
+    if (current.pendingEffect === "stage_pending_custody") {
+      return beginEffect(
+        current,
+        "aborting",
+        "failed",
+        "compensate_pending_custody"
+      );
     }
     const phase =
       current.pendingEffect === "commit_successor"
@@ -132,9 +168,7 @@ export const decideUpstreamEnrollmentTransaction = (
         : current.pendingEffect === "abort_pending" ||
             current.pendingEffect === "revoke_active"
           ? "aborting"
-          : current.pendingEffect === "stage_pending_custody"
-            ? "prepared"
-            : "awaiting_remote";
+          : "awaiting_remote";
     return decision(current, { phase }, current.pendingEffect);
   }
 

@@ -2,13 +2,14 @@ import type {
   MemorySourceRepository,
   TeamMembershipActionReviewRecord
 } from "@koed/db";
-import { collaborationApprovalReviewSchema } from "@koed/shared";
 
-import { teamAdminRequestHash, teamAdminScopeHash } from "../team/routes.js";
+import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {
-  ActionApprovalPolicyError,
-  type ActionApprovalPolicy
-} from "./approval-policy.js";
+  bindTeamAdminOperation,
+  requireActionReview,
+  reviewedAction,
+  unavailableAction
+} from "./action-definition-support.js";
 import type {
   HighRiskActionGrantIntent,
   HighRiskResolvedActionGrantOperation
@@ -48,55 +49,24 @@ interface TeamActionAdmission {
   policy: ActionApprovalPolicy;
 }
 
-const bindTeamOperation = (
-  operation: Omit<
-    HighRiskResolvedActionGrantOperation,
-    "scopeHash" | "requestHash"
-  >
-): HighRiskResolvedActionGrantOperation => ({
-  ...operation,
-  scopeHash: teamAdminScopeHash({
-    action: operation.action,
-    teamId: operation.teamId,
-    targetId: operation.targetId
-  }),
-  requestHash: teamAdminRequestHash({
-    method: operation.method,
-    path: operation.path,
-    body: operation.body
-  })
-});
-
 const nativeReview = (
-  review: Omit<
-    Parameters<typeof collaborationApprovalReviewSchema.parse>[0],
-    "version"
-  >
-): ActionApprovalPolicy => ({
-  disposition: "native_review",
-  review: collaborationApprovalReviewSchema.parse({ version: 1, ...review })
-});
+  review: Parameters<typeof reviewedAction>[1]
+): ActionApprovalPolicy => reviewedAction("native_review", review);
 
 const stepUp = (
-  review: Omit<
-    Parameters<typeof collaborationApprovalReviewSchema.parse>[0],
-    "version"
-  >
-): ActionApprovalPolicy => ({
-  disposition: "step_up",
-  review: collaborationApprovalReviewSchema.parse({ version: 1, ...review })
-});
+  review: Parameters<typeof reviewedAction>[1]
+): ActionApprovalPolicy => reviewedAction("step_up", review);
 
-const unavailable = (context: string): never => {
-  throw new ActionApprovalPolicyError(
+const unavailable = (context: string): never =>
+  unavailableAction(
     `${context} review requires complete current authorization context`
   );
-};
 
-const requireReview = <T>(value: T | null, context: string): T => {
-  if (!value) unavailable(context);
-  return value as T;
-};
+const requireReview = <T>(value: T | null, context: string): T =>
+  requireActionReview(
+    value,
+    `${context} review requires complete current authorization context`
+  );
 
 const memberDisplay = (review: TeamMembershipActionReviewRecord): string =>
   review.member.displayName?.trim() ||
@@ -140,7 +110,7 @@ const teamCreateActionDefinition = defineTeamAction<
 >({
   action: "team.create",
   resolveOperation: (intent) =>
-    bindTeamOperation({
+    bindTeamAdminOperation({
       operationFamily: "admin",
       action: intent.action,
       teamId: null,
@@ -157,7 +127,7 @@ const teamInviteAcceptActionDefinition = defineTeamAction<
 >({
   action: "team.invite.accept",
   resolveOperation: (intent) =>
-    bindTeamOperation({
+    bindTeamAdminOperation({
       operationFamily: "admin",
       action: intent.action,
       teamId: null,
@@ -198,7 +168,7 @@ const teamInviteRevokeActionDefinition = defineTeamAction<
 >({
   action: "team.invite.revoke",
   resolveOperation: (intent) =>
-    bindTeamOperation({
+    bindTeamAdminOperation({
       operationFamily: "admin",
       action: intent.action,
       teamId: intent.teamId,
@@ -238,7 +208,7 @@ const teamMemberRoleUpdateActionDefinition = defineTeamAction<
 >({
   action: "team.member.role_update",
   resolveOperation: (intent) =>
-    bindTeamOperation({
+    bindTeamAdminOperation({
       operationFamily: "admin",
       action: intent.action,
       teamId: intent.teamId,
@@ -291,7 +261,7 @@ const teamMemberDisableActionDefinition = defineTeamAction<
 >({
   action: "team.member.disable",
   resolveOperation: (intent) =>
-    bindTeamOperation({
+    bindTeamAdminOperation({
       operationFamily: "admin",
       action: intent.action,
       teamId: intent.teamId,
@@ -335,7 +305,7 @@ const teamLeaveActionDefinition = defineTeamAction<
 >({
   action: "team.leave",
   resolveOperation: (intent) =>
-    bindTeamOperation({
+    bindTeamAdminOperation({
       operationFamily: "admin",
       action: intent.action,
       teamId: intent.teamId,

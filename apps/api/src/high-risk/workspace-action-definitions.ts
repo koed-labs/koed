@@ -2,16 +2,13 @@ import type {
   MemorySourceRepository,
   TeamWorkspaceAccessUpdateReviewRecord
 } from "@koed/db";
+import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {
-  collaborationApprovalReviewSchema,
-  type CollaborationApprovalReview
-} from "@koed/shared";
-
-import { teamAdminRequestHash, teamAdminScopeHash } from "../team/routes.js";
-import {
-  ActionApprovalPolicyError,
-  type ActionApprovalPolicy
-} from "./approval-policy.js";
+  bindTeamAdminOperation,
+  requireActionReview,
+  reviewedAction,
+  unavailableAction
+} from "./action-definition-support.js";
 import type {
   HighRiskActionGrantIntent,
   HighRiskResolvedActionGrantOperation
@@ -41,43 +38,21 @@ interface WorkspaceActionAdmissionInput {
   intent: HighRiskActionGrantIntent;
 }
 
-const unavailable = (context: string): never => {
-  throw new ActionApprovalPolicyError(
+const unavailable = (context: string): never =>
+  unavailableAction(
     `${context} review requires complete current authorization context`
   );
-};
 
-const requireReview = <T>(value: T | null, context: string): T => {
-  if (!value) unavailable(context);
-  return value as T;
-};
-
-const bindTeamOperation = (
-  operation: Omit<
-    HighRiskResolvedActionGrantOperation,
-    "scopeHash" | "requestHash"
-  >
-): HighRiskResolvedActionGrantOperation => ({
-  ...operation,
-  scopeHash: teamAdminScopeHash({
-    action: operation.action,
-    teamId: operation.teamId,
-    targetId: operation.targetId
-  }),
-  requestHash: teamAdminRequestHash({
-    method: operation.method,
-    path: operation.path,
-    body: operation.body
-  })
-});
+const requireReview = <T>(value: T | null, context: string): T =>
+  requireActionReview(
+    value,
+    `${context} review requires complete current authorization context`
+  );
 
 const reviewed = (
   disposition: "native_review" | "step_up",
-  review: Omit<CollaborationApprovalReview, "version">
-): ActionApprovalPolicy => ({
-  disposition,
-  review: collaborationApprovalReviewSchema.parse({ version: 1, ...review })
-});
+  review: Parameters<typeof reviewedAction>[1]
+): ActionApprovalPolicy => reviewedAction(disposition, review);
 
 export const bindTeamWorkspaceCreateOperation = (
   intent: Extract<WorkspaceActionIntent, { action: "team.workspace.create" }>
@@ -93,7 +68,7 @@ export const bindTeamWorkspaceCreateOperation = (
   ) {
     unavailable("Team Workspace creation");
   }
-  return bindTeamOperation({
+  return bindTeamAdminOperation({
     operationFamily: "admin",
     action: intent.action,
     teamId,
@@ -114,7 +89,7 @@ export const bindTeamWorkspaceLifecycleOperation = (
   >,
   teamId: string
 ): HighRiskResolvedActionGrantOperation =>
-  bindTeamOperation({
+  bindTeamAdminOperation({
     operationFamily: "admin",
     action: intent.action,
     teamId,
@@ -133,7 +108,7 @@ export const bindTeamWorkspaceAccessUpdateOperation = (
   >,
   teamId: string
 ): HighRiskResolvedActionGrantOperation =>
-  bindTeamOperation({
+  bindTeamAdminOperation({
     operationFamily: "admin",
     action: intent.action,
     teamId,

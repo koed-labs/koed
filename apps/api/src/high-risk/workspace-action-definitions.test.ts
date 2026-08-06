@@ -239,6 +239,48 @@ describe("Workspace action definitions", () => {
     expect(disablement).toMatchObject({ policy: { disposition: "step_up" } });
   });
 
+  it.each(["team", "workspace", "member"] as const)(
+    "rejects dangerous Unicode controls in authoritative %s names",
+    async (field) => {
+      const repo = repository();
+      const review = (await repository().getTeamWorkspaceAccessUpdateReview(
+        { userId: ids.actor },
+        { teamWorkspaceId: ids.workspace, userId: ids.member }
+      ))!;
+      repo.getTeamWorkspaceAccessUpdateReview.mockResolvedValueOnce({
+        ...review,
+        team: {
+          ...review.team,
+          name: field === "team" ? "Safe\u202eAdmin" : review.team.name
+        },
+        workspace: {
+          ...review.workspace,
+          name:
+            field === "workspace" ? "Safe\u2066Archive" : review.workspace.name
+        },
+        member: {
+          ...review.member,
+          displayName:
+            field === "member"
+              ? "Safe\nAdministrator"
+              : review.member.displayName
+        }
+      } as never);
+
+      await expect(
+        admit(
+          {
+            action: "team.workspace.access_update",
+            teamId: ids.team,
+            teamWorkspaceId: ids.workspace,
+            body: { userId: ids.member, access: "read", expectedVersion: 3 }
+          },
+          repo
+        )
+      ).rejects.toThrow("Approval copy must not contain");
+    }
+  );
+
   it("fails closed for missing, stale, or mismatched Workspace context", async () => {
     const repo = repository();
     repo.getTeamWorkspaceLifecycleReview.mockResolvedValueOnce(null as never);

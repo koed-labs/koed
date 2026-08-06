@@ -36,7 +36,6 @@ import {
   lockShareGrantRetentionScopeWithClient,
   scheduleShareGrantRevocationRetentionWithClient
 } from "./retention-lifecycle-repository.js";
-import { createSavepointPool } from "./savepoint-pool.js";
 
 export const SHARED_MEMORY_AUTHORITY = SHARED_MEMORY_AUTHORITY_ACTION;
 
@@ -666,6 +665,24 @@ export interface SharedMemoryRepository {
     }
   ): Promise<SharedMemoryReadResult | null>;
 }
+
+type SharedMemoryClientScopedRepository = SharedMemoryRepository & {
+  createSourceOwnerConsent(
+    actor: ActorContext,
+    input: SharedMemoryCreateConsentInput,
+    client?: pg.PoolClient
+  ): Promise<SharedMemoryConsentRecord>;
+  createShareGrant(
+    actor: ActorContext,
+    input: SharedMemoryCreateGrantInput,
+    client?: pg.PoolClient
+  ): Promise<SharedMemoryGrantRecord>;
+  selectGrantRepresentation(
+    actor: ActorContext,
+    input: SharedMemorySelectRepresentationInput,
+    client?: pg.PoolClient
+  ): Promise<SharedMemoryGrantRecord>;
+};
 
 export class SharedMemoryAuthorizationError extends Error {
   statusCode = 403;
@@ -4754,7 +4771,7 @@ export const createSharedMemoryRepository = (
     };
   };
 
-  const repository: SharedMemoryRepository = {
+  const repository: SharedMemoryClientScopedRepository = {
     async getSharedMemoryPreviewAdmission(actor, input) {
       return withTransaction(pool, (client) =>
         reviewOrNull(async () => {
@@ -5342,18 +5359,19 @@ export const createSharedMemoryRepository = (
     async createShareBundle(actor, input) {
       try {
         return await withTransaction(pool, async (client) => {
-          const repository = createSharedMemoryRepository(
-            createSavepointPool(client, "shared_memory_bundle"),
-            options
-          );
           const consent = await repository.createSourceOwnerConsent(
             actor,
-            input.consent
+            input.consent,
+            client
           );
           if (!consentMatchesBinding(consent, input.expected)) {
             throw new SharedMemoryBundleInvariantError();
           }
-          const grant = await repository.createShareGrant(actor, input.grant);
+          const grant = await repository.createShareGrant(
+            actor,
+            input.grant,
+            client
+          );
           if (!grantMatchesBinding(grant, input.expected)) {
             throw new SharedMemoryBundleInvariantError();
           }
@@ -5368,20 +5386,18 @@ export const createSharedMemoryRepository = (
     async changeRepresentationBundle(actor, input) {
       try {
         return await withTransaction(pool, async (client) => {
-          const repository = createSharedMemoryRepository(
-            createSavepointPool(client, "shared_memory_bundle"),
-            options
-          );
           const consent = await repository.createSourceOwnerConsent(
             actor,
-            input.consent
+            input.consent,
+            client
           );
           if (!consentMatchesBinding(consent, input.expected)) {
             throw new SharedMemoryBundleInvariantError();
           }
           const grant = await repository.selectGrantRepresentation(
             actor,
-            input.representation
+            input.representation,
+            client
           );
           if (!grantMatchesBinding(grant, input.expected)) {
             throw new SharedMemoryBundleInvariantError();
@@ -5394,14 +5410,18 @@ export const createSharedMemoryRepository = (
       }
     },
 
-    async createSourceOwnerConsent(actor, input) {
+    async createSourceOwnerConsent(
+      actor,
+      input,
+      transactionClient?: pg.PoolClient
+    ) {
       assertUuid(input.consentId, "consentId");
       const allowed = normalizedRepresentations(input.allowedRepresentations);
       if (!allowed.includes(input.selectedRepresentation))
         throw new SharedMemoryConflictError(
           "Selected representation is outside owner consent"
         );
-      return withTransaction(pool, async (client) => {
+      const command = async (client: pg.PoolClient) => {
         const loaded = await loadPersistedPreviewByReference(client, {
           preview: input.preview,
           requiredMessage: "Consent preview reference is not active"
@@ -5558,13 +5578,16 @@ export const createSharedMemoryRepository = (
           ]
         );
         return mapConsent(inserted.rows[0] as Row);
-      });
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
     },
 
-    async createShareGrant(actor, input) {
+    async createShareGrant(actor, input, transactionClient?: pg.PoolClient) {
       assertUuid(input.mutationId, "mutationId");
       assertUuid(input.logicalGrantId, "logicalGrantId");
-      return withTransaction(pool, async (client) => {
+      const command = async (client: pg.PoolClient) => {
         const consentResult = await client.query(
           `select c.*,lm.owner_user_id,lm.local_session_id
            from source_owner_representation_consents c
@@ -5717,12 +5740,19 @@ export const createSharedMemoryRepository = (
           actorPrincipalId: actor.userId
         });
         return mapGrant(row);
-      });
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
     },
 
-    async selectGrantRepresentation(actor, input) {
+    async selectGrantRepresentation(
+      actor,
+      input,
+      transactionClient?: pg.PoolClient
+    ) {
       assertUuid(input.mutationId, "mutationId");
-      return withTransaction(pool, async (client) => {
+      const command = async (client: pg.PoolClient) => {
         await lockShareGrantRetentionScopeWithClient(
           client,
           input.shareGrantId
@@ -5874,7 +5904,10 @@ export const createSharedMemoryRepository = (
           actorPrincipalId: actor.userId
         });
         return mapGrant(row);
-      });
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
     },
 
     async revokeShareGrant(actor, input) {

@@ -1,18 +1,14 @@
 import type { MemorySourceRepository, TeamRecord } from "@koed/db";
 import {
-  collaborationApprovalReviewSchema,
-  type CollaborationApprovalReview
-} from "@koed/shared";
-
-import {
   retentionAdminRequestHash,
   retentionAdminScopeHash
 } from "../retention/routes.js";
-import { teamAdminRequestHash, teamAdminScopeHash } from "../team/routes.js";
+import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {
-  ActionApprovalPolicyError,
-  type ActionApprovalPolicy
-} from "./approval-policy.js";
+  bindTeamAdminOperation,
+  reviewedAction,
+  unavailableAction
+} from "./action-definition-support.js";
 import type {
   HighRiskActionGrantIntent,
   HighRiskResolvedActionGrantOperation
@@ -46,37 +42,14 @@ interface GovernanceAdmissionInput {
   intent: HighRiskActionGrantIntent;
 }
 
-const unavailable = (context: string): never => {
-  throw new ActionApprovalPolicyError(
+const unavailable = (context: string): never =>
+  unavailableAction(
     `${context} requires complete current Team, version, and governance context`
   );
-};
 
 const reviewed = (
-  review: Omit<CollaborationApprovalReview, "version">
-): ActionApprovalPolicy => ({
-  disposition: "step_up",
-  review: collaborationApprovalReviewSchema.parse({ version: 1, ...review })
-});
-
-const bindTeamOperation = (
-  operation: Omit<
-    HighRiskResolvedActionGrantOperation,
-    "scopeHash" | "requestHash"
-  >
-): HighRiskResolvedActionGrantOperation => ({
-  ...operation,
-  scopeHash: teamAdminScopeHash({
-    action: operation.action,
-    teamId: operation.teamId,
-    targetId: operation.targetId
-  }),
-  requestHash: teamAdminRequestHash({
-    method: operation.method,
-    path: operation.path,
-    body: operation.body
-  })
-});
+  review: Parameters<typeof reviewedAction>[1]
+): ActionApprovalPolicy => reviewedAction("step_up", review);
 
 const bindRetentionOperation = (
   operation: Omit<
@@ -100,7 +73,7 @@ const bindRetentionOperation = (
 export const bindEntitlementOperation = (
   intent: Extract<GovernanceIntent, { action: "team.entitlement.update" }>
 ): HighRiskResolvedActionGrantOperation =>
-  bindTeamOperation({
+  bindTeamAdminOperation({
     operationFamily: "admin",
     action: intent.action,
     teamId: intent.teamId,
@@ -113,7 +86,7 @@ export const bindEntitlementOperation = (
 export const bindBillingSeatsOperation = (
   intent: Extract<GovernanceIntent, { action: "team.billing_seats.update" }>
 ): HighRiskResolvedActionGrantOperation =>
-  bindTeamOperation({
+  bindTeamAdminOperation({
     operationFamily: "admin",
     action: intent.action,
     teamId: intent.teamId,

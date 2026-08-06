@@ -4,14 +4,14 @@ import {
   calculateConversationSourceDownloadScopeHash,
   calculateConversationSourceDiscoveryRequestHash,
   calculateConversationSourceDiscoveryScopeHash,
-  collaborationApprovalReviewSchema,
   type CollaborationApprovalReview
 } from "@koed/shared";
 
+import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {
-  ActionApprovalPolicyError,
-  type ActionApprovalPolicy
-} from "./approval-policy.js";
+  reviewedAction,
+  unavailableAction
+} from "./action-definition-support.js";
 import {
   managedConversationTransferRequestHash,
   managedConversationTransferScopeHash,
@@ -45,19 +45,15 @@ interface ManagedSourceAdmissionInput {
 
 const TARGET_ESTABLISHMENT_MS = 24 * 60 * 60 * 1_000;
 
-const unavailable = (context: string): never => {
-  throw new ActionApprovalPolicyError(
+const unavailable = (context: string): never =>
+  unavailableAction(
     `${context} requires complete current execution and enrolled device context`
   );
-};
 
 const reviewed = (
   disposition: "native_review" | "step_up",
   review: Omit<CollaborationApprovalReview, "version">
-): ActionApprovalPolicy => ({
-  disposition,
-  review: collaborationApprovalReviewSchema.parse({ version: 1, ...review })
-});
+): ActionApprovalPolicy => reviewedAction(disposition, review);
 
 export const bindConversationSourceDiscoveryOperation = (
   intent: Extract<

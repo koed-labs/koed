@@ -1,8 +1,4 @@
-import {
-  highRiskActionGrantCanonicalHash,
-  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
-  teamPresenceStatusCatalogue
-} from "@koed/shared";
+import { teamPresenceStatusCatalogue } from "@koed/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
   type DeviceCredentialAuthContext,
@@ -42,6 +38,15 @@ import {
   publicTeamManagementMember,
   publicTeamRosterMember
 } from "./presence.js";
+import {
+  teamAdminRequestHash,
+  teamAdminScopeHash
+} from "./action-grant-hash.js";
+
+export {
+  teamAdminRequestHash,
+  teamAdminScopeHash
+} from "./action-grant-hash.js";
 
 const forbidden = (message: string) =>
   Object.assign(new Error(message), { statusCode: 403 });
@@ -58,31 +63,6 @@ const isStaleVersionError = (error: unknown): boolean =>
     typeof error === "object" &&
     "code" in error &&
     error.code === "STALE_VERSION"
-  );
-
-export const teamAdminScopeHash = (input: {
-  action: string;
-  teamId: string | null;
-  targetId: string | null;
-}): string =>
-  highRiskActionGrantCanonicalHash(
-    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
-    {
-      operationFamily: "admin",
-      action: input.action,
-      teamId: input.teamId,
-      targetId: input.targetId
-    }
-  );
-
-export const teamAdminRequestHash = (input: {
-  method: string;
-  path: string;
-  body: unknown;
-}): string =>
-  highRiskActionGrantCanonicalHash(
-    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
-    input
   );
 
 const backendOriginHash = (protocolDeploymentId: string): string =>

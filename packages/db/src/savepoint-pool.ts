@@ -9,7 +9,7 @@ const queryText = (
 
 export const createSavepointPool = (
   client: pg.PoolClient,
-  scope: "high_risk" | "shared_memory_bundle"
+  scope: "high_risk"
 ): pg.Pool => {
   let depth = 0;
   const emptyQueryResult = (): pg.QueryResult<pg.QueryResultRow> => ({

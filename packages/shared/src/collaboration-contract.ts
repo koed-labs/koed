@@ -152,6 +152,15 @@ const boundedRequiredUtf8 = (maximum: number) =>
     `Must contain at most ${maximum} UTF-8 bytes`
   );
 
+const dangerousApprovalCopyPattern =
+  /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u206f]/u;
+
+const authoritativeApprovalCopy = (maximum: number) =>
+  boundedRequiredUtf8(maximum).refine(
+    (value) => !dangerousApprovalCopyPattern.test(value),
+    "Approval copy must not contain line, control, or bidirectional formatting characters"
+  );
+
 const distinctUuidArray = (minimum: number, maximum: number) =>
   z
     .array(z.uuid())
@@ -1643,16 +1652,16 @@ export const collaborationApprovalTierSchema = z.enum([
 export const collaborationApprovalReviewSchema = z
   .object({
     version: z.literal(1),
-    title: boundedRequiredUtf8(160),
-    description: boundedRequiredUtf8(600),
-    consequence: boundedRequiredUtf8(600),
-    confirmLabel: boundedRequiredUtf8(80),
+    title: authoritativeApprovalCopy(160),
+    description: authoritativeApprovalCopy(600),
+    consequence: authoritativeApprovalCopy(600),
+    confirmLabel: authoritativeApprovalCopy(80),
     details: z
       .array(
         z
           .object({
-            label: boundedRequiredUtf8(80),
-            value: boundedRequiredUtf8(320)
+            label: authoritativeApprovalCopy(80),
+            value: authoritativeApprovalCopy(320)
           })
           .strict()
       )

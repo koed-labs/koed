@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createUpstreamEnrollmentTransaction,
   decideUpstreamEnrollmentTransaction,
+  executeUpstreamEnrollmentTransactionEffect,
   upstreamEnrollmentObservationApplies,
   type UpstreamEnrollmentTransactionEvent,
   type UpstreamEnrollmentTransactionSnapshot
@@ -21,6 +22,27 @@ const transition = (
 ) => decideUpstreamEnrollmentTransaction(snapshot, event).next;
 
 describe("upstream enrollment transaction", () => {
+  it("dispatches only the effect declared by the transition decision", () => {
+    const current = createUpstreamEnrollmentTransaction({
+      id: "request-1",
+      generation: 1,
+      kind: "initial"
+    });
+    const decision = decideUpstreamEnrollmentTransaction(current, {
+      type: "prepare"
+    });
+    const handled = vi.fn(() => "staged");
+
+    expect(
+      executeUpstreamEnrollmentTransactionEffect(decision, {
+        stage_pending_custody: handled
+      })
+    ).toBe("staged");
+    expect(handled).toHaveBeenCalledOnce();
+    expect(() =>
+      executeUpstreamEnrollmentTransactionEffect(decision, {})
+    ).toThrow("stage_pending_custody has no handler");
+  });
   it("orders durable pending custody before remote challenge creation", () => {
     const prepared = initial();
     const stage = decideUpstreamEnrollmentTransaction(prepared, {
@@ -129,6 +151,37 @@ describe("upstream enrollment transaction", () => {
     ).toMatchObject({
       effect: "abort_pending",
       next: { phase: "aborting", pendingEffect: "abort_pending" }
+    });
+  });
+
+  it("redispatches a persisted effect that was interrupted after its phase was saved", () => {
+    const awaiting = transition(initial(), { type: "effect_succeeded" });
+    const aborting = decideUpstreamEnrollmentTransaction(awaiting, {
+      type: "cancel"
+    }).next;
+
+    expect(
+      decideUpstreamEnrollmentTransaction(aborting, { type: "recover" })
+    ).toMatchObject({
+      effect: "abort_pending",
+      next: { phase: "aborting", pendingEffect: "abort_pending" }
+    });
+  });
+
+  it("drives failed custody staging into an explicit compensation effect", () => {
+    const failed = decideUpstreamEnrollmentTransaction(initial(), {
+      type: "effect_failed"
+    }).next;
+
+    expect(
+      decideUpstreamEnrollmentTransaction(failed, { type: "recover" })
+    ).toMatchObject({
+      effect: "compensate_pending_custody",
+      next: {
+        phase: "aborting",
+        state: "failed",
+        pendingEffect: "compensate_pending_custody"
+      }
     });
   });
 

@@ -7,7 +7,6 @@ import type {
   SharedMemoryShareReviewRecord
 } from "@koed/db";
 import {
-  collaborationApprovalReviewSchema,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
@@ -15,10 +14,12 @@ import {
   type CollaborationApprovalReview
 } from "@koed/shared";
 
+import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {
-  ActionApprovalPolicyError,
-  type ActionApprovalPolicy
-} from "./approval-policy.js";
+  requireActionReview,
+  reviewedAction,
+  unavailableAction
+} from "./action-definition-support.js";
 import type {
   HighRiskActionGrantIntent,
   HighRiskResolvedActionGrantOperation
@@ -50,24 +51,21 @@ interface SharedMemoryAdmissionInput {
   intent: HighRiskActionGrantIntent;
 }
 
-const unavailable = (context: string): never => {
-  throw new ActionApprovalPolicyError(
+const unavailable = (context: string): never =>
+  unavailableAction(
     `${context} requires complete current source-owner, destination, preview, policy, and grant context`
   );
-};
 
-const requireReview = <T>(value: T | null, context: string): T => {
-  if (!value) unavailable(context);
-  return value as T;
-};
+const requireReview = <T>(value: T | null, context: string): T =>
+  requireActionReview(
+    value,
+    `${context} requires complete current source-owner, destination, preview, policy, and grant context`
+  );
 
 const reviewed = (
   disposition: "native_review" | "step_up",
   review: Omit<CollaborationApprovalReview, "version">
-): ActionApprovalPolicy => ({
-  disposition,
-  review: collaborationApprovalReviewSchema.parse({ version: 1, ...review })
-});
+): ActionApprovalPolicy => reviewedAction(disposition, review);
 
 const representationRank: Record<SharedMemoryRepresentation, number> = {
   lcm_rollups: 0,

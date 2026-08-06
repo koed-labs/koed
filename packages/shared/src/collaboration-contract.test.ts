@@ -6,6 +6,7 @@ import {
   COLLABORATION_NAME_MAX_CODE_POINTS,
   collaborationCommandReturnsSnapshot,
   collaborationCommandResultSchema,
+  collaborationApprovalReviewSchema,
   collaborationDurableSendEventSchema,
   collaborationDurableSendSchema,
   collaborationLimitsSchema,
@@ -61,6 +62,39 @@ const ids = {
 const timestamp = "2026-07-17T08:30:00.000Z";
 const revision = "snapshot.revision-000001";
 const cursor = "cursor.page-000000001";
+
+const authoritativeApprovalReview = () => ({
+  version: 1 as const,
+  title: "Archive Research?",
+  description: "Review the current Team and Workspace.",
+  consequence: "The Workspace will no longer be normally available.",
+  confirmLabel: "Archive Workspace",
+  details: [{ label: "Team", value: "Équipe 東京" }]
+});
+
+describe("authoritative approval copy", () => {
+  it("retains legitimate normalized Unicode", () => {
+    expect(
+      collaborationApprovalReviewSchema.parse(authoritativeApprovalReview())
+        .details[0]?.value
+    ).toBe("Équipe 東京");
+  });
+
+  it.each([
+    "Team\nAdmin",
+    "Team\u0000Admin",
+    "Team\u202eAdmin",
+    "Team\u2066Admin",
+    "Team\u206aAdmin"
+  ])("rejects dangerous review value %j", (value) => {
+    expect(
+      collaborationApprovalReviewSchema.safeParse({
+        ...authoritativeApprovalReview(),
+        details: [{ label: "Team", value }]
+      }).success
+    ).toBe(false);
+  });
+});
 
 const participant = (
   id: string = ids.user,

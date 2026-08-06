@@ -1,11 +1,11 @@
 import type { MemorySourceRepository } from "@koed/db";
-import { collaborationApprovalReviewSchema } from "@koed/shared";
 
-import { teamAdminRequestHash, teamAdminScopeHash } from "../team/routes.js";
+import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {
-  ActionApprovalPolicyError,
-  type ActionApprovalPolicy
-} from "./approval-policy.js";
+  bindTeamAdminOperation,
+  reviewedAction,
+  unavailableAction
+} from "./action-definition-support.js";
 import type {
   HighRiskActionGrantIntent,
   HighRiskResolvedActionGrantOperation
@@ -34,19 +34,7 @@ export const resolveTeamInviteCreateActionGrantOperation = (input: {
     path: `/v1/teams/${input.intent.teamId}/invites`,
     body: input.intent.body
   };
-  return {
-    ...operation,
-    scopeHash: teamAdminScopeHash({
-      action: operation.action,
-      teamId: operation.teamId,
-      targetId: operation.targetId
-    }),
-    requestHash: teamAdminRequestHash({
-      method: operation.method,
-      path: operation.path,
-      body: operation.body
-    })
-  };
+  return bindTeamAdminOperation(operation);
 };
 
 const resolveTeamInviteCreatePolicy = async (input: {
@@ -63,38 +51,34 @@ const resolveTeamInviteCreatePolicy = async (input: {
     }
   );
   if (!reviewContext) {
-    throw new ActionApprovalPolicyError(
+    return unavailableAction(
       "Team invitation review requires current manager, Team, and Workspace context"
     );
   }
-  return {
-    disposition: "native_review",
-    review: collaborationApprovalReviewSchema.parse({
-      version: 1,
-      title: `Invite ${input.intent.body.email}?`,
-      description: "Review the exact invitation before it is issued.",
-      consequence:
-        "The recipient can join with the listed role and initial Workspace Access until the invitation expires.",
-      confirmLabel: "Create invitation",
-      details: [
-        { label: "Team", value: reviewContext.team.name },
-        { label: "Recipient", value: input.intent.body.email },
-        { label: "Role", value: input.intent.body.role },
-        {
-          label: "Default Workspace",
-          value: reviewContext.defaultWorkspace.name
-        },
-        {
-          label: "Workspace Access",
-          value: input.intent.body.defaultWorkspaceAccess
-        },
-        {
-          label: "Expires after",
-          value: `${input.intent.body.ttlHours} hours`
-        }
-      ]
-    })
-  };
+  return reviewedAction("native_review", {
+    title: `Invite ${input.intent.body.email}?`,
+    description: "Review the exact invitation before it is issued.",
+    consequence:
+      "The recipient can join with the listed role and initial Workspace Access until the invitation expires.",
+    confirmLabel: "Create invitation",
+    details: [
+      { label: "Team", value: reviewContext.team.name },
+      { label: "Recipient", value: input.intent.body.email },
+      { label: "Role", value: input.intent.body.role },
+      {
+        label: "Default Workspace",
+        value: reviewContext.defaultWorkspace.name
+      },
+      {
+        label: "Workspace Access",
+        value: input.intent.body.defaultWorkspaceAccess
+      },
+      {
+        label: "Expires after",
+        value: `${input.intent.body.ttlHours} hours`
+      }
+    ]
+  });
 };
 
 export const teamInviteCreateActionDefinition = {

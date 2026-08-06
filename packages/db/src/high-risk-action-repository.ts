@@ -55,7 +55,7 @@ export type HighRiskConfirmationState =
   | "expired"
   | "revoked";
 
-export type HighRiskActionGrantState = HighRiskConfirmationState;
+export type HighRiskActionGrantState = HighRiskConfirmationState | "consumed";
 
 export interface HighRiskOperationBinding {
   ownerUserId: string;
@@ -380,6 +380,9 @@ const apiStateFromRows = (
   }
   if (grant?.state === "revoked" || confirmation.state === "revoked") {
     return "revoked";
+  }
+  if (grant?.state === "consumed") {
+    return "consumed";
   }
   if (confirmation.state === "pending") {
     return "pending";
@@ -975,6 +978,14 @@ export const createHighRiskActionRepository = (
                 input.clientRequestId
               ),
               eq(highRiskBrowserConfirmations.ownerUserId, input.ownerUserId),
+              eq(
+                highRiskBrowserConfirmations.deviceCredentialId,
+                input.deviceCredentialId
+              ),
+              eq(
+                highRiskBrowserConfirmations.upstreamBackendId,
+                input.upstreamBackendId
+              ),
               inArray(highRiskBrowserConfirmations.state, [
                 "pending",
                 "approved"
