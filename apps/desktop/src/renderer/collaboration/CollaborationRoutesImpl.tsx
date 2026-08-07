@@ -262,10 +262,12 @@ const representationStateLabel = (
 
 function Modal({
   children,
+  className,
   label,
   onClose
 }: {
   children: ReactNode;
+  className?: string;
   label: string;
   onClose: () => void;
 }) {
@@ -275,7 +277,7 @@ function Modal({
       <DialogPopup
         aria-label={label}
         aria-modal="true"
-        className="collab-modal"
+        className={`collab-modal${className ? ` ${className}` : ""}`}
         initialFocus={() =>
           popupRef.current?.querySelector<HTMLElement>(
             "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), .collab-command-list button:not([disabled]), .collab-modal-actions button:not([disabled])"
@@ -1884,6 +1886,48 @@ const SHARED_MEMORY_REPRESENTATIONS = [
   "lcm_rollups"
 ] as const satisfies readonly SharedMemoryRepresentation[];
 
+const sharedMemoryPreparationCopy = (
+  syncState: PersonalMemoryEntry["syncState"]
+): { detail: string; label: string; title: string } => {
+  switch (syncState) {
+    case "not_started":
+      return {
+        title: "Starting secure sync",
+        detail:
+          "Koed is setting up this memory for sharing. You can keep this window open.",
+        label: "Starting"
+      };
+    case "partially_available":
+      return {
+        title: "Finishing preparation",
+        detail:
+          "The memory has arrived and is finishing processing. The preview will open here when it is ready.",
+        label: "Finishing"
+      };
+    case "ready":
+      return {
+        title: "Preparing your preview",
+        detail:
+          "The synchronized revision is ready. Koed is building the source review.",
+        label: "Ready"
+      };
+    case "stale":
+      return {
+        title: "Refreshing this memory",
+        detail:
+          "Koed is refreshing the synchronized revision before opening the source review.",
+        label: "Refreshing"
+      };
+    default:
+      return {
+        title: "Syncing this memory",
+        detail:
+          "Koed is preparing the first synchronized revision. The preview will open here when it is ready.",
+        label: "Processing"
+      };
+  }
+};
+
 const firstWritableWorkspace = (
   team: CollaborationSnapshot["navigation"]["teams"][number] | null | undefined
 ) =>
@@ -1927,6 +1971,7 @@ function SharedMemoryOwnerModal({
     { kind: "new" } | { kind: "change"; grant: SharedMemoryGrant } | null
   >(entry.logicalMemoryId ? null : { kind: "new" });
   const [preview, setPreview] = useState<SharedMemoryPreview | null>(null);
+  const [preparingPreview, setPreparingPreview] = useState(false);
   const [revokingGrantId, setRevokingGrantId] = useState<string | null>(null);
   const [stoppingSync, setStoppingSync] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -2015,29 +2060,65 @@ function SharedMemoryOwnerModal({
 
   const prepareAndPreview = () =>
     run(async () => {
-      requireDestination();
-      let prepared = currentEntry;
-      if (!prepared.logicalMemoryId || !prepared.hasSynchronizedRevision) {
-        prepared = await client.prepareSharedMemorySource({
-          sessionId: prepared.id
-        });
-        setCurrentEntry(prepared);
+      setPreparingPreview(true);
+      try {
+        requireDestination();
+        if (
+          !currentEntry.logicalMemoryId ||
+          !currentEntry.hasSynchronizedRevision
+        ) {
+          setCurrentEntry(
+            await client.prepareSharedMemorySource({
+              sessionId: currentEntry.id
+            })
+          );
+        }
+      } catch (cause) {
+        setPreparingPreview(false);
+        throw cause;
       }
-      if (!prepared.logicalMemoryId || !prepared.hasSynchronizedRevision) {
-        throw new CollaborationInputError(
-          "The source is being prepared. Reopen it when sync is ready."
-        );
-      }
-      setPreview(
-        await client.previewSharedMemory({
-          logicalMemoryId: prepared.logicalMemoryId,
-          teamId,
-          workspaceId,
-          representation,
-          allowedRepresentations: [representation]
-        })
-      );
     });
+
+  useEffect(() => {
+    if (
+      !preparingPreview ||
+      !currentEntry.logicalMemoryId ||
+      !currentEntry.hasSynchronizedRevision
+    ) {
+      return;
+    }
+    let active = true;
+    setError("");
+    void client
+      .previewSharedMemory({
+        logicalMemoryId: currentEntry.logicalMemoryId,
+        teamId,
+        workspaceId,
+        representation,
+        allowedRepresentations: [representation]
+      })
+      .then((nextPreview) => {
+        if (!active) return;
+        setPreview(nextPreview);
+        setPreparingPreview(false);
+      })
+      .catch((cause) => {
+        if (!active) return;
+        setPreparingPreview(false);
+        setError(failureMessage(cause, "Shared Memory could not be prepared."));
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    client,
+    currentEntry.hasSynchronizedRevision,
+    currentEntry.logicalMemoryId,
+    preparingPreview,
+    representation,
+    teamId,
+    workspaceId
+  ]);
 
   const beginNewShare = () => {
     const team =
@@ -2049,6 +2130,7 @@ function SharedMemoryOwnerModal({
     setWorkspaceId(workspace?.id ?? "");
     setRepresentation("memory_events");
     setPreview(null);
+    setPreparingPreview(false);
     setRevokingGrantId(null);
     setWorkflow({ kind: "new" });
     setError("");
@@ -2059,6 +2141,7 @@ function SharedMemoryOwnerModal({
     setWorkspaceId(grant.workspaceId);
     setRepresentation(grant.activeRepresentation ?? "memory_events");
     setPreview(null);
+    setPreparingPreview(false);
     setRevokingGrantId(null);
     setWorkflow({ kind: "change", grant });
     setError("");
@@ -2190,16 +2273,37 @@ function SharedMemoryOwnerModal({
     };
   };
 
+  const preparationCopy = sharedMemoryPreparationCopy(currentEntry.syncState);
+
   if (destinationInvalid) return null;
 
   return (
-    <Modal label={`Share ${entry.title}`} onClose={onClose}>
+    <Modal
+      className="collab-share-memory-modal"
+      label={`Share ${entry.title}`}
+      onClose={onClose}
+    >
       <ModalHeader title={entry.title} onClose={onClose} />
       <div className="collab-form collab-share-memory-form">
         {loadingGrants ? (
           <div className="collab-modal-state" role="status">
             <LoaderCircle className="collab-spin" aria-hidden="true" />
             Loading shared destinations
+          </div>
+        ) : preparingPreview ? (
+          <div
+            className="collab-modal-state collab-share-preparing"
+            role="status"
+            aria-busy="true"
+            aria-live="polite"
+          >
+            <LoaderCircle
+              className="collab-spin collab-share-preparing-icon"
+              aria-hidden="true"
+            />
+            <strong>{preparationCopy.title}</strong>
+            <p>{preparationCopy.detail}</p>
+            <small>Current status: {preparationCopy.label}</small>
           </div>
         ) : workflow === null ? (
           <>
@@ -2504,6 +2608,7 @@ function SharedMemoryOwnerModal({
                 onClick={() => {
                   if (ownerGrants.length > 0) {
                     setPreview(null);
+                    setPreparingPreview(false);
                     setWorkflow(null);
                     setError("");
                   } else {
@@ -2517,6 +2622,7 @@ function SharedMemoryOwnerModal({
                 type="button"
                 disabled={
                   busy ||
+                  preparingPreview ||
                   !teamId ||
                   !workspaceId ||
                   availableTeams.length === 0 ||
@@ -2531,13 +2637,15 @@ function SharedMemoryOwnerModal({
               >
                 {busy
                   ? "Working..."
-                  : preview
-                    ? workflow.kind === "change"
-                      ? "Consent and replace"
-                      : selectedDestinationGrant?.lifecycle === "revoked"
-                        ? "Consent and restore"
-                        : "Consent and share"
-                    : "Review source"}
+                  : preparingPreview
+                    ? "Preparing source..."
+                    : preview
+                      ? workflow.kind === "change"
+                        ? "Consent and replace"
+                        : selectedDestinationGrant?.lifecycle === "revoked"
+                          ? "Consent and restore"
+                          : "Consent and share"
+                      : "Review source"}
               </button>
             </>
           )}

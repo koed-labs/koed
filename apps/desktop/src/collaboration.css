@@ -1041,6 +1041,12 @@
   min-inline-size: 0;
 }
 
+.shared-conversation-timeline,
+.shared-conversation-preview {
+  box-sizing: border-box;
+  padding-inline: clamp(1rem, 2.5vw, 1.5rem);
+}
+
 .memory-source-part {
   display: grid;
   gap: 9px;
@@ -1181,6 +1187,10 @@
   max-height: min(720px, calc(100vh - 92px));
 }
 
+.collab-share-memory-modal {
+  max-width: min(48rem, calc(100vw - 2rem));
+}
+
 .collab-share-memory-form .collab-preview-list {
   border: 1px solid var(--collab-border);
   border-radius: 5px;
@@ -1288,6 +1298,41 @@
   color: var(--collab-muted);
   font-size: 12px;
   padding: 18px;
+}
+
+.collab-share-preparing {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 250px;
+  padding: 36px 24px;
+  text-align: center;
+}
+
+.collab-share-preparing-icon {
+  color: var(--collab-accent);
+  height: 28px;
+  margin-bottom: 8px;
+  width: 28px;
+}
+
+.collab-share-preparing strong {
+  color: var(--collab-text);
+  font-size: 14px;
+}
+
+.collab-share-preparing p {
+  line-height: 1.5;
+  margin: 6px 0 14px;
+  max-width: 390px;
+}
+
+.collab-share-preparing small {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .collab-command-list {

@@ -2414,6 +2414,9 @@ pnpm test
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain("Review source")
     );
+    expect(
+      document.body.querySelector(".collab-share-memory-modal")
+    ).not.toBeNull();
     await click(container, "Review source");
     await vi.waitFor(() =>
       expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
@@ -2552,6 +2555,106 @@ pnpm test
     });
     expect(client.previewSharedMemory).toHaveBeenCalledWith(
       expect.objectContaining({ logicalMemoryId: prepared.logicalMemoryId })
+    );
+  });
+
+  it("keeps the share modal open until the first synchronized revision is ready", async () => {
+    const localSessionId = uuid(307);
+    const logicalMemoryId = uuid(308);
+    const current = baseSnapshot();
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...current,
+      navigation: {
+        ...current.navigation,
+        personal: {
+          ...current.navigation.personal,
+          memory: []
+        }
+      }
+    });
+    const processing = {
+      id: localSessionId,
+      logicalMemoryId,
+      title: "Local Captured Session",
+      projectName: "koed",
+      updatedAt: at,
+      preview: "2 Memory Events",
+      eventCount: 2,
+      hasSynchronizedRevision: false,
+      syncState: "processing" as const
+    };
+    const client = createClient(snapshot);
+    vi.mocked(client.prepareSharedMemorySource).mockResolvedValue(processing);
+    const modal = {
+      kind: "share_personal_memory" as const,
+      sessionId: localSessionId,
+      localEntry: {
+        ...processing,
+        logicalMemoryId: null,
+        syncState: "not_started" as const
+      }
+    };
+    const markdownAdapters = {
+      openExternal: vi.fn(async () => undefined),
+      writeClipboard: vi.fn(async () => undefined)
+    };
+
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          markdownAdapters={markdownAdapters}
+          modal={modal}
+          onModalChange={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+
+    await click(container, "Review source");
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Syncing this memory")
+    );
+    expect(document.body.textContent).toContain("Current status: Processing");
+    expect(document.body.textContent).not.toContain(
+      "Reopen it when sync is ready"
+    );
+    expect(client.previewSharedMemory).not.toHaveBeenCalled();
+
+    const ready = {
+      ...processing,
+      hasSynchronizedRevision: true,
+      syncState: "ready" as const
+    };
+    const readySnapshot = collaborationSnapshotSchema.parse({
+      ...snapshot,
+      navigation: {
+        ...snapshot.navigation,
+        personal: {
+          ...snapshot.navigation.personal,
+          memory: [ready]
+        }
+      }
+    });
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          markdownAdapters={markdownAdapters}
+          modal={modal}
+          onModalChange={vi.fn()}
+          snapshot={readySnapshot}
+        />
+      )
+    );
+
+    await vi.waitFor(() =>
+      expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
+    );
+    expect(client.previewSharedMemory).toHaveBeenCalledTimes(1);
+    expect(client.previewSharedMemory).toHaveBeenCalledWith(
+      expect.objectContaining({ logicalMemoryId })
     );
   });
 
