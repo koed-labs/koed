@@ -2173,8 +2173,54 @@ export const createKoedServerManager = ({
       PersonalDesktopRequest,
       { operation: "personal.events.load_page" }
     >["input"]
-  ) =>
-    personalEventsData(
+  ) => {
+    if (input.eventIds) {
+      const eventValues: Record<string, unknown>[] = [];
+      for (let index = 0; index < input.eventIds.length; index += 8) {
+        const batch = await Promise.all(
+          input.eventIds.slice(index, index + 8).map(async (eventId) => {
+            try {
+              const payload = await authenticatedPersonalMemoryRequest(
+                ({ apiOrigin }) => {
+                  const url = new URL(
+                    `/v1/memory/graph/events/${encodeURIComponent(eventId)}`,
+                    apiOrigin
+                  );
+                  url.searchParams.set("includeContent", "true");
+                  url.searchParams.set("includeRaw", "false");
+                  return { url, init: { method: "GET" } };
+                },
+                2 * 1_024 * 1_024
+              );
+              const event = objectValue(payload.event);
+              if (
+                !event ||
+                event.projectId !== input.projectId ||
+                event.threadId !== input.threadId
+              ) {
+                throw new PersonalMemoryBoundaryError(
+                  "invalid_response",
+                  false
+                );
+              }
+              return event;
+            } catch (cause) {
+              if (
+                cause instanceof PersonalMemoryBoundaryError &&
+                cause.code === "not_found"
+              ) {
+                return null;
+              }
+              throw cause;
+            }
+          })
+        );
+        eventValues.push(...batch.filter((event) => event !== null));
+      }
+      return personalEventsData({ events: eventValues });
+    }
+
+    return personalEventsData(
       await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => {
           const url = new URL("/v1/memory/graph/events", apiOrigin);
@@ -2198,6 +2244,7 @@ export const createKoedServerManager = ({
         32 * 1_024 * 1_024
       )
     );
+  };
 
   const assignPersonalSessionProject = async (
     input: Extract<

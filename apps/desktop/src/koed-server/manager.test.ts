@@ -820,6 +820,95 @@ describe("Koed server desktop manager", () => {
     expect(personalMemoryFetch).not.toHaveBeenCalled();
   });
 
+  it("loads exact changed Personal Memory events and omits invalidated rows", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "main_only_token" })
+    );
+    const visibleEventId = "11111111-1111-4111-8111-111111111111";
+    const invalidatedEventId = "22222222-2222-4222-8222-222222222222";
+    const personalMemoryFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            event: {
+              id: visibleEventId,
+              actor: "assistant",
+              eventType: "message",
+              timestamp: "2026-07-23T00:00:01.000Z",
+              sourceEventTime: null,
+              sourceSequence: 1,
+              content: "Updated older event",
+              contentPreview: "Updated older event",
+              invalidatedAt: null,
+              metadata: {},
+              projectId: "project-1",
+              threadId: "thread-1"
+            }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://localhost:4170" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.events.load_page",
+        input: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          limit: 500,
+          eventIds: [visibleEventId, invalidatedEventId]
+        }
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        events: [
+          {
+            id: visibleEventId,
+            content: "Updated older event"
+          }
+        ]
+      }
+    });
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+    expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toBe(
+      `http://localhost:4170/v1/memory/graph/events/${visibleEventId}?includeContent=true&includeRaw=false`
+    );
+    expect(String(personalMemoryFetch.mock.calls[1]?.[0])).toBe(
+      `http://localhost:4170/v1/memory/graph/events/${invalidatedEventId}?includeContent=true&includeRaw=false`
+    );
+  });
+
   it("derives the exact assignment body from the main-owned Project graph", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });

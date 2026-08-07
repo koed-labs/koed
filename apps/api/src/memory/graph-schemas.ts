@@ -136,6 +136,7 @@ export const graphEventParamsSchema = z.object({ eventId: z.string().uuid() });
 
 export const graphEventDetailQuerySchema = z.object({
   includeInvalidated: queryBooleanSchema.default(false),
+  includeContent: queryBooleanSchema.default(false),
   includeRaw: queryBooleanSchema.default(false),
   teamWorkspaceId: z.string().uuid().optional()
 });
