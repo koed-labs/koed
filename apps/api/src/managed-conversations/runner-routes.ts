@@ -394,6 +394,10 @@ const createTransferSourceAuthorization = async (
     targetDeploymentId: string;
     firstSegmentIndex: number;
     recipientKey: RecipientPublicKeyMaterial;
+    initiatingOperation: {
+      kind: "handoff" | "fork";
+      id: string;
+    };
   }
 ) => {
   requireSyncRunner(auth);
@@ -427,6 +431,7 @@ const createTransferSourceAuthorization = async (
           targetDeploymentId: input.targetDeploymentId,
           key: input.recipientKey
         },
+        initiatingOperation: input.initiatingOperation,
         capabilityHash: sha256(capability),
         firstSegmentIndex: input.firstSegmentIndex,
         expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
@@ -1200,7 +1205,8 @@ export const registerManagedConversationRunnerRoutes = (
       });
       return createTransferSourceAuthorization(context, auth, {
         ...input,
-        sourceGenerationId: input.sourceGenerationId
+        sourceGenerationId: input.sourceGenerationId,
+        initiatingOperation: { kind: "handoff", id: handoffId }
       });
     }
   );
@@ -1563,7 +1569,8 @@ export const registerManagedConversationRunnerRoutes = (
       });
       return createTransferSourceAuthorization(context, auth, {
         ...input,
-        sourceGenerationId: input.sourceGenerationId
+        sourceGenerationId: input.sourceGenerationId,
+        initiatingOperation: { kind: "fork", id: forkId }
       });
     }
   );

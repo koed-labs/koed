@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -8,6 +15,9 @@ import { discoverManagedConversationRuntime } from "./managed-conversation-runti
 
 describe("managed Conversation runtime discovery", () => {
   const homes: string[] = [];
+
+  const temporaryRoot = async (prefix: string): Promise<string> =>
+    realpath(await mkdtemp(join(tmpdir(), prefix)));
 
   afterEach(async () => {
     await Promise.all(
@@ -49,7 +59,7 @@ describe("managed Conversation runtime discovery", () => {
   };
 
   it("finds the exact transcript in a valid Koed-managed home", async () => {
-    const root = await mkdtemp(join(tmpdir(), "koed-runtime-discovery-"));
+    const root = await temporaryRoot("koed-runtime-discovery-");
     homes.push(root);
     const expected = await createTranscript(root, "session-valid", "thread-1");
 
@@ -66,7 +76,7 @@ describe("managed Conversation runtime discovery", () => {
   });
 
   it("rejects ambiguous provider identity", async () => {
-    const root = await mkdtemp(join(tmpdir(), "koed-runtime-discovery-"));
+    const root = await temporaryRoot("koed-runtime-discovery-");
     homes.push(root);
     await createTranscript(root, "session-first", "thread-1");
     await createTranscript(root, "session-second", "thread-1");
@@ -80,8 +90,8 @@ describe("managed Conversation runtime discovery", () => {
   });
 
   it("does not follow transcript directory symlinks", async () => {
-    const root = await mkdtemp(join(tmpdir(), "koed-runtime-discovery-"));
-    const outside = await mkdtemp(join(tmpdir(), "koed-runtime-outside-"));
+    const root = await temporaryRoot("koed-runtime-discovery-");
+    const outside = await temporaryRoot("koed-runtime-outside-");
     homes.push(root, outside);
     const managedHome = join(root, "codex-managed", "session-valid");
     await mkdir(managedHome, { recursive: true });

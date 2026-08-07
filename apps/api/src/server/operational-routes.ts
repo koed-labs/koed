@@ -741,6 +741,7 @@ export const registerOperationalRoutes = (
         deploymentProfile: config.deploymentProfile,
         runtimeMode: config.runtimeMode,
         dependencyMode: config.dependencyMode,
+        developerTeamBackendEnabled: config.developerTeamBackendEnabled,
         workosAuthKitEnabled: config.workos.authkitEnabled,
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
@@ -795,6 +796,7 @@ export const registerOperationalRoutes = (
         deploymentProfile: config.deploymentProfile,
         runtimeMode: config.runtimeMode,
         dependencyMode: config.dependencyMode,
+        developerTeamBackendEnabled: config.developerTeamBackendEnabled,
         workosAuthKitEnabled: config.workos.authkitEnabled,
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider

@@ -14,9 +14,11 @@ import type {
 import {
   sharedMemoryConsentActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareActionGrantBinding,
+  sharedMemoryShareBundleActionGrantBinding,
   type SharedMemoryActionGrantBinding
 } from "@koed/shared";
 import {
@@ -29,8 +31,11 @@ import {
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ApiRouteContext } from "../server/context.js";
+import { changeRepresentationBundle, createShareBundle } from "./bundles.js";
 import {
   createShareGrantSchema,
+  createSharedMemoryShareBundleSchema,
+  changeSharedMemoryRepresentationBundleSchema,
   createSharedMemoryPreviewSchema,
   createSourceOwnerConsentSchema,
   listWorkspaceSharedMemoryQuerySchema,
@@ -731,6 +736,84 @@ export const registerSharedMemoryRoutes = (
   );
 
   app.post(
+    "/v1/shared-memory/share-bundles",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const input = createSharedMemoryShareBundleSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      const binding = sharedMemoryShareBundleActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        logicalGrantId: input.logicalGrantId,
+        consentId: input.consentId,
+        logicalMemoryId: input.logicalMemoryId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        previewId: input.preview.previewId,
+        previewRevision: input.previewRevision,
+        previewHash: input.preview.previewHash,
+        mode: input.mode,
+        allowedRepresentations: input.allowedRepresentations,
+        selectedRepresentation: input.selectedRepresentation,
+        expiresAt: input.expiresAt
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const bundle = await createShareBundle(
+              repository,
+              { userId: authenticated.actor.id },
+              {
+                consent: {
+                  consentId: input.consentId,
+                  preview: input.preview,
+                  mode: input.mode,
+                  allowedRepresentations: input.allowedRepresentations,
+                  selectedRepresentation: input.selectedRepresentation,
+                  expiresAt: input.expiresAt,
+                  authority: authenticated.authority
+                },
+                grant: {
+                  mutationId: input.mutationId,
+                  logicalGrantId: input.logicalGrantId,
+                  consentId: input.consentId,
+                  authority: authenticated.authority
+                },
+                expected: {
+                  consentId: input.consentId,
+                  logicalMemoryId: input.logicalMemoryId,
+                  teamId: input.teamId,
+                  teamWorkspaceId: input.teamWorkspaceId,
+                  previewId: input.preview.previewId,
+                  previewRevision: input.previewRevision,
+                  previewHash: input.preview.previewHash
+                }
+              }
+            );
+            if (!bundle) return null;
+            return {
+              statusCode: 201,
+              body: {
+                consent: consentDto(bundle.consent),
+                grant: grantDto(bundle.grant)
+              }
+            };
+          }
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
+    }
+  );
+
+  app.post(
     "/v1/shared-memory/share-grants",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
     async (request, reply) => {
@@ -780,6 +863,91 @@ export const registerSharedMemoryRoutes = (
         )
       );
       return reply.status(result.statusCode).send(result.body);
+    }
+  );
+
+  app.put(
+    "/v1/shared-memory/share-grants/:shareGrantId/representation-bundle",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      rejectApiToken(request);
+      const params = shareGrantParamsSchema.parse(request.params);
+      const input = changeSharedMemoryRepresentationBundleSchema.parse(
+        request.body
+      );
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      const binding = sharedMemoryRepresentationBundleActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        consentId: input.consentId,
+        logicalMemoryId: input.logicalMemoryId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        shareGrantId: params.shareGrantId,
+        previewId: input.preview.previewId,
+        previewRevision: input.previewRevision,
+        previewHash: input.preview.previewHash,
+        mode: input.mode,
+        allowedRepresentations: input.allowedRepresentations,
+        representation: input.representation,
+        expectedGrantVersion: input.expectedGrantVersion,
+        expiresAt: input.expiresAt
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const bundle = await changeRepresentationBundle(
+              repository,
+              { userId: authenticated.actor.id },
+              {
+                consent: {
+                  consentId: input.consentId,
+                  preview: input.preview,
+                  mode: input.mode,
+                  allowedRepresentations: input.allowedRepresentations,
+                  selectedRepresentation: input.representation,
+                  expiresAt: input.expiresAt,
+                  authority: authenticated.authority
+                },
+                representation: {
+                  mutationId: input.mutationId,
+                  shareGrantId: params.shareGrantId,
+                  consentId: input.consentId,
+                  representation: input.representation,
+                  expectedGrantVersion: input.expectedGrantVersion,
+                  authority: authenticated.authority
+                },
+                expected: {
+                  consentId: input.consentId,
+                  logicalMemoryId: input.logicalMemoryId,
+                  teamId: input.teamId,
+                  teamWorkspaceId: input.teamWorkspaceId,
+                  previewId: input.preview.previewId,
+                  previewRevision: input.previewRevision,
+                  previewHash: input.preview.previewHash,
+                  representation: input.representation
+                }
+              }
+            );
+            if (!bundle) return null;
+            return {
+              statusCode: 200,
+              body: {
+                consent: consentDto(bundle.consent),
+                grant: grantDto(bundle.grant)
+              }
+            };
+          }
+        )
+      );
+      return result.body;
     }
   );
 

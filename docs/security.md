@@ -185,3 +185,126 @@ outbox failures fail closed. The route and credential rules are enumerated in
 [Team Collaboration Action And Credential Matrix](team-collaboration-action-credential-matrix.md),
 and the complete service boundary is in
 [Team Collaboration Architecture](team-collaboration.md).
+
+## Tiered Desktop Action Approval
+
+Koed separates exact Action Grant issuance from the User-facing approval
+ceremony. The Team Backend owns an exhaustive action policy and persists the
+selected `direct`, `native_review`, or `step_up` tier with display-safe review
+copy. The renderer and local edge cannot request or downgrade a tier. Direct
+and Native review address mistakes; Step-up is the independent boundary for a
+compromised renderer, trust establishment, privilege escalation, material
+access expansion/removal, commercial changes, and governance actions.
+
+Action Grant creation enters through one Team Backend admission interface. One
+exhaustive catalog gives every accepted action a definition that owns its exact
+operation binding, authoritative repository context, approval policy, and
+display-safe review DTO. There is no route-level policy context loader or
+legacy approval-policy switch. For Team invitation
+creation, the authoritative review lookup verifies current Team-management
+authority, Team entitlement, requested role, and the exact active Workspace in
+one repository read. Team creation, invitation acceptance and revocation,
+member role changes, member disablement, and Team leave use the same definition
+boundary with focused invitation, membership, version, role, and last-owner
+context. Team leave accepts the exact one-use device grant as well as a fresh
+browser session. Grant consumption repeats all current authorization and
+last-owner checks.
+
+Workspace definitions keep Team manager authority separate from Workspace
+Access. Creation requires current Team management authority; archive, restore,
+and access changes additionally require the actor's raw enabled `write` grant
+for the exact Workspace. Restore deliberately checks that raw grant while the
+archived Workspace's effective access is disabled. Target Team Membership and
+target Workspace Access are resolved independently for access changes, and the
+nested and legacy-flat creation routes retain different exact request hashes.
+
+Shared Memory definitions keep Personal Memory ownership, Cross-Identity Sync
+provenance, Workspace Access, source-owner consent, Share Grant authority, and
+materialized representations as separate checks. Preview admission verifies the
+exact owner-private replica and destination policies. It remains Direct only
+when the source-owner policy is unchanged; creating or replacing that policy is
+Step-up because replacement pauses active consents and invalidates affected
+Share Grants. Share and representation-change admission validate the persisted
+preview, three-policy intersection, current share permission, and exact grant
+version. Raw `memory_events` sharing and fidelity increases remain Step-up,
+while derived sharing, fidelity decreases, and owner revocation remain Native
+review.
+Consent is not a requestable catalog action: supported Desktop flows bind it
+inside the exact share or representation-change bundle and consume the one-use
+Action Grant atomically with both repository stages. Revocation is authorized
+by the exact source-owned Share Grant and deliberately remains possible after
+destination access, policy, sync, consent, or representation availability is
+lost.
+
+Commercial entitlement and billing-seat definitions require current Team owner
+authority at admission as well as execution, then bind lifecycle and the exact
+optimistic version before issuing a grant. Other governance definitions resolve
+their operation-specific Team-management authority. Entitlement, billing-seat
+policy, Team deletion, legal-hold placement, and both legal-hold release stages
+remain Step-up. Legal-hold release admission reads the
+exact hold, Team, scope, and current stage, so the release request and release
+confirmation cannot authorize one another or a different hold.
+
+Every tier retains device/backend binding, exact scope and request hashes,
+short expiry, one-use consumption, replay protection, authoritative execution
+checks, and audit. Browser activation routes accept only stored Step-up grants.
+Terminal browser results are inert, render before any permitted close attempt,
+and expose neither reusable credentials nor Action Grant secrets. See
+[ADR 0024](adr/0024-tiered-desktop-action-approval.md).
+
+Desktop renders the schema-validated authoritative review DTO generically. Its
+action labels and progress text are presentation-only: they do not select a
+tier, construct trusted confirmation copy, infer policy from an action-name
+prefix, or downgrade a Team Backend decision.
+
+The local Action Grant lifecycle durably creates encrypted, unclassified
+custody before sending a request to the Team Backend. It alone validates the
+authoritative remote status envelope, converts its bounded activation path,
+records ambiguity, reconciles polling results, resolves the exact bound secret,
+and removes terminal custody. Collaboration commands therefore do not recreate
+Team Backend approval policy, and malformed, mismatched, or lost responses
+cannot invent a local approval classification or expose a secret to Desktop.
+Personal source discovery and restore use this same lifecycle for idempotent
+custody preparation, polling reconciliation, ambiguity, exact initiating-
+operation secret resolution, and consumed or otherwise terminal cleanup.
+The lifecycle is the only API module allowed to coordinate the encrypted
+custody store's prepare, classify, ambiguity, exact resolve, discard, and
+terminal-delete primitives. Local collaboration, Shared Memory, Team control,
+and source-replication adapters receive its narrow behavior interface.
+
+Managed Conversation handoff and fork source downloads do not create a second
+interactive ceremony. The enrolled target runner may mint a short-lived exact
+download authorization only through its validated handoff or fork route. The
+handoff and fork action definition binds the exact execution, operation, and
+target device, then resolves the current execution assignment and active target
+credentials on the Team Backend. An established unambiguous target receives
+Native review; new, stale, missing, or deployment-ambiguous target trust
+receives Step-up, while a missing owned execution fails closed. Conversation
+source discovery is Direct only for the already authenticated enrolled device,
+and a standalone source download remains Step-up. The
+authorization persists that initiating operation identity alongside the source
+generation, target deployment, segment boundary, recipient key, and device
+credential. Every segment request revalidates that the initiating operation is
+still active and still binds the same source and target, so cancellation or a
+terminal failure immediately invalidates the capability. Standalone or
+exceptional source downloads remain Step-up.
+
+Upstream credential rotation is a replacement transaction. The active
+credential and Local-Edge Client Credential remain authoritative while a
+replacement challenge is pending. Approval commits the swap and retires the
+predecessor; denial, expiry, or cancellation deletes only the pending material
+and leaves the active connection configured.
+
+Local reusable-secret custody is divided into narrow domain capabilities for
+upstream/Desktop credentials, Local-Edge Client Credentials, pending Team
+sends, and Action Grants. They share an internal encrypted-state transaction
+core, not a public generic storage API. The core retains the existing AES-256-GCM
+envelopes, owner-only key and state files, bounded ownership-token lock,
+directory-synced atomic replacement, and fail-closed corruption behavior.
+Cross-domain writes must name their exact domains; initial enrollment uses this
+edge to make upstream and Local-Edge Client Credential staging all-or-nothing.
+Action Grant records keep the legacy `state` field within the state vocabulary
+understood by previous binaries and store the extended approval lifecycle in a
+separate field. An unclassified or Native-review record therefore remains
+readable as legacy `pending` state during rollback, while current binaries retain
+the exact lifecycle. No migration or weaker rollback format exists.

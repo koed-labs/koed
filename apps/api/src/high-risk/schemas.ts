@@ -22,6 +22,10 @@ export const decideHighRiskBrowserActivationSchema = z
   .object({ decision: z.enum(["approve", "deny"]) })
   .strict();
 
+export const decideNativeActionReviewSchema = z
+  .object({ decision: z.literal("approve") })
+  .strict();
+
 export const highRiskBrowserActivationEnvelopeSchema = z
   .object({
     status: highRiskActionGrantRemoteStatusSchema,

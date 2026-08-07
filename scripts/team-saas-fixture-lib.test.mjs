@@ -322,12 +322,14 @@ test("Team SaaS fixture can seed and validate a live database", async (t) => {
          id, selector, client_request_id, owner_user_id,
          decision_user_session_id, device_credential_id,
          upstream_backend_id, team_id, operation_family, action, target_id,
-         scope_hash, request_hash, secret_commitment, state, expires_at,
-         decision_freshly_authenticated_at, decided_at
+         scope_hash, request_hash, secret_commitment, approval_tier,
+         review_summary, state, expires_at, decision_freshly_authenticated_at,
+         decided_at
        ) values (
          $1, $2, $3, $4, $5, $6, 'fixture-backend', $7,
          'share_grant_management', 'fixture.reset', $8,
-         $9, $9, $10, 'approved', now() + interval '5 minutes', now(), now()
+         $9, $9, $10, 'step_up', $11::jsonb, 'approved',
+         now() + interval '5 minutes', now(), now()
        )`,
       [
         highRiskConfirmationId,
@@ -339,7 +341,15 @@ test("Team SaaS fixture can seed and validate a live database", async (t) => {
         fixtureTeam.id,
         randomUUID(),
         "a".repeat(64),
-        `v1:${"b".repeat(64)}`
+        `v1:${"b".repeat(64)}`,
+        JSON.stringify({
+          version: 1,
+          title: "Reset the Team fixture?",
+          description: "Remove deterministic Team fixture records.",
+          consequence: "Fixture-owned records will be deleted.",
+          confirmLabel: "Reset fixture",
+          details: []
+        })
       ]
     );
     await client.query(

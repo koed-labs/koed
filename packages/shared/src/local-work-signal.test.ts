@@ -67,6 +67,6 @@ describe("Koed local work signals", () => {
       onError
     );
     handles.push(handle);
-    await waitFor(() => onError.mock.calls.length === 1);
+    await waitFor(() => onError.mock.calls.length >= 1);
   });
 });

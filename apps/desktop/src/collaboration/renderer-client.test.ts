@@ -53,6 +53,15 @@ const ids = {
   membership: id(25)
 };
 
+const approvalReview = {
+  version: 1 as const,
+  title: "Create Team?",
+  description: "Review the exact Team creation request.",
+  consequence: "A new Team will be created.",
+  confirmLabel: "Create Team",
+  details: []
+};
+
 const person = (personId = ids.user, displayName = "Mark") => ({
   id: personId,
   displayName,
@@ -395,6 +404,8 @@ const success = (
         status: {
           version: 1,
           actionGrant: { id: ids.actionGrant },
+          approvalTier: "direct",
+          review: null,
           state: "approved",
           activationUrl: null,
           expiresAt: "2026-07-18T09:30:00.000Z"
@@ -406,6 +417,8 @@ const success = (
         status: {
           version: 1,
           actionGrant: command.input.actionGrant,
+          approvalTier: "direct",
+          review: null,
           state: "canceled",
           activationUrl: null,
           expiresAt: "2026-07-18T09:30:00.000Z"
@@ -527,28 +540,6 @@ const success = (
     case "collaboration.preview_shared_memory":
     case "collaboration.load_shared_memory_preview_page":
       data = { preview: sharedPreview() };
-      break;
-    case "collaboration.consent_shared_memory":
-      data = {
-        consent: {
-          id: command.input.consentId,
-          logicalMemoryId: command.input.logicalMemoryId,
-          teamId: command.input.teamId,
-          workspaceId: command.input.workspaceId,
-          mode: command.input.mode,
-          state: "active",
-          version: 1,
-          allowedRepresentations: command.input.allowedRepresentations,
-          selectedRepresentation: command.input.selectedRepresentation,
-          previewRevision: command.input.previewRevision,
-          previewHash: command.input.previewHash,
-          sourceRevision: 12,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          activatedAt: timestamp,
-          revokedAt: null
-        }
-      };
       break;
     case "collaboration.share_memory":
       data = {
@@ -1245,6 +1236,187 @@ describe("collaboration renderer client", () => {
       throw new Error("Expected Action Grant and Team creation commands");
     }
     expect(request.input.intent.commandRequestId).toBe(create.requestId);
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.await_action_grant"
+      )
+    ).toBe(false);
+    client.dispose();
+  });
+
+  it("confirms an authoritative Native review without browser waiting", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const review = {
+      version: 1 as const,
+      title: "Invite member@example.test?",
+      description: "Review the exact invitation before it is issued.",
+      consequence: "The recipient can join with read access.",
+      confirmLabel: "Create invitation",
+      details: [
+        { label: "Team", value: "Koed Team" },
+        { label: "Workspace", value: "Product" }
+      ]
+    };
+    const confirmNativeReview = vi.fn(async () => true);
+    const client = createCollaborationRendererClient(mock.bridge, {
+      confirmNativeReview
+    });
+    await client.load();
+    const defaultCommand = mock.command.getMockImplementation();
+    if (!defaultCommand) throw new Error("Expected collaboration mock");
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.request_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: ids.actionGrant },
+              approvalTier: "native_review",
+              review,
+              state: "review_required",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      if (command.command === "collaboration.confirm_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: command.input.actionGrant,
+              approvalTier: "native_review",
+              review,
+              state: "approved",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      return defaultCommand(command);
+    });
+
+    await client.createInvitation({
+      teamId: ids.team,
+      email: "member@example.test",
+      role: "member",
+      defaultWorkspaceId: ids.workspace,
+      defaultWorkspaceAccess: "read",
+      ttlHours: 72
+    });
+
+    expect(confirmNativeReview).toHaveBeenCalledWith(review);
+    expect(
+      mock.command.mock.calls.find(
+        ([command]) => command.command === "collaboration.confirm_action_grant"
+      )?.[0]
+    ).toMatchObject({
+      input: { actionGrant: { id: ids.actionGrant }, decision: "approve" }
+    });
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.await_action_grant"
+      )
+    ).toBe(false);
+    client.dispose();
+  });
+
+  it("cancels Team invitation creation from the authoritative Native review", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const review = {
+      version: 1 as const,
+      title: "Invite member@example.test?",
+      description: "Review the exact invitation before it is issued.",
+      consequence: "The recipient can join with read access.",
+      confirmLabel: "Create invitation",
+      details: [
+        { label: "Team", value: "Koed Team" },
+        { label: "Workspace", value: "Product" }
+      ]
+    };
+    const confirmNativeReview = vi.fn(async () => false);
+    const client = createCollaborationRendererClient(mock.bridge, {
+      confirmNativeReview
+    });
+    await client.load();
+    const defaultCommand = mock.command.getMockImplementation();
+    if (!defaultCommand) throw new Error("Expected collaboration mock");
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.request_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: ids.actionGrant },
+              approvalTier: "native_review",
+              review,
+              state: "review_required",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      if (command.command === "collaboration.confirm_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: command.input.actionGrant,
+              approvalTier: "native_review",
+              review,
+              state: "canceled",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      return defaultCommand(command);
+    });
+
+    await expect(
+      client.createInvitation({
+        teamId: ids.team,
+        email: "member@example.test",
+        role: "member",
+        defaultWorkspaceId: ids.workspace,
+        defaultWorkspaceAccess: "read",
+        ttlHours: 72
+      })
+    ).rejects.toMatchObject({ code: "permission_denied" });
+
+    expect(confirmNativeReview).toHaveBeenCalledWith(review);
+    expect(
+      mock.command.mock.calls.find(
+        ([command]) => command.command === "collaboration.confirm_action_grant"
+      )?.[0]
+    ).toMatchObject({
+      input: { actionGrant: { id: ids.actionGrant }, decision: "cancel" }
+    });
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.create_invitation"
+      )
+    ).toBe(false);
     client.dispose();
   });
 
@@ -1310,6 +1482,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "pending",
               activationUrl: "https://team.example.test/approve",
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1342,6 +1516,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "approved",
               activationUrl: null,
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1398,6 +1574,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "pending",
               activationUrl: "https://team.example.test/approve",
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1448,6 +1626,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "pending",
               activationUrl: "https://team.example.test/approve",
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1583,7 +1763,9 @@ describe("collaboration renderer client", () => {
       representation: "memory_events",
       allowedRepresentations: ["memory_events"]
     });
-    const consent = await client.consentSharedMemory({
+    await client.shareMemory({
+      mutationId: ids.message,
+      logicalGrantId: ids.logicalGrant,
       consentId: ids.consent,
       logicalMemoryId: ids.logicalMemory,
       teamId: ids.team,
@@ -1595,14 +1777,6 @@ describe("collaboration renderer client", () => {
       previewHash: preview.previewHash,
       expiresAt: null
     });
-    await client.shareMemory({
-      mutationId: ids.message,
-      logicalGrantId: ids.logicalGrant,
-      logicalMemoryId: ids.logicalMemory,
-      teamId: ids.team,
-      workspaceId: ids.workspace,
-      consentId: consent.id
-    });
 
     const commands = mock.command.mock.calls.map(([command]) => command);
     const previewGrant = commands.find(
@@ -1610,17 +1784,16 @@ describe("collaboration renderer client", () => {
         command.command === "collaboration.request_action_grant" &&
         command.input.intent.intent === "collaboration.preview_shared_memory"
     );
-    const consentGrant = commands.find(
+    const shareGrant = commands.find(
       (command) =>
         command.command === "collaboration.request_action_grant" &&
-        command.input.intent.intent === "collaboration.consent_shared_memory"
+        command.input.intent.intent === "collaboration.share_memory"
     );
     expect(previewGrant).not.toHaveProperty("input.intent.remoteReplicaId");
-    expect(consentGrant).not.toHaveProperty("input.intent.previewId");
+    expect(shareGrant).not.toHaveProperty("input.intent.previewId");
     const protectedCommands = commands.filter(
       (command) =>
         command.command === "collaboration.preview_shared_memory" ||
-        command.command === "collaboration.consent_shared_memory" ||
         command.command === "collaboration.share_memory"
     );
     for (const protectedCommand of protectedCommands) {

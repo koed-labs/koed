@@ -215,6 +215,8 @@ export {
   collaborationActionGrantIntentSchema,
   collaborationActionGrantReferenceSchema,
   collaborationActionGrantStatusSchema,
+  collaborationApprovalReviewSchema,
+  collaborationApprovalTierSchema,
   collaborationBackendIdentitySchema,
   collaborationCommandResultSchema,
   collaborationConnectionEventSchema,
@@ -277,6 +279,8 @@ export type {
   CollaborationActionGrantIntent,
   CollaborationActionGrantReference,
   CollaborationActionGrantStatus,
+  CollaborationApprovalReview,
+  CollaborationApprovalTier,
   CollaborationBackendIdentity,
   CollaborationCommandResult,
   CollaborationConnection,
@@ -424,48 +428,58 @@ export {
 export {
   clearCollaborationActionGrantCustodyForBackend,
   deleteCollaborationActionGrantCustody,
-  clearCollaborationPendingTeamSends,
-  deleteCollaborationPendingSend,
-  deleteDesktopLocalCredential,
-  deleteLocalEdgeClientCredential,
-  deleteUpstreamCredentialSecret,
-  desktopLocalCredentialReferenceFor,
-  localEdgeClientCredentialReferenceFor,
-  parseUpstreamCredentialReference,
+  markCollaborationActionGrantCustodyAmbiguous,
   readCollaborationActionGrantCustodyCommitmentHash,
   readCollaborationActionGrantCustodyStatus,
-  listCollaborationPendingSends,
-  readDesktopLocalCredentialAuthorization,
-  readLocalEdgeClientCredentialAuthorization,
-  readUpstreamCredentialAuthorization,
   resolveCollaborationActionGrantSecret,
-  rotateDesktopLocalCredential,
   storeCollaborationActionGrantCustody,
+  updateCollaborationActionGrantCustodyStatus
+} from "./collaboration-action-grant-custody-store.js";
+export {
+  clearCollaborationPendingTeamSends,
+  deleteCollaborationPendingSend,
+  listCollaborationPendingSends,
   storeCollaborationPendingSend,
-  storeDesktopLocalCredential,
+  updateCollaborationPendingSendState
+} from "./collaboration-pending-send-store.js";
+export {
+  deleteLocalEdgeClientCredential,
+  localEdgeClientCredentialReferenceFor,
+  readLocalEdgeClientCredentialAuthorization,
   storeLocalEdgeClientCredential,
-  storeUpstreamCredentialSecret,
-  updateCollaborationActionGrantCustodyStatus,
-  updateCollaborationPendingSendState,
-  upstreamCredentialReferenceFor,
-  verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
-} from "./upstream-credential-store.js";
+} from "./local-edge-client-credential-custody.js";
+export {
+  DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES,
+  deleteDesktopLocalCredential,
+  deleteUpstreamCredentialSecret,
+  desktopLocalCredentialReferenceFor,
+  parseUpstreamCredentialReference,
+  readDesktopLocalCredentialAuthorization,
+  readUpstreamCredentialAuthorization,
+  rotateDesktopLocalCredential,
+  storeDesktopLocalCredential,
+  storeEnrollmentCredentialCustody,
+  storeUpstreamCredentialSecret,
+  upstreamCredentialReferenceFor,
+  verifyDesktopLocalCredentialAuthorization
+} from "./upstream-desktop-credential-custody.js";
 export {
   SHARED_MEMORY_AUTHORITY_ACTION,
   sharedMemoryConsentActionGrantBinding,
   sharedMemoryGrantManagementRequestHash,
   sharedMemoryGrantManagementScopeHash,
   sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryShareBundleActionGrantBinding,
   sharedMemoryShareActionGrantBinding
 } from "./shared-memory-action-grant.js";
 export type {
   SharedMemoryActionGrantBinding,
   SharedMemoryRepresentation as SharedMemoryActionGrantRepresentation
 } from "./shared-memory-action-grant.js";
-export { DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES } from "./upstream-credential-store.js";
 export type {
   CollaborationActionGrantAccessInput,
   CollaborationActionGrantCustodyInput,
@@ -473,13 +487,17 @@ export type {
   CollaborationActionGrantOperationFamily,
   CollaborationActionGrantResolveInput,
   CollaborationActionGrantState,
-  CollaborationActionGrantStatusRecord,
+  CollaborationActionGrantStatusRecord
+} from "./collaboration-action-grant-custody-store.js";
+export type {
   CollaborationPendingSendInput,
-  CollaborationPendingSendRecord,
+  CollaborationPendingSendRecord
+} from "./collaboration-pending-send-store.js";
+export type {
   DesktopLocalCredentialAuthorization,
   DesktopLocalCredentialInput,
   DesktopLocalCredentialOperationFamily
-} from "./upstream-credential-store.js";
+} from "./upstream-desktop-credential-custody.js";
 export type {
   EncryptedPayloadEnvelope,
   EncryptedPayloadProvenance,
@@ -721,10 +739,14 @@ export type {
 } from "./project-metadata.js";
 export type {
   LocalEdgeClientCredentialAuthorization,
-  LocalEdgeClientCredentialInput,
+  LocalEdgeClientCredentialInput
+} from "./local-edge-client-credential-custody.js";
+export type {
+  EnrollmentCredentialCustodyInput,
+  EnrollmentCredentialCustodyResult,
   UpstreamCredentialSecretInput,
   UpstreamCredentialSecretStoreDeps
-} from "./upstream-credential-store.js";
+} from "./upstream-desktop-credential-custody.js";
 
 export type HealthStatus = "ok" | "degraded" | "error";
 

@@ -74,6 +74,7 @@ export interface CapabilitiesConfig {
   deploymentProfile: DeploymentProfile;
   runtimeMode: "developer" | "local-personal" | "external";
   dependencyMode: RuntimeDependencyMode;
+  developerTeamBackendEnabled?: boolean;
   workosAuthKitEnabled?: boolean;
   applicationLayerEncryption?: CapabilityAvailability;
   crossIdentitySync?: CapabilityAvailability;
@@ -563,7 +564,9 @@ export const buildCapabilitiesResponse = (
 ): CapabilitiesResponse => {
   const teamFoundation =
     config.teamCollaborationEnabled &&
-    hasTeamFoundation(config.deploymentProfile);
+    (hasTeamFoundation(config.deploymentProfile) ||
+      (config.deploymentProfile === "developer" &&
+        config.developerTeamBackendEnabled === true));
   const authProviders = authProvidersForDeployment(config);
   const cloud = config.deploymentProfile === "koed_managed_cloud";
   const collaborationCloud = cloud && config.teamCollaborationEnabled;

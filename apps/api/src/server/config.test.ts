@@ -18,6 +18,7 @@ describe("resolveApiServerConfig", () => {
       cookieSecure: true,
       publicRegistrationEnabled: false,
       teamCollaborationEnabled: false,
+      developerTeamBackendEnabled: false,
       rateLimit: {
         store: "memory",
         policies: {
@@ -60,6 +61,24 @@ describe("resolveApiServerConfig", () => {
     ).toBe(true);
     expect(() =>
       resolveApiServerConfig({ KOED_TEAM_COLLABORATION_ENABLED: "yes" })
+    ).toThrow(/must be exactly/);
+  });
+
+  it("enables the isolated developer Team backend only with an explicit validated value", () => {
+    expect(
+      resolveApiServerConfig({
+        KOED_DEVELOPER_TEAM_BACKEND_ENABLED: "true"
+      }).developerTeamBackendEnabled
+    ).toBe(true);
+    expect(
+      resolveApiServerConfig({
+        KOED_DEVELOPER_TEAM_BACKEND_ENABLED: "false"
+      }).developerTeamBackendEnabled
+    ).toBe(false);
+    expect(() =>
+      resolveApiServerConfig({
+        KOED_DEVELOPER_TEAM_BACKEND_ENABLED: "1"
+      })
     ).toThrow(/must be exactly/);
   });
 

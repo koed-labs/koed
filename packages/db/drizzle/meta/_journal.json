@@ -162,6 +162,20 @@
       "when": 1785433191165,
       "tag": "0022_deep_brood",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1785506347606,
+      "tag": "0023_warm_lenny_balinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785510727455,
+      "tag": "0024_misty_prodigy",
+      "breakpoints": true
     }
   ]
 }

@@ -133,6 +133,51 @@ export const createShareGrantSchema = z
   })
   .strict();
 
+export const createSharedMemoryShareBundleSchema = z
+  .object({
+    mutationId: uuidSchema,
+    logicalGrantId: uuidSchema,
+    consentId: uuidSchema,
+    logicalMemoryId: uuidSchema,
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    preview: sharedSourcePreviewReferenceSchema,
+    previewRevision: positiveVersionSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    allowedRepresentations: distinctRepresentationsSchema,
+    selectedRepresentation: sharedMemoryRepresentationSchema,
+    expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
+    authority: sharedMemoryAuthoritySchema
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.allowedRepresentations.includes(input.selectedRepresentation),
+    { message: "Selected representation is not owner-authorized" }
+  );
+
+export const changeSharedMemoryRepresentationBundleSchema = z
+  .object({
+    mutationId: uuidSchema,
+    consentId: uuidSchema,
+    logicalMemoryId: uuidSchema,
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    preview: sharedSourcePreviewReferenceSchema,
+    previewRevision: positiveVersionSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    allowedRepresentations: distinctRepresentationsSchema,
+    representation: sharedMemoryRepresentationSchema,
+    expectedGrantVersion: positiveVersionSchema,
+    expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
+    authority: sharedMemoryAuthoritySchema
+  })
+  .strict()
+  .refine(
+    (input) => input.allowedRepresentations.includes(input.representation),
+    { message: "Selected representation is not owner-authorized" }
+  );
+
 export const shareGrantParamsSchema = z
   .object({ shareGrantId: uuidSchema })
   .strict();

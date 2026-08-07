@@ -248,7 +248,7 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-const statusCommandTimeoutMs = 30_000;
+const statusCommandTimeoutMs = 120_000;
 
 const waitForAbortOrDelay = (
   signal: AbortSignal,
@@ -1189,7 +1189,10 @@ export const createKoedServerManager = ({
     );
   };
 
-  const withPackageComponent = async (value: unknown): Promise<unknown> => {
+  const withPackageComponent = (
+    value: unknown,
+    packageStatus: ServerPackageStatusPayload | null
+  ): unknown => {
     if (typeof value !== "object" || value === null) {
       return value;
     }
@@ -1198,8 +1201,6 @@ export const createKoedServerManager = ({
       personalDeviceSync: personalDeviceSyncComponent(environment)
     };
     if (!("api" in value)) return withPersonalDeviceSync;
-    const packageStatus =
-      (await runPackageStatusJson()) as ServerPackageStatusPayload | null;
     return {
       ...withPersonalDeviceSync,
       serverPackage: packageComponent(
@@ -1233,9 +1234,12 @@ export const createKoedServerManager = ({
   };
 
   const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
-    const current = await runJson(["status"], statusCommandTimeoutMs);
+    const [current, packageStatus] = await Promise.all([
+      runJson(["status"], statusCommandTimeoutMs),
+      runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
+    ]);
     scheduleEnrollmentReconciliation(current);
-    return withPackageComponent(current);
+    return withPackageComponent(current, packageStatus);
   };
 
   const pollUntilReady = async (attemptLimit = 90) => {

@@ -39,6 +39,7 @@ export interface ApiServerConfig {
   cookieSecure: boolean;
   publicRegistrationEnabled: boolean;
   teamCollaborationEnabled: boolean;
+  developerTeamBackendEnabled: boolean;
   corsOrigins: Set<string>;
   rateLimit: {
     store: string;
@@ -87,6 +88,18 @@ export interface ApiServerConfig {
 const optionalEnv = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+};
+
+const explicitBooleanEnv = (
+  environment: NodeJS.ProcessEnv,
+  name: string,
+  fallback = false
+): boolean => {
+  const configured = environment[name];
+  if (configured === undefined || configured === "") return fallback;
+  if (configured === "true") return true;
+  if (configured === "false") return false;
+  throw new Error(`${name} must be exactly "true" or "false"`);
 };
 
 const positiveIntEnv = (
@@ -226,6 +239,10 @@ export const resolveApiServerConfig = (
     publicRegistrationEnabled:
       environment.KOED_ALLOW_PUBLIC_REGISTRATION === "true",
     teamCollaborationEnabled: resolveTeamCollaborationEnabled(environment),
+    developerTeamBackendEnabled: explicitBooleanEnv(
+      environment,
+      "KOED_DEVELOPER_TEAM_BACKEND_ENABLED"
+    ),
     corsOrigins: resolveCorsOrigins(environment, nodeEnv),
     rateLimit: {
       store: optionalEnv(environment.RATE_LIMIT_STORE) ?? "memory",

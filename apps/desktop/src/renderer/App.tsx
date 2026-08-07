@@ -671,6 +671,7 @@ export function App({
           .filter(
             ({ state }) =>
               state === "awaiting_approval" ||
+              state === "awaiting_review" ||
               state === "approved" ||
               state === "executing"
           )

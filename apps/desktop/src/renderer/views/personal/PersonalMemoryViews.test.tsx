@@ -61,7 +61,7 @@ const thread = (
   eventCount: 1_000,
   id: `thread-${index}`,
   invalidatedCount: index === 1 ? 2 : 0,
-  latestAt: "2026-07-23T00:00:00.000Z",
+  latestAt: new Date().toISOString(),
   name: `Captured Session ${index}`,
   projectAssignmentSource: "detected",
   projectId: "project-1",
@@ -242,6 +242,9 @@ describe("PersonalMemoryWorkspace", () => {
     await vi.waitFor(() =>
       expect(container.textContent).toContain(source.name)
     );
+    expect(
+      container.querySelector("#personal-active-projects")?.textContent
+    ).toContain("Active 1");
 
     await act(async () => {
       container
