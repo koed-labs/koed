@@ -92,9 +92,9 @@ The README keeps to one basic local path. For other options, see:
   and [Upgrades](docs/upgrades.md) for operational guidance.
 
 For local Desktop, private VPS, Team Self-Hosted, and cloud deployment
-language, use `koed-server` plus dependencies as the product boundary. API,
-Worker, and Explorer remain useful implementation names for code, logs, and
-troubleshooting.
+language, use `koed-server` plus dependencies as the product boundary. API and
+Worker remain useful implementation names for code, logs, and troubleshooting.
+The retired Explorer is not a process or deployment dependency.
 
 ## Security Notes
 

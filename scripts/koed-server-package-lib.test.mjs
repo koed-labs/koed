@@ -43,6 +43,9 @@ const createPackageRoot = () => {
   const runtime = resolve(root, "koed-runtime");
   for (const file of [
     "api/dist/index.js",
+    "api/dist/browser-approval/index.html",
+    "api/dist/browser-approval/assets/index-abc12345.js",
+    "api/dist/browser-approval/assets/index-abc12345.css",
     "worker/dist/index.js",
     "embedding-service/dist/index.js",
     "mcp-server/dist/cli.js",
@@ -171,6 +174,20 @@ test("reports missing required runtime files", () => {
     result.errors.join("\n"),
     /koed-runtime\/mcp-server\/dist\/capture-hook\.js/
   );
+});
+
+test("requires packaged API browser approval assets", () => {
+  const root = createPackageRoot();
+  rmSync(
+    resolve(root, "koed-runtime", "api", "dist", "browser-approval", "assets"),
+    { recursive: true }
+  );
+  writeManifest(root);
+
+  const result = validatePackageRoot(root);
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /browser-approval\/assets/);
 });
 
 test("rejects retired Explorer, native runtime, model, and Python leftovers", () => {

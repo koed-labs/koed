@@ -14,7 +14,8 @@ Target topology:
 - Koed Desktop and its local edge run from the current source checkout.
 - The Team Backend runs in the isolated local Docker Compose stack at
   `http://127.0.0.1:3300`.
-- Explorer runs at `http://127.0.0.1:5174`.
+- The Team Backend API serves approval pages at `http://127.0.0.1:3300`; no
+  separate browser service runs.
 - The backend uses the `developer` profile with the explicit developer-only
   Team-backend capability switch. This does not represent the identity setup
   for Team Self-Hosted or Koed-managed cloud.
@@ -38,10 +39,10 @@ tier:
 `Confirmed` means the focused automated boundary evidence matches the accepted
 policy. The evidence column distinguishes rows that also received a manual
 fresh-stack Desktop tracer from rows covered by the automated Desktop, local
-edge, Team Backend, repository, and Explorer boundaries. `Mismatch` means the
-deployed behavior differs from the accepted policy. Manual tracers sample each
-ceremony class; they are not presented as a substitute for the exhaustive
-branch suites.
+edge, Team Backend, repository, and API-hosted browser boundaries. `Mismatch`
+means the deployed behavior differs from the accepted policy. Manual tracers
+sample each ceremony class; they are not presented as a substitute for the
+exhaustive branch suites.
 
 ## Validation Flow
 
@@ -157,23 +158,24 @@ Observed on 2026-08-03:
 3. Register the fresh Docker backend in Desktop, refresh capability schema 6,
    and enable only the route families needed by the inventory.
 4. Start device enrollment, inspect the exact requested operation families in
-   Explorer, approve through the authenticated browser session, exchange the
-   credential, and activate the backend.
+   the API-hosted approval page, approve through the authenticated browser
+   session, exchange the credential, and activate the backend.
 5. Confirm Personal Memory remains local and the renderer never receives the
    upstream credential or Action Grant secret.
 
 For Step-up validation, the five-minute Action Grant clock continues while the
-User signs in. If authentication finishes after expiry, Explorer must render an
-inert failure with safe-close guidance and Desktop must not execute the action.
-Request a new exact grant instead of retrying or reviving the expired one. Once
+User signs in. If authentication finishes after expiry, the API-hosted page
+must render an inert failure with safe-close guidance and Desktop must not
+execute the action. Request a new exact grant instead of retrying or reviving
+the expired one. Once
 the fresh page is approved, Desktop retrieves the result, submits the mutation
 with the command request id bound into the grant, and verifies either one
 consumption or an authoritative pre-consumption denial.
 
 #### WorkOS-backed deployments
 
-The approval protocol is independent of the browser identity provider.
-Explorer loads the advertised providers from `/v1/capabilities`: Team
+The approval protocol is independent of the browser identity provider. The
+API-hosted page loads the advertised providers from `/v1/capabilities`: Team
 Self-Hosted can offer local sessions and WorkOS/AuthKit together, while
 Koed-managed cloud offers WorkOS/AuthKit only. When fresh authentication is
 required, a WorkOS-capable Step-up page renders `Sign in with WorkOS`, follows
@@ -206,15 +208,19 @@ pnpm --filter @koed/desktop exec vitest run \
   src/collaboration/renderer-client.test.ts \
   src/CollaborationApp.test.tsx \
   src/renderer/services/desktop-commands.test.ts
-pnpm --filter @koed/explorer exec vitest run \
-  src/koed/HighRiskActionApproval.test.tsx
+pnpm --filter @koed/api exec vitest run \
+  src/browser-approval/HighRiskActionApproval.test.tsx \
+  src/browser-approval/DeviceEnrollmentApproval.test.tsx \
+  src/server/browser-approval-routes.test.ts
 ```
 
-Current focused approval result: 201/201 tests passed: 38 shared, 67 API, 84
-Desktop, and 12 Explorer tests. The added Explorer case proves a WorkOS-only
-Step-up page offers no local credential fields. Separately, all 45 Desktop
-manager tests and the focused non-default invitation Workspace repository test
-pass.
+The browser suite covers local sign-in followed by authoritative Step-up and
+device-enrollment approval, denial, expiry, session expiry, terminal focus,
+fail-closed review handling, unreconciled decisions, every supported enrollment
+access label, page security headers, and narrow immutable asset serving.
+WorkOS-only behavior remains covered by the API authentication integration
+tests. Record fresh counts when this live-validation ledger is rerun; do not
+carry the retired Explorer totals forward.
 
 The host Electron interaction gate also passes after repairing stale fixture
 expectations for required Team Presence, the two-message Shared Session,
@@ -283,8 +289,8 @@ the renderer allows 135 seconds. A fake-clock regression accepts a status that
 finishes after 120 seconds, and the final rebuilt Desktop reaches the main UI
 with the local Docker Team visible.
 
-The expired Step-up attempt supplied a negative tracer: Explorer remained
-inert, displayed safe-close guidance, and submitted no decision. A later
+The expired Step-up attempt supplied a negative tracer: the API-hosted page
+remained inert, displayed safe-close guidance, and submitted no decision. A later
 approved attempt was denied before consumption because the validating actor had
 already reduced their own access to `read`; this demonstrates that browser
 approval does not override current Team and Workspace authorization. The

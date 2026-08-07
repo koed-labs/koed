@@ -59,7 +59,7 @@ const reviewedGrantEnvelope = (
       state,
       activationPath:
         state === "pending"
-          ? `/v1/high-risk/browser-activations/${selector}`
+          ? `/high-risk/browser-activations/${selector}`
           : null,
       expiresAt: new Date(Date.now() + 60_000).toISOString()
     }

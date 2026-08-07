@@ -505,12 +505,13 @@ enrolled local edge and upstream, but all Team Membership, Workspace Access,
 Share Grant, lifecycle, and entitlement decisions remain request-time Koed
 authorization checks.
 
-Browser-mediated device enrollment uses local-edge routes, not API Tokens. A
-browser-authenticated User creates a short-lived enrollment challenge with
-`POST /v1/local-edge/device-enrollments/challenges`, opens an authorized browser
-client against the challenge id, and reviews the safe approval context through
-`GET /v1/local-edge/device-enrollments/challenges/{challengeId}`. The browser
-client can approve or deny the challenge through
+Browser-mediated device enrollment uses local-edge routes, not API Tokens. The
+local edge creates a short-lived enrollment challenge with
+`POST /v1/local-edge/device-enrollments/challenges` and opens
+`GET /device-enrollment/{challengeId}` on the Team Backend API origin. The API-
+hosted page reviews the bounded context through
+`GET /v1/local-edge/device-enrollments/challenges/{challengeId}` and can approve
+or deny the challenge through
 `POST /v1/local-edge/device-enrollments/challenges/{challengeId}/approval`;
 approval binds a device credential to the User, upstream backend, device
 instance, operation families, and server-side verifier material, while denial
@@ -530,6 +531,14 @@ device credential stops future device-credential authentication without
 rotating local personal API Tokens. A local edge keeps its secure credential and
 route state unchanged when remote revocation cannot be confirmed, so the User
 can retry without leaving an untracked remote credential.
+
+Step-up Action Grants follow the same deployment boundary. Desktop resolves
+the backend-provided `/high-risk/browser-activations/{selector}` path against
+the registered backend and opens it in the system browser. The API-hosted page
+uses the authenticated `/v1/high-risk/browser-activations/{selector}` JSON
+endpoint for review and the corresponding `/decision` endpoint for one explicit
+approve or deny choice. Only a freshly authenticated matching User can decide;
+API Tokens and device credentials cannot inspect or decide the activation.
 
 Device credential metadata records created, updated, last-used, last-validated,
 expiry, and revocation state. Audit events record credential creation and

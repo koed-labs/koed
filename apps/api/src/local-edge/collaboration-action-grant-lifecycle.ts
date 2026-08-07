@@ -17,10 +17,7 @@ import {
 } from "@koed/shared";
 
 import { highRiskActionGrantRemoteEnvelopeSchema } from "../high-risk/action-grant-protocol.js";
-import {
-  safeUpstreamProxyUrl,
-  type LocalEdgeUpstreamBackend
-} from "./upstream-routing.js";
+import type { LocalEdgeUpstreamBackend } from "./upstream-routing.js";
 
 export interface ActionGrantRemoteStatus {
   version: 1;
@@ -84,6 +81,30 @@ export interface CollaborationActionGrantLifecycle {
   ): void;
   resolve(input: CollaborationActionGrantResolveInput): string | null;
 }
+
+const browserActivationUrl = (
+  backend: LocalEdgeUpstreamBackend,
+  path: string
+): URL => {
+  if (
+    !/^\/high-risk\/browser-activations\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      path
+    )
+  ) {
+    throw new Error("Unsupported browser activation path");
+  }
+  const base = new URL(backend.baseUrl);
+  const basePath = base.pathname.replace(/\/+$/, "");
+  const activation = new URL(`${basePath}${path}`, base.origin);
+  if (
+    activation.origin !== base.origin ||
+    activation.search ||
+    activation.hash
+  ) {
+    throw new Error("Unsupported browser activation path");
+  }
+  return activation;
+};
 
 export const createCollaborationActionGrantLifecycle = (input: {
   koedHome: string;
@@ -194,7 +215,7 @@ export const createCollaborationActionGrantLifecycle = (input: {
     if (!parsed.success) return null;
     try {
       const activationUrl = parsed.data.status.activationPath
-        ? safeUpstreamProxyUrl(
+        ? browserActivationUrl(
             context.backend,
             parsed.data.status.activationPath
           )

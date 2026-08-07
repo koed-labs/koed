@@ -40,10 +40,13 @@ stop` and `docker compose down` remain clean manual stops and do not trigger an
 automatic restart.
 
 `MEMORY_API_URL` is intentionally pinned to the container's internal API
-endpoint. When an independently deployed browser client needs API access,
-set `API_BROWSER_PUBLIC_URL` and include its exact
-origin in `API_CORS_ORIGINS`. This preserves browser CSRF protections without
-adding a browser service to `koed-server`.
+endpoint. The same `koed-server` API process serves Step-up and device-
+enrollment pages. If the public browser-reachable address differs from the
+registered backend URL, set `API_BROWSER_PUBLIC_URL` to the public API origin.
+Do not deploy a separate browser client and do not add
+another CORS origin for approval pages; authentication and approval writes are
+same-origin. Behind TLS, set `API_COOKIE_SECURE=true` and configure
+`WORKOS_REDIRECT_URI` on that public API origin.
 
 Browser self-registration is disabled by default. For a local mock server or
 closed dogfood environment where registration is intentionally open, set

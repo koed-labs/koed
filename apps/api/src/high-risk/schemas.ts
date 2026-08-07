@@ -44,3 +44,7 @@ export const highRiskBrowserActivationEnvelopeSchema = z
       .strict()
   })
   .strict();
+
+export type HighRiskBrowserActivation = z.infer<
+  typeof highRiskBrowserActivationEnvelopeSchema
+>;

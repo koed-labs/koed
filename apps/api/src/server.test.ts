@@ -6562,8 +6562,37 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(login.statusCode).toBe(302);
+    const transientCookies = isStringArray(login.headers["set-cookie"])
+      ? login.headers["set-cookie"]
+      : typeof login.headers["set-cookie"] === "string"
+        ? [login.headers["set-cookie"]]
+        : [];
+    expect(transientCookies).toHaveLength(2);
+    expect(transientCookies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("koed_workos_state="),
+        expect.stringContaining("koed_workos_return_to=")
+      ])
+    );
+    for (const transientCookie of transientCookies) {
+      expect(transientCookie).toContain("Path=/;");
+      expect(transientCookie).toContain("HttpOnly");
+      expect(transientCookie).toContain("Secure");
+      expect(transientCookie).toContain("SameSite=Lax");
+    }
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toBe("/settings");
+    const sessionCookie = (
+      isStringArray(callback.headers["set-cookie"])
+        ? callback.headers["set-cookie"]
+        : [callback.headers["set-cookie"]]
+    ).find(
+      (value): value is string =>
+        typeof value === "string" && value.startsWith("cm_session=")
+    );
+    expect(sessionCookie).toContain("HttpOnly");
+    expect(sessionCookie).toContain("Secure");
+    expect(sessionCookie).toContain("SameSite=Lax");
     const meBody = jsonBody<{
       user: { email: string; displayName: string | null };
     }>(me);
@@ -6678,14 +6707,14 @@ describe("account and access flows", () => {
     expect(callback.headers.location).toBe("/");
   });
 
-  it("allows WorkOS to return to the configured public browser origin", async () => {
+  it("rejects cross-origin WorkOS return targets even when a browser URL is configured", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
     process.env.WORKOS_AUTHKIT_ENABLED = "true";
     process.env.WORKOS_CLIENT_ID = "client_test_123";
     process.env.WORKOS_API_KEY = "sk_test_hidden";
     process.env.WORKOS_REDIRECT_URI =
       "https://api.example.test/auth/workos/callback";
-    process.env.BROWSER_PUBLIC_URL = "https://app.example.test/koed";
+    process.env.BROWSER_PUBLIC_URL = "https://app.example.test";
     const workosClient: WorkosAuthKitClient = {
       getAuthorizationUrl: ({ state }) =>
         `https://workos.example.test/authorize?state=${state}`,
@@ -6723,7 +6752,7 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(callback.statusCode).toBe(302);
-    expect(callback.headers.location).toBe(returnTo);
+    expect(callback.headers.location).toBe("/");
   });
 
   it("rejects WorkOS callbacks with invalid state or email-only account matches", async () => {
@@ -6794,6 +6823,11 @@ describe("account and access flows", () => {
       url: "/auth/register",
       payload: { email: "solo@example.com", password: "password123" }
     });
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { email: "solo@example.com", password: "password123" }
+    });
     const cookie = cookieHeader(registered);
     const me = await app.inject({
       method: "GET",
@@ -6809,6 +6843,19 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(registered.statusCode).toBe(200);
+    expect(login.statusCode).toBe(200);
+    expect(login.headers["cache-control"]).toBe("no-store");
+    const localSessionCookie = (
+      isStringArray(login.headers["set-cookie"])
+        ? login.headers["set-cookie"]
+        : [login.headers["set-cookie"]]
+    ).find(
+      (value): value is string =>
+        typeof value === "string" && value.startsWith("cm_session=")
+    );
+    expect(localSessionCookie).toContain("HttpOnly");
+    expect(localSessionCookie).toContain("Secure");
+    expect(localSessionCookie).toContain("SameSite=Lax");
     expect(jsonBody<{ user: { email: string } }>(me).user.email).toBe(
       "solo@example.com"
     );
@@ -7664,7 +7711,7 @@ describe("account and access flows", () => {
   });
 
   it("enrolls and revokes device credentials independently from API Tokens", async () => {
-    process.env.BROWSER_PUBLIC_URL = "https://app.example.test/koed";
+    process.env.BROWSER_PUBLIC_URL = "https://app.example.test";
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",
@@ -7843,9 +7890,7 @@ describe("account and access flows", () => {
     expect(createdChallenge.statusCode).toBe(200);
     expect(
       jsonBody<{ activationUrl: string }>(createdChallenge).activationUrl
-    ).toMatch(
-      /^https:\/\/app\.example\.test\/koed\/device-enrollment\/[0-9a-f-]+$/
-    );
+    ).toMatch(/^https:\/\/app\.example\.test\/device-enrollment\/[0-9a-f-]+$/);
     expect(deniedAdminChallenge.statusCode).toBe(400);
     expect(deniedOverScopedRedeem.statusCode).toBe(400);
     expect(deniedPublicKeyRedeem.statusCode).toBe(400);

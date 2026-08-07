@@ -20,6 +20,8 @@ const hashC = "c".repeat(64);
 const uuidFor = (value: number): string =>
   `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 
+type PreviewItem = CollaborationPersistedSharedMemoryPreview["items"][number];
+
 const ids = {
   localOwner: uuidFor(1),
   upstreamUser: uuidFor(2),
@@ -50,7 +52,7 @@ const binding = () => ({
   classifierHash: hash
 });
 
-const sourceItem = (index = 0) => ({
+const sourceItem = (index = 0): PreviewItem => ({
   itemType: "user_message" as const,
   schemaVersion: 1 as const,
   sourceId: uuidFor(100 + index),
@@ -60,7 +62,7 @@ const sourceItem = (index = 0) => ({
   content: { text: `authoritative item ${index}` }
 });
 
-const previewResponse = (items = [sourceItem()]) => ({
+const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
   previewId: ids.preview,
   previewHash: hash,
   previewRevision: 1,
@@ -280,7 +282,7 @@ const createFixture = (
     actionGrantSecret?: string | null;
     persistPreview?: boolean;
     persistGrant?: boolean;
-    previewItems?: ReturnType<typeof sourceItem>[];
+    previewItems?: PreviewItem[];
     prepareLocalLcmRepresentation?: NonNullable<
       CollaborationSharedMemoryControlOptions["prepareLocalLcmRepresentation"]
     >;

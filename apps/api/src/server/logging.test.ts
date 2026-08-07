@@ -120,6 +120,33 @@ describe("API logging", () => {
     expect(JSON.stringify(serialized)).not.toContain("signature");
   });
 
+  it.each([
+    [
+      "/high-risk/browser-activations/953249fe-6002-4750-83e8-fe89268e35ac",
+      "/high-risk/browser-activations/:selector"
+    ],
+    [
+      "/v1/high-risk/browser-activations/953249fe-6002-4750-83e8-fe89268e35ac/decision",
+      "/v1/high-risk/browser-activations/:selector/decision"
+    ],
+    [
+      "/device-enrollment/953249fe-6002-4750-83e8-fe89268e35ac",
+      "/device-enrollment/:challengeId"
+    ]
+  ])("redacts approval identifiers from %s logs", (url, route) => {
+    const serialized = serializeApiRequest({
+      id: "req-approval",
+      method: "GET",
+      url,
+      routeOptions: { url: route }
+    });
+
+    expect(serialized).toMatchObject({ path: route, route });
+    expect(JSON.stringify(serialized)).not.toContain(
+      "953249fe-6002-4750-83e8-fe89268e35ac"
+    );
+  });
+
   it("preserves W3C trace ids without logging all headers", () => {
     const serialized = serializeApiRequest({
       id: "req-2",

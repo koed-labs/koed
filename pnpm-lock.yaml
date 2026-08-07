@@ -84,6 +84,21 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@types/react':
+        specifier: ~19.2.14
+        version: 19.2.16
+      '@types/react-dom':
+        specifier: ~19.2.3
+        version: 19.2.3(@types/react@19.2.16)
+      happy-dom:
+        specifier: ^20.9.0
+        version: 20.10.1
+      react:
+        specifier: 19.2.6
+        version: 19.2.6
+      react-dom:
+        specifier: 19.2.6
+        version: 19.2.6(react@19.2.6)
       tsx:
         specifier: ^4.22.1
         version: 4.22.1

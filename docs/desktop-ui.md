@@ -205,7 +205,8 @@ Grant. The renderer cannot select or downgrade the tier:
 1. **Direct** executes the explicit control with no second ceremony.
 2. **Native review** presents the backend-authored title, details, and
    consequence in Desktop, then sends an exact approve/cancel decision.
-3. **Step-up** opens an independently authenticated browser confirmation.
+3. **Step-up** opens the Team Backend's API-hosted, independently authenticated
+   browser confirmation.
 4. **Bundled stages** retain separate records and audit while sharing the one
    User decision for the surrounding workflow.
 

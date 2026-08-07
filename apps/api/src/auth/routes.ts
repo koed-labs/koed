@@ -15,33 +15,19 @@ const workosStateCookieName = "koed_workos_state";
 const workosReturnToCookieName = "koed_workos_return_to";
 const workosStateTtlSeconds = 10 * 60;
 
-const safeReturnTo = (value: unknown, browserPublicUrl?: string): string => {
-  if (
-    typeof value !== "string" ||
-    !value.startsWith("/") ||
-    value.startsWith("//")
-  ) {
-    if (typeof value !== "string" || !browserPublicUrl) return "/";
-    try {
-      const target = new URL(value);
-      const browserApp = new URL(`${browserPublicUrl.replace(/\/+$/, "")}/`);
-      const browserAppPath = browserApp.pathname.replace(/\/+$/, "");
-      if (
-        target.origin === browserApp.origin &&
-        (target.pathname === browserAppPath ||
-          target.pathname.startsWith(`${browserAppPath}/`)) &&
-        !target.username &&
-        !target.password
-      ) {
-        return target.toString();
-      }
-    } catch {
-      return "/";
-    }
-    return "/";
-  }
-  return value;
-};
+const hasUnsafeReturnCharacter = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return character === "\\" || code <= 31 || code === 127;
+  });
+
+export const safeReturnTo = (value: unknown): string =>
+  typeof value === "string" &&
+  value.startsWith("/") &&
+  !value.startsWith("//") &&
+  !hasUnsafeReturnCharacter(value)
+    ? value
+    : "/";
 
 const firstForwardedForAddress = (value: unknown): string | undefined => {
   if (typeof value !== "string") {
@@ -118,7 +104,7 @@ export const registerAuthRoutes = (
         new Date(Date.now() + sessionTtlMs)
       );
       setSessionCookie(reply, sessionSecret);
-
+      reply.header("cache-control", "no-store");
       return { user: publicUser(user!) };
     }
   );
@@ -153,7 +139,7 @@ export const registerAuthRoutes = (
         new Date(Date.now() + sessionTtlMs)
       );
       setSessionCookie(reply, sessionSecret);
-
+      reply.header("cache-control", "no-store");
       return { user: publicUser(user!) };
     }
   );
@@ -180,7 +166,7 @@ export const registerAuthRoutes = (
         new Date(Date.now() + sessionTtlMs)
       );
       setSessionCookie(reply, sessionSecret);
-
+      reply.header("cache-control", "no-store");
       return { user: publicUser(user) };
     }
   );
@@ -196,21 +182,21 @@ export const registerAuthRoutes = (
       }
       const state = createOpaqueSecret("wos");
       const returnTo = safeReturnTo(
-        (request.query as { return_to?: string } | undefined)?.return_to,
-        config.browserPublicUrl
+        (request.query as { return_to?: string } | undefined)?.return_to
       );
+      reply.header("cache-control", "no-store");
       reply.setCookie(workosStateCookieName, state, {
         httpOnly: true,
         sameSite: "lax",
         secure: config.cookieSecure,
-        path: "/auth/workos/callback",
+        path: "/",
         maxAge: workosStateTtlSeconds
       });
       reply.setCookie(workosReturnToCookieName, returnTo, {
         httpOnly: true,
         sameSite: "lax",
         secure: config.cookieSecure,
-        path: "/auth/workos/callback",
+        path: "/",
         maxAge: workosStateTtlSeconds
       });
       return reply.redirect(
@@ -264,10 +250,10 @@ export const registerAuthRoutes = (
       }
       if (!authentication.user.emailVerified) {
         reply.clearCookie(workosStateCookieName, {
-          path: "/auth/workos/callback"
+          path: "/"
         });
         reply.clearCookie(workosReturnToCookieName, {
-          path: "/auth/workos/callback"
+          path: "/"
         });
         return reply
           .status(403)
@@ -298,17 +284,15 @@ export const registerAuthRoutes = (
         new Date(Date.now() + sessionTtlMs)
       );
       setSessionCookie(reply, sessionSecret);
+      reply.header("cache-control", "no-store");
       reply.clearCookie(workosStateCookieName, {
-        path: "/auth/workos/callback"
+        path: "/"
       });
       reply.clearCookie(workosReturnToCookieName, {
-        path: "/auth/workos/callback"
+        path: "/"
       });
       return reply.redirect(
-        safeReturnTo(
-          request.cookies[workosReturnToCookieName],
-          config.browserPublicUrl
-        )
+        safeReturnTo(request.cookies[workosReturnToCookieName])
       );
     }
   );
@@ -321,11 +305,13 @@ export const registerAuthRoutes = (
     }
 
     reply.clearCookie(sessionCookieName, { path: "/" });
+    reply.header("cache-control", "no-store");
     return { ok: true };
   });
 
-  app.get("/me", async (request) => {
+  app.get("/me", async (request, reply) => {
     const user = await authenticateSession(request);
+    reply.header("cache-control", "no-store");
 
     return {
       user: publicUser(user)

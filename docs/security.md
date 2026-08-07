@@ -248,8 +248,14 @@ confirmation cannot authorize one another or a different hold.
 Every tier retains device/backend binding, exact scope and request hashes,
 short expiry, one-use consumption, replay protection, authoritative execution
 checks, and audit. Browser activation routes accept only stored Step-up grants.
-Terminal browser results are inert, render before any permitted close attempt,
-and expose neither reusable credentials nor Action Grant secrets. See
+The API process serves the narrow approval pages on the authentication origin;
+there is no cross-origin browser approval client. Page responses use a
+restrictive Content Security Policy, deny framing, suppress referrers and
+caching, and disable MIME sniffing. Browser decision writes retain same-origin
+and CSRF enforcement. The pages use no service worker or browser storage, and
+activation selectors are redacted to route templates in structured request and
+error logs. Terminal browser results are inert and expose neither reusable
+credentials nor Action Grant secrets. See
 [ADR 0024](adr/0024-tiered-desktop-action-approval.md).
 
 Desktop renders the schema-validated authoritative review DTO generically. Its

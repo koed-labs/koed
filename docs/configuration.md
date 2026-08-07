@@ -580,7 +580,17 @@ The file must not contain request bodies, prompts, raw Memory, cookies, API
 Tokens, provider secrets, IP addresses unless explicitly approved by deployment
 policy, or full URLs containing customer content.
 
-- `BROWSER_PUBLIC_URL`: optional absolute browser-client base URL used for device-enrollment and sensitive-action approval links. `koed-server` does not deploy that browser client.
+- `BROWSER_PUBLIC_URL`: optional public browser-reachable base URL for the
+  existing API process, used when device-enrollment links cannot be built from
+  the registered backend URL. Set it to the externally reachable API origin,
+  for example `https://koed.example.com`. Paths are rejected because approval
+  routes and assets must share that API origin. It is
+  not the URL of a separate browser service. Step-up and device-enrollment
+  pages, authentication, and approval JSON all remain on this same origin.
+  With TLS termination, also configure secure cookies and make the WorkOS
+  callback use this public API origin.
+  Registered backend URLs may still contain a reverse-proxy base path. The
+  generated activation URL and browser approval requests preserve that path.
 - `REDIS_HOST_PORT`: host port mapped to the Redis dependency container when using the Docker Compose starter. Default `16379`.
 - `REDIS_URL`: explicit Redis/BullMQ URL consumed by `koed-server`, API, and Worker in external dependency mode when `WORK_QUEUE_BACKEND=bullmq`. For the Docker Compose starter, use `redis://localhost:${REDIS_HOST_PORT}`.
 - `WORK_QUEUE_BACKEND`: `bullmq` by default for Redis/BullMQ queues. Set `local` to use the Postgres-backed `local_work_queue` table for API/Worker jobs; this does not require Redis for job queues, though Redis may still be used for rate-limit or cache stores if configured.

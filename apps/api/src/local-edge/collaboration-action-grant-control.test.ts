@@ -98,7 +98,7 @@ const pendingStatus = (expiresAt: string) => ({
     approvalTier: "step_up",
     review: approvalReview,
     state: "pending",
-    activationPath: `/v1/high-risk/browser-activations/${ids.selector}`,
+    activationPath: `/high-risk/browser-activations/${ids.selector}`,
     expiresAt
   }
 });
@@ -278,7 +278,7 @@ describe("collaboration Action Grant control", () => {
         status: {
           actionGrant: { id: ids.actionGrant },
           state: "pending",
-          activationUrl: `https://team.example.test/koed/v1/high-risk/browser-activations/${ids.selector}`,
+          activationUrl: `https://team.example.test/koed/high-risk/browser-activations/${ids.selector}`,
           expiresAt
         }
       }
@@ -319,7 +319,7 @@ describe("collaboration Action Grant control", () => {
       )
     ).toMatchObject({
       state: "pending",
-      activationUrl: `https://team.example.test/koed/v1/high-risk/browser-activations/${ids.selector}`
+      activationUrl: `https://team.example.test/koed/high-risk/browser-activations/${ids.selector}`
     });
   });
 
@@ -751,8 +751,8 @@ describe("collaboration Action Grant control", () => {
 
   it("fails closed when the remote activation path is malformed or leaks a secret-shaped token", async () => {
     for (const activationPath of [
-      `/v1/high-risk/browser-activations/${ids.selector}?bad=1`,
-      `/v1/high-risk/browser-activations/hrg_${"A".repeat(43)}`
+      `/high-risk/browser-activations/${ids.selector}?bad=1`,
+      `/high-risk/browser-activations/hrg_${"A".repeat(43)}`
     ]) {
       const fixture = createFixture({
         fetch: vi.fn(async () =>
@@ -893,7 +893,7 @@ describe("collaboration Action Grant control", () => {
       )
     ).toMatchObject({
       state: "pending",
-      activationUrl: `https://team.example.test/koed/v1/high-risk/browser-activations/${ids.selector}`
+      activationUrl: `https://team.example.test/koed/high-risk/browser-activations/${ids.selector}`
     });
     expect(
       await fixture.control.resolveSecret({

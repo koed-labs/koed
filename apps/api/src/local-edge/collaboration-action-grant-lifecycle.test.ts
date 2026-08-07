@@ -92,7 +92,7 @@ const remoteEnvelope = (status: ActionGrantRemoteStatus) => ({
     activationPath:
       status.activationUrl === null
         ? null
-        : `/v1/high-risk/browser-activations/${selector}`,
+        : `/high-risk/browser-activations/${selector}`,
     expiresAt: status.expiresAt
   }
 });
@@ -207,7 +207,7 @@ describe("collaboration Action Grant lifecycle", () => {
     stepUp.lifecycle.create(stepUp.custody);
     const pending = approvedStatus({
       state: "pending",
-      activationUrl: `https://team.example.test/koed/v1/high-risk/browser-activations/${selector}`
+      activationUrl: `https://team.example.test/koed/high-risk/browser-activations/${selector}`
     });
     expect(
       stepUp.lifecycle.acceptRemote(

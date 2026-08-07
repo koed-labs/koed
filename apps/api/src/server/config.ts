@@ -139,6 +139,19 @@ const optionalPublicHttpUrl = (
   return url.toString().replace(/\/$/, "");
 };
 
+const optionalPublicHttpOrigin = (
+  value: string | undefined,
+  name: string
+): string | undefined => {
+  const configured = optionalPublicHttpUrl(value, name);
+  if (!configured) return undefined;
+  const url = new URL(configured);
+  if (url.pathname !== "/") {
+    throw new Error(`${name} must be an HTTP or HTTPS origin without a path`);
+  }
+  return url.origin;
+};
+
 const resolveRuntimeMode = (
   value: string | undefined
 ): ApiServerConfig["runtimeMode"] =>
@@ -218,7 +231,7 @@ export const resolveApiServerConfig = (
     dependencyMode,
     apiPort: optionalEnv(environment.API_PORT),
     koedHome,
-    browserPublicUrl: optionalPublicHttpUrl(
+    browserPublicUrl: optionalPublicHttpOrigin(
       environment.BROWSER_PUBLIC_URL,
       "BROWSER_PUBLIC_URL"
     ),

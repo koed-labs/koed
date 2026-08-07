@@ -42,6 +42,15 @@ the local edge. Step-up requests expose only a short-lived browser activation
 URL and require a fresh browser session. Bundled stages cannot be requested as
 standalone interactive approvals by supported Desktop callers.
 
+The Team Backend API process serves the exceptional Step-up and device-
+enrollment pages on the same public origin as the authoritative JSON and
+authentication endpoints. These pages are a narrow browser bundle packaged
+with `@koed/api`; they are not a separate application, service, or authority.
+The API serves only backend-derived display-safe details, applies restrictive
+browser security headers, and accepts decisions only through the existing
+session-authenticated endpoints. An independently deployed Explorer or browser
+client is not part of this architecture.
+
 Every path retains exact action, body, target, Team or Workspace, device,
 backend, request-hash, commitment, idempotency, expiry, single-use, audit, and
 replay bindings. API Tokens never authorize these actions. Upstream device
@@ -124,6 +133,8 @@ local component must own the challenge and result. That future change may move
 selected actions to stronger confirmation without changing exact Action Grant
 execution semantics.
 
-Browser authentication remains the Step-up mechanism for this decision. It is
-not reusable administrative authority, and browser-window closure is never the
-signal that lets Desktop execute.
+Browser authentication remains the Step-up mechanism for this decision. The
+API-hosted page uses a validated relative authentication return path, so the
+session cookie and decision stay same-origin. It is not reusable administrative
+authority, and browser-window closure is never the signal that lets Desktop
+execute.
