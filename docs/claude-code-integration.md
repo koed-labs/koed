@@ -94,12 +94,12 @@ the API Token. The tool guidance in
 ## Running alongside Codex
 
 Codex and Claude Code can attach separate MCP Server instances to the same Koed
-API with the same API Token. The MCP Server also starts the local browser
-Memory Answer bridge on port `3210` for Explorer Questions. When another
+API with the same API Token. The MCP Server also starts the local Memory
+Question bridge on port `3210`. When another
 instance already holds that port, the new instance logs the conflict, retries
 in the background, and continues serving MCP recall. Set
 `MEMORY_ANSWER_BRIDGE_ENABLED=false` on the Claude Code instance if the
-Codex-attached instance should keep owning the browser bridge. See
+Codex-attached instance should keep owning the bridge. See
 [Configuration](configuration.md) for the bridge settings.
 
 ## Limitations

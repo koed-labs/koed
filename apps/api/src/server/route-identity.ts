@@ -481,14 +481,14 @@ export const routeIdentityContracts = [
     "/v1/capture-policies",
     "session_or_api_token",
     "capture",
-    "List capture policies for Explorer or AI-client compatibility."
+    "List capture policies for Desktop or AI-client use."
   ),
   route(
     "PUT",
     "/v1/capture-policies",
     "session_or_api_token",
     "capture",
-    "Update capture policies for Explorer or AI-client compatibility."
+    "Update capture policies for Desktop or AI-client use."
   ),
   route(
     "POST",
@@ -932,7 +932,7 @@ export const routeIdentityContracts = [
     "/v1/memory/graph/stream",
     "session_or_api_token",
     "personal_memory",
-    "Personal Memory graph/event stream for Explorer and local integrations."
+    "Personal Memory graph/event stream for Desktop and local integrations."
   ),
   route(
     "OPTIONS",

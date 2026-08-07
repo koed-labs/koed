@@ -1159,10 +1159,6 @@ describe("CollaborationApp", () => {
         failed: 0,
         notChecked: 0
       },
-      explorer: {
-        ...component(state),
-        url: "http://127.0.0.1:3300/explorer"
-      },
       lastVerification: {
         ...component(state),
         checkedAt: state === "healthy" ? "2026-07-23T00:00:00.000Z" : null
@@ -1370,7 +1366,6 @@ describe("CollaborationApp", () => {
         failed: 0,
         notChecked: 0
       },
-      explorer: { ...starting, url: "http://127.0.0.1:3300/explorer" },
       lastVerification: { ...starting, checkedAt: null },
       serverPackage: starting
     };

@@ -33,14 +33,14 @@ mutable-collaboration replication design.
 
 - One remote `koed-server` deployment with Postgres, its work queue backend,
   and the Embedding Service.
-- One public HTTPS Explorer/API origin for the remote deployment.
+- One public HTTPS API origin for the remote deployment.
 - Two isolated local devices for Alice's one remote Personal identity, each
   with its own `KOED_HOME`, `CODEX_HOME`, and Electron user-data directory.
 - One separate Bob profile for Team/Workspace authorization and realtime
   collaboration. A full Personal-plus-Team run therefore uses three local
   profiles; a two-profile run proves only one of those concerns at a time.
 - One stable environment file per local profile.
-- Distinct local API, Explorer, Postgres, and Embedding Service ports.
+- Distinct local API, Postgres, and Embedding Service ports.
 - One remote Team and one Workspace shared by both Users.
 
 Never share these between the two local profiles:
@@ -49,7 +49,7 @@ Never share these between the two local profiles:
 - `CODEX_HOME` or `CODEX_CONFIG_PATH`;
 - Electron `--user-data-dir`;
 - Personal database;
-- local API or Explorer credential;
+- local API credential;
 - local encryption keys;
 - upstream device credential;
 - realtime cursor or cached Team state.
@@ -64,7 +64,7 @@ artifact only when the model file is treated as read-only.
 - Two active devices in the same Personal Device Group, each with its own
   device key material and no configured remote upstream.
 - A relay configured only for PDS encrypted package delivery and acknowledgements.
-- Distinct local API, Explorer, Postgres, Embedding Service, and PDS gateway
+- Distinct local API, Postgres, Embedding Service, and PDS gateway
   ports.
 
 Use the same isolation rules as the remote topology. A PDS device must never
@@ -325,7 +325,7 @@ Generated profile files are dotenv inputs, not shell scripts. When a test
 process must load one directly, use Node's `--env-file=<path>` support or the
 Koed config loader. Do not `source` the file in a shell.
 
-Isolated Desktop profiles pass their assigned API, Explorer, Postgres, Redis,
+Isolated Desktop profiles pass their assigned API, Postgres, Redis,
 embedding, and debugging ports to supervised children at launch. A profile's
 `local.env` remains a default configuration input and is not authoritative for
 those live overrides. Use Desktop status plus

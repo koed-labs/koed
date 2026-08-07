@@ -2,7 +2,7 @@
 
 The API is Koed's backend HTTP service. It authenticates Users and API Tokens,
 persists captured source activity, runs Projection into Koed semantic memory
-structures, serves Recall endpoints, and exposes Explorer-facing graph,
+structures, serves Recall endpoints, and exposes Desktop-facing graph,
 settings, and question APIs.
 
 The API stores and retrieves memory, but it does not perform server-side LLM
@@ -36,7 +36,7 @@ connected AI Client through the MCP Server.
 - `src/memory/lcm-routes.ts`: pending LCM Summary and submission routes.
 - `src/memory/questions-routes.ts`: Memory Question persistence and claim/update
   routes.
-- `src/memory/graph-routes.ts` and `src/memory/graph-stream.ts`: Explorer graph
+- `src/memory/graph-routes.ts` and `src/memory/graph-stream.ts`: Desktop graph
   APIs and update stream.
 - `src/memory/jobs.ts`: embedding and LCM compaction job scheduling.
 - `src/memory/queue.ts`: BullMQ and Postgres-backed local queue adapter wiring.

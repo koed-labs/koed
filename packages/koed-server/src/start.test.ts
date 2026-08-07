@@ -80,7 +80,6 @@ const healthyStatus = (root: string): KoedServerStatus => ({
     failed: 0,
     notChecked: 0
   },
-  explorer: { state: "healthy", url: "http://localhost:5174" },
   lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
 });
 
@@ -89,7 +88,6 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/api/dist/index.js",
     "koed-runtime/worker/dist/index.js",
     "koed-runtime/embedding-service/dist/index.js",
-    "koed-runtime/explorer-dist/index.html",
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
     "koed-runtime/api/node_modules/@koed/db/dist/index.js",
@@ -368,7 +366,7 @@ describe("start supervisor", () => {
     expect(token).toMatch(/^cmt_/);
     expect(
       JSON.parse(
-        readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
+        readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
       )
     ).toMatchObject({ apiToken: token, source: "environment" });
   });
@@ -391,14 +389,14 @@ describe("start supervisor", () => {
 
     const first = await provisionDesktopApiToken(paths, runtime, environment);
     const firstCredential = readFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       "utf8"
     );
     const second = await provisionDesktopApiToken(paths, runtime, environment);
 
     expect(second).toBe(first);
     expect(
-      readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
+      readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
     ).toBe(firstCredential);
   });
 
@@ -411,7 +409,7 @@ describe("start supervisor", () => {
     createSourceDesktopDbRuntime(root, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       `${JSON.stringify({
         apiToken: "cmt_revoked",
         provisionedAt: "2026-01-01T00:00:00.000Z",
@@ -451,7 +449,7 @@ describe("start supervisor", () => {
     });
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       `${JSON.stringify({
         apiToken: persistedToken,
         provisionedAt: "2026-01-01T00:00:00.000Z",
@@ -580,8 +578,7 @@ describe("start supervisor", () => {
     const root = tempDir();
     const api = controlledChild(1);
     const worker = controlledChild(2);
-    const explorer = controlledChild(3);
-    const spawned = [api, worker, explorer];
+    const spawned = [api, worker];
     let scheduledFailure = false;
 
     await expect(
@@ -610,7 +607,6 @@ describe("start supervisor", () => {
       "Essential managed child api exited unexpectedly with code 1"
     );
 
-    expect(explorer.signals).toEqual(["SIGTERM"]);
     expect(worker.signals).toEqual(["SIGTERM"]);
     expect(api.signals).toEqual([]);
   });
@@ -619,8 +615,7 @@ describe("start supervisor", () => {
     const root = tempDir();
     const api = controlledChild(1);
     const worker = controlledChild(2);
-    const explorer = controlledChild(3);
-    const spawned = [api, worker, explorer];
+    const spawned = [api, worker];
     let scheduledFailure = false;
 
     await expect(
@@ -651,7 +646,6 @@ describe("start supervisor", () => {
       "Essential managed child worker failed: worker connection lost"
     );
 
-    expect(explorer.signals).toEqual(["SIGTERM"]);
     expect(worker.signals).toEqual(["SIGTERM"]);
     expect(api.signals).toEqual(["SIGTERM"]);
     expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(false);
@@ -662,8 +656,7 @@ describe("start supervisor", () => {
     const root = tempDir();
     const api = controlledChild(1);
     const worker = controlledChild(2);
-    const explorer = controlledChild(3);
-    const spawned = [api, worker, explorer];
+    const spawned = [api, worker];
     let scheduledStop = false;
 
     await expect(
@@ -683,17 +676,16 @@ describe("start supervisor", () => {
         collectStatus: async () => {
           if (!scheduledStop) {
             scheduledStop = true;
-            setImmediate(() => explorer.exit(null, "SIGTERM"));
+            setImmediate(() => worker.exit(null, "SIGTERM"));
           }
           return healthyStatus(root);
         }
       })
     ).rejects.toThrow(
-      "Essential managed child explorer exited unexpectedly with signal SIGTERM"
+      "Essential managed child worker exited unexpectedly with signal SIGTERM"
     );
 
-    expect(explorer.signals).toEqual([]);
-    expect(worker.signals).toEqual(["SIGTERM"]);
+    expect(worker.signals).toEqual([]);
     expect(api.signals).toEqual(["SIGTERM"]);
     expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(false);
     expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(false);
@@ -739,7 +731,6 @@ describe("start supervisor", () => {
       [
         "API_HOST_PORT=3300",
         "MEMORY_API_URL=http://localhost:3300",
-        "EXPLORER_WEB_HOST_PORT=5174",
         "DATABASE_URL=postgres://repo/db",
         "REDIS_URL=redis://repo:6379",
         "EMBEDDING_SERVICE_URL=http://repo:3800",
@@ -752,7 +743,7 @@ describe("start supervisor", () => {
       args: string[];
       env?: NodeJS.ProcessEnv;
     }> = [];
-    let runtime: { apiUrl?: string; explorerUrl?: string } | undefined;
+    let runtime: { apiUrl?: string } | undefined;
 
     await startKoedServer({
       signal: cleanShutdownSignal(),
@@ -761,8 +752,6 @@ describe("start supervisor", () => {
         KOED_REPO_ROOT: root,
         KOED_DEPENDENCY_MODE: "external",
         API_HOST_PORT: "4545",
-        EXPLORER_WEB_HOST_PORT: "5574",
-        EXPLORER_WEB_HOST: "0.0.0.0",
         DATABASE_URL: "postgres://operator/db",
         REDIS_URL: "redis://operator:6379",
         EMBEDDING_SERVICE_URL: "http://operator:3800",
@@ -779,19 +768,12 @@ describe("start supervisor", () => {
       collectStatus: async () => {
         runtime = JSON.parse(
           readFileSync(resolve(root, "run/koed-server.json"), "utf8")
-        ) as { apiUrl?: string; explorerUrl?: string };
+        ) as { apiUrl?: string };
         return healthyStatus(root);
       }
     });
 
     expect(runtime?.apiUrl).toBe("http://localhost:4545");
-    expect(runtime?.explorerUrl).toBe("http://localhost:5574");
-    expect(
-      spawned.find((entry) => entry.args.includes("preview"))?.args
-    ).toContain("5574");
-    expect(
-      spawned.find((entry) => entry.args.includes("preview"))?.args
-    ).toContain("0.0.0.0");
     expect(
       spawned
         .filter((entry) =>
@@ -885,7 +867,7 @@ describe("start supervisor", () => {
       resolve(resources.pgBin, "pg_ctl")
     );
     expect(commands.map((command) => command.args.join(" "))).toContain(
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer --filter @koed/mcp-server build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/mcp-server build"
     );
     const buildEnv = commands.find((command) =>
       command.args.includes("@koed/embedding-service")
@@ -917,8 +899,7 @@ describe("start supervisor", () => {
       "postgres-native",
       "embedding-service-native",
       "api",
-      "worker",
-      "explorer"
+      "worker"
     ]);
   });
 
@@ -940,7 +921,6 @@ describe("start supervisor", () => {
         "KOED_DEPENDENCY_MODE=bundled-local",
         `KOED_MODELS_DIR=${modelsDir}`,
         "API_HOST_PORT=23300",
-        "EXPLORER_WEB_HOST_PORT=25174",
         "POSTGRES_HOST_PORT=25432",
         "EMBEDDING_SERVICE_HOST_PORT=23800",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
@@ -1013,11 +993,8 @@ describe("start supervisor", () => {
     expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("28080");
     expect(spawned[0]?.env?.LLAMA_RERANKER_SERVER_PORT).toBe("29080");
     expect(spawned.at(-1)?.env?.API_PORT).toBe("23300");
-    expect(spawned.at(-1)?.env?.EXPLORER_API_BASE_URL).toBe(
-      "http://localhost:23300"
-    );
     const provisionedTokenFile: unknown = JSON.parse(
-      readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
+      readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
     );
     if (
       provisionedTokenFile === null ||
@@ -1025,24 +1002,19 @@ describe("start supervisor", () => {
       !("apiToken" in provisionedTokenFile) ||
       typeof provisionedTokenFile.apiToken !== "string"
     ) {
-      throw new TypeError("Explorer token fixture is invalid");
+      throw new TypeError("Local app credential fixture is invalid");
     }
     const provisionedToken = provisionedTokenFile.apiToken;
     const worker = spawned.find((entry) =>
       entry.args.some((arg) => arg.endsWith("apps/worker/dist/index.js"))
     );
-    const explorer = spawned.find((entry) => entry.args.includes("preview"));
     expect(provisionedToken).toMatch(/^cmt_/);
     expect(worker?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
     expect(worker?.env?.MEMORY_API_URL).toBe("http://localhost:23300");
-    expect(worker?.env?.VITE_KOED_API_TOKEN).toBe(provisionedToken);
-    expect(explorer?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
-    expect(explorer?.env?.VITE_KOED_API_TOKEN).toBe(provisionedToken);
     expect(
       JSON.parse(readFileSync(resolve(root, "config/local-ports.json"), "utf8"))
     ).toEqual({
       api: "23300",
-      explorer: "25174",
       postgres: "25432",
       embedding: "23800",
       llamaEmbedding: "28080",
@@ -1326,14 +1298,12 @@ describe("start supervisor", () => {
       readFileSync(resolve(root, "config/local-ports.json"), "utf8")
     ) as {
       api: string;
-      explorer: string;
       postgres: string;
       embedding: string;
       llamaEmbedding: string;
       llamaReranker: string;
     };
     expect(ports.api).not.toBe("43300");
-    expect(Number(ports.explorer)).toBeGreaterThanOrEqual(45174);
     expect(Number(ports.postgres)).toBeGreaterThanOrEqual(45432);
     expect(Number(ports.embedding)).toBeGreaterThanOrEqual(43800);
     expect(ports.llamaEmbedding).not.toBe("18080");
@@ -1348,14 +1318,11 @@ describe("start supervisor", () => {
     expect(spawned.at(-1)?.env?.EMBEDDING_SERVICE_URL).toBe(
       `http://127.0.0.1:${ports.embedding}`
     );
-    expect(spawned.at(-1)?.env?.CORS_ORIGINS).toContain(
-      `http://localhost:${ports.explorer}`
-    );
     expect(spawned.at(-1)?.env?.CORS_ORIGINS?.split(",")).toContain(
       "koed://app"
     );
     const credential = JSON.parse(
-      readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
+      readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
     ) as { apiToken: string };
     expect(credential.apiToken).toMatch(/^cmt_/);
     const desktopCredential = readDesktopLocalCredentialAuthorization(root);
@@ -1374,7 +1341,6 @@ describe("start supervisor", () => {
       resolve(root, ".env"),
       [
         "API_HOST_PORT=3300",
-        "EXPLORER_WEB_HOST_PORT=5174",
         "POSTGRES_HOST_PORT=15432",
         "EMBEDDING_SERVICE_HOST_PORT=3800",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
@@ -1419,22 +1385,17 @@ describe("start supervisor", () => {
       readFileSync(resolve(root, "config/local-ports.json"), "utf8")
     ) as {
       api: string;
-      explorer: string;
       postgres: string;
       embedding: string;
       llamaEmbedding: string;
       llamaReranker: string;
     };
     expect(ports.api).not.toBe("3300");
-    expect(ports.explorer).not.toBe("5174");
     expect(ports.postgres).not.toBe("15432");
     expect(ports.embedding).not.toBe("3800");
     expect(ports.llamaEmbedding).not.toBe("28080");
     expect(ports.llamaReranker).not.toBe("29080");
     expect(spawned.at(-1)?.env?.API_PORT).toBe(ports.api);
-    expect(spawned.at(-1)?.env?.EXPLORER_API_BASE_URL).toBe(
-      `http://localhost:${ports.api}`
-    );
   });
 
   it("does not allocate ports when a live supervisor owns KOED_HOME", async () => {
@@ -1521,16 +1482,7 @@ describe("start supervisor", () => {
       spawned[0]?.env?.DATA_ENCRYPTION_KEY
     );
     expect(spawned[1]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
-    expect(spawned[2]?.args[0]).toMatch(/explorer-static-server\.js$/);
-    expect(spawned[2]?.args.slice(1)).toEqual([
-      resolve(root, "koed-runtime/explorer-dist"),
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "5174",
-      "--api-url",
-      "http://localhost:3300"
-    ]);
+    expect(spawned).toHaveLength(2);
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");
   });
 
@@ -1667,15 +1619,14 @@ describe("start supervisor", () => {
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
       resolve(root, "scripts/setup-env.mjs"),
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer --filter @koed/mcp-server build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/mcp-server build"
     ]);
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
     );
     expect(spawned.map((entry) => entry.args.join(" "))).toEqual([
       resolve(root, "apps/api/dist/index.js"),
-      resolve(root, "apps/worker/dist/index.js"),
-      `${resolve(root, "node_modules/vite/bin/vite.js")} preview --host 127.0.0.1 --port 5174`
+      resolve(root, "apps/worker/dist/index.js")
     ]);
   });
 });

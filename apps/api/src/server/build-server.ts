@@ -905,7 +905,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       deviceRead: rateLimitHandlers.memoryRead,
       deviceWrite: rateLimitHandlers.memoryWrite
     },
-    explorerPublicUrl: config.explorerPublicUrl
+    browserPublicUrl: config.browserPublicUrl
   });
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: requireRepository,

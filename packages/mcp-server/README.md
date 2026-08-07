@@ -20,7 +20,7 @@ pnpm --filter @koed/mcp-server build
 After build, the package exposes:
 
 - `koed-mcp`: stdio MCP server for Codex.
-- `koed-memory-answer-bridge`: standalone local HTTP bridge for Explorer
+- `koed-memory-answer-bridge`: standalone local HTTP bridge for Memory Questions
   questions. Normal MCP startup runs its own bridge.
 - `koed-capture-hook`: Codex lifecycle hook for automatic capture.
 
@@ -126,10 +126,10 @@ Provider-side hidden instructions are still controlled by Codex/OpenAI and are
 not visible to or removable by Koed. Task prompts for Memory Answer and LCM
 Summary remain separate from this app-server context minimisation layer.
 
-## Explorer Answer Bridge
+## Memory Question Answer Bridge
 
 When `koed-mcp` starts, it also starts a local HTTP bridge on
-`http://localhost:3210` by default. The Explorer uses this bridge for
+`http://localhost:3210` by default. Authorized local clients can use this bridge for
 Questions; users do not need to run a separate app-server or answer bridge
 process for normal operation:
 
@@ -174,8 +174,8 @@ first check that the process owning port `3210` can resolve `codex` or that
 `MEMORY_CODEX_APP_SERVER_BINARY` points at the correct binary. Prefer the
 MCP-owned bridge; avoid running a second standalone bridge on the same port.
 
-Explorer manual Memory Question settings inherit `MEMORY_ANSWER_*` unless
-`MEMORY_MANUAL_ANSWER_*` or a per-question Explorer selection overrides them.
+Manual Memory Question settings inherit `MEMORY_ANSWER_*` unless
+`MEMORY_MANUAL_ANSWER_*` or a per-question client selection overrides them.
 The bridge stores per-question settings on the pending question row before
 claiming it, so retries and background catch-up keep the same Codex model and
 reasoning choices. The available model and reasoning selectors are read from
@@ -197,7 +197,7 @@ MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 ```
 
 MCP Memory Answer and LCM Summary model, reasoning, timeout, and attempts can
-also be edited from the Explorer Settings panel. These API user settings take
+also be edited through the API. These API user settings take
 precedence over `.env`; `.env` remains the bootstrap/default source for fresh
 installs.
 

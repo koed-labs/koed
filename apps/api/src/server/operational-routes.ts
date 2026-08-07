@@ -611,9 +611,6 @@ export const registerOperationalRoutes = (
       publicStatus: "/self-host/status",
       capabilities: "/v1/capabilities",
       openapi: "/openapi.json"
-    },
-    explorer: {
-      defaultUrl: "http://localhost:5174"
     }
   }));
 

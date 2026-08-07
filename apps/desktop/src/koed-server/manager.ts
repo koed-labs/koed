@@ -233,7 +233,6 @@ const diagnosticStatus = ({
       failed: 0,
       notChecked: 0
     },
-    explorer: { ...component("Start Koed"), url: "" },
     lastVerification: { ...component("Run doctor"), checkedAt: null }
   } as DiagnosticStatus;
 };
@@ -274,17 +273,17 @@ const waitForAbortOrDelay = (
 const resolveKoedHome = (environment: NodeJS.ProcessEnv): string =>
   resolve(environment.KOED_HOME?.trim() || `${homedir()}/.koed`);
 
-const resolveExplorerCredentialPath = (
+const resolveLocalAppCredentialPath = (
   environment: NodeJS.ProcessEnv
 ): string =>
-  resolve(resolveKoedHome(environment), "config", "explorer-token.json");
+  resolve(resolveKoedHome(environment), "config", "local-app-credential.json");
 
-const readExplorerCredential = (
+const readLocalAppCredential = (
   environment: NodeJS.ProcessEnv
 ): { ok: true; apiToken: string } | { ok: false; error: string } => {
-  const credentialPath = resolveExplorerCredentialPath(environment);
+  const credentialPath = resolveLocalAppCredentialPath(environment);
   if (!nodeExistsSync(credentialPath)) {
-    return { ok: false, error: "Explorer credential is not provisioned." };
+    return { ok: false, error: "Local app credential is not provisioned." };
   }
   try {
     const parsed = JSON.parse(readFileSync(credentialPath, "utf8")) as {
@@ -292,9 +291,9 @@ const readExplorerCredential = (
     };
     return typeof parsed.apiToken === "string" && parsed.apiToken.trim()
       ? { ok: true, apiToken: parsed.apiToken.trim() }
-      : { ok: false, error: "Explorer credential is missing an API Token." };
+      : { ok: false, error: "Local app credential is missing an API Token." };
   } catch {
-    return { ok: false, error: "Explorer credential could not be read." };
+    return { ok: false, error: "Local app credential could not be read." };
   }
 };
 
@@ -865,8 +864,7 @@ export const setupServicesHealthy = (value: unknown): boolean => {
     status?.database,
     status?.redis,
     status?.workerQueues,
-    status?.embeddingService,
-    status?.explorer
+    status?.embeddingService
   ].every(componentHealthy);
 };
 
@@ -1246,7 +1244,7 @@ export const createKoedServerManager = ({
       latest = await runJson(["status"], statusCommandTimeoutMs);
       if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
-        await provisionExplorerCredential();
+        await provisionLocalAppCredential();
         return latest;
       }
       await sleep(1_000);
@@ -1260,10 +1258,10 @@ export const createKoedServerManager = ({
     );
   };
 
-  const provisionExplorerCredentialOnce = async () =>
-    readExplorerCredential(environment);
+  const provisionLocalAppCredentialOnce = async () =>
+    readLocalAppCredential(environment);
 
-  const provisionExplorerCredential = async (force = false) => {
+  const provisionLocalAppCredential = async (force = false) => {
     if (force) retainedPersonalApiToken = null;
     if (retainedPersonalApiToken && !force) {
       return { ok: true as const, apiToken: retainedPersonalApiToken };
@@ -1271,7 +1269,7 @@ export const createKoedServerManager = ({
     if (personalApiTokenProvisioning) {
       return personalApiTokenProvisioning;
     }
-    const provisioning = provisionExplorerCredentialOnce().then((result) => {
+    const provisioning = provisionLocalAppCredentialOnce().then((result) => {
       if (result.ok) retainedPersonalApiToken = result.apiToken;
       return result;
     });
@@ -1303,7 +1301,7 @@ export const createKoedServerManager = ({
       throw new PersonalMemoryBoundaryError("not_ready", true);
     }
     retainedPersonalApiOrigin = apiOrigin;
-    const credential = await provisionExplorerCredential(refreshToken);
+    const credential = await provisionLocalAppCredential(refreshToken);
     if (!credential.ok) {
       throw new PersonalMemoryBoundaryError("not_ready", true);
     }
@@ -2422,7 +2420,7 @@ export const createKoedServerManager = ({
     const current = await runJson(["status"], statusCommandTimeoutMs);
     if (hasHealthyApi(current)) {
       retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
-      await provisionExplorerCredential();
+      await provisionLocalAppCredential();
       return current;
     }
 

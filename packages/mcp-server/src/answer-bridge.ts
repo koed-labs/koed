@@ -788,7 +788,7 @@ export const localMemoryAgentSettings = async (
     precedence: {
       mcpMemoryAnswer: ["API user setting", "MEMORY_ANSWER_*", "code defaults"],
       manualMemoryAnswer: [
-        "Explorer per-question selection",
+        "Per-question client selection",
         "MEMORY_MANUAL_ANSWER_*",
         "MEMORY_ANSWER_*",
         "code defaults"

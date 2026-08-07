@@ -500,11 +500,11 @@ export const registerLocalEdgeRoutes = (
       const publicChallenge = publicDeviceEnrollmentChallenge(challenge);
       return {
         challenge: publicChallenge,
-        ...(context.config.explorerPublicUrl
+        ...(context.config.browserPublicUrl
           ? {
               activationUrl: new URL(
                 `device-enrollment/${encodeURIComponent(publicChallenge.id)}`,
-                `${context.config.explorerPublicUrl}/`
+                `${context.config.browserPublicUrl}/`
               ).toString()
             }
           : {})

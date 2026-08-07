@@ -34,7 +34,6 @@ const writeRuntimeState = (
       startedAt: "2026-01-01T00:00:00.000Z",
       repoRoot: root,
       apiUrl: "http://localhost:43300",
-      explorerUrl: "http://localhost:45174",
       dependencyMode,
       automaticPorts,
       services: []
@@ -124,7 +123,7 @@ describe("Codex setup wrapper", () => {
     expect(result.stdout).not.toContain("new_token");
     expect(
       JSON.parse(
-        readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
+        readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
       )
     ).toMatchObject({ apiToken: "new_token", source: "repo-env" });
   });
@@ -139,7 +138,6 @@ describe("Codex setup wrapper", () => {
         startedAt: "2026-01-01T00:00:00.000Z",
         repoRoot: root,
         apiUrl: "http://localhost:43300",
-        explorerUrl: "http://localhost:45174",
         services: []
       })
     );
@@ -156,7 +154,6 @@ describe("Codex setup wrapper", () => {
 
     expect(result.ok).toBe(true);
     expect(result.apiUrl).toBe("http://localhost:43300");
-    expect(result.explorerUrl).toBe("http://localhost:45174");
     expect(calls[0]?.env?.MEMORY_API_URL).toBe("http://localhost:43300");
   });
 
@@ -400,7 +397,6 @@ describe("Codex setup wrapper", () => {
       resolve(root, ".env"),
       [
         "MEMORY_API_URL=https://repo-api.example.test",
-        "EXPLORER_WEB_HOST_PORT=15174",
         "DATABASE_URL=postgres://repository/external",
         "POSTGRES_HOST_PORT=15432",
         "POSTGRES_PASSWORD=repository-password"
@@ -430,7 +426,6 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(true);
     expect(checkedPids).toEqual([424_242]);
     expect(result.apiUrl).toBe("https://repo-api.example.test");
-    expect(result.explorerUrl).toBe("http://localhost:15174");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.env?.DATABASE_URL).toBe("postgres://repository/external");
     expect(calls[0]?.env?.POSTGRES_HOST_PORT).toBe("15432");
@@ -457,7 +452,7 @@ describe("Codex setup wrapper", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -506,7 +501,7 @@ describe("Codex setup wrapper", () => {
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -543,7 +538,7 @@ describe("Codex setup wrapper", () => {
     writeRuntimeState(root, "bundled-local", process.pid, true);
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
     writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=repo_token\n");
@@ -561,7 +556,6 @@ describe("Codex setup wrapper", () => {
         KOED_REPO_ROOT: root,
         CODEX_HOME: codexHome,
         MEMORY_API_URL: "http://localhost:3300",
-        KOED_EXPLORER_URL: "http://localhost:5174",
         KOED_AUTO_PORTS: "0"
       },
       now: () => new Date("2026-01-01T00:00:00.000Z")
@@ -588,7 +582,7 @@ describe("Codex setup wrapper", () => {
     );
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });

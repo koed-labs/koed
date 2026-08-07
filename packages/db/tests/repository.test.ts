@@ -12355,7 +12355,7 @@ describeDb("memory repository visibility", () => {
       targetId: team.id,
       metadata: {
         event: "first_recall_completed",
-        surface: "explorer",
+        surface: "api",
         deploymentProfile: "koed_managed_cloud",
         teamId: team.id,
         attributes: { route: "memory_answer" }
@@ -12391,7 +12391,7 @@ describeDb("memory repository visibility", () => {
         {
           event: "first_recall_completed",
           count: 1,
-          surfaces: { explorer: 1 },
+          surfaces: { api: 1 },
           deploymentProfiles: { koed_managed_cloud: 1 }
         }
       ]

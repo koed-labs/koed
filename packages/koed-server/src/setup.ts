@@ -13,10 +13,10 @@ import { dirname, resolve } from "node:path";
 import {
   resolveActiveIntegrationApiToken,
   resolveLocalApiToken,
-  writeExplorerCredential
+  writeLocalAppCredential
 } from "./credentials.js";
 import { resolveKoedServerConfig } from "./config.js";
-import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import {
   localPostgresEnv,
   resolveLocalPostgresRuntimePaths
@@ -41,7 +41,6 @@ export interface KoedServerSetupCodexResult {
   state: "healthy" | "needs_attention";
   koedHome: string;
   apiUrl: string;
-  explorerUrl: string;
   checkedAt: string;
   command: string;
   stdout?: string;
@@ -223,7 +222,7 @@ export const repairCodexIntegration = ({
       command: "write Codex config",
       error: "No Koed API Token is available for the Codex integration.",
       action:
-        "Start Koed Desktop first so it can provision a local Explorer/API Token, then run Fix Codex integration again."
+        "Start Koed Desktop first so it can provision a local API Token, then run Fix Codex integration again."
     };
   }
 
@@ -353,7 +352,6 @@ interface SetupCodexBaseContext {
   repoEnv: Record<string, string>;
   dependencyMode: "bundled-local" | "external";
   apiUrl: string;
-  explorerUrl: string;
   checkedAt: string;
   scriptPath: string;
 }
@@ -392,7 +390,6 @@ const resolveSetupCodexBase = (
     repoEnv,
     dependencyMode: config.dependencyMode,
     apiUrl: resolveApiUrl(environment, repoEnv),
-    explorerUrl: resolveExplorerUrl(environment, repoEnv),
     checkedAt: (options.now ?? (() => new Date()))().toISOString(),
     scriptPath: resolve(paths.repoRoot, "scripts/clients-bootstrap.mjs")
   };
@@ -422,7 +419,6 @@ const prepareSetupCodex = (
         state: "needs_attention",
         koedHome: base.paths.koedHome,
         apiUrl: base.apiUrl,
-        explorerUrl: base.explorerUrl,
         checkedAt: base.checkedAt,
         command: "resolve bundled-local setup environment",
         error: database.error,
@@ -455,7 +451,7 @@ const persistSetupApiToken = (
       resolveLocalApiToken(context.environment, repoEnv))
     : resolveLocalApiToken(context.environment, repoEnv);
   if (!apiToken) return;
-  writeExplorerCredential(context.paths, {
+  writeLocalAppCredential(context.paths, {
     apiToken: apiToken.token,
     provisionedAt: context.checkedAt,
     source: apiToken.source
@@ -476,7 +472,6 @@ const runSetupBootstrap = (
   const base = {
     koedHome: context.paths.koedHome,
     apiUrl: context.apiUrl,
-    explorerUrl: context.explorerUrl,
     checkedAt: context.checkedAt,
     command: `node ${context.scriptPath}`
   };

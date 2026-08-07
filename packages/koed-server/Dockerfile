@@ -24,7 +24,6 @@ RUN pnpm install --frozen-lockfile \
   && pnpm --filter @koed/api build \
   && pnpm --filter @koed/mcp-server build \
   && pnpm --filter @koed/worker build \
-  && pnpm --filter @koed/explorer build \
   && pnpm --filter @koed/koed-server build
 
 ENV KOED_HOME=/data/koed
@@ -34,9 +33,7 @@ ENV KOED_RUNTIME_MODE=external
 ENV KOED_DEPENDENCY_MODE=external
 ENV API_HOST=0.0.0.0
 ENV API_HOST_PORT=3300
-ENV EXPLORER_WEB_HOST=0.0.0.0
-ENV EXPLORER_WEB_HOST_PORT=5174
 
-EXPOSE 3300 5174
+EXPOSE 3300
 
 CMD ["sh", "-c", "umask 077 && mkdir -p \"$KOED_HOME\" \"$KOED_DEVICE_PROOF_DIR\" && chmod 700 \"$KOED_HOME\" \"$(dirname \"$KOED_DEVICE_PROOF_DIR\")\" \"$KOED_DEVICE_PROOF_DIR\" && exec node packages/koed-server/dist/cli.js start"]

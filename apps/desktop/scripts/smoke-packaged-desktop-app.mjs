@@ -464,7 +464,6 @@ const assertPackagedJsSurface = (layout) => {
     ["Packaged API artifact", "api/dist/index.js"],
     ["Packaged Worker artifact", "worker/dist/index.js"],
     ["Packaged Embedding Service artifact", "embedding-service/dist/index.js"],
-    ["Packaged Explorer artifact", "explorer-dist/index.html"],
     ["Packaged MCP Server artifact", "mcp-server/dist/cli.js"],
     [
       "Packaged Supported Capture Hook artifact",
@@ -511,7 +510,7 @@ const assertPackagedJsSurface = (layout) => {
 };
 
 const assertPackagedDaemonReady = (payload, label) => {
-  const requiredComponents = ["database", "redis", "explorer"];
+  const requiredComponents = ["database", "redis"];
   const unhealthy = requiredComponents.filter(
     (component) => payload?.[component]?.state !== "healthy"
   );
@@ -763,7 +762,7 @@ const waitForHealthyStatus = async ({
       continue;
     }
     lastStatus = parseJsonOutput("status --json", status.stdout);
-    const readyComponents = ["database", "redis", "explorer"].every(
+    const readyComponents = ["database", "redis"].every(
       (component) => lastStatus?.[component]?.state === "healthy"
     );
     if (readyComponents) {

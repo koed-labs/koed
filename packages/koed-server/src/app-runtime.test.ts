@@ -30,7 +30,7 @@ const paths = (root: string): KoedServerPaths => ({
   lastVerificationPath: resolve(root, "run", "last-verification.json"),
   serverConfigPath: resolve(root, "config", "server.json"),
   localPortsPath: resolve(root, "config", "local-ports.json"),
-  explorerTokenPath: resolve(root, "config", "explorer-token.json"),
+  localAppCredentialPath: resolve(root, "config", "local-app-credential.json"),
   upstreamBackendsPath: resolve(root, "config", "upstream-backends.json"),
   projectMetadataPath: resolve(root, "config", "projects.json"),
   projectTeamWorkspaceLinksPath: resolve(
@@ -57,7 +57,6 @@ const createPackagedRuntime = (root: string) => {
     "koed-runtime/api/dist/index.js",
     "koed-runtime/worker/dist/index.js",
     "koed-runtime/embedding-service/dist/index.js",
-    "koed-runtime/explorer-dist/index.html",
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
     "koed-runtime/api/node_modules/@koed/db/dist/index.js",
@@ -72,7 +71,6 @@ const createKoedHomeRuntime = (root: string) => {
     "runtime/koed-runtime/api/dist/index.js",
     "runtime/koed-runtime/worker/dist/index.js",
     "runtime/koed-runtime/embedding-service/dist/index.js",
-    "runtime/koed-runtime/explorer-dist/index.html",
     "runtime/koed-runtime/mcp-server/dist/cli.js",
     "runtime/koed-runtime/mcp-server/dist/capture-hook.js",
     "runtime/koed-runtime/api/node_modules/@koed/db/dist/index.js",
@@ -87,7 +85,6 @@ const createKoedHomeServerPackageRuntime = (root: string) => {
     "runtime/koed-server/current/koed-runtime/api/dist/index.js",
     "runtime/koed-server/current/koed-runtime/worker/dist/index.js",
     "runtime/koed-server/current/koed-runtime/embedding-service/dist/index.js",
-    "runtime/koed-server/current/koed-runtime/explorer-dist/index.html",
     "runtime/koed-server/current/koed-runtime/mcp-server/dist/cli.js",
     "runtime/koed-server/current/koed-runtime/mcp-server/dist/capture-hook.js",
     "runtime/koed-server/current/koed-runtime/api/node_modules/@koed/db/dist/index.js",
@@ -103,7 +100,6 @@ const createSourceCheckout = (root: string) => {
     "apps/api/package.json",
     "apps/worker/package.json",
     "apps/embedding-service/package.json",
-    "apps/explorer/package.json",
     "packages/db/package.json",
     "packages/mcp-server/package.json"
   ]) {

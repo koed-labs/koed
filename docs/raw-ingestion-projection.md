@@ -5,7 +5,7 @@ Koed stores coding-tool output in two layers:
 - Raw ingestion records preserve source events as closely as possible to the
   originating tool.
 - Projected records are Koed-specific semantic units used by retrieval,
-  summaries, graph views, Questions, and the explorer APIs.
+  summaries, graph views, Questions, and memory APIs.
 
 In domain terms, **Projection** is the transformation from captured source
 activity into Koed semantic memory structures. This document describes the
@@ -151,7 +151,7 @@ transaction. An identity conflict or artifact failure rolls back the session
 creation rather than leaving an unjournaled Captured Session. Source registration
 and segment transfer have an independent local rate-limit bucket so a large
 first discovery cannot consume the interactive Memory read/write allowance used
-by Explorer and the MCP Server.
+by Desktop and the MCP Server.
 
 The first successful bounded full discovery cycle establishes activation. Files
 present in that baseline retain their complete-record boundary as an immutable

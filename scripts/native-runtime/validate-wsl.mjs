@@ -85,12 +85,11 @@ const statusLooksReady = (payload) => {
   const api = components?.api ?? payload?.api;
   const database =
     components?.database ?? components?.postgres ?? payload?.database;
-  const explorer = components?.explorer ?? payload?.explorer;
   const isHealthy = (entry) =>
     entry?.state === "healthy" ||
     entry?.status === "ok" ||
     entry?.ready === true;
-  return isHealthy(api) && isHealthy(database) && isHealthy(explorer);
+  return isHealthy(api) && isHealthy(database);
 };
 
 const waitForStatus = ({ runCli, timeoutMs = 180_000, intervalMs = 2_000 }) => {

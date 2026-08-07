@@ -35,7 +35,6 @@ test("packaging path policy excludes documentation and includes runtime consumer
     "apps/api/src/index.ts",
     "apps/worker/src/index.ts",
     "apps/embedding-service/src/index.ts",
-    "apps/explorer/src/App.tsx",
     "packages/koed-server/src/cli.ts",
     "packages/mcp-server/src/cli.ts",
     "packages/core/src/index.ts",

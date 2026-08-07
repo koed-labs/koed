@@ -22,7 +22,7 @@ node packages/koed-server/dist/cli.js setup codex --json
 ```
 
 The setup command prepares the environment, creates or reuses the local API
-Token once the API is ready, writes the app-provisioned Explorer credential,
+Token once the API is ready, writes the app-provisioned local credential,
 writes the Codex MCP and Capture Hook configuration, verifies capture, and
 finishes with a doctor check. Koed Desktop runs this guided client setup path
 automatically on startup when needed; `pnpm clients:bootstrap` remains the
@@ -35,9 +35,6 @@ Create a local API token and copy it immediately. Full token values are shown on
 ```bash
 pnpm api-token:create --owner-email local@koed.ai --name "Client Integration"
 ```
-
-Use `pnpm explorer:bootstrap` if you already have a token and just want to write
-it into Explorer local config.
 
 ## MCP Server
 
@@ -68,20 +65,18 @@ If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.
 
-## Browser Questions
+## Memory Questions
 
-The Explorer Questions tab uses the local MCP server as its AI-client
-sidecar. The browser can ask a question and persist it in Koed, then the MCP
-server delegates answer synthesis to Codex app-server mode in the local Codex
-environment. The backend stores questions, retrieval evidence, citations, and
-answer status, but does not run LLM synthesis.
+API clients can persist a Memory Question in Koed, then the MCP Server delegates
+answer synthesis to Codex app-server mode in the local Codex environment. The
+backend stores questions, retrieval evidence, citations, and answer status, but
+does not run LLM synthesis.
 
-When the MCP server starts, it also starts a local browser bridge on
-`http://localhost:3210` by default. The Explorer uses that local endpoint
-for Questions; there is no separate bridge process to run. `MEMORY_API_TOKEN`
-also enables the MCP server's local pending-question catch-up service, which
-claims unanswered browser questions and finishes them through local Codex answer
-synthesis after a refresh or interrupted browser request.
+When the MCP Server starts, it also starts a local Memory Question bridge on
+`http://localhost:3210` by default; there is no separate bridge process to run.
+`MEMORY_API_TOKEN` also enables its pending-question catch-up service, which
+claims unanswered questions and finishes them through local Codex answer
+synthesis after an interrupted request.
 
 Koed starts Codex app-server mode internally when it needs local answer or LCM
 summary synthesis. Users do not need to run a separate app-server or answer
@@ -177,7 +172,7 @@ shutdown releases the lease without deleting the rollout. Managed terminal
 boundaries are held until their journaled records project successfully, so a
 later turn cannot be folded into an earlier seal.
 
-There is no Desktop or Explorer entry point for this experiment. It does not
+There is no Desktop entry point for this experiment. It does not
 attach to external Codex processes and does not replace the supported Transcript
 Watcher. Existing Codex CLI and native-app conversations are captured from
 transcript growth; Capture Hook signals only reduce watcher latency.

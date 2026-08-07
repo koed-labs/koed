@@ -81,19 +81,19 @@ describe("resolveApiServerConfig", () => {
     ]);
   });
 
-  it("validates and normalizes the public Explorer URL", () => {
+  it("validates and normalizes the public browser URL", () => {
     expect(
       resolveApiServerConfig({
-        EXPLORER_PUBLIC_URL: "https://app.example.test/koed/"
-      }).explorerPublicUrl
+        BROWSER_PUBLIC_URL: "https://app.example.test/koed/"
+      }).browserPublicUrl
     ).toBe("https://app.example.test/koed");
     expect(() =>
       resolveApiServerConfig({
-        EXPLORER_PUBLIC_URL: "https://user:secret@app.example.test/koed"
+        BROWSER_PUBLIC_URL: "https://user:secret@app.example.test/koed"
       })
     ).toThrow(/without credentials/);
     expect(() =>
-      resolveApiServerConfig({ EXPLORER_PUBLIC_URL: "file:///tmp/explorer" })
+      resolveApiServerConfig({ BROWSER_PUBLIC_URL: "file:///tmp/browser" })
     ).toThrow(/HTTP or HTTPS/);
   });
 

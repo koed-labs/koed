@@ -660,94 +660,12 @@ describe("status and doctor JSON contracts", () => {
     );
   });
 
-  it("verifies Explorer process and reachability", async () => {
-    const root = tempDir();
-    mkdirSync(resolve(root, "run"), { recursive: true });
-    writeFileSync(
-      resolve(root, "run/koed-server.json"),
-      JSON.stringify({ pid: 10, processes: { explorer: 12, worker: 11 } })
-    );
-
-    const status = await collectKoedServerStatus(
-      {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        HOME: root,
-        WORK_QUEUE_BACKEND: "local"
-      },
-      {
-        fetch: async (url) =>
-          String(url).includes(":5174")
-            ? response(true, 200, "")
-            : response(true, 200, {
-                checks: [
-                  { service: "postgres", status: "ok" },
-                  { service: "postgres-version", status: "ok" },
-                  { service: "migrations", status: "ok" },
-                  { service: "pgvector", status: "ok" },
-                  { service: "work-queue", status: "ok" },
-                  { service: "embedding-service", status: "ok" },
-                  { service: "embedding-model", status: "ok" }
-                ]
-              }),
-        spawnSync: () => spawnResult("", 0),
-        checkPid: (pid) => pid === 10 || pid === 11 || pid === 12,
-        now: () => new Date("2026-01-01T00:00:00.000Z")
-      }
-    );
-
-    expect(status.explorer.state).toBe("healthy");
-    expect(status.explorer.message).toContain("reachable");
-    expect(status.explorer.details?.explorerPid).toBe(12);
-  });
-
-  it("marks Explorer unhealthy when the recorded process is stale", async () => {
-    const root = tempDir();
-    mkdirSync(resolve(root, "run"), { recursive: true });
-    writeFileSync(
-      resolve(root, "run/koed-server.json"),
-      JSON.stringify({ pid: 10, processes: { explorer: 12, worker: 11 } })
-    );
-
-    const status = await collectKoedServerStatus(
-      {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        HOME: root,
-        WORK_QUEUE_BACKEND: "local"
-      },
-      {
-        fetch: async () =>
-          response(true, 200, {
-            checks: [
-              { service: "postgres", status: "ok" },
-              { service: "postgres-version", status: "ok" },
-              { service: "migrations", status: "ok" },
-              { service: "pgvector", status: "ok" },
-              { service: "work-queue", status: "ok" },
-              { service: "embedding-service", status: "ok" },
-              { service: "embedding-model", status: "ok" }
-            ]
-          }),
-        spawnSync: () => spawnResult("", 0),
-        checkPid: (pid) => pid === 10 || pid === 11,
-        now: () => new Date("2026-01-01T00:00:00.000Z")
-      }
-    );
-
-    expect(status.explorer.state).toBe("needs_attention");
-    expect(status.explorer.message).toContain("not running");
-  });
-
   it("maps fully prepared but stopped supervisor to starting", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     mkdirSync(resolve(root, "hook"), { recursive: true });
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(
-      resolve(root, ".env"),
-      "MEMORY_API_TOKEN=replace_with_token_from_pnpm_api_token_create\nVITE_KOED_API_TOKEN=token\n"
-    );
+    writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=token\n");
     writeFileSync(
       resolve(root, ".codex/config.toml"),
       codexIntegrationConfig()
@@ -800,7 +718,6 @@ describe("status and doctor JSON contracts", () => {
     expect(status.dependencyMode).toBe("external");
     expect(status.state).toBe("healthy");
     expect(status.codexTranscriptWatcher.state).toBe("starting");
-    expect(status.explorer.state).toBe("starting");
   });
   it("prefers running runtime state over plain-shell dependency defaults", async () => {
     const root = tempDir();
@@ -811,7 +728,7 @@ describe("status and doctor JSON contracts", () => {
     );
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
-      resolve(root, "config/explorer-token.json"),
+      resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop-token" })
     );
     mkdirSync(resolve(root, ".codex"), { recursive: true });
@@ -829,7 +746,6 @@ describe("status and doctor JSON contracts", () => {
         startedAt: "2026-01-01T00:00:00.000Z",
         repoRoot: root,
         apiUrl: "http://localhost:43300",
-        explorerUrl: "http://localhost:45774",
         runtimeMode: "local-personal",
         dependencyMode: "bundled-local",
         automaticPorts: true,
@@ -838,14 +754,12 @@ describe("status and doctor JSON contracts", () => {
           "embedding-service-native",
           "api",
           "worker",
-          "explorer",
           "codex-transcript-watcher"
         ],
         codexTranscriptWatcherEnabled: true,
         processes: {
           api: 43,
           worker: 44,
-          explorer: 45,
           codexTranscriptWatcher: 46
         }
       })
@@ -870,7 +784,7 @@ describe("status and doctor JSON contracts", () => {
           });
         },
         spawnSync: () => spawnResult("", 0),
-        checkPid: (pid) => [42, 44, 45, 46].includes(pid),
+        checkPid: (pid) => [42, 44, 46].includes(pid),
         now: () => new Date("2026-01-01T00:00:00.000Z")
       }
     );
@@ -882,6 +796,5 @@ describe("status and doctor JSON contracts", () => {
     expect(status.codex.state).toBe("healthy");
     expect(status.mcpServer.state).toBe("healthy");
     expect(status.redis.message).toContain("local queue");
-    expect(status.explorer.url).toBe("http://localhost:45774");
   });
 });

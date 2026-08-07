@@ -111,7 +111,7 @@ const sessions = new Map<string, UserSessionContext>([
 const buildServer = async (overrides?: {
   repository?: Partial<ReturnType<HighRiskRouteContext["requireRepository"]>>;
   deviceOperationFamilies?: string[];
-  explorerPublicUrl?: string;
+  browserPublicUrl?: string;
 }) => {
   const repository: ReturnType<HighRiskRouteContext["requireRepository"]> = {
     createActionGrant: vi.fn(async () => binding),
@@ -170,8 +170,8 @@ const buildServer = async (overrides?: {
       deviceRead: async () => undefined,
       deviceWrite: async () => undefined
     },
-    ...(overrides?.explorerPublicUrl
-      ? { explorerPublicUrl: overrides.explorerPublicUrl }
+    ...(overrides?.browserPublicUrl
+      ? { browserPublicUrl: overrides.browserPublicUrl }
       : {})
   });
   await app.ready();
@@ -484,9 +484,9 @@ describe("high-risk action grant routes", () => {
     await fixture.app.close();
   });
 
-  it("redirects browser navigation to Explorer without weakening JSON authentication", async () => {
+  it("redirects browser navigation to the configured app without weakening JSON authentication", async () => {
     const fixture = await buildServer({
-      explorerPublicUrl: "https://koed.example/explorer"
+      browserPublicUrl: "https://koed.example/app"
     });
 
     const browserNavigation = await fixture.app.inject({
@@ -502,7 +502,7 @@ describe("high-risk action grant routes", () => {
 
     expect(browserNavigation.statusCode).toBe(302);
     expect(browserNavigation.headers.location).toBe(
-      `https://koed.example/explorer/high-risk/browser-activations/${binding.selector}`
+      `https://koed.example/app/high-risk/browser-activations/${binding.selector}`
     );
     expect(programmaticRequest.statusCode).toBe(401);
     expect(fixture.repository.getBrowserActivation).not.toHaveBeenCalled();

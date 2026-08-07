@@ -47,7 +47,6 @@ const createPackageRoot = () => {
     "embedding-service/dist/index.js",
     "mcp-server/dist/cli.js",
     "mcp-server/dist/capture-hook.js",
-    "explorer-dist/index.html",
     "api/node_modules/@koed/db/dist/index.js"
   ]) {
     writeFile(resolve(runtime, file));
@@ -174,8 +173,10 @@ test("reports missing required runtime files", () => {
   );
 });
 
-test("rejects native runtime assets, model files, and Python embedding leftovers", () => {
+test("rejects retired Explorer, native runtime, model, and Python leftovers", () => {
   const root = createPackageRoot();
+  writeFile(resolve(root, "koed-runtime", "explorer-dist", "index.html"));
+  writeFile(resolve(root, "koed-server", "dist", "explorer-static-server.js"));
   writeFile(resolve(root, "koed-runtime", "postgres", "bin", "initdb"));
   writeFile(resolve(root, "koed-runtime", "llama.cpp", "llama-server"));
   writeFile(resolve(root, "koed-runtime", "models", "model.gguf"));
@@ -188,6 +189,11 @@ test("rejects native runtime assets, model files, and Python embedding leftovers
   const result = validatePackageRoot(root);
 
   assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /koed-runtime\/explorer-dist/);
+  assert.match(
+    result.errors.join("\n"),
+    /koed-server\/dist\/explorer-static-server\.js/
+  );
   assert.match(
     result.errors.join("\n"),
     /Excluded file is present: koed-runtime\/postgres/

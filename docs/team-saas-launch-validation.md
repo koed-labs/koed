@@ -68,7 +68,7 @@ Routes excluded from the advertised deployment profile are not treated as
 active test cases. The harness uses deterministic fixture Workspace and node IDs
 by default.
 Set `KOED_LAUNCH_BROWSER_ORIGIN` or pass `--browser-origin` with the exact
-Explorer origin accepted by the target deployment. Session-authenticated write
+browser origin accepted by the target deployment. Session-authenticated write
 probes send that origin together with same-site browser metadata so the harness
 exercises the production CSRF boundary instead of bypassing or accidentally
 failing before route authorization.

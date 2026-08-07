@@ -15,21 +15,21 @@ const workosStateCookieName = "koed_workos_state";
 const workosReturnToCookieName = "koed_workos_return_to";
 const workosStateTtlSeconds = 10 * 60;
 
-const safeReturnTo = (value: unknown, explorerPublicUrl?: string): string => {
+const safeReturnTo = (value: unknown, browserPublicUrl?: string): string => {
   if (
     typeof value !== "string" ||
     !value.startsWith("/") ||
     value.startsWith("//")
   ) {
-    if (typeof value !== "string" || !explorerPublicUrl) return "/";
+    if (typeof value !== "string" || !browserPublicUrl) return "/";
     try {
       const target = new URL(value);
-      const explorer = new URL(`${explorerPublicUrl.replace(/\/+$/, "")}/`);
-      const explorerPath = explorer.pathname.replace(/\/+$/, "");
+      const browserApp = new URL(`${browserPublicUrl.replace(/\/+$/, "")}/`);
+      const browserAppPath = browserApp.pathname.replace(/\/+$/, "");
       if (
-        target.origin === explorer.origin &&
-        (target.pathname === explorerPath ||
-          target.pathname.startsWith(`${explorerPath}/`)) &&
+        target.origin === browserApp.origin &&
+        (target.pathname === browserAppPath ||
+          target.pathname.startsWith(`${browserAppPath}/`)) &&
         !target.username &&
         !target.password
       ) {
@@ -197,7 +197,7 @@ export const registerAuthRoutes = (
       const state = createOpaqueSecret("wos");
       const returnTo = safeReturnTo(
         (request.query as { return_to?: string } | undefined)?.return_to,
-        config.explorerPublicUrl
+        config.browserPublicUrl
       );
       reply.setCookie(workosStateCookieName, state, {
         httpOnly: true,
@@ -307,7 +307,7 @@ export const registerAuthRoutes = (
       return reply.redirect(
         safeReturnTo(
           request.cookies[workosReturnToCookieName],
-          config.explorerPublicUrl
+          config.browserPublicUrl
         )
       );
     }

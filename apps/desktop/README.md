@@ -27,7 +27,7 @@ Project-assignment requests. Preload validates each operation and result in
 both directions. The renderer receives domain data and typed loaders/callbacks
 only; it never receives an API Token, Authorization header, API base URL,
 generic request path, or remote authority for these Personal Memory operations.
-Desktop and Explorer share the virtualized timeline contract, so long
+Desktop uses the shared virtualized timeline contract, so long
 Conversations retain bounded rendering and older-event pagination without
 coupling their navigation shells. Persisted Project discovery metadata is
 merged with captured Memory activity locally, so a discovered Project can
@@ -96,7 +96,7 @@ skip this smoke.
 
 This local package bundles the Electron shell, packaged renderer assets, the
 `@koed/koed-server` control-plane CLI, JS/service artifacts for API, Worker,
-Explorer, MCP Server, Supported Capture Hook, DB migrations, the built
+MCP Server, Supported Capture Hook, DB migrations, the built
 Embedding Service, and runtime package dependencies under
 `Contents/Resources/koed-runtime`. It can also stage native Postgres/pgvector
 and llama-server assets from `KOED_NATIVE_RUNTIME_SOURCE_DIR`; when present,
@@ -130,7 +130,7 @@ diagnostics instead of crashing.
 Packaged Desktop bundled-local startup asks `koed-server` to allocate local
 ports automatically. The first successful allocation is persisted under
 `KOED_HOME/config/local-ports.json` so subsequent Desktop launches keep stable
-API, Explorer, Postgres, and Embedding Service ports while avoiding common
+API, Postgres, and Embedding Service ports while avoiding common
 local development or Docker port collisions. First-run setup inspects package,
 runtime, model, service, Codex integration, and final verification state before
 making changes. After one explicit confirmation, Desktop runs only incomplete

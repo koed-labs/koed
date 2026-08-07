@@ -5,11 +5,8 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { resolveKoedServerConfig } from "./config.js";
-import {
-  loadExplorerCredential,
-  resolveActiveIntegrationApiToken
-} from "./credentials.js";
-import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { resolveActiveIntegrationApiToken } from "./credentials.js";
+import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
@@ -573,61 +570,6 @@ const inspectMcp = (
   );
 };
 
-const inspectExplorer = async (
-  explorerUrl: string,
-  runtime: KoedServerRuntimeState | null,
-  runtimeProcessRunning: boolean,
-  explorerCredentialConfigured: boolean,
-  deps: Required<KoedServerStatusDependencies>
-): Promise<KoedServerComponentStatus> => {
-  const explorerPid = runtime?.processes?.explorer;
-  const details = {
-    appCredentialProvisioned: explorerCredentialConfigured,
-    explorerPid: explorerPid ?? null
-  };
-  if (!runtimeProcessRunning) {
-    return starting(
-      "Koed server supervisor is not currently running.",
-      details
-    );
-  }
-  if (!explorerPid) {
-    return needsAttention(
-      "Explorer process is not recorded in koed-server runtime state.",
-      "Restart koed-server or inspect Koed logs.",
-      details
-    );
-  }
-  if (!deps.checkPid(explorerPid)) {
-    return needsAttention(
-      "Explorer process is not running.",
-      "Run koed-server restart --json or inspect Koed logs.",
-      details
-    );
-  }
-
-  try {
-    const response = await deps.fetch(explorerUrl);
-    if (response.ok) {
-      return healthy("Explorer is reachable through the Koed local service.", {
-        ...details,
-        httpStatus: response.status
-      });
-    }
-    return needsAttention(
-      `Explorer is not reachable at ${explorerUrl} (HTTP ${response.status}).`,
-      "Run koed-server restart --json or inspect Explorer logs.",
-      { ...details, httpStatus: response.status }
-    );
-  } catch (error) {
-    return needsAttention(
-      `Explorer is not reachable at ${explorerUrl} (${error instanceof Error ? error.message : String(error)}).`,
-      "Run koed-server restart --json or inspect Explorer logs.",
-      details
-    );
-  }
-};
-
 const inspectCodexTranscriptWatcher = (
   enabled: boolean,
   runtime: KoedServerRuntimeState | null,
@@ -850,10 +792,6 @@ export const collectKoedServerStatus = async (
     runtimeProcessRunning && runtime?.apiUrl
       ? runtime.apiUrl
       : resolveApiUrl(runtimeEnvironment, repoEnv);
-  const explorerUrl =
-    runtimeProcessRunning && runtime?.explorerUrl
-      ? runtime.explorerUrl
-      : resolveExplorerUrl(runtimeEnvironment, repoEnv);
   // Automatic ports identify a Desktop-owned local control plane. Without a
   // live runtime for this KOED_HOME, a healthy service on the default port may
   // be an unrelated Koed backend and must not satisfy local readiness.
@@ -973,14 +911,6 @@ export const collectKoedServerStatus = async (
     inspectDeviceIdentity(paths, environment),
     Promise.resolve(inspectUpstreamBackends(paths, deps))
   ]);
-  const explorerCredential = loadExplorerCredential(paths);
-  const explorer = await inspectExplorer(
-    explorerUrl,
-    runtime,
-    runtimeProcessRunning,
-    Boolean(explorerCredential),
-    deps
-  );
   const statusWithoutState = {
     ok: false,
     state: "starting" as KoedServerComponentState,
@@ -1001,7 +931,6 @@ export const collectKoedServerStatus = async (
     lcmSummaryService,
     deviceIdentity,
     upstreamBackends,
-    explorer: { ...explorer, url: explorerUrl },
     lastVerification
   } satisfies KoedServerStatus;
 

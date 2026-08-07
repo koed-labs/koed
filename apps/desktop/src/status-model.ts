@@ -10,7 +10,6 @@ export const stateLabels = {
 export const statusComponentKeys = [
   "serverPackage",
   "api",
-  "explorer",
   "database",
   "redis",
   "workerQueues",
@@ -34,16 +33,12 @@ export interface StatusComponentDefinition {
 export const componentDefinitions = {
   api: {
     label: "API",
-    description: "Koed HTTP API used by local integrations and Explorer."
+    description: "Koed HTTP API used by local integrations and Desktop."
   },
   serverPackage: {
     label: "Server package",
     description:
       "Standalone koed-server app-runtime package installed under KOED_HOME."
-  },
-  explorer: {
-    label: "Explorer",
-    description: "Embedded UI for browsing captured memory."
   },
   database: {
     label: "Database",
@@ -111,7 +106,6 @@ export type StatusCardActionCommand =
   | "runtime_install"
   | "models_install"
   | "doctor"
-  | "open_explorer"
   | "open_logs"
   | "copy_diagnostics"
   | "connect_team_backend"
@@ -138,10 +132,10 @@ export const statusCards = [
   {
     id: "controlPlane",
     title: "Koed Control Plane",
-    role: "Supervises KOED_HOME plus local API, Worker, and Explorer processes.",
+    role: "Supervises KOED_HOME plus local API and Worker processes.",
     impact:
       "Local startup and process supervision are blocked when this is down.",
-    componentKeys: ["api", "workerQueues", "explorer"],
+    componentKeys: ["api", "workerQueues"],
     primaryAction: {
       label: "Start Koed",
       command: "start",
@@ -176,9 +170,9 @@ export const statusCards = [
   {
     id: "api",
     title: "Core API",
-    role: "HTTP API used by Explorer, Capture Hook, MCP Server, and recall.",
+    role: "HTTP API used by Desktop, Capture Hook, MCP Server, and recall.",
     impact:
-      "Capture, recall, settings, and Explorer calls fail when unreachable.",
+      "Capture, recall, settings, and Desktop calls fail when unreachable.",
     componentKeys: ["api"],
     primaryAction: {
       label: "Ensure API is running",
@@ -340,22 +334,6 @@ export const statusCards = [
       },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
-  },
-  {
-    id: "explorer",
-    title: "Explorer",
-    role: "Embedded UI for browsing captured memory and local settings.",
-    impact: "Inspection UI is unavailable when this local surface is down.",
-    componentKeys: ["explorer"],
-    primaryAction: {
-      label: "Open Explorer",
-      command: "open_explorer",
-      primary: true
-    },
-    secondaryActions: [
-      { label: "Ensure Explorer", command: "start", timeoutMs: 180_000 },
-      { label: "Refresh", command: "status", timeoutMs: 10_000 }
-    ]
   }
 ] as const satisfies readonly StatusCardDefinition[];
 
@@ -364,7 +342,6 @@ export type StatusCardId = (typeof statusCards)[number]["id"];
 const recoveryCardIdByComponent = {
   serverPackage: "serverPackage",
   api: "api",
-  explorer: "explorer",
   database: "memoryStore",
   redis: "queueWorker",
   workerQueues: "queueWorker",

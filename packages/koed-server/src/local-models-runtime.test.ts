@@ -32,7 +32,7 @@ const paths = (root: string): KoedServerPaths => ({
   lastVerificationPath: resolve(root, "run", "last-verification.json"),
   serverConfigPath: resolve(root, "config", "server.json"),
   localPortsPath: resolve(root, "config", "local-ports.json"),
-  explorerTokenPath: resolve(root, "config", "explorer-token.json"),
+  localAppCredentialPath: resolve(root, "config", "local-app-credential.json"),
   upstreamBackendsPath: resolve(root, "config", "upstream-backends.json"),
   projectMetadataPath: resolve(root, "config", "projects.json"),
   projectTeamWorkspaceLinksPath: resolve(

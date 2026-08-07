@@ -43,9 +43,8 @@ const runtime = (
   dependencyMode: "bundled-local",
   repoRoot: "/repo",
   apiUrl: "http://localhost:3300",
-  explorerUrl: "http://localhost:5174",
-  services: ["api", "worker", "explorer"],
-  processes: { api: 10, worker: 11, explorer: 12 },
+  services: ["api", "worker"],
+  processes: { api: 10, worker: 11 },
   ...overrides
 });
 
@@ -68,11 +67,10 @@ describe("stopKoedServer", () => {
     writeRuntime(
       koedHome,
       runtime({
-        services: ["api", "worker", "explorer", "codex-transcript-watcher"],
+        services: ["api", "worker", "codex-transcript-watcher"],
         processes: {
           api: 10,
           worker: 11,
-          explorer: 12,
           codexTranscriptWatcher: 13
         }
       })
@@ -88,7 +86,6 @@ describe("stopKoedServer", () => {
     expect(result.ok).toBe(true);
     expect(signals).toEqual([
       [13, "SIGTERM"],
-      [12, "SIGTERM"],
       [11, "SIGTERM"],
       [10, "SIGTERM"]
     ]);
@@ -107,18 +104,17 @@ describe("stopKoedServer", () => {
 
     expect(result.ok).toBe(true);
     expect(signals).toEqual([
-      [12, "SIGTERM"],
       [11, "SIGTERM"],
       [10, "SIGTERM"]
     ]);
-    expect(result.stoppedPids).toEqual([12, 11, 10]);
+    expect(result.stoppedPids).toEqual([11, 10]);
   });
 
   it("waits for the supervisor to exit before completing stop", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime());
     writeSupervisorLock(koedHome, 100);
-    const running = new Set([100, 10, 11, 12]);
+    const running = new Set([100, 10, 11]);
     const signals: Array<[number, NodeJS.Signals]> = [];
 
     const result = stopKoedServer({
@@ -135,7 +131,7 @@ describe("stopKoedServer", () => {
 
     expect(result.ok).toBe(true);
     expect(signals).toEqual([]);
-    expect(result.stoppedPids).toEqual([10, 11, 12, 100]);
+    expect(result.stoppedPids).toEqual([10, 11, 100]);
     expect(result.stoppedServices).toContain("supervisor");
   });
 
@@ -304,8 +300,8 @@ describe("stopKoedServer", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.missingPids).toEqual([12, 11, 10]);
-    expect(result.missingServices).toEqual(["explorer", "worker", "api"]);
+    expect(result.missingPids).toEqual([11, 10]);
+    expect(result.missingServices).toEqual(["worker", "api"]);
     expect(() =>
       readFileSync(resolve(koedHome, "run", "koed-server.json"))
     ).toThrow();
@@ -318,7 +314,7 @@ describe("stopKoedServer", () => {
     writeFileSync(resolve(dataDir, "PG_VERSION"), "16");
     writeRuntime(
       koedHome,
-      runtime({ services: ["postgres-native", "api", "worker", "explorer"] })
+      runtime({ services: ["postgres-native", "api", "worker"] })
     );
     const calls: Array<{ command: string; args: string[] }> = [];
 
@@ -361,7 +357,7 @@ describe("stopKoedServer", () => {
     writeFileSync(envPath, "KOED_POSTGRES_PG_CTL_BIN=/env/bin/pg_ctl\n");
     writeRuntime(
       koedHome,
-      runtime({ services: ["postgres-native", "api", "worker", "explorer"] })
+      runtime({ services: ["postgres-native", "api", "worker"] })
     );
     const calls: Array<{ command: string; args: string[] }> = [];
 
@@ -401,8 +397,8 @@ describe("stopKoedServer", () => {
     writeRuntime(
       koedHome,
       runtime({
-        services: ["embedding-service-native", "api", "worker", "explorer"],
-        processes: { api: 10, worker: 11, explorer: 12, embeddingService: 13 }
+        services: ["embedding-service-native", "api", "worker"],
+        processes: { api: 10, worker: 11, embeddingService: 13 }
       })
     );
     const pids: number[] = [];
@@ -414,7 +410,7 @@ describe("stopKoedServer", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(pids).toEqual([12, 11, 10, 13]);
+    expect(pids).toEqual([11, 10, 13]);
     expect(result.stoppedServices).toContain("embedding-service-native");
   });
 
@@ -424,14 +420,7 @@ describe("stopKoedServer", () => {
       koedHome,
       runtime({
         dependencyMode: "external",
-        services: [
-          "postgres",
-          "redis",
-          "embedding-service",
-          "api",
-          "worker",
-          "explorer"
-        ]
+        services: ["postgres", "redis", "embedding-service", "api", "worker"]
       })
     );
     const commands: string[] = [];
@@ -461,7 +450,7 @@ describe("stopKoedServer", () => {
     writeRuntime(
       koedHome,
       runtime({
-        services: ["postgres", "redis", "api", "worker", "explorer"]
+        services: ["postgres", "redis", "api", "worker"]
       })
     );
     const calls: string[][] = [];

@@ -30,7 +30,7 @@ export interface ApiServerConfig {
   dependencyMode: RuntimeDependencyMode;
   apiPort?: string;
   koedHome: string;
-  explorerPublicUrl?: string;
+  browserPublicUrl?: string;
   upstreamBackendsPath: string;
   upstreamEnrollmentsPath: string;
   dataEncryptionKeyConfigured: boolean;
@@ -205,9 +205,9 @@ export const resolveApiServerConfig = (
     dependencyMode,
     apiPort: optionalEnv(environment.API_PORT),
     koedHome,
-    explorerPublicUrl: optionalPublicHttpUrl(
-      environment.EXPLORER_PUBLIC_URL,
-      "EXPLORER_PUBLIC_URL"
+    browserPublicUrl: optionalPublicHttpUrl(
+      environment.BROWSER_PUBLIC_URL,
+      "BROWSER_PUBLIC_URL"
     ),
     upstreamBackendsPath: resolve(koedHome, "config", "upstream-backends.json"),
     upstreamEnrollmentsPath: resolve(

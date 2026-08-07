@@ -1,7 +1,7 @@
 # Explorer-First Auth And Device Enrollment
 
-Status: Accepted design; implementation is tracked by follow-up Team SaaS Launch
-issues.
+Status: Superseded by the Explorer retirement. Koed Desktop now owns setup and
+inspection flows; the enrollment credential boundaries remain applicable.
 
 Related decisions:
 

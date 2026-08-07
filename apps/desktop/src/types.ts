@@ -46,7 +46,6 @@ export interface KoedServerStatus {
     failed: number;
     notChecked: number;
   };
-  explorer: ComponentStatus & { url: string };
   lastVerification: ComponentStatus & { checkedAt: string | null };
   serverPackage?: ComponentStatus & {
     currentVersion?: string;

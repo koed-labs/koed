@@ -17,9 +17,7 @@ operators of modified network services to publish their source code.
 
 The license covers the Koed-authored repository contents unless a file or
 component says otherwise. Third-party software and assets retain their own
-licenses and notices. In particular, Koed Explorer preserves its T3 Code
-upstream MIT notice in
-[Third-Party Notices](../apps/explorer/THIRD_PARTY_NOTICES.md).
+licenses and notices.
 
 The product and hosted-service boundary is documented in
 [Commercial Feature Boundary](commercial-feature-boundary.md). Team

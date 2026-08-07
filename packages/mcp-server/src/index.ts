@@ -198,7 +198,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     maxSearches: number;
     maxExpansions: number;
     appServerBinary: string;
-    configuredFrom: "explorer_question_or_env";
+    configuredFrom: "memory_question_or_env";
   };
   localLcmSummaryWorker: {
     provider: string;
@@ -970,7 +970,7 @@ export const memoryAccessCheck = async (
       maxSearches: manualAnswerWorker.maxSearches,
       maxExpansions: manualAnswerWorker.maxExpansions,
       appServerBinary: manualAnswerWorker.appServerBinary,
-      configuredFrom: "explorer_question_or_env"
+      configuredFrom: "memory_question_or_env"
     },
     localLcmSummaryWorker: {
       provider: lcmSummaryWorker.provider,

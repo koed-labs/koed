@@ -45,7 +45,7 @@ export interface HighRiskRouteContext {
     deviceRead: RateLimitHandler;
     deviceWrite: RateLimitHandler;
   };
-  explorerPublicUrl?: string;
+  browserPublicUrl?: string;
 }
 
 const forbidden = (
@@ -165,11 +165,11 @@ const acceptsHtml = (request: FastifyRequest): boolean =>
     ?.split(",")
     .some((value) => value.trim().split(";", 1)[0] === "text/html") ?? false;
 
-const explorerActivationUrl = (
-  explorerPublicUrl: string,
+const browserActivationUrl = (
+  browserPublicUrl: string,
   selector: string
 ): string =>
-  `${explorerPublicUrl.replace(/\/+$/, "")}/high-risk/browser-activations/${encodeURIComponent(selector)}`;
+  `${browserPublicUrl.replace(/\/+$/, "")}/high-risk/browser-activations/${encodeURIComponent(selector)}`;
 
 export const registerHighRiskRoutes = (
   app: FastifyInstance,
@@ -353,9 +353,9 @@ export const registerHighRiskRoutes = (
       const { selector } = highRiskBrowserActivationParamsSchema.parse(
         request.params
       );
-      if (context.explorerPublicUrl && acceptsHtml(request)) {
+      if (context.browserPublicUrl && acceptsHtml(request)) {
         return reply.redirect(
-          explorerActivationUrl(context.explorerPublicUrl, selector)
+          browserActivationUrl(context.browserPublicUrl, selector)
         );
       }
       const session = await authenticateBrowserSession(request, context);

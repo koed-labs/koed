@@ -279,13 +279,8 @@ The Team SaaS synthetic fixture covers backend authorization and Shared Memory
 truth. See [Collaboration Launch Validation](collaboration-launch-validation.md)
 for the broader launch workflow.
 
-The Explorer retirement parity fixture also covers nested and oversized
+The retirement parity fixture also covers nested and oversized
 Markdown, every tool category, grouped activity, multi-file and malformed
 patches, keyboard focus, light and dark themes, 200% zoom, reduced motion,
-forced colors, and the 10,000-event performance budgets. Desktop does not
-import or embed the Explorer in its rendering path, and no active
-Explorer-only formatting dependency remains. Explorer's dormant
-syntax-highlighting selectors and file-link-chip styles are optional net-new
-Desktop work, not retirement blockers. Operational Explorer packaging and
-health references can be removed separately when the legacy service itself is
-retired.
+forced colors, and the 10,000-event performance budgets. Desktop owns this
+rendering path and has no dependency on the retired browser app.

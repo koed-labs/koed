@@ -146,7 +146,7 @@ afterEach(() => {
     "KOED_DEPLOYMENT_PROFILE",
     "KOED_RUNTIME_MODE",
     "KOED_DEPENDENCY_MODE",
-    "EXPLORER_PUBLIC_URL",
+    "BROWSER_PUBLIC_URL",
     "CORS_ORIGINS",
     "API_CORS_ORIGINS",
     "WORKOS_AUTHKIT_ENABLED",
@@ -5216,9 +5216,6 @@ describe("api health", () => {
         publicStatus: "/self-host/status",
         capabilities: "/v1/capabilities",
         openapi: "/openapi.json"
-      },
-      explorer: {
-        defaultUrl: "http://localhost:5174"
       }
     });
     expect(response.body).not.toContain("/sensitive/local/path");
@@ -6680,24 +6677,24 @@ describe("account and access flows", () => {
     expect(callback.headers.location).toBe("/");
   });
 
-  it("allows WorkOS to return to the configured public Explorer origin", async () => {
+  it("allows WorkOS to return to the configured public browser origin", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
     process.env.WORKOS_AUTHKIT_ENABLED = "true";
     process.env.WORKOS_CLIENT_ID = "client_test_123";
     process.env.WORKOS_API_KEY = "sk_test_hidden";
     process.env.WORKOS_REDIRECT_URI =
       "https://api.example.test/auth/workos/callback";
-    process.env.EXPLORER_PUBLIC_URL = "https://app.example.test/koed";
+    process.env.BROWSER_PUBLIC_URL = "https://app.example.test/koed";
     const workosClient: WorkosAuthKitClient = {
       getAuthorizationUrl: ({ state }) =>
         `https://workos.example.test/authorize?state=${state}`,
       async authenticateWithCode() {
         return {
           user: {
-            id: "user_explorer_return",
-            email: "explorer-return@example.test",
+            id: "user_browser_return",
+            email: "browser-return@example.test",
             emailVerified: true,
-            firstName: "Explorer",
+            firstName: "Browser",
             lastName: "Return",
             profile: {}
           },
@@ -6718,7 +6715,7 @@ describe("account and access flows", () => {
     const callback = await app.inject({
       method: "GET",
       url:
-        "/auth/workos/callback?code=auth-code-explorer-return&state=" +
+        "/auth/workos/callback?code=auth-code-browser-return&state=" +
         new URL(login.headers.location as string).searchParams.get("state"),
       headers: browserSessionHeaders(cookieJarHeader(login))
     });
@@ -7666,7 +7663,7 @@ describe("account and access flows", () => {
   });
 
   it("enrolls and revokes device credentials independently from API Tokens", async () => {
-    process.env.EXPLORER_PUBLIC_URL = "https://app.example.test/koed";
+    process.env.BROWSER_PUBLIC_URL = "https://app.example.test/koed";
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",
@@ -9038,7 +9035,7 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(cookie),
       payload: {
         event: "first_memory_answer_completed",
-        surface: "explorer",
+        surface: "api",
         deploymentProfile: "private_vps",
         teamId: team.id,
         metadata: {
@@ -9052,7 +9049,7 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(cookie),
       payload: {
         event: "first_memory_answer_completed",
-        surface: "explorer",
+        surface: "api",
         metadata: {
           promptText: "this must not be accepted"
         }
@@ -9064,7 +9061,7 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(cookie),
       payload: {
         event: "first_memory_answer_completed",
-        surface: "explorer",
+        surface: "api",
         metadata: {
           source: "raw memory sentinel should never enter analytics"
         }
@@ -9106,7 +9103,7 @@ describe("account and access flows", () => {
       headers: browserSessionHeaders(cookieHeader(otherRegistered)),
       payload: {
         event: "workspace_created",
-        surface: "explorer",
+        surface: "api",
         teamId: team.id
       }
     });
@@ -9182,7 +9179,7 @@ describe("account and access flows", () => {
         {
           event: "first_memory_answer_completed",
           count: 1,
-          surfaces: { explorer: 1 },
+          surfaces: { api: 1 },
           deploymentProfiles: { private_vps: 1 }
         }
       ]
@@ -14106,7 +14103,7 @@ describe("account and access flows", () => {
     });
     const session = jsonBody<SessionResponse>(sessionResponse).session;
     for (const content of [
-      "Can we add early generated titles for Explorer chats?",
+      "Can we add early generated titles for Desktop chats?",
       "Can those generated titles avoid waiting for LCM summaries?",
       "Please make manual renames keep winning over generated names."
     ]) {
@@ -14133,7 +14130,7 @@ describe("account and access flows", () => {
       url: `/v1/memory/session-titles/${session.id}`,
       headers,
       payload: {
-        title: "Explorer Titles",
+        title: "Desktop Titles",
         titleModel: "codex-app-server:test",
         titlePromptVersion: "session-title-codex-json-v1"
       }
@@ -14150,9 +14147,7 @@ describe("account and access flows", () => {
       jsonBody<{ sessions: Array<{ id: string }> }>(pending).sessions
     ).toEqual([expect.objectContaining({ id: session.id })]);
     expect(submitted.statusCode).toBe(200);
-    expect(jsonBody<{ title: string }>(submitted).title).toBe(
-      "Explorer Titles"
-    );
+    expect(jsonBody<{ title: string }>(submitted).title).toBe("Desktop Titles");
     expect(
       jsonBody<{ sessions: Array<{ id: string }> }>(pendingAfterSubmit).sessions
     ).toHaveLength(0);
@@ -14544,7 +14539,7 @@ describe("account and access flows", () => {
         project_id: "project-1",
         project_name: "Koed",
         thread_id: "thread-1",
-        thread_name: "Explorer",
+        thread_name: "Desktop",
         local_memory_worker_config: {
           provider: "codex",
           model: "gpt-5.4",

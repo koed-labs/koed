@@ -9,7 +9,6 @@ import { isProcessRunning } from "./process-liveness.js";
 
 export interface KoedLocalPorts {
   api: string;
-  explorer: string;
   postgres: string;
   embedding: string;
   llamaEmbedding: string;
@@ -18,7 +17,6 @@ export interface KoedLocalPorts {
 
 const DEFAULT_PORTS: KoedLocalPorts = {
   api: "43300",
-  explorer: "45174",
   postgres: "45432",
   embedding: "43800",
   llamaEmbedding: "18080",
@@ -48,7 +46,6 @@ export interface LocalPortAllocationDependencies {
 
 const ENV_KEYS = {
   api: ["API_HOST_PORT"],
-  explorer: ["EXPLORER_WEB_HOST_PORT"],
   postgres: ["POSTGRES_HOST_PORT"],
   embedding: ["EMBEDDING_SERVICE_HOST_PORT"],
   llamaEmbedding: [
@@ -181,9 +178,6 @@ export const readPersistedLocalPorts = (
     ) as Partial<KoedLocalPorts>;
     return {
       ...(validPort(parsed.api) ? { api: validPort(parsed.api)! } : {}),
-      ...(validPort(parsed.explorer)
-        ? { explorer: validPort(parsed.explorer)! }
-        : {}),
       ...(validPort(parsed.postgres)
         ? { postgres: validPort(parsed.postgres)! }
         : {}),
@@ -223,9 +217,6 @@ export const applyPersistedLocalPorts = (
     ...environment,
     ...(persisted.api && !trim(environment.API_HOST_PORT)
       ? { API_HOST_PORT: persisted.api }
-      : {}),
-    ...(persisted.explorer && !trim(environment.EXPLORER_WEB_HOST_PORT)
-      ? { EXPLORER_WEB_HOST_PORT: persisted.explorer }
       : {}),
     ...(persisted.postgres && !trim(environment.POSTGRES_HOST_PORT)
       ? { POSTGRES_HOST_PORT: persisted.postgres }
@@ -310,7 +301,6 @@ export const allocateAndPersistLocalPorts = async (
     return {
       ...environment,
       API_HOST_PORT: allocated.api,
-      EXPLORER_WEB_HOST_PORT: allocated.explorer,
       POSTGRES_HOST_PORT: allocated.postgres,
       EMBEDDING_SERVICE_HOST_PORT: allocated.embedding,
       EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: allocated.llamaEmbedding,

@@ -40,7 +40,7 @@ MCP-side workers.
    Desktop starts its managed local personal `koed-server` with
    `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
    Operator overrides those values. Desktop bundled-local startup allocates free
-   local API, Explorer, Postgres, Embedding Service, and private llama-server
+   local API, Postgres, Embedding Service, and private llama-server
    child ports and persists them under `KOED_HOME/config/local-ports.json` for
    stable later launches. This keeps independent Koed homes from attaching to
    each other's model processes. The same
@@ -87,15 +87,14 @@ MCP-side workers.
    native path with an isolated temporary `KOED_HOME`, optional Homebrew-backed
    runtime install for that temporary home, temporary host ports, native resource
    preflight, API Token creation, Capture Hook-like personal ingestion,
-   Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer
-   reachability, and stop-based cleanup before Operators rely on it for local
+   Projection, queue/embedding work, Memory Answer evidence retrieval, API
+   readiness, and stop-based cleanup before Operators rely on it for local
    development or packaging checks.
-6. The API, Worker, and Explorer run as local app processes supervised by
+6. The API and Worker run as local app processes supervised by
    `koed-server` and connect to those configured dependency URLs. On a
    Desktop-managed fresh start, the supervisor starts the API first, waits for
-   API and migration readiness, provisions the app-owned local API Token and
-   Explorer credential inside `KOED_HOME`, and only then starts Worker and
-   Explorer with that credential. This ordering prevents authenticated
+   API and migration readiness, provisions the app-owned local API Token inside
+   `KOED_HOME`, and only then starts Worker with that credential. This ordering prevents authenticated
    background work from ever starting with an example or stale token. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
@@ -110,7 +109,7 @@ MCP-side workers.
 7. `koed-server start --daemon --json` starts a detached `koed-server start`
    supervisor and returns machine-readable startup intent for Desktop and
    scripts. `koed-server stop --json` stops supervised processes in
-   dependency-safe order: Transcript Watcher, Explorer, Worker, API, native
+   dependency-safe order: Transcript Watcher, Worker, API, native
    Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
    watcher before the API lets its active scan finish or terminate without
    losing the API dependency. Stop treats stale process IDs as an idempotent
@@ -132,9 +131,9 @@ MCP-side workers.
    only, never readiness gates.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
-   Explorer credential, verification, and doctor setup can be invoked through
+   local credential, verification, and doctor setup can be invoked through
    the control plane. Setup applies persisted auto-allocated local ports before
-   resolving the API/Explorer URLs, so Desktop-managed ports and direct CLI
+   resolving the API URL, so Desktop-managed ports and direct CLI
    setup write the same target URL/token. `koed-server repair codex --json` is
    the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
    block for the active local API URL/token and the credential-free Hook
@@ -152,19 +151,16 @@ MCP-side workers.
     repo-local scripts directly. Its Project and Captured Session navigation is
     native to the Desktop renderer. Selecting a Captured Session requests
     paginated Memory Events from the API and renders the raw Conversation
-    in-process; Desktop does not embed Explorer or put API Token credentials in
-    navigation URLs. Desktop and Explorer share only stable selection and
-    virtualized timeline primitives, while each retains its own client state
-    and navigation shell. Desktop readiness still reports API, Worker/queues,
-    Explorer, and provisioned app-credential health so a local service failure
-    is actionable, but the Conversation surface does not depend on an Explorer
-    iframe. Desktop manages only its local personal `koed-server`; remote, Team
+    in-process; Desktop does not put API Token credentials in navigation URLs.
+    Desktop readiness reports API, Worker/queues, and provisioned app-credential
+    health so a local service failure is actionable. Desktop manages only its
+    local personal `koed-server`; remote, Team
     Self-Hosted, and cloud targets are connect-only.
 
 ## Server Deployment Boundary
 
 Server, private VPS, Team Self-Hosted, and Koed-managed cloud deployments are
-described as `koed-server` plus dependencies. API, Worker, Explorer, queue
+described as `koed-server` plus dependencies. API, Worker, queue
 processors, and diagnostics are implementation surfaces inside that server
 boundary. Postgres/pgvector, the selected queue backend, the Embedding Service,
 reverse proxy/TLS, and backup/restore jobs are dependencies of the deployment.
@@ -485,11 +481,11 @@ credential before opening secure storage for the separate upstream credential.
 Personal API Tokens remain on Personal Memory routes and cannot be promoted
 into Team authority from the requested operation body.
 
-## Explorer-First Auth And Device Enrollment
+## Desktop Auth And Device Enrollment
 
-Koed Desktop and Explorer are the primary setup and inspection surface for
-local, private VPS, Team Self-Hosted, and Koed-managed cloud targets. The
-accepted design is recorded in
+Koed Desktop is the setup and inspection surface for local, private VPS, Team
+Self-Hosted, and Koed-managed cloud targets. The retired Explorer-first design
+is recorded as historical context in
 [ADR 0008](adr/0008-explorer-first-auth-and-device-enrollment.md).
 
 Local personal setup may keep app-provisioned API Tokens for AI-client
@@ -504,10 +500,10 @@ authorization checks.
 
 Browser-mediated device enrollment uses local-edge routes, not API Tokens. A
 browser-authenticated User creates a short-lived enrollment challenge with
-`POST /v1/local-edge/device-enrollments/challenges`, opens Explorer against the
-challenge id, and reviews the safe approval context through
-`GET /v1/local-edge/device-enrollments/challenges/{challengeId}`. Explorer can
-approve or deny the challenge through
+`POST /v1/local-edge/device-enrollments/challenges`, opens an authorized browser
+client against the challenge id, and reviews the safe approval context through
+`GET /v1/local-edge/device-enrollments/challenges/{challengeId}`. The browser
+client can approve or deny the challenge through
 `POST /v1/local-edge/device-enrollments/challenges/{challengeId}/approval`;
 approval binds a device credential to the User, upstream backend, device
 instance, operation families, and server-side verifier material, while denial
