@@ -229,7 +229,8 @@ describe("PersonalMemoryStore", () => {
     const loadEventPage = vi
       .fn<PersonalDesktopApi["loadEventPage"]>()
       .mockResolvedValueOnce([event(1), event(2)])
-      .mockResolvedValueOnce([event(2), event(3)]);
+      .mockResolvedValueOnce([event(2), event(3)])
+      .mockResolvedValueOnce([]);
     const bridge = api({
       listProjects: vi
         .fn<PersonalDesktopApi["listProjects"]>()
@@ -264,6 +265,64 @@ describe("PersonalMemoryStore", () => {
           ?.events.map(({ sourceSequence }) => sourceSequence)
       ).toEqual([2, 3])
     );
+    expect(loadEventPage).toHaveBeenLastCalledWith({
+      projectId: selected.projectId,
+      threadId: selected.id,
+      limit: 500,
+      eventIds: [event(1).id]
+    });
+  });
+
+  it("reconciles a valid changed event outside the refreshed head", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    const selected = thread(1);
+    const changedOlder = {
+      ...event(1),
+      content: "Updated older event",
+      contentPreview: "Updated older event"
+    };
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(50), event(51)])
+      .mockResolvedValueOnce([event(1), event(2)])
+      .mockResolvedValueOnce([event(50), event(51)])
+      .mockResolvedValueOnce([changedOlder]);
+    const bridge = api({
+      listProjects: vi.fn(async () => [project([selected])]),
+      loadEventPage,
+      subscribe: vi.fn((listener) => {
+        onChange = listener;
+        return () => undefined;
+      })
+    });
+    const store = new PersonalMemoryStore(bridge);
+    await store.loadProjects();
+    await store.loadInitial(selected);
+    await store.loadOlder(selected);
+
+    onChange?.({
+      contractVersion: 1,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: changedOlder.id,
+          projectId: selected.projectId,
+          threadId: selected.id
+        }
+      ]
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        store.detail(selected)?.events.find(({ id }) => id === changedOlder.id)
+      ).toMatchObject({ content: "Updated older event" })
+    );
+    expect(loadEventPage).toHaveBeenLastCalledWith({
+      projectId: selected.projectId,
+      threadId: selected.id,
+      limit: 500,
+      eventIds: [changedOlder.id]
+    });
   });
 
   it("keeps visible events mounted while refreshing the live head", async () => {

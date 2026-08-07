@@ -291,15 +291,34 @@ export class PersonalMemoryStore {
       }
       entry.thread = thread;
       try {
+        const cachedChangedEventIds = new Set(
+          entry.events
+            .filter(({ id }) => changedEventIds.has(id))
+            .map(({ id }) => id)
+        );
         const events = await this.#api.loadEventPage({
           projectId: thread.projectId,
           threadId: thread.id,
           limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
         });
         if (this.#cache.get(key) !== entry) continue;
+        const headEventIds = new Set(events.map(({ id }) => id));
+        const changedEventsOutsideHead = [...cachedChangedEventIds].filter(
+          (eventId) => !headEventIds.has(eventId)
+        );
+        const reconciledChangedEvents =
+          changedEventsOutsideHead.length > 0
+            ? await this.#api.loadEventPage({
+                projectId: thread.projectId,
+                threadId: thread.id,
+                limit: PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
+                eventIds: changedEventsOutsideHead
+              })
+            : [];
+        if (this.#cache.get(key) !== entry) continue;
         entry.events = mergeConversationEvents(
           entry.events.filter(({ id }) => !changedEventIds.has(id)),
-          events
+          [...events, ...reconciledChangedEvents]
         );
         entry.hasOlder = entry.events.length < thread.eventCount;
         entry.loadedAt = Date.now();

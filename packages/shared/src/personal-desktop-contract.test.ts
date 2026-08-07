@@ -53,6 +53,39 @@ describe("Personal Desktop IPC contract", () => {
     ).toThrow();
   });
 
+  it("accepts bounded exact-event reconciliation without pagination authority", () => {
+    const eventId = "22222222-2222-4222-8222-222222222222";
+    expect(
+      personalDesktopRequestSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.events.load_page",
+        input: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          limit: 500,
+          eventIds: [eventId]
+        }
+      })
+    ).toMatchObject({ input: { eventIds: [eventId] } });
+    expect(() =>
+      personalDesktopRequestSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.events.load_page",
+        input: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          limit: 500,
+          eventIds: [eventId],
+          cursor: {
+            id: eventId,
+            sourceSequence: 1,
+            timestamp: "2026-07-23T00:00:01.000Z"
+          }
+        }
+      })
+    ).toThrow();
+  });
+
   it("rejects generic assignment targets and credential-bearing results", () => {
     expect(() =>
       personalDesktopRequestSchema.parse({

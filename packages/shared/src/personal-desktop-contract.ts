@@ -87,9 +87,29 @@ export const personalDesktopEventPageInputSchema = z
       z.literal(PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT),
       z.literal(PERSONAL_DESKTOP_OLDER_EVENT_LIMIT)
     ]),
-    cursor: personalDesktopConversationCursorSchema.optional()
+    cursor: personalDesktopConversationCursorSchema.optional(),
+    eventIds: z.array(z.uuid()).min(1).max(500).optional()
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (input.cursor && input.eventIds) {
+      context.addIssue({
+        code: "custom",
+        path: ["eventIds"],
+        message: "eventIds cannot be combined with a pagination cursor"
+      });
+    }
+    if (
+      input.eventIds &&
+      new Set(input.eventIds).size !== input.eventIds.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["eventIds"],
+        message: "eventIds must be distinct"
+      });
+    }
+  });
 
 export const personalDesktopSessionProjectInputSchema = z.discriminatedUnion(
   "action",
