@@ -1,8 +1,4 @@
-import {
-  highRiskActionGrantCanonicalHash,
-  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
-  teamPresenceStatusCatalogue
-} from "@koed/shared";
+import { teamPresenceStatusCatalogue } from "@koed/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
   type DeviceCredentialAuthContext,
@@ -42,6 +38,15 @@ import {
   publicTeamManagementMember,
   publicTeamRosterMember
 } from "./presence.js";
+import {
+  teamAdminRequestHash,
+  teamAdminScopeHash
+} from "./action-grant-hash.js";
+
+export {
+  teamAdminRequestHash,
+  teamAdminScopeHash
+} from "./action-grant-hash.js";
 
 const forbidden = (message: string) =>
   Object.assign(new Error(message), { statusCode: 403 });
@@ -58,31 +63,6 @@ const isStaleVersionError = (error: unknown): boolean =>
     typeof error === "object" &&
     "code" in error &&
     error.code === "STALE_VERSION"
-  );
-
-export const teamAdminScopeHash = (input: {
-  action: string;
-  teamId: string | null;
-  targetId: string | null;
-}): string =>
-  highRiskActionGrantCanonicalHash(
-    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
-    {
-      operationFamily: "admin",
-      action: input.action,
-      teamId: input.teamId,
-      targetId: input.targetId
-    }
-  );
-
-export const teamAdminRequestHash = (input: {
-  method: string;
-  path: string;
-  body: unknown;
-}): string =>
-  highRiskActionGrantCanonicalHash(
-    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
-    input
   );
 
 const backendOriginHash = (protocolDeploymentId: string): string =>
@@ -317,11 +297,15 @@ export const registerTeamRoutes = (
           MemorySourceRepository,
           "ensureLocalSyncDeployment" | "getVerifiedExternalAuthIdentityForUser"
         >
-    ) => Promise<{ statusCode: number; body: TBody } | null>
+    ) => Promise<{ statusCode: number; body: TBody } | null>,
+    options: { requireVerifiedIdentity?: boolean } = {}
   ): Promise<{ statusCode: number; body: TBody }> => {
+    const requireIdentity = options.requireVerifiedIdentity !== false;
     if (actor.kind === "browser") {
       const repository = requireRepository();
-      await requireVerifiedTeamIdentity(repository, actor.user);
+      if (requireIdentity) {
+        await requireVerifiedTeamIdentity(repository, actor.user);
+      }
       const result = await execute(repository);
       if (!result) {
         throw forbidden("Team administration action is not authorized");
@@ -345,7 +329,9 @@ export const registerTeamRoutes = (
       }),
       execute: async ({ team, sync, externalAuth }) => {
         const repository = { ...team, ...sync, ...externalAuth };
-        await requireVerifiedTeamIdentity(repository, actor.user);
+        if (requireIdentity) {
+          await requireVerifiedTeamIdentity(repository, actor.user);
+        }
         return execute(repository);
       }
     });
@@ -710,17 +696,33 @@ export const registerTeamRoutes = (
     "/v1/teams/:teamId/leave",
     { preHandler: memoryWriteRateLimit },
     async (request) => {
-      const user = await requireFreshSession(request);
+      const actor = await authenticateAdminActor(request);
       const { teamId } = teamIdParamsSchema.parse(request.params);
       const input = expectedVersionSchema.parse(request.body);
-      const membership = await runVersioned(() =>
-        requireRepository().leaveTeam(
-          { userId: user.id },
-          { teamId, expectedVersion: input.expectedVersion }
+      return (
+        await runVersioned(() =>
+          runHighRiskTeamWrite(
+            request,
+            actor,
+            {
+              action: "team.leave",
+              teamId,
+              targetId: teamId,
+              body: request.body
+            },
+            async (repo) => {
+              const membership = await repo.leaveTeam(
+                { userId: actor.user.id },
+                { teamId, expectedVersion: input.expectedVersion }
+              );
+              return membership
+                ? { statusCode: 200, body: { membership } }
+                : null;
+            },
+            { requireVerifiedIdentity: false }
+          )
         )
-      );
-      if (!membership) throw forbidden("Team cannot be left");
-      return { membership };
+      ).body;
     }
   );
 

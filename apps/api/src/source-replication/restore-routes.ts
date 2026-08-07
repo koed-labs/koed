@@ -4,16 +4,16 @@ import {
   fetchBoundedJsonObject,
   parseConversationSourceOriginKeyRegistration,
   parseConversationSourceReplicationSourceDescriptor,
-  parseSignedConversationSourceClosureManifest,
-  readCollaborationActionGrantCustodyCommitmentHash,
-  resolveCollaborationActionGrantSecret,
-  storeCollaborationActionGrantCustody,
-  updateCollaborationActionGrantCustodyStatus
+  parseSignedConversationSourceClosureManifest
 } from "@koed/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
-import { highRiskActionGrantRemoteEnvelopeSchema } from "../high-risk/action-grant-protocol.js";
+import {
+  createCollaborationActionGrantLifecycle,
+  type ActionGrantRemoteStatus,
+  type CollaborationActionGrantLifecycleContext
+} from "../local-edge/collaboration-action-grant-lifecycle.js";
 import {
   readLocalEdgeUpstreamRegistry,
   safeUpstreamProxyUrl,
@@ -126,6 +126,54 @@ export const registerConversationSourceRestoreRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  const actionGrantLifecycle =
+    context.collaboration?.actionGrantLifecycle ??
+    createCollaborationActionGrantLifecycle({
+      koedHome: context.config.koedHome
+    });
+
+  const reconcileRemoteActionGrant = async (
+    lifecycleContext: CollaborationActionGrantLifecycleContext,
+    referenceId: string,
+    request: {
+      authorization: string;
+      remote: Parameters<typeof remoteRequest>[3];
+    }
+  ): Promise<ActionGrantRemoteStatus> => {
+    try {
+      const payload = await remoteRequest(
+        context,
+        lifecycleContext.backend,
+        request.authorization,
+        request.remote
+      );
+      const status = actionGrantLifecycle.acceptRemote(
+        lifecycleContext,
+        { id: referenceId },
+        payload
+      );
+      if (!status) {
+        throw statusError("Source Action Grant response is invalid", 503);
+      }
+      return status;
+    } catch (error) {
+      const statusCode =
+        error && typeof error === "object" && "statusCode" in error
+          ? Number(error.statusCode)
+          : null;
+      if (statusCode === 401 || statusCode === 403 || statusCode === 404) {
+        actionGrantLifecycle.discard({ id: referenceId }, "authority_lost");
+      } else {
+        actionGrantLifecycle.markAmbiguous(
+          lifecycleContext,
+          { id: referenceId },
+          actionGrantLifecycle.read(lifecycleContext, { id: referenceId }) ??
+            undefined
+        );
+      }
+      throw error;
+    }
+  };
   app.post(
     "/v1/personal-source-replication/discovery",
     { preHandler: context.rateLimit.memoryWrite },
@@ -161,75 +209,53 @@ export const registerConversationSourceRestoreRoutes = (
         );
       }
       const body = { cursor: input.cursor, limit: input.limit };
-      const custodyAccess = {
+      const lifecycleContext = {
+        backend,
+        localOwnerUserId: user.id,
+        principalUserId: enrollment.principalUserId,
+        upstreamDeviceCredentialId: enrollment.deviceCredentialId
+      } satisfies CollaborationActionGrantLifecycleContext;
+      const prepared = actionGrantLifecycle.prepare({
         referenceId: input.requestId,
         backendId: backend.id,
         deploymentBaseUrl: backend.baseUrl,
         deviceCredentialId: enrollment.deviceCredentialId,
         localOwnerUserId: user.id,
-        principalUserId: enrollment.principalUserId
-      };
-      let commitmentHash = readCollaborationActionGrantCustodyCommitmentHash(
-        context.config.koedHome,
-        custodyAccess
-      );
-      if (!commitmentHash) {
-        commitmentHash = storeCollaborationActionGrantCustody(
-          context.config.koedHome,
-          {
-            ...custodyAccess,
-            operationFamily: "source_download",
-            action: "conversation_source.discover",
-            teamId: null,
-            targetId: null,
+        principalUserId: enrollment.principalUserId,
+        operationFamily: "source_download",
+        action: "conversation_source.discover",
+        teamId: null,
+        targetId: null,
+        method: "POST",
+        path: "/v1/conversation-source-replication/sources/discover",
+        body,
+        idempotencyKey: input.requestId,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString()
+      });
+      const status = await reconcileRemoteActionGrant(
+        lifecycleContext,
+        input.requestId,
+        {
+          authorization,
+          remote: {
             method: "POST",
-            path: "/v1/conversation-source-replication/sources/discover",
-            body,
-            idempotencyKey: input.requestId,
-            expiresAt: new Date(Date.now() + 5 * 60_000).toISOString()
-          }
-        ).commitmentHash;
-      }
-      const remote = highRiskActionGrantRemoteEnvelopeSchema.parse(
-        await remoteRequest(context, backend, authorization, {
-          method: "POST",
-          path: "/v1/high-risk/action-grants",
-          body: {
-            version: 1,
-            clientRequestId: input.requestId,
-            grantCommitment: `v1:${commitmentHash}`,
-            intent: {
-              action: "conversation_source.discover",
-              body
+            path: "/v1/high-risk/action-grants",
+            body: {
+              version: 1,
+              clientRequestId: input.requestId,
+              grantCommitment: `v1:${prepared.commitmentHash}`,
+              intent: {
+                action: "conversation_source.discover",
+                body
+              }
             }
           }
-        })
-      );
-      if (remote.status.actionGrant.id !== input.requestId) {
-        throw statusError("Source discovery grant identity is invalid", 503);
-      }
-      const activationUrl = remote.status.activationPath
-        ? safeUpstreamProxyUrl(backend, remote.status.activationPath).toString()
-        : null;
-      updateCollaborationActionGrantCustodyStatus(
-        context.config.koedHome,
-        remote.status.state === "approved"
-          ? {
-              ...custodyAccess,
-              state: "approved",
-              expiresAt: remote.status.expiresAt
-            }
-          : {
-              ...custodyAccess,
-              state: "pending",
-              activationUrl,
-              expiresAt: remote.status.expiresAt
-            }
+        }
       );
       return reply.status(202).send({
         requestId: input.requestId,
-        approvalState: remote.status.state,
-        activationUrl
+        approvalState: status.state,
+        activationUrl: status.activationUrl
       });
     }
   );
@@ -257,61 +283,70 @@ export const registerConversationSourceRestoreRoutes = (
         throw statusError("Source discovery backend is unavailable", 409);
       }
       const body = { cursor: input.cursor, limit: input.limit };
-      const custodyAccess = {
+      const lifecycleContext = {
+        backend,
+        localOwnerUserId: user.id,
+        principalUserId: enrollment.principalUserId,
+        upstreamDeviceCredentialId: enrollment.deviceCredentialId
+      } satisfies CollaborationActionGrantLifecycleContext;
+      const status = await reconcileRemoteActionGrant(
+        lifecycleContext,
+        input.requestId,
+        {
+          authorization,
+          remote: {
+            method: "GET",
+            path: `/v1/high-risk/action-grants/${encodeURIComponent(input.requestId)}`
+          }
+        }
+      );
+      if (status.state !== "approved") {
+        return {
+          requestId: input.requestId,
+          approvalState: status.state,
+          activationUrl: status.activationUrl
+        };
+      }
+      const grant = actionGrantLifecycle.resolve({
         referenceId: input.requestId,
         backendId: backend.id,
         deploymentBaseUrl: backend.baseUrl,
         deviceCredentialId: enrollment.deviceCredentialId,
         localOwnerUserId: user.id,
-        principalUserId: enrollment.principalUserId
-      };
-      const status = highRiskActionGrantRemoteEnvelopeSchema.parse(
-        await remoteRequest(context, backend, authorization, {
-          method: "GET",
-          path: `/v1/high-risk/action-grants/${encodeURIComponent(input.requestId)}`
-        })
-      ).status;
-      if (status.state !== "approved") {
-        return {
-          requestId: input.requestId,
-          approvalState: status.state,
-          activationUrl: status.activationPath
-            ? safeUpstreamProxyUrl(backend, status.activationPath).toString()
-            : null
-        };
-      }
-      updateCollaborationActionGrantCustodyStatus(context.config.koedHome, {
-        ...custodyAccess,
-        state: "approved",
-        expiresAt: status.expiresAt
-      });
-      const grant = resolveCollaborationActionGrantSecret(
-        context.config.koedHome,
-        {
-          ...custodyAccess,
-          operationFamily: "source_download",
-          action: "conversation_source.discover",
-          teamId: null,
-          targetId: null,
-          method: "POST",
-          path: "/v1/conversation-source-replication/sources/discover",
-          body,
-          idempotencyKey: input.requestId
-        }
-      );
-      if (!grant) {
-        throw statusError("Source discovery grant is unavailable", 409);
-      }
-      const result = await remoteRequest(context, backend, authorization, {
+        principalUserId: enrollment.principalUserId,
+        operationFamily: "source_download",
+        action: "conversation_source.discover",
+        teamId: null,
+        targetId: null,
         method: "POST",
         path: "/v1/conversation-source-replication/sources/discover",
         body,
-        actionGrant: grant
+        idempotencyKey: input.requestId
       });
-      updateCollaborationActionGrantCustodyStatus(context.config.koedHome, {
-        ...custodyAccess,
-        state: "consumed"
-      });
+      if (!grant) {
+        throw statusError("Source discovery grant is unavailable", 409);
+      }
+      let result: Awaited<ReturnType<typeof remoteRequest>>;
+      try {
+        result = await remoteRequest(context, backend, authorization, {
+          method: "POST",
+          path: "/v1/conversation-source-replication/sources/discover",
+          body,
+          actionGrant: grant
+        });
+      } catch (error) {
+        actionGrantLifecycle.markAmbiguous(
+          lifecycleContext,
+          { id: input.requestId },
+          status
+        );
+        throw error;
+      }
+      actionGrantLifecycle.transitionTerminal(
+        lifecycleContext,
+        status,
+        "consumed"
+      );
       return {
         requestId: input.requestId,
         approvalState: "consumed",
@@ -409,75 +444,53 @@ export const registerConversationSourceRestoreRoutes = (
           publicJwk: selectedRecipient.publicJwk
         }
       };
-      const custodyAccess = {
+      const lifecycleContext = {
+        backend,
+        localOwnerUserId: user.id,
+        principalUserId: enrollment.principalUserId,
+        upstreamDeviceCredentialId: enrollment.deviceCredentialId
+      } satisfies CollaborationActionGrantLifecycleContext;
+      const prepared = actionGrantLifecycle.prepare({
         referenceId: job.actionGrantId,
         backendId: backend.id,
         deploymentBaseUrl: backend.baseUrl,
         deviceCredentialId: enrollment.deviceCredentialId,
         localOwnerUserId: user.id,
-        principalUserId: enrollment.principalUserId
-      };
-      let commitmentHash = readCollaborationActionGrantCustodyCommitmentHash(
-        context.config.koedHome,
-        custodyAccess
-      );
-      if (!commitmentHash) {
-        commitmentHash = storeCollaborationActionGrantCustody(
-          context.config.koedHome,
-          {
-            ...custodyAccess,
-            operationFamily: "source_download",
-            action: "conversation_source.download",
-            teamId: null,
-            targetId: input.sourceGenerationId,
+        principalUserId: enrollment.principalUserId,
+        operationFamily: "source_download",
+        action: "conversation_source.download",
+        teamId: null,
+        targetId: input.sourceGenerationId,
+        method: "POST",
+        path: "/v1/conversation-source-replication/download-authorizations",
+        body,
+        idempotencyKey: job.actionGrantId,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString()
+      });
+      const status = await reconcileRemoteActionGrant(
+        lifecycleContext,
+        job.actionGrantId,
+        {
+          authorization,
+          remote: {
             method: "POST",
-            path: "/v1/conversation-source-replication/download-authorizations",
-            body,
-            idempotencyKey: job.actionGrantId,
-            expiresAt: new Date(Date.now() + 5 * 60_000).toISOString()
-          }
-        ).commitmentHash;
-      }
-      const remote = highRiskActionGrantRemoteEnvelopeSchema.parse(
-        await remoteRequest(context, backend, authorization, {
-          method: "POST",
-          path: "/v1/high-risk/action-grants",
-          body: {
-            version: 1,
-            clientRequestId: job.actionGrantId,
-            grantCommitment: `v1:${commitmentHash}`,
-            intent: {
-              action: "conversation_source.download",
-              ...body
+            path: "/v1/high-risk/action-grants",
+            body: {
+              version: 1,
+              clientRequestId: job.actionGrantId,
+              grantCommitment: `v1:${prepared.commitmentHash}`,
+              intent: {
+                action: "conversation_source.download",
+                ...body
+              }
             }
           }
-        })
-      );
-      if (remote.status.actionGrant.id !== job.actionGrantId) {
-        throw statusError("Source restore grant identity is invalid", 503);
-      }
-      const activationUrl = remote.status.activationPath
-        ? safeUpstreamProxyUrl(backend, remote.status.activationPath).toString()
-        : null;
-      updateCollaborationActionGrantCustodyStatus(
-        context.config.koedHome,
-        remote.status.state === "approved"
-          ? {
-              ...custodyAccess,
-              state: "approved",
-              expiresAt: remote.status.expiresAt
-            }
-          : {
-              ...custodyAccess,
-              state: "pending",
-              activationUrl,
-              expiresAt: remote.status.expiresAt
-            }
+        }
       );
       return reply.status(202).send({
         restore: publicRestore(job),
-        activationUrl,
-        approvalState: remote.status.state
+        activationUrl: status.activationUrl,
+        approvalState: status.state
       });
     }
   );
@@ -498,6 +511,10 @@ export const registerConversationSourceRestoreRoutes = (
       );
       if (!job) throw statusError("Source restore not found", 404);
       if (job.state !== "awaiting_approval") {
+        actionGrantLifecycle.discard(
+          { id: job.actionGrantId },
+          "durable_outcome"
+        );
         return { restore: publicRestore(job), approvalState: "consumed" };
       }
       const registry = readLocalEdgeUpstreamRegistry(
@@ -513,19 +530,33 @@ export const registerConversationSourceRestoreRoutes = (
       if (!backend || !authorization || !enrollment) {
         throw statusError("Source restore backend is unavailable", 409);
       }
-      const status = highRiskActionGrantRemoteEnvelopeSchema.parse(
-        await remoteRequest(context, backend, authorization, {
-          method: "GET",
-          path: `/v1/high-risk/action-grants/${encodeURIComponent(job.actionGrantId)}`
-        })
-      ).status;
+      const lifecycleContext = {
+        backend,
+        localOwnerUserId: user.id,
+        principalUserId: enrollment.principalUserId,
+        upstreamDeviceCredentialId: enrollment.deviceCredentialId
+      } satisfies CollaborationActionGrantLifecycleContext;
+      let status = actionGrantLifecycle.read(lifecycleContext, {
+        id: job.actionGrantId
+      });
+      if (status?.state !== "approved") {
+        status = await reconcileRemoteActionGrant(
+          lifecycleContext,
+          job.actionGrantId,
+          {
+            authorization,
+            remote: {
+              method: "GET",
+              path: `/v1/high-risk/action-grants/${encodeURIComponent(job.actionGrantId)}`
+            }
+          }
+        );
+      }
       if (status.state !== "approved") {
         return {
           restore: publicRestore(job),
           approvalState: status.state,
-          activationUrl: status.activationPath
-            ? safeUpstreamProxyUrl(backend, status.activationPath).toString()
-            : null
+          activationUrl: status.activationUrl
         };
       }
       const recipient = await resolveSyncRecipientContext(
@@ -557,40 +588,61 @@ export const registerConversationSourceRestoreRoutes = (
           publicJwk: selectedRecipient.publicJwk
         }
       };
-      const custodyAccess = {
+      const grantInput = {
         referenceId: job.actionGrantId,
         backendId: backend.id,
         deploymentBaseUrl: backend.baseUrl,
         deviceCredentialId: enrollment.deviceCredentialId,
         localOwnerUserId: user.id,
-        principalUserId: enrollment.principalUserId
-      };
-      updateCollaborationActionGrantCustodyStatus(context.config.koedHome, {
-        ...custodyAccess,
-        state: "approved",
-        expiresAt: status.expiresAt
-      });
-      const grant = resolveCollaborationActionGrantSecret(
-        context.config.koedHome,
-        {
-          ...custodyAccess,
-          operationFamily: "source_download",
-          action: "conversation_source.download",
-          teamId: null,
-          targetId: job.sourceGenerationId,
-          method: "POST",
-          path: "/v1/conversation-source-replication/download-authorizations",
-          body,
-          idempotencyKey: job.actionGrantId
-        }
-      );
-      if (!grant) throw statusError("Source restore grant is unavailable", 409);
-      const download = await remoteRequest(context, backend, authorization, {
+        principalUserId: enrollment.principalUserId,
+        operationFamily: "source_download",
+        action: "conversation_source.download",
+        teamId: null,
+        targetId: job.sourceGenerationId,
         method: "POST",
         path: "/v1/conversation-source-replication/download-authorizations",
         body,
-        actionGrant: grant
-      });
+        idempotencyKey: job.actionGrantId
+      } as const;
+      let grant = actionGrantLifecycle.resolve(grantInput);
+      if (!grant) {
+        status = await reconcileRemoteActionGrant(
+          lifecycleContext,
+          job.actionGrantId,
+          {
+            authorization,
+            remote: {
+              method: "GET",
+              path: `/v1/high-risk/action-grants/${encodeURIComponent(job.actionGrantId)}`
+            }
+          }
+        );
+        if (status.state !== "approved") {
+          return {
+            restore: publicRestore(job),
+            approvalState: status.state,
+            activationUrl: status.activationUrl
+          };
+        }
+        grant = actionGrantLifecycle.resolve(grantInput);
+      }
+      if (!grant) throw statusError("Source restore grant is unavailable", 409);
+      let download: Awaited<ReturnType<typeof remoteRequest>>;
+      try {
+        download = await remoteRequest(context, backend, authorization, {
+          method: "POST",
+          path: "/v1/conversation-source-replication/download-authorizations",
+          body,
+          actionGrant: grant
+        });
+      } catch (error) {
+        actionGrantLifecycle.markAmbiguous(
+          lifecycleContext,
+          { id: job.actionGrantId },
+          status
+        );
+        throw error;
+      }
       const authorizationId = z.uuid().parse(download.authorizationId);
       const capability = z
         .string()
@@ -649,10 +701,11 @@ export const registerConversationSourceRestoreRoutes = (
           lastSegmentIndex
         }
       );
-      updateCollaborationActionGrantCustodyStatus(context.config.koedHome, {
-        ...custodyAccess,
-        state: "consumed"
-      });
+      actionGrantLifecycle.transitionTerminal(
+        lifecycleContext,
+        status,
+        "consumed"
+      );
       return { restore: publicRestore(active), approvalState: "consumed" };
     }
   );

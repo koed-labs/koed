@@ -8,6 +8,8 @@ import {
   deleteUpstreamCredentialSecret,
   readLocalEdgeUpstreamEnrollmentBinding,
   readUpstreamCredentialAuthorization,
+  storeEnrollmentCredentialCustody,
+  upstreamCredentialReferenceFor,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret
 } from "@koed/shared";
@@ -23,6 +25,13 @@ import {
   upstreamDisconnectCleanupPending
 } from "./upstream-disconnect-cleanup.js";
 import { withUpstreamEnrollmentLock } from "./upstream-enrollment-lock.js";
+import {
+  createUpstreamEnrollmentTransaction,
+  decideUpstreamEnrollmentTransaction,
+  executeUpstreamEnrollmentTransactionEffect,
+  upstreamEnrollmentObservationApplies,
+  type UpstreamEnrollmentTransactionSnapshot
+} from "./upstream-enrollment-transaction.js";
 import {
   clearUpstreamBackendCapabilities,
   collectUpstreamRegistryStatus,
@@ -52,6 +61,17 @@ export interface UpstreamEnrollmentRecord {
   state: UpstreamEnrollmentState;
   activationUrl: string | null;
   requestedOperationFamilies: string[];
+  transaction:
+    | { kind: "initial" }
+    | {
+        kind: "replacement";
+        predecessorCredentialId: string;
+        predecessorCredentialReference: string;
+      };
+  transactionState: UpstreamEnrollmentTransactionSnapshot;
+  activeCredentialReference?: string;
+  pendingCredentialReference?: string;
+  challengeHash?: string;
   challengeId?: string;
   credentialKeyId?: string;
   credentialReference?: string;
@@ -106,6 +126,7 @@ export interface UpstreamEnrollmentDeps {
   now?: () => Date;
   randomId?: () => string;
   randomBytes?: typeof randomBytes;
+  beforeEnrollmentEffect?: (boundary: string) => void;
 }
 
 const depsWithDefaults = (
@@ -118,7 +139,8 @@ const depsWithDefaults = (
   fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),
   now: deps.now ?? (() => new Date()),
   randomId: deps.randomId ?? randomUUID,
-  randomBytes: deps.randomBytes ?? randomBytes
+  randomBytes: deps.randomBytes ?? randomBytes,
+  beforeEnrollmentEffect: deps.beforeEnrollmentEffect ?? (() => undefined)
 });
 
 const defaultStore = (now: string): UpstreamEnrollmentStore => ({
@@ -162,63 +184,186 @@ const readStore = (
 };
 
 const normalizeRecord = (
-  record: Partial<UpstreamEnrollmentRecord>,
+  record: Partial<UpstreamEnrollmentRecord> & {
+    rotationCredentialId?: string;
+    rotationCredentialReference?: string;
+  },
   now: string
-): UpstreamEnrollmentRecord => ({
-  backendId:
-    typeof record.backendId === "string"
-      ? validateBackendId(record.backendId)
-      : "missing",
-  requestId:
+): UpstreamEnrollmentRecord => {
+  const requestId =
     typeof record.requestId === "string" && record.requestId.trim()
       ? record.requestId.trim().slice(0, 120)
-      : "unknown",
-  state: normalizeEnrollmentState(record.state),
-  activationUrl:
-    typeof record.activationUrl === "string"
-      ? sanitizeActivationUrl(record.activationUrl)
-      : null,
-  requestedOperationFamilies: Array.isArray(record.requestedOperationFamilies)
-    ? record.requestedOperationFamilies.filter(isOperationFamily)
-    : [],
-  ...(typeof record.challengeId === "string" && record.challengeId.trim()
-    ? { challengeId: record.challengeId.trim().slice(0, 120) }
-    : {}),
-  ...(typeof record.credentialKeyId === "string" &&
-  record.credentialKeyId.trim()
-    ? { credentialKeyId: record.credentialKeyId.trim().slice(0, 160) }
-    : {}),
-  ...(typeof record.credentialReference === "string" &&
-  record.credentialReference.trim()
-    ? { credentialReference: record.credentialReference.trim().slice(0, 180) }
-    : {}),
-  ...(typeof record.localClientCredentialReference === "string" &&
-  record.localClientCredentialReference.trim()
-    ? {
-        localClientCredentialReference: record.localClientCredentialReference
-          .trim()
-          .slice(0, 200)
-      }
-    : {}),
-  ...(typeof record.deviceCredentialId === "string" &&
-  uuidPattern.test(record.deviceCredentialId)
-    ? { deviceCredentialId: record.deviceCredentialId.toLowerCase() }
-    : {}),
-  ...(typeof record.principalUserId === "string" &&
-  uuidPattern.test(record.principalUserId)
-    ? { principalUserId: record.principalUserId.toLowerCase() }
-    : {}),
-  createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
-  updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
-  expiresAt: typeof record.expiresAt === "string" ? record.expiresAt : null,
-  ...(typeof record.failureReason === "string"
-    ? { failureReason: record.failureReason.slice(0, 80) }
-    : {}),
-  ...(typeof record.failureMessage === "string"
-    ? { failureMessage: record.failureMessage.slice(0, 240) }
-    : {}),
-  credential: sanitizeCredential(record.credential)
-});
+      : "unknown";
+  const state = normalizeEnrollmentState(record.state);
+  const transactionKind =
+    record.transaction?.kind === "replacement" ||
+    (typeof record.rotationCredentialId === "string" &&
+      uuidPattern.test(record.rotationCredentialId) &&
+      typeof record.rotationCredentialReference === "string" &&
+      record.rotationCredentialReference.trim())
+      ? "replacement"
+      : "initial";
+  const candidateTransaction = record.transactionState;
+  const phase =
+    candidateTransaction?.phase === "prepared" ||
+    candidateTransaction?.phase === "awaiting_remote" ||
+    candidateTransaction?.phase === "awaiting_exchange" ||
+    candidateTransaction?.phase === "committing" ||
+    candidateTransaction?.phase === "committed" ||
+    candidateTransaction?.phase === "aborting" ||
+    candidateTransaction?.phase === "aborted" ||
+    candidateTransaction?.phase === "recovery_required"
+      ? candidateTransaction.phase
+      : state === "exchanged"
+        ? "committed"
+        : state === "denied" ||
+            state === "expired" ||
+            state === "canceled" ||
+            state === "revoked" ||
+            state === "failed"
+          ? "aborted"
+          : state === "approved"
+            ? "awaiting_exchange"
+            : "awaiting_remote";
+  const pendingEffect =
+    candidateTransaction?.pendingEffect === "stage_pending_custody" ||
+    candidateTransaction?.pendingEffect === "compensate_pending_custody" ||
+    candidateTransaction?.pendingEffect === "record_challenge" ||
+    candidateTransaction?.pendingEffect === "commit_successor" ||
+    candidateTransaction?.pendingEffect === "abort_pending" ||
+    candidateTransaction?.pendingEffect === "revoke_active"
+      ? candidateTransaction.pendingEffect
+      : null;
+  const transactionTargetState =
+    candidateTransaction?.state === "pending" ||
+    candidateTransaction?.state === "approved" ||
+    candidateTransaction?.state === "exchanged" ||
+    candidateTransaction?.state === "denied" ||
+    candidateTransaction?.state === "expired" ||
+    candidateTransaction?.state === "canceled" ||
+    candidateTransaction?.state === "revoked" ||
+    candidateTransaction?.state === "failed"
+      ? candidateTransaction.state
+      : state;
+  const transactionState: UpstreamEnrollmentTransactionSnapshot = {
+    id:
+      typeof candidateTransaction?.id === "string" &&
+      candidateTransaction.id.trim()
+        ? candidateTransaction.id.trim().slice(0, 120)
+        : requestId,
+    generation:
+      Number.isSafeInteger(candidateTransaction?.generation) &&
+      candidateTransaction!.generation > 0
+        ? candidateTransaction!.generation
+        : 1,
+    kind: transactionKind,
+    phase,
+    state: transactionTargetState,
+    pendingEffect
+  };
+  return {
+    backendId:
+      typeof record.backendId === "string"
+        ? validateBackendId(record.backendId)
+        : "missing",
+    requestId,
+    state,
+    activationUrl:
+      typeof record.activationUrl === "string"
+        ? sanitizeActivationUrl(record.activationUrl)
+        : null,
+    requestedOperationFamilies: Array.isArray(record.requestedOperationFamilies)
+      ? record.requestedOperationFamilies.filter(isOperationFamily)
+      : [],
+    transaction:
+      record.transaction?.kind === "replacement" &&
+      uuidPattern.test(record.transaction.predecessorCredentialId) &&
+      record.transaction.predecessorCredentialReference.trim()
+        ? {
+            kind: "replacement",
+            predecessorCredentialId:
+              record.transaction.predecessorCredentialId.toLowerCase(),
+            predecessorCredentialReference:
+              record.transaction.predecessorCredentialReference
+                .trim()
+                .slice(0, 180)
+          }
+        : typeof record.rotationCredentialId === "string" &&
+            uuidPattern.test(record.rotationCredentialId) &&
+            typeof record.rotationCredentialReference === "string" &&
+            record.rotationCredentialReference.trim()
+          ? {
+              kind: "replacement",
+              predecessorCredentialId:
+                record.rotationCredentialId.toLowerCase(),
+              predecessorCredentialReference: record.rotationCredentialReference
+                .trim()
+                .slice(0, 180)
+            }
+          : { kind: "initial" },
+    transactionState,
+    ...(typeof record.activeCredentialReference === "string" &&
+    record.activeCredentialReference.trim()
+      ? {
+          activeCredentialReference: record.activeCredentialReference
+            .trim()
+            .slice(0, 180)
+        }
+      : {}),
+    ...(typeof record.pendingCredentialReference === "string" &&
+    record.pendingCredentialReference.trim()
+      ? {
+          pendingCredentialReference: record.pendingCredentialReference
+            .trim()
+            .slice(0, 180)
+        }
+      : {}),
+    ...(typeof record.challengeHash === "string" &&
+    /^[0-9a-f]{64}$/.test(record.challengeHash)
+      ? { challengeHash: record.challengeHash }
+      : {}),
+    ...(typeof record.challengeId === "string" && record.challengeId.trim()
+      ? { challengeId: record.challengeId.trim().slice(0, 120) }
+      : {}),
+    ...(typeof record.credentialKeyId === "string" &&
+    record.credentialKeyId.trim()
+      ? { credentialKeyId: record.credentialKeyId.trim().slice(0, 160) }
+      : {}),
+    ...(typeof record.credentialReference === "string" &&
+    record.credentialReference.trim()
+      ? { credentialReference: record.credentialReference.trim().slice(0, 180) }
+      : {}),
+    ...(typeof record.localClientCredentialReference === "string" &&
+    record.localClientCredentialReference.trim()
+      ? {
+          localClientCredentialReference: record.localClientCredentialReference
+            .trim()
+            .slice(0, 200)
+        }
+      : {}),
+    ...(typeof record.deviceCredentialId === "string" &&
+    uuidPattern.test(record.deviceCredentialId)
+      ? { deviceCredentialId: record.deviceCredentialId.toLowerCase() }
+      : {}),
+    ...(typeof record.principalUserId === "string" &&
+    uuidPattern.test(record.principalUserId)
+      ? { principalUserId: record.principalUserId.toLowerCase() }
+      : {}),
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
+    expiresAt: typeof record.expiresAt === "string" ? record.expiresAt : null,
+    ...(typeof record.failureReason === "string"
+      ? { failureReason: record.failureReason.slice(0, 80) }
+      : {}),
+    ...(typeof record.failureMessage === "string"
+      ? { failureMessage: record.failureMessage.slice(0, 240) }
+      : {}),
+    credential: sanitizeCredential(record.credential)
+  };
+};
+
+const replacementTransaction = (record: UpstreamEnrollmentRecord) =>
+  record.transaction.kind === "replacement" ? record.transaction : null;
 
 const normalizeEnrollmentState = (value: unknown): UpstreamEnrollmentState => {
   if (
@@ -372,6 +517,18 @@ const browserEnrollmentOperationFamilies = (
   options: { collaboration: boolean }
 ): string[] => routePolicyOperationFamilies(routePolicy, options);
 
+const localClientOperationFamiliesFor = (operationFamilies: string[]) =>
+  operationFamilies.filter(
+    (family) =>
+      family === "personal_collaboration_read" ||
+      family === "personal_collaboration_write" ||
+      family === "team_workspace_read" ||
+      family === "team_chat_read" ||
+      family === "team_chat_write" ||
+      family === "share_grant_management" ||
+      family === "managed_execution"
+  );
+
 const expiresAtFor = (now: Date): string =>
   new Date(now.getTime() + 10 * 60 * 1000).toISOString();
 
@@ -437,6 +594,11 @@ const createUpstreamChallenge = async (
     operationFamilies: string[];
     requestId: string;
     expiresAt: string | null;
+    rotation?: {
+      credentialId: string;
+      credentialReference: string;
+      authorization: string;
+    };
   },
   deps: Required<UpstreamEnrollmentDeps>
 ): Promise<{ challengeId: string; activationUrl: string }> => {
@@ -448,11 +610,17 @@ const createUpstreamChallenge = async (
     ),
     {
       method: "POST",
+      headers: input.rotation
+        ? { authorization: input.rotation.authorization }
+        : undefined,
       body: JSON.stringify({
         challenge_hash: input.challengeHash,
         upstream_backend_id: input.backendId,
         device_instance_id: input.deviceInstanceId,
         protocol_deployment_id: input.protocolDeploymentId,
+        ...(input.rotation
+          ? { rotate_credential_id: input.rotation.credentialId }
+          : {}),
         device_label: "Koed local edge",
         requested_operation_families: input.operationFamilies,
         pending_credential: {
@@ -599,6 +767,57 @@ const remoteCredentialStatus = async (
   }
 };
 
+type RotationCredentialDiscovery =
+  | {
+      state: "active";
+      credentialId: string;
+      principalUserId: string;
+      credentialReference: string;
+      authorization: string;
+    }
+  | { state: "none" }
+  | { state: "unavailable" };
+
+const discoverRotationCredential = async (
+  paths: KoedServerPaths,
+  backend: UpstreamBackendSummary,
+  store: UpstreamEnrollmentStore,
+  deps: Required<UpstreamEnrollmentDeps>
+): Promise<RotationCredentialDiscovery> => {
+  const candidates = [...store.enrollments]
+    .reverse()
+    .filter(
+      (record) =>
+        record.backendId === backend.id &&
+        typeof record.credentialReference === "string"
+    );
+  for (const candidate of candidates) {
+    const credentialReference = candidate.credentialReference!;
+    const authorization = readUpstreamCredentialAuthorization(
+      paths.koedHome,
+      credentialReference
+    );
+    if (!authorization) continue;
+    const status = await remoteCredentialStatus(
+      paths,
+      backend,
+      credentialReference,
+      deps
+    );
+    if (status.state === "active") {
+      return {
+        state: "active",
+        credentialId: status.deviceCredentialId,
+        principalUserId: status.principalUserId,
+        credentialReference,
+        authorization
+      };
+    }
+    if (status.state === "unknown") return { state: "unavailable" };
+  }
+  return { state: "none" };
+};
+
 const revokeRemoteCredential = async (
   paths: KoedServerPaths,
   backend: UpstreamBackendSummary,
@@ -685,7 +904,11 @@ const sameEnrollmentIdentity = (
   expected: UpstreamEnrollmentRecord
 ): current is UpstreamEnrollmentRecord =>
   current?.requestId === expected.requestId &&
-  current.credentialReference === expected.credentialReference;
+  current.credentialReference === expected.credentialReference &&
+  upstreamEnrollmentObservationApplies(current.transactionState, {
+    transactionId: expected.transactionState.id,
+    generation: expected.transactionState.generation
+  });
 
 const enrollmentResultFromSnapshot = (
   backendId: string,
@@ -712,7 +935,12 @@ const materializeState = (
   now: Date,
   backend?: UpstreamBackendSummary
 ): UpstreamEnrollmentRecord => {
-  if (backend?.credential.status === "configured") {
+  const replacement = replacementTransaction(record);
+  if (
+    backend?.credential.status === "configured" &&
+    (!replacement ||
+      backend.credential.reference === record.credentialReference)
+  ) {
     return {
       ...record,
       state: "exchanged",
@@ -880,12 +1108,30 @@ const startUpstreamEnrollmentWithFetch = async (
     if (
       current.state === "pending" ||
       current.state === "approved" ||
-      current.state === "exchanged"
+      (current.state === "exchanged" &&
+        JSON.stringify(current.enrollment?.requestedOperationFamilies ?? []) ===
+          JSON.stringify(operationFamilies))
     ) {
       return current;
     }
     store = readStore(paths, resolvedDeps);
     expectedRecord = latestEnrollment(store, backendId);
+  }
+
+  const rotation = await discoverRotationCredential(
+    paths,
+    backend,
+    store,
+    resolvedDeps
+  );
+  if (rotation.state === "unavailable") {
+    return {
+      ok: false,
+      state: "failed",
+      backend,
+      message:
+        "Could not verify the existing upstream device credential required for authenticated rotation. Retry when the Team Backend is available."
+    };
   }
 
   const requestId = resolvedDeps.randomId();
@@ -898,48 +1144,11 @@ const startUpstreamEnrollmentWithFetch = async (
     .digest("hex")
     .slice(0, 40)}`;
   const expiresAt = expiresAtFor(now);
-  const localClientOperationFamilies = operationFamilies.filter(
-    (family) =>
-      family === "personal_collaboration_read" ||
-      family === "personal_collaboration_write" ||
-      family === "team_workspace_read" ||
-      family === "team_chat_read" ||
-      family === "team_chat_write" ||
-      family === "share_grant_management" ||
-      family === "managed_execution"
-  );
+  const localClientOperationFamilies =
+    localClientOperationFamiliesFor(operationFamilies);
   const localClientSecret = randomSecret(resolvedDeps);
 
-  let challenge: { challengeId: string; activationUrl: string };
-  try {
-    challenge = await createUpstreamChallenge(
-      backend,
-      {
-        backendId,
-        deviceInstanceId,
-        protocolDeploymentId: identity.deploymentId!,
-        challengeHash,
-        credentialKeyId,
-        verifierSecret,
-        operationFamilies,
-        requestId,
-        expiresAt
-      },
-      resolvedDeps
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      state: "failed",
-      backend,
-      message:
-        error instanceof Error
-          ? error.message
-          : "Failed to create upstream enrollment challenge."
-    };
-  }
-
-  return withUpstreamEnrollmentLock(paths, backendId, () => {
+  const staged = await withUpstreamEnrollmentLock(paths, backendId, () => {
     store = readStore(paths, resolvedDeps);
     const currentRecord = latestEnrollment(store, backendId);
     const currentBackend = backendById(paths, backendId, resolvedDeps).backend;
@@ -969,72 +1178,363 @@ const startUpstreamEnrollmentWithFetch = async (
       JSON.stringify(currentOperationFamilies) !==
         JSON.stringify(operationFamilies)
     ) {
-      return currentRecord
-        ? enrollmentResultFromSnapshot(backendId, currentRecord, currentBackend)
-        : {
-            ok: false,
-            state: "failed" as const,
-            backend: currentBackend,
-            message: `Upstream backend ${backendId} changed while enrollment was starting; retry with its current configuration.`
-          };
+      return {
+        kind: "result" as const,
+        result: currentRecord
+          ? enrollmentResultFromSnapshot(
+              backendId,
+              currentRecord,
+              currentBackend
+            )
+          : {
+              ok: false,
+              state: "failed" as const,
+              backend: currentBackend,
+              message: `Upstream backend ${backendId} changed while enrollment was starting; retry with its current configuration.`
+            }
+      };
     }
 
-    const { reference } = storeUpstreamCredentialSecret(paths.koedHome, {
+    const reference = upstreamCredentialReferenceFor({
       backendId,
-      credentialKeyId,
-      secret: verifierSecret
+      credentialKeyId
     });
-    const localClientCredential =
-      localClientOperationFamilies.length > 0
-        ? storeLocalEdgeClientCredential(paths.koedHome, {
-            backendId,
-            secret: localClientSecret,
-            operationFamilies: localClientOperationFamilies
-          })
-        : null;
-    updateUpstreamBackendCredential(
-      paths,
-      backendId,
-      { status: "unknown", reference },
-      {
-        existsSync: resolvedDeps.existsSync,
-        readFileSync: resolvedDeps.readFileSync,
-        writeFileSync: resolvedDeps.writeFileSync,
-        renameSync: resolvedDeps.renameSync,
-        now: resolvedDeps.now
-      }
+    const transactionGeneration =
+      Math.max(
+        0,
+        ...store.enrollments
+          .filter((entry) => entry.backendId === backendId)
+          .map((entry) => entry.transactionState.generation)
+      ) + 1;
+    const preparedTransaction = createUpstreamEnrollmentTransaction({
+      id: requestId,
+      generation: transactionGeneration,
+      kind: rotation.state === "active" ? "replacement" : "initial"
+    });
+    const stageDecision = decideUpstreamEnrollmentTransaction(
+      preparedTransaction,
+      { type: "prepare" }
     );
-
     const record: UpstreamEnrollmentRecord = {
       backendId,
       requestId,
       state: "pending",
-      activationUrl: challenge.activationUrl,
+      activationUrl: null,
       requestedOperationFamilies: operationFamilies,
-      challengeId: challenge.challengeId,
+      transaction:
+        rotation.state === "active"
+          ? {
+              kind: "replacement",
+              predecessorCredentialId: rotation.credentialId,
+              predecessorCredentialReference: rotation.credentialReference
+            }
+          : { kind: "initial" },
+      transactionState: stageDecision.next,
+      ...(rotation.state === "active"
+        ? { activeCredentialReference: rotation.credentialReference }
+        : {}),
+      pendingCredentialReference: reference,
+      challengeHash,
       credentialKeyId,
       credentialReference: reference,
-      ...(localClientCredential
-        ? { localClientCredentialReference: localClientCredential.reference }
-        : {}),
       createdAt: nowIso,
       updatedAt: nowIso,
       expiresAt,
       credential: { status: "unknown", reference }
     };
+    if (rotation.state === "active") {
+      store.enrollments = store.enrollments.map((entry) =>
+        entry.backendId === backendId &&
+        entry.credentialReference === rotation.credentialReference
+          ? {
+              ...entry,
+              state: "exchanged",
+              updatedAt: nowIso,
+              deviceCredentialId: rotation.credentialId,
+              principalUserId: rotation.principalUserId,
+              credential: {
+                status: "configured",
+                reference: rotation.credentialReference
+              }
+            }
+          : entry
+      );
+    }
     store.enrollments.push(record);
     store.updatedAt = nowIso;
     writeStore(paths, store, resolvedDeps);
-    const refreshedBackend = backendById(
-      paths,
-      backendId,
+    try {
+      let stagedRecord = record;
+      executeUpstreamEnrollmentTransactionEffect(stageDecision, {
+        stage_pending_custody: () => {
+          resolvedDeps.beforeEnrollmentEffect("stage_upstream_credential");
+          if (
+            rotation.state !== "active" &&
+            localClientOperationFamilies.length > 0
+          ) {
+            resolvedDeps.beforeEnrollmentEffect(
+              "stage_local_client_credential"
+            );
+            const custody = storeEnrollmentCredentialCustody(paths.koedHome, {
+              upstream: { backendId, credentialKeyId, secret: verifierSecret },
+              localEdgeClient: {
+                backendId,
+                secret: localClientSecret,
+                operationFamilies: localClientOperationFamilies
+              }
+            });
+            if (custody.upstreamReference !== reference) {
+              throw new Error("Staged upstream credential reference changed.");
+            }
+            stagedRecord = {
+              ...stagedRecord,
+              localClientCredentialReference: custody.localEdgeClientReference
+            };
+          } else {
+            const stored = storeUpstreamCredentialSecret(paths.koedHome, {
+              backendId,
+              credentialKeyId,
+              secret: verifierSecret
+            });
+            if (stored.reference !== reference) {
+              throw new Error("Staged upstream credential reference changed.");
+            }
+          }
+          resolvedDeps.beforeEnrollmentEffect("stage_registry_credential");
+          updateUpstreamBackendCredential(
+            paths,
+            backendId,
+            rotation.state === "active"
+              ? {
+                  status: "configured",
+                  reference: rotation.credentialReference
+                }
+              : { status: "unknown", reference },
+            {
+              existsSync: resolvedDeps.existsSync,
+              readFileSync: resolvedDeps.readFileSync,
+              writeFileSync: resolvedDeps.writeFileSync,
+              renameSync: resolvedDeps.renameSync,
+              now: resolvedDeps.now
+            }
+          );
+        }
+      });
+      stagedRecord = {
+        ...stagedRecord,
+        transactionState: decideUpstreamEnrollmentTransaction(
+          stageDecision.next,
+          { type: "effect_succeeded" }
+        ).next,
+        updatedAt: resolvedDeps.now().toISOString()
+      };
+      store.enrollments = store.enrollments.map((entry) =>
+        entry.backendId === record.backendId &&
+        entry.requestId === record.requestId
+          ? stagedRecord
+          : entry
+      );
+      store.updatedAt = stagedRecord.updatedAt;
+      resolvedDeps.beforeEnrollmentEffect("commit_prepared_state");
+      writeStore(paths, store, resolvedDeps);
+      return { kind: "record" as const, record: stagedRecord };
+    } catch (error) {
+      const recoveryRequired: UpstreamEnrollmentRecord = {
+        ...record,
+        transactionState: decideUpstreamEnrollmentTransaction(
+          stageDecision.next,
+          { type: "effect_failed" }
+        ).next,
+        updatedAt: resolvedDeps.now().toISOString(),
+        failureReason: "prepared_effect_interrupted",
+        failureMessage:
+          error instanceof Error
+            ? error.message.slice(0, 240)
+            : "Enrollment preparation was interrupted."
+      };
+      store.enrollments = store.enrollments.map((entry) =>
+        entry.backendId === record.backendId &&
+        entry.requestId === record.requestId
+          ? recoveryRequired
+          : entry
+      );
+      store.updatedAt = recoveryRequired.updatedAt;
+      writeStore(paths, store, resolvedDeps);
+      return {
+        kind: "result" as const,
+        result: {
+          ok: false,
+          state: "failed" as const,
+          backend: backendById(paths, backendId, resolvedDeps).backend,
+          enrollment: summarizeEnrollment(
+            recoveryRequired,
+            backendById(paths, backendId, resolvedDeps).backend
+          ),
+          message:
+            "Upstream enrollment preparation was interrupted and requires recovery."
+        }
+      };
+    }
+  });
+  if (staged.kind === "result") return staged.result;
+  expectedRecord = staged.record;
+
+  let challenge: { challengeId: string; activationUrl: string };
+  try {
+    challenge = await createUpstreamChallenge(
+      backend,
+      {
+        backendId,
+        deviceInstanceId,
+        protocolDeploymentId: identity.deploymentId!,
+        challengeHash,
+        credentialKeyId,
+        verifierSecret,
+        operationFamilies,
+        requestId,
+        expiresAt,
+        ...(rotation.state === "active" ? { rotation } : {})
+      },
       resolvedDeps
-    ).backend;
+    );
+  } catch (error) {
+    await withUpstreamEnrollmentLock(paths, backendId, () => {
+      const failedStore = readStore(paths, resolvedDeps);
+      let current = latestEnrollment(failedStore, backendId);
+      if (!sameEnrollmentIdentity(current, staged.record)) return;
+      const abortDecision = decideUpstreamEnrollmentTransaction(
+        current.transactionState,
+        { type: "cancel" }
+      );
+      const aborting = abortDecision.next;
+      current = {
+        ...current,
+        transactionState: aborting,
+        updatedAt: resolvedDeps.now().toISOString(),
+        failureReason: "challenge_creation_failed",
+        failureMessage:
+          error instanceof Error
+            ? error.message.slice(0, 240)
+            : "Failed to create upstream enrollment challenge."
+      };
+      failedStore.enrollments = failedStore.enrollments.map((entry) =>
+        entry.backendId === current.backendId &&
+        entry.requestId === current.requestId
+          ? current
+          : entry
+      );
+      failedStore.updatedAt = current.updatedAt;
+      writeStore(paths, failedStore, resolvedDeps);
+      let aborted: ReturnType<typeof abortPendingEnrollmentCredential>;
+      try {
+        aborted = executeUpstreamEnrollmentTransactionEffect(abortDecision, {
+          abort_pending: () =>
+            abortPendingEnrollmentCredential(
+              paths,
+              backendId,
+              current,
+              resolvedDeps
+            )
+        })!;
+      } catch (abortError) {
+        const recoveryRequired: UpstreamEnrollmentRecord = {
+          ...current,
+          transactionState: decideUpstreamEnrollmentTransaction(aborting, {
+            type: "effect_failed"
+          }).next,
+          updatedAt: resolvedDeps.now().toISOString(),
+          failureReason: "challenge_abort_interrupted",
+          failureMessage:
+            abortError instanceof Error
+              ? abortError.message.slice(0, 240)
+              : "Challenge cleanup was interrupted."
+        };
+        failedStore.enrollments = failedStore.enrollments.map((entry) =>
+          entry.backendId === current.backendId &&
+          entry.requestId === current.requestId
+            ? recoveryRequired
+            : entry
+        );
+        failedStore.updatedAt = recoveryRequired.updatedAt;
+        writeStore(paths, failedStore, resolvedDeps);
+        return;
+      }
+      const transactionState = {
+        ...decideUpstreamEnrollmentTransaction(aborting, {
+          type: "effect_succeeded"
+        }).next,
+        state: "failed" as const
+      };
+      const failed: UpstreamEnrollmentRecord = {
+        ...current,
+        state: "failed",
+        activationUrl: null,
+        updatedAt: resolvedDeps.now().toISOString(),
+        transactionState,
+        credential: aborted.credential,
+        failureReason: "challenge_creation_failed",
+        failureMessage: current.failureMessage
+      };
+      delete failed.pendingCredentialReference;
+      failedStore.enrollments = failedStore.enrollments.map((entry) =>
+        entry.backendId === current.backendId &&
+        entry.requestId === current.requestId
+          ? failed
+          : entry
+      );
+      failedStore.updatedAt = failed.updatedAt;
+      writeStore(paths, failedStore, resolvedDeps);
+    });
+    return {
+      ok: false,
+      state: "failed",
+      backend: backendById(paths, backendId, resolvedDeps).backend,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Failed to create upstream enrollment challenge."
+    };
+  }
+
+  return withUpstreamEnrollmentLock(paths, backendId, () => {
+    const currentStore = readStore(paths, resolvedDeps);
+    const current = latestEnrollment(currentStore, backendId);
+    const currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+    if (!sameEnrollmentIdentity(current, staged.record)) {
+      return enrollmentResultFromSnapshot(backendId, current, currentBackend);
+    }
+    const challengeDecision = decideUpstreamEnrollmentTransaction(
+      current.transactionState,
+      { type: "challenge_created" }
+    );
+    const pending = executeUpstreamEnrollmentTransactionEffect(
+      challengeDecision,
+      {
+        record_challenge: (): UpstreamEnrollmentRecord => ({
+          ...current,
+          challengeId: challenge.challengeId,
+          activationUrl: challenge.activationUrl,
+          transactionState: decideUpstreamEnrollmentTransaction(
+            challengeDecision.next,
+            { type: "effect_succeeded" }
+          ).next,
+          updatedAt: resolvedDeps.now().toISOString()
+        })
+      }
+    )!;
+    currentStore.enrollments = currentStore.enrollments.map((entry) =>
+      entry.backendId === current.backendId &&
+      entry.requestId === current.requestId
+        ? pending
+        : entry
+    );
+    currentStore.updatedAt = pending.updatedAt;
+    writeStore(paths, currentStore, resolvedDeps);
     return {
       ok: true,
       state: "pending" as const,
-      backend: refreshedBackend,
-      enrollment: summarizeEnrollment(record, refreshedBackend),
+      backend: currentBackend,
+      enrollment: summarizeEnrollment(pending, currentBackend),
       message: `Started upstream enrollment for ${backendId}. Open the activation URL to approve this local edge.`
     };
   });
@@ -1048,6 +1548,64 @@ export const startUpstreamEnrollment = (
   withSecureFetchForBackend(paths, id, deps, (resolvedDeps) =>
     startUpstreamEnrollmentWithFetch(paths, id, resolvedDeps)
   );
+
+const abortPendingEnrollmentCredential = (
+  paths: KoedServerPaths,
+  backendId: string,
+  record: UpstreamEnrollmentRecord,
+  deps: Required<UpstreamEnrollmentDeps>
+): { credential: UpstreamCredentialStatus; predecessorRestored: boolean } => {
+  const replacement = replacementTransaction(record);
+  deps.beforeEnrollmentEffect("abort_delete_pending_credential");
+  deleteUpstreamCredentialSecret(paths.koedHome, record.credentialReference);
+  if (
+    replacement &&
+    replacement.predecessorCredentialReference !== record.credentialReference
+  ) {
+    deps.beforeEnrollmentEffect("abort_restore_predecessor_registry");
+    updateUpstreamBackendCredential(
+      paths,
+      backendId,
+      {
+        status: "configured",
+        reference: replacement.predecessorCredentialReference
+      },
+      {
+        existsSync: deps.existsSync,
+        readFileSync: deps.readFileSync,
+        writeFileSync: deps.writeFileSync,
+        renameSync: deps.renameSync,
+        now: deps.now
+      }
+    );
+    return {
+      credential: {
+        status: "configured",
+        reference: replacement.predecessorCredentialReference
+      },
+      predecessorRestored: true
+    };
+  }
+  deps.beforeEnrollmentEffect("abort_delete_local_client_credential");
+  deleteLocalEdgeClientCredential(paths.koedHome, backendId);
+  deps.beforeEnrollmentEffect("abort_clear_registry_credential");
+  updateUpstreamBackendCredential(
+    paths,
+    backendId,
+    { status: "not_configured" },
+    {
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync,
+      writeFileSync: deps.writeFileSync,
+      renameSync: deps.renameSync,
+      now: deps.now
+    }
+  );
+  return {
+    credential: { status: "not_configured" },
+    predecessorRestored: false
+  };
+};
 
 const getUpstreamEnrollmentStatusWithFetch = async (
   paths: KoedServerPaths,
@@ -1075,6 +1633,134 @@ const getUpstreamEnrollmentStatusWithFetch = async (
       backend,
       message: `No upstream enrollment has been started for ${backendId}.`
     };
+  }
+  if (
+    record.transactionState.phase === "recovery_required" &&
+    record.transactionState.pendingEffect === "stage_pending_custody"
+  ) {
+    return withUpstreamEnrollmentLock(paths, backendId, () => {
+      const recoveryStore = readStore(paths, resolvedDeps);
+      const current = latestEnrollment(recoveryStore, backendId);
+      const currentBackend = backendById(
+        paths,
+        backendId,
+        resolvedDeps
+      ).backend;
+      if (!sameEnrollmentIdentity(current, record)) {
+        return enrollmentResultFromSnapshot(backendId, current, currentBackend);
+      }
+      const recoveryDecision = decideUpstreamEnrollmentTransaction(
+        current.transactionState,
+        { type: "recover" }
+      );
+      const aborted = executeUpstreamEnrollmentTransactionEffect(
+        recoveryDecision,
+        {
+          compensate_pending_custody: () =>
+            abortPendingEnrollmentCredential(
+              paths,
+              backendId,
+              current,
+              resolvedDeps
+            )
+        }
+      )!;
+      const recovered: UpstreamEnrollmentRecord = {
+        ...current,
+        state: "failed",
+        activationUrl: null,
+        updatedAt: resolvedDeps.now().toISOString(),
+        transactionState: decideUpstreamEnrollmentTransaction(
+          recoveryDecision.next,
+          { type: "effect_succeeded" }
+        ).next,
+        credential: aborted.credential,
+        failureReason: "prepared_effect_compensated",
+        failureMessage:
+          "Interrupted enrollment preparation was compensated; start enrollment again."
+      };
+      delete recovered.pendingCredentialReference;
+      recoveryStore.enrollments = recoveryStore.enrollments.map((entry) =>
+        entry.backendId === current.backendId &&
+        entry.requestId === current.requestId
+          ? recovered
+          : entry
+      );
+      recoveryStore.updatedAt = recovered.updatedAt;
+      writeStore(paths, recoveryStore, resolvedDeps);
+      return {
+        ok: false,
+        state: "failed" as const,
+        backend: backendById(paths, backendId, resolvedDeps).backend,
+        enrollment: summarizeEnrollment(
+          recovered,
+          backendById(paths, backendId, resolvedDeps).backend
+        ),
+        message: recovered.failureMessage!
+      };
+    });
+  }
+  if (
+    (record.transactionState.phase === "aborting" ||
+      record.transactionState.phase === "recovery_required") &&
+    record.transactionState.pendingEffect === "abort_pending"
+  ) {
+    return withUpstreamEnrollmentLock(paths, backendId, () => {
+      const recoveryStore = readStore(paths, resolvedDeps);
+      const current = latestEnrollment(recoveryStore, backendId);
+      let currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+      if (!sameEnrollmentIdentity(current, record)) {
+        return enrollmentResultFromSnapshot(backendId, current, currentBackend);
+      }
+      const replacement = replacementTransaction(current);
+      const resumed = decideUpstreamEnrollmentTransaction(
+        current.transactionState,
+        { type: "recover" }
+      );
+      const aborted = executeUpstreamEnrollmentTransactionEffect(resumed, {
+        abort_pending: () =>
+          abortPendingEnrollmentCredential(
+            paths,
+            backendId,
+            current,
+            resolvedDeps
+          )
+      })!;
+      const recovered: UpstreamEnrollmentRecord = {
+        ...current,
+        state: current.transactionState.state,
+        activationUrl: null,
+        updatedAt: resolvedDeps.now().toISOString(),
+        transactionState: decideUpstreamEnrollmentTransaction(resumed.next, {
+          type: "effect_succeeded"
+        }).next,
+        credential: aborted.credential,
+        ...(aborted.predecessorRestored && replacement
+          ? {
+              credentialReference: replacement.predecessorCredentialReference,
+              activeCredentialReference:
+                replacement.predecessorCredentialReference
+            }
+          : {})
+      };
+      delete recovered.pendingCredentialReference;
+      recoveryStore.enrollments = recoveryStore.enrollments.map((entry) =>
+        entry.backendId === current.backendId &&
+        entry.requestId === current.requestId
+          ? recovered
+          : entry
+      );
+      recoveryStore.updatedAt = recovered.updatedAt;
+      writeStore(paths, recoveryStore, resolvedDeps);
+      currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+      return {
+        ok: true,
+        state: recovered.state,
+        backend: currentBackend,
+        enrollment: summarizeEnrollment(recovered, currentBackend),
+        message: `Upstream enrollment for ${backendId} is ${recovered.state}.`
+      };
+    });
   }
   const materialized = materializeState(record, now, backend);
   let credentialStatus: RemoteCredentialStatus | null = null;
@@ -1128,30 +1814,130 @@ const getUpstreamEnrollmentStatusWithFetch = async (
 
     let current = materializeState(currentRecord, now, currentBackend);
     let temporaryCredentialStatusFailure = false;
+    const recordReplacement = replacementTransaction(record);
+    const currentReplacement = replacementTransaction(current);
     const remoteResultStillApplies =
       currentBackend &&
       enrollmentCanReceiveRemoteStatus(current) &&
       current.credentialReference === record.credentialReference &&
       currentBackend.credential.status !== "revoked" &&
       currentBackend.credential.status !== "not_configured" &&
-      currentBackend.credential.reference === record.credentialReference;
+      (currentBackend.credential.reference === record.credentialReference ||
+        (recordReplacement !== null &&
+          currentBackend.credential.reference ===
+            recordReplacement.predecessorCredentialReference));
 
     if (remoteResultStillApplies && credentialStatus?.state === "active") {
-      updateUpstreamBackendCredential(
-        paths,
-        backendId,
-        {
-          status: "configured",
-          reference: current.credentialReference
-        },
-        {
-          existsSync: resolvedDeps.existsSync,
-          readFileSync: resolvedDeps.readFileSync,
-          writeFileSync: resolvedDeps.writeFileSync,
-          renameSync: resolvedDeps.renameSync,
-          now: resolvedDeps.now
-        }
+      const commitDecision = decideUpstreamEnrollmentTransaction(
+        current.transactionState,
+        { type: "credential_observed", status: "active" }
       );
+      current = {
+        ...current,
+        transactionState: commitDecision.next,
+        updatedAt: now.toISOString()
+      };
+      currentStore.enrollments = currentStore.enrollments.map((entry) =>
+        entry.backendId === current.backendId &&
+        entry.requestId === current.requestId
+          ? current
+          : entry
+      );
+      currentStore.updatedAt = current.updatedAt;
+      writeStore(paths, currentStore, resolvedDeps);
+      try {
+        executeUpstreamEnrollmentTransactionEffect(commitDecision, {
+          commit_successor: () => {
+            if (currentReplacement) {
+              const localFamilies = localClientOperationFamiliesFor(
+                current.requestedOperationFamilies
+              );
+              if (localFamilies.length > 0) {
+                resolvedDeps.beforeEnrollmentEffect(
+                  "commit_local_client_credential"
+                );
+                const localClient = storeLocalEdgeClientCredential(
+                  paths.koedHome,
+                  {
+                    backendId,
+                    secret: randomSecret(resolvedDeps),
+                    operationFamilies: localFamilies
+                  }
+                );
+                current = {
+                  ...current,
+                  localClientCredentialReference: localClient.reference
+                };
+              } else {
+                resolvedDeps.beforeEnrollmentEffect(
+                  "commit_delete_local_client_credential"
+                );
+                deleteLocalEdgeClientCredential(paths.koedHome, backendId);
+              }
+            }
+            resolvedDeps.beforeEnrollmentEffect("commit_registry_credential");
+            updateUpstreamBackendCredential(
+              paths,
+              backendId,
+              {
+                status: "configured",
+                reference: current.credentialReference
+              },
+              {
+                existsSync: resolvedDeps.existsSync,
+                readFileSync: resolvedDeps.readFileSync,
+                writeFileSync: resolvedDeps.writeFileSync,
+                renameSync: resolvedDeps.renameSync,
+                now: resolvedDeps.now
+              }
+            );
+            if (
+              currentReplacement &&
+              currentReplacement.predecessorCredentialReference !==
+                current.credentialReference
+            ) {
+              resolvedDeps.beforeEnrollmentEffect(
+                "commit_delete_predecessor_credential"
+              );
+              deleteUpstreamCredentialSecret(
+                paths.koedHome,
+                currentReplacement.predecessorCredentialReference
+              );
+            }
+          }
+        });
+      } catch (error) {
+        current = {
+          ...current,
+          transactionState: decideUpstreamEnrollmentTransaction(
+            commitDecision.next,
+            { type: "effect_failed" }
+          ).next,
+          updatedAt: now.toISOString(),
+          failureReason: "commit_effect_interrupted",
+          failureMessage:
+            error instanceof Error
+              ? error.message.slice(0, 240)
+              : "Enrollment commit was interrupted."
+        };
+        currentStore.enrollments = currentStore.enrollments.map((entry) =>
+          entry.backendId === current.backendId &&
+          entry.requestId === current.requestId
+            ? current
+            : entry
+        );
+        currentStore.updatedAt = current.updatedAt;
+        writeStore(paths, currentStore, resolvedDeps);
+        currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+        return {
+          ok: false,
+          state: current.state,
+          backend: currentBackend,
+          enrollment: summarizeEnrollment(current, currentBackend),
+          message:
+            "Upstream enrollment commit was interrupted and will recover on retry."
+        };
+      }
       currentBackend = backendById(paths, backendId, resolvedDeps).backend;
       current = {
         ...current,
@@ -1159,6 +1945,11 @@ const getUpstreamEnrollmentStatusWithFetch = async (
         updatedAt: now.toISOString(),
         failureReason: undefined,
         failureMessage: undefined,
+        transactionState: decideUpstreamEnrollmentTransaction(
+          commitDecision.next,
+          { type: "effect_succeeded" }
+        ).next,
+        activeCredentialReference: current.credentialReference,
         credential: {
           status: "configured",
           reference: current.credentialReference
@@ -1166,38 +1957,65 @@ const getUpstreamEnrollmentStatusWithFetch = async (
         deviceCredentialId: credentialStatus.deviceCredentialId,
         principalUserId: credentialStatus.principalUserId
       };
+      delete current.pendingCredentialReference;
     } else if (
       remoteResultStillApplies &&
       credentialStatus?.state === "rejected" &&
       current.state === "exchanged"
     ) {
-      deleteUpstreamCredentialSecret(
-        paths.koedHome,
-        current.credentialReference
+      const revokeDecision = decideUpstreamEnrollmentTransaction(
+        current.transactionState,
+        { type: "credential_observed", status: "rejected" }
       );
-      deleteLocalEdgeClientCredential(paths.koedHome, backendId);
-      updateUpstreamBackendCredential(
-        paths,
-        backendId,
-        { status: "not_configured" },
-        {
-          existsSync: resolvedDeps.existsSync,
-          readFileSync: resolvedDeps.readFileSync,
-          writeFileSync: resolvedDeps.writeFileSync,
-          renameSync: resolvedDeps.renameSync,
-          now: resolvedDeps.now
+      current = {
+        ...current,
+        transactionState: revokeDecision.next,
+        updatedAt: now.toISOString()
+      };
+      currentStore.enrollments = currentStore.enrollments.map((entry) =>
+        entry.backendId === current.backendId &&
+        entry.requestId === current.requestId
+          ? current
+          : entry
+      );
+      currentStore.updatedAt = current.updatedAt;
+      writeStore(paths, currentStore, resolvedDeps);
+      executeUpstreamEnrollmentTransactionEffect(revokeDecision, {
+        revoke_active: () => {
+          deleteUpstreamCredentialSecret(
+            paths.koedHome,
+            current.credentialReference
+          );
+          deleteLocalEdgeClientCredential(paths.koedHome, backendId);
+          updateUpstreamBackendCredential(
+            paths,
+            backendId,
+            { status: "not_configured" },
+            {
+              existsSync: resolvedDeps.existsSync,
+              readFileSync: resolvedDeps.readFileSync,
+              writeFileSync: resolvedDeps.writeFileSync,
+              renameSync: resolvedDeps.renameSync,
+              now: resolvedDeps.now
+            }
+          );
         }
-      );
+      });
       currentBackend = backendById(paths, backendId, resolvedDeps).backend;
       current = {
         ...current,
         state: "failed",
         updatedAt: now.toISOString(),
+        transactionState: decideUpstreamEnrollmentTransaction(
+          revokeDecision.next,
+          { type: "effect_succeeded" }
+        ).next,
         failureReason: "credential_rejected",
         failureMessage:
           "Upstream backend rejected the stored device credential; restart enrollment.",
         credential: { status: "not_configured" }
       };
+      delete current.activeCredentialReference;
     } else if (
       remoteResultStillApplies &&
       credentialStatus?.state === "unknown" &&
@@ -1213,58 +2031,122 @@ const getUpstreamEnrollmentStatusWithFetch = async (
       };
     } else if (remoteResultStillApplies) {
       if (upstreamStatus === "denied" || upstreamStatus === "expired") {
-        deleteUpstreamCredentialSecret(
-          paths.koedHome,
-          current.credentialReference
+        const abortDecision = decideUpstreamEnrollmentTransaction(
+          current.transactionState,
+          { type: "challenge_observed", status: upstreamStatus }
         );
-        deleteLocalEdgeClientCredential(paths.koedHome, backendId);
-        updateUpstreamBackendCredential(
-          paths,
-          backendId,
-          { status: "not_configured" },
+        current = {
+          ...current,
+          transactionState: abortDecision.next,
+          updatedAt: now.toISOString()
+        };
+        currentStore.enrollments = currentStore.enrollments.map((entry) =>
+          entry.backendId === current.backendId &&
+          entry.requestId === current.requestId
+            ? current
+            : entry
+        );
+        currentStore.updatedAt = current.updatedAt;
+        writeStore(paths, currentStore, resolvedDeps);
+        const aborted = executeUpstreamEnrollmentTransactionEffect(
+          abortDecision,
           {
-            existsSync: resolvedDeps.existsSync,
-            readFileSync: resolvedDeps.readFileSync,
-            writeFileSync: resolvedDeps.writeFileSync,
-            renameSync: resolvedDeps.renameSync,
-            now: resolvedDeps.now
+            abort_pending: () =>
+              abortPendingEnrollmentCredential(
+                paths,
+                backendId,
+                current,
+                resolvedDeps
+              )
           }
-        );
+        )!;
         currentBackend = backendById(paths, backendId, resolvedDeps).backend;
         current = {
           ...current,
           state: upstreamStatus,
           updatedAt: now.toISOString(),
-          credential: { status: "not_configured" }
+          transactionState: decideUpstreamEnrollmentTransaction(
+            abortDecision.next,
+            { type: "effect_succeeded" }
+          ).next,
+          credential: aborted.credential,
+          ...(aborted.predecessorRestored
+            ? {
+                credentialReference:
+                  currentReplacement!.predecessorCredentialReference,
+                activeCredentialReference:
+                  currentReplacement!.predecessorCredentialReference
+              }
+            : {})
         };
+        delete current.pendingCredentialReference;
       } else if (upstreamStatus === "approved") {
+        const approval = decideUpstreamEnrollmentTransaction(
+          current.transactionState,
+          { type: "challenge_observed", status: "approved" }
+        );
         current = {
           ...current,
           state: "approved",
+          transactionState: approval.next,
           updatedAt: now.toISOString()
         };
       }
     }
 
-    if (current.state === "expired") {
-      deleteUpstreamCredentialSecret(
-        paths.koedHome,
-        current.credentialReference
+    if (
+      current.state === "expired" &&
+      current.credential?.status !== "configured" &&
+      current.transactionState.phase !== "aborted"
+    ) {
+      const expiringReplacement = replacementTransaction(current);
+      const abortDecision = decideUpstreamEnrollmentTransaction(
+        current.transactionState,
+        { type: "challenge_observed", status: "expired" }
       );
-      deleteLocalEdgeClientCredential(paths.koedHome, backendId);
-      updateUpstreamBackendCredential(
-        paths,
-        backendId,
-        { status: "not_configured" },
+      current = {
+        ...current,
+        transactionState: abortDecision.next,
+        updatedAt: now.toISOString()
+      };
+      currentStore.enrollments = currentStore.enrollments.map((entry) =>
+        entry.backendId === current.backendId &&
+        entry.requestId === current.requestId
+          ? current
+          : entry
+      );
+      currentStore.updatedAt = current.updatedAt;
+      writeStore(paths, currentStore, resolvedDeps);
+      const aborted = executeUpstreamEnrollmentTransactionEffect(
+        abortDecision,
         {
-          existsSync: resolvedDeps.existsSync,
-          readFileSync: resolvedDeps.readFileSync,
-          writeFileSync: resolvedDeps.writeFileSync,
-          renameSync: resolvedDeps.renameSync,
-          now: resolvedDeps.now
+          abort_pending: () =>
+            abortPendingEnrollmentCredential(
+              paths,
+              backendId,
+              current,
+              resolvedDeps
+            )
         }
-      );
+      )!;
       currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+      current = {
+        ...current,
+        transactionState: decideUpstreamEnrollmentTransaction(
+          abortDecision.next,
+          { type: "effect_succeeded" }
+        ).next,
+        credential: aborted.credential,
+        ...(aborted.predecessorRestored
+          ? {
+              credentialReference:
+                expiringReplacement!.predecessorCredentialReference,
+              activeCredentialReference:
+                expiringReplacement!.predecessorCredentialReference
+            }
+          : {})
+      };
+      delete current.pendingCredentialReference;
     }
 
     if (JSON.stringify(current) !== JSON.stringify(currentRecord)) {
@@ -1275,6 +2157,7 @@ const getUpstreamEnrollmentStatusWithFetch = async (
           : entry
       );
       currentStore.updatedAt = now.toISOString();
+      resolvedDeps.beforeEnrollmentEffect("commit_enrollment_state");
       writeStore(paths, currentStore, resolvedDeps);
     }
     return {
@@ -1320,6 +2203,16 @@ export const cancelUpstreamEnrollment = async (
       };
     }
     const materialized = materializeState(record, nowDate, backend);
+    if (materialized.transactionState.pendingEffect === "commit_successor") {
+      return {
+        ok: false,
+        state: materialized.state,
+        backend,
+        enrollment: summarizeEnrollment(materialized, backend),
+        message:
+          "The successor credential is already active and its local commit must recover before enrollment can be canceled."
+      };
+    }
     if (
       materialized.state === "exchanged" ||
       materialized.state === "revoked" ||
@@ -1335,17 +2228,52 @@ export const cancelUpstreamEnrollment = async (
         message: `Upstream enrollment for ${backendId} is already ${materialized.state}.`
       };
     }
-    const canceled: UpstreamEnrollmentRecord = {
+    const abortDecision = decideUpstreamEnrollmentTransaction(
+      materialized.transactionState,
+      { type: "cancel" }
+    );
+    const aborting: UpstreamEnrollmentRecord = {
       ...materialized,
+      transactionState: abortDecision.next,
+      updatedAt: now
+    };
+    store.enrollments = store.enrollments.map((entry) =>
+      entry.backendId === record.backendId &&
+      entry.requestId === record.requestId
+        ? aborting
+        : entry
+    );
+    store.updatedAt = now;
+    writeStore(paths, store, resolvedDeps);
+    const aborted = executeUpstreamEnrollmentTransactionEffect(abortDecision, {
+      abort_pending: () =>
+        abortPendingEnrollmentCredential(
+          paths,
+          backendId,
+          aborting,
+          resolvedDeps
+        )
+    })!;
+    const canceledReplacement = replacementTransaction(aborting);
+    const canceled: UpstreamEnrollmentRecord = {
+      ...aborting,
       state: "canceled",
       updatedAt: now,
-      credential: { status: "not_configured" }
+      transactionState: decideUpstreamEnrollmentTransaction(
+        abortDecision.next,
+        { type: "effect_succeeded" }
+      ).next,
+      credential: aborted.credential,
+      ...(aborted.predecessorRestored
+        ? {
+            credentialReference:
+              canceledReplacement!.predecessorCredentialReference,
+            activeCredentialReference:
+              canceledReplacement!.predecessorCredentialReference
+          }
+        : {})
     };
-    deleteUpstreamCredentialSecret(
-      paths.koedHome,
-      materialized.credentialReference
-    );
-    deleteLocalEdgeClientCredential(paths.koedHome, backendId);
+    delete canceled.pendingCredentialReference;
     store.enrollments = store.enrollments.map((entry) =>
       entry.backendId === record.backendId &&
       entry.requestId === record.requestId
@@ -1354,7 +2282,10 @@ export const cancelUpstreamEnrollment = async (
     );
     store.updatedAt = now;
     writeStore(paths, store, resolvedDeps);
-    if (getActiveUpstreamBackend(paths)?.id === backendId) {
+    if (
+      !aborted.predecessorRestored &&
+      getActiveUpstreamBackend(paths)?.id === backendId
+    ) {
       setActiveUpstreamBackend(paths, null, {
         existsSync: resolvedDeps.existsSync,
         readFileSync: resolvedDeps.readFileSync,
@@ -1572,6 +2503,17 @@ const disconnectUpstreamBackendEnrollmentWithFetch = async (
       state: "revoked",
       activationUrl: null,
       requestedOperationFamilies: [],
+      transaction: { kind: "initial" },
+      transactionState: {
+        ...createUpstreamEnrollmentTransaction({
+          id: existing?.transactionState.id ?? existing?.requestId ?? "revoked",
+          generation: existing?.transactionState.generation ?? 1,
+          kind: "initial"
+        }),
+        phase: "aborted",
+        state: "revoked",
+        pendingEffect: null
+      },
       updatedAt: now,
       createdAt: existing?.createdAt ?? now,
       expiresAt: null,

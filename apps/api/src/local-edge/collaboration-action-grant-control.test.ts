@@ -46,6 +46,15 @@ const ids = {
   logicalGrant: "00000000-0000-4000-8000-000000000012"
 } as const;
 
+const approvalReview = {
+  version: 1 as const,
+  title: "Create Workspace?",
+  description: "Review the exact Workspace creation request.",
+  consequence: "A new shared Workspace will be created.",
+  confirmLabel: "Create Workspace",
+  details: [{ label: "Team", value: "Koed Team" }]
+};
+
 const backend = (
   overrides: Partial<LocalEdgeUpstreamBackend> = {}
 ): LocalEdgeUpstreamBackend => ({
@@ -86,6 +95,8 @@ const pendingStatus = (expiresAt: string) => ({
     version: 1,
     actionGrant: { id: ids.actionGrant },
     selector: ids.selector,
+    approvalTier: "step_up",
+    review: approvalReview,
     state: "pending",
     activationPath: `/v1/high-risk/browser-activations/${ids.selector}`,
     expiresAt
@@ -97,7 +108,25 @@ const approvedStatus = (expiresAt: string) => ({
     version: 1,
     actionGrant: { id: ids.actionGrant },
     selector: ids.selector,
+    approvalTier: "step_up",
+    review: approvalReview,
     state: "approved",
+    activationPath: null,
+    expiresAt
+  }
+});
+
+const nativeStatus = (
+  expiresAt: string,
+  state: "review_required" | "approved"
+) => ({
+  status: {
+    version: 1,
+    actionGrant: { id: ids.actionGrant },
+    selector: ids.selector,
+    approvalTier: "native_review",
+    review: approvalReview,
+    state,
     activationPath: null,
     expiresAt
   }
@@ -185,7 +214,7 @@ describe("collaboration Action Grant control", () => {
       }
     });
 
-  const consentGrantCommand = () =>
+  const shareGrantCommand = () =>
     parsedCommand<
       Extract<
         CollaborationRendererCommand,
@@ -195,8 +224,10 @@ describe("collaboration Action Grant control", () => {
       command: "collaboration.request_action_grant",
       input: {
         intent: {
-          intent: "collaboration.consent_shared_memory",
+          intent: "collaboration.share_memory",
           commandRequestId: ids.commandRequest,
+          mutationId: ids.mutation,
+          logicalGrantId: ids.logicalGrant,
           consentId: ids.consent,
           logicalMemoryId: ids.logicalMemory,
           teamId: ids.team,
@@ -221,6 +252,15 @@ describe("collaboration Action Grant control", () => {
     parsedCommand({
       command: "collaboration.cancel_action_grant",
       input: { actionGrant: { id: ids.actionGrant } }
+    });
+
+  const confirmCommand = () =>
+    parsedCommand({
+      command: "collaboration.confirm_action_grant",
+      input: {
+        actionGrant: { id: ids.actionGrant },
+        decision: "approve"
+      }
     });
 
   it("creates a pending Action Grant without exposing secrets or credentials to the renderer", async () => {
@@ -330,7 +370,7 @@ describe("collaboration Action Grant control", () => {
     });
   });
 
-  it("resolves the persisted preview before binding consent Action Grants", async () => {
+  it("resolves the persisted preview before binding a one-review share bundle", async () => {
     const fixture = createFixture({
       context: {
         operationFamilies: new Set(["share_grant_management"]),
@@ -341,7 +381,7 @@ describe("collaboration Action Grant control", () => {
     });
 
     const result = await fixture.control.dispatch(
-      consentGrantCommand(),
+      shareGrantCommand(),
       fixture.context
     );
 
@@ -354,7 +394,9 @@ describe("collaboration Action Grant control", () => {
       intent: Record<string, unknown>;
     };
     expect(payload.intent).toEqual({
-      action: "shared_memory.consent",
+      action: "shared_memory.share",
+      mutationId: ids.mutation,
+      logicalGrantId: ids.logicalGrant,
       consentId: ids.consent,
       logicalMemoryId: ids.logicalMemory,
       teamId: ids.team,
@@ -374,12 +416,14 @@ describe("collaboration Action Grant control", () => {
 
     expect(
       fixture.control.describeIntent(fixture.context.backend, {
-        intent: "collaboration.consent_shared_memory",
+        intent: "collaboration.share_memory",
         commandRequestId: ids.commandRequest,
-        consentId: ids.consent,
+        mutationId: ids.mutation,
+        logicalGrantId: ids.logicalGrant,
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
+        consentId: ids.consent,
         mode: "continuous",
         allowedRepresentations: ["memory_events", "lcm_leaves"],
         selectedRepresentation: "memory_events",
@@ -388,40 +432,6 @@ describe("collaboration Action Grant control", () => {
         expiresAt: null
       })
     ).toBeNull();
-
-    expect(
-      fixture.control.describeIntent(fixture.context.backend, {
-        intent: "collaboration.share_memory",
-        commandRequestId: ids.commandRequest,
-        mutationId: ids.mutation,
-        logicalGrantId: ids.logicalGrant,
-        logicalMemoryId: ids.logicalMemory,
-        teamId: ids.team,
-        workspaceId: ids.workspace,
-        consentId: ids.consent
-      })
-    ).toEqual({
-      operationFamily: "share_grant_management",
-      action: `shared_memory.share.${ids.logicalMemory}.${ids.workspace}`,
-      teamId: ids.team,
-      targetId: ids.logicalGrant,
-      method: "POST",
-      path: "/v1/shared-memory/share-grants",
-      body: {
-        mutationId: ids.mutation,
-        logicalGrantId: ids.logicalGrant,
-        logicalMemoryId: ids.logicalMemory,
-        teamId: ids.team,
-        teamWorkspaceId: ids.workspace,
-        consentId: ids.consent,
-        authority: {
-          action: "workspace.memory.share_owned",
-          source: "device_action_grant",
-          referenceId: ids.commandRequest
-        }
-      },
-      idempotencyKey: ids.commandRequest
-    });
 
     expect(
       fixture.control.describeIntent(fixture.context.backend, {
@@ -461,35 +471,20 @@ describe("collaboration Action Grant control", () => {
         intent: "collaboration.change_shared_memory_representation",
         commandRequestId: ids.commandRequest,
         mutationId: ids.mutation,
+        logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
         shareGrantId: ids.logicalGrant,
         consentId: ids.consent,
         representation: "lcm_leaves",
-        expectedGrantVersion: 4
-      })
-    ).toEqual({
-      operationFamily: "share_grant_management",
-      action: `shared_memory.change_representation.${ids.workspace}.lcm_leaves`,
-      teamId: ids.team,
-      targetId: ids.logicalGrant,
-      method: "PUT",
-      path: `/v1/shared-memory/share-grants/${ids.logicalGrant}/representation`,
-      body: {
-        mutationId: ids.mutation,
-        teamId: ids.team,
-        teamWorkspaceId: ids.workspace,
-        consentId: ids.consent,
-        representation: "lcm_leaves",
         expectedGrantVersion: 4,
-        authority: {
-          action: "workspace.memory.share_owned",
-          source: "device_action_grant",
-          referenceId: ids.commandRequest
-        }
-      },
-      idempotencyKey: ids.commandRequest
-    });
+        mode: "continuous",
+        allowedRepresentations: ["lcm_leaves"],
+        previewRevision: 2,
+        previewHash: "b".repeat(64),
+        expiresAt: null
+      })
+    ).toBeNull();
   });
 
   it("maps Team Action Grant intents to the exact protected Team-control routes", () => {
@@ -679,6 +674,46 @@ describe("collaboration Action Grant control", () => {
     expect(secret).toMatch(/^hrg_[A-Za-z0-9_-]{43}$/);
   });
 
+  it("reconciles a Native-review approval after a retryable decision response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(nativeStatus(expiresAt, "review_required"))
+      )
+      .mockResolvedValueOnce(jsonResponse({ error: "gateway timeout" }, 502))
+      .mockResolvedValueOnce(
+        jsonResponse(nativeStatus(approvedExpiresAt, "approved"))
+      );
+    const fixture = createFixture({ fetch: fetchMock });
+
+    await fixture.control.dispatch(requestCommand(), fixture.context);
+    const confirmation = await fixture.control.dispatch(
+      confirmCommand(),
+      fixture.context
+    );
+    expect(confirmation).toMatchObject({
+      ok: false,
+      error: { code: "temporarily_unavailable", retryable: true }
+    });
+
+    const reconciled = await fixture.control.dispatch(
+      pollCommand(),
+      fixture.context
+    );
+    expect(reconciled).toMatchObject({
+      ok: true,
+      data: {
+        status: {
+          approvalTier: "native_review",
+          state: "approved"
+        }
+      }
+    });
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain(
+      `/v1/high-risk/action-grants/${ids.actionGrant}/await`
+    );
+  });
+
   it("deletes local custody when secret resolution input is tampered", async () => {
     const fetchMock = vi
       .fn()
@@ -726,6 +761,8 @@ describe("collaboration Action Grant control", () => {
               version: 1,
               actionGrant: { id: ids.actionGrant },
               selector: ids.selector,
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "pending",
               activationPath,
               expiresAt
@@ -786,6 +823,43 @@ describe("collaboration Action Grant control", () => {
       )
     ).toBeNull();
   });
+
+  it.each(["consumed", "denied", "revoked", "expired", "canceled"] as const)(
+    "applies authoritative %s polling cleanup through the shared lifecycle",
+    async (state) => {
+      const terminal = approvedStatus(approvedExpiresAt);
+      terminal.status.state = state;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(pendingStatus(expiresAt)))
+        .mockResolvedValueOnce(jsonResponse(terminal));
+      const fixture = createFixture({ fetch: fetchMock });
+
+      await fixture.control.dispatch(requestCommand(), fixture.context);
+      const polled = await fixture.control.dispatch(
+        pollCommand(),
+        fixture.context
+      );
+
+      expect(polled).toMatchObject({
+        ok: true,
+        data: { status: { state } }
+      });
+      expect(
+        readCollaborationActionGrantCustodyStatus(
+          fixture.koedHome,
+          {
+            referenceId: ids.actionGrant,
+            backendId: "team-vps",
+            deploymentBaseUrl: "https://team.example.test/koed",
+            deviceCredentialId: ids.device,
+            principalUserId: ids.principal
+          },
+          { now: () => fixture.nowRef.value }
+        )
+      ).toBeNull();
+    }
+  );
 
   it("retains only a bounded ambiguous-response window on malformed polling", async () => {
     const nowRef = { value: new Date(startIso) };

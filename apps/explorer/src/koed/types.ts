@@ -229,13 +229,26 @@ export interface HighRiskBrowserActivation {
     version: 1;
     actionGrant: { id: string };
     selector: string;
+    approvalTier: "direct" | "native_review" | "step_up";
+    review: {
+      version: 1;
+      title: string;
+      description: string;
+      consequence: string;
+      confirmLabel: string;
+      details: Array<{ label: string; value: string }>;
+    } | null;
     state: HighRiskBrowserActivationState;
     activationPath: string | null;
     expiresAt: string;
   };
   confirmation: {
     action: string;
-    operationFamily: "admin" | "share_grant_management";
+    operationFamily:
+      | "admin"
+      | "share_grant_management"
+      | "source_download"
+      | "managed_execution";
     teamId: string | null;
     targetId: string | null;
   };

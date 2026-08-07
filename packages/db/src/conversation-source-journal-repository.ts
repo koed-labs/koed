@@ -248,6 +248,8 @@ type DownloadAuthorizationRow = {
   device_credential_id: string;
   artifact_id: string;
   recipient_key: Record<string, unknown>;
+  initiating_operation_kind: "handoff" | "fork" | null;
+  initiating_operation_id: string | null;
   first_segment_index: number;
   last_segment_index: number;
   created_at: Date;
@@ -593,6 +595,8 @@ const mapDownloadAuthorization = (
   deviceCredentialId: row.device_credential_id,
   artifactId: row.artifact_id,
   recipientKey: row.recipient_key,
+  initiatingOperationKind: row.initiating_operation_kind,
+  initiatingOperationId: row.initiating_operation_id,
   firstSegmentIndex: row.first_segment_index,
   lastSegmentIndex: row.last_segment_index,
   createdAt: row.created_at.toISOString(),
@@ -1173,6 +1177,10 @@ export interface ConversationSourceJournalRepository {
       deviceCredentialId: string;
       artifactId: string;
       recipientKey: Record<string, unknown>;
+      initiatingOperation?: {
+        kind: "handoff" | "fork";
+        id: string;
+      };
       capabilityHash: string;
       firstSegmentIndex: number;
       expiresAt: string;
@@ -3192,6 +3200,8 @@ export const createConversationSourceJournalRepository = (
          device_credential_id,
          artifact_id,
          recipient_key,
+         initiating_operation_kind,
+         initiating_operation_id,
          capability_hash,
          first_segment_index,
          last_segment_index,
@@ -3203,8 +3213,10 @@ export const createConversationSourceJournalRepository = (
               $4::jsonb,
               $5,
               $6,
+              $7,
+              $8,
               artifact.current_journal_sequence,
-              $7
+              $9
          from conversation_source_artifacts artifact
          join device_credentials credential
            on credential.id = $3
@@ -3217,13 +3229,15 @@ export const createConversationSourceJournalRepository = (
           and artifact.id = $2
           and artifact.replica_role = 'hosted_personal'
           and artifact.lifecycle in ('active', 'finalized')
-          and artifact.current_journal_sequence >= $6 - 1
+          and artifact.current_journal_sequence >= $8 - 1
        returning
          id,
          owner_user_id,
          device_credential_id,
          artifact_id,
          recipient_key,
+         initiating_operation_kind,
+         initiating_operation_id,
          first_segment_index,
          last_segment_index,
          created_at,
@@ -3236,6 +3250,8 @@ export const createConversationSourceJournalRepository = (
         input.artifactId,
         input.deviceCredentialId,
         input.recipientKey,
+        input.initiatingOperation?.kind ?? null,
+        input.initiatingOperation?.id ?? null,
         input.capabilityHash,
         input.firstSegmentIndex,
         input.expiresAt
@@ -3258,6 +3274,8 @@ export const createConversationSourceJournalRepository = (
               download_auth.device_credential_id,
               download_auth.artifact_id,
               download_auth.recipient_key,
+              download_auth.initiating_operation_kind,
+              download_auth.initiating_operation_id,
               download_auth.first_segment_index,
               download_auth.last_segment_index,
               download_auth.created_at,
@@ -3282,6 +3300,51 @@ export const createConversationSourceJournalRepository = (
           and download_auth.capability_hash = $4
           and download_auth.revoked_at is null
           and download_auth.expires_at > now()
+          and (
+            (
+              download_auth.initiating_operation_kind is null
+              and download_auth.initiating_operation_id is null
+            )
+            or (
+              download_auth.initiating_operation_kind = 'handoff'
+              and exists (
+                select 1
+                  from managed_conversation_handoffs handoff
+                 where handoff.id = download_auth.initiating_operation_id
+                   and handoff.owner_user_id = download_auth.owner_user_id
+                   and handoff.target_device_id::text =
+                         credential.device_instance_id
+                   and handoff.target_deployment_id::text =
+                         download_auth.recipient_key ->> 'targetDeploymentId'
+                   and handoff.source_generation_id =
+                         artifact.source_generation_id
+                   and handoff.state in (
+                     'workspace_prepared',
+                     'target_verified',
+                     'lease_transferred',
+                     'restoring',
+                     'identity_verified',
+                     'running'
+                   )
+              )
+            )
+            or (
+              download_auth.initiating_operation_kind = 'fork'
+              and exists (
+                select 1
+                  from managed_conversation_forks fork
+                 where fork.id = download_auth.initiating_operation_id
+                   and fork.owner_user_id = download_auth.owner_user_id
+                   and fork.target_device_id::text =
+                         credential.device_instance_id
+                   and fork.target_deployment_id::text =
+                         download_auth.recipient_key ->> 'targetDeploymentId'
+                   and fork.parent_source_generation_id =
+                         artifact.source_generation_id
+                   and fork.state = 'source_attested'
+              )
+            )
+          )
         limit 1`,
       [
         actor.userId,

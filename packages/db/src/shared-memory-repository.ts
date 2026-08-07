@@ -367,7 +367,163 @@ export interface SharedMemoryOwnerGrantPage {
   hasMore: boolean;
 }
 
+export interface SharedMemoryReviewSource {
+  logicalMemoryId: string;
+  title: string;
+  ownerPrincipalId: string;
+}
+
+export interface SharedMemoryReviewDestination {
+  team: { id: string; name: string };
+  workspace: { id: string; name: string };
+}
+
+export interface SharedMemoryPreviewAdmissionRecord extends SharedMemoryReviewDestination {
+  source: SharedMemoryReviewSource;
+  remoteReplicaId: string;
+  representation: SharedMemoryRepresentation;
+  requestedAllowedRepresentations: SharedMemoryRepresentation[];
+  effectivePolicyIntersection: SharedMemoryRepresentation[];
+  sourceOwnerPolicyWillChange: boolean;
+}
+
+export interface SharedMemoryShareReviewRecord extends SharedMemoryReviewDestination {
+  source: SharedMemoryReviewSource;
+  preview: Pick<
+    SharedMemoryPersistedPreviewRecord,
+    | "previewId"
+    | "previewHash"
+    | "previewRevision"
+    | "remoteReplicaId"
+    | "representation"
+    | "sourceRevision"
+  >;
+  effectivePolicyIntersection: SharedMemoryRepresentation[];
+}
+
+export interface SharedMemoryRepresentationChangeReviewRecord extends SharedMemoryShareReviewRecord {
+  grant: Pick<
+    SharedMemoryGrantRecord,
+    | "id"
+    | "logicalMemoryId"
+    | "teamId"
+    | "teamWorkspaceId"
+    | "grantVersion"
+    | "lifecycle"
+    | "activeRepresentation"
+  >;
+  willReactivate: boolean;
+}
+
+export interface SharedMemoryRevokeReviewRecord extends SharedMemoryReviewDestination {
+  source: Pick<SharedMemoryReviewSource, "logicalMemoryId" | "title">;
+  grant: Pick<
+    SharedMemoryGrantRecord,
+    "id" | "grantVersion" | "lifecycle" | "activeRepresentation"
+  >;
+}
+
+export interface SharedMemoryCreateConsentInput {
+  consentId: string;
+  preview: SharedSourcePreviewReference;
+  mode: SharedMemoryConsentMode;
+  allowedRepresentations: SharedMemoryRepresentation[];
+  selectedRepresentation: SharedMemoryRepresentation;
+  expiresAt?: string | null;
+  authority: SharedMemoryAuthorityContext;
+}
+
+export interface SharedMemoryCreateGrantInput {
+  mutationId: string;
+  logicalGrantId: string;
+  consentId: string;
+  authority: SharedMemoryAuthorityContext;
+}
+
+export interface SharedMemorySelectRepresentationInput {
+  mutationId: string;
+  shareGrantId: string;
+  consentId: string;
+  representation: SharedMemoryRepresentation;
+  expectedGrantVersion: number;
+  authority: SharedMemoryAuthorityContext;
+}
+
+export interface SharedMemoryConsentBinding {
+  logicalMemoryId: string;
+  teamId: string;
+  teamWorkspaceId: string;
+  previewId: string;
+  previewRevision: number;
+  previewHash: string;
+}
+
+export interface SharedMemoryCreateShareBundleInput {
+  consent: SharedMemoryCreateConsentInput;
+  grant: SharedMemoryCreateGrantInput;
+  expected: SharedMemoryConsentBinding & { consentId: string };
+}
+
+export interface SharedMemoryChangeRepresentationBundleInput {
+  consent: SharedMemoryCreateConsentInput;
+  representation: SharedMemorySelectRepresentationInput;
+  expected: SharedMemoryConsentBinding & {
+    consentId: string;
+    representation: SharedMemoryRepresentation;
+  };
+}
+
 export interface SharedMemoryRepository {
+  getSharedMemoryPreviewAdmission(
+    actor: ActorContext,
+    input: {
+      logicalMemoryId: string;
+      remoteReplicaId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      representation: SharedMemoryRepresentation;
+      allowedRepresentations: SharedMemoryRepresentation[];
+    }
+  ): Promise<SharedMemoryPreviewAdmissionRecord | null>;
+  getSharedMemoryShareReview(
+    actor: ActorContext,
+    input: {
+      logicalMemoryId: string;
+      logicalGrantId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      consentId: string;
+      preview: SharedSourcePreviewReference;
+      previewRevision: number;
+      selectedRepresentation: SharedMemoryRepresentation;
+      allowedRepresentations: SharedMemoryRepresentation[];
+      expiresAt: string | null;
+    }
+  ): Promise<SharedMemoryShareReviewRecord | null>;
+  getSharedMemoryRepresentationChangeReview(
+    actor: ActorContext,
+    input: {
+      logicalMemoryId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      shareGrantId: string;
+      expectedGrantVersion: number;
+      preview: SharedSourcePreviewReference;
+      previewRevision: number;
+      representation: SharedMemoryRepresentation;
+      allowedRepresentations: SharedMemoryRepresentation[];
+      expiresAt: string | null;
+    }
+  ): Promise<SharedMemoryRepresentationChangeReviewRecord | null>;
+  getSharedMemoryRevokeReview(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      teamWorkspaceId: string;
+      shareGrantId: string;
+      expectedGrantVersion: number;
+    }
+  ): Promise<SharedMemoryRevokeReviewRecord | null>;
   createAuthoritativeSourcePreview(
     actor: ActorContext,
     input: {
@@ -413,36 +569,30 @@ export interface SharedMemoryRepository {
   ): Promise<SharedMemoryPolicyRecord>;
   createSourceOwnerConsent(
     actor: ActorContext,
-    input: {
-      consentId: string;
-      preview: SharedSourcePreviewReference;
-      mode: SharedMemoryConsentMode;
-      allowedRepresentations: SharedMemoryRepresentation[];
-      selectedRepresentation: SharedMemoryRepresentation;
-      expiresAt?: string | null;
-      authority: SharedMemoryAuthorityContext;
-    }
+    input: SharedMemoryCreateConsentInput
   ): Promise<SharedMemoryConsentRecord>;
   createShareGrant(
     actor: ActorContext,
-    input: {
-      mutationId: string;
-      logicalGrantId: string;
-      consentId: string;
-      authority: SharedMemoryAuthorityContext;
-    }
+    input: SharedMemoryCreateGrantInput
   ): Promise<SharedMemoryGrantRecord>;
   selectGrantRepresentation(
     actor: ActorContext,
-    input: {
-      mutationId: string;
-      shareGrantId: string;
-      consentId: string;
-      representation: SharedMemoryRepresentation;
-      expectedGrantVersion: number;
-      authority: SharedMemoryAuthorityContext;
-    }
+    input: SharedMemorySelectRepresentationInput
   ): Promise<SharedMemoryGrantRecord>;
+  createShareBundle(
+    actor: ActorContext,
+    input: SharedMemoryCreateShareBundleInput
+  ): Promise<{
+    consent: SharedMemoryConsentRecord;
+    grant: SharedMemoryGrantRecord;
+  } | null>;
+  changeRepresentationBundle(
+    actor: ActorContext,
+    input: SharedMemoryChangeRepresentationBundleInput
+  ): Promise<{
+    consent: SharedMemoryConsentRecord;
+    grant: SharedMemoryGrantRecord;
+  } | null>;
   revokeShareGrant(
     actor: ActorContext,
     input: {
@@ -515,6 +665,24 @@ export interface SharedMemoryRepository {
     }
   ): Promise<SharedMemoryReadResult | null>;
 }
+
+type SharedMemoryClientScopedRepository = SharedMemoryRepository & {
+  createSourceOwnerConsent(
+    actor: ActorContext,
+    input: SharedMemoryCreateConsentInput,
+    client?: pg.PoolClient
+  ): Promise<SharedMemoryConsentRecord>;
+  createShareGrant(
+    actor: ActorContext,
+    input: SharedMemoryCreateGrantInput,
+    client?: pg.PoolClient
+  ): Promise<SharedMemoryGrantRecord>;
+  selectGrantRepresentation(
+    actor: ActorContext,
+    input: SharedMemorySelectRepresentationInput,
+    client?: pg.PoolClient
+  ): Promise<SharedMemoryGrantRecord>;
+};
 
 export class SharedMemoryAuthorizationError extends Error {
   statusCode = 403;
@@ -1241,6 +1409,33 @@ const withTransaction = async <T>(
   }
 };
 
+class SharedMemoryBundleInvariantError extends Error {}
+
+const consentMatchesBinding = (
+  consent: SharedMemoryConsentRecord,
+  expected: SharedMemoryConsentBinding
+): boolean =>
+  consent.logicalMemoryId === expected.logicalMemoryId &&
+  consent.teamId === expected.teamId &&
+  consent.teamWorkspaceId === expected.teamWorkspaceId &&
+  consent.previewId === expected.previewId &&
+  consent.previewRevision === expected.previewRevision &&
+  consent.previewHash === expected.previewHash;
+
+const grantMatchesBinding = (
+  grant: SharedMemoryGrantRecord,
+  expected: SharedMemoryConsentBinding & {
+    consentId: string;
+    representation?: SharedMemoryRepresentation;
+  }
+): boolean =>
+  grant.logicalMemoryId === expected.logicalMemoryId &&
+  grant.teamId === expected.teamId &&
+  grant.teamWorkspaceId === expected.teamWorkspaceId &&
+  grant.consentId === expected.consentId &&
+  (expected.representation === undefined ||
+    grant.activeRepresentation === expected.representation);
+
 const requireWorkspaceAccess = async (
   client: SqlClient,
   actor: ActorContext,
@@ -1271,6 +1466,29 @@ const requireWorkspaceAccess = async (
   );
   if (result.rows[0]?.allowed !== true)
     throw new SharedMemoryAuthorizationError();
+};
+
+const requireWorkspaceSharePermission = async (
+  client: SqlClient,
+  actor: ActorContext,
+  teamId: string,
+  teamWorkspaceId: string
+): Promise<void> => {
+  await requireWorkspaceAccess(client, actor, teamId, teamWorkspaceId, "write");
+  const shareAuthority = await client.query<{ allowed: boolean }>(
+    `select exists (
+       select 1 from team_workspace_access_grants
+        where team_id=$1 and team_workspace_id=$2 and user_id=$3
+          and access='write' and can_share_owned_memory=true
+          and disabled_at is null
+     ) as allowed`,
+    [teamId, teamWorkspaceId, actor.userId]
+  );
+  if (shareAuthority.rows[0]?.allowed !== true) {
+    throw new SharedMemoryAuthorizationError(
+      "Workspace Memory sharing authority is required"
+    );
+  }
 };
 
 const requireTeamManager = async (
@@ -1342,27 +1560,12 @@ const requireShareAuthority = async (
   }
   assertUuid(input.authority.referenceId, "authority.referenceId");
   if (input.requireSharePermission !== false) {
-    await requireWorkspaceAccess(
+    await requireWorkspaceSharePermission(
       client,
       actor,
       input.teamId,
-      input.teamWorkspaceId,
-      "write"
+      input.teamWorkspaceId
     );
-    const shareAuthority = await client.query<{ allowed: boolean }>(
-      `select exists (
-         select 1 from team_workspace_access_grants
-          where team_id=$1 and team_workspace_id=$2 and user_id=$3
-            and access='write' and can_share_owned_memory=true
-            and disabled_at is null
-       ) as allowed`,
-      [input.teamId, input.teamWorkspaceId, actor.userId]
-    );
-    if (shareAuthority.rows[0]?.allowed !== true) {
-      throw new SharedMemoryAuthorizationError(
-        "Workspace Memory sharing authority is required"
-      );
-    }
   }
 
   if (input.authority.source === "browser_session") {
@@ -4376,7 +4579,467 @@ export const createSharedMemoryRepository = (
     });
   };
 
-  const repository: SharedMemoryRepository = {
+  const reviewOrNull = async <T>(work: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await work();
+    } catch (error) {
+      if (
+        error instanceof SharedMemoryAuthorizationError ||
+        error instanceof SharedMemoryConflictError
+      ) {
+        return null;
+      }
+      throw error;
+    }
+  };
+
+  const loadReviewDisplay = async (
+    client: SqlClient,
+    input: {
+      logicalMemoryId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      ownerPrincipalId: string;
+    }
+  ): Promise<SharedMemoryReviewSource & SharedMemoryReviewDestination> => {
+    const result = await client.query<Row>(
+      `select t.name as team_name,tw.name as workspace_name,
+              coalesce(nullif(trim(s.metadata->>'threadName'),''),'Captured Session') as source_title
+         from logical_memories lm
+         join teams t on t.id=$2
+         join team_workspaces tw on tw.id=$3 and tw.team_id=t.id
+         left join sessions s on s.id=lm.local_session_id
+        where lm.id=$1 and lm.owner_principal_id=$4
+        limit 1`,
+      [
+        input.logicalMemoryId,
+        input.teamId,
+        input.teamWorkspaceId,
+        input.ownerPrincipalId
+      ]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new SharedMemoryAuthorizationError();
+    }
+    return {
+      logicalMemoryId: input.logicalMemoryId,
+      ownerPrincipalId: input.ownerPrincipalId,
+      title: stringValue(row.source_title),
+      team: { id: input.teamId, name: stringValue(row.team_name) },
+      workspace: {
+        id: input.teamWorkspaceId,
+        name: stringValue(row.workspace_name)
+      }
+    };
+  };
+
+  const loadPreviewReviewContext = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    input: {
+      logicalMemoryId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      preview: SharedSourcePreviewReference;
+      previewRevision: number;
+      representation: SharedMemoryRepresentation;
+      allowedRepresentations: SharedMemoryRepresentation[];
+      expiresAt: string | null;
+    }
+  ): Promise<SharedMemoryShareReviewRecord> => {
+    const allowed = normalizedRepresentations(input.allowedRepresentations);
+    if (
+      !allowed.includes(input.representation) ||
+      (input.expiresAt !== null && Date.parse(input.expiresAt) <= Date.now())
+    ) {
+      throw new SharedMemoryConflictError(
+        "Shared Memory review input is no longer valid"
+      );
+    }
+    const loaded = await loadPersistedPreviewByReference(client, {
+      preview: input.preview,
+      requiredMessage: "Shared Memory preview reference is not active"
+    });
+    const { preview, artifact, artifactBody } = loaded;
+    const owner = await requireSourceOwner(
+      client,
+      actor,
+      input.logicalMemoryId
+    );
+    if (
+      preview.ownerUserId !== actor.userId ||
+      preview.ownerPrincipalId !== owner.ownerPrincipalId ||
+      preview.logicalMemoryId !== input.logicalMemoryId ||
+      preview.teamId !== input.teamId ||
+      preview.teamWorkspaceId !== input.teamWorkspaceId ||
+      preview.previewRevision !== input.previewRevision ||
+      preview.representation !== input.representation
+    ) {
+      throw new SharedMemoryAuthorizationError(
+        "Shared Memory preview ownership or destination binding is invalid"
+      );
+    }
+    await requireWorkspaceSharePermission(
+      client,
+      actor,
+      input.teamId,
+      input.teamWorkspaceId
+    );
+    const replicaState = await loadActiveReplicaState(client, {
+      logicalMemoryId: input.logicalMemoryId,
+      remoteReplicaId: preview.remoteReplicaId,
+      ownerUserId: actor.userId,
+      ownerPrincipalId: owner.ownerPrincipalId,
+      syncRelationshipId: artifact.syncRelationshipId
+    });
+    if (
+      replicaState.sourceCursor < preview.sourceRevision ||
+      replicaState.localReplicaId !== preview.remoteReplicaId ||
+      artifactBody.sync.relationshipId !== artifact.syncRelationshipId ||
+      artifactBody.sync.localReplicaId !== preview.remoteReplicaId ||
+      artifactBody.sync.remoteReplicaId !== replicaState.remoteSyncReplicaId ||
+      artifactBody.sync.localSessionId !== replicaState.localSessionId ||
+      artifactBody.sync.sourceDeploymentIdentityId !==
+        replicaState.sourceDeploymentIdentityId ||
+      artifactBody.sync.remoteUserIdentityId !==
+        replicaState.remoteUserIdentityId ||
+      artifactBody.sync.deviceCredentialId !==
+        replicaState.deviceCredentialId ||
+      artifactBody.sync.deviceProvenanceHash !==
+        replicaState.deviceProvenanceHash ||
+      preview.deviceProvenanceHash !== replicaState.deviceProvenanceHash
+    ) {
+      throw new SharedMemoryAuthorizationError(
+        "Owner-private remote replica binding is invalid"
+      );
+    }
+    const policies = await requireCurrentPolicies(client, {
+      logicalMemoryId: input.logicalMemoryId,
+      ownerPrincipalId: owner.ownerPrincipalId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId
+    });
+    if (
+      !policies.intersection.includes(input.representation) ||
+      !isSubset(allowed, stringArray(policies.owner.allowed_representations)) ||
+      stringValue(policies.owner.policy_id) !== artifact.sourceOwnerPolicyId ||
+      numberValue(policies.owner.version) !==
+        artifact.sourceOwnerPolicyVersion ||
+      stringValue(policies.team.policy_id) !== artifact.teamPolicyId ||
+      numberValue(policies.team.version) !== artifact.teamPolicyVersion ||
+      stringValue(policies.workspace.policy_id) !==
+        artifact.workspacePolicyId ||
+      numberValue(policies.workspace.version) !==
+        artifact.workspacePolicyVersion ||
+      preview.binding.representationPolicyRevision !==
+        artifact.representationPolicyRevision ||
+      preview.binding.representationPolicyHash !==
+        artifact.representationPolicyHash ||
+      preview.binding.contentPolicyVersion !== artifact.contentPolicyVersion ||
+      preview.binding.contentPolicyHash !== artifact.contentPolicyHash ||
+      preview.binding.classifierVersion !== artifact.classifierVersion ||
+      preview.binding.classifierHash !== artifact.classifierHash
+    ) {
+      throw new SharedMemoryConflictError(
+        "Preview is outside the current exact three-policy intersection"
+      );
+    }
+    const display = await loadReviewDisplay(client, {
+      logicalMemoryId: input.logicalMemoryId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      ownerPrincipalId: owner.ownerPrincipalId
+    });
+    return {
+      source: {
+        logicalMemoryId: display.logicalMemoryId,
+        ownerPrincipalId: display.ownerPrincipalId,
+        title: display.title
+      },
+      team: display.team,
+      workspace: display.workspace,
+      preview: {
+        previewId: preview.previewId,
+        previewHash: preview.previewHash,
+        previewRevision: preview.previewRevision,
+        remoteReplicaId: preview.remoteReplicaId,
+        representation: preview.representation,
+        sourceRevision: preview.sourceRevision
+      },
+      effectivePolicyIntersection: policies.intersection
+    };
+  };
+
+  const repository: SharedMemoryClientScopedRepository = {
+    async getSharedMemoryPreviewAdmission(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(async () => {
+          const allowed = normalizedRepresentations(
+            input.allowedRepresentations
+          );
+          const owner = await requireSourceOwner(
+            client,
+            actor,
+            input.logicalMemoryId
+          );
+          await requireWorkspaceSharePermission(
+            client,
+            actor,
+            input.teamId,
+            input.teamWorkspaceId
+          );
+          const readiness = await client.query<Row>(
+            `select mr.id,
+                    lm.latest_source_revision,mr.latest_revision,
+                    sr.target_processing_cursor
+               from logical_memories lm
+               join memory_replicas mr
+                 on mr.id=$2 and mr.logical_memory_id=lm.id
+                and mr.owner_user_id=$3
+                and mr.owner_principal_id=$4
+                and mr.replica_role='target'
+                and mr.encryption_scope='owner_private_replica'
+                and mr.lifecycle='active' and mr.disabled_at is null
+               join cross_identity_sync_relationships sr
+                 on sr.local_replica_id=mr.id
+                and sr.logical_memory_id=lm.id and sr.side='target'
+                and sr.local_user_id=$3 and sr.revoked_at is null
+                and sr.state in ('processing','partially_available','ready','stale')
+               join device_credentials credential
+                 on credential.id=sr.device_credential_id
+                and credential.owner_user_id=$3
+                and credential.revoked_at is null
+                and (credential.expires_at is null or credential.expires_at>now())
+              where lm.id=$1 and lm.owner_user_id=$3
+                and lm.owner_principal_id=$4 and lm.local_session_id is not null
+                and sr.target_processing_cursor=lm.latest_source_revision
+                and sr.target_processing_cursor=mr.latest_revision
+              limit 1`,
+            [
+              input.logicalMemoryId,
+              input.remoteReplicaId,
+              actor.userId,
+              owner.ownerPrincipalId
+            ]
+          );
+          if (!readiness.rows[0]) {
+            throw new SharedMemoryAuthorizationError(
+              "Owner-private sync relationship is not ready"
+            );
+          }
+          const teamPolicy = await activePolicy(client, {
+            table: "team_representation_policies",
+            whereSql: "team_id=$1",
+            parameters: [input.teamId]
+          });
+          const workspacePolicy = await activePolicy(client, {
+            table: "workspace_representation_policies",
+            whereSql: "team_id=$1 and team_workspace_id=$2",
+            parameters: [input.teamId, input.teamWorkspaceId]
+          });
+          if (!teamPolicy || !workspacePolicy) {
+            throw new SharedMemoryConflictError(
+              "Team and Workspace representation policies are required"
+            );
+          }
+          const effective = intersection(
+            allowed,
+            stringArray(teamPolicy.allowed_representations),
+            stringArray(workspacePolicy.allowed_representations)
+          );
+          if (
+            !effective.includes(input.representation) ||
+            !isSubset(allowed, effective)
+          ) {
+            throw new SharedMemoryConflictError(
+              "Preview allowlist is outside the destination policy intersection"
+            );
+          }
+          const ownerPolicy = await activePolicy(client, {
+            table: "source_owner_representation_policies",
+            whereSql: "logical_memory_id=$1 and source_owner_principal_id=$2",
+            parameters: [input.logicalMemoryId, owner.ownerPrincipalId]
+          });
+          const currentAllowed = ownerPolicy
+            ? normalizedRepresentations(
+                stringArray(ownerPolicy.allowed_representations)
+              )
+            : [];
+          const display = await loadReviewDisplay(client, {
+            logicalMemoryId: input.logicalMemoryId,
+            teamId: input.teamId,
+            teamWorkspaceId: input.teamWorkspaceId,
+            ownerPrincipalId: owner.ownerPrincipalId
+          });
+          return {
+            source: {
+              logicalMemoryId: display.logicalMemoryId,
+              ownerPrincipalId: display.ownerPrincipalId,
+              title: display.title
+            },
+            team: display.team,
+            workspace: display.workspace,
+            remoteReplicaId: input.remoteReplicaId,
+            representation: input.representation,
+            requestedAllowedRepresentations: allowed,
+            effectivePolicyIntersection: effective,
+            sourceOwnerPolicyWillChange:
+              currentAllowed.length !== allowed.length ||
+              !isSubset(allowed, currentAllowed)
+          };
+        })
+      );
+    },
+
+    async getSharedMemoryShareReview(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(async () => {
+          const review = await loadPreviewReviewContext(client, actor, {
+            ...input,
+            representation: input.selectedRepresentation
+          });
+          const conflicts = await client.query<{ conflicting: boolean }>(
+            `select exists (
+               select 1 from team_session_share_grants
+                where logical_grant_id=$1
+                  and (owner_user_id<>$2 or logical_memory_id<>$3
+                    or team_id<>$4 or team_workspace_id<>$5 or consent_id<>$6)
+               union all
+               select 1 from team_session_share_grants
+                where logical_memory_id=$3 and team_workspace_id=$5
+                  and logical_grant_id<>$1
+             ) as conflicting`,
+            [
+              input.logicalGrantId,
+              actor.userId,
+              input.logicalMemoryId,
+              input.teamId,
+              input.teamWorkspaceId,
+              input.consentId
+            ]
+          );
+          const retention = await client.query(
+            `select 1 from retention_policies
+              where effective_at <= transaction_timestamp()
+                and (superseded_at is null or superseded_at > transaction_timestamp())
+                and ((scope='workspace' and team_id=$1 and team_workspace_id=$2)
+                  or (scope='team' and team_id=$1))
+              limit 1`,
+            [input.teamId, input.teamWorkspaceId]
+          );
+          if (conflicts.rows[0]?.conflicting === true || !retention.rowCount) {
+            throw new SharedMemoryConflictError(
+              "Share Grant destination or retention context is invalid"
+            );
+          }
+          return review;
+        })
+      );
+    },
+
+    async getSharedMemoryRepresentationChangeReview(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(async () => {
+          const review = await loadPreviewReviewContext(client, actor, input);
+          const grantResult = await client.query<Row>(
+            `select * from team_session_share_grants
+              where id=$1 and owner_user_id=$2 and logical_memory_id=$3
+                and team_id=$4 and team_workspace_id=$5
+                and grant_version=$6 and lifecycle in ('active','revoked')
+              limit 1`,
+            [
+              input.shareGrantId,
+              actor.userId,
+              input.logicalMemoryId,
+              input.teamId,
+              input.teamWorkspaceId,
+              input.expectedGrantVersion
+            ]
+          );
+          const row = grantResult.rows[0];
+          if (!row || !row.active_representation) {
+            throw new SharedMemoryConflictError(
+              "Current Share Grant representation is required"
+            );
+          }
+          const grant = mapGrant(row);
+          if (
+            grant.lifecycle === "active" &&
+            grant.activeRepresentation === input.representation
+          ) {
+            throw new SharedMemoryConflictError(
+              "Active Share Grant already uses this representation"
+            );
+          }
+          return {
+            ...review,
+            grant: {
+              id: grant.id,
+              logicalMemoryId: grant.logicalMemoryId,
+              teamId: grant.teamId,
+              teamWorkspaceId: grant.teamWorkspaceId,
+              grantVersion: grant.grantVersion,
+              lifecycle: grant.lifecycle,
+              activeRepresentation: grant.activeRepresentation
+            },
+            willReactivate: grant.lifecycle === "revoked"
+          };
+        })
+      );
+    },
+
+    async getSharedMemoryRevokeReview(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(async () => {
+          const result = await client.query<Row>(
+            `select g.*,t.name as team_name,tw.name as workspace_name,
+                    coalesce(nullif(trim(s.metadata->>'threadName'),''),'Captured Session') as source_title
+               from team_session_share_grants g
+               join teams t on t.id=g.team_id
+               join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=t.id
+               left join logical_memories lm on lm.id=g.logical_memory_id
+               left join sessions s on s.id=lm.local_session_id
+              where g.id=$1 and g.owner_user_id=$2
+                and g.team_id=$3 and g.team_workspace_id=$4
+                and g.grant_version=$5 and g.lifecycle='active'
+              limit 1`,
+            [
+              input.shareGrantId,
+              actor.userId,
+              input.teamId,
+              input.teamWorkspaceId,
+              input.expectedGrantVersion
+            ]
+          );
+          const row = result.rows[0];
+          if (!row) {
+            throw new SharedMemoryAuthorizationError(
+              "Source-owned Share Grant is required"
+            );
+          }
+          const grant = mapGrant(row);
+          return {
+            source: {
+              logicalMemoryId: grant.logicalMemoryId,
+              title: stringValue(row.source_title)
+            },
+            team: { id: grant.teamId, name: stringValue(row.team_name) },
+            workspace: {
+              id: grant.teamWorkspaceId,
+              name: stringValue(row.workspace_name)
+            },
+            grant: {
+              id: grant.id,
+              grantVersion: grant.grantVersion,
+              lifecycle: grant.lifecycle,
+              activeRepresentation: grant.activeRepresentation
+            }
+          };
+        })
+      );
+    },
+
     async createAuthoritativeSourcePreview(actor, input) {
       return createAuthoritativeSourcePreview(actor, input);
     },
@@ -4693,14 +5356,72 @@ export const createSharedMemoryRepository = (
       });
     },
 
-    async createSourceOwnerConsent(actor, input) {
+    async createShareBundle(actor, input) {
+      try {
+        return await withTransaction(pool, async (client) => {
+          const consent = await repository.createSourceOwnerConsent(
+            actor,
+            input.consent,
+            client
+          );
+          if (!consentMatchesBinding(consent, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          const grant = await repository.createShareGrant(
+            actor,
+            input.grant,
+            client
+          );
+          if (!grantMatchesBinding(grant, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          return { consent, grant };
+        });
+      } catch (error) {
+        if (error instanceof SharedMemoryBundleInvariantError) return null;
+        throw error;
+      }
+    },
+
+    async changeRepresentationBundle(actor, input) {
+      try {
+        return await withTransaction(pool, async (client) => {
+          const consent = await repository.createSourceOwnerConsent(
+            actor,
+            input.consent,
+            client
+          );
+          if (!consentMatchesBinding(consent, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          const grant = await repository.selectGrantRepresentation(
+            actor,
+            input.representation,
+            client
+          );
+          if (!grantMatchesBinding(grant, input.expected)) {
+            throw new SharedMemoryBundleInvariantError();
+          }
+          return { consent, grant };
+        });
+      } catch (error) {
+        if (error instanceof SharedMemoryBundleInvariantError) return null;
+        throw error;
+      }
+    },
+
+    async createSourceOwnerConsent(
+      actor,
+      input,
+      transactionClient?: pg.PoolClient
+    ) {
       assertUuid(input.consentId, "consentId");
       const allowed = normalizedRepresentations(input.allowedRepresentations);
       if (!allowed.includes(input.selectedRepresentation))
         throw new SharedMemoryConflictError(
           "Selected representation is outside owner consent"
         );
-      return withTransaction(pool, async (client) => {
+      const command = async (client: pg.PoolClient) => {
         const loaded = await loadPersistedPreviewByReference(client, {
           preview: input.preview,
           requiredMessage: "Consent preview reference is not active"
@@ -4857,13 +5578,16 @@ export const createSharedMemoryRepository = (
           ]
         );
         return mapConsent(inserted.rows[0] as Row);
-      });
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
     },
 
-    async createShareGrant(actor, input) {
+    async createShareGrant(actor, input, transactionClient?: pg.PoolClient) {
       assertUuid(input.mutationId, "mutationId");
       assertUuid(input.logicalGrantId, "logicalGrantId");
-      return withTransaction(pool, async (client) => {
+      const command = async (client: pg.PoolClient) => {
         const consentResult = await client.query(
           `select c.*,lm.owner_user_id,lm.local_session_id
            from source_owner_representation_consents c
@@ -5016,12 +5740,19 @@ export const createSharedMemoryRepository = (
           actorPrincipalId: actor.userId
         });
         return mapGrant(row);
-      });
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
     },
 
-    async selectGrantRepresentation(actor, input) {
+    async selectGrantRepresentation(
+      actor,
+      input,
+      transactionClient?: pg.PoolClient
+    ) {
       assertUuid(input.mutationId, "mutationId");
-      return withTransaction(pool, async (client) => {
+      const command = async (client: pg.PoolClient) => {
         await lockShareGrantRetentionScopeWithClient(
           client,
           input.shareGrantId
@@ -5173,7 +5904,10 @@ export const createSharedMemoryRepository = (
           actorPrincipalId: actor.userId
         });
         return mapGrant(row);
-      });
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
     },
 
     async revokeShareGrant(actor, input) {
@@ -5190,7 +5924,11 @@ export const createSharedMemoryRepository = (
           [input.shareGrantId]
         );
         const grant = result.rows[0] as Row | undefined;
-        if (!grant) throw new SharedMemoryAuthorizationError();
+        if (!grant || grant.owner_user_id !== actor.userId) {
+          throw new SharedMemoryAuthorizationError(
+            "Only the source owner may revoke this Share Grant"
+          );
+        }
         if (grant.lifecycle === "revoked") {
           const replay = await client.query(
             `select 1

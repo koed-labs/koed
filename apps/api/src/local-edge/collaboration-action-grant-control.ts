@@ -13,21 +13,18 @@ import {
   type CollaborationCommandResult,
   type CollaborationRendererCommand
 } from "@koed/shared";
-import {
-  deleteCollaborationActionGrantCustody,
-  readCollaborationActionGrantCustodyStatus,
-  resolveCollaborationActionGrantSecret,
-  storeCollaborationActionGrantCustody,
-  updateCollaborationActionGrantCustodyStatus
-} from "@koed/shared";
 import { z } from "zod";
 
 import {
   highRiskActionGrantIntentFromCollaborationIntent,
-  highRiskActionGrantRemoteEnvelopeSchema,
   resolveHighRiskActionGrantOperation,
   type HighRiskActionGrantOperation
 } from "../high-risk/action-grant-protocol.js";
+import {
+  createCollaborationActionGrantLifecycle,
+  type ActionGrantRemoteStatus,
+  type CollaborationActionGrantLifecycle
+} from "./collaboration-action-grant-lifecycle.js";
 import {
   safeUpstreamProxyUrl,
   type LocalEdgeUpstreamBackend
@@ -41,6 +38,7 @@ const AMBIGUOUS_RESPONSE_WINDOW_MS = 30_000;
 export const collaborationActionGrantControlCommandNames = [
   "collaboration.request_action_grant",
   "collaboration.await_action_grant",
+  "collaboration.confirm_action_grant",
   "collaboration.cancel_action_grant"
 ] as const;
 
@@ -94,6 +92,7 @@ export interface CollaborationActionGrantControlContext {
 export interface CollaborationActionGrantControlOptions {
   koedHome: string;
   fetch: typeof fetch;
+  actionGrantLifecycle?: CollaborationActionGrantLifecycle;
   now?: () => Date;
   randomBytes?: typeof randomBytes;
   randomUuid?: () => string;
@@ -119,21 +118,6 @@ export interface CollaborationActionGrantControl {
     context: CollaborationActionGrantControlContext;
   }): Promise<string | null>;
 }
-
-type RemoteStatus = {
-  version: 1;
-  actionGrant: { id: string };
-  state:
-    | "pending"
-    | "approved"
-    | "consumed"
-    | "denied"
-    | "revoked"
-    | "expired"
-    | "canceled";
-  activationUrl: string | null;
-  expiresAt: string;
-};
 
 class ControlFailure extends Error {
   constructor(
@@ -166,7 +150,7 @@ const safeError = (
 
 const success = (
   command: CollaborationActionGrantControlCommand,
-  status: RemoteStatus
+  status: ActionGrantRemoteStatus
 ): CollaborationCommandResult =>
   collaborationCommandResultSchema.parse({
     contractVersion: COLLABORATION_CONTRACT_VERSION,
@@ -177,6 +161,8 @@ const success = (
       status: {
         version: 1,
         actionGrant: status.actionGrant,
+        approvalTier: status.approvalTier,
+        review: status.review,
         state: status.state,
         activationUrl: status.activationUrl,
         expiresAt: status.expiresAt
@@ -247,47 +233,6 @@ const credentialOperationFamilyForGrant = (
       ? "managed_execution"
       : "share_grant_management";
 
-const validatedRemoteStatus = (
-  backend: LocalEdgeUpstreamBackend,
-  payload: unknown
-): RemoteStatus => {
-  const parsed = highRiskActionGrantRemoteEnvelopeSchema.safeParse(payload);
-  if (!parsed.success) {
-    throw new ControlFailure("temporarily_unavailable");
-  }
-  if (parsed.data.status.activationPath !== null) {
-    try {
-      const activationUrl = safeUpstreamProxyUrl(
-        backend,
-        parsed.data.status.activationPath
-      );
-      if (
-        activationUrl.search ||
-        activationUrl.hash ||
-        activationUrl.toString().includes("hrg_")
-      ) {
-        throw new Error("invalid activation path");
-      }
-      return {
-        version: 1,
-        actionGrant: parsed.data.status.actionGrant,
-        state: parsed.data.status.state,
-        activationUrl: activationUrl.toString(),
-        expiresAt: parsed.data.status.expiresAt
-      };
-    } catch {
-      throw new ControlFailure("temporarily_unavailable");
-    }
-  }
-  return {
-    version: 1,
-    actionGrant: parsed.data.status.actionGrant,
-    state: parsed.data.status.state,
-    activationUrl: null,
-    expiresAt: parsed.data.status.expiresAt
-  };
-};
-
 const remoteRequest = async (
   options: Required<
     Pick<
@@ -354,18 +299,6 @@ const remoteRequest = async (
   }
 };
 
-const ambiguousUntil = (
-  options: Required<
-    Pick<
-      CollaborationActionGrantControlOptions,
-      "now" | "ambiguousResponseWindowMs"
-    >
-  >
-): string =>
-  new Date(
-    options.now().getTime() + options.ambiguousResponseWindowMs
-  ).toISOString();
-
 const createdExpiry = (
   options: Required<
     Pick<CollaborationActionGrantControlOptions, "now" | "actionGrantTtlMs">
@@ -404,19 +337,8 @@ const mapPermanentFailure = (status: number): ControlFailure => {
   return new ControlFailure("internal_error");
 };
 
-const actionGrantAccess = (
-  context: CollaborationActionGrantControlContext,
-  referenceId: string
-) => ({
-  referenceId,
-  backendId: context.backend.id,
-  deploymentBaseUrl: context.backend.baseUrl,
-  deviceCredentialId: context.upstreamDeviceCredentialId ?? "",
-  ...(context.localOwnerUserId
-    ? { localOwnerUserId: context.localOwnerUserId }
-    : {}),
-  principalUserId: context.principalUserId
-});
+const decisionResponseMayBeAmbiguous = (status: number): boolean =>
+  status >= 500;
 
 const hasDeviceContext = (
   context: CollaborationActionGrantControlContext
@@ -429,89 +351,6 @@ const hasDeviceContext = (
     z.uuid().safeParse(context.upstreamDeviceCredentialId).success &&
     safeAuthorizationHeader(context.upstreamDeviceAuthorization)
   );
-
-const persistRemoteStatus = (
-  koedHome: string,
-  context: CollaborationActionGrantControlContext,
-  status: RemoteStatus,
-  now: () => Date
-): void => {
-  if (status.state === "pending") {
-    updateCollaborationActionGrantCustodyStatus(
-      koedHome,
-      {
-        ...actionGrantAccess(context, status.actionGrant.id),
-        state: "pending",
-        activationUrl: status.activationUrl,
-        expiresAt: status.expiresAt
-      },
-      { now }
-    );
-    return;
-  }
-  if (status.state === "approved") {
-    updateCollaborationActionGrantCustodyStatus(
-      koedHome,
-      {
-        ...actionGrantAccess(context, status.actionGrant.id),
-        state: "approved",
-        expiresAt: status.expiresAt
-      },
-      { now }
-    );
-    return;
-  }
-  updateCollaborationActionGrantCustodyStatus(
-    koedHome,
-    {
-      ...actionGrantAccess(context, status.actionGrant.id),
-      state: status.state,
-      expiresAt: status.expiresAt
-    },
-    { now }
-  );
-};
-
-const persistAmbiguousWindow = (
-  koedHome: string,
-  context: CollaborationActionGrantControlContext,
-  status: {
-    actionGrant: { id: string };
-    state: "pending" | "approved";
-    activationUrl: string | null;
-  },
-  now: () => Date,
-  ambiguousResponseWindowMs: number
-): void => {
-  if (status.state === "pending") {
-    updateCollaborationActionGrantCustodyStatus(
-      koedHome,
-      {
-        ...actionGrantAccess(context, status.actionGrant.id),
-        state: "pending",
-        activationUrl: status.activationUrl,
-        ambiguousUntil: ambiguousUntil({
-          now,
-          ambiguousResponseWindowMs
-        })
-      },
-      { now }
-    );
-    return;
-  }
-  updateCollaborationActionGrantCustodyStatus(
-    koedHome,
-    {
-      ...actionGrantAccess(context, status.actionGrant.id),
-      state: "approved",
-      ambiguousUntil: ambiguousUntil({
-        now,
-        ambiguousResponseWindowMs
-      })
-    },
-    { now }
-  );
-};
 
 export const createCollaborationActionGrantControl = (
   input: CollaborationActionGrantControlOptions
@@ -529,6 +368,14 @@ export const createCollaborationActionGrantControl = (
       input.ambiguousResponseWindowMs ?? AMBIGUOUS_RESPONSE_WINDOW_MS,
     random: input.random ?? Math.random
   };
+  const lifecycle =
+    input.actionGrantLifecycle ??
+    createCollaborationActionGrantLifecycle({
+      koedHome: options.koedHome,
+      now: options.now,
+      randomBytes: options.randomBytes,
+      ambiguousResponseWindowMs: options.ambiguousResponseWindowMs
+    });
 
   const dispatch = async (
     commandInput: unknown,
@@ -553,12 +400,18 @@ export const createCollaborationActionGrantControl = (
                 })
               : null;
           const consentPreview =
-            intent.intent === "collaboration.consent_shared_memory"
+            intent.intent === "collaboration.share_memory" ||
+            intent.intent ===
+              "collaboration.change_shared_memory_representation"
               ? await context.resolveSharedMemoryConsentPreview?.({
                   logicalMemoryId: intent.logicalMemoryId,
                   teamId: intent.teamId,
                   workspaceId: intent.workspaceId,
-                  selectedRepresentation: intent.selectedRepresentation,
+                  selectedRepresentation:
+                    intent.intent ===
+                    "collaboration.change_shared_memory_representation"
+                      ? intent.representation
+                      : intent.selectedRepresentation,
                   allowedRepresentations: intent.allowedRepresentations,
                   previewRevision: intent.previewRevision,
                   previewHash: intent.previewHash
@@ -571,7 +424,14 @@ export const createCollaborationActionGrantControl = (
             return failure(command, new ControlFailure("permission_denied"));
           }
           if (
-            intent.intent === "collaboration.consent_shared_memory" &&
+            intent.intent === "collaboration.share_memory" &&
+            !consentPreview
+          ) {
+            return failure(command, new ControlFailure("permission_denied"));
+          }
+          if (
+            intent.intent ===
+              "collaboration.change_shared_memory_representation" &&
             !consentPreview
           ) {
             return failure(command, new ControlFailure("permission_denied"));
@@ -610,32 +470,25 @@ export const createCollaborationActionGrantControl = (
             return failure(command, new ControlFailure("permission_denied"));
           }
           const expiresAt = createdExpiry(options);
-          const stored = storeCollaborationActionGrantCustody(
-            options.koedHome,
-            {
-              referenceId,
-              backendId: context.backend.id,
-              deploymentBaseUrl: context.backend.baseUrl,
-              deviceCredentialId: context.upstreamDeviceCredentialId,
-              ...(context.localOwnerUserId
-                ? { localOwnerUserId: context.localOwnerUserId }
-                : {}),
-              principalUserId: context.principalUserId,
-              operationFamily: operation.operationFamily,
-              action: operation.action,
-              teamId: operation.teamId,
-              targetId: operation.targetId,
-              method: operation.method,
-              path: operation.path,
-              body: operation.body,
-              idempotencyKey: operation.idempotencyKey,
-              expiresAt
-            },
-            {
-              now: options.now,
-              randomBytes: options.randomBytes
-            }
-          );
+          const stored = lifecycle.create({
+            referenceId,
+            backendId: context.backend.id,
+            deploymentBaseUrl: context.backend.baseUrl,
+            deviceCredentialId: context.upstreamDeviceCredentialId,
+            ...(context.localOwnerUserId
+              ? { localOwnerUserId: context.localOwnerUserId }
+              : {}),
+            principalUserId: context.principalUserId,
+            operationFamily: operation.operationFamily,
+            action: operation.action,
+            teamId: operation.teamId,
+            targetId: operation.targetId,
+            method: operation.method,
+            path: operation.path,
+            body: operation.body,
+            idempotencyKey: operation.idempotencyKey,
+            expiresAt
+          });
           try {
             const remote = await remoteRequest(options, context, {
               method: "POST",
@@ -651,39 +504,23 @@ export const createCollaborationActionGrantControl = (
               }
             });
             if (!remote.ok) {
-              deleteCollaborationActionGrantCustody(
-                options.koedHome,
-                stored.referenceId
-              );
+              lifecycle.discard({ id: stored.referenceId }, "request_rejected");
               return failure(command, mapPermanentFailure(remote.status));
             }
-            const status = validatedRemoteStatus(
-              context.backend,
+            const status = lifecycle.acceptRemote(
+              context,
+              { id: stored.referenceId },
               remote.payload
             );
-            if (status.actionGrant.id !== stored.referenceId) {
-              deleteCollaborationActionGrantCustody(
-                options.koedHome,
-                stored.referenceId
-              );
+            if (!status) {
               return failure(
                 command,
                 new ControlFailure("temporarily_unavailable")
               );
             }
-            persistRemoteStatus(options.koedHome, context, status, options.now);
             return success(command, status);
           } catch (error) {
-            updateCollaborationActionGrantCustodyStatus(
-              options.koedHome,
-              {
-                ...actionGrantAccess(context, stored.referenceId),
-                state: "pending",
-                activationUrl: null,
-                ambiguousUntil: ambiguousUntil(options)
-              },
-              { now: options.now }
-            );
+            lifecycle.markAmbiguous(context, { id: stored.referenceId });
             if (error instanceof ControlFailure) {
               return failure(command, error);
             }
@@ -697,11 +534,7 @@ export const createCollaborationActionGrantControl = (
           if (!hasDeviceContext(context)) {
             return failure(command, new ControlFailure("permission_denied"));
           }
-          const status = readCollaborationActionGrantCustodyStatus(
-            options.koedHome,
-            actionGrantAccess(context, command.input.actionGrant.id),
-            { now: options.now }
-          );
+          const status = lifecycle.read(context, command.input.actionGrant);
           if (!status) {
             return failure(command, new ControlFailure("not_available"));
           }
@@ -716,26 +549,16 @@ export const createCollaborationActionGrantControl = (
                 remote.status === 403 ||
                 remote.status === 404
               ) {
-                deleteCollaborationActionGrantCustody(
-                  options.koedHome,
-                  status.actionGrant.id
-                );
+                lifecycle.discard(status.actionGrant, "authority_lost");
               }
               return failure(command, mapPermanentFailure(remote.status));
             }
-            const next = validatedRemoteStatus(context.backend, remote.payload);
-            if (next.actionGrant.id !== status.actionGrant.id) {
-              persistAmbiguousWindow(
-                options.koedHome,
-                context,
-                {
-                  actionGrant: status.actionGrant,
-                  state: status.state === "pending" ? "pending" : "approved",
-                  activationUrl: status.activationUrl
-                },
-                options.now,
-                options.ambiguousResponseWindowMs
-              );
+            const next = lifecycle.acceptRemote(
+              context,
+              status.actionGrant,
+              remote.payload
+            );
+            if (!next) {
               return failure(
                 command,
                 new ControlFailure("temporarily_unavailable")
@@ -747,20 +570,96 @@ export const createCollaborationActionGrantControl = (
                 new ControlFailure("temporarily_unavailable")
               );
             }
-            persistRemoteStatus(options.koedHome, context, next, options.now);
             return success(command, next);
           } catch (error) {
-            persistAmbiguousWindow(
-              options.koedHome,
-              context,
-              {
-                actionGrant: status.actionGrant,
-                state: status.state === "pending" ? "pending" : "approved",
-                activationUrl: status.activationUrl
-              },
-              options.now,
-              options.ambiguousResponseWindowMs
+            lifecycle.markAmbiguous(context, status.actionGrant, {
+              ...status,
+              state:
+                status.state === "pending" || status.state === "review_required"
+                  ? status.state
+                  : "approved"
+            });
+            return failure(
+              command,
+              error instanceof ControlFailure
+                ? error
+                : new ControlFailure("temporarily_unavailable")
             );
+          }
+        }
+        case "collaboration.confirm_action_grant": {
+          if (!hasDeviceContext(context)) {
+            return failure(command, new ControlFailure("permission_denied"));
+          }
+          const status = lifecycle.read(context, command.input.actionGrant);
+          if (
+            !status ||
+            status.state !== "review_required" ||
+            status.approvalTier !== "native_review"
+          ) {
+            return failure(command, new ControlFailure("not_available"));
+          }
+          const path = `/v1/high-risk/action-grants/${encodeURIComponent(
+            status.actionGrant.id
+          )}`;
+          try {
+            if (command.input.decision === "cancel") {
+              const remote = await remoteRequest(options, context, {
+                method: "DELETE",
+                path
+              });
+              if (!remote.ok && remote.status !== 404) {
+                return failure(command, mapPermanentFailure(remote.status));
+              }
+              return success(
+                command,
+                lifecycle.transitionTerminal(context, status, "canceled")
+              );
+            }
+            const remote = await remoteRequest(options, context, {
+              method: "POST",
+              path: `${path}/native-decision`,
+              body: { decision: "approve" }
+            });
+            if (!remote.ok) {
+              if (decisionResponseMayBeAmbiguous(remote.status)) {
+                lifecycle.markAmbiguous(context, status.actionGrant, status);
+              }
+              return failure(command, mapPermanentFailure(remote.status));
+            }
+            const next = lifecycle.acceptRemote(
+              context,
+              status.actionGrant,
+              remote.payload
+            );
+            if (!next) {
+              return failure(
+                command,
+                new ControlFailure("temporarily_unavailable")
+              );
+            }
+            if (
+              next.state === "consumed" ||
+              next.state === "denied" ||
+              next.state === "revoked" ||
+              next.state === "expired" ||
+              next.state === "canceled"
+            ) {
+              return success(command, next);
+            }
+            if (
+              next.approvalTier !== "native_review" ||
+              next.state !== "approved"
+            ) {
+              lifecycle.markAmbiguous(context, status.actionGrant, status);
+              return failure(
+                command,
+                new ControlFailure("temporarily_unavailable")
+              );
+            }
+            return success(command, next);
+          } catch (error) {
+            lifecycle.markAmbiguous(context, status.actionGrant, status);
             return failure(
               command,
               error instanceof ControlFailure
@@ -773,11 +672,7 @@ export const createCollaborationActionGrantControl = (
           if (!hasDeviceContext(context)) {
             return failure(command, new ControlFailure("permission_denied"));
           }
-          const status = readCollaborationActionGrantCustodyStatus(
-            options.koedHome,
-            actionGrantAccess(context, command.input.actionGrant.id),
-            { now: options.now }
-          );
+          const status = lifecycle.read(context, command.input.actionGrant);
           if (!status) {
             return failure(command, new ControlFailure("not_available"));
           }
@@ -789,29 +684,18 @@ export const createCollaborationActionGrantControl = (
             if (!remote.ok && remote.status !== 404) {
               return failure(command, mapPermanentFailure(remote.status));
             }
-            deleteCollaborationActionGrantCustody(
-              options.koedHome,
-              status.actionGrant.id
+            return success(
+              command,
+              lifecycle.transitionTerminal(context, status, "canceled")
             );
-            return success(command, {
-              version: 1,
-              actionGrant: status.actionGrant,
-              state: "canceled",
-              activationUrl: null,
-              expiresAt: status.expiresAt
-            });
           } catch (error) {
-            persistAmbiguousWindow(
-              options.koedHome,
-              context,
-              {
-                actionGrant: status.actionGrant,
-                state: status.state === "pending" ? "pending" : "approved",
-                activationUrl: status.activationUrl
-              },
-              options.now,
-              options.ambiguousResponseWindowMs
-            );
+            lifecycle.markAmbiguous(context, status.actionGrant, {
+              ...status,
+              state:
+                status.state === "pending" || status.state === "review_required"
+                  ? status.state
+                  : "approved"
+            });
             return failure(
               command,
               error instanceof ControlFailure
@@ -853,28 +737,24 @@ export const createCollaborationActionGrantControl = (
       return Promise.resolve(null);
     }
     return Promise.resolve(
-      resolveCollaborationActionGrantSecret(
-        options.koedHome,
-        {
-          referenceId: input.reference.id,
-          backendId: input.context.backend.id,
-          deploymentBaseUrl: input.context.backend.baseUrl,
-          deviceCredentialId,
-          ...(input.context.localOwnerUserId
-            ? { localOwnerUserId: input.context.localOwnerUserId }
-            : {}),
-          principalUserId: input.context.principalUserId,
-          operationFamily: operation.operationFamily,
-          action: operation.action,
-          teamId: operation.teamId,
-          targetId: operation.targetId,
-          method: operation.method,
-          path: operation.path,
-          body: operation.body,
-          idempotencyKey: operation.idempotencyKey
-        },
-        { now: options.now }
-      )
+      lifecycle.resolve({
+        referenceId: input.reference.id,
+        backendId: input.context.backend.id,
+        deploymentBaseUrl: input.context.backend.baseUrl,
+        deviceCredentialId,
+        ...(input.context.localOwnerUserId
+          ? { localOwnerUserId: input.context.localOwnerUserId }
+          : {}),
+        principalUserId: input.context.principalUserId,
+        operationFamily: operation.operationFamily,
+        action: operation.action,
+        teamId: operation.teamId,
+        targetId: operation.targetId,
+        method: operation.method,
+        path: operation.path,
+        body: operation.body,
+        idempotencyKey: operation.idempotencyKey
+      })
     );
   };
 

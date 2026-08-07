@@ -13,6 +13,7 @@ import {
 import {
   DESKTOP_COLLABORATION_BROKER_COMMAND_TIMEOUT_MS,
   DESKTOP_COLLABORATION_BROKER_HANDSHAKE_TIMEOUT_MS,
+  DESKTOP_COLLABORATION_BROKER_LONG_POLL_COMMAND_TIMEOUT_MS,
   DESKTOP_COLLABORATION_BROKER_MAX_MESSAGE_BYTES,
   DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
   DESKTOP_COLLABORATION_BROKER_SHUTDOWN_TIMEOUT_MS,
@@ -42,6 +43,7 @@ export interface CollaborationLocalTransportOptions {
   spawnBroker: (sessionToken: string) => ChildProcessWithIpc;
   openExternal: (url: string) => Promise<unknown>;
   commandTimeoutMs?: number;
+  longPollCommandTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   randomUuid?: () => string;
@@ -84,6 +86,9 @@ export const createCollaborationLocalTransport = (
 ) => {
   const commandTimeoutMs =
     options.commandTimeoutMs ?? DESKTOP_COLLABORATION_BROKER_COMMAND_TIMEOUT_MS;
+  const longPollCommandTimeoutMs =
+    options.longPollCommandTimeoutMs ??
+    DESKTOP_COLLABORATION_BROKER_LONG_POLL_COMMAND_TIMEOUT_MS;
   const handshakeTimeoutMs =
     options.handshakeTimeoutMs ??
     DESKTOP_COLLABORATION_BROKER_HANDSHAKE_TIMEOUT_MS;
@@ -337,11 +342,15 @@ export const createCollaborationLocalTransport = (
     }
     const envelopeId = createEnvelopeId();
     return await new Promise<CollaborationCommandResult>((resolve) => {
+      const timeoutMs =
+        parsed.command === "collaboration.await_action_grant"
+          ? longPollCommandTimeoutMs
+          : commandTimeoutMs;
       const timer = setTimeout(() => {
         pending.delete(envelopeId);
         resolve(failureResult(parsed, safeError("temporarily_unavailable")));
         restartBroker(safeError("temporarily_unavailable"));
-      }, commandTimeoutMs);
+      }, timeoutMs);
       timer.unref?.();
       pending.set(envelopeId, {
         ownerId: context.ownerId,

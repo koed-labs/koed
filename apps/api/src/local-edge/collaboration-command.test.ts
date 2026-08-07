@@ -1546,6 +1546,15 @@ describe("local-edge collaboration command route", () => {
             status: {
               version: 1,
               actionGrant: { id: actionGrantId },
+              approvalTier: "step_up",
+              review: {
+                version: 1,
+                title: "Create Product Team?",
+                description: "Review the exact Team creation request.",
+                consequence: "A new Team will be created.",
+                confirmLabel: "Create Team",
+                details: [{ label: "Team", value: "Product Team" }]
+              },
               state: "pending",
               activationUrl: "https://team.example.test/action-grant",
               expiresAt: "2099-01-01T00:05:00.000Z"

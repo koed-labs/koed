@@ -418,6 +418,74 @@ export interface AcceptedTeamInviteRecord {
   createdUser: boolean;
 }
 
+export interface TeamInviteReviewRecord {
+  invite: TeamInviteRecord;
+  team: TeamRecord;
+  defaultWorkspace: Pick<TeamWorkspaceRecord, "id" | "name" | "lifecycle">;
+}
+
+export interface TeamInviteAcceptanceReviewRecord extends TeamInviteReviewRecord {
+  effectiveRole: TeamRole;
+}
+
+export interface TeamInviteCreationReviewRecord {
+  managerRole: Exclude<TeamRole, "member">;
+  team: Pick<TeamRecord, "id" | "name">;
+  defaultWorkspace: Pick<TeamWorkspaceRecord, "id" | "name" | "lifecycle">;
+}
+
+export interface TeamInviteRevocationReviewRecord {
+  managerRole: Exclude<TeamRole, "member">;
+  team: Pick<TeamRecord, "id" | "name">;
+  invite: Pick<
+    TeamInviteRecord,
+    "id" | "email" | "role" | "version" | "lifecycle"
+  >;
+}
+
+export interface TeamMembershipActionReviewRecord {
+  managerRole: Exclude<TeamRole, "member">;
+  team: Pick<TeamRecord, "id" | "name">;
+  member: Pick<
+    TeamMembershipRecord,
+    "userId" | "role" | "status" | "version" | "disabledAt"
+  > & {
+    email: string;
+    displayName: string | null;
+  };
+  activeOwnerCount: number;
+}
+
+export interface TeamLeaveReviewRecord {
+  team: Pick<TeamRecord, "id" | "name">;
+  membership: Pick<
+    TeamMembershipRecord,
+    "userId" | "role" | "status" | "version" | "disabledAt"
+  >;
+  activeOwnerCount: number;
+}
+
+export interface TeamWorkspaceCreationReviewRecord {
+  managerRole: Exclude<TeamRole, "member">;
+  team: Pick<TeamRecord, "id" | "name">;
+}
+
+export interface TeamWorkspaceLifecycleReviewRecord {
+  managerRole: Exclude<TeamRole, "member">;
+  team: Pick<TeamRecord, "id" | "name">;
+  workspace: Pick<TeamWorkspaceRecord, "id" | "name" | "version" | "lifecycle">;
+}
+
+export interface TeamWorkspaceAccessUpdateReviewRecord extends TeamWorkspaceLifecycleReviewRecord {
+  member: {
+    userId: string;
+    email: string;
+    displayName: string | null;
+  };
+  currentAccess: TeamWorkspaceAccessLevel;
+  currentAccessVersion: number | null;
+}
+
 export interface ApiTokenRecord {
   id: string;
   ownerUserId: string;
@@ -851,6 +919,8 @@ export interface ConversationSourceDownloadAuthorizationRecord {
   deviceCredentialId: string;
   artifactId: string;
   recipientKey: Record<string, unknown>;
+  initiatingOperationKind: "handoff" | "fork" | null;
+  initiatingOperationId: string | null;
   firstSegmentIndex: number;
   lastSegmentIndex: number;
   createdAt: string;
@@ -1931,9 +2001,51 @@ export interface MemorySourceRepository
       expiresAt: Date;
     }
   ): Promise<TeamInviteRecord | null>;
+  getTeamInviteCreationReview(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      defaultTeamWorkspaceId: string;
+      role: TeamRole;
+    }
+  ): Promise<TeamInviteCreationReviewRecord | null>;
+  getTeamInviteAcceptanceReview(
+    actor: ActorContext,
+    tokenHash: string
+  ): Promise<TeamInviteAcceptanceReviewRecord | null>;
+  getTeamInviteRevocationReview(
+    actor: ActorContext,
+    input: { teamId: string; inviteId: string }
+  ): Promise<TeamInviteRevocationReviewRecord | null>;
+  getTeamMembershipActionReview(
+    actor: ActorContext,
+    input: { teamId: string; userId: string }
+  ): Promise<TeamMembershipActionReviewRecord | null>;
+  getTeamLeaveReview(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamLeaveReviewRecord | null>;
+  getTeamWorkspaceCreationReview(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamWorkspaceCreationReviewRecord | null>;
+  getTeamWorkspaceLifecycleReview(
+    actor: ActorContext,
+    input: {
+      teamWorkspaceId: string;
+      lifecycle: TeamWorkspaceLifecycle;
+    }
+  ): Promise<TeamWorkspaceLifecycleReviewRecord | null>;
+  getTeamWorkspaceAccessUpdateReview(
+    actor: ActorContext,
+    input: { teamWorkspaceId: string; userId: string }
+  ): Promise<TeamWorkspaceAccessUpdateReviewRecord | null>;
   getPendingTeamInviteByTokenHash(
     tokenHash: string
   ): Promise<TeamInviteRecord | null>;
+  getPendingTeamInviteReviewByTokenHash(
+    tokenHash: string
+  ): Promise<TeamInviteReviewRecord | null>;
   acceptTeamInvite(input: {
     tokenHash: string;
     userId: string;

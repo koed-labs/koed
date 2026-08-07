@@ -424,6 +424,21 @@ export function PeopleView({
   const [busyKey, setBusyKey] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [accessDraft, setAccessDraft] = useState<
+    Record<
+      string,
+      {
+        teamId: string;
+        workspaceId: string;
+        workspaceName: string;
+        userId: string;
+        userName: string;
+        before: "disabled" | "read" | "write";
+        after: "disabled" | "read" | "write";
+        expectedVersion: number | null;
+      }
+    >
+  >({});
   const [presenceNow, setPresenceNow] = useState(() => Date.now());
   const effectivePresenceNow = Math.max(presenceNow, Date.now());
   const [createdInvitation, setCreatedInvitation] = useState<{
@@ -731,6 +746,31 @@ export function PeopleView({
     );
   };
 
+  const applyAccessDraft = async () => {
+    const changes = Object.entries(accessDraft);
+    if (changes.length === 0) return;
+    await runOperation(
+      "apply-access-draft",
+      async () => {
+        for (const [key, change] of changes) {
+          await client.setWorkspaceAccess({
+            teamId: change.teamId,
+            workspaceId: change.workspaceId,
+            userId: change.userId,
+            access: change.after,
+            expectedVersion: change.expectedVersion
+          });
+          setAccessDraft((current) => {
+            const remaining = { ...current };
+            delete remaining[key];
+            return remaining;
+          });
+        }
+      },
+      "The remaining Workspace Access draft could not be applied. Successful changes are already reflected in the authoritative view."
+    );
+  };
+
   return (
     <section className="collab-index collab-index-view collab-team-admin">
       <header className="collab-content-header">
@@ -855,7 +895,45 @@ export function PeopleView({
         >
           <header>
             <h2 id="members-heading">Members</h2>
+            {canManage && Object.keys(accessDraft).length > 0 ? (
+              <div className="collab-header-actions">
+                <span role="status">
+                  {Object.keys(accessDraft).length} pending access{" "}
+                  {Object.keys(accessDraft).length === 1 ? "change" : "changes"}
+                </span>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={Boolean(busyKey)}
+                  onClick={() => setAccessDraft({})}
+                >
+                  Discard
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(busyKey)}
+                  onClick={() => void applyAccessDraft()}
+                >
+                  {busyKey === "apply-access-draft"
+                    ? "Applying…"
+                    : "Review and apply"}
+                </button>
+              </div>
+            ) : null}
           </header>
+          {canManage && Object.keys(accessDraft).length > 0 ? (
+            <ul
+              className="collab-admin-list"
+              aria-label="Workspace Access draft"
+            >
+              {Object.values(accessDraft).map((change) => (
+                <li key={`${change.userId}:${change.workspaceId}`}>
+                  <strong>{change.userName}</strong> · {change.workspaceName}:{" "}
+                  {change.before} → {change.after}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {view.people.length === 0 ? (
             <p className="collab-admin-empty">No Team members available.</p>
           ) : (
@@ -988,34 +1066,45 @@ export function PeopleView({
                                 access: "disabled" as const,
                                 version: null
                               };
+                            const draftKey = `${person.id}:${workspace.id}`;
+                            const drafted = accessDraft[draftKey];
                             return (
                               <label key={workspace.id}>
                                 <span>{workspace.name}</span>
                                 <select
                                   aria-label={`${workspace.name} access for ${person.displayName}`}
-                                  value={currentAccess.access}
+                                  value={drafted?.after ?? currentAccess.access}
                                   disabled={
                                     Boolean(busyKey) ||
                                     !canChangeTarget ||
                                     workspace.lifecycle !== "active"
                                   }
-                                  onChange={(event) =>
-                                    void runOperation(
-                                      `access-${workspace.id}-${person.id}`,
-                                      () =>
-                                        client.setWorkspaceAccess({
+                                  onChange={(event) => {
+                                    const after = event.currentTarget.value as
+                                      | "disabled"
+                                      | "read"
+                                      | "write";
+                                    setAccessDraft((current) => {
+                                      if (after === currentAccess.access) {
+                                        const remaining = { ...current };
+                                        delete remaining[draftKey];
+                                        return remaining;
+                                      }
+                                      return {
+                                        ...current,
+                                        [draftKey]: {
                                           teamId: team.id,
                                           workspaceId: workspace.id,
+                                          workspaceName: workspace.name,
                                           userId: person.id,
-                                          access: event.currentTarget.value as
-                                            | "disabled"
-                                            | "read"
-                                            | "write",
+                                          userName: person.displayName,
+                                          before: currentAccess.access,
+                                          after,
                                           expectedVersion: currentAccess.version
-                                        }),
-                                      "Workspace Access could not be changed."
-                                    )
-                                  }
+                                        }
+                                      };
+                                    });
+                                  }}
                                 >
                                   <option value="disabled">No access</option>
                                   <option value="read">Read</option>
@@ -2024,18 +2113,7 @@ function SharedMemoryOwnerModal({
     run(async () => {
       if (!preview || !currentEntry.logicalMemoryId || !workflow) return;
       requireDestination();
-      const consent = await client.consentSharedMemory({
-        consentId: crypto.randomUUID(),
-        logicalMemoryId: currentEntry.logicalMemoryId,
-        teamId,
-        workspaceId,
-        mode,
-        allowedRepresentations: [representation],
-        selectedRepresentation: representation,
-        previewRevision: preview.previewRevision,
-        previewHash: preview.previewHash,
-        expiresAt: null
-      });
+      const consentId = crypto.randomUUID();
       const targetGrant =
         workflow.kind === "change" ? workflow.grant : selectedDestinationGrant;
       if (targetGrant) {
@@ -2058,12 +2136,18 @@ function SharedMemoryOwnerModal({
         }
         const changed = await client.changeSharedMemoryRepresentation({
           mutationId: crypto.randomUUID(),
+          logicalMemoryId: currentEntry.logicalMemoryId,
           teamId,
           workspaceId,
           shareGrantId: refreshedGrant.id,
-          consentId: consent.id,
+          consentId,
           representation,
-          expectedGrantVersion: refreshedGrant.grantVersion
+          expectedGrantVersion: refreshedGrant.grantVersion,
+          mode,
+          allowedRepresentations: [representation],
+          previewRevision: preview.previewRevision,
+          previewHash: preview.previewHash,
+          expiresAt: null
         });
         setOwnerGrants((current) =>
           current.map((grant) => (grant.id === changed.id ? changed : grant))
@@ -2072,10 +2156,16 @@ function SharedMemoryOwnerModal({
         const shared = await client.shareMemory({
           mutationId: crypto.randomUUID(),
           logicalGrantId: crypto.randomUUID(),
+          consentId,
           logicalMemoryId: currentEntry.logicalMemoryId,
           teamId,
           workspaceId,
-          consentId: consent.id
+          mode,
+          allowedRepresentations: [representation],
+          selectedRepresentation: representation,
+          previewRevision: preview.previewRevision,
+          previewHash: preview.previewHash,
+          expiresAt: null
         });
         setOwnerGrants((current) => [shared, ...current]);
       }
@@ -3038,6 +3128,7 @@ function MainContent({
     case "team_people":
       return (
         <PeopleView
+          key={snapshot.view.teamId}
           client={client}
           snapshot={snapshot}
           onSelectWorkspace={(selectedWorkspaceId) => {

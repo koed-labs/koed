@@ -230,23 +230,6 @@ const previewCommand = () => ({
   }
 });
 
-const consentCommand = () => ({
-  ...commandBase("collaboration.consent_shared_memory"),
-  input: {
-    consentId: ids.consent,
-    logicalMemoryId: ids.logicalMemory,
-    teamId: ids.team,
-    workspaceId: ids.workspace,
-    mode: "continuous",
-    allowedRepresentations: ["memory_events"],
-    selectedRepresentation: "memory_events",
-    previewRevision: 1,
-    previewHash: hash,
-    expiresAt: null,
-    actionGrant: { id: ids.actionGrant }
-  }
-});
-
 const shareCommand = () => ({
   ...commandBase("collaboration.share_memory"),
   input: {
@@ -256,6 +239,12 @@ const shareCommand = () => ({
     teamId: ids.team,
     workspaceId: ids.workspace,
     consentId: ids.consent,
+    mode: "continuous",
+    allowedRepresentations: ["memory_events"],
+    selectedRepresentation: "memory_events",
+    previewRevision: 1,
+    previewHash: hash,
+    expiresAt: null,
     actionGrant: { id: ids.actionGrant }
   }
 });
@@ -451,6 +440,36 @@ const createFixture = (
         response = { consent: consentResponse() };
       } else if (
         recorded.method === "POST" &&
+        url.pathname.endsWith("/v1/shared-memory/share-bundles")
+      ) {
+        response = {
+          consent: consentResponse(),
+          grant: grantResponse()
+        };
+      } else if (
+        recorded.method === "PUT" &&
+        url.pathname.endsWith("/representation-bundle")
+      ) {
+        const consentId =
+          typeof recorded.body?.consentId === "string"
+            ? recorded.body.consentId
+            : ids.consent;
+        response = {
+          consent: {
+            ...consentResponse(),
+            id: consentId,
+            allowedRepresentations: ["lcm_leaves"],
+            selectedRepresentation: "lcm_leaves",
+            previewHash: hashC
+          },
+          grant: grantResponse({
+            representation: "lcm_leaves",
+            consentId,
+            grantVersion: 2
+          })
+        };
+      } else if (
+        recorded.method === "POST" &&
         url.pathname.endsWith("/v1/shared-memory/share-grants")
       ) {
         response = { grant: grantResponse() };
@@ -607,10 +626,12 @@ const createFixture = (
         }
       ]
     }),
-    resolveActionGrantSecret: () =>
-      overrides.actionGrantSecret === undefined
-        ? "hrg_00000000000000000000000000000000"
-        : overrides.actionGrantSecret
+    actionGrantLifecycle: {
+      resolve: () =>
+        overrides.actionGrantSecret === undefined
+          ? "hrg_00000000000000000000000000000000"
+          : overrides.actionGrantSecret
+    }
   };
 
   return {
@@ -836,32 +857,6 @@ describe("collaboration Shared Memory control", () => {
     expect(second.data.preview.items[0]?.sequence).toBe(101);
   });
 
-  it("consents using only the persisted preview ID/hash and exact preview binding", async () => {
-    const fixture = createFixture();
-    await fixture.control.dispatch(previewCommand(), context());
-    const result = await fixture.control.dispatch(consentCommand(), context());
-
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        consent: {
-          id: ids.consent,
-          previewHash: hash,
-          previewRevision: 1,
-          state: "active"
-        }
-      }
-    });
-    const request = fixture.requests.find((item) =>
-      item.pathname.endsWith("/consents")
-    );
-    expect(request?.body).toMatchObject({
-      preview: { previewId: ids.preview, previewHash: hash }
-    });
-    expect(request?.body).not.toHaveProperty("items");
-    expect(JSON.stringify(request?.body)).not.toContain("authoritative item");
-  });
-
   it("shares, revokes, and changes representation through persisted scoped authority", async () => {
     const shareFixture = createFixture();
     const shared = await shareFixture.control.dispatch(
@@ -944,12 +939,18 @@ describe("collaboration Shared Memory control", () => {
         ...commandBase("collaboration.change_shared_memory_representation"),
         input: {
           mutationId: randomUUID(),
+          logicalMemoryId: ids.logicalMemory,
           teamId: ids.team,
           workspaceId: ids.workspace,
           shareGrantId: ids.grant,
           consentId: replacementConsentId,
           representation: "lcm_leaves",
           expectedGrantVersion: 1,
+          mode: "continuous",
+          allowedRepresentations: ["lcm_leaves"],
+          previewRevision: 1,
+          previewHash: hashC,
+          expiresAt: null,
           actionGrant: { id: ids.actionGrant }
         }
       },
@@ -1163,15 +1164,17 @@ describe("collaboration Shared Memory control", () => {
     expectFailure(
       await fixture.control.dispatch(
         {
-          ...consentCommand(),
-          input: { ...consentCommand().input, previewRevision: 2 }
+          ...shareCommand(),
+          input: { ...shareCommand().input, previewRevision: 2 }
         },
         context()
       ),
       "conflict"
     );
     expect(
-      fixture.requests.filter((item) => item.pathname.endsWith("/consents"))
+      fixture.requests.filter((item) =>
+        item.pathname.endsWith("/share-bundles")
+      )
     ).toHaveLength(0);
   });
 

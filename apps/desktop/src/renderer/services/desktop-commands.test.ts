@@ -39,6 +39,23 @@ describe("invokeDesktop", () => {
     await vi.advanceTimersByTimeAsync(25);
     await expectation;
   });
+
+  it("allows aggregate status to finish after bundled-local warmup", async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: KoedServerStatus) => void;
+    window.koedDesktop = {
+      invoke: () =>
+        new Promise<KoedServerStatus>((done) => {
+          resolve = done;
+        })
+    } as DesktopApi;
+
+    const pending = invokeDesktop<KoedServerStatus>("status");
+    await vi.advanceTimersByTimeAsync(120_001);
+    resolve(status());
+
+    await expect(pending).resolves.toEqual(status());
+  });
 });
 
 describe("DesktopStatusStore", () => {

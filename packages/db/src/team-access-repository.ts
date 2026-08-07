@@ -1,4 +1,5 @@
 import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
@@ -52,13 +53,19 @@ import type {
   ListTeamAuditEventsInput,
   TeamBillingSeatStateRecord,
   TeamBillingSeatSyncStatus,
+  TeamInviteAcceptanceReviewRecord,
+  TeamInviteCreationReviewRecord,
   TeamInviteRecord,
+  TeamInviteRevocationReviewRecord,
+  TeamInviteReviewRecord,
   TeamInviteLifecycle,
   TeamEntitlementGateRecord,
   TeamEntitlementStatus,
   TeamMembershipRecord,
   TeamMembershipStatus,
   TeamManagementMemberRecord,
+  TeamMembershipActionReviewRecord,
+  TeamLeaveReviewRecord,
   TeamRecord,
   TeamRole,
   TeamLifecycle,
@@ -66,7 +73,10 @@ import type {
   TeamSupportOverviewRecord,
   TeamWorkspaceAccessLevel,
   TeamWorkspaceAccessRecord,
+  TeamWorkspaceAccessUpdateReviewRecord,
   TeamWorkspaceContextRecord,
+  TeamWorkspaceCreationReviewRecord,
+  TeamWorkspaceLifecycleReviewRecord,
   TeamWorkspaceLifecycle,
   TeamWorkspaceRecord,
   UserRecord
@@ -79,6 +89,27 @@ const nullableTimestampIso = (value: Date | string | null): string | null =>
   value ? timestampIso(value) : null;
 
 const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+
+const reviewManagerMemberships = alias(
+  teamMemberships,
+  "review_manager_memberships"
+);
+const reviewTargetMemberships = alias(
+  teamMemberships,
+  "review_target_memberships"
+);
+const reviewAcceptanceMemberships = alias(
+  teamMemberships,
+  "review_acceptance_memberships"
+);
+const reviewManagerWorkspaceAccess = alias(
+  teamWorkspaceAccessGrants,
+  "review_manager_workspace_access"
+);
+const reviewTargetWorkspaceAccess = alias(
+  teamWorkspaceAccessGrants,
+  "review_target_workspace_access"
+);
 
 const normalizeBoundedName = (value: string): string => {
   const normalized = value.trim().normalize("NFC");
@@ -733,9 +764,10 @@ export const createTeamAccessRepository = (
     );
   };
 
-  const getDefaultTeamWorkspaceForUpdate = async (
+  const getTeamWorkspaceForUpdate = async (
     tx: TeamAccessTransaction,
-    teamId: string
+    teamId: string,
+    teamWorkspaceId: string
   ) => {
     const rows = await tx
       .select({
@@ -743,8 +775,12 @@ export const createTeamAccessRepository = (
         lifecycle: teamWorkspaces.lifecycle
       })
       .from(teamWorkspaces)
-      .where(eq(teamWorkspaces.teamId, teamId))
-      .orderBy(teamWorkspaces.createdAt, teamWorkspaces.id)
+      .where(
+        and(
+          eq(teamWorkspaces.teamId, teamId),
+          eq(teamWorkspaces.id, teamWorkspaceId)
+        )
+      )
       .limit(1)
       .for("update");
 
@@ -3146,9 +3182,10 @@ export const createTeamAccessRepository = (
         ) {
           return null;
         }
-        const defaultWorkspace = await getDefaultTeamWorkspaceForUpdate(
+        const defaultWorkspace = await getTeamWorkspaceForUpdate(
           tx,
-          input.teamId
+          input.teamId,
+          input.defaultTeamWorkspaceId
         );
         if (
           !defaultWorkspace ||
@@ -3201,6 +3238,485 @@ export const createTeamAccessRepository = (
 
         return invite;
       });
+    },
+
+    async getTeamInviteCreationReview(
+      actor: ActorContext,
+      input: {
+        teamId: string;
+        defaultTeamWorkspaceId: string;
+        role: TeamRole;
+      }
+    ): Promise<TeamInviteCreationReviewRecord | null> {
+      const conditions = [
+        eq(teamMemberships.teamId, input.teamId),
+        eq(teamMemberships.userId, actor.userId),
+        inArray(teamMemberships.role, ["owner", "admin"]),
+        eq(teamMemberships.status, "enabled"),
+        isNull(teamMemberships.disabledAt),
+        eq(teams.id, input.teamId),
+        eq(teams.lifecycle, "active"),
+        inArray(teams.entitlementStatus, ["active", "grace"]),
+        eq(teamWorkspaces.id, input.defaultTeamWorkspaceId),
+        eq(teamWorkspaces.teamId, input.teamId),
+        eq(teamWorkspaces.lifecycle, "active")
+      ];
+      if (input.role === "owner") {
+        conditions.push(eq(teamMemberships.role, "owner"));
+      }
+      const rows = await db
+        .select({
+          managerRole: teamMemberships.role,
+          teamId: teams.id,
+          teamName: teams.name,
+          defaultWorkspaceId: teamWorkspaces.id,
+          defaultWorkspaceName: teamWorkspaces.name,
+          defaultWorkspaceLifecycle: teamWorkspaces.lifecycle
+        })
+        .from(teamMemberships)
+        .innerJoin(teams, eq(teams.id, teamMemberships.teamId))
+        .innerJoin(teamWorkspaces, eq(teamWorkspaces.teamId, teams.id))
+        .where(and(...conditions))
+        .limit(1);
+      const row = rows[0];
+      if (!row || row.managerRole === "member") {
+        return null;
+      }
+      return {
+        managerRole: row.managerRole,
+        team: { id: row.teamId, name: row.teamName },
+        defaultWorkspace: {
+          id: row.defaultWorkspaceId,
+          name: row.defaultWorkspaceName,
+          lifecycle: row.defaultWorkspaceLifecycle
+        }
+      };
+    },
+
+    async getTeamInviteAcceptanceReview(
+      actor: ActorContext,
+      tokenHash: string
+    ): Promise<TeamInviteAcceptanceReviewRecord | null> {
+      const rows = await db
+        .select({
+          invite: teamInvites,
+          team: teams,
+          defaultWorkspace: teamWorkspaces,
+          existingMembershipRole: reviewAcceptanceMemberships.role,
+          existingMembershipStatus: reviewAcceptanceMemberships.status,
+          existingMembershipDisabledAt: reviewAcceptanceMemberships.disabledAt
+        })
+        .from(teamInvites)
+        .innerJoin(teams, eq(teams.id, teamInvites.teamId))
+        .innerJoin(
+          teamWorkspaces,
+          and(
+            eq(teamWorkspaces.id, teamInvites.defaultTeamWorkspaceId),
+            eq(teamWorkspaces.teamId, teamInvites.teamId)
+          )
+        )
+        .innerJoin(users, eq(users.id, actor.userId))
+        .leftJoin(
+          reviewAcceptanceMemberships,
+          and(
+            eq(reviewAcceptanceMemberships.teamId, teamInvites.teamId),
+            eq(reviewAcceptanceMemberships.userId, actor.userId)
+          )
+        )
+        .where(
+          and(
+            eq(teamInvites.tokenHash, tokenHash),
+            eq(teamInvites.lifecycle, "pending"),
+            gt(teamInvites.expiresAt, sql`now()`),
+            eq(teams.lifecycle, "active"),
+            inArray(teams.entitlementStatus, ["active", "grace"]),
+            eq(teamWorkspaces.lifecycle, "active"),
+            isNull(users.disabledAt),
+            isNull(users.deletedAt),
+            sql`lower(btrim(${users.email})) = ${teamInvites.normalizedEmail}`
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (
+        !row ||
+        row.existingMembershipStatus === "disabled" ||
+        row.existingMembershipDisabledAt !== null
+      ) {
+        return null;
+      }
+      return row
+        ? {
+            invite: mapInviteRecord(row.invite),
+            team: mapTeamRecord(row.team),
+            defaultWorkspace: {
+              id: row.defaultWorkspace.id,
+              name: row.defaultWorkspace.name,
+              lifecycle: row.defaultWorkspace.lifecycle
+            },
+            effectiveRole:
+              row.existingMembershipStatus === "enabled" &&
+              row.existingMembershipRole
+                ? row.existingMembershipRole
+                : row.invite.role
+          }
+        : null;
+    },
+
+    async getTeamInviteRevocationReview(
+      actor: ActorContext,
+      input: { teamId: string; inviteId: string }
+    ): Promise<TeamInviteRevocationReviewRecord | null> {
+      const rows = await db
+        .select({
+          managerRole: teamMemberships.role,
+          teamId: teams.id,
+          teamName: teams.name,
+          invite: teamInvites
+        })
+        .from(teamInvites)
+        .innerJoin(teams, eq(teams.id, teamInvites.teamId))
+        .innerJoin(
+          teamMemberships,
+          and(
+            eq(teamMemberships.teamId, teamInvites.teamId),
+            eq(teamMemberships.userId, actor.userId)
+          )
+        )
+        .where(
+          and(
+            eq(teamInvites.id, input.inviteId),
+            eq(teamInvites.teamId, input.teamId),
+            eq(teamInvites.lifecycle, "pending"),
+            eq(teams.lifecycle, "active"),
+            inArray(teamMemberships.role, ["owner", "admin"]),
+            eq(teamMemberships.status, "enabled"),
+            isNull(teamMemberships.disabledAt)
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (
+        !row ||
+        row.managerRole === "member" ||
+        (row.invite.role === "owner" && row.managerRole !== "owner")
+      ) {
+        return null;
+      }
+      return {
+        managerRole: row.managerRole,
+        team: { id: row.teamId, name: row.teamName },
+        invite: {
+          id: row.invite.id,
+          email: row.invite.email,
+          role: row.invite.role,
+          version: row.invite.version,
+          lifecycle: row.invite.lifecycle
+        }
+      };
+    },
+
+    async getTeamMembershipActionReview(
+      actor: ActorContext,
+      input: { teamId: string; userId: string }
+    ): Promise<TeamMembershipActionReviewRecord | null> {
+      const rows = await db
+        .select({
+          managerRole: reviewManagerMemberships.role,
+          teamId: teams.id,
+          teamName: teams.name,
+          member: reviewTargetMemberships,
+          email: users.email,
+          displayName: users.displayName,
+          activeOwnerCount: sql<number>`(
+            select count(*)::int
+              from team_memberships as active_owners
+             where active_owners.team_id = ${teams.id}
+               and active_owners.role = 'owner'
+               and active_owners.status = 'enabled'
+               and active_owners.disabled_at is null
+          )`
+        })
+        .from(teams)
+        .innerJoin(
+          reviewManagerMemberships,
+          and(
+            eq(reviewManagerMemberships.teamId, teams.id),
+            eq(reviewManagerMemberships.userId, actor.userId)
+          )
+        )
+        .innerJoin(
+          reviewTargetMemberships,
+          and(
+            eq(reviewTargetMemberships.teamId, teams.id),
+            eq(reviewTargetMemberships.userId, input.userId)
+          )
+        )
+        .innerJoin(users, eq(users.id, reviewTargetMemberships.userId))
+        .where(
+          and(
+            eq(teams.id, input.teamId),
+            eq(teams.lifecycle, "active"),
+            inArray(teams.entitlementStatus, ["active", "grace"]),
+            inArray(reviewManagerMemberships.role, ["owner", "admin"]),
+            eq(reviewManagerMemberships.status, "enabled"),
+            isNull(reviewManagerMemberships.disabledAt)
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row || row.managerRole === "member") {
+        return null;
+      }
+      const member = mapMembershipRecord(row.member);
+      return {
+        managerRole: row.managerRole,
+        team: { id: row.teamId, name: row.teamName },
+        member: {
+          userId: member.userId,
+          role: member.role,
+          status: member.status,
+          version: member.version,
+          disabledAt: member.disabledAt,
+          email: row.email,
+          displayName: row.displayName
+        },
+        activeOwnerCount: row.activeOwnerCount
+      };
+    },
+
+    async getTeamLeaveReview(
+      actor: ActorContext,
+      teamId: string
+    ): Promise<TeamLeaveReviewRecord | null> {
+      const rows = await db
+        .select({
+          teamId: teams.id,
+          teamName: teams.name,
+          membership: teamMemberships,
+          activeOwnerCount: sql<number>`(
+            select count(*)::int
+              from team_memberships as active_owners
+             where active_owners.team_id = ${teams.id}
+               and active_owners.role = 'owner'
+               and active_owners.status = 'enabled'
+               and active_owners.disabled_at is null
+          )`
+        })
+        .from(teamMemberships)
+        .innerJoin(teams, eq(teams.id, teamMemberships.teamId))
+        .where(
+          and(
+            eq(teamMemberships.teamId, teamId),
+            eq(teamMemberships.userId, actor.userId),
+            eq(teamMemberships.status, "enabled"),
+            isNull(teamMemberships.disabledAt),
+            eq(teams.lifecycle, "active")
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row) {
+        return null;
+      }
+      const membership = mapMembershipRecord(row.membership);
+      return {
+        team: { id: row.teamId, name: row.teamName },
+        membership: {
+          userId: membership.userId,
+          role: membership.role,
+          status: membership.status,
+          version: membership.version,
+          disabledAt: membership.disabledAt
+        },
+        activeOwnerCount: row.activeOwnerCount
+      };
+    },
+
+    async getTeamWorkspaceCreationReview(
+      actor: ActorContext,
+      teamId: string
+    ): Promise<TeamWorkspaceCreationReviewRecord | null> {
+      const rows = await db
+        .select({
+          managerRole: teamMemberships.role,
+          teamId: teams.id,
+          teamName: teams.name
+        })
+        .from(teams)
+        .innerJoin(
+          teamMemberships,
+          and(
+            eq(teamMemberships.teamId, teams.id),
+            eq(teamMemberships.userId, actor.userId)
+          )
+        )
+        .where(
+          and(
+            eq(teams.id, teamId),
+            eq(teams.lifecycle, "active"),
+            inArray(teams.entitlementStatus, ["active", "grace"]),
+            inArray(teamMemberships.role, ["owner", "admin"]),
+            eq(teamMemberships.status, "enabled"),
+            isNull(teamMemberships.disabledAt)
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row || row.managerRole === "member") return null;
+      return {
+        managerRole: row.managerRole,
+        team: { id: row.teamId, name: row.teamName }
+      };
+    },
+
+    async getTeamWorkspaceLifecycleReview(
+      actor: ActorContext,
+      input: {
+        teamWorkspaceId: string;
+        lifecycle: TeamWorkspaceLifecycle;
+      }
+    ): Promise<TeamWorkspaceLifecycleReviewRecord | null> {
+      const rows = await db
+        .select({
+          managerRole: teamMemberships.role,
+          teamId: teams.id,
+          teamName: teams.name,
+          workspace: teamWorkspaces
+        })
+        .from(teamWorkspaces)
+        .innerJoin(teams, eq(teams.id, teamWorkspaces.teamId))
+        .innerJoin(
+          teamMemberships,
+          and(
+            eq(teamMemberships.teamId, teamWorkspaces.teamId),
+            eq(teamMemberships.userId, actor.userId)
+          )
+        )
+        .innerJoin(
+          teamWorkspaceAccessGrants,
+          and(
+            eq(teamWorkspaceAccessGrants.teamWorkspaceId, teamWorkspaces.id),
+            eq(teamWorkspaceAccessGrants.teamId, teamWorkspaces.teamId),
+            eq(teamWorkspaceAccessGrants.userId, actor.userId)
+          )
+        )
+        .where(
+          and(
+            eq(teamWorkspaces.id, input.teamWorkspaceId),
+            eq(teamWorkspaces.lifecycle, input.lifecycle),
+            eq(teams.lifecycle, "active"),
+            inArray(teams.entitlementStatus, ["active", "grace"]),
+            inArray(teamMemberships.role, ["owner", "admin"]),
+            eq(teamMemberships.status, "enabled"),
+            isNull(teamMemberships.disabledAt),
+            eq(teamWorkspaceAccessGrants.access, "write"),
+            isNull(teamWorkspaceAccessGrants.disabledAt)
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row || row.managerRole === "member") return null;
+      return {
+        managerRole: row.managerRole,
+        team: { id: row.teamId, name: row.teamName },
+        workspace: {
+          id: row.workspace.id,
+          name: row.workspace.name,
+          version: row.workspace.version,
+          lifecycle: row.workspace.lifecycle
+        }
+      };
+    },
+
+    async getTeamWorkspaceAccessUpdateReview(
+      actor: ActorContext,
+      input: { teamWorkspaceId: string; userId: string }
+    ): Promise<TeamWorkspaceAccessUpdateReviewRecord | null> {
+      const rows = await db
+        .select({
+          managerRole: reviewManagerMemberships.role,
+          teamId: teams.id,
+          teamName: teams.name,
+          workspace: teamWorkspaces,
+          memberUserId: reviewTargetMemberships.userId,
+          memberEmail: users.email,
+          memberDisplayName: users.displayName,
+          currentAccess: reviewTargetWorkspaceAccess.access,
+          currentAccessVersion: reviewTargetWorkspaceAccess.version,
+          currentAccessDisabledAt: reviewTargetWorkspaceAccess.disabledAt
+        })
+        .from(teamWorkspaces)
+        .innerJoin(teams, eq(teams.id, teamWorkspaces.teamId))
+        .innerJoin(
+          reviewManagerMemberships,
+          and(
+            eq(reviewManagerMemberships.teamId, teamWorkspaces.teamId),
+            eq(reviewManagerMemberships.userId, actor.userId)
+          )
+        )
+        .innerJoin(
+          reviewManagerWorkspaceAccess,
+          and(
+            eq(reviewManagerWorkspaceAccess.teamWorkspaceId, teamWorkspaces.id),
+            eq(reviewManagerWorkspaceAccess.teamId, teamWorkspaces.teamId),
+            eq(reviewManagerWorkspaceAccess.userId, actor.userId)
+          )
+        )
+        .innerJoin(
+          reviewTargetMemberships,
+          and(
+            eq(reviewTargetMemberships.teamId, teamWorkspaces.teamId),
+            eq(reviewTargetMemberships.userId, input.userId)
+          )
+        )
+        .innerJoin(users, eq(users.id, reviewTargetMemberships.userId))
+        .leftJoin(
+          reviewTargetWorkspaceAccess,
+          and(
+            eq(reviewTargetWorkspaceAccess.teamWorkspaceId, teamWorkspaces.id),
+            eq(reviewTargetWorkspaceAccess.teamId, teamWorkspaces.teamId),
+            eq(reviewTargetWorkspaceAccess.userId, input.userId)
+          )
+        )
+        .where(
+          and(
+            eq(teamWorkspaces.id, input.teamWorkspaceId),
+            eq(teamWorkspaces.lifecycle, "active"),
+            eq(teams.lifecycle, "active"),
+            inArray(teams.entitlementStatus, ["active", "grace"]),
+            inArray(reviewManagerMemberships.role, ["owner", "admin"]),
+            eq(reviewManagerMemberships.status, "enabled"),
+            isNull(reviewManagerMemberships.disabledAt),
+            eq(reviewManagerWorkspaceAccess.access, "write"),
+            isNull(reviewManagerWorkspaceAccess.disabledAt),
+            eq(reviewTargetMemberships.status, "enabled"),
+            isNull(reviewTargetMemberships.disabledAt)
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row || row.managerRole === "member") return null;
+      return {
+        managerRole: row.managerRole,
+        team: { id: row.teamId, name: row.teamName },
+        workspace: {
+          id: row.workspace.id,
+          name: row.workspace.name,
+          version: row.workspace.version,
+          lifecycle: row.workspace.lifecycle
+        },
+        member: {
+          userId: row.memberUserId,
+          email: row.memberEmail,
+          displayName: row.memberDisplayName
+        },
+        currentAccess:
+          row.currentAccessDisabledAt === null && row.currentAccess
+            ? row.currentAccess
+            : "disabled",
+        currentAccessVersion: row.currentAccessVersion
+      };
     },
 
     async listTeamInvites(
@@ -3274,6 +3790,45 @@ export const createTeamAccessRepository = (
       return rows[0] ? mapInviteRecord(rows[0]) : null;
     },
 
+    async getPendingTeamInviteReviewByTokenHash(
+      tokenHash: string
+    ): Promise<TeamInviteReviewRecord | null> {
+      const rows = await db
+        .select({
+          invite: teamInvites,
+          team: teams,
+          defaultWorkspace: teamWorkspaces
+        })
+        .from(teamInvites)
+        .innerJoin(teams, eq(teams.id, teamInvites.teamId))
+        .innerJoin(
+          teamWorkspaces,
+          eq(teamWorkspaces.id, teamInvites.defaultTeamWorkspaceId)
+        )
+        .where(
+          and(
+            eq(teamInvites.tokenHash, tokenHash),
+            eq(teamInvites.lifecycle, "pending"),
+            gt(teamInvites.expiresAt, sql`now()`),
+            eq(teams.lifecycle, "active"),
+            eq(teamWorkspaces.lifecycle, "active")
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      return row
+        ? {
+            invite: mapInviteRecord(row.invite),
+            team: mapTeamRecord(row.team),
+            defaultWorkspace: {
+              id: row.defaultWorkspace.id,
+              name: row.defaultWorkspace.name,
+              lifecycle: row.defaultWorkspace.lifecycle
+            }
+          }
+        : null;
+    },
+
     async acceptTeamInvite(input: {
       tokenHash: string;
       userId: string;
@@ -3323,9 +3878,10 @@ export const createTeamAccessRepository = (
             return null;
           }
 
-          const defaultWorkspace = await getDefaultTeamWorkspaceForUpdate(
+          const defaultWorkspace = await getTeamWorkspaceForUpdate(
             tx,
-            inviteRow.teamId
+            inviteRow.teamId,
+            inviteRow.defaultTeamWorkspaceId
           );
           if (
             !defaultWorkspace ||

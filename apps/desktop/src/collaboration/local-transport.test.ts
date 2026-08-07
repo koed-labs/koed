@@ -323,6 +323,64 @@ describe("Desktop collaboration broker transport", () => {
     expect(children).toHaveLength(2);
   });
 
+  it("keeps the broker alive while an Action Grant long-poll is still within its wider timeout", async () => {
+    const child = new FakeBrokerChild();
+    const transport = createCollaborationLocalTransport({
+      commandTimeoutMs: 10,
+      longPollCommandTimeoutMs: 100,
+      openExternal: vi.fn(async () => undefined),
+      spawnBroker: (sessionToken) => {
+        queueMicrotask(() => {
+          child.emit("message", ready(sessionToken));
+        });
+        return child as never;
+      }
+    });
+    const longPoll = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec",
+      command: "collaboration.await_action_grant",
+      input: {
+        actionGrant: { id: "00000000-0000-4000-8000-000000000008" }
+      }
+    });
+
+    const pending = transport.request(longPoll, context());
+    await waitFor(() => child.sent.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(child.killed).toBe(false);
+    const sent = sentCommand(child);
+    child.emit("message", {
+      protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      sessionToken: sent.sessionToken,
+      type: "command_result",
+      envelopeId: sent.envelopeId,
+      ownerId: sent.ownerId,
+      result: {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: longPoll.requestId,
+        command: longPoll.command,
+        ok: false,
+        error: {
+          code: "temporarily_unavailable",
+          userMessage: collaborationSafeErrorMessages.temporarily_unavailable,
+          retryable: true,
+          retryAfterMs: null
+        }
+      }
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      requestId: longPoll.requestId,
+      command: "collaboration.await_action_grant",
+      ok: false,
+      error: { code: "temporarily_unavailable" }
+    });
+    expect(child.killed).toBe(false);
+  });
+
   it("purges active owners when the broker emits a wrong-owner event", async () => {
     const child = new FakeBrokerChild();
     const events: CollaborationRendererEvent[] = [];

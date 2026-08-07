@@ -10819,6 +10819,11 @@ describeDb("memory repository visibility", () => {
       )
     )?.find((candidate) => candidate.name === "General");
     expect(defaultWorkspace).toBeDefined();
+    const invitedWorkspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Invited Workspace" }
+    );
+    expect(invitedWorkspace).not.toBeNull();
 
     const existingTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
     const backendOriginHash = createHash("sha256")
@@ -10828,7 +10833,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         teamId: team.id,
-        defaultTeamWorkspaceId: defaultWorkspace!.id,
+        defaultTeamWorkspaceId: invitedWorkspace!.id,
         defaultWorkspaceAccess: "read",
         email: existingUserEmail.toUpperCase(),
         role: "member",
@@ -10839,7 +10844,7 @@ describeDb("memory repository visibility", () => {
     );
     expect(existingInvite).toMatchObject({
       teamId: team.id,
-      defaultTeamWorkspaceId: defaultWorkspace!.id,
+      defaultTeamWorkspaceId: invitedWorkspace!.id,
       defaultWorkspaceAccess: "read",
       email: existingUserEmail,
       normalizedEmail: existingUserEmail,
@@ -11122,7 +11127,16 @@ describeDb("memory repository visibility", () => {
     const managedMember = managementMembers?.find(
       (member) => member.userId === existingUser.id
     );
-    expect(managedMember?.workspaceAccess).toHaveLength(2);
+    expect(managedMember?.workspaceAccess).toHaveLength(3);
+    expect(
+      managedMember?.workspaceAccess.find(
+        (access) => access.teamWorkspaceId === invitedWorkspace!.id
+      )
+    ).toMatchObject({
+      userId: existingUser.id,
+      access: "read",
+      version: 1
+    });
     expect(
       managedMember?.workspaceAccess.find(
         (access) => access.teamWorkspaceId === defaultWorkspace!.id
@@ -11130,7 +11144,7 @@ describeDb("memory repository visibility", () => {
     ).toMatchObject({
       userId: existingUser.id,
       access: "read",
-      version: 2
+      version: 1
     });
     expect(
       managedMember?.workspaceAccess.find(
@@ -11458,6 +11472,44 @@ describeDb("memory repository visibility", () => {
     expect(beforeGrant).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
     );
+    await expect(
+      repo.getTeamInviteCreationReview(
+        { userId: admin.id },
+        {
+          teamId: team.id,
+          defaultTeamWorkspaceId: workspace!.id,
+          role: "member"
+        }
+      )
+    ).resolves.toEqual({
+      managerRole: "admin",
+      team: { id: team.id, name: "Workspace Listing Team" },
+      defaultWorkspace: {
+        id: workspace!.id,
+        name: "Explicit Grant Workspace",
+        lifecycle: "active"
+      }
+    });
+    await expect(
+      repo.getTeamInviteCreationReview(
+        { userId: admin.id },
+        {
+          teamId: team.id,
+          defaultTeamWorkspaceId: workspace!.id,
+          role: "owner"
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamInviteCreationReview(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          defaultTeamWorkspaceId: randomUUID(),
+          role: "member"
+        }
+      )
+    ).resolves.toBeNull();
 
     const grant = await repo.setTeamWorkspaceAccess(
       { userId: owner.id },
@@ -11494,6 +11546,226 @@ describeDb("memory repository visibility", () => {
     ).resolves.not.toEqual(
       expect.arrayContaining([expect.objectContaining({ id: workspace!.id })])
     );
+  });
+
+  it("resolves focused authoritative Team action review context", async () => {
+    const owner = await repo.createUser({
+      email: `action-review-owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `action-review-admin-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `action-review-member-${randomUUID()}@example.com`
+    });
+    const invitee = await repo.createUser({
+      email: `action-review-invitee-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Action Review Team" }
+    );
+    const acceptedAdmin = await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: admin,
+      role: "admin"
+    });
+    const acceptedMember = await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member,
+      role: "member"
+    });
+    const workspace = (await repo.listTeamWorkspaces(
+      { userId: owner.id },
+      { teamId: team.id, limit: 10 }
+    ))![0]!;
+    const emails = await pool.query<{ id: string; email: string }>(
+      "select id, email from users where id = any($1::uuid[])",
+      [[admin.id, invitee.id]]
+    );
+    const emailById = new Map(emails.rows.map((row) => [row.id, row.email]));
+    const adminTokenHash = `action-review-admin-${randomUUID()}`;
+    const adminInvite = await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        defaultTeamWorkspaceId: workspace.id,
+        defaultWorkspaceAccess: "write",
+        email: emailById.get(admin.id)!,
+        role: "owner",
+        backendOriginHash: createHash("sha256")
+          .update(`review-origin:${randomUUID()}`)
+          .digest("hex"),
+        tokenHash: adminTokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    const inviteeTokenHash = `action-review-invitee-${randomUUID()}`;
+    const inviteeInvite = await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        defaultTeamWorkspaceId: workspace.id,
+        defaultWorkspaceAccess: "read",
+        email: emailById.get(invitee.id)!,
+        role: "member",
+        backendOriginHash: createHash("sha256")
+          .update(`review-origin:${randomUUID()}`)
+          .digest("hex"),
+        tokenHash: inviteeTokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+
+    await expect(
+      repo.getTeamInviteAcceptanceReview({ userId: admin.id }, adminTokenHash)
+    ).resolves.toMatchObject({
+      team: { id: team.id, name: "Action Review Team" },
+      defaultWorkspace: { id: workspace.id, name: workspace.name },
+      invite: { id: adminInvite!.id, role: "owner" },
+      effectiveRole: "admin"
+    });
+    await expect(
+      repo.getTeamInviteAcceptanceReview({ userId: owner.id }, inviteeTokenHash)
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamInviteRevocationReview(
+        { userId: admin.id },
+        { teamId: team.id, inviteId: inviteeInvite!.id }
+      )
+    ).resolves.toMatchObject({
+      managerRole: "admin",
+      team: { id: team.id, name: "Action Review Team" },
+      invite: {
+        id: inviteeInvite!.id,
+        version: inviteeInvite!.version,
+        lifecycle: "pending"
+      }
+    });
+    await expect(
+      repo.getTeamInviteRevocationReview(
+        { userId: admin.id },
+        { teamId: team.id, inviteId: adminInvite!.id }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamMembershipActionReview(
+        { userId: admin.id },
+        { teamId: team.id, userId: member.id }
+      )
+    ).resolves.toMatchObject({
+      managerRole: "admin",
+      team: { id: team.id, name: "Action Review Team" },
+      member: {
+        userId: member.id,
+        role: "member",
+        status: "enabled",
+        version: acceptedMember.membership.version
+      },
+      activeOwnerCount: 1
+    });
+    await expect(
+      repo.getTeamLeaveReview({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      team: { id: team.id, name: "Action Review Team" },
+      membership: { userId: owner.id, role: "owner", status: "enabled" },
+      activeOwnerCount: 1
+    });
+    await expect(
+      repo.getTeamLeaveReview({ userId: admin.id }, team.id)
+    ).resolves.toMatchObject({
+      membership: {
+        userId: admin.id,
+        role: "admin",
+        version: acceptedAdmin.membership.version
+      }
+    });
+
+    await expect(
+      repo.getTeamWorkspaceCreationReview({ userId: admin.id }, team.id)
+    ).resolves.toEqual({
+      managerRole: "admin",
+      team: { id: team.id, name: "Action Review Team" }
+    });
+    await expect(
+      repo.getTeamWorkspaceCreationReview({ userId: member.id }, team.id)
+    ).resolves.toBeNull();
+    const adminAccess = await repo.getTeamWorkspaceAccess(
+      { userId: admin.id },
+      workspace.id
+    );
+    await expect(
+      repo.getTeamWorkspaceLifecycleReview(
+        { userId: admin.id },
+        { teamWorkspaceId: workspace.id, lifecycle: "active" }
+      )
+    ).resolves.toBeNull();
+    const adminWriteAccess = await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace.id,
+        userId: admin.id,
+        access: "write",
+        expectedVersion: adminAccess!.version
+      }
+    );
+    expect(adminWriteAccess?.access).toBe("write");
+    await expect(
+      repo.getTeamWorkspaceLifecycleReview(
+        { userId: admin.id },
+        { teamWorkspaceId: workspace.id, lifecycle: "active" }
+      )
+    ).resolves.toMatchObject({
+      managerRole: "admin",
+      team: { id: team.id, name: "Action Review Team" },
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+        lifecycle: "active",
+        version: workspace.version
+      }
+    });
+    const memberAccess = await repo.getTeamWorkspaceAccess(
+      { userId: member.id },
+      workspace.id
+    );
+    await expect(
+      repo.getTeamWorkspaceAccessUpdateReview(
+        { userId: admin.id },
+        { teamWorkspaceId: workspace.id, userId: member.id }
+      )
+    ).resolves.toMatchObject({
+      managerRole: "admin",
+      team: { id: team.id, name: "Action Review Team" },
+      workspace: { id: workspace.id, lifecycle: "active" },
+      member: { userId: member.id },
+      currentAccess: memberAccess!.access,
+      currentAccessVersion: memberAccess!.version
+    });
+    const archived = await repo.archiveTeamWorkspace(
+      { userId: admin.id },
+      { teamWorkspaceId: workspace.id, expectedVersion: workspace.version }
+    );
+    await expect(
+      repo.getTeamWorkspaceLifecycleReview(
+        { userId: admin.id },
+        { teamWorkspaceId: workspace.id, lifecycle: "archived" }
+      )
+    ).resolves.toMatchObject({
+      workspace: {
+        id: workspace.id,
+        lifecycle: "archived",
+        version: archived!.version
+      }
+    });
+    await expect(
+      repo.getTeamWorkspaceAccessUpdateReview(
+        { userId: admin.id },
+        { teamWorkspaceId: workspace.id, userId: member.id }
+      )
+    ).resolves.toBeNull();
   });
 
   it("serializes billing and entitlement compare-and-swap races", async () => {

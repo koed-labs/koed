@@ -323,7 +323,25 @@ const run = async () => {
       "command palette focus restoration"
     );
 
-    const idleCommandCount = chat.commandCount;
+    let idleCommandCount = chat.commandCount;
+    let stableCommandSamples = 0;
+    for (
+      let attempt = 0;
+      attempt < 20 && stableCommandSamples < 5;
+      attempt += 1
+    ) {
+      await delay(100);
+      const currentCommandCount = await window.webContents.executeJavaScript(
+        `window.__koedBrowserCommandCount ?? 0`
+      );
+      if (currentCommandCount === idleCommandCount) {
+        stableCommandSamples += 1;
+      } else {
+        idleCommandCount = currentCommandCount;
+        stableCommandSamples = 0;
+      }
+    }
+    assert.equal(stableCommandSamples, 5);
     await delay(500);
     const afterIdleCommandCount = await window.webContents.executeJavaScript(
       `window.__koedBrowserCommandCount ?? 0`
@@ -369,7 +387,11 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
       );
-    const teamSelectionCommandsBefore =
+    const teamSelectionCommandIndex =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserCommands?.length ?? 0`
+      );
+    const teamSelectionUserCommandIndex =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserUserCommands?.length ?? 0`
       );
@@ -389,17 +411,33 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
       );
-    const teamSelectionCommands = await window.webContents.executeJavaScript(
-      `window.__koedBrowserUserCommands?.slice(${teamSelectionCommandsBefore}) ?? []`
-    );
+    const teamSelectionUserCommands =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.slice(${teamSelectionUserCommandIndex}) ?? []`
+      );
     const teamSwitchProfiles = await window.webContents.executeJavaScript(
       `window.__koedRenderProfiles ?? []`
     );
-    // Team activation selects People and loads its authorized invitation page.
+    const teamSelectionCommands = await window.webContents.executeJavaScript(
+      `window.__koedBrowserCommands?.slice(${teamSelectionCommandIndex}) ?? []`
+    );
+    // Team activation selects People, loads its authorized invitation page,
+    // records delivery, and reports current-user Team activity.
+    assert.deepEqual(teamSelectionCommands, [
+      "collaboration.select",
+      "collaboration.list_invitations",
+      "collaboration.mark_delivered",
+      "collaboration.report_team_activity"
+    ]);
+    assert.deepEqual(teamSelectionUserCommands, [
+      "collaboration.select",
+      "collaboration.list_invitations",
+      "collaboration.mark_delivered"
+    ]);
     assert.equal(
       afterTeamSelectionCommandCount - teamSelectionCommandCount,
-      2,
-      JSON.stringify(teamSelectionCommands)
+      teamSelectionUserCommands.length,
+      JSON.stringify({ teamSelectionCommands, teamSelectionUserCommands })
     );
     assert.ok(
       teamSwitchFrameMs < 100,
@@ -410,7 +448,11 @@ const run = async () => {
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
       );
-    const workspaceSelectionCommandsBefore =
+    const workspaceSelectionCommandIndex =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserCommands?.length ?? 0`
+      );
+    const workspaceSelectionUserCommandIndex =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserUserCommands?.length ?? 0`
       );
@@ -433,12 +475,28 @@ const run = async () => {
       );
     const workspaceSelectionCommands =
       await window.webContents.executeJavaScript(
-        `window.__koedBrowserUserCommands?.slice(${workspaceSelectionCommandsBefore}) ?? []`
+        `window.__koedBrowserCommands?.slice(${workspaceSelectionCommandIndex}) ?? []`
       );
+    const workspaceSelectionUserCommands =
+      await window.webContents.executeJavaScript(
+        `window.__koedBrowserUserCommands?.slice(${workspaceSelectionUserCommandIndex}) ?? []`
+      );
+    assert.deepEqual(workspaceSelectionCommands, [
+      "collaboration.select",
+      "collaboration.mark_delivered",
+      "collaboration.report_team_activity"
+    ]);
+    assert.deepEqual(workspaceSelectionUserCommands, [
+      "collaboration.select",
+      "collaboration.mark_delivered"
+    ]);
     assert.equal(
       afterWorkspaceSelectionCommandCount - workspaceSelectionCommandCount,
-      1,
-      JSON.stringify(workspaceSelectionCommands)
+      workspaceSelectionUserCommands.length,
+      JSON.stringify({
+        workspaceSelectionCommands,
+        workspaceSelectionUserCommands
+      })
     );
     assert.ok(
       workspaceSelectionFrameMs < 100,

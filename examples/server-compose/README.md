@@ -52,6 +52,14 @@ closed dogfood environment where registration is intentionally open, set
 `KOED_ALLOW_PUBLIC_REGISTRATION=true` in the Compose env file. Production
 operators should prefer WorkOS/AuthKit or operator-managed account bootstrap.
 
+For isolated source-checkout testing of this Compose stack as both the local
+identity authority and a Team backend, set `KOED_DEPLOYMENT_PROFILE=developer`,
+`KOED_TEAM_COLLABORATION_ENABLED=true`, and
+`KOED_DEVELOPER_TEAM_BACKEND_ENABLED=true`. The last switch is ignored outside
+the developer profile and must not be enabled in production. Team Self-Hosted
+and managed-cloud profiles continue to require verified WorkOS/AuthKit identity
+for Team-authority operations.
+
 The Embedding Service container mounts `${KOED_MODELS_DIR}` at `/models`; when
 `KOED_MODELS_DIR` is unset it mounts `$HOME/.koed/models`, which matches the
 default `koed-server models install --kind embedding` destination.

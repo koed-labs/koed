@@ -294,7 +294,7 @@ export const registerConversationSourceReplicationRoutes = (
       const actionGrant = header(request, "x-koed-action-grant");
       if (!actionGrant) {
         throw sourceReplicationError(
-          "Browser-approved source discovery grant is required",
+          "Exact source discovery grant is required",
           403
         );
       }
@@ -362,7 +362,7 @@ export const registerConversationSourceReplicationRoutes = (
       const actionGrant = header(request, "x-koed-action-grant");
       if (!actionGrant) {
         throw sourceReplicationError(
-          "Browser-approved source download grant is required",
+          "Exact source download grant is required",
           403
         );
       }
