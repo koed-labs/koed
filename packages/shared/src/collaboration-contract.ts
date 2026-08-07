@@ -152,6 +152,15 @@ const boundedRequiredUtf8 = (maximum: number) =>
     `Must contain at most ${maximum} UTF-8 bytes`
   );
 
+const dangerousApprovalCopyPattern =
+  /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u206f]/u;
+
+const authoritativeApprovalCopy = (maximum: number) =>
+  boundedRequiredUtf8(maximum).refine(
+    (value) => !dangerousApprovalCopyPattern.test(value),
+    "Approval copy must not contain line, control, or bidirectional formatting characters"
+  );
+
 const distinctUuidArray = (minimum: number, maximum: number) =>
   z
     .array(z.uuid())
@@ -1563,7 +1572,9 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       representation: sharedMemoryRepresentationSchema,
       allowedRepresentations: distinctSharedMemoryRepresentationsSchema
     }),
-    actionGrantIntent("collaboration.consent_shared_memory", {
+    actionGrantIntent("collaboration.share_memory", {
+      mutationId: z.uuid(),
+      logicalGrantId: z.uuid(),
       consentId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
@@ -1574,14 +1585,6 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable()
-    }),
-    actionGrantIntent("collaboration.share_memory", {
-      mutationId: z.uuid(),
-      logicalGrantId: z.uuid(),
-      logicalMemoryId: z.uuid(),
-      teamId: z.uuid(),
-      workspaceId: z.uuid(),
-      consentId: z.uuid()
     }),
     actionGrantIntent("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
@@ -1597,12 +1600,18 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
     }),
     actionGrantIntent("collaboration.change_shared_memory_representation", {
       mutationId: z.uuid(),
+      logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       shareGrantId: z.uuid(),
       consentId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
-      expectedGrantVersion: positiveVersionSchema
+      expectedGrantVersion: positiveVersionSchema,
+      mode: z.enum(["snapshot", "continuous"]),
+      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      previewRevision: positiveVersionSchema,
+      previewHash: sha256Schema,
+      expiresAt: collaborationTimestampSchema.nullable()
     }),
     actionGrantIntent("collaboration.managed_conversation_handoff", {
       executionId: z.uuid(),
@@ -1625,6 +1634,7 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
 
 const collaborationActionGrantStatusStateSchema = z.enum([
   "pending",
+  "review_required",
   "approved",
   "consumed",
   "denied",
@@ -1632,6 +1642,32 @@ const collaborationActionGrantStatusStateSchema = z.enum([
   "expired",
   "canceled"
 ]);
+
+export const collaborationApprovalTierSchema = z.enum([
+  "direct",
+  "native_review",
+  "step_up"
+]);
+
+export const collaborationApprovalReviewSchema = z
+  .object({
+    version: z.literal(1),
+    title: authoritativeApprovalCopy(160),
+    description: authoritativeApprovalCopy(600),
+    consequence: authoritativeApprovalCopy(600),
+    confirmLabel: authoritativeApprovalCopy(80),
+    details: z
+      .array(
+        z
+          .object({
+            label: authoritativeApprovalCopy(80),
+            value: authoritativeApprovalCopy(320)
+          })
+          .strict()
+      )
+      .max(12)
+  })
+  .strict();
 
 const actionGrantActivationUrlSchema = z
   .string()
@@ -1675,20 +1711,54 @@ export const collaborationActionGrantStatusSchema = z
   .object({
     version: z.literal(1),
     actionGrant: collaborationActionGrantReferenceSchema,
+    approvalTier: collaborationApprovalTierSchema,
+    review: collaborationApprovalReviewSchema.nullable(),
     state: collaborationActionGrantStatusStateSchema,
     activationUrl: actionGrantActivationUrlSchema.nullable(),
     expiresAt: collaborationTimestampSchema
   })
   .strict()
   .superRefine((status, context) => {
-    const pending = status.state === "pending";
-    if (pending !== (status.activationUrl !== null)) {
+    if ((status.approvalTier === "direct") !== (status.review === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["review"],
+        message:
+          status.approvalTier === "direct"
+            ? "Direct Action Grants must not carry confirmation copy"
+            : "Reviewed Action Grants require authoritative confirmation copy"
+      });
+    }
+    const browserPending = status.state === "pending";
+    if (browserPending !== (status.activationUrl !== null)) {
       context.addIssue({
         code: "custom",
         path: ["activationUrl"],
-        message: pending
+        message: browserPending
           ? "Pending Action Grants require an activation URL"
           : "Terminal or approved Action Grants must not expose activation URLs"
+      });
+    }
+    if (browserPending && status.approvalTier !== "step_up") {
+      context.addIssue({
+        code: "custom",
+        path: ["approvalTier"],
+        message: "Only Step-up Action Grants may await browser approval"
+      });
+    }
+    if (
+      (status.state === "review_required") !==
+      (status.approvalTier === "native_review" &&
+        status.state !== "approved" &&
+        !["consumed", "denied", "revoked", "expired", "canceled"].includes(
+          status.state
+        ))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["state"],
+        message:
+          "Native-review Action Grants must await an exact native decision"
       });
     }
   });
@@ -1925,7 +1995,8 @@ export const collaborationRendererCommandSchema = z
       forceRemoteNavigation: z.boolean().optional()
     }),
     command("collaboration.select", {
-      selection: collaborationSelectionSchema
+      selection: collaborationSelectionSchema,
+      navigationIntent: z.enum(["foreground", "prewarm"]).optional()
     }),
     command("collaboration.connect_backend", {
       remoteUrl: collaborationRemoteBackendUrlSchema
@@ -1937,6 +2008,10 @@ export const collaborationRendererCommandSchema = z
     }),
     command("collaboration.await_action_grant", {
       actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.confirm_action_grant", {
+      actionGrant: collaborationActionGrantReferenceSchema,
+      decision: z.enum(["approve", "cancel"])
     }),
     command("collaboration.cancel_action_grant", {
       actionGrant: collaborationActionGrantReferenceSchema
@@ -2126,7 +2201,9 @@ export const collaborationRendererCommandSchema = z
       cursor: collaborationOpaqueCursorSchema,
       limit: z.number().int().min(1).max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS)
     }),
-    command("collaboration.consent_shared_memory", {
+    command("collaboration.share_memory", {
+      mutationId: z.uuid(),
+      logicalGrantId: z.uuid(),
       consentId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
@@ -2137,15 +2214,6 @@ export const collaborationRendererCommandSchema = z
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
-      actionGrant: collaborationActionGrantReferenceSchema
-    }),
-    command("collaboration.share_memory", {
-      mutationId: z.uuid(),
-      logicalGrantId: z.uuid(),
-      logicalMemoryId: z.uuid(),
-      teamId: z.uuid(),
-      workspaceId: z.uuid(),
-      consentId: z.uuid(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.revoke_shared_memory", {
@@ -2163,12 +2231,18 @@ export const collaborationRendererCommandSchema = z
     }),
     command("collaboration.change_shared_memory_representation", {
       mutationId: z.uuid(),
+      logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       shareGrantId: z.uuid(),
       consentId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
       expectedGrantVersion: positiveVersionSchema,
+      mode: z.enum(["snapshot", "continuous"]),
+      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      previewRevision: positiveVersionSchema,
+      previewHash: sha256Schema,
+      expiresAt: collaborationTimestampSchema.nullable(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.subscribe", {
@@ -2201,18 +2275,6 @@ export const collaborationRendererCommandSchema = z
         code: "custom",
         path: ["input", "representation"],
         message: "Preview representation must be owner-authorized"
-      });
-    }
-    if (
-      rendererCommand.command === "collaboration.consent_shared_memory" &&
-      !rendererCommand.input.allowedRepresentations.includes(
-        rendererCommand.input.selectedRepresentation
-      )
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["input", "selectedRepresentation"],
-        message: "Selected representation must be consented"
       });
     }
   });
@@ -2256,12 +2318,35 @@ const successResult = <const TName extends string, T extends z.ZodType>(
 
 const emptyResultDataSchema = z.object({}).strict();
 
-const snapshotResultCommands = [
+const directSnapshotResultCommands = [
   "collaboration.load",
   "collaboration.select",
   "collaboration.reconnect_backend",
   "collaboration.disconnect_backend"
 ] as const;
+
+const createdResourceSnapshotResultCommands = [
+  "collaboration.create_team",
+  "collaboration.join_team",
+  "collaboration.create_workspace"
+] as const;
+
+const connectBackendSnapshotResultCommand =
+  "collaboration.connect_backend" as const;
+
+export const collaborationSnapshotResultCommands = [
+  ...directSnapshotResultCommands,
+  connectBackendSnapshotResultCommand,
+  ...createdResourceSnapshotResultCommands
+] as const;
+
+const collaborationSnapshotResultCommandSet = new Set<string>(
+  collaborationSnapshotResultCommands
+);
+
+export const collaborationCommandReturnsSnapshot = (
+  commandName: string
+): boolean => collaborationSnapshotResultCommandSet.has(commandName);
 
 const threadResultCommands = [
   "collaboration.create_notes_to_self",
@@ -2275,7 +2360,10 @@ const threadResultCommands = [
   "collaboration.restore_thread"
 ] as const;
 
-const snapshotSuccessSchemas = snapshotResultCommands.map((name) =>
+const snapshotSuccessSchemas = [
+  ...directSnapshotResultCommands,
+  ...createdResourceSnapshotResultCommands
+].map((name) =>
   successResult(
     name,
     z.object({ snapshot: collaborationSnapshotSchema }).strict()
@@ -2286,14 +2374,11 @@ const threadSuccessSchemas = threadResultCommands.map((name) =>
 );
 
 const commandNameSchema = z.enum([
-  ...snapshotResultCommands,
-  "collaboration.connect_backend",
+  ...collaborationSnapshotResultCommands,
   "collaboration.request_action_grant",
   "collaboration.await_action_grant",
+  "collaboration.confirm_action_grant",
   "collaboration.cancel_action_grant",
-  "collaboration.create_team",
-  "collaboration.join_team",
-  "collaboration.create_workspace",
   ...threadResultCommands,
   "collaboration.send_message",
   "collaboration.retry_message",
@@ -2319,7 +2404,6 @@ const commandNameSchema = z.enum([
   "collaboration.revoke_shared_memory_sync",
   "collaboration.preview_shared_memory",
   "collaboration.load_shared_memory_preview_page",
-  "collaboration.consent_shared_memory",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
   "collaboration.change_shared_memory_representation",
@@ -2342,7 +2426,7 @@ export const collaborationCommandResultSchema = z.union([
   ...snapshotSuccessSchemas,
   ...threadSuccessSchemas,
   successResult(
-    "collaboration.connect_backend",
+    connectBackendSnapshotResultCommand,
     z
       .object({
         backend: collaborationBackendIdentitySchema,
@@ -2367,22 +2451,16 @@ export const collaborationCommandResultSchema = z.union([
     "collaboration.await_action_grant",
     z.object({ status: collaborationActionGrantStatusSchema }).strict()
   ),
-  successResult(
-    "collaboration.cancel_action_grant",
-    z.object({ status: collaborationActionGrantStatusSchema }).strict()
-  ),
-  successResult(
-    "collaboration.create_team",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
-  successResult(
-    "collaboration.join_team",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
-  successResult(
-    "collaboration.create_workspace",
-    z.object({ snapshot: collaborationSnapshotSchema }).strict()
-  ),
+  z
+    .object({
+      ...successResultBaseShape,
+      command: z.enum([
+        "collaboration.confirm_action_grant",
+        "collaboration.cancel_action_grant"
+      ]),
+      data: z.object({ status: collaborationActionGrantStatusSchema }).strict()
+    })
+    .strict(),
   successResult(
     "collaboration.send_message",
     z.union([
@@ -2491,10 +2569,6 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ preview: sharedMemoryPreviewSchema }).strict()
   ),
   successResult(
-    "collaboration.consent_shared_memory",
-    z.object({ consent: sharedMemoryConsentSchema }).strict()
-  ),
-  successResult(
     "collaboration.share_memory",
     z.object({ grant: sharedMemoryGrantSchema }).strict()
   ),
@@ -2548,7 +2622,7 @@ const realtimeResourceSchema = z
     }
   });
 
-const rendererUpdateSchema = z.discriminatedUnion("type", [
+export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("navigation_snapshot"),
@@ -2774,14 +2848,14 @@ const realtimeUpdateDeliverySchema = z
     occurredAt: collaborationTimestampSchema,
     family: collaborationRealtimeEventFamilySchema,
     resource: realtimeResourceSchema,
-    update: rendererUpdateSchema
+    update: collaborationRendererUpdateSchema
   })
   .strict()
   .superRefine((delivery, context) => {
     const { family, resource, update } = delivery;
     const allowedUpdateTypes: Record<
       z.infer<typeof collaborationRealtimeEventFamilySchema>,
-      ReadonlySet<z.infer<typeof rendererUpdateSchema>["type"]>
+      ReadonlySet<z.infer<typeof collaborationRendererUpdateSchema>["type"]>
     > = {
       team_lifecycle: new Set(["navigation_snapshot"]),
       team_membership_access: new Set(["navigation_snapshot"]),
@@ -3045,6 +3119,12 @@ export type CollaborationActionGrantReference = z.infer<
 >;
 export type CollaborationActionGrantStatus = z.infer<
   typeof collaborationActionGrantStatusSchema
+>;
+export type CollaborationApprovalTier = z.infer<
+  typeof collaborationApprovalTierSchema
+>;
+export type CollaborationApprovalReview = z.infer<
+  typeof collaborationApprovalReviewSchema
 >;
 export type CollaborationInvitation = z.infer<
   typeof collaborationInvitationSchema

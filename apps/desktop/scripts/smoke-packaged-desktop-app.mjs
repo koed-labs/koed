@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -20,6 +21,10 @@ import {
   readDiagnosticWindow,
   writeDiagnosticWindow
 } from "./smoke-diagnostics.mjs";
+import {
+  smokeExecutionPlan,
+  withPackagedNativeAssetsMasked
+} from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
@@ -34,6 +39,9 @@ const parseArgs = (argv) => {
     json: false,
     build: false,
     missingAssets: false,
+    maskNativeAssets: false,
+    embeddingModelSource: undefined,
+    exportEmbeddingModel: undefined,
     diagnosticsDir: undefined,
     timeoutMs: 180_000,
     pollIntervalMs: 2_000
@@ -51,6 +59,28 @@ const parseArgs = (argv) => {
     }
     if (value === "--missing-assets") {
       options.missingAssets = true;
+      continue;
+    }
+    if (value === "--mask-native-assets") {
+      options.maskNativeAssets = true;
+      continue;
+    }
+    if (value === "--embedding-model-source") {
+      const source = argv[index + 1]?.trim();
+      if (!source) {
+        throw new Error("--embedding-model-source requires a path.");
+      }
+      options.embeddingModelSource = resolve(source);
+      index += 1;
+      continue;
+    }
+    if (value === "--export-embedding-model") {
+      const target = argv[index + 1]?.trim();
+      if (!target) {
+        throw new Error("--export-embedding-model requires a path.");
+      }
+      options.exportEmbeddingModel = resolve(target);
+      index += 1;
       continue;
     }
     if (value === "--diagnostics-dir") {
@@ -84,6 +114,9 @@ const parseArgs = (argv) => {
   if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
     throw new Error("--poll-interval-ms must be a positive integer.");
   }
+  if (options.maskNativeAssets && !options.missingAssets) {
+    throw new Error("--mask-native-assets requires --missing-assets.");
+  }
   return options;
 };
 
@@ -93,11 +126,50 @@ Options:
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
   --missing-assets          Expect packaged native runtime assets to be missing
+  --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
+  --embedding-model-source  Pre-seed the pinned embedding model from this file
+  --export-embedding-model  Copy the verified installed model to this path
   --diagnostics-dir <path>  Create a curated diagnostics child under this path
   --timeout-ms <number>     Max wait for healthy status (default 180000)
   --poll-interval-ms <num>  Poll interval (default 2000)
   --help, -h                Show this help
 `;
+
+const beginPhase = (label) => {
+  console.error(`[packaged-smoke] ${label} started`);
+  return performance.now();
+};
+
+const finishPhase = (timings, label, startedAt) => {
+  const durationMs = Math.round(performance.now() - startedAt);
+  timings[label] = durationMs;
+  console.error(`[packaged-smoke] ${label} finished in ${durationMs}ms`);
+};
+
+const measurePhase = async (timings, label, work) => {
+  const startedAt = beginPhase(label);
+  try {
+    return await work();
+  } finally {
+    finishPhase(timings, label, startedAt);
+  }
+};
+
+const seedEmbeddingModel = (koedHome, source) => {
+  assertExists("Cached embedding model", source);
+  const target = resolve(koedHome, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf");
+  mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
+  cpSync(source, target, { preserveTimestamps: true });
+  return target;
+};
+
+const exportEmbeddingModel = (koedHome, target) => {
+  const source = resolve(koedHome, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf");
+  assertExists("Verified installed embedding model", source);
+  mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
+  cpSync(source, target, { preserveTimestamps: true });
+  return target;
+};
 
 const buildPackage = () => {
   const packageScript =
@@ -347,7 +419,7 @@ const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
   };
 };
 
-const assertNoSourceCheckoutResolution = (label, payload) => {
+export const assertNoSourceCheckoutResolution = (label, payload) => {
   const sourceMarkers = [
     resolve(sourceCheckoutRoot, "apps", "api"),
     resolve(sourceCheckoutRoot, "apps", "worker"),
@@ -656,6 +728,7 @@ const smokeMissingAssets = (layout, koedHome) => {
     runtimeStatus.stdout
   );
   assertNoSourceCheckoutResolution("runtime status --json", runtimeStatusJson);
+  assertMissingAssets(runtimeStatusJson, "runtime status --json");
   const doctor = runPackagedCommand(layout, koedHome, ["doctor", "--json"]);
   const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
   assertNoSourceCheckoutResolution("doctor --json", doctorJson);
@@ -705,6 +778,8 @@ const waitForHealthyStatus = async ({
 };
 
 const smokeHealthyDaemon = async (layout, koedHome, options) => {
+  const timings = options.timings ?? {};
+  let phaseStarted = beginPhase("runtime install and verification");
   const packageStatus = smokePackageStatus(layout, koedHome);
   const runtimeStatus = runPackagedCommand(layout, koedHome, [
     "runtime",
@@ -771,7 +846,9 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     installedRuntimeStatusJson,
     "runtime status --json after install"
   );
+  finishPhase(timings, "runtime install and verification", phaseStarted);
 
+  phaseStarted = beginPhase("embedding model verification or install");
   const modelStatus = runPackagedCommand(layout, koedHome, [
     "models",
     "status",
@@ -813,7 +890,9 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       );
     }
   }
+  finishPhase(timings, "embedding model verification or install", phaseStarted);
 
+  phaseStarted = beginPhase("first daemon start and health");
   const start = runPackagedCommand(layout, koedHome, [
     "start",
     "--daemon",
@@ -853,7 +932,9 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   );
   assertNoSourceCheckoutResolution("status --json", reconnectJson);
   assertPackagedDaemonReady(reconnectJson, "status --json after reconnect");
+  finishPhase(timings, "first daemon start and health", phaseStarted);
 
+  phaseStarted = beginPhase("daemon stop, restart, and health");
   const stop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
   if (stop.status !== 0) {
     throw new Error(
@@ -905,6 +986,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   if (finalStopJson.ok !== true) {
     throw new Error(`final stop --json was not ok: ${finalStop.stdout}`);
   }
+  finishPhase(timings, "daemon stop, restart, and health", phaseStarted);
 
   return {
     packageStatus,
@@ -929,28 +1011,39 @@ const run = async () => {
     console.log(usage);
     return;
   }
+  const timings = {};
+  const totalStartedAt = beginPhase("complete smoke");
   if (options.build) {
-    buildPackage();
+    await measurePhase(timings, "package build", async () => buildPackage());
   }
-  const layout = resolvePackagedLayout();
-  assertPackagedJsSurface(layout);
+  const layout = await measurePhase(
+    timings,
+    "package surface verification",
+    async () => {
+      const packagedLayout = resolvePackagedLayout();
+      assertPackagedJsSurface(packagedLayout);
+      return packagedLayout;
+    }
+  );
 
   const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-smoke-"));
   const daemonPids = [];
   try {
-    const collaborationBroker = await smokePackagedCollaborationBroker(
-      layout,
-      koedHome
-    );
-    const rendererFaults = await smokePackagedRendererFaults({
-      executable: layout.executable,
-      env: createSmokeEnv(layout, koedHome, {
-        ELECTRON_RUN_AS_NODE: undefined
-      }),
-      koedHome
-    });
-    if (options.missingAssets) {
-      const result = smokeMissingAssets(layout, koedHome);
+    const executionPlan = smokeExecutionPlan(options);
+    if (executionPlan.missingAssets) {
+      const runMissingAssets = () => smokeMissingAssets(layout, koedHome);
+      const result = await measurePhase(
+        timings,
+        "missing native asset diagnostics",
+        async () =>
+          options.maskNativeAssets
+            ? withPackagedNativeAssetsMasked({
+                runtimeRoot: layout.runtimeRoot,
+                work: runMissingAssets
+              })
+            : runMissingAssets()
+      );
+      finishPhase(timings, "complete smoke", totalStartedAt);
       if (options.json) {
         console.log(
           JSON.stringify(
@@ -958,22 +1051,52 @@ const run = async () => {
               ok: true,
               mode: "missing-assets",
               appPath: layout.appPath,
-              collaborationBroker,
-              rendererFaults,
+              timings,
               ...result
             },
             null,
             2
           )
         );
+      } else {
+        console.log("Packaged Desktop missing-assets smoke passed.");
       }
       return;
     }
 
+    if (options.embeddingModelSource) {
+      await measurePhase(timings, "embedding model pre-seed", async () =>
+        seedEmbeddingModel(koedHome, options.embeddingModelSource)
+      );
+    }
+    const collaborationBroker = await measurePhase(
+      timings,
+      "collaboration broker",
+      async () => smokePackagedCollaborationBroker(layout, koedHome)
+    );
+    const rendererFaults = await measurePhase(
+      timings,
+      "renderer fault checks",
+      async () =>
+        smokePackagedRendererFaults({
+          executable: layout.executable,
+          env: createSmokeEnv(layout, koedHome, {
+            ELECTRON_RUN_AS_NODE: undefined
+          }),
+          koedHome
+        })
+    );
     const result = await smokeHealthyDaemon(layout, koedHome, {
       ...options,
-      daemonPids
+      daemonPids,
+      timings
     });
+    if (options.exportEmbeddingModel) {
+      await measurePhase(timings, "embedding model cache export", async () =>
+        exportEmbeddingModel(koedHome, options.exportEmbeddingModel)
+      );
+    }
+    finishPhase(timings, "complete smoke", totalStartedAt);
     if (options.json) {
       console.log(
         JSON.stringify(
@@ -981,6 +1104,7 @@ const run = async () => {
             ok: true,
             mode: "healthy-daemon",
             appPath: layout.appPath,
+            timings,
             collaborationBroker,
             rendererFaults,
             runtime: { ok: result.install.ok, state: result.install.state },
@@ -1027,7 +1151,9 @@ const run = async () => {
   }
 };
 
-run().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  run().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

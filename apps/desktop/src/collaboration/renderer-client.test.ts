@@ -53,6 +53,15 @@ const ids = {
   membership: id(25)
 };
 
+const approvalReview = {
+  version: 1 as const,
+  title: "Create Team?",
+  description: "Review the exact Team creation request.",
+  consequence: "A new Team will be created.",
+  confirmLabel: "Create Team",
+  details: []
+};
+
 const person = (personId = ids.user, displayName = "Mark") => ({
   id: personId,
   displayName,
@@ -395,6 +404,8 @@ const success = (
         status: {
           version: 1,
           actionGrant: { id: ids.actionGrant },
+          approvalTier: "direct",
+          review: null,
           state: "approved",
           activationUrl: null,
           expiresAt: "2026-07-18T09:30:00.000Z"
@@ -406,6 +417,8 @@ const success = (
         status: {
           version: 1,
           actionGrant: command.input.actionGrant,
+          approvalTier: "direct",
+          review: null,
           state: "canceled",
           activationUrl: null,
           expiresAt: "2026-07-18T09:30:00.000Z"
@@ -527,28 +540,6 @@ const success = (
     case "collaboration.preview_shared_memory":
     case "collaboration.load_shared_memory_preview_page":
       data = { preview: sharedPreview() };
-      break;
-    case "collaboration.consent_shared_memory":
-      data = {
-        consent: {
-          id: command.input.consentId,
-          logicalMemoryId: command.input.logicalMemoryId,
-          teamId: command.input.teamId,
-          workspaceId: command.input.workspaceId,
-          mode: command.input.mode,
-          state: "active",
-          version: 1,
-          allowedRepresentations: command.input.allowedRepresentations,
-          selectedRepresentation: command.input.selectedRepresentation,
-          previewRevision: command.input.previewRevision,
-          previewHash: command.input.previewHash,
-          sourceRevision: 12,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          activatedAt: timestamp,
-          revokedAt: null
-        }
-      };
       break;
     case "collaboration.share_memory":
       data = {
@@ -700,7 +691,13 @@ const createBridge = (initial = fixture()) => {
         current.selection.kind === "shared_session" &&
         current.selection.sharedSessionId === selection.sharedSessionId;
       if (!keepsPreparedSharedSnapshot) {
-        current = fixture({ selectedTeam: "teamId" in selection });
+        const authoritative = current;
+        current = collaborationSnapshotSchema.parse({
+          ...fixture({ selectedTeam: "teamId" in selection }),
+          connection: authoritative.connection,
+          navigation: authoritative.navigation,
+          snapshotRevision: authoritative.snapshotRevision
+        });
         if (selection.kind === "team_people") {
           const team = current.navigation.teams.find(
             (candidate) => candidate.id === selection.teamId
@@ -782,6 +779,15 @@ describe("collaboration renderer client", () => {
     const client = createCollaborationRendererClient(bridge);
     await client.load();
     await waitFor(() => expect(sharedSelections).toBe(1));
+    expect(
+      vi
+        .mocked(bridge.command)
+        .mock.calls.find(
+          ([command]) =>
+            command.command === "collaboration.select" &&
+            command.input.selection.kind === "shared_session"
+        )?.[0]
+    ).toMatchObject({ input: { navigationIntent: "prewarm" } });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     const selected = client.select(prepared.selection);
@@ -1100,6 +1106,56 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
+  it("does not launch stale snapshot work after subscription synchronization", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const originalCommand = mock.command.getMockImplementation()!;
+    let releaseTeamSubscription: (() => void) | null = null;
+    mock.command.mockImplementation(async (command) => {
+      if (
+        command.command === "collaboration.subscribe" &&
+        command.input.scope.scope === "team"
+      ) {
+        await new Promise<void>((resolve) => {
+          releaseTeamSubscription = resolve;
+        });
+      }
+      return originalCommand(command);
+    });
+
+    const prepared = sharedFixture();
+    const preparedTeam = prepared.navigation.teams[0]!;
+    mock.setSnapshot(
+      collaborationSnapshotSchema.parse({
+        ...prepared,
+        selection: { kind: "team_people", teamId: ids.team },
+        view: {
+          kind: "team_people",
+          teamId: ids.team,
+          people: preparedTeam.people
+        }
+      })
+    );
+    const older = client.select({ kind: "team_people", teamId: ids.team });
+    await waitFor(() => expect(releaseTeamSubscription).not.toBeNull());
+
+    mock.setSnapshot(fixture());
+    await client.select({ kind: "notes_to_self" });
+    releaseTeamSubscription!();
+    await older;
+
+    expect(client.currentSelection()).toEqual({ kind: "notes_to_self" });
+    expect(
+      mock.command.mock.calls.filter(
+        ([command]) =>
+          command.command === "collaboration.select" &&
+          command.input.navigationIntent === "prewarm"
+      )
+    ).toHaveLength(0);
+    client.dispose();
+  });
+
   it("publishes an authorized navigation shell before selection I/O completes", async () => {
     const initial = fixture();
     const authoritative = collaborationSnapshotSchema.parse({
@@ -1180,6 +1236,187 @@ describe("collaboration renderer client", () => {
       throw new Error("Expected Action Grant and Team creation commands");
     }
     expect(request.input.intent.commandRequestId).toBe(create.requestId);
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.await_action_grant"
+      )
+    ).toBe(false);
+    client.dispose();
+  });
+
+  it("confirms an authoritative Native review without browser waiting", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const review = {
+      version: 1 as const,
+      title: "Invite member@example.test?",
+      description: "Review the exact invitation before it is issued.",
+      consequence: "The recipient can join with read access.",
+      confirmLabel: "Create invitation",
+      details: [
+        { label: "Team", value: "Koed Team" },
+        { label: "Workspace", value: "Product" }
+      ]
+    };
+    const confirmNativeReview = vi.fn(async () => true);
+    const client = createCollaborationRendererClient(mock.bridge, {
+      confirmNativeReview
+    });
+    await client.load();
+    const defaultCommand = mock.command.getMockImplementation();
+    if (!defaultCommand) throw new Error("Expected collaboration mock");
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.request_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: ids.actionGrant },
+              approvalTier: "native_review",
+              review,
+              state: "review_required",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      if (command.command === "collaboration.confirm_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: command.input.actionGrant,
+              approvalTier: "native_review",
+              review,
+              state: "approved",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      return defaultCommand(command);
+    });
+
+    await client.createInvitation({
+      teamId: ids.team,
+      email: "member@example.test",
+      role: "member",
+      defaultWorkspaceId: ids.workspace,
+      defaultWorkspaceAccess: "read",
+      ttlHours: 72
+    });
+
+    expect(confirmNativeReview).toHaveBeenCalledWith(review);
+    expect(
+      mock.command.mock.calls.find(
+        ([command]) => command.command === "collaboration.confirm_action_grant"
+      )?.[0]
+    ).toMatchObject({
+      input: { actionGrant: { id: ids.actionGrant }, decision: "approve" }
+    });
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.await_action_grant"
+      )
+    ).toBe(false);
+    client.dispose();
+  });
+
+  it("cancels Team invitation creation from the authoritative Native review", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const review = {
+      version: 1 as const,
+      title: "Invite member@example.test?",
+      description: "Review the exact invitation before it is issued.",
+      consequence: "The recipient can join with read access.",
+      confirmLabel: "Create invitation",
+      details: [
+        { label: "Team", value: "Koed Team" },
+        { label: "Workspace", value: "Product" }
+      ]
+    };
+    const confirmNativeReview = vi.fn(async () => false);
+    const client = createCollaborationRendererClient(mock.bridge, {
+      confirmNativeReview
+    });
+    await client.load();
+    const defaultCommand = mock.command.getMockImplementation();
+    if (!defaultCommand) throw new Error("Expected collaboration mock");
+    mock.command.mockImplementation(async (command) => {
+      if (command.command === "collaboration.request_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: { id: ids.actionGrant },
+              approvalTier: "native_review",
+              review,
+              state: "review_required",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      if (command.command === "collaboration.confirm_action_grant") {
+        return collaborationCommandResultSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            status: {
+              version: 1,
+              actionGrant: command.input.actionGrant,
+              approvalTier: "native_review",
+              review,
+              state: "canceled",
+              activationUrl: null,
+              expiresAt: "2099-07-18T09:30:00.000Z"
+            }
+          }
+        });
+      }
+      return defaultCommand(command);
+    });
+
+    await expect(
+      client.createInvitation({
+        teamId: ids.team,
+        email: "member@example.test",
+        role: "member",
+        defaultWorkspaceId: ids.workspace,
+        defaultWorkspaceAccess: "read",
+        ttlHours: 72
+      })
+    ).rejects.toMatchObject({ code: "permission_denied" });
+
+    expect(confirmNativeReview).toHaveBeenCalledWith(review);
+    expect(
+      mock.command.mock.calls.find(
+        ([command]) => command.command === "collaboration.confirm_action_grant"
+      )?.[0]
+    ).toMatchObject({
+      input: { actionGrant: { id: ids.actionGrant }, decision: "cancel" }
+    });
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.create_invitation"
+      )
+    ).toBe(false);
     client.dispose();
   });
 
@@ -1245,6 +1482,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "pending",
               activationUrl: "https://team.example.test/approve",
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1277,6 +1516,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "approved",
               activationUrl: null,
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1333,6 +1574,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "pending",
               activationUrl: "https://team.example.test/approve",
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1383,6 +1626,8 @@ describe("collaboration renderer client", () => {
             status: {
               version: 1,
               actionGrant: { id: ids.actionGrant },
+              approvalTier: "step_up",
+              review: approvalReview,
               state: "pending",
               activationUrl: "https://team.example.test/approve",
               expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -1518,7 +1763,9 @@ describe("collaboration renderer client", () => {
       representation: "memory_events",
       allowedRepresentations: ["memory_events"]
     });
-    const consent = await client.consentSharedMemory({
+    await client.shareMemory({
+      mutationId: ids.message,
+      logicalGrantId: ids.logicalGrant,
       consentId: ids.consent,
       logicalMemoryId: ids.logicalMemory,
       teamId: ids.team,
@@ -1530,14 +1777,6 @@ describe("collaboration renderer client", () => {
       previewHash: preview.previewHash,
       expiresAt: null
     });
-    await client.shareMemory({
-      mutationId: ids.message,
-      logicalGrantId: ids.logicalGrant,
-      logicalMemoryId: ids.logicalMemory,
-      teamId: ids.team,
-      workspaceId: ids.workspace,
-      consentId: consent.id
-    });
 
     const commands = mock.command.mock.calls.map(([command]) => command);
     const previewGrant = commands.find(
@@ -1545,17 +1784,16 @@ describe("collaboration renderer client", () => {
         command.command === "collaboration.request_action_grant" &&
         command.input.intent.intent === "collaboration.preview_shared_memory"
     );
-    const consentGrant = commands.find(
+    const shareGrant = commands.find(
       (command) =>
         command.command === "collaboration.request_action_grant" &&
-        command.input.intent.intent === "collaboration.consent_shared_memory"
+        command.input.intent.intent === "collaboration.share_memory"
     );
     expect(previewGrant).not.toHaveProperty("input.intent.remoteReplicaId");
-    expect(consentGrant).not.toHaveProperty("input.intent.previewId");
+    expect(shareGrant).not.toHaveProperty("input.intent.previewId");
     const protectedCommands = commands.filter(
       (command) =>
         command.command === "collaboration.preview_shared_memory" ||
-        command.command === "collaboration.consent_shared_memory" ||
         command.command === "collaboration.share_memory"
     );
     for (const protectedCommand of protectedCommands) {
@@ -2179,7 +2417,18 @@ describe("collaboration renderer client", () => {
   });
 
   it("reloads authoritative presence after an optimistic preference conflict", async () => {
-    const mock = createBridge();
+    const initial = fixture();
+    const initialTeam = initial.navigation.teams[0]!;
+    const selectedPeople = collaborationSnapshotSchema.parse({
+      ...initial,
+      selection: { kind: "team_people", teamId: ids.team },
+      view: {
+        kind: "team_people",
+        teamId: ids.team,
+        people: initialTeam.people
+      }
+    });
+    const mock = createBridge(selectedPeople);
     const client = createCollaborationRendererClient(mock.bridge);
     await client.load();
     const authoritativePerson = {
@@ -2194,15 +2443,22 @@ describe("collaboration renderer client", () => {
       }
     };
     const authoritative = collaborationSnapshotSchema.parse({
-      ...fixture(),
+      ...selectedPeople,
       navigation: {
-        ...fixture().navigation,
-        teams: fixture().navigation.teams.map((team) => ({
+        ...selectedPeople.navigation,
+        teams: selectedPeople.navigation.teams.map((team) => ({
           ...team,
           people: team.people.map((candidate) =>
             candidate.id === ids.remoteUser ? authoritativePerson : candidate
           )
         }))
+      },
+      view: {
+        kind: "team_people",
+        teamId: ids.team,
+        people: initialTeam.people.map((candidate) =>
+          candidate.id === ids.remoteUser ? authoritativePerson : candidate
+        )
       }
     });
     mock.setSnapshot(authoritative);
@@ -2220,6 +2476,9 @@ describe("collaboration renderer client", () => {
         }
       })
     );
+    mock.command.mockImplementationOnce(async (command) =>
+      success(command, authoritative, new Map())
+    );
 
     await expect(
       client.setTeamPresence({
@@ -2235,16 +2494,27 @@ describe("collaboration renderer client", () => {
       manualStatus: "out_of_office",
       preferenceVersion: 4
     });
+    expect(client.currentSelection()).toEqual({
+      kind: "team_people",
+      teamId: ids.team
+    });
     expect(
       mock.command.mock.calls.filter(
         ([command]) => command.command === "collaboration.load"
       )
     ).toHaveLength(2);
     expect(
-      mock.command.mock.calls.filter(
-        ([command]) => command.command === "collaboration.load"
-      )[1]?.[0].input
+      mock.command.mock.calls
+        .filter(([command]) => command.command === "collaboration.load")
+        .at(-1)?.[0].input
     ).toEqual({ forceRemoteNavigation: true });
+    expect(
+      mock.command.mock.calls
+        .filter(([command]) => command.command === "collaboration.select")
+        .at(-1)?.[0].input
+    ).toEqual({
+      selection: { kind: "team_people", teamId: ids.team }
+    });
     client.dispose();
   });
 
@@ -3440,7 +3710,13 @@ describe("collaboration renderer client", () => {
         workspaceId: ids.workspace,
         threadId: ids.channel
       });
-      const refreshed = fixture({ selectedTeam: true });
+      const recoveredSelections: CollaborationSnapshot["selection"][] = [];
+      client.subscribe((next, update) => {
+        if (update.kind === "command" || update.kind === "realtime") {
+          recoveredSelections.push(next.selection);
+        }
+      });
+      const refreshed = fixture();
       const team = refreshed.navigation.teams[0]!;
       mock.setSnapshot(
         collaborationSnapshotSchema.parse({
@@ -3483,6 +3759,9 @@ describe("collaboration renderer client", () => {
           ([command]) => command.command === "collaboration.load"
         )
       ).toHaveLength(2);
+      expect(recoveredSelections).not.toContainEqual({
+        kind: "notes_to_self"
+      });
       client.dispose();
     }
   );
@@ -3551,6 +3830,52 @@ describe("collaboration renderer client", () => {
         ([command]) => command.command === "collaboration.load"
       )
     ).toHaveLength(3);
+    client.dispose();
+  });
+
+  it("does not let delayed stream recovery overwrite a newer user selection", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    await client.select({
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
+    const originalCommand = mock.command.getMockImplementation()!;
+    let releaseRecoverySelection: (() => void) | null = null;
+    mock.command.mockImplementation(async (command) => {
+      if (
+        command.command === "collaboration.select" &&
+        command.input.selection.kind === "workspace_channel"
+      ) {
+        await new Promise<void>((resolve) => {
+          releaseRecoverySelection = resolve;
+        });
+      }
+      return originalCommand(command);
+    });
+
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "control",
+      subscriptionId: ids.teamSubscription,
+      occurredAt: timestamp,
+      reason: "requires_snapshot"
+    });
+    await waitFor(() => expect(releaseRecoverySelection).not.toBeNull());
+
+    await client.select({ kind: "notes_to_self" });
+    releaseRecoverySelection!();
+    await waitFor(() =>
+      expect(client.currentSelection()).toEqual({ kind: "notes_to_self" })
+    );
+    const current = client.current();
+    expect(current?.view.kind).toBe("thread");
+    if (current?.view.kind === "thread") {
+      expect(current.view.thread.scope).toBe("personal");
+    }
     client.dispose();
   });
 
@@ -3913,6 +4238,49 @@ describe("collaboration renderer client", () => {
         ([command]) => command.command === "collaboration.load"
       )
     ).toHaveLength(loadsBeforeStream);
+    client.dispose();
+  });
+
+  it("reloads Team state once when its realtime stream recovers", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    await client.select({
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
+    const loadsBeforeRecovery = mock.command.mock.calls.filter(
+      ([command]) => command.command === "collaboration.load"
+    ).length;
+
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "connection",
+      connection: {
+        ...fixture().connection,
+        state: "reconnecting",
+        connectedAt: null,
+        reconnectAttempt: 1
+      },
+      error: null
+    });
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "connection",
+      connection: fixture().connection,
+      error: null
+    });
+
+    await waitFor(() =>
+      expect(
+        mock.command.mock.calls.filter(
+          ([command]) => command.command === "collaboration.load"
+        )
+      ).toHaveLength(loadsBeforeRecovery + 1)
+    );
+    expect(client.current()?.connection.state).toBe("live");
     client.dispose();
   });
 

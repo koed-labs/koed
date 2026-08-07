@@ -990,24 +990,6 @@ const createClient = (initial = baseSnapshot()): MockClient => {
         "Shared Memory owner flow is not configured in this fixture"
       );
     }),
-    consentSharedMemory: vi.fn(async (input) => ({
-      id: input.consentId,
-      logicalMemoryId: input.logicalMemoryId,
-      teamId: input.teamId,
-      workspaceId: input.workspaceId,
-      mode: input.mode,
-      state: "active" as const,
-      version: 1,
-      allowedRepresentations: input.allowedRepresentations,
-      selectedRepresentation: input.selectedRepresentation,
-      previewRevision: input.previewRevision,
-      previewHash: input.previewHash,
-      sourceRevision: 12,
-      createdAt: at,
-      updatedAt: at,
-      activatedAt: at,
-      revokedAt: null
-    })),
     shareMemory: vi.fn(async (input) => ({
       id: ids.grant,
       logicalGrantId: input.logicalGrantId,
@@ -1202,6 +1184,50 @@ describe("CollaborationApp", () => {
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledOnce());
   });
 
+  it("refreshes local health when collaboration becomes live", async () => {
+    const initial = {
+      ...baseSnapshot(),
+      connection: {
+        ...baseSnapshot().connection,
+        state: "unavailable" as const,
+        connectedAt: null
+      }
+    };
+    const client = createClient(collaborationSnapshotSchema.parse(initial));
+    const localStatusStore = new DesktopStatusStore();
+    const refresh = vi
+      .spyOn(localStatusStore, "refresh")
+      .mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(
+        <App
+          collaborationClient={client}
+          onboardingComplete
+          statusStoreOverride={localStatusStore}
+        />
+      );
+    });
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      client.emit(
+        {
+          ...requireCurrent(client),
+          connection: {
+            ...requireCurrent(client).connection,
+            state: "live",
+            connectedAt: "2026-07-23T00:01:00.000Z"
+          }
+        },
+        undefined,
+        "connection"
+      );
+    });
+
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  });
+
   it("keeps an onboarded device in the app shell while services recover", async () => {
     const starting = {
       state: "starting" as const,
@@ -1361,6 +1387,11 @@ describe("CollaborationApp", () => {
         "write"
       )
     );
+    expect(client.setWorkspaceAccess).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Riley Jones · Launch Plans: disabled → write"
+    );
+    await click(container, "Review and apply");
     expect(client.setWorkspaceAccess).toHaveBeenCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -1422,6 +1453,8 @@ describe("CollaborationApp", () => {
         "read"
       )
     );
+    expect(client.setWorkspaceAccess).toHaveBeenCalledTimes(1);
+    await click(container, "Review and apply");
     expect(client.setWorkspaceAccess).toHaveBeenLastCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -1438,6 +1471,8 @@ describe("CollaborationApp", () => {
         "disabled"
       )
     );
+    expect(client.setWorkspaceAccess).toHaveBeenCalledTimes(2);
+    await click(container, "Review and apply");
     expect(client.setWorkspaceAccess).toHaveBeenLastCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -1511,6 +1546,100 @@ describe("CollaborationApp", () => {
       name: "Operations",
       description: "Runbooks"
     });
+  });
+
+  it("discards Workspace Access drafts when switching directly between Teams", async () => {
+    const starting = baseSnapshot();
+    const managedSecondTeam = {
+      ...starting.navigation.teams[0]!,
+      id: ids.teamTwo,
+      name: "Beta Team",
+      directMessages: [],
+      workspaces: starting.navigation.teams[0]!.workspaces.map((workspace) => ({
+        ...workspace,
+        channels: [],
+        sharedMemory: []
+      }))
+    };
+    const managedTeams = collaborationSnapshotSchema.parse({
+      ...starting,
+      navigation: {
+        ...starting.navigation,
+        teams: [starting.navigation.teams[0]!, managedSecondTeam]
+      }
+    });
+    const client = await render(
+      createClient(
+        viewFor(managedTeams, { kind: "team_people", teamId: ids.team })
+      )
+    );
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Launch Plans access for Riley Jones"]'
+        )!,
+        "write"
+      )
+    );
+    expect(document.body.textContent).toContain("1 pending access change");
+
+    await act(async () => {
+      await client.select({ kind: "team_people", teamId: ids.teamTwo });
+    });
+
+    expect(document.body.textContent).toContain("Beta Team");
+    expect(document.body.textContent).not.toContain("pending access change");
+    expect(document.body.textContent).not.toContain("Review and apply");
+  });
+
+  it("keeps only unapplied Workspace Access changes after a partial failure", async () => {
+    const client = createClient();
+    vi.mocked(client.setWorkspaceAccess)
+      .mockResolvedValueOnce({
+        workspaceId: ids.workspace,
+        userId: ids.alex,
+        access: "disabled",
+        version: 2
+      })
+      .mockRejectedValueOnce(new Error("second change failed"));
+    await render(client);
+    await click(container, "Atlas Research");
+    await click(container, "People");
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Launch Plans access for Alex Chen"]'
+        )!,
+        "disabled"
+      )
+    );
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Launch Plans access for Riley Jones"]'
+        )!,
+        "write"
+      )
+    );
+
+    expect(document.body.textContent).toContain("2 pending access changes");
+    await click(container, "Review and apply");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "The remaining Workspace Access draft could not be applied"
+      )
+    );
+
+    expect(client.setWorkspaceAccess).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).not.toContain(
+      "Alex Chen · Launch Plans: read → disabled"
+    );
+    expect(document.body.textContent).toContain(
+      "Riley Jones · Launch Plans: disabled → write"
+    );
+    expect(document.body.textContent).toContain("1 pending access change");
   });
 
   it("keeps a normal User's Team roster usable without management controls", async () => {
@@ -1883,6 +2012,33 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).not.toContain(
       "Collaboration is temporarily unavailable."
     );
+  });
+
+  it("keeps cached Team People visible during a transient outage", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const client = await render(createClient(selected));
+
+    await act(async () =>
+      client.emit(
+        {
+          ...requireCurrent(client),
+          connection: {
+            ...requireCurrent(client).connection,
+            state: "unavailable",
+            connectedAt: null
+          }
+        },
+        "Collaboration is temporarily unavailable.",
+        "connection"
+      )
+    );
+
+    expect(document.body.textContent).toContain("Members");
+    expect(document.body.textContent).toContain("Alex Chen");
+    expect(document.body.textContent).not.toContain("Team unavailable");
   });
 
   it("clears a transient stream announcement after verified live activity", async () => {

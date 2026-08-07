@@ -570,7 +570,9 @@ dashboard.
 
 - Normal navigation contains a focused connection/status surface for Remote URL,
   capability validation, browser-mediated enrollment, reconnect, disconnect,
-  and backend change.
+  and backend change. After enrollment, protected actions use the
+  backend-selected Direct, Native review, or browser Step-up tier documented in
+  ADR 0024; browser approval is not the default ceremony.
 - Remote URLs are validated outside the renderer. Embedded credentials,
   unsupported schemes, unsafe redirects, disallowed private-network targets,
   DNS-rebinding paths, and non-loopback plaintext production connections are

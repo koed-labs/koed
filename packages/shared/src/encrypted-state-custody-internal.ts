@@ -1,31 +1,28 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  scryptSync,
-  timingSafeEqual
-} from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync
-} from "node:fs";
-import { dirname, resolve } from "node:path";
+// Internal domain implementation retained behind focused public custody modules.
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import {
+  collaborationApprovalReviewSchema,
+  collaborationApprovalTierSchema,
   collaborationSafeErrorSchema,
+  type CollaborationApprovalReview,
+  type CollaborationApprovalTier,
   type CollaborationSafeError
 } from "./collaboration-contract.js";
 import { highRiskActionGrantCommitmentHash } from "./high-risk-action-grant-commitment.js";
 import { assertSecureHttpTransport } from "./http-transport-security.js";
+import {
+  createEncryptedStateTransactionCore,
+  decryptEncryptedStateValue,
+  encryptEncryptedStateValue,
+  isEncryptedStateEnvelope,
+  resolveEncryptedStateTransactionDeps,
+  type EncryptedStateDomain,
+  type EncryptedStateEnvelope,
+  type ResolvedEncryptedStateTransactionDeps
+} from "./encrypted-state-transaction-core.js";
 
 export interface UpstreamCredentialSecretInput {
   backendId: string;
@@ -47,7 +44,7 @@ export interface UpstreamCredentialSecretStoreDeps {
   beforeStoreCommit?: () => void;
 }
 
-type ResolvedStoreDeps = Required<UpstreamCredentialSecretStoreDeps>;
+type ResolvedStoreDeps = ResolvedEncryptedStateTransactionDeps;
 
 export interface LocalEdgeClientCredentialInput {
   backendId: string;
@@ -60,6 +57,17 @@ export interface LocalEdgeClientCredentialAuthorization {
   backendId: string;
   credentialKeyId: string;
   operationFamilies: string[];
+}
+
+export interface EnrollmentCredentialCustodyInput {
+  upstream: UpstreamCredentialSecretInput;
+  localEdgeClient: LocalEdgeClientCredentialInput;
+}
+
+export interface EnrollmentCredentialCustodyResult {
+  upstreamReference: string;
+  localEdgeClientReference: string;
+  localEdgeClientCredentialKeyId: string;
 }
 
 export const DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES = [
@@ -98,6 +106,7 @@ export type CollaborationActionGrantMethod =
   | "DELETE";
 export type CollaborationActionGrantState =
   | "pending"
+  | "review_required"
   | "approved"
   | "consumed"
   | "denied"
@@ -146,6 +155,8 @@ export interface CollaborationActionGrantResolveInput extends CollaborationActio
 export interface CollaborationActionGrantStatusRecord {
   version: 1;
   actionGrant: { id: string };
+  approvalTier: CollaborationApprovalTier;
+  review: CollaborationApprovalReview | null;
   state: CollaborationActionGrantState;
   activationUrl: string | null;
   expiresAt: string;
@@ -161,14 +172,7 @@ interface DesktopLocalCredentialPayload {
   updatedAt: string;
 }
 
-interface StoredSecretEnvelope {
-  algorithm: "aes-256-gcm";
-  iv: string;
-  tag: string;
-  ciphertext: string;
-  createdAt: string;
-  updatedAt: string;
-}
+type StoredSecretEnvelope = EncryptedStateEnvelope;
 
 interface StoredActionGrantMetadata {
   schemaVersion: 1;
@@ -189,18 +193,51 @@ interface StoredActionGrantMetadata {
   expiresAt: string;
 }
 
-interface StoredActionGrantRecord {
+interface StoredActionGrantRecordBase {
   schemaVersion: 1;
   referenceId: string;
   commitmentHash: string;
-  state: CollaborationActionGrantState;
-  activationUrl: string | null;
-  ambiguousUntil: string | null;
   createdAt: string;
   updatedAt: string;
   metadata: StoredActionGrantMetadata;
   envelope: StoredSecretEnvelope;
 }
+
+type StoredLegacyActionGrantState = Exclude<
+  CollaborationActionGrantState,
+  "review_required"
+>;
+
+type StoredActionGrantRecord = StoredActionGrantRecordBase &
+  (
+    | {
+        lifecycle: "unclassified";
+        approvalTier: null;
+        review: null;
+        state: "pending";
+        approvalState: null;
+        activationUrl: null;
+        ambiguousUntil: null;
+      }
+    | {
+        lifecycle: "classified";
+        approvalTier: CollaborationApprovalTier;
+        review: CollaborationApprovalReview | null;
+        state: StoredLegacyActionGrantState;
+        approvalState: CollaborationActionGrantState;
+        activationUrl: string | null;
+        ambiguousUntil: null;
+      }
+    | {
+        lifecycle: "ambiguous";
+        approvalTier: CollaborationApprovalTier | null;
+        review: CollaborationApprovalReview | null;
+        state: StoredLegacyActionGrantState;
+        approvalState: CollaborationActionGrantState | null;
+        activationUrl: string | null;
+        ambiguousUntil: string;
+      }
+  );
 
 export interface CollaborationPendingSendInput {
   ownerId: string;
@@ -269,45 +306,9 @@ const referencePrefix = "keychain://koed-upstream/";
 const localEdgeClientReferencePrefix = "keychain://koed-local-edge-client/";
 const desktopLocalCredentialReference = "keychain://koed-desktop-local/install";
 const storeKeySalt = "koed-upstream-credential-store-v1";
-const defaultLockTimeoutMs = 5_000;
-const defaultStaleLockMs = 30_000;
-const maximumLockTimeoutMs = 30_000;
-const maximumStaleLockMs = 10 * 60_000;
-const lockTokenPattern = /^[A-Za-z0-9_-]{43}$/;
-
-const sleepSync = (milliseconds: number): void => {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
-};
-
 const depsWithDefaults = (
   deps: UpstreamCredentialSecretStoreDeps = {}
-): ResolvedStoreDeps => {
-  const lockTimeoutMs = deps.lockTimeoutMs ?? defaultLockTimeoutMs;
-  const staleLockMs = deps.staleLockMs ?? defaultStaleLockMs;
-  if (
-    !Number.isFinite(lockTimeoutMs) ||
-    lockTimeoutMs < 0 ||
-    lockTimeoutMs > maximumLockTimeoutMs ||
-    !Number.isFinite(staleLockMs) ||
-    staleLockMs < 1_000 ||
-    staleLockMs > maximumStaleLockMs
-  ) {
-    throw new Error("Local secret store lock bounds are invalid.");
-  }
-  return {
-    existsSync: deps.existsSync ?? existsSync,
-    readFileSync: deps.readFileSync ?? readFileSync,
-    writeFileSync: deps.writeFileSync ?? writeFileSync,
-    renameSync: deps.renameSync ?? renameSync,
-    randomBytes: deps.randomBytes ?? randomBytes,
-    now: deps.now ?? (() => new Date()),
-    lockNowMs: deps.lockNowMs ?? Date.now,
-    sleepSync: deps.sleepSync ?? sleepSync,
-    lockTimeoutMs,
-    staleLockMs,
-    beforeStoreCommit: deps.beforeStoreCommit ?? (() => undefined)
-  };
-};
+): ResolvedStoreDeps => resolveEncryptedStateTransactionDeps(deps);
 
 const validateReferencePart = (
   value: string,
@@ -429,316 +430,10 @@ const storePathFor = (koedHome: string): string =>
 const keyPathFor = (koedHome: string): string =>
   resolve(koedHome, "config", "local-secret-store.key");
 
-const lockPathFor = (koedHome: string): string =>
-  `${storePathFor(koedHome)}.lock`;
-
-interface StoreLockMetadata {
-  version: 1;
-  ownerToken: string;
-  pid: number;
-  createdAtEpochMs: number;
-}
-
-interface StoreLock {
-  path: string;
-  ownerToken: string;
-}
-
-interface LockSnapshot {
-  contents: string | null;
-  dev: number;
-  ino: number;
-  mode: number;
-  size: number;
-  mtimeMs: number;
-  ctimeMs: number;
-}
-
-const errorCode = (error: unknown): string | null =>
-  error && typeof error === "object" && "code" in error
-    ? String(error.code)
-    : null;
-
-const syncDirectory = (path: string): void => {
-  let descriptor: number | null = null;
-  try {
-    descriptor = openSync(path, "r");
-    fsyncSync(descriptor);
-  } catch (error) {
-    if (
-      !["EACCES", "EBADF", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(
-        errorCode(error) ?? ""
-      )
-    ) {
-      throw error;
-    }
-  } finally {
-    if (descriptor !== null) closeSync(descriptor);
-  }
-};
-
-const unlinkIfPresent = (path: string): void => {
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if (errorCode(error) !== "ENOENT") throw error;
-  }
-};
-
-const atomicWriteFile = (
-  targetPath: string,
-  contents: string,
-  uniqueToken: string,
-  deps: ResolvedStoreDeps
-): void => {
-  const parentPath = dirname(targetPath);
-  mkdirSync(parentPath, { recursive: true, mode: 0o700 });
-  const tempPath = `${targetPath}.${process.pid}.${uniqueToken}.tmp`;
-  let descriptor: number | null = null;
-  try {
-    descriptor = openSync(tempPath, "wx", 0o600);
-    deps.writeFileSync(descriptor, contents, "utf8");
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = null;
-    deps.renameSync(tempPath, targetPath);
-    syncDirectory(parentPath);
-  } finally {
-    if (descriptor !== null) closeSync(descriptor);
-    unlinkIfPresent(tempPath);
-  }
-};
-
-const parseLockMetadata = (
-  contents: string | null
-): StoreLockMetadata | null => {
-  if (contents === null) return null;
-  try {
-    const candidate = JSON.parse(contents) as Record<string, unknown>;
-    if (
-      !candidate ||
-      Array.isArray(candidate) ||
-      Object.keys(candidate).length !== 4 ||
-      candidate.version !== 1 ||
-      typeof candidate.ownerToken !== "string" ||
-      !lockTokenPattern.test(candidate.ownerToken) ||
-      !Number.isInteger(candidate.pid) ||
-      (candidate.pid as number) <= 0 ||
-      !Number.isSafeInteger(candidate.createdAtEpochMs) ||
-      (candidate.createdAtEpochMs as number) < 0
-    ) {
-      return null;
-    }
-    return candidate as unknown as StoreLockMetadata;
-  } catch {
-    return null;
-  }
-};
-
-const readLockSnapshot = (path: string): LockSnapshot | null => {
-  try {
-    const stats = lstatSync(path);
-    let contents: string | null = null;
-    if (stats.isFile() && stats.size <= 1_024) {
-      try {
-        contents = String(readFileSync(path, "utf8"));
-      } catch (error) {
-        if (errorCode(error) !== "ENOENT") throw error;
-        return null;
-      }
-    }
-    return {
-      contents,
-      dev: stats.dev,
-      ino: stats.ino,
-      mode: stats.mode,
-      size: stats.size,
-      mtimeMs: stats.mtimeMs,
-      ctimeMs: stats.ctimeMs
-    };
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return null;
-    throw error;
-  }
-};
-
-const sameLockSnapshot = (left: LockSnapshot, right: LockSnapshot): boolean =>
-  left.contents === right.contents &&
-  left.dev === right.dev &&
-  left.ino === right.ino &&
-  left.mode === right.mode &&
-  left.size === right.size &&
-  left.mtimeMs === right.mtimeMs &&
-  left.ctimeMs === right.ctimeMs;
-
-const recoverStaleLock = (path: string, deps: ResolvedStoreDeps): boolean => {
-  const snapshot = readLockSnapshot(path);
-  if (!snapshot) return true;
-  const now = deps.lockNowMs();
-  if (now - snapshot.mtimeMs < deps.staleLockMs) return false;
-  const metadata = parseLockMetadata(snapshot.contents);
-  if (metadata && now - metadata.createdAtEpochMs < deps.staleLockMs) {
-    return false;
-  }
-  const confirmed = readLockSnapshot(path);
-  if (!confirmed || !sameLockSnapshot(snapshot, confirmed)) return false;
-  try {
-    unlinkSync(path);
-    syncDirectory(dirname(path));
-    return true;
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return true;
-    throw error;
-  }
-};
-
-const acquireStoreLock = (
-  koedHome: string,
-  deps: ResolvedStoreDeps
-): StoreLock => {
-  const path = lockPathFor(koedHome);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const ownerToken = randomBytes(32).toString("base64url");
-  const metadata: StoreLockMetadata = {
-    version: 1,
-    ownerToken,
-    pid: process.pid,
-    createdAtEpochMs: deps.lockNowMs()
-  };
-  const startedAt = deps.lockNowMs();
-  let attempt = 0;
-
-  for (;;) {
-    let descriptor: number | null = null;
-    let created = false;
-    try {
-      descriptor = openSync(path, "wx", 0o600);
-      created = true;
-      writeFileSync(descriptor, `${JSON.stringify(metadata)}\n`, "utf8");
-      fsyncSync(descriptor);
-      closeSync(descriptor);
-      descriptor = null;
-      syncDirectory(dirname(path));
-      return { path, ownerToken };
-    } catch (error) {
-      if (descriptor !== null) {
-        closeSync(descriptor);
-      }
-      if (created) {
-        try {
-          unlinkSync(path);
-        } catch (unlinkError) {
-          if (errorCode(unlinkError) !== "ENOENT") throw unlinkError;
-        }
-      }
-      if (errorCode(error) !== "EEXIST") throw error;
-    }
-
-    if (recoverStaleLock(path, deps)) continue;
-    const elapsed = deps.lockNowMs() - startedAt;
-    if (elapsed >= deps.lockTimeoutMs) {
-      throw new Error("Timed out acquiring the local secret store lock.");
-    }
-    const backoff = Math.min(10 * 2 ** Math.min(attempt, 4), 100);
-    deps.sleepSync(Math.min(backoff, deps.lockTimeoutMs - elapsed));
-    attempt += 1;
-  }
-};
-
-const releaseStoreLock = (lock: StoreLock): void => {
-  const snapshot = readLockSnapshot(lock.path);
-  if (!snapshot) return;
-  const metadata = parseLockMetadata(snapshot.contents);
-  if (metadata?.ownerToken !== lock.ownerToken) return;
-  const confirmed = readLockSnapshot(lock.path);
-  if (!confirmed || !sameLockSnapshot(snapshot, confirmed)) return;
-  try {
-    unlinkSync(lock.path);
-    syncDirectory(dirname(lock.path));
-  } catch (error) {
-    if (errorCode(error) !== "ENOENT") throw error;
-  }
-};
-
-const readOrCreateStoreKey = (
-  koedHome: string,
-  deps: ResolvedStoreDeps
-): Buffer => {
-  const keyPath = keyPathFor(koedHome);
-  mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 });
-  if (!deps.existsSync(keyPath)) {
-    if (deps.existsSync(storePathFor(koedHome))) {
-      throw new Error("Local secret store key is missing or invalid.");
-    }
-    atomicWriteFile(
-      keyPath,
-      `${deps.randomBytes(32).toString("base64")}\n`,
-      randomBytes(32).toString("base64url"),
-      deps
-    );
-  }
-  const key = readStoreKey(koedHome, deps);
-  if (!key) {
-    throw new Error("Local secret store key is missing or invalid.");
-  }
-  return key;
-};
-
-const readStoreKey = (
-  koedHome: string,
-  deps: ResolvedStoreDeps
-): Buffer | null => {
-  const keyPath = keyPathFor(koedHome);
-  if (!deps.existsSync(keyPath)) {
-    return null;
-  }
-  try {
-    const keyMaterial = String(deps.readFileSync(keyPath, "utf8")).trim();
-    if (!/^[A-Za-z0-9+/]{43}=$/.test(keyMaterial)) {
-      return null;
-    }
-    const decoded = Buffer.from(keyMaterial, "base64");
-    if (decoded.length !== 32 || decoded.toString("base64") !== keyMaterial) {
-      return null;
-    }
-    return scryptSync(keyMaterial, storeKeySalt, 32);
-  } catch {
-    return null;
-  }
-};
-
 function isStoredSecretEnvelope(
   candidate: unknown
 ): candidate is StoredSecretEnvelope {
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    return false;
-  }
-  const envelope = candidate as Record<string, unknown>;
-  const decodeCanonicalBase64 = (value: unknown): Buffer | null => {
-    if (
-      typeof value !== "string" ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-        value
-      )
-    ) {
-      return null;
-    }
-    const decoded = Buffer.from(value, "base64");
-    return decoded.toString("base64") === value ? decoded : null;
-  };
-  const iv = decodeCanonicalBase64(envelope.iv);
-  const tag = decodeCanonicalBase64(envelope.tag);
-  const ciphertext = decodeCanonicalBase64(envelope.ciphertext);
-  return (
-    Object.keys(envelope).length === 6 &&
-    envelope.algorithm === "aes-256-gcm" &&
-    iv?.length === 12 &&
-    tag?.length === 16 &&
-    ciphertext !== null &&
-    isCanonicalTimestamp(envelope.createdAt) &&
-    isCanonicalTimestamp(envelope.updatedAt) &&
-    envelope.updatedAt >= envelope.createdAt
-  );
+  return isEncryptedStateEnvelope(candidate, isCanonicalTimestamp);
 }
 
 function isStoredPendingSendRecord(
@@ -817,25 +512,10 @@ function isStoredPendingSendRecord(
   }
 }
 
-const readStore = (
-  koedHome: string,
-  deps: ResolvedStoreDeps,
+const parseStore = (
+  parsed: unknown,
   options: { preserveMalformedActionGrants?: boolean } = {}
 ): SecretStoreFile => {
-  const now = deps.now().toISOString();
-  const storePath = storePathFor(koedHome);
-  if (!deps.existsSync(storePath)) {
-    return {
-      schemaVersion: 1,
-      updatedAt: now,
-      secrets: {},
-      actionGrants: {},
-      pendingCollaborationSends: {}
-    };
-  }
-  const parsed = JSON.parse(
-    String(deps.readFileSync(storePath, "utf8"))
-  ) as Record<string, unknown>;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     Boolean(value) && typeof value === "object" && !Array.isArray(value);
   if (
@@ -887,31 +567,30 @@ const readStore = (
   };
 };
 
+const encryptedStateCore = (koedHome: string, deps: ResolvedStoreDeps) =>
+  createEncryptedStateTransactionCore<
+    SecretStoreFile,
+    { preserveMalformedActionGrants?: boolean }
+  >({
+    storePath: storePathFor(koedHome),
+    keyPath: keyPathFor(koedHome),
+    keySalt: storeKeySalt,
+    createEmpty: (now) => ({
+      schemaVersion: 1,
+      updatedAt: now,
+      secrets: {},
+      actionGrants: {},
+      pendingCollaborationSends: {}
+    }),
+    parse: parseStore,
+    deps
+  });
+
 const readStoreForRead = (
   koedHome: string,
   deps: ResolvedStoreDeps
-): SecretStoreFile | null => {
-  try {
-    return readStore(koedHome, deps);
-  } catch {
-    return null;
-  }
-};
-
-const writeStore = (
-  koedHome: string,
-  store: SecretStoreFile,
-  ownerToken: string,
-  deps: ResolvedStoreDeps
-): void => {
-  const storePath = storePathFor(koedHome);
-  atomicWriteFile(
-    storePath,
-    `${JSON.stringify(store, null, 2)}\n`,
-    ownerToken,
-    deps
-  );
-};
+): SecretStoreFile | null =>
+  encryptedStateCore(koedHome, deps).readFailClosed({});
 
 interface StoreMutationResult<Result> {
   result: Result;
@@ -921,21 +600,20 @@ interface StoreMutationResult<Result> {
 const mutateStore = <Result>(
   koedHome: string,
   deps: ResolvedStoreDeps,
+  domains: readonly [EncryptedStateDomain, ...EncryptedStateDomain[]],
   mutation: (store: SecretStoreFile) => StoreMutationResult<Result>
-): Result => {
-  const lock = acquireStoreLock(koedHome, deps);
-  try {
-    const store = readStore(koedHome, deps);
-    const outcome = mutation(store);
-    if (outcome.changed) {
-      deps.beforeStoreCommit();
-      writeStore(koedHome, store, lock.ownerToken, deps);
-    }
-    return outcome.result;
-  } finally {
-    releaseStoreLock(lock);
-  }
-};
+): Result =>
+  encryptedStateCore(koedHome, deps).mutate({ domains, apply: mutation });
+
+const readOrCreateStoreKey = (
+  koedHome: string,
+  deps: ResolvedStoreDeps
+): Buffer => encryptedStateCore(koedHome, deps).readOrCreateKey();
+
+const readStoreKey = (
+  koedHome: string,
+  deps: ResolvedStoreDeps
+): Buffer | null => encryptedStateCore(koedHome, deps).readKey();
 
 const encryptSecret = (
   key: Buffer,
@@ -945,60 +623,14 @@ const encryptSecret = (
   previous?: StoredSecretEnvelope,
   aad?: string
 ): StoredSecretEnvelope => {
-  const iv = deps.randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  if (aad) {
-    cipher.setAAD(Buffer.from(aad, "utf8"));
-  }
-  const ciphertext = Buffer.concat([
-    cipher.update(secret, "utf8"),
-    cipher.final()
-  ]);
-  return {
-    algorithm: "aes-256-gcm",
-    iv: iv.toString("base64"),
-    tag: cipher.getAuthTag().toString("base64"),
-    ciphertext: ciphertext.toString("base64"),
-    createdAt: previous?.createdAt ?? now,
-    updatedAt: now
-  };
+  return encryptEncryptedStateValue(key, secret, now, deps, previous, aad);
 };
 
 const decryptSecret = (
   key: Buffer,
   envelope: StoredSecretEnvelope,
   aad?: string
-): string => {
-  const decodeBase64 = (value: string): Buffer => {
-    if (
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-        value
-      )
-    ) {
-      throw new Error("Encrypted local credential is malformed.");
-    }
-    const decoded = Buffer.from(value, "base64");
-    if (decoded.toString("base64") !== value) {
-      throw new Error("Encrypted local credential is malformed.");
-    }
-    return decoded;
-  };
-  const iv = decodeBase64(envelope.iv);
-  const tag = decodeBase64(envelope.tag);
-  const ciphertext = decodeBase64(envelope.ciphertext);
-  if (iv.length !== 12 || tag.length !== 16) {
-    throw new Error("Encrypted local credential is malformed.");
-  }
-  const decipher = createDecipheriv("aes-256-gcm", key, iv);
-  if (aad) {
-    decipher.setAAD(Buffer.from(aad, "utf8"));
-  }
-  decipher.setAuthTag(tag);
-  return Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final()
-  ]).toString("utf8");
-};
+): string => decryptEncryptedStateValue(key, envelope, aad);
 
 export const storeUpstreamCredentialSecret = (
   koedHome: string,
@@ -1010,19 +642,24 @@ export const storeUpstreamCredentialSecret = (
   }
   const resolvedDeps = depsWithDefaults(deps);
   const reference = upstreamCredentialReferenceFor(input);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
-    const key = readOrCreateStoreKey(koedHome, resolvedDeps);
-    const now = resolvedDeps.now().toISOString();
-    store.secrets[reference] = encryptSecret(
-      key,
-      input.secret,
-      now,
-      resolvedDeps,
-      store.secrets[reference]
-    );
-    store.updatedAt = now;
-    return { result: { reference }, changed: true };
-  });
+  return mutateStore(
+    koedHome,
+    resolvedDeps,
+    ["upstream_credential"],
+    (store) => {
+      const key = readOrCreateStoreKey(koedHome, resolvedDeps);
+      const now = resolvedDeps.now().toISOString();
+      store.secrets[reference] = encryptSecret(
+        key,
+        input.secret,
+        now,
+        resolvedDeps,
+        store.secrets[reference]
+      );
+      store.updatedAt = now;
+      return { result: { reference }, changed: true };
+    }
+  );
 };
 
 export const readUpstreamCredentialAuthorization = (
@@ -1251,7 +888,7 @@ export const storeCollaborationPendingSend = (
 ): CollaborationPendingSendRecord => {
   const input = validatePendingSendInput(inputValue);
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
     const encryptionKey = readOrCreateStoreKey(koedHome, resolvedDeps);
     const key = pendingSendKey(input);
     const previous = store.pendingCollaborationSends[key];
@@ -1358,7 +995,7 @@ export const updateCollaborationPendingSendState = (
     throw new Error("Collaboration pending send state is invalid.");
   }
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
     const stored = store.pendingCollaborationSends[input.key];
     if (!stored) return { result: null, changed: false };
     const encryptionKey = readStoreKey(koedHome, resolvedDeps);
@@ -1395,7 +1032,7 @@ export const deleteCollaborationPendingSend = (
 ): boolean => {
   if (!/^collaboration-send:[a-f0-9]{64}$/.test(key)) return false;
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
     if (!store.pendingCollaborationSends[key]) {
       return { result: false, changed: false };
     }
@@ -1411,7 +1048,7 @@ export const clearCollaborationPendingTeamSends = (
   deps: UpstreamCredentialSecretStoreDeps = {}
 ): number => {
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["pending_team_send"], (store) => {
     const keys = Object.entries(store.pendingCollaborationSends)
       .filter(
         ([, record]) =>
@@ -1533,32 +1170,37 @@ export const storeDesktopLocalCredential = (
     input.operationFamilies
   );
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
-    const key = readOrCreateStoreKey(koedHome, resolvedDeps);
-    if (store.secrets[desktopLocalCredentialReference]) {
-      throw new Error("A desktop local credential is already stored.");
+  return mutateStore(
+    koedHome,
+    resolvedDeps,
+    ["desktop_credential"],
+    (store) => {
+      const key = readOrCreateStoreKey(koedHome, resolvedDeps);
+      if (store.secrets[desktopLocalCredentialReference]) {
+        throw new Error("A desktop local credential is already stored.");
+      }
+      const now = resolvedDeps.now().toISOString();
+      const payload: DesktopLocalCredentialPayload = {
+        version: 1,
+        ...generateDesktopCredentialMaterial(resolvedDeps),
+        ownerUserId,
+        operationFamilies,
+        createdAt: now,
+        updatedAt: now
+      };
+      store.secrets[desktopLocalCredentialReference] = encryptSecret(
+        key,
+        JSON.stringify(payload),
+        now,
+        resolvedDeps
+      );
+      store.updatedAt = now;
+      return {
+        result: desktopLocalCredentialAuthorization(payload),
+        changed: true
+      };
     }
-    const now = resolvedDeps.now().toISOString();
-    const payload: DesktopLocalCredentialPayload = {
-      version: 1,
-      ...generateDesktopCredentialMaterial(resolvedDeps),
-      ownerUserId,
-      operationFamilies,
-      createdAt: now,
-      updatedAt: now
-    };
-    store.secrets[desktopLocalCredentialReference] = encryptSecret(
-      key,
-      JSON.stringify(payload),
-      now,
-      resolvedDeps
-    );
-    store.updatedAt = now;
-    return {
-      result: desktopLocalCredentialAuthorization(payload),
-      changed: true
-    };
-  });
+  );
 };
 
 export const readDesktopLocalCredentialAuthorization = (
@@ -1620,41 +1262,46 @@ export const rotateDesktopLocalCredential = (
   deps: UpstreamCredentialSecretStoreDeps = {}
 ): DesktopLocalCredentialAuthorization | null => {
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
-    const key = readStoreKey(koedHome, resolvedDeps);
-    const previous = store.secrets[desktopLocalCredentialReference];
-    if (!key || !previous) return { result: null, changed: false };
-    let current: DesktopLocalCredentialPayload | null;
-    try {
-      current = parseDesktopLocalCredentialPayload(
-        decryptSecret(key, previous)
+  return mutateStore(
+    koedHome,
+    resolvedDeps,
+    ["desktop_credential"],
+    (store) => {
+      const key = readStoreKey(koedHome, resolvedDeps);
+      const previous = store.secrets[desktopLocalCredentialReference];
+      if (!key || !previous) return { result: null, changed: false };
+      let current: DesktopLocalCredentialPayload | null;
+      try {
+        current = parseDesktopLocalCredentialPayload(
+          decryptSecret(key, previous)
+        );
+      } catch {
+        return { result: null, changed: false };
+      }
+      if (!current) return { result: null, changed: false };
+      const now = resolvedDeps.now().toISOString();
+      const payload: DesktopLocalCredentialPayload = {
+        version: 1,
+        ...generateDesktopCredentialMaterial(resolvedDeps),
+        ownerUserId: current.ownerUserId,
+        operationFamilies: current.operationFamilies,
+        createdAt: current.createdAt,
+        updatedAt: now
+      };
+      store.secrets[desktopLocalCredentialReference] = encryptSecret(
+        key,
+        JSON.stringify(payload),
+        now,
+        resolvedDeps,
+        previous
       );
-    } catch {
-      return { result: null, changed: false };
+      store.updatedAt = now;
+      return {
+        result: desktopLocalCredentialAuthorization(payload),
+        changed: true
+      };
     }
-    if (!current) return { result: null, changed: false };
-    const now = resolvedDeps.now().toISOString();
-    const payload: DesktopLocalCredentialPayload = {
-      version: 1,
-      ...generateDesktopCredentialMaterial(resolvedDeps),
-      ownerUserId: current.ownerUserId,
-      operationFamilies: current.operationFamilies,
-      createdAt: current.createdAt,
-      updatedAt: now
-    };
-    store.secrets[desktopLocalCredentialReference] = encryptSecret(
-      key,
-      JSON.stringify(payload),
-      now,
-      resolvedDeps,
-      previous
-    );
-    store.updatedAt = now;
-    return {
-      result: desktopLocalCredentialAuthorization(payload),
-      changed: true
-    };
-  });
+  );
 };
 
 export const deleteDesktopLocalCredential = (
@@ -1664,6 +1311,7 @@ export const deleteDesktopLocalCredential = (
   deleteCredentialSecretByReference(
     koedHome,
     desktopLocalCredentialReference,
+    "desktop_credential",
     deps
   );
 
@@ -1699,25 +1347,103 @@ export const storeLocalEdgeClientCredential = (
   const credentialKeyId = localEdgeClientCredentialKeyIdFor(backendId);
   const reference = localEdgeClientCredentialReferenceFor(backendId);
   const operationFamilies = normalizeOperationFamilies(input.operationFamilies);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
-    const key = readOrCreateStoreKey(koedHome, resolvedDeps);
-    const now = resolvedDeps.now().toISOString();
-    store.secrets[reference] = encryptSecret(
-      key,
-      JSON.stringify({
+  return mutateStore(
+    koedHome,
+    resolvedDeps,
+    ["local_edge_client_credential"],
+    (store) => {
+      const key = readOrCreateStoreKey(koedHome, resolvedDeps);
+      const now = resolvedDeps.now().toISOString();
+      store.secrets[reference] = encryptSecret(
+        key,
+        JSON.stringify({
+          schemaVersion: 1,
+          backendId,
+          credentialKeyId,
+          secret: input.secret,
+          operationFamilies
+        }),
+        now,
+        resolvedDeps,
+        store.secrets[reference]
+      );
+      store.updatedAt = now;
+      return { result: { reference, credentialKeyId }, changed: true };
+    }
+  );
+};
+
+/**
+ * Enrollment-only custody edge: both credentials become durable in the same
+ * encrypted-state replacement or neither does.
+ */
+export const storeEnrollmentCredentialCustody = (
+  koedHome: string,
+  input: EnrollmentCredentialCustodyInput,
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): EnrollmentCredentialCustodyResult => {
+  if (input.upstream.backendId !== input.localEdgeClient.backendId) {
+    throw new Error("Enrollment credential backends do not match.");
+  }
+  if (!isSafeAuthorizationValue(input.upstream.secret)) {
+    throw new Error("Upstream credential secret is not valid.");
+  }
+  const backendId = validateReferencePart(
+    input.upstream.backendId,
+    "backendId",
+    {
+      allowColon: true
+    }
+  );
+  if (!isSafeAuthorizationValue(input.localEdgeClient.secret)) {
+    throw new Error("Local-Edge Client Credential secret is not valid.");
+  }
+  const operationFamilies = normalizeOperationFamilies(
+    input.localEdgeClient.operationFamilies
+  );
+  const upstreamReference = upstreamCredentialReferenceFor(input.upstream);
+  const localReference = localEdgeClientCredentialReferenceFor(backendId);
+  const credentialKeyId = localEdgeClientCredentialKeyIdFor(backendId);
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(
+    koedHome,
+    resolvedDeps,
+    ["upstream_credential", "local_edge_client_credential"],
+    (store) => {
+      const key = readOrCreateStoreKey(koedHome, resolvedDeps);
+      const now = resolvedDeps.now().toISOString();
+      store.secrets[upstreamReference] = encryptSecret(
+        key,
+        input.upstream.secret,
+        now,
+        resolvedDeps,
+        store.secrets[upstreamReference]
+      );
+      const payload = JSON.stringify({
         schemaVersion: 1,
         backendId,
         credentialKeyId,
-        secret: input.secret,
+        secret: input.localEdgeClient.secret,
         operationFamilies
-      }),
-      now,
-      resolvedDeps,
-      store.secrets[reference]
-    );
-    store.updatedAt = now;
-    return { result: { reference, credentialKeyId }, changed: true };
-  });
+      });
+      store.secrets[localReference] = encryptSecret(
+        key,
+        payload,
+        now,
+        resolvedDeps,
+        store.secrets[localReference]
+      );
+      store.updatedAt = now;
+      return {
+        result: {
+          upstreamReference,
+          localEdgeClientReference: localReference,
+          localEdgeClientCredentialKeyId: credentialKeyId
+        },
+        changed: true
+      };
+    }
+  );
 };
 
 export const readLocalEdgeClientCredentialAuthorization = (
@@ -1821,6 +1547,7 @@ export const deleteLocalEdgeClientCredential = (
   deleteCredentialSecretByReference(
     koedHome,
     localEdgeClientCredentialReferenceFor(backendId),
+    "local_edge_client_credential",
     deps
   );
 
@@ -1836,6 +1563,7 @@ export const deleteUpstreamCredentialSecret = (
   return deleteCredentialSecretByReference(
     koedHome,
     upstreamCredentialReferenceFor(parsed),
+    "upstream_credential",
     deps
   );
 };
@@ -1843,10 +1571,11 @@ export const deleteUpstreamCredentialSecret = (
 const deleteCredentialSecretByReference = (
   koedHome: string,
   normalizedReference: string,
+  domain: EncryptedStateDomain,
   deps: UpstreamCredentialSecretStoreDeps
 ): boolean => {
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, [domain], (store) => {
     if (!store.secrets[normalizedReference]) {
       return { result: false, changed: false };
     }
@@ -1860,6 +1589,7 @@ const actionGrantSecretPattern = /^hrg_[A-Za-z0-9_-]{43}$/;
 const sha256HexPattern = /^[a-f0-9]{64}$/;
 const actionGrantStateSet = new Set<CollaborationActionGrantState>([
   "pending",
+  "review_required",
   "approved",
   "consumed",
   "denied",
@@ -1867,6 +1597,20 @@ const actionGrantStateSet = new Set<CollaborationActionGrantState>([
   "expired",
   "canceled"
 ]);
+const legacyActionGrantStateSet = new Set<StoredLegacyActionGrantState>([
+  "pending",
+  "approved",
+  "consumed",
+  "denied",
+  "revoked",
+  "expired",
+  "canceled"
+]);
+
+const legacyCompatibleActionGrantState = (
+  state: CollaborationActionGrantState | null
+): StoredLegacyActionGrantState =>
+  state === null || state === "review_required" ? "pending" : state;
 const actionGrantOperationFamilySet =
   new Set<CollaborationActionGrantOperationFamily>([
     "admin",
@@ -2018,13 +1762,18 @@ const createActionGrantSecret = (deps: ResolvedStoreDeps): string => {
 
 const actionGrantStatusRecord = (
   record: StoredActionGrantRecord
-): CollaborationActionGrantStatusRecord => ({
-  version: 1,
-  actionGrant: { id: record.referenceId },
-  state: record.state,
-  activationUrl: record.activationUrl,
-  expiresAt: record.metadata.expiresAt
-});
+): CollaborationActionGrantStatusRecord | null =>
+  record.approvalTier === null || record.approvalState === null
+    ? null
+    : {
+        version: 1,
+        actionGrant: { id: record.referenceId },
+        approvalTier: record.approvalTier,
+        review: record.review,
+        state: record.approvalState,
+        activationUrl: record.activationUrl,
+        expiresAt: record.metadata.expiresAt
+      };
 
 const storedString = (value: unknown, field: string): string => {
   if (typeof value !== "string") {
@@ -2061,11 +1810,29 @@ const parseStoredActionGrantRecord = (
       storedString(metadata.deploymentBaseUrl, "deploymentBaseUrl")
     );
     const parsedReferenceId = validateActionGrantReferenceId(referenceId);
-    const stateRaw = storedString(record.state, "state");
-    if (!actionGrantStateSet.has(stateRaw as CollaborationActionGrantState)) {
-      return null;
-    }
-    const state = stateRaw as CollaborationActionGrantState;
+    const storedStateRaw = record.state;
+    const storedState =
+      storedStateRaw === null
+        ? "pending"
+        : legacyActionGrantStateSet.has(
+              storedStateRaw as StoredLegacyActionGrantState
+            )
+          ? (storedStateRaw as StoredLegacyActionGrantState)
+          : storedStateRaw === "review_required"
+            ? "pending"
+            : null;
+    if (storedState === null) return null;
+    const approvalStateRaw =
+      "approvalState" in record ? record.approvalState : storedStateRaw;
+    const approvalState =
+      approvalStateRaw === null
+        ? null
+        : actionGrantStateSet.has(
+              approvalStateRaw as CollaborationActionGrantState
+            )
+          ? (approvalStateRaw as CollaborationActionGrantState)
+          : null;
+    if (approvalStateRaw !== null && approvalState === null) return null;
     const commitmentHash = storedString(
       record.commitmentHash,
       "commitmentHash"
@@ -2074,25 +1841,75 @@ const parseStoredActionGrantRecord = (
       return null;
     }
     const ambiguousUntilRaw = record.ambiguousUntil;
+    const lifecycle =
+      record.lifecycle === "unclassified" ||
+      record.lifecycle === "classified" ||
+      record.lifecycle === "ambiguous"
+        ? record.lifecycle
+        : ambiguousUntilRaw !== null
+          ? "ambiguous"
+          : record.review !== null ||
+              (approvalState !== null && approvalState !== "pending")
+            ? "classified"
+            : "unclassified";
     const activationUrl = validateActionGrantActivationUrl(
       record.activationUrl === null
         ? null
         : storedString(record.activationUrl, "activationUrl"),
       deployment.origin
     );
-    const parsed: StoredActionGrantRecord = {
+    const classification =
+      lifecycle === "unclassified"
+        ? {
+            lifecycle,
+            approvalTier: null,
+            review: null,
+            state: "pending" as const,
+            approvalState: null,
+            activationUrl: null,
+            ambiguousUntil: null
+          }
+        : {
+            lifecycle,
+            approvalTier:
+              record.approvalTier === null
+                ? null
+                : collaborationApprovalTierSchema.parse(record.approvalTier),
+            review:
+              record.review === null
+                ? null
+                : collaborationApprovalReviewSchema.parse(record.review),
+            state: legacyCompatibleActionGrantState(approvalState),
+            approvalState,
+            activationUrl,
+            ambiguousUntil:
+              ambiguousUntilRaw === null
+                ? null
+                : validateCanonicalTimestamp(
+                    storedString(ambiguousUntilRaw, "ambiguousUntil"),
+                    "ambiguousUntil"
+                  )
+          };
+    if (
+      lifecycle === "classified" &&
+      (classification.approvalTier === null ||
+        classification.approvalState === null ||
+        classification.ambiguousUntil !== null)
+    ) {
+      return null;
+    }
+    if (
+      lifecycle === "ambiguous" &&
+      (classification.ambiguousUntil === null ||
+        (classification.approvalTier === null) !==
+          (classification.approvalState === null))
+    ) {
+      return null;
+    }
+    const base = {
       schemaVersion: 1,
       referenceId: parsedReferenceId,
       commitmentHash,
-      state,
-      activationUrl,
-      ambiguousUntil:
-        ambiguousUntilRaw === null
-          ? null
-          : validateCanonicalTimestamp(
-              storedString(ambiguousUntilRaw, "ambiguousUntil"),
-              "ambiguousUntil"
-            ),
       createdAt: validateCanonicalTimestamp(
         storedString(record.createdAt, "createdAt"),
         "createdAt"
@@ -2182,6 +1999,10 @@ const parseStoredActionGrantRecord = (
         )
       }
     };
+    const parsed = {
+      ...base,
+      ...classification
+    } as StoredActionGrantRecord;
     if (
       !sha256HexPattern.test(parsed.metadata.bodyHash) ||
       !sha256HexPattern.test(parsed.metadata.requestHash) ||
@@ -2191,7 +2012,7 @@ const parseStoredActionGrantRecord = (
     ) {
       return null;
     }
-    if (parsed.state !== "pending" && activationUrl !== null) {
+    if (parsed.approvalState !== "pending" && activationUrl !== null) {
       return null;
     }
     if (
@@ -2262,11 +2083,11 @@ const pruneTerminalActionGrantRecords = (
     if (
       !record ||
       recordIsExpired(record, now) ||
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled" ||
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled" ||
       (record.ambiguousUntil !== null &&
         Date.parse(record.ambiguousUntil) <= now.getTime())
     ) {
@@ -2285,7 +2106,6 @@ export const storeCollaborationActionGrantCustody = (
   referenceId: string;
   secret: string;
   commitmentHash: string;
-  status: CollaborationActionGrantStatusRecord;
 } => {
   const resolvedDeps = depsWithDefaults(deps);
   const referenceId = validateActionGrantReferenceId(input.referenceId);
@@ -2326,7 +2146,7 @@ export const storeCollaborationActionGrantCustody = (
     body: input.body,
     idempotencyKey: input.idempotencyKey.toLowerCase()
   });
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
     const secret = createActionGrantSecret(resolvedDeps);
     const commitmentHash = highRiskActionGrantCommitmentHash(secret);
     const nowDate = resolvedDeps.now();
@@ -2358,7 +2178,11 @@ export const storeCollaborationActionGrantCustody = (
       schemaVersion: 1,
       referenceId,
       commitmentHash,
+      lifecycle: "unclassified",
+      approvalTier: null,
+      review: null,
       state: "pending",
+      approvalState: null,
       activationUrl: null,
       ambiguousUntil: null,
       createdAt: now,
@@ -2379,8 +2203,7 @@ export const storeCollaborationActionGrantCustody = (
       result: {
         referenceId,
         secret,
-        commitmentHash,
-        status: actionGrantStatusRecord(record)
+        commitmentHash
       },
       changed: true
     };
@@ -2393,18 +2216,18 @@ export const readCollaborationActionGrantCustodyStatus = (
   deps: UpstreamCredentialSecretStoreDeps = {}
 ): CollaborationActionGrantStatusRecord | null => {
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
     const record = readParsedActionGrantRecord(store, input.referenceId);
     if (!record) return { result: null, changed: false };
     const now = resolvedDeps.now();
     if (
       !validateActionGrantAccess(record, input) ||
       recordIsExpired(record, now) ||
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled" ||
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled" ||
       (record.ambiguousUntil !== null &&
         Date.parse(record.ambiguousUntil) <= now.getTime())
     ) {
@@ -2422,18 +2245,18 @@ export const readCollaborationActionGrantCustodyCommitmentHash = (
   deps: UpstreamCredentialSecretStoreDeps = {}
 ): string | null => {
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
     const record = readParsedActionGrantRecord(store, input.referenceId);
     if (!record) return { result: null, changed: false };
     const now = resolvedDeps.now();
     if (
       !validateActionGrantAccess(record, input) ||
       recordIsExpired(record, now) ||
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled"
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled"
     ) {
       deleteActionGrantRecord(store, record.referenceId);
       store.updatedAt = now.toISOString();
@@ -2443,11 +2266,51 @@ export const readCollaborationActionGrantCustodyCommitmentHash = (
   });
 };
 
+export const markCollaborationActionGrantCustodyAmbiguous = (
+  koedHome: string,
+  input: CollaborationActionGrantAccessInput & { ambiguousUntil: string },
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): boolean => {
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
+    const record = readParsedActionGrantRecord(store, input.referenceId);
+    if (!record) return { result: false, changed: false };
+    if (!validateActionGrantAccess(record, input)) {
+      deleteActionGrantRecord(store, record.referenceId);
+      store.updatedAt = resolvedDeps.now().toISOString();
+      return { result: false, changed: true };
+    }
+    const nowIso = resolvedDeps.now().toISOString();
+    const ambiguousUntil = validateCanonicalTimestamp(
+      input.ambiguousUntil,
+      "ambiguousUntil"
+    );
+    if (ambiguousUntil <= nowIso) return { result: false, changed: false };
+    const ambiguous: StoredActionGrantRecord = {
+      ...record,
+      lifecycle: "ambiguous",
+      approvalTier: record.approvalTier,
+      review: record.review,
+      state: record.state,
+      approvalState: record.approvalState,
+      activationUrl: record.activationUrl,
+      ambiguousUntil,
+      updatedAt: nowIso
+    };
+    store.actionGrants[record.referenceId] = ambiguous;
+    store.updatedAt = nowIso;
+    return { result: true, changed: true };
+  });
+};
+
 export const updateCollaborationActionGrantCustodyStatus = (
   koedHome: string,
-  input:
+  input: {
+    approvalTier?: CollaborationApprovalTier;
+    review?: CollaborationApprovalReview | null;
+  } & (
     | (CollaborationActionGrantAccessInput & {
-        state: "pending";
+        state: "pending" | "review_required";
         activationUrl: string | null;
         ambiguousUntil?: string | null;
         expiresAt?: string;
@@ -2459,13 +2322,17 @@ export const updateCollaborationActionGrantCustodyStatus = (
         expiresAt?: string;
       })
     | (CollaborationActionGrantAccessInput & {
-        state: Exclude<CollaborationActionGrantState, "pending" | "approved">;
+        state: Exclude<
+          CollaborationActionGrantState,
+          "pending" | "review_required" | "approved"
+        >;
         expiresAt?: string;
-      }),
+      })
+  ),
   deps: UpstreamCredentialSecretStoreDeps = {}
 ): CollaborationActionGrantStatusRecord | null => {
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
     const record = readParsedActionGrantRecord(store, input.referenceId);
     if (!record) return { result: null, changed: false };
     if (!validateActionGrantAccess(record, input)) {
@@ -2474,6 +2341,19 @@ export const updateCollaborationActionGrantCustodyStatus = (
       return { result: null, changed: true };
     }
     const nowIso = resolvedDeps.now().toISOString();
+    const approvalTier = input.approvalTier ?? record.approvalTier;
+    const review =
+      input.review === undefined
+        ? record.review
+        : input.review
+          ? collaborationApprovalReviewSchema.parse(input.review)
+          : null;
+    if (
+      approvalTier === null ||
+      (approvalTier === "direct") !== (review === null)
+    ) {
+      return { result: null, changed: false };
+    }
     if (
       input.state === "consumed" ||
       input.state === "denied" ||
@@ -2488,6 +2368,8 @@ export const updateCollaborationActionGrantCustodyStatus = (
       const status: CollaborationActionGrantStatusRecord = {
         version: 1,
         actionGrant: { id: record.referenceId },
+        approvalTier,
+        review,
         state: input.state,
         activationUrl: null,
         expiresAt
@@ -2509,7 +2391,10 @@ export const updateCollaborationActionGrantCustodyStatus = (
     const previousMetadata = {
       ...record.metadata
     } satisfies StoredActionGrantMetadata;
-    record.state = input.state;
+    record.state = legacyCompatibleActionGrantState(input.state);
+    record.approvalState = input.state;
+    record.approvalTier = approvalTier;
+    record.review = review;
     record.activationUrl =
       input.state === "pending"
         ? input.activationUrl === null
@@ -2556,6 +2441,7 @@ export const updateCollaborationActionGrantCustodyStatus = (
       }
     }
     record.ambiguousUntil = ambiguousUntil;
+    record.lifecycle = ambiguousUntil ? "ambiguous" : "classified";
     record.updatedAt = nowIso;
     store.actionGrants[record.referenceId] = record;
     store.updatedAt = nowIso;
@@ -2570,7 +2456,7 @@ export const deleteCollaborationActionGrantCustody = (
 ): boolean => {
   const parsedReferenceId = validateActionGrantReferenceId(referenceId);
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
     if (!deleteActionGrantRecord(store, parsedReferenceId)) {
       return { result: false, changed: false };
     }
@@ -2588,7 +2474,7 @@ export const clearCollaborationActionGrantCustodyForBackend = (
     allowColon: true
   });
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
     const keysToDelete = Object.entries(store.actionGrants)
       .filter(([, record]) => record.metadata.backendId === backendId)
       .map(([referenceId]) => referenceId);
@@ -2609,24 +2495,24 @@ export const resolveCollaborationActionGrantSecret = (
   deps: UpstreamCredentialSecretStoreDeps = {}
 ): string | null => {
   const resolvedDeps = depsWithDefaults(deps);
-  return mutateStore(koedHome, resolvedDeps, (store) => {
+  return mutateStore(koedHome, resolvedDeps, ["action_grant"], (store) => {
     const record = readParsedActionGrantRecord(store, input.referenceId);
     if (!record) return { result: null, changed: false };
     const now = resolvedDeps.now();
     const accessMatches = validateActionGrantAccess(record, input);
     const expired = recordIsExpired(record, now);
     const terminal =
-      record.state === "consumed" ||
-      record.state === "denied" ||
-      record.state === "revoked" ||
-      record.state === "expired" ||
-      record.state === "canceled";
+      record.approvalState === "consumed" ||
+      record.approvalState === "denied" ||
+      record.approvalState === "revoked" ||
+      record.approvalState === "expired" ||
+      record.approvalState === "canceled";
     if (!accessMatches || expired || terminal) {
       deleteActionGrantRecord(store, record.referenceId);
       store.updatedAt = now.toISOString();
       return { result: null, changed: true };
     }
-    if (record.state !== "approved") {
+    if (record.approvalState !== "approved") {
       return { result: null, changed: false };
     }
     if (

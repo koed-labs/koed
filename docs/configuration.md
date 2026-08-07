@@ -72,6 +72,13 @@ Supported mode fields:
   deletion reembedding, but does not start Cross-Identity Sync, retention purge,
   collaboration replay pruning, or other Team collaboration jobs. Restart both
   API and Worker after changing the value.
+- `KOED_DEVELOPER_TEAM_BACKEND_ENABLED`: an isolated local-testing switch that
+  lets the `developer` deployment profile truthfully advertise and serve the
+  Team backend capability foundation. It accepts only `true` or `false`,
+  defaults to `false`, requires `KOED_TEAM_COLLABORATION_ENABLED=true`, and is
+  ignored by every non-developer deployment profile. Do not enable it for a
+  production deployment. It does not relax the verified WorkOS/AuthKit identity
+  requirement for Team Self-Hosted or Koed-managed cloud.
 
 Authentication providers are part of the deployment capability contract.
 Private VPS and Team Self-Hosted profiles expose local session authentication;
@@ -285,6 +292,22 @@ may be a full `Bearer ...` or `Koed-Device ...` authorization header, or a
 `key:secret` value which is sent as `Koed-Device key:secret`. Local browser
 session cookies and personal API Tokens are never forwarded upstream.
 
+The file-backed custody implementation has one internal encrypted-state
+transaction core for key handling, authenticated encryption, bounded lock
+recovery, schema parsing, and durable atomic replacement. Public code consumes
+separate upstream/Desktop credential custody, Local-Edge Client Credential
+custody, pending Team-send persistence, and Action Grant custody capabilities;
+the generic transaction core is not a package export. All four capabilities
+continue to read and write the existing schema-version-1 file and key paths.
+Action Grant custody keeps its legacy `state` field inside the vocabulary a
+previous binary accepts and records the current approval lifecycle separately,
+so unclassified and Native-review records remain rollback-readable as legacy
+`pending` state without losing their current semantics. This requires no data
+migration. Unknown, malformed, or undecryptable state fails closed rather than
+falling back to plaintext or a weaker store. Enrollment may declare an explicit
+cross-domain transaction so its upstream credential and Local-Edge Client
+Credential are staged in one replacement.
+
 Supported commands:
 
 ```bash
@@ -321,8 +344,12 @@ Enrollment orchestration state is separate from the upstream backend registry.
 `upstream enroll start/status/cancel` and `upstream disconnect` record only
 non-secret local state under `KOED_HOME/run/upstream-enrollments.json`, including
 state, requested operation families, timestamps, and credential status/reference
-metadata. `upstream enroll start` creates a short-lived browser approval
-challenge on the upstream backend and prints the activation URL. After the user
+metadata. Each record also carries a transaction identity, monotonically
+increasing backend-local generation, phase, and distinct active and pending
+credential references. `upstream enroll start` first commits a non-authoritative
+prepared transaction and encrypted pending custody under the per-backend lock,
+then creates a short-lived browser approval challenge on the upstream backend
+and records its activation URL. After the user
 approves the challenge in a browser session, `upstream enroll status` validates
 the scoped device credential with the upstream backend and marks the local
 backend credential configured. Koed Desktop performs that reconciliation
@@ -335,9 +362,15 @@ Local-Edge Client Credential scoped to the selected backend and
 `team_workspace_read`. The local edge validates that credential, then uses the
 separate enrolled upstream device credential without exposing it to MCP. A
 Personal API Token alone is rejected from Team, Share Grant, sync, and admin
-operation families. Enrollment status, replacement, cancellation, and disconnect
-mutations are serialized per backend across CLI processes; remote requests run
-before lock acquisition, and each mutation rereads current state while locked.
+operation families. Enrollment status, replacement, cancellation, recovery, and
+disconnect mutations are serialized per backend across CLI processes. Remote
+requests run outside the lock, while every authority-changing effect is preceded
+by a durable transaction decision and every final state commit occurs under the
+same lock after rereading transaction identity and generation. Interrupted
+preparation is compensated; interrupted commit or abort effects resume
+idempotently. Replacement commits the successor into the registry before
+deleting predecessor custody, and temporary remote uncertainty retains the
+active credential.
 
 `KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED=true` lets the MCP Server resolve
 an explicit local Project-to-Team Workspace mapping when `memory_answer` receives
@@ -477,8 +510,8 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   Team collaboration is disabled because Personal broker commands and
   subscriptions remain available.
 - `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Only `codex` is supported.
-- `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.4-mini`.
-- `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `medium`.
+- `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.6-luna`.
+- `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `low`.
 - `MEMORY_CURATED_REVIEW_TIMEOUT_MS`: maximum duration of one local review call. Default `90000`.
 - `MEMORY_CURATED_REVIEW_MAX_ATTEMPTS`: maximum review attempts before a non-stale worker failure becomes a rejection. Default `2`.
 - `MEMORY_CURATED_REVIEW_MAX_PROMPT_TOKENS`: maximum complete review-bundle size. Oversized evidence fails closed instead of being truncated. Default `24000`.
@@ -695,8 +728,8 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_BRIDGE_PORT`: local answer bridge port used by the Explorer. Default `3210`.
 - `MEMORY_ANSWER_BRIDGE_CORS_ORIGINS`: comma-separated browser origins allowed to call the local answer bridge.
 - `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Default and only supported value: `codex`.
-- `MEMORY_ANSWER_MODEL`: Codex model for MCP Memory Answer synthesis.
-- `MEMORY_ANSWER_REASONING_EFFORT`: Codex reasoning effort for MCP Memory Answer synthesis.
+- `MEMORY_ANSWER_MODEL`: Codex model for MCP Memory Answer synthesis. Default `gpt-5.6-luna`.
+- `MEMORY_ANSWER_REASONING_EFFORT`: Codex reasoning effort for MCP Memory Answer synthesis. Default `low`.
 - `MEMORY_ANSWER_TIMEOUT_MS`: timeout for each local MCP Memory Answer app-server turn.
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
@@ -710,8 +743,8 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS`: bridge-level retry cap for older pending question rows without per-question max attempts.
 - `MEMORY_QUESTION_ANSWER_LOCAL_LEASE_SECONDS`: short renewable lease used when the local bridge claims a pending manual Memory Question.
 - `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary synthesis. Default and only supported value: `codex`.
-- `MEMORY_LCM_SUMMARY_MODEL`: Codex model for LCM Summary synthesis.
-- `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: Codex reasoning effort for LCM Summary synthesis.
+- `MEMORY_LCM_SUMMARY_MODEL`: Codex model for LCM Summary synthesis. Default `gpt-5.6-luna`.
+- `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: Codex reasoning effort for LCM Summary synthesis. Default `low`.
 - `MEMORY_LCM_SUMMARY_TIMEOUT_MS`: timeout for each local LCM Summary app-server turn.
 - `MEMORY_LCM_SUMMARY_MAX_ATTEMPTS`: maximum local LCM Summary synthesis attempts.
 - `MEMORY_LCM_SUMMARY_RETRY_DELAY_MS`: delay between local LCM Summary retry attempts.

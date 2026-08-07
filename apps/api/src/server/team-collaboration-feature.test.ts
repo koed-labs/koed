@@ -349,4 +349,38 @@ describe("Team collaboration feature switch", () => {
       ])
     });
   });
+
+  it("advertises Team capabilities for an explicitly isolated developer Team backend", () => {
+    const disabled = buildCapabilitiesResponse({
+      deploymentProfile: "developer",
+      runtimeMode: "developer",
+      dependencyMode: "external",
+      teamCollaborationEnabled: true
+    });
+    const enabled = buildCapabilitiesResponse({
+      deploymentProfile: "developer",
+      runtimeMode: "developer",
+      dependencyMode: "external",
+      teamCollaborationEnabled: true,
+      developerTeamBackendEnabled: true
+    });
+
+    expect(disabled.memory).toMatchObject({
+      teamWorkspaces: "unavailable",
+      collaboration: "unavailable",
+      shareGrants: "unavailable"
+    });
+    expect(enabled.memory).toMatchObject({
+      teamWorkspaces: "partial",
+      collaboration: "partial",
+      shareGrants: "partial"
+    });
+    expect(enabled.capabilities["memory.collaboration"]).toMatchObject({
+      availability: "partial",
+      endpoints: expect.arrayContaining([
+        "/v1/collaboration/teams/{teamId}/threads",
+        "/v1/collaboration/realtime/snapshot"
+      ])
+    });
+  });
 });

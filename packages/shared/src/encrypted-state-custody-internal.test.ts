@@ -20,6 +20,7 @@ import {
   deleteCollaborationActionGrantCustody,
   clearCollaborationPendingTeamSends,
   deleteCollaborationPendingSend,
+  readCollaborationActionGrantCustodyCommitmentHash,
   readCollaborationActionGrantCustodyStatus,
   listCollaborationPendingSends,
   DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES,
@@ -36,6 +37,7 @@ import {
   storeCollaborationActionGrantCustody,
   storeCollaborationPendingSend,
   storeDesktopLocalCredential,
+  storeEnrollmentCredentialCustody,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret,
   updateCollaborationActionGrantCustodyStatus,
@@ -43,7 +45,7 @@ import {
   upstreamCredentialReferenceFor,
   verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
-} from "./upstream-credential-store.js";
+} from "./encrypted-state-custody-internal.js";
 
 const temps: string[] = [];
 
@@ -121,6 +123,82 @@ const spawnConcurrencyChild = (
   );
 
 describe("upstream credential secret store", () => {
+  it("stages enrollment credential custody in one atomic encrypted replacement", () => {
+    const koedHome = tempHome();
+    const result = storeEnrollmentCredentialCustody(koedHome, {
+      upstream: {
+        backendId: "team-vps",
+        credentialKeyId: "device-key",
+        secret: "upstream-secret"
+      },
+      localEdgeClient: {
+        backendId: "team-vps",
+        secret: "local-edge-secret",
+        operationFamilies: ["team_workspace_read"]
+      }
+    });
+
+    expect(result.upstreamReference).toBe(
+      upstreamCredentialReferenceFor({
+        backendId: "team-vps",
+        credentialKeyId: "device-key"
+      })
+    );
+    expect(
+      readUpstreamCredentialAuthorization(koedHome, result.upstreamReference)
+    ).toBe("Koed-Device device-key:upstream-secret");
+    expect(
+      readLocalEdgeClientCredentialAuthorization(koedHome, "team-vps")
+    ).toMatchObject({
+      backendId: "team-vps",
+      operationFamilies: ["team_workspace_read"]
+    });
+    const persisted = readFileSync(
+      resolve(koedHome, "secrets", "upstream-credentials.json"),
+      "utf8"
+    );
+    expect(persisted).not.toContain("upstream-secret");
+    expect(persisted).not.toContain("local-edge-secret");
+  });
+
+  it("leaves neither enrollment credential staged when the atomic commit is interrupted", () => {
+    const koedHome = tempHome();
+    expect(() =>
+      storeEnrollmentCredentialCustody(
+        koedHome,
+        {
+          upstream: {
+            backendId: "team-vps",
+            credentialKeyId: "device-key",
+            secret: "upstream-secret"
+          },
+          localEdgeClient: {
+            backendId: "team-vps",
+            secret: "local-edge-secret",
+            operationFamilies: ["team_workspace_read"]
+          }
+        },
+        {
+          beforeStoreCommit: () => {
+            throw new Error("interrupted");
+          }
+        }
+      )
+    ).toThrow("interrupted");
+    expect(
+      readUpstreamCredentialAuthorization(
+        koedHome,
+        upstreamCredentialReferenceFor({
+          backendId: "team-vps",
+          credentialKeyId: "device-key"
+        })
+      )
+    ).toBeNull();
+    expect(
+      readLocalEdgeClientCredentialAuthorization(koedHome, "team-vps")
+    ).toBeNull();
+  });
+
   it("persists collaboration retry bodies encrypted with immutable send identity", () => {
     const koedHome = tempHome();
     const teamSend = {
@@ -802,6 +880,18 @@ describe("collaboration Action Grant custody", () => {
     deviceCredentialId,
     principalUserId
   } as const;
+  const reviewedAccess = {
+    ...access,
+    approvalTier: "step_up" as const,
+    review: {
+      version: 1 as const,
+      title: "Approve this action?",
+      description: "Review the exact action binding.",
+      consequence: "The bound action may execute.",
+      confirmLabel: "Approve",
+      details: []
+    }
+  };
 
   const resolveInput = {
     ...access,
@@ -818,14 +908,49 @@ describe("collaboration Action Grant custody", () => {
   it("stores only encrypted Action Grant secret custody and reuses it after restart", () => {
     const koedHome = tempHome();
     const stored = storeGrant(koedHome);
+    const persisted = JSON.parse(
+      readFileSync(
+        resolve(koedHome, "secrets", "upstream-credentials.json"),
+        "utf8"
+      )
+    ) as { actionGrants: Record<string, unknown> };
 
     expect(stored.secret).toBe(secretSentinel);
     expect(stored.commitmentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(persisted.actionGrants[referenceId]).toMatchObject({
+      lifecycle: "unclassified",
+      approvalTier: null,
+      review: null,
+      state: "pending",
+      approvalState: null
+    });
     expect(
       updateCollaborationActionGrantCustodyStatus(
         koedHome,
         {
-          ...access,
+          ...reviewedAccess,
+          approvalTier: "native_review",
+          state: "review_required",
+          activationUrl: null
+        },
+        fixedDeps("2026-07-17T02:00:20.000Z")
+      )
+    ).toMatchObject({ state: "review_required" });
+    const reviewRequiredStore = JSON.parse(
+      readFileSync(
+        resolve(koedHome, "secrets", "upstream-credentials.json"),
+        "utf8"
+      )
+    ) as { actionGrants: Record<string, unknown> };
+    expect(reviewRequiredStore.actionGrants[referenceId]).toMatchObject({
+      state: "pending",
+      approvalState: "review_required"
+    });
+    expect(
+      updateCollaborationActionGrantCustodyStatus(
+        koedHome,
+        {
+          ...reviewedAccess,
           state: "pending",
           activationUrl: `${deploymentBaseUrl}/approve/action-grants/${referenceId}`
         },
@@ -838,7 +963,7 @@ describe("collaboration Action Grant custody", () => {
     expect(
       updateCollaborationActionGrantCustodyStatus(
         koedHome,
-        { ...access, state: "approved" },
+        { ...reviewedAccess, state: "approved" },
         fixedDeps("2026-07-17T02:01:00.000Z")
       )
     ).toMatchObject({
@@ -872,12 +997,50 @@ describe("collaboration Action Grant custody", () => {
     ).toBe(secretSentinel);
   });
 
+  it("upgrades Action Grant records written before the compatibility fields", () => {
+    const koedHome = tempHome();
+    const stored = storeGrant(koedHome);
+    const storePath = resolve(koedHome, "secrets", "upstream-credentials.json");
+    const persisted = JSON.parse(readFileSync(storePath, "utf8")) as {
+      actionGrants: Record<string, Record<string, unknown>>;
+    };
+    persisted.actionGrants[referenceId]!.state = null;
+    delete persisted.actionGrants[referenceId]!.approvalState;
+    writeFileSync(storePath, `${JSON.stringify(persisted)}\n`, "utf8");
+
+    expect(
+      readCollaborationActionGrantCustodyCommitmentHash(
+        koedHome,
+        access,
+        fixedDeps("2026-07-17T02:00:10.000Z")
+      )
+    ).toBe(stored.commitmentHash);
+    expect(
+      updateCollaborationActionGrantCustodyStatus(
+        koedHome,
+        {
+          ...reviewedAccess,
+          state: "pending",
+          activationUrl: `${deploymentBaseUrl}/approve/action-grants/${referenceId}`
+        },
+        fixedDeps("2026-07-17T02:00:20.000Z")
+      )
+    ).toMatchObject({ state: "pending" });
+    const upgraded = JSON.parse(readFileSync(storePath, "utf8")) as {
+      actionGrants: Record<string, Record<string, unknown>>;
+    };
+    expect(upgraded.actionGrants[referenceId]).toMatchObject({
+      state: "pending",
+      approvalState: "pending"
+    });
+  });
+
   it("fails closed on ciphertext or metadata tampering", () => {
     const koedHome = tempHome();
     storeGrant(koedHome);
     updateCollaborationActionGrantCustodyStatus(
       koedHome,
-      { ...access, state: "approved" },
+      { ...reviewedAccess, state: "approved" },
       fixedDeps("2026-07-17T02:01:00.000Z")
     );
 
@@ -914,12 +1077,12 @@ describe("collaboration Action Grant custody", () => {
     storeGrant(koedHome);
     updateCollaborationActionGrantCustodyStatus(
       koedHome,
-      { ...access, state: "approved" },
+      { ...reviewedAccess, state: "approved" },
       fixedDeps("2026-07-17T02:01:00.000Z")
     );
 
     expect(
-      readCollaborationActionGrantCustodyStatus(
+      readCollaborationActionGrantCustodyCommitmentHash(
         koedHome,
         access,
         fixedDeps("2026-07-17T02:06:00.000Z")
@@ -993,7 +1156,7 @@ describe("collaboration Action Grant custody", () => {
       readCollaborationActionGrantCustodyStatus(koedHome, access, fixedDeps())
     ).toBeNull();
     expect(
-      readCollaborationActionGrantCustodyStatus(
+      readCollaborationActionGrantCustodyCommitmentHash(
         koedHome,
         {
           ...access,
@@ -1003,7 +1166,7 @@ describe("collaboration Action Grant custody", () => {
         },
         fixedDeps()
       )
-    ).toMatchObject({ actionGrant: { id: otherReferenceId } });
+    ).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("fails closed on malformed Action Grant custody without rewriting unrelated encrypted state", () => {
@@ -1110,7 +1273,7 @@ describe("collaboration Action Grant custody", () => {
       storeGrant(koedHome);
       updateCollaborationActionGrantCustodyStatus(
         koedHome,
-        { ...access, state: "approved" },
+        { ...reviewedAccess, state: "approved" },
         fixedDeps("2026-07-17T02:01:00.000Z")
       );
 
@@ -1155,7 +1318,7 @@ describe("collaboration Action Grant custody", () => {
     });
     updateCollaborationActionGrantCustodyStatus(
       koedHome,
-      { ...access, state: "approved" },
+      { ...reviewedAccess, state: "approved" },
       fixedDeps("2026-07-17T02:01:00.000Z")
     );
 
@@ -1292,7 +1455,12 @@ describe("credential store cross-process serialization", () => {
     await runContendedPair(
       "action-transition",
       "approve-grant-held",
-      { ...actionGrantAccess, state: "approved" },
+      {
+        ...actionGrantAccess,
+        state: "approved",
+        approvalTier: "direct",
+        review: null
+      },
       "consume-grant",
       { ...actionGrantAccess, state: "consumed" }
     );

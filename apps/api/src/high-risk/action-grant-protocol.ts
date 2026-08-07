@@ -1,16 +1,9 @@
 import {
-  calculateConversationSourceDownloadRequestHash,
-  calculateConversationSourceDownloadScopeHash,
-  calculateConversationSourceDiscoveryRequestHash,
-  calculateConversationSourceDiscoveryScopeHash,
   collaborationActionGrantIntentSchema,
+  collaborationApprovalReviewSchema,
+  collaborationApprovalTierSchema,
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
-  sharedMemoryConsentActionGrantBinding,
-  sharedMemoryPreviewActionGrantBinding,
-  sharedMemoryRepresentationActionGrantBinding,
-  sharedMemoryRevokeActionGrantBinding,
-  sharedMemoryShareActionGrantBinding,
   type CollaborationActionGrantIntent
 } from "@koed/shared";
 import { z } from "zod";
@@ -26,7 +19,6 @@ import {
   revokeShareGrantSchema,
   selectGrantRepresentationSchema
 } from "../shared-memory/schemas.js";
-import { teamAdminRequestHash, teamAdminScopeHash } from "../team/routes.js";
 import {
   acceptTeamInviteSchema,
   createTeamInviteSchema,
@@ -39,13 +31,34 @@ import {
   updateTeamMemberRoleSchema
 } from "../team/schemas.js";
 import {
-  retentionAdminRequestHash,
-  retentionAdminScopeHash
-} from "../retention/routes.js";
-import {
   sourceDiscoverySchema,
   sourceReplicationRecipientKeySchema
 } from "../source-replication/schemas.js";
+import { resolveTeamInviteCreateActionGrantOperation } from "./team-invite-create-action-definition.js";
+import { resolveTeamAndMembershipActionGrantOperation } from "./team-and-membership-action-definitions.js";
+import {
+  bindTeamWorkspaceAccessUpdateOperation,
+  bindTeamWorkspaceCreateOperation,
+  bindTeamWorkspaceLifecycleOperation
+} from "./workspace-action-definitions.js";
+import {
+  bindSharedMemoryPreviewOperation,
+  bindSharedMemoryRepresentationChangeOperation,
+  bindSharedMemoryRevokeOperation,
+  bindSharedMemoryShareOperation
+} from "./shared-memory-action-definitions.js";
+import {
+  bindConversationSourceDiscoveryOperation,
+  bindConversationSourceDownloadOperation,
+  bindManagedConversationTransferOperation
+} from "./managed-source-action-definitions.js";
+import {
+  bindBillingSeatsOperation,
+  bindEntitlementOperation,
+  bindLegalHoldPlacementOperation,
+  bindLegalHoldReleaseOperation,
+  bindTeamDeletionRequestOperation
+} from "./governance-action-definitions.js";
 
 const uuidSchema = z.uuid();
 const activationPathSchema = z
@@ -196,11 +209,13 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
-      action: z.literal("shared_memory.consent"),
-      consentId: uuidSchema,
+      action: z.literal("shared_memory.share"),
+      mutationId: uuidSchema,
+      logicalGrantId: uuidSchema,
       logicalMemoryId: uuidSchema,
       teamId: uuidSchema,
       teamWorkspaceId: uuidSchema,
+      consentId: uuidSchema,
       previewId: uuidSchema,
       mode: createSourceOwnerConsentSchema.shape.mode,
       allowedRepresentations:
@@ -210,17 +225,6 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable()
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("shared_memory.share"),
-      mutationId: uuidSchema,
-      logicalGrantId: uuidSchema,
-      logicalMemoryId: uuidSchema,
-      teamId: uuidSchema,
-      teamWorkspaceId: uuidSchema,
-      consentId: uuidSchema
     })
     .strict(),
   z
@@ -238,13 +242,21 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("shared_memory.change_representation"),
       mutationId: uuidSchema,
+      logicalMemoryId: uuidSchema,
       teamId: uuidSchema,
       teamWorkspaceId: uuidSchema,
       shareGrantId: uuidSchema,
       consentId: uuidSchema,
+      previewId: uuidSchema,
       representation: createSharedMemoryPreviewSchema.shape.representation,
       expectedGrantVersion:
-        selectGrantRepresentationSchema.shape.expectedGrantVersion
+        selectGrantRepresentationSchema.shape.expectedGrantVersion,
+      mode: createSourceOwnerConsentSchema.shape.mode,
+      allowedRepresentations:
+        createSourceOwnerConsentSchema.shape.allowedRepresentations,
+      previewRevision: z.number().int().safe().positive(),
+      previewHash: z.string().regex(/^[a-f0-9]{64}$/),
+      expiresAt: z.string().datetime({ offset: true }).nullable()
     })
     .strict(),
   z
@@ -305,6 +317,7 @@ export const highRiskActionGrantCreateRequestSchema = z
 
 export const highRiskActionGrantStatusStateSchema = z.enum([
   "pending",
+  "review_required",
   "approved",
   "consumed",
   "denied",
@@ -318,22 +331,51 @@ export const highRiskActionGrantRemoteStatusSchema = z
     version: z.literal(1),
     actionGrant: z.object({ id: uuidSchema }).strict(),
     selector: uuidSchema,
+    approvalTier: collaborationApprovalTierSchema,
+    review: collaborationApprovalReviewSchema.nullable(),
     state: highRiskActionGrantStatusStateSchema,
     activationPath: activationPathSchema.nullable(),
     expiresAt: z.string().datetime({ offset: true })
   })
   .strict()
   .superRefine((status, context) => {
-    const pending = status.state === "pending";
-    if (pending !== (status.activationPath !== null)) {
+    if ((status.approvalTier === "direct") !== (status.review === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["review"],
+        message:
+          status.approvalTier === "direct"
+            ? "Direct Action Grants must not carry confirmation copy"
+            : "Reviewed Action Grants require authoritative confirmation copy"
+      });
+    }
+    const browserPending = status.state === "pending";
+    if (browserPending !== (status.activationPath !== null)) {
       context.addIssue({
         code: "custom",
         path: ["activationPath"],
-        message: pending
+        message: browserPending
           ? "Pending Action Grants require an activation path"
           : "Approved or terminal Action Grants must not expose an activation path"
       });
       return;
+    }
+    if (browserPending && status.approvalTier !== "step_up") {
+      context.addIssue({
+        code: "custom",
+        path: ["approvalTier"],
+        message: "Only Step-up grants may expose browser activation"
+      });
+    }
+    if (
+      status.state === "review_required" &&
+      status.approvalTier !== "native_review"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["approvalTier"],
+        message: "Native review is required for review_required state"
+      });
     }
     if (
       status.activationPath !== null &&
@@ -355,6 +397,8 @@ export const highRiskActionGrantRemoteEnvelopeSchema = z
 export type HighRiskActionGrantIntent = z.infer<
   typeof highRiskActionGrantIntentSchema
 >;
+
+export type HighRiskActionName = HighRiskActionGrantIntent["action"];
 
 export interface HighRiskActionGrantOperation {
   operationFamily:
@@ -430,22 +474,6 @@ const invitationTokenFromUrl = (
     return null;
   }
 };
-
-export const highRiskActionGrantOperationFamilyForIntent = (
-  intent: HighRiskActionGrantIntent
-):
-  | "admin"
-  | "share_grant_management"
-  | "source_download"
-  | "managed_execution" =>
-  intent.action === "conversation_source.download" ||
-  intent.action === "conversation_source.discover"
-    ? "source_download"
-    : intent.action.startsWith("managed_conversation.")
-      ? "managed_execution"
-      : intent.action.startsWith("shared_memory.")
-        ? "share_grant_management"
-        : "admin";
 
 export const highRiskActionGrantIntentFromCollaborationIntent = (
   backendBaseUrl: string,
@@ -556,14 +584,16 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             allowedRepresentations: intent.allowedRepresentations
           }
         : null;
-    case "collaboration.consent_shared_memory":
+    case "collaboration.share_memory":
       return resolved?.sharedMemoryPreviewId
         ? {
-            action: "shared_memory.consent",
-            consentId: intent.consentId,
+            action: "shared_memory.share",
+            mutationId: intent.mutationId,
+            logicalGrantId: intent.logicalGrantId,
             logicalMemoryId: intent.logicalMemoryId,
             teamId: intent.teamId,
             teamWorkspaceId: intent.workspaceId,
+            consentId: intent.consentId,
             previewId: resolved.sharedMemoryPreviewId,
             mode: intent.mode,
             allowedRepresentations: intent.allowedRepresentations,
@@ -573,16 +603,6 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             expiresAt: intent.expiresAt
           }
         : null;
-    case "collaboration.share_memory":
-      return {
-        action: "shared_memory.share",
-        mutationId: intent.mutationId,
-        logicalGrantId: intent.logicalGrantId,
-        logicalMemoryId: intent.logicalMemoryId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.workspaceId,
-        consentId: intent.consentId
-      };
     case "collaboration.revoke_shared_memory":
       return {
         action: "shared_memory.revoke",
@@ -594,16 +614,25 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         reasonCode: intent.reasonCode
       };
     case "collaboration.change_shared_memory_representation":
-      return {
-        action: "shared_memory.change_representation",
-        mutationId: intent.mutationId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.workspaceId,
-        shareGrantId: intent.shareGrantId,
-        consentId: intent.consentId,
-        representation: intent.representation,
-        expectedGrantVersion: intent.expectedGrantVersion
-      };
+      return resolved?.sharedMemoryPreviewId
+        ? {
+            action: "shared_memory.change_representation",
+            mutationId: intent.mutationId,
+            logicalMemoryId: intent.logicalMemoryId,
+            teamId: intent.teamId,
+            teamWorkspaceId: intent.workspaceId,
+            shareGrantId: intent.shareGrantId,
+            consentId: intent.consentId,
+            previewId: resolved.sharedMemoryPreviewId,
+            representation: intent.representation,
+            expectedGrantVersion: intent.expectedGrantVersion,
+            mode: intent.mode,
+            allowedRepresentations: intent.allowedRepresentations,
+            previewRevision: intent.previewRevision,
+            previewHash: intent.previewHash,
+            expiresAt: intent.expiresAt
+          }
+        : null;
     case "collaboration.managed_conversation_handoff":
       return {
         action: "managed_conversation.handoff",
@@ -628,42 +657,6 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
   }
 };
 
-const actionGrantOperation = (
-  input: Omit<HighRiskResolvedActionGrantOperation, "scopeHash" | "requestHash">
-): HighRiskActionGrantOperation => input;
-
-const withTeamHashes = (
-  input: HighRiskActionGrantOperation
-): HighRiskResolvedActionGrantOperation => ({
-  ...input,
-  scopeHash: teamAdminScopeHash({
-    action: input.action,
-    teamId: input.teamId,
-    targetId: input.targetId
-  }),
-  requestHash: teamAdminRequestHash({
-    method: input.method,
-    path: input.path,
-    body: input.body
-  })
-});
-
-const withRetentionHashes = (
-  input: HighRiskActionGrantOperation
-): HighRiskResolvedActionGrantOperation => ({
-  ...input,
-  scopeHash: retentionAdminScopeHash({
-    action: input.action,
-    teamId: input.teamId,
-    targetId: input.targetId
-  }),
-  requestHash: retentionAdminRequestHash({
-    method: input.method,
-    path: input.path,
-    body: input.body
-  })
-});
-
 export const resolveHighRiskActionGrantOperation = (input: {
   clientRequestId: string;
   intent: HighRiskActionGrantIntent;
@@ -676,151 +669,30 @@ export const resolveHighRiskActionGrantOperation = (input: {
   const { clientRequestId, intent } = input;
   switch (intent.action) {
     case "team.create":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: null,
-          targetId: null,
-          method: "POST",
-          path: "/v1/teams",
-          body: intent.body
-        })
-      );
     case "team.invite.accept":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: null,
-          targetId: null,
-          method: "POST",
-          path: "/v1/team-invites/accept",
-          body: intent.body
-        })
-      );
     case "team.member.role_update":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.userId,
-          method: "PATCH",
-          path: `/v1/teams/${intent.teamId}/members/${intent.userId}/role`,
-          body: intent.body
-        })
-      );
     case "team.member.disable":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.userId,
-          method: "POST",
-          path: `/v1/teams/${intent.teamId}/members/${intent.userId}/disable`,
-          body: intent.body
-        })
-      );
     case "team.leave":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.teamId,
-          method: "POST",
-          path: `/v1/teams/${intent.teamId}/leave`,
-          body: intent.body
-        })
-      );
-    case "team.invite.create":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.body.defaultTeamWorkspaceId,
-          method: "POST",
-          path: `/v1/teams/${intent.teamId}/invites`,
-          body: intent.body
-        })
-      );
     case "team.invite.revoke":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.inviteId,
-          method: "DELETE",
-          path: `/v1/teams/${intent.teamId}/invites/${intent.inviteId}`,
-          body: intent.body
-        })
-      );
+      return resolveTeamAndMembershipActionGrantOperation({
+        clientRequestId,
+        intent
+      });
+    case "team.invite.create":
+      return resolveTeamInviteCreateActionGrantOperation({
+        clientRequestId,
+        intent
+      });
     case "team.entitlement.update":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.teamId,
-          method: "PUT",
-          path: `/v1/teams/${intent.teamId}/entitlement`,
-          body: intent.body
-        })
-      );
+      return bindEntitlementOperation(intent);
     case "team.billing_seats.update":
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.teamId,
-          method: "PUT",
-          path: `/v1/teams/${intent.teamId}/billing-seats/policy`,
-          body: intent.body
-        })
-      );
-    case "team.workspace.create": {
-      const teamId =
-        intent.teamId ??
-        ("teamId" in intent.body ? String(intent.body.teamId) : null);
-      if (!teamId) {
-        return null;
-      }
-      return withTeamHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId,
-          targetId: null,
-          method: "POST",
-          path:
-            intent.teamId === undefined
-              ? "/v1/team-workspaces"
-              : `/v1/teams/${teamId}/workspaces`,
-          body: intent.body
-        })
-      );
-    }
+      return bindBillingSeatsOperation(intent);
+    case "team.workspace.create":
+      return bindTeamWorkspaceCreateOperation(intent);
     case "team.workspace.archive":
     case "team.workspace.restore": {
       const build = (teamId: string) =>
-        withTeamHashes(
-          actionGrantOperation({
-            operationFamily: "admin",
-            action: intent.action,
-            teamId,
-            targetId: intent.teamWorkspaceId,
-            method: "POST",
-            path: `/v1/team-workspaces/${intent.teamWorkspaceId}/${
-              intent.action === "team.workspace.archive" ? "archive" : "restore"
-            }`,
-            body: intent.body
-          })
-        );
+        bindTeamWorkspaceLifecycleOperation(intent, teamId);
       if (!input.resolveWorkspaceTeamId) {
         return intent.teamId ? build(intent.teamId) : null;
       }
@@ -835,17 +707,7 @@ export const resolveHighRiskActionGrantOperation = (input: {
     }
     case "team.workspace.access_update": {
       const build = (teamId: string) =>
-        withTeamHashes(
-          actionGrantOperation({
-            operationFamily: "admin",
-            action: intent.action,
-            teamId,
-            targetId: intent.teamWorkspaceId,
-            method: "PUT",
-            path: `/v1/team-workspaces/${intent.teamWorkspaceId}/access`,
-            body: intent.body
-          })
-        );
+        bindTeamWorkspaceAccessUpdateOperation(intent, teamId);
       if (!input.resolveWorkspaceTeamId) {
         return intent.teamId ? build(intent.teamId) : null;
       }
@@ -858,176 +720,37 @@ export const resolveHighRiskActionGrantOperation = (input: {
         );
     }
     case "team.retention.delete_request":
-      return withRetentionHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId: intent.teamId,
-          targetId: intent.teamId,
-          method: "POST",
-          path: `/v1/retention/teams/${intent.teamId}/deletion-request`,
-          body: intent.body
-        })
-      );
-    case "team.legal_hold.place": {
-      const teamId = intent.body.target.teamId;
-      const targetId =
-        "teamId" in intent.body.target ? intent.body.target.teamId : null;
-      return withRetentionHashes(
-        actionGrantOperation({
-          operationFamily: "admin",
-          action: intent.action,
-          teamId,
-          targetId,
-          method: "POST",
-          path: "/v1/retention/legal-holds",
-          body: intent.body
-        })
-      );
-    }
+      return bindTeamDeletionRequestOperation(intent);
+    case "team.legal_hold.place":
+      return bindLegalHoldPlacementOperation(intent);
     case "team.legal_hold.release_request":
     case "team.legal_hold.release_confirm": {
       if (!input.resolveLegalHoldTeamId) {
         return null;
       }
-      return input.resolveLegalHoldTeamId(intent.holdId).then((teamId) =>
-        teamId
-          ? withRetentionHashes(
-              actionGrantOperation({
-                operationFamily: "admin",
-                action: intent.action,
-                teamId,
-                targetId: intent.holdId,
-                method: "POST",
-                path:
-                  intent.action === "team.legal_hold.release_request"
-                    ? `/v1/retention/legal-holds/${intent.holdId}/release-request`
-                    : `/v1/retention/legal-holds/${intent.holdId}/release-confirmation`,
-                body: intent.body
-              })
-            )
-          : null
-      );
+      return input
+        .resolveLegalHoldTeamId(intent.holdId)
+        .then((teamId) =>
+          teamId ? bindLegalHoldReleaseOperation(intent, teamId) : null
+        );
     }
     case "shared_memory.preview":
-      return sharedMemoryPreviewActionGrantBinding({
-        referenceId: clientRequestId,
-        logicalMemoryId: intent.logicalMemoryId,
-        remoteReplicaId: intent.remoteReplicaId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.teamWorkspaceId,
-        representation: intent.representation,
-        allowedRepresentations: intent.allowedRepresentations
-      });
-    case "shared_memory.consent":
-      return sharedMemoryConsentActionGrantBinding({
-        referenceId: clientRequestId,
-        consentId: intent.consentId,
-        logicalMemoryId: intent.logicalMemoryId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.teamWorkspaceId,
-        previewId: intent.previewId,
-        mode: intent.mode,
-        allowedRepresentations: intent.allowedRepresentations,
-        selectedRepresentation: intent.selectedRepresentation,
-        previewRevision: intent.previewRevision,
-        previewHash: intent.previewHash,
-        expiresAt: intent.expiresAt
-      });
+      return bindSharedMemoryPreviewOperation(intent, clientRequestId);
     case "shared_memory.share":
-      return sharedMemoryShareActionGrantBinding({
-        referenceId: clientRequestId,
-        mutationId: intent.mutationId,
-        logicalGrantId: intent.logicalGrantId,
-        logicalMemoryId: intent.logicalMemoryId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.teamWorkspaceId,
-        consentId: intent.consentId
-      });
+      return bindSharedMemoryShareOperation(intent, clientRequestId);
     case "shared_memory.revoke":
-      return sharedMemoryRevokeActionGrantBinding({
-        referenceId: clientRequestId,
-        mutationId: intent.mutationId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.teamWorkspaceId,
-        shareGrantId: intent.shareGrantId,
-        expectedGrantVersion: intent.expectedGrantVersion,
-        reasonCode: intent.reasonCode
-      });
+      return bindSharedMemoryRevokeOperation(intent, clientRequestId);
     case "shared_memory.change_representation":
-      return sharedMemoryRepresentationActionGrantBinding({
-        referenceId: clientRequestId,
-        mutationId: intent.mutationId,
-        teamId: intent.teamId,
-        teamWorkspaceId: intent.teamWorkspaceId,
-        shareGrantId: intent.shareGrantId,
-        consentId: intent.consentId,
-        representation: intent.representation,
-        expectedGrantVersion: intent.expectedGrantVersion
-      });
+      return bindSharedMemoryRepresentationChangeOperation(
+        intent,
+        clientRequestId
+      );
     case "conversation_source.discover":
-      return {
-        operationFamily: "source_download",
-        action: intent.action,
-        teamId: null,
-        targetId: null,
-        method: "POST",
-        path: "/v1/conversation-source-replication/sources/discover",
-        body: intent.body,
-        scopeHash: calculateConversationSourceDiscoveryScopeHash(),
-        requestHash: calculateConversationSourceDiscoveryRequestHash(
-          intent.body
-        )
-      };
+      return bindConversationSourceDiscoveryOperation(intent);
     case "conversation_source.download":
-      return {
-        operationFamily: "source_download",
-        action: intent.action,
-        teamId: null,
-        targetId: intent.sourceGenerationId,
-        method: "POST",
-        path: "/v1/conversation-source-replication/download-authorizations",
-        body: {
-          sourceGenerationId: intent.sourceGenerationId,
-          targetDeploymentId: intent.targetDeploymentId,
-          firstSegmentIndex: intent.firstSegmentIndex,
-          recipientKey: intent.recipientKey
-        },
-        scopeHash: calculateConversationSourceDownloadScopeHash({
-          sourceGenerationId: intent.sourceGenerationId,
-          targetDeploymentId: intent.targetDeploymentId,
-          recipientKey: intent.recipientKey
-        }),
-        requestHash: calculateConversationSourceDownloadRequestHash({
-          sourceGenerationId: intent.sourceGenerationId,
-          targetDeploymentId: intent.targetDeploymentId,
-          firstSegmentIndex: intent.firstSegmentIndex,
-          recipientKey: intent.recipientKey
-        })
-      };
+      return bindConversationSourceDownloadOperation(intent);
     case "managed_conversation.handoff":
-    case "managed_conversation.fork": {
-      const path = `/v1/managed-conversations/${intent.executionId}/${
-        intent.action === "managed_conversation.handoff" ? "handoffs" : "forks"
-      }`;
-      return {
-        operationFamily: "managed_execution",
-        action: intent.action,
-        teamId: null,
-        targetId: intent.executionId,
-        method: "POST",
-        path,
-        body: intent.body,
-        scopeHash: managedConversationTransferScopeHash({
-          action: intent.action,
-          executionId: intent.executionId
-        }),
-        requestHash: managedConversationTransferRequestHash({
-          method: "POST",
-          path,
-          body: intent.body
-        })
-      };
-    }
+    case "managed_conversation.fork":
+      return bindManagedConversationTransferOperation(intent);
   }
 };

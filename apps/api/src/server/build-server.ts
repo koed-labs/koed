@@ -42,6 +42,7 @@ import {
   createCollaborationActionGrantControl,
   type CollaborationActionGrantControl
 } from "../local-edge/collaboration-action-grant-control.js";
+import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import { createPostgresCollaborationSharedMemoryAuthorityStore } from "../local-edge/collaboration-shared-memory-authority-store.js";
 import {
   createCollaborationSharedMemoryControl,
@@ -579,6 +580,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           envelopeEncryptionProvider
         })
       : null;
+  const collaborationActionGrantLifecycle =
+    createCollaborationActionGrantLifecycle({ koedHome: config.koedHome });
   const collaborationSharedMemoryControl =
     options.collaborationSharedMemoryControl ??
     (sharedMemoryAuthorityRepository
@@ -587,6 +590,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           upstreamBackendsPath: localEdgeUpstreamBackendsPath,
           fetch: localEdgeFetch,
           resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
+          actionGrantLifecycle: collaborationActionGrantLifecycle,
           authorityStore: sharedMemoryAuthorityRepository,
           prepareLocalLcmRepresentation: async (input) => {
             if (!repository) return "pending";
@@ -636,7 +640,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     options.collaborationActionGrantControl ??
     createCollaborationActionGrantControl({
       koedHome: config.koedHome,
-      fetch: localEdgeFetch
+      fetch: localEdgeFetch,
+      actionGrantLifecycle: collaborationActionGrantLifecycle
     });
 
   const collaborationNavigationInvalidationListeners = new Set<
@@ -649,6 +654,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     rateLimit: rateLimitHandlers,
     collaboration: {
       admission: collaborationAdmission,
+      actionGrantLifecycle: collaborationActionGrantLifecycle,
       actionGrantControl: collaborationActionGrantControl,
       sharedMemoryControl: collaborationSharedMemoryControl,
       subscribeNavigationInvalidation: (
@@ -898,6 +904,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerHighRiskRoutes(app, {
     requireRepository,
+    hashSecret,
     authenticateSessionContext: authHelpers.authenticateSessionContext,
     authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,
     rateLimit: {

@@ -51,6 +51,33 @@ describe("local-edge upstream enrollment binding", () => {
     });
   });
 
+  it("keeps the exchanged predecessor active while a replacement is pending", () => {
+    expect(
+      readFixture({
+        schemaVersion: 1,
+        enrollments: [
+          {
+            backendId,
+            requestId: "active-predecessor",
+            state: "exchanged",
+            deviceCredentialId: firstCredential,
+            principalUserId: firstPrincipal
+          },
+          {
+            backendId,
+            requestId: "pending-replacement",
+            state: "pending"
+          }
+        ]
+      })
+    ).toEqual({
+      backendId,
+      enrollmentId: "active-predecessor",
+      deviceCredentialId: firstCredential,
+      principalUserId: firstPrincipal
+    });
+  });
+
   it("fails closed for absent, pending, or malformed enrollment state", () => {
     expect(
       readLocalEdgeUpstreamEnrollmentBinding(

@@ -463,6 +463,35 @@ const run = async () => {
       bodyIncludes("Pending invitations"),
       "People administration"
     );
+    alice.setSize(1150, 800);
+    await delay(50);
+    const memberLayout = await evaluate(
+      alice,
+      `(() => {
+        const overlaps = (left, right) =>
+          left && right &&
+          !(left.right <= right.left || right.right <= left.left ||
+            left.bottom <= right.top || right.bottom <= left.top);
+        return [...document.querySelectorAll('.collab-person-admin-row')].map((row) => {
+          const access = row.querySelector('.collab-access-grid')?.getBoundingClientRect();
+          const disable = row.querySelector('.collab-member-disable')?.getBoundingClientRect();
+          const role = row.querySelector('.collab-member-role')?.getBoundingClientRect();
+          return {
+            accessDisableOverlap: Boolean(overlaps(access, disable)),
+            roleDisableOverlap: Boolean(overlaps(role, disable)),
+            overflow: row.scrollWidth > row.clientWidth
+          };
+        });
+      })()`
+    );
+    assert.ok(memberLayout.length > 0);
+    assert.ok(
+      memberLayout.every(
+        (row) =>
+          !row.accessDisableOverlap && !row.roleDisableOverlap && !row.overflow
+      ),
+      JSON.stringify(memberLayout)
+    );
     await trustedClick(alice, byText("button", "Invite member"));
     await trustedType(
       alice,

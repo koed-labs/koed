@@ -325,6 +325,18 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async getSharedMemoryPreviewAdmission() {
+      return null;
+    },
+    async getSharedMemoryShareReview() {
+      return null;
+    },
+    async getSharedMemoryRepresentationChangeReview() {
+      return null;
+    },
+    async getSharedMemoryRevokeReview() {
+      return null;
+    },
     async rewrapTeamRepresentationChunkBatch() {
       return {
         processedRows: 0,
@@ -420,6 +432,25 @@ const createFixture = () => {
       }
       grantVersion += 1;
       return grantRecord();
+    },
+    async createShareBundle(actor, input) {
+      const consent = await repository.createSourceOwnerConsent(
+        actor,
+        input.consent
+      );
+      const grant = await repository.createShareGrant(actor, input.grant);
+      return { consent, grant };
+    },
+    async changeRepresentationBundle(actor, input) {
+      const consent = await repository.createSourceOwnerConsent(
+        actor,
+        input.consent
+      );
+      const grant = await repository.selectGrantRepresentation(
+        actor,
+        input.representation
+      );
+      return { consent, grant };
     },
     async revokeShareGrant(actor, input) {
       repositoryCalls += 1;

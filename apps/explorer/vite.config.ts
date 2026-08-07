@@ -55,6 +55,7 @@ export default defineConfig({
     sourcemap: buildSourcemap
   },
   test: {
-    setupFiles: ["./src/test/setupReactAct.ts"]
+    setupFiles: ["./src/test/setupReactAct.ts"],
+    testTimeout: 15_000
   }
 });

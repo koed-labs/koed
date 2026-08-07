@@ -11,15 +11,13 @@ import {
   readLocalEdgeClientCredentialAuthorization,
   RemoteRequestTimeoutError,
   RemoteResponseLimitError,
-  resolveCollaborationActionGrantSecret,
-  sharedMemoryConsentActionGrantBinding,
   sharedMemoryConsentSchema,
   sharedMemoryGrantSchema,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryPreviewSchema,
-  sharedMemoryRepresentationActionGrantBinding,
+  sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
-  sharedMemoryShareActionGrantBinding,
+  sharedMemoryShareBundleActionGrantBinding,
   sharedMemorySourceItemSchema,
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
@@ -38,6 +36,10 @@ import {
   type LocalEdgeUpstreamBackend,
   type LocalEdgeUpstreamRegistry
 } from "./upstream-routing.js";
+import {
+  createCollaborationActionGrantLifecycle,
+  type CollaborationActionGrantLifecycle
+} from "./collaboration-action-grant-lifecycle.js";
 import { openOpaqueCursor, sealOpaqueCursor } from "./opaque-cursor.js";
 
 const RESPONSE_LIMIT_BYTES = 2 * 1_024 * 1_024;
@@ -51,7 +53,6 @@ const sharedMemoryControlCommandNames = [
   "collaboration.list_owned_shared_memory_grants",
   "collaboration.preview_shared_memory",
   "collaboration.load_shared_memory_preview_page",
-  "collaboration.consent_shared_memory",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
   "collaboration.change_shared_memory_representation"
@@ -392,7 +393,7 @@ export interface CollaborationSharedMemoryControlOptions {
   readDesktopCredential?: DesktopCredentialReader;
   readLocalEdgeClientCredential?: LocalEdgeCredentialReader;
   readUpstreamRegistry?: (path: string) => LocalEdgeUpstreamRegistry;
-  resolveActionGrantSecret?: typeof resolveCollaborationActionGrantSecret;
+  actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
 }
 
 type SharedDesktopCredentialApi = {
@@ -938,9 +939,10 @@ const resolveProtectedActionGrant = (
   if (!("actionGrant" in command.input)) {
     throw new ControlFailure("permission_denied");
   }
-  const resolveSecret =
-    options.resolveActionGrantSecret ?? resolveCollaborationActionGrantSecret;
-  const secret = resolveSecret(options.koedHome, {
+  const lifecycle =
+    options.actionGrantLifecycle ??
+    createCollaborationActionGrantLifecycle({ koedHome: options.koedHome });
+  const secret = lifecycle.resolve({
     referenceId: command.input.actionGrant.id,
     backendId: authority.backendId,
     deploymentBaseUrl: authority.backend.baseUrl,
@@ -1691,115 +1693,6 @@ const dispatchPreviewPage = async (
   return result;
 };
 
-const requirePreviewForConsent = async (
-  options: CollaborationSharedMemoryControlOptions,
-  identity: AuthorityIdentity,
-  command: Extract<
-    CollaborationSharedMemoryControlCommand,
-    { command: "collaboration.consent_shared_memory" }
-  >
-): Promise<CollaborationPersistedSharedMemoryPreview> => {
-  const preview = persistedPreviewSchema.safeParse(
-    await options.authorityStore.readAuthoritativePreview({
-      ...identity,
-      previewHash: command.input.previewHash
-    })
-  );
-  if (
-    !preview.success ||
-    !sameIdentity(preview.data, identity) ||
-    preview.data.previewHash !== command.input.previewHash ||
-    preview.data.previewRevision !== command.input.previewRevision ||
-    preview.data.logicalMemoryId !== command.input.logicalMemoryId ||
-    preview.data.teamId !== command.input.teamId ||
-    preview.data.teamWorkspaceId !== command.input.workspaceId ||
-    preview.data.representation !== command.input.selectedRepresentation ||
-    !sameRepresentations(
-      preview.data.allowedRepresentations,
-      command.input.allowedRepresentations
-    )
-  ) {
-    throw new ControlFailure("conflict");
-  }
-  return preview.data;
-};
-
-const dispatchConsent = async (
-  options: CollaborationSharedMemoryControlOptions,
-  authority: ResolvedAuthority,
-  command: Extract<
-    CollaborationSharedMemoryControlCommand,
-    { command: "collaboration.consent_shared_memory" }
-  >
-): Promise<CollaborationCommandResult> => {
-  const identity = authorityIdentity(authority);
-  const preview = await requirePreviewForConsent(options, identity, command);
-  const binding = sharedMemoryConsentActionGrantBinding({
-    referenceId: command.input.actionGrant.id,
-    consentId: command.input.consentId,
-    logicalMemoryId: command.input.logicalMemoryId,
-    teamId: command.input.teamId,
-    teamWorkspaceId: command.input.workspaceId,
-    previewId: preview.previewId,
-    mode: command.input.mode,
-    allowedRepresentations: command.input.allowedRepresentations,
-    selectedRepresentation: command.input.selectedRepresentation,
-    previewRevision: command.input.previewRevision,
-    previewHash: preview.previewHash,
-    expiresAt: command.input.expiresAt
-  });
-  const payload = await remoteRequest(options, authority, {
-    method: binding.method,
-    path: binding.path,
-    body: binding.body,
-    idempotencyKey: command.requestId,
-    actionGrant: resolveProtectedActionGrant(
-      options,
-      authority,
-      command,
-      binding
-    )
-  });
-  const remote = remoteConsentSchema.safeParse(payload.consent);
-  if (!remote.success) throw new ControlFailure("internal_error");
-  const dto = mapConsent(remote.data);
-  if (
-    dto.id !== command.input.consentId ||
-    dto.logicalMemoryId !== command.input.logicalMemoryId ||
-    dto.teamId !== command.input.teamId ||
-    dto.workspaceId !== command.input.workspaceId ||
-    dto.mode !== command.input.mode ||
-    dto.selectedRepresentation !== command.input.selectedRepresentation ||
-    dto.previewRevision !== preview.previewRevision ||
-    dto.previewHash !== preview.previewHash ||
-    dto.sourceRevision !== preview.sourceRevision ||
-    !sameRepresentations(
-      dto.allowedRepresentations,
-      command.input.allowedRepresentations
-    )
-  ) {
-    throw new ControlFailure("permission_denied");
-  }
-  const persisted = persistedConsentSchema.safeParse(
-    await options.authorityStore.persistAuthoritativeConsent({
-      identity,
-      previewId: preview.previewId,
-      consent: remote.data
-    })
-  );
-  if (
-    !persisted.success ||
-    !sameIdentity(persisted.data, identity) ||
-    persisted.data.previewId !== preview.previewId ||
-    canonicalJson(persisted.data.consent) !== canonicalJson(dto)
-  ) {
-    throw new ControlFailure("not_available");
-  }
-  const result = success(command, { consent: dto });
-  if (!result) throw new ControlFailure("internal_error");
-  return result;
-};
-
 const materializeSelectedRepresentation = async (input: {
   options: CollaborationSharedMemoryControlOptions;
   authority: ResolvedAuthority;
@@ -1873,51 +1766,43 @@ const dispatchShare = async (
   >
 ): Promise<CollaborationCommandResult> => {
   const identity = authorityIdentity(authority);
-  const consent = persistedConsentSchema.safeParse(
-    await options.authorityStore.readAuthoritativeConsent({
-      ...identity,
-      consentId: command.input.consentId
-    })
-  );
-  if (
-    !consent.success ||
-    !sameIdentity(consent.data, identity) ||
-    consent.data.consent.id !== command.input.consentId ||
-    consent.data.consent.logicalMemoryId !== command.input.logicalMemoryId ||
-    consent.data.consent.teamId !== command.input.teamId ||
-    consent.data.consent.workspaceId !== command.input.workspaceId ||
-    consent.data.consent.state !== "active"
-  ) {
-    throw new ControlFailure("conflict");
-  }
   const preview = persistedPreviewSchema.safeParse(
     await options.authorityStore.readAuthoritativePreview({
       ...identity,
-      previewHash: consent.data.consent.previewHash
+      previewHash: command.input.previewHash
     })
   );
   if (
     !preview.success ||
     !sameIdentity(preview.data, identity) ||
-    preview.data.previewId !== consent.data.previewId ||
-    preview.data.previewHash !== consent.data.consent.previewHash ||
+    preview.data.previewHash !== command.input.previewHash ||
+    preview.data.previewRevision !== command.input.previewRevision ||
     preview.data.logicalMemoryId !== command.input.logicalMemoryId ||
     preview.data.teamId !== command.input.teamId ||
     preview.data.teamWorkspaceId !== command.input.workspaceId ||
-    preview.data.representation !==
-      consent.data.consent.selectedRepresentation ||
-    preview.data.sourceRevision !== consent.data.consent.sourceRevision
+    preview.data.representation !== command.input.selectedRepresentation ||
+    !sameRepresentations(
+      preview.data.allowedRepresentations,
+      command.input.allowedRepresentations
+    )
   ) {
     throw new ControlFailure("conflict");
   }
-  const binding = sharedMemoryShareActionGrantBinding({
+  const binding = sharedMemoryShareBundleActionGrantBinding({
     referenceId: command.input.actionGrant.id,
     mutationId: command.input.mutationId,
     logicalGrantId: command.input.logicalGrantId,
     logicalMemoryId: command.input.logicalMemoryId,
     teamId: command.input.teamId,
     teamWorkspaceId: command.input.workspaceId,
-    consentId: command.input.consentId
+    consentId: command.input.consentId,
+    previewId: preview.data.previewId,
+    previewRevision: command.input.previewRevision,
+    previewHash: command.input.previewHash,
+    mode: command.input.mode,
+    allowedRepresentations: command.input.allowedRepresentations,
+    selectedRepresentation: command.input.selectedRepresentation,
+    expiresAt: command.input.expiresAt
   });
   const payload = await remoteRequest(options, authority, {
     method: binding.method,
@@ -1931,6 +1816,37 @@ const dispatchShare = async (
       binding
     )
   });
+  const remoteConsent = remoteConsentSchema.safeParse(payload.consent);
+  if (!remoteConsent.success) throw new ControlFailure("internal_error");
+  const consentDtoValue = mapConsent(remoteConsent.data);
+  if (
+    consentDtoValue.id !== command.input.consentId ||
+    consentDtoValue.logicalMemoryId !== command.input.logicalMemoryId ||
+    consentDtoValue.teamId !== command.input.teamId ||
+    consentDtoValue.workspaceId !== command.input.workspaceId ||
+    consentDtoValue.mode !== command.input.mode ||
+    consentDtoValue.selectedRepresentation !==
+      command.input.selectedRepresentation ||
+    consentDtoValue.previewRevision !== command.input.previewRevision ||
+    consentDtoValue.previewHash !== command.input.previewHash ||
+    consentDtoValue.sourceRevision !== preview.data.sourceRevision ||
+    !sameRepresentations(
+      consentDtoValue.allowedRepresentations,
+      command.input.allowedRepresentations
+    )
+  ) {
+    throw new ControlFailure("permission_denied");
+  }
+  const consent = persistedConsentSchema.safeParse(
+    await options.authorityStore.persistAuthoritativeConsent({
+      identity,
+      previewId: preview.data.previewId,
+      consent: remoteConsent.data
+    })
+  );
+  if (!consent.success || !sameIdentity(consent.data, identity)) {
+    throw new ControlFailure("not_available");
+  }
   const remote = readRemoteGrant(payload);
   if (
     remote.logicalGrantId !== command.input.logicalGrantId ||
@@ -1938,8 +1854,7 @@ const dispatchShare = async (
     remote.teamId !== command.input.teamId ||
     remote.teamWorkspaceId !== command.input.workspaceId ||
     remote.consentId !== command.input.consentId ||
-    remote.activeRepresentation !==
-      consent.data.consent.selectedRepresentation ||
+    remote.activeRepresentation !== command.input.selectedRepresentation ||
     remote.sourceRevision !== consent.data.consent.sourceRevision ||
     remote.lifecycle !== "active"
   ) {
@@ -2172,64 +2087,57 @@ const dispatchChangeRepresentation = async (
   >
 ): Promise<CollaborationCommandResult> => {
   const identity = authorityIdentity(authority);
-  const [prior, consent] = await Promise.all([
-    requirePersistedGrant(
-      options.authorityStore,
-      identity,
-      command.input.shareGrantId,
-      command.input.teamId,
-      command.input.workspaceId
-    ),
-    options.authorityStore.readAuthoritativeConsent({
-      ...identity,
-      consentId: command.input.consentId
-    })
-  ]);
-  const parsedConsent = persistedConsentSchema.safeParse(consent);
+  const prior = await requirePersistedGrant(
+    options.authorityStore,
+    identity,
+    command.input.shareGrantId,
+    command.input.teamId,
+    command.input.workspaceId
+  );
   if (
     prior.grant.grantVersion !== command.input.expectedGrantVersion ||
-    !parsedConsent.success ||
-    !sameIdentity(parsedConsent.data, identity) ||
-    parsedConsent.data.consent.id !== command.input.consentId ||
-    parsedConsent.data.consent.logicalMemoryId !==
-      prior.grant.logicalMemoryId ||
-    parsedConsent.data.consent.teamId !== command.input.teamId ||
-    parsedConsent.data.consent.workspaceId !== command.input.workspaceId ||
-    parsedConsent.data.consent.selectedRepresentation !==
-      command.input.representation ||
-    parsedConsent.data.consent.state !== "active"
+    prior.grant.logicalMemoryId !== command.input.logicalMemoryId
   ) {
     throw new ControlFailure("conflict");
   }
   const parsedPreview = persistedPreviewSchema.safeParse(
     await options.authorityStore.readAuthoritativePreview({
       ...identity,
-      previewHash: parsedConsent.data.consent.previewHash
+      previewHash: command.input.previewHash
     })
   );
   if (
     !parsedPreview.success ||
     !sameIdentity(parsedPreview.data, identity) ||
-    parsedPreview.data.previewId !== parsedConsent.data.previewId ||
-    parsedPreview.data.previewHash !== parsedConsent.data.consent.previewHash ||
+    parsedPreview.data.previewHash !== command.input.previewHash ||
+    parsedPreview.data.previewRevision !== command.input.previewRevision ||
     parsedPreview.data.logicalMemoryId !== prior.grant.logicalMemoryId ||
     parsedPreview.data.teamId !== command.input.teamId ||
     parsedPreview.data.teamWorkspaceId !== command.input.workspaceId ||
     parsedPreview.data.representation !== command.input.representation ||
-    parsedPreview.data.sourceRevision !==
-      parsedConsent.data.consent.sourceRevision
+    !sameRepresentations(
+      parsedPreview.data.allowedRepresentations,
+      command.input.allowedRepresentations
+    )
   ) {
     throw new ControlFailure("conflict");
   }
-  const binding = sharedMemoryRepresentationActionGrantBinding({
+  const binding = sharedMemoryRepresentationBundleActionGrantBinding({
     referenceId: command.input.actionGrant.id,
     mutationId: command.input.mutationId,
+    logicalMemoryId: command.input.logicalMemoryId,
     teamId: command.input.teamId,
     teamWorkspaceId: command.input.workspaceId,
     shareGrantId: command.input.shareGrantId,
     consentId: command.input.consentId,
+    previewId: parsedPreview.data.previewId,
     representation: command.input.representation,
-    expectedGrantVersion: command.input.expectedGrantVersion
+    expectedGrantVersion: command.input.expectedGrantVersion,
+    mode: command.input.mode,
+    allowedRepresentations: command.input.allowedRepresentations,
+    previewRevision: command.input.previewRevision,
+    previewHash: command.input.previewHash,
+    expiresAt: command.input.expiresAt
   });
   const payload = await remoteRequest(options, authority, {
     method: binding.method,
@@ -2243,6 +2151,36 @@ const dispatchChangeRepresentation = async (
       binding
     )
   });
+  const remoteConsent = remoteConsentSchema.safeParse(payload.consent);
+  if (!remoteConsent.success) throw new ControlFailure("internal_error");
+  const consentDtoValue = mapConsent(remoteConsent.data);
+  if (
+    consentDtoValue.id !== command.input.consentId ||
+    consentDtoValue.logicalMemoryId !== command.input.logicalMemoryId ||
+    consentDtoValue.teamId !== command.input.teamId ||
+    consentDtoValue.workspaceId !== command.input.workspaceId ||
+    consentDtoValue.mode !== command.input.mode ||
+    consentDtoValue.selectedRepresentation !== command.input.representation ||
+    consentDtoValue.previewRevision !== command.input.previewRevision ||
+    consentDtoValue.previewHash !== command.input.previewHash ||
+    consentDtoValue.sourceRevision !== parsedPreview.data.sourceRevision ||
+    !sameRepresentations(
+      consentDtoValue.allowedRepresentations,
+      command.input.allowedRepresentations
+    )
+  ) {
+    throw new ControlFailure("permission_denied");
+  }
+  const parsedConsent = persistedConsentSchema.safeParse(
+    await options.authorityStore.persistAuthoritativeConsent({
+      identity,
+      previewId: parsedPreview.data.previewId,
+      consent: remoteConsent.data
+    })
+  );
+  if (!parsedConsent.success || !sameIdentity(parsedConsent.data, identity)) {
+    throw new ControlFailure("not_available");
+  }
   const remote = readRemoteGrant(payload);
   if (
     remote.id !== prior.grant.id ||
@@ -2294,8 +2232,6 @@ const dispatchResolved = async (
       return dispatchPreview(options, authority, command);
     case "collaboration.load_shared_memory_preview_page":
       return dispatchPreviewPage(options, authority, command);
-    case "collaboration.consent_shared_memory":
-      return dispatchConsent(options, authority, command);
     case "collaboration.share_memory":
       return dispatchShare(options, authority, command);
     case "collaboration.revoke_shared_memory":
@@ -2372,8 +2308,10 @@ export const createCollaborationSharedMemoryControl = (
       const command = collaborationRendererCommandSchema.parse({
         contractVersion: COLLABORATION_CONTRACT_VERSION,
         requestId: randomUUID(),
-        command: "collaboration.consent_shared_memory",
+        command: "collaboration.share_memory",
         input: {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
           consentId: randomUUID(),
           logicalMemoryId: parsedInput.data.logicalMemoryId,
           teamId: parsedInput.data.teamId,
@@ -2387,7 +2325,7 @@ export const createCollaborationSharedMemoryControl = (
           actionGrant: { id: randomUUID() }
         }
       });
-      if (command.command !== "collaboration.consent_shared_memory") {
+      if (command.command !== "collaboration.share_memory") {
         return null;
       }
       const authority = await resolveAuthority(options, command, context.data);

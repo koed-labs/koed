@@ -1,5 +1,13 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 
+import {
+  calculateConversationSourceClosureDigest,
+  calculateConversationSourceRootDigest,
+  CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  generateConversationSourceReplicationOriginKeyPair,
+  signConversationSourceClosureManifest,
+  type ConversationSourceClosureManifest
+} from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -24,7 +32,7 @@ const ids = {
 };
 const recipientKeyId = randomUUID();
 const recipientPublicJwk = generateKeyPairSync("rsa", {
-  modulusLength: 2048
+  modulusLength: 3072
 }).publicKey.export({ format: "jwk" });
 
 const buildServer = async (options?: {
@@ -710,6 +718,126 @@ describe("managed Conversation runner routes", () => {
       error: "Device credential is not allowed for source replication"
     });
     expect(getSource).not.toHaveBeenCalled();
+    await fixture.app.close();
+  });
+
+  it("persists the initiating handoff on a successful source download authorization", async () => {
+    const logicalSourceId = randomUUID();
+    const sessionId = randomUUID();
+    const keys = generateConversationSourceReplicationOriginKeyPair();
+    const chainHeadDigest = "c".repeat(64);
+    const sourceCreatedAt = "2026-07-30T10:00:00.000Z";
+    const closureManifest: ConversationSourceClosureManifest = {
+      protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+      logicalSourceId,
+      sourceGenerationId: ids.sourceGeneration,
+      originKeyId: keys.originKeyId,
+      segmentCount: 1,
+      endByteCursor: 64,
+      endItemCursor: 1,
+      chainHeadDigest,
+      sourceRootDigest: calculateConversationSourceRootDigest([
+        chainHeadDigest
+      ]),
+      sourceCreatedAt,
+      closedAt: "2026-07-30T10:05:00.000Z",
+      priorGenerationClosure: null
+    };
+    const signedClosure = signConversationSourceClosureManifest(
+      closureManifest,
+      keys.privateKey
+    );
+    const closureHash = calculateConversationSourceClosureDigest(signedClosure);
+    const artifact = {
+      id: randomUUID(),
+      ownerUserId: ids.user,
+      sessionId,
+      logicalSourceId,
+      sourceGenerationId: ids.sourceGeneration,
+      replicaRole: "hosted_personal",
+      lifecycle: "finalized",
+      sourceRuntime: "codex",
+      externalSessionId: "codex-session-1",
+      sourceFingerprint: "d".repeat(64),
+      sourceCreatedAt,
+      priorGenerationClosure: null,
+      closureHash,
+      closureManifest: signedClosure.manifest,
+      closureSignature: signedClosure.signature,
+      originKeyId: keys.originKeyId,
+      originPublicKey: keys.publicKeyBase64url,
+      originKeyStatus: "active",
+      redactedSourceLabel: "Codex session 1",
+      originDeploymentId: ids.otherDeployment,
+      originDeviceId: ids.otherDevice,
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0
+    };
+    const createAuthorization = vi.fn(async () => ({
+      id: randomUUID(),
+      firstSegmentIndex: 0,
+      lastSegmentIndex: 0,
+      expiresAt: "2026-07-30T10:30:00.000Z"
+    }));
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationHandoff: vi.fn(async () => ({
+          id: ids.handoff,
+          state: "workspace_prepared",
+          sourceDeviceId: ids.otherDevice,
+          sourceDeploymentId: ids.otherDeployment,
+          targetDeviceId: ids.device,
+          targetDeploymentId: ids.deployment,
+          sourceGenerationId: ids.sourceGeneration,
+          sourceClosureHash: closureHash
+        })),
+        getConversationSourceArtifactByGeneration: vi.fn(async () => artifact),
+        getCapturedSession: vi.fn(async () => ({
+          logicalSessionId: randomUUID(),
+          forkedFromExternalThreadId: null,
+          project: null
+        })),
+        createConversationSourceDownloadAuthorization: createAuthorization
+      }
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/managed-conversation-runner/handoffs/${ids.handoff}/source-download-authorization`,
+      headers: runnerHeaders,
+      payload: {
+        targetDeploymentId: ids.deployment,
+        sourceGenerationId: ids.sourceGeneration,
+        firstSegmentIndex: 0,
+        recipientKey: {
+          algorithm: "RSA-OAEP-SHA256",
+          keyId: recipientKeyId,
+          keyVersion: 1,
+          publicJwk: {
+            kty: "RSA",
+            n: recipientPublicJwk.n,
+            e: recipientPublicJwk.e,
+            alg: "RSA-OAEP-256",
+            key_ops: ["encrypt"],
+            ext: true,
+            kid: recipientKeyId,
+            use: "enc"
+          }
+        }
+      }
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(createAuthorization).toHaveBeenCalledWith(
+      { userId: ids.user },
+      expect.objectContaining({
+        deviceCredentialId: ids.credential,
+        artifactId: artifact.id,
+        initiatingOperation: { kind: "handoff", id: ids.handoff },
+        firstSegmentIndex: 0
+      })
+    );
     await fixture.app.close();
   });
 });

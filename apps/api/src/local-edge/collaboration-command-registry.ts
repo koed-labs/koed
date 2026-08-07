@@ -263,6 +263,10 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: read
   },
+  "collaboration.confirm_action_grant": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
   "collaboration.cancel_action_grant": {
     scope: "team",
     desktopOperationFamily: write
@@ -599,10 +603,6 @@ export const collaborationCommandRegistry = {
   "collaboration.load_shared_memory_preview_page": {
     scope: "team",
     desktopOperationFamily: read
-  },
-  "collaboration.consent_shared_memory": {
-    scope: "team",
-    desktopOperationFamily: write
   },
   "collaboration.share_memory": {
     scope: "team",

@@ -6,7 +6,7 @@ import {
   ShieldCheckIcon,
   XIcon
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button, cn, Input } from "@koed/ui";
 import {
@@ -27,128 +27,34 @@ type ApprovalPageState =
   | "loading"
   | HighRiskBrowserActivationState
   | "unauthenticated"
+  | "unreconciled"
+  | "invalid"
   | "unknown"
   | "error";
 
-const actionCopy: Record<
-  string,
-  { title: string; description: string; button: string }
-> = {
-  "team.create": {
-    title: "Create a Team",
-    description: "Create a new Team with its default Workspace and channel.",
-    button: "Create Team"
-  },
-  "team.invite.accept": {
-    title: "Join a Team",
-    description: "Accept this invitation and add your account to the Team.",
-    button: "Join Team"
-  },
-  "team.member.role_update": {
-    title: "Change a Team role",
-    description: "Change a Team member's role and administrative authority.",
-    button: "Change role"
-  },
-  "team.member.disable": {
-    title: "Disable a Team member",
-    description: "Remove a Team member's current access.",
-    button: "Disable member"
-  },
-  "team.leave": {
-    title: "Leave this Team",
-    description: "Remove your account from this Team.",
-    button: "Leave Team"
-  },
-  "team.invite.create": {
-    title: "Create a Team invitation",
-    description: "Issue a new invitation for this Team.",
-    button: "Create invitation"
-  },
-  "team.invite.revoke": {
-    title: "Revoke a Team invitation",
-    description: "Prevent the selected invitation from being used.",
-    button: "Revoke invitation"
-  },
-  "team.entitlement.update": {
-    title: "Change Team access",
-    description: "Change the Team's entitlement and access state.",
-    button: "Change access"
-  },
-  "team.billing_seats.update": {
-    title: "Change Team seat policy",
-    description: "Change the Team's billing seat policy.",
-    button: "Change seat policy"
-  },
-  "team.workspace.create": {
-    title: "Create a Workspace",
-    description: "Create a new Workspace inside this Team.",
-    button: "Create Workspace"
-  },
-  "team.workspace.archive": {
-    title: "Archive a Workspace",
-    description: "Archive this Workspace and change its normal availability.",
-    button: "Archive Workspace"
-  },
-  "team.workspace.restore": {
-    title: "Restore a Workspace",
-    description: "Restore this archived Workspace.",
-    button: "Restore Workspace"
-  },
-  "team.workspace.access_update": {
-    title: "Change Workspace access",
-    description: "Change a Team member's access to this Workspace.",
-    button: "Change access"
-  },
-  "team.retention.delete_request": {
-    title: "Request Team deletion",
-    description: "Start the governed deletion process for this Team.",
-    button: "Request deletion"
-  },
-  "team.legal_hold.place": {
-    title: "Place a legal hold",
-    description: "Place selected Team data under legal hold.",
-    button: "Place hold"
-  },
-  "team.legal_hold.release_request": {
-    title: "Request legal-hold release",
-    description: "Start the governed release process for this legal hold.",
-    button: "Request release"
-  },
-  "team.legal_hold.release_confirm": {
-    title: "Release a legal hold",
-    description: "Complete the governed release of this legal hold.",
-    button: "Release hold"
-  },
-  "shared_memory.preview": {
-    title: "Preview Shared Memory",
-    description:
-      "Prepare the exact Memory representation for review before sharing.",
-    button: "Prepare preview"
-  },
-  "shared_memory.consent": {
-    title: "Approve Memory sharing consent",
-    description:
-      "Record the selected source and representation boundary for sharing.",
-    button: "Approve consent"
-  },
-  "shared_memory.share": {
-    title: "Share Memory with a Workspace",
-    description:
-      "Grant the selected Workspace access to the approved Memory representation.",
-    button: "Share Memory"
-  },
-  "shared_memory.revoke": {
-    title: "Revoke Shared Memory access",
-    description: "Remove ordinary Team access granted by this Share Grant.",
-    button: "Revoke access"
-  },
-  "shared_memory.change_representation": {
-    title: "Change a Shared Memory representation",
-    description:
-      "Change the level of Memory detail available to the Workspace.",
-    button: "Change representation"
-  }
-};
+const terminalStates = new Set<ApprovalPageState>([
+  "approved",
+  "consumed",
+  "denied",
+  "revoked",
+  "canceled",
+  "expired",
+  "unreconciled",
+  "invalid",
+  "unknown",
+  "error"
+]);
+
+const autoCloseStates = new Set<ApprovalPageState>([
+  "approved",
+  "consumed",
+  "denied",
+  "revoked",
+  "canceled",
+  "expired",
+  "invalid",
+  "unknown"
+]);
 
 const authenticationRequired = (message: string): boolean => {
   const normalized = message.toLowerCase();
@@ -182,6 +88,7 @@ export function HighRiskActionApproval({
   const [authBusy, setAuthBusy] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const terminalResultRef = useRef<HTMLDivElement>(null);
 
   const loadActivation = useCallback(async () => {
     if (!selector) {
@@ -193,6 +100,17 @@ export function HighRiskActionApproval({
     setError(null);
     try {
       const loaded = await loadHighRiskBrowserActivation(selector);
+      if (
+        loaded.status.approvalTier !== "step_up" ||
+        loaded.status.review === null
+      ) {
+        setActivation(null);
+        setState("invalid");
+        setError(
+          "This confirmation is missing authoritative approval details. No decision was submitted."
+        );
+        return;
+      }
       setActivation(loaded);
       setState(loaded.status.state);
     } catch (caught) {
@@ -240,32 +158,39 @@ export function HighRiskActionApproval({
     };
   }, [state]);
 
+  useEffect(() => {
+    if (!terminalStates.has(state) && state !== "unreconciled") return;
+    terminalResultRef.current?.focus();
+    if (!autoCloseStates.has(state)) return;
+    if (window.opener === null || window.closed) return;
+    const closeFrame = window.requestAnimationFrame(() => window.close());
+    return () => window.cancelAnimationFrame(closeFrame);
+  }, [state]);
+
   const copy = useMemo(() => {
-    if (activation) {
-      const action = activation.confirmation.action;
-      const actionKey = Object.keys(actionCopy).find(
-        (candidate) =>
-          action === candidate ||
-          (candidate.startsWith("shared_memory.") &&
-            (action.startsWith(`${candidate}.`) ||
-              action.startsWith(`${candidate}:`)))
-      );
-      return actionKey
-        ? actionCopy[actionKey]!
-        : {
-            title: "Approve a sensitive Team action",
-            description:
-              "Review this request from your enrolled local Koed device.",
-            button: "Approve action"
-          };
+    if (activation?.status.review) {
+      return {
+        title: activation.status.review.title,
+        description: activation.status.review.description,
+        consequence: activation.status.review.consequence,
+        button: activation.status.review.confirmLabel,
+        details: activation.status.review.details
+      };
     }
     return {
-      title: "Confirm a sensitive Team action",
-      description: "Review the request before allowing it to continue.",
-      button: "Approve action"
+      title: "Sensitive Team action unavailable",
+      description:
+        "Koed could not load authoritative review details for this confirmation.",
+      button: "Unavailable",
+      consequence: null,
+      details: []
     };
   }, [activation]);
-  const canAct = state === "pending" && busy === null;
+  const canAct =
+    state === "pending" &&
+    activation?.status.approvalTier === "step_up" &&
+    activation.status.review !== null &&
+    busy === null;
 
   const submitDecision = async (decision: "approve" | "deny") => {
     if (!selector || !canAct) return;
@@ -282,8 +207,32 @@ export function HighRiskActionApproval({
         setState("unauthenticated");
         setError(null);
       } else {
-        setState("error");
-        setError(message);
+        try {
+          const authoritative = await loadHighRiskBrowserActivation(selector);
+          if (
+            authoritative.status.approvalTier !== "step_up" ||
+            authoritative.status.review === null
+          ) {
+            setActivation(null);
+            setState("error");
+            setError(
+              "The decision outcome was checked, but authoritative approval details are no longer available."
+            );
+          } else {
+            setActivation(authoritative);
+            setState(authoritative.status.state);
+            setError(
+              authoritative.status.state === "pending"
+                ? "The decision was not recorded. Review the action and submit your choice again."
+                : null
+            );
+          }
+        } catch {
+          setState("unreconciled");
+          setError(
+            `Koed could not confirm whether the decision was recorded (${message}). Keep this window open and retry the status check before taking any further action.`
+          );
+        }
       }
     } finally {
       setBusy(null);
@@ -318,6 +267,9 @@ export function HighRiskActionApproval({
             <p className="mt-2 text-muted-foreground text-sm">
               {copy.description}
             </p>
+            {copy.consequence ? (
+              <p className="mt-2 font-medium text-sm">{copy.consequence}</p>
+            ) : null}
           </div>
           <StatusIcon state={state} />
         </div>
@@ -336,10 +288,24 @@ export function HighRiskActionApproval({
                 value={activation.confirmation.teamId}
               />
             ) : null}
+            {copy.details.map((entry) => (
+              <Detail
+                className="sm:col-span-2"
+                key={`${entry.label}:${entry.value}`}
+                label={entry.label}
+                value={entry.value}
+              />
+            ))}
           </dl>
         ) : null}
 
-        <div className="mt-5 border border-border p-4">
+        <div
+          aria-live="polite"
+          className="mt-5 border border-border p-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          ref={terminalResultRef}
+          role="status"
+          tabIndex={terminalStates.has(state) ? -1 : undefined}
+        >
           <p className="font-medium text-sm">{stateMessage(state)}</p>
           {error ? (
             <p className="mt-1 text-destructive-foreground text-sm">{error}</p>
@@ -437,7 +403,7 @@ export function HighRiskActionApproval({
                 </Button>
               ) : null}
             </div>
-          ) : (
+          ) : state === "pending" ? (
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button
                 disabled={!canAct}
@@ -464,18 +430,21 @@ export function HighRiskActionApproval({
                 )}
                 {copy.button}
               </Button>
-              {state === "error" || state === "unknown" ? (
-                <Button
-                  onClick={() => void loadActivation()}
-                  size="lg"
-                  variant="outline"
-                >
-                  <RefreshCwIcon className="size-4" />
-                  Retry
-                </Button>
-              ) : null}
             </div>
-          )}
+          ) : state === "unreconciled" || state === "error" ? (
+            <div className="flex justify-end">
+              <Button
+                onClick={() => void loadActivation()}
+                size="lg"
+                variant="outline"
+              >
+                <RefreshCwIcon className="size-4" />
+                {state === "unreconciled"
+                  ? "Check decision status"
+                  : "Retry action lookup"}
+              </Button>
+            </div>
+          ) : null}
         </div>
       </section>
     </main>
@@ -504,6 +473,7 @@ function StatusIcon({ state }: { state: ApprovalPageState }) {
     "denied",
     "revoked",
     "canceled",
+    "unreconciled",
     "unknown",
     "error"
   ].includes(state);
@@ -537,22 +507,27 @@ function StatusIcon({ state }: { state: ApprovalPageState }) {
 function stateMessage(state: ApprovalPageState): string {
   switch (state) {
     case "approved":
-      return "Approved. The enrolled device may perform this exact action once.";
+      return "Approved — Koed Desktop is retrieving the result. You can safely close this window and return to Koed.";
     case "consumed":
-      return "This approval was used and cannot be replayed.";
+      return "Completed — this one-use approval was consumed and cannot be replayed. You can safely close this window and return to Koed.";
     case "denied":
-      return "This request was denied and cannot continue.";
+      return "Denied — no change was authorized. You can safely close this window and return to Koed.";
     case "revoked":
+      return "Canceled — authority for this request was revoked. You can safely close this window and return to Koed.";
     case "canceled":
-      return "This request was canceled and can no longer be approved.";
+      return "Canceled — no change was authorized. You can safely close this window and return to Koed.";
     case "expired":
-      return "This request expired. Start the action again from Koed.";
+      return "Expired — no change was authorized. Close this window, return to Koed, and start the action again.";
     case "unauthenticated":
       return "Sign in again to confirm this sensitive action.";
+    case "unreconciled":
+      return "Outcome unknown — Koed has not confirmed whether your decision was recorded. This window will remain open.";
     case "unknown":
-      return "This confirmation was not found or is no longer available.";
+      return "Unavailable — this confirmation is unknown or no longer available. You can safely close this window and return to Koed.";
+    case "invalid":
+      return "Unavailable — this confirmation is incomplete and no decision can be submitted from this page. You can safely close this window and return to Koed.";
     case "error":
-      return "This confirmation could not be completed.";
+      return "Action lookup failed — no decision was submitted. Retry the lookup before closing this window.";
     case "loading":
       return "Loading confirmation.";
     case "pending":

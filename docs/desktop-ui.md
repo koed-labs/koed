@@ -71,7 +71,9 @@ the code was saved.
 4. Select the exact Team, Workspace, and representation.
 5. Review the source preview. Koed does not silently substitute another
    representation when the requested source is unavailable.
-6. Confirm the consent stage and complete the browser-mediated Action Grant.
+6. Confirm one exact in-app review. Koed records source-owner consent and
+   creates the Share Grant as one recoverable bundle; raw Memory Events may
+   elevate that exact decision to browser Step-up.
 7. Open the resulting entry under the destination Workspace's Shared Memory.
 
 Project-to-Workspace mapping may suggest a destination, but it never grants
@@ -129,7 +131,8 @@ current. Recovery actions are explicit:
 | Pending message                       | Wait or inspect; removal is unavailable during delivery |
 | Share source unavailable              | Restore source/sync authority, then retry review        |
 | Shared representation stale           | Retry updates or inspect the last authorized state      |
-| Action Grant waiting                  | Return to browser approval or cancel                    |
+| Native review waiting                 | Review the authoritative consequence or cancel          |
+| Step-up waiting                       | Return to browser approval or cancel                    |
 | Action Grant denied, expired, or lost | Start a new exact action                                |
 | Captured Session load failed          | Retry without discarding the current selection          |
 
@@ -139,16 +142,23 @@ It does not clear Personal content.
 
 ## Action Grants
 
-High-risk Team operations use three visible stages:
+Protected Desktop operations use a backend-selected tier and one exact Action
+Grant. The renderer cannot select or downgrade the tier:
 
-1. **Preview** names the exact resource, destination, representation, and
-   expected effect.
-2. **Consent** records the User's request without granting reusable
-   administration authority.
-3. **Browser approval** authorizes one short-lived, device-bound,
-   backend-bound, action-specific mutation.
+1. **Direct** executes the explicit control with no second ceremony.
+2. **Native review** presents the backend-authored title, details, and
+   consequence in Desktop, then sends an exact approve/cancel decision.
+3. **Step-up** opens an independently authenticated browser confirmation.
+4. **Bundled stages** retain separate records and audit while sharing the one
+   User decision for the surrounding workflow.
 
-The status surface distinguishes waiting, approved, applying, complete,
+Shared Memory preview is Direct. Initial sharing and representation changes
+bundle consent with the Share Grant mutation, so they never prompt for consent
+as a standalone implementation stage. Workspace Access selects edit a visible
+local draft; **Review and apply** shows every before/after value before exact
+changes are classified as Native review or independent Step-up.
+
+The status surface distinguishes native review, browser Step-up, approved, applying, complete,
 canceled, denied, expired, and failed. Completion is shown only after the
 authoritative mutation and resulting snapshot both succeed. Approval URLs and
 reusable credentials never enter renderer state.

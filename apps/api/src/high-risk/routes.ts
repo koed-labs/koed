@@ -6,16 +6,17 @@ import type {
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
-import type { AuthHelpers } from "../auth/session.js";
+import type { AuthHelpers, HashSecret } from "../auth/session.js";
 import type { RateLimitHandler } from "../infra/rate-limit.js";
 import {
-  highRiskActionGrantOperationFamilyForIntent,
-  highRiskActionGrantRemoteEnvelopeSchema,
-  resolveHighRiskActionGrantOperation
-} from "./action-grant-protocol.js";
+  admitHighRiskActionGrant,
+  highRiskActionGrantOperationFamilyForIntent
+} from "./action-definitions.js";
+import { highRiskActionGrantRemoteEnvelopeSchema } from "./action-grant-protocol.js";
 import {
   createHighRiskActionGrantSchema,
   decideHighRiskBrowserActivationSchema,
+  decideNativeActionReviewSchema,
   highRiskBrowserActivationEnvelopeSchema,
   highRiskActionGrantParamsSchema,
   highRiskBrowserActivationParamsSchema
@@ -32,14 +33,33 @@ type HighRiskRepository = Pick<
   | "cancelActionGrant"
   | "getBrowserActivation"
   | "decideBrowserActivation"
-  | "lookupLegalHoldTeamId"
-  | "getTeamWorkspaceAccess"
+  | "decideNativeActionReview"
+  | "listTeams"
+  | "getTeamInviteAcceptanceReview"
+  | "getTeamInviteRevocationReview"
+  | "getTeamMembershipActionReview"
+  | "getTeamLeaveReview"
+  | "getTeamWorkspaceCreationReview"
+  | "getTeamWorkspaceLifecycleReview"
+  | "getTeamWorkspaceAccessUpdateReview"
+  | "getSharedMemoryPreviewAdmission"
+  | "getSharedMemoryShareReview"
+  | "getSharedMemoryRevokeReview"
+  | "getSharedMemoryRepresentationChangeReview"
+  | "getManagedConversationExecution"
+  | "listDeviceCredentials"
+  | "getTeamEntitlementGate"
+  | "getTeamBillingSeatState"
+  | "getTeamMembership"
+  | "getLegalHoldApprovalReview"
+  | "getTeamInviteCreationReview"
 >;
 
 export interface HighRiskRouteContext {
   requireRepository(): HighRiskRepository;
   authenticateSessionContext: AuthHelpers["authenticateSessionContext"];
   authenticateDeviceCredential: AuthHelpers["authenticateDeviceCredential"];
+  hashSecret: HashSecret;
   rateLimit: {
     browser: RateLimitHandler;
     deviceRead: RateLimitHandler;
@@ -122,27 +142,20 @@ const credentialOperationFamilyForGrant = (
         ? "managed_execution"
         : "share_grant_management";
 
-const resolveWorkspaceTeamIdForUser = async (
-  repository: HighRiskRepository,
-  userId: string,
-  teamWorkspaceId: string
-): Promise<string | null> => {
-  const access = await repository.getTeamWorkspaceAccess(
-    { userId },
-    teamWorkspaceId
-  );
-  return access?.teamId ?? null;
-};
-
 const statusResponse = (grant: HighRiskActionGrantBindingRecord) =>
   highRiskActionGrantRemoteEnvelopeSchema.parse({
     status: {
       version: 1,
       actionGrant: { id: grant.id },
       selector: grant.selector,
-      state: grant.state,
+      approvalTier: grant.approvalTier,
+      review: grant.review,
+      state:
+        grant.state === "pending" && grant.approvalTier === "native_review"
+          ? "review_required"
+          : grant.state,
       activationPath:
-        grant.state === "pending"
+        grant.state === "pending" && grant.approvalTier === "step_up"
           ? `/v1/high-risk/browser-activations/${grant.selector}`
           : null,
       expiresAt: grant.expiresAt
@@ -189,20 +202,23 @@ export const registerHighRiskRoutes = (
       );
       requireOperationFamily(auth, credentialOperationFamily);
       const repository = context.requireRepository();
-      const operation = await resolveHighRiskActionGrantOperation({
+      const admission = await admitHighRiskActionGrant({
+        repository,
+        userId: auth.user.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        currentDeviceInstanceId: auth.credential.deviceInstanceId,
         clientRequestId: input.clientRequestId,
-        intent: input.intent,
-        resolveWorkspaceTeamId: async (teamWorkspaceId) =>
-          resolveWorkspaceTeamIdForUser(
-            repository,
-            auth.user.id,
-            teamWorkspaceId
-          ),
-        resolveLegalHoldTeamId: async (holdId) =>
-          repository.lookupLegalHoldTeamId(holdId)
+        hashSecret: context.hashSecret,
+        intent: input.intent
       });
-      if (!operation) {
+      if (!admission) {
         throw forbidden();
+      }
+      const { operation, policy } = admission;
+      if (policy.disposition === "bundled_stage") {
+        throw forbidden(
+          "This action is authorized only within its reviewed workflow"
+        );
       }
       const created = await repository.createActionGrant({
         clientRequestId: input.clientRequestId,
@@ -216,7 +232,9 @@ export const registerHighRiskRoutes = (
         teamId: operation.teamId,
         targetId: operation.targetId,
         scopeHash: operation.scopeHash,
-        requestHash: operation.requestHash
+        requestHash: operation.requestHash,
+        approvalTier: policy.disposition,
+        review: policy.review
       });
       if (!created) {
         throw forbidden();
@@ -271,6 +289,50 @@ export const registerHighRiskRoutes = (
       } finally {
         request.raw.removeListener("aborted", onClose);
       }
+    }
+  );
+
+  app.post(
+    "/v1/high-risk/action-grants/:clientRequestId/native-decision",
+    {
+      preHandler: context.rateLimit.deviceWrite,
+      bodyLimit: HIGH_RISK_BODY_LIMIT_BYTES
+    },
+    async (request) => {
+      const auth = await authenticateDeviceCredential(request, context);
+      const { clientRequestId } = highRiskActionGrantParamsSchema.parse(
+        request.params
+      );
+      decideNativeActionReviewSchema.parse(request.body);
+      const repository = context.requireRepository();
+      const current = await repository.getActionGrant({
+        clientRequestId,
+        ownerUserId: auth.user.id,
+        deviceCredentialId: auth.credential.id,
+        upstreamBackendId: auth.credential.upstreamBackendId
+      });
+      if (!current || current.approvalTier !== "native_review") {
+        throw forbidden();
+      }
+      requireOperationFamily(
+        auth,
+        credentialOperationFamilyForGrant(
+          current.operationFamily as
+            | "admin"
+            | "share_grant_management"
+            | "source_download"
+            | "managed_execution"
+        )
+      );
+      const decided = await repository.decideNativeActionReview({
+        clientRequestId,
+        ownerUserId: auth.user.id,
+        deviceCredentialId: auth.credential.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        decision: "approve"
+      });
+      if (!decided) throw forbidden();
+      return statusResponse(decided);
     }
   );
 

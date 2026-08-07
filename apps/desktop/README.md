@@ -169,8 +169,11 @@ Linux/WSL use is limited to smoke and unpacked-artifact testing.
   renderer, bundled `koed-server`, and `koed-runtime` JS/service artifact layout
   can run without checkout overrides. The smoke launches the packaged
   `koed-server` with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
-  daemon start/status/reconnect/stop, and `--missing-assets` checks actionable
-  `doctor --json` output when native runtime assets are absent. Set
+  collaboration and renderer fault handling, and verifies daemon
+  start/status/reconnect/stop. The focused `--missing-assets` mode checks
+  packaged-CLI status and actionable `doctor --json` output without launching
+  Electron services. Add `--mask-native-assets` to temporarily hide and then
+  restore `postgres` and `llama.cpp` in an already-built packaged app. Set
   `KOED_NATIVE_RUNTIME_SOURCE_DIR` to stage native assets into the package
   manifest for packaged-provider runtime install tests.
   `pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`

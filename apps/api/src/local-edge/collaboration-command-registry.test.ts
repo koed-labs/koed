@@ -33,6 +33,7 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.disconnect_backend": { scope: "unsupported", desktop: write },
   "collaboration.request_action_grant": { scope: "team", desktop: write },
   "collaboration.await_action_grant": { scope: "team", desktop: read },
+  "collaboration.confirm_action_grant": { scope: "team", desktop: write },
   "collaboration.cancel_action_grant": { scope: "team", desktop: write },
   "collaboration.create_team": { scope: "team", desktop: write },
   "collaboration.join_team": { scope: "team", desktop: write },
@@ -162,7 +163,6 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     scope: "team",
     desktop: read
   },
-  "collaboration.consent_shared_memory": { scope: "team", desktop: write },
   "collaboration.share_memory": { scope: "team", desktop: write },
   "collaboration.revoke_shared_memory": { scope: "team", desktop: write },
   "collaboration.change_shared_memory_representation": {

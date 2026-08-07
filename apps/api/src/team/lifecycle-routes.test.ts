@@ -14,7 +14,11 @@ import {
   type CollaborationAdmissionController
 } from "../collaboration/admission.js";
 import type { ApiRouteContext } from "../server/context.js";
-import { registerTeamRoutes } from "./routes.js";
+import {
+  registerTeamRoutes,
+  teamAdminRequestHash,
+  teamAdminScopeHash
+} from "./routes.js";
 
 const user: UserRecord = {
   id: randomUUID(),
@@ -908,7 +912,7 @@ describe("Team lifecycle routes", () => {
         method: "POST",
         url: `/v1/teams/${teamId}/leave`,
         payload: { expectedVersion: 1 },
-        device: "browser_only"
+        device: "admin"
       },
       {
         label: "invite list",
@@ -1223,6 +1227,56 @@ describe("Team lifecycle routes", () => {
       { userId: user.id },
       { teamId, expectedVersion: 1 }
     );
+  });
+
+  it("consumes an exact one-use Action Grant for device Team leave and rejects replay", async () => {
+    const leaveTeam = vi.fn(async () => membership());
+    const fixture = await createFixture({ repository: { leaveTeam } });
+    const request = {
+      method: "POST" as const,
+      url: `/v1/teams/${teamId}/leave`,
+      headers: {
+        authorization: "Koed-Device device-key:secret",
+        "x-koed-action-grant": "hrg_leave_once"
+      },
+      payload: { expectedVersion: 1 }
+    };
+
+    const response = await fixture.app.inject(request);
+
+    expect(response.statusCode).toBe(200);
+    expect(fixture.repository.executeActionGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionGrant: "hrg_leave_once",
+        ownerUserId: user.id,
+        teamId,
+        operationFamily: "admin",
+        action: "team.leave",
+        targetId: teamId,
+        scopeHash: teamAdminScopeHash({
+          action: "team.leave",
+          teamId,
+          targetId: teamId
+        }),
+        requestHash: teamAdminRequestHash({
+          method: "POST",
+          path: `/v1/teams/${teamId}/leave`,
+          body: { expectedVersion: 1 }
+        })
+      })
+    );
+    expect(leaveTeam).toHaveBeenCalledWith(
+      { userId: user.id },
+      { teamId, expectedVersion: 1 }
+    );
+
+    vi.mocked(fixture.repository.executeActionGrant).mockResolvedValueOnce(
+      null
+    );
+    const replay = await fixture.app.inject(request);
+    expect(replay.statusCode).toBe(403);
+    expect(leaveTeam).toHaveBeenCalledTimes(1);
+    await fixture.app.close();
   });
 
   it("requires a matching verified WorkOS identity and current backend origin in managed cloud", async () => {

@@ -119,7 +119,11 @@ export const connectElectronCdp = async ({
       `Electron CDP ${method} timed out on ${host}:${port}.`
     );
 
-  await Promise.all([send("Runtime.enable"), send("Network.enable")]);
+  await Promise.all([
+    send("Runtime.enable"),
+    send("Network.enable"),
+    send("Page.enable")
+  ]);
 
   const waitForProtocolEvent = (method, eventTimeoutMs = timeoutMs) =>
     withTimeout(
@@ -308,6 +312,10 @@ export const connectElectronCdp = async ({
           evaluationTimeoutMs: waitTimeoutMs + 2_000
         }
       ),
+    waitForJavaScriptDialog: (waitTimeoutMs = timeoutMs) =>
+      waitForProtocolEvent("Page.javascriptDialogOpening", waitTimeoutMs),
+    handleJavaScriptDialog: (accept) =>
+      send("Page.handleJavaScriptDialog", { accept }),
     screenshot: async (path) => {
       const result = await send("Page.captureScreenshot", {
         format: "png",

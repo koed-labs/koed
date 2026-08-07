@@ -130,6 +130,19 @@ const collaborationFixture = (): CollaborationSnapshot => {
     ...currentUser,
     id: uuid(23)
   };
+  const teamPerson = (person: typeof currentUser) => ({
+    ...person,
+    teamPresence: {
+      mode: "auto" as const,
+      manualStatus: "available" as const,
+      activityLevel: "active" as const,
+      lastActivityAt: timestamp,
+      nextTransitionAt: new Date(
+        new Date(timestamp).getTime() + 5 * 60_000
+      ).toISOString(),
+      preferenceVersion: 1
+    }
+  });
   const participant = (person: typeof currentUser) => ({
     id: person.id,
     displayName: person.displayName,
@@ -253,7 +266,7 @@ const collaborationFixture = (): CollaborationSnapshot => {
       role: "owner" as const,
       lifecycle: "active" as const,
       unreadCount: teamIndex % 7 === 0 ? 3 : 0,
-      people: [teamPrincipal, teammate],
+      people: [teamPerson(teamPrincipal), teamPerson(teammate)],
       directMessages: [],
       workspaces,
       version: 1
@@ -384,7 +397,9 @@ const resultFor = (
               acknowledgedEventId: command.input.eventId,
               subscriptionVersion: command.input.expectedSubscriptionVersion + 1
             }
-          : {};
+          : command.command === "collaboration.report_team_activity"
+            ? { acceptedTeamIds: command.input.teamIds }
+            : {};
   return collaborationCommandResultSchema.parse({
     contractVersion: COLLABORATION_CONTRACT_VERSION,
     requestId: command.requestId,
@@ -401,9 +416,17 @@ const ChatValidationApp = () => {
       command: async (command) => {
         const browserWindow = window as Window & {
           __koedBrowserCommandCount?: number;
+          __koedBrowserCommands?: string[];
+          __koedBrowserUserCommands?: string[];
         };
-        browserWindow.__koedBrowserCommandCount =
-          (browserWindow.__koedBrowserCommandCount ?? 0) + 1;
+        browserWindow.__koedBrowserCommands ??= [];
+        browserWindow.__koedBrowserCommands.push(command.command);
+        if (command.command !== "collaboration.report_team_activity") {
+          browserWindow.__koedBrowserUserCommands ??= [];
+          browserWindow.__koedBrowserUserCommands.push(command.command);
+          browserWindow.__koedBrowserCommandCount =
+            browserWindow.__koedBrowserUserCommands.length;
+        }
         if (command.command === "collaboration.select") {
           await new Promise<void>((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
@@ -1002,6 +1025,59 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
   const recorded: CollaborationRendererCommand[] = [];
   let suspendAcknowledgements = false;
   const nextCommandFailures = new Map<string, Error>();
+  let pendingNativeReview: {
+    version: 1;
+    title: string;
+    description: string;
+    consequence: string;
+    confirmLabel: string;
+    details: Array<{ label: string; value: string }>;
+  } | null = null;
+
+  const nativeReviewFor = (
+    intent: Extract<
+      CollaborationRendererCommand,
+      { command: "collaboration.request_action_grant" }
+    >["input"]["intent"]
+  ) => {
+    switch (intent.intent) {
+      case "collaboration.create_invitation":
+        return {
+          version: 1 as const,
+          title: `Invite ${intent.email}?`,
+          description: "Review the exact invitation before it is issued.",
+          consequence: `The recipient can join with ${intent.defaultWorkspaceAccess} access.`,
+          confirmLabel: "Create invitation",
+          details: [
+            { label: "Email", value: intent.email },
+            { label: "Role", value: intent.role },
+            { label: "Workspace Access", value: intent.defaultWorkspaceAccess }
+          ]
+        };
+      case "collaboration.join_team":
+        return {
+          version: 1 as const,
+          title: "Join Team?",
+          description: "Review the invitation before joining this Team.",
+          consequence: "The Team will become available in Desktop.",
+          confirmLabel: "Join Team",
+          details: [{ label: "Invitation", value: intent.invitation }]
+        };
+      case "collaboration.revoke_invitation":
+        return {
+          version: 1 as const,
+          title: "Revoke invitation?",
+          description: "Review the exact pending invitation.",
+          consequence: "The invitation can no longer be used.",
+          confirmLabel: "Revoke invitation",
+          details: [{ label: "Invitation", value: intent.invitationId }]
+        };
+      default:
+        throw new Error(
+          `Unexpected Native-review browser intent: ${intent.intent}`
+        );
+    }
+  };
 
   const command = async (
     input: CollaborationRendererCommand
@@ -1035,15 +1111,37 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         };
         return result(parsed, { snapshot: snapshot() });
       case "collaboration.request_action_grant":
+        pendingNativeReview = nativeReviewFor(parsed.input.intent);
         return result(parsed, {
           status: {
             version: 1,
             actionGrant: { id: interactionIds.actionGrant },
-            state: "approved",
+            approvalTier: "native_review",
+            review: pendingNativeReview,
+            state: "review_required",
             activationUrl: null,
             expiresAt: "2099-01-02T10:38:00.000Z"
           }
         });
+      case "collaboration.confirm_action_grant": {
+        if (!pendingNativeReview) {
+          throw new Error("Native review decision has no pending review");
+        }
+        const review = pendingNativeReview;
+        pendingNativeReview = null;
+        return result(parsed, {
+          status: {
+            version: 1,
+            actionGrant: parsed.input.actionGrant,
+            approvalTier: "native_review",
+            review,
+            state:
+              parsed.input.decision === "approve" ? "approved" : "canceled",
+            activationUrl: null,
+            expiresAt: "2099-01-02T10:38:00.000Z"
+          }
+        });
+      }
       case "collaboration.create_invitation": {
         invitationSequence += 1;
         const invitation = {
@@ -1319,7 +1417,10 @@ const CollaborationInteractionsValidationApp = () => {
     return createStatefulCollaborationBridge(actor);
   }, []);
   const client = useMemo(
-    () => createCollaborationRendererClient(fixture.bridge),
+    () =>
+      createCollaborationRendererClient(fixture.bridge, {
+        confirmNativeReview: () => true
+      }),
     [fixture]
   );
   useEffect(() => {

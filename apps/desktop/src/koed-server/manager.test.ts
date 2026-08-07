@@ -60,7 +60,7 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
-  it("allows a full status inspection to outlive the old ten-second budget", async () => {
+  it("allows a cold-start status inspection to use the two-minute budget", async () => {
     let timeout: number | undefined;
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -82,7 +82,7 @@ describe("Koed server desktop manager", () => {
 
     await manager.handlers.status!();
 
-    expect(timeout).toBe(30_000);
+    expect(timeout).toBe(120_000);
   });
 
   it("treats local services as ready before later setup stages finish", () => {
@@ -333,15 +333,28 @@ describe("Koed server desktop manager", () => {
           "Secure device storage is available through the operating system."
       }
     });
-    expect(calls[0]).toEqual({
-      command: "/node",
-      args: ["/repo/packages/koed-server/dist/cli.js", "status", "--json"]
-    });
+    expect(calls.slice(0, 2)).toEqual(
+      expect.arrayContaining([
+        {
+          command: "/node",
+          args: ["/repo/packages/koed-server/dist/cli.js", "status", "--json"]
+        },
+        {
+          command: "/node",
+          args: [
+            "/repo/packages/koed-server/dist/cli.js",
+            "package",
+            "status",
+            "--json"
+          ]
+        }
+      ])
+    );
 
     await expect(manager.handlers.project_list!()).resolves.toMatchObject({
       ok: true
     });
-    expect(calls[1]).toEqual({
+    expect(calls[2]).toEqual({
       command: "/node",
       args: [
         "/repo/packages/koed-server/dist/cli.js",
@@ -357,7 +370,7 @@ describe("Koed server desktop manager", () => {
         groupId: "group_redacted"
       })
     ).resolves.toMatchObject({ ok: true });
-    expect(calls.slice(2)).toEqual([
+    expect(calls.slice(3)).toEqual([
       {
         command: "/node",
         args: [
@@ -1051,6 +1064,7 @@ describe("Koed server desktop manager", () => {
     });
     expect(calls).toEqual([
       ["/repo/cli.js", "status", "--json"],
+      ["/repo/cli.js", "package", "status", "--json"],
       [
         "/repo/cli.js",
         "upstream",
@@ -1060,7 +1074,8 @@ describe("Koed server desktop manager", () => {
         "team-vps",
         "--json"
       ],
-      ["/repo/cli.js", "status", "--json"]
+      ["/repo/cli.js", "status", "--json"],
+      ["/repo/cli.js", "package", "status", "--json"]
     ]);
   });
 
@@ -1266,6 +1281,10 @@ describe("Koed server desktop manager", () => {
             }),
             ""
           );
+          return;
+        }
+        if (args[1] === "package" && args[2] === "status") {
+          callback(null, JSON.stringify({ ok: true, state: "healthy" }), "");
           return;
         }
         completeEnrollment = () =>
