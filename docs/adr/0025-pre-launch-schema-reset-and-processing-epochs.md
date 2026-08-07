@@ -1,4 +1,4 @@
-# Pre-launch schema reset and processing epochs
+# ADR 0025: Pre-launch schema reset and processing epochs
 
 Status: Proposed.
 
@@ -11,6 +11,9 @@ Related decisions:
 - [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](0013-team-collaboration-authority.md)
 - [0020 Portable Personal Derived Artifact Replication](0020-portable-personal-derived-artifact-replication.md)
 - [0021 Portable Semantic Work Ownership](0021-portable-semantic-work-ownership.md)
+- [0023 Collaboration Receipts Use Versioned Audiences](0023-collaboration-receipts-use-versioned-audiences.md)
+- [0023 Team Member Presence](0023-team-member-presence.md)
+- [0024 Tiered Desktop Action Approval](0024-tiered-desktop-action-approval.md)
 
 Supporting plans:
 
@@ -91,7 +94,7 @@ Koed keeps separate ownership and upgrade rules for:
 - processing compatibility identities and generation sets;
 - cryptographic epochs such as PDS `current_epoch`.
 
-No global application version replaces those namespaces. PDS governance is separate canonical security, identity, consent, and lifecycle control, not processing state. Frozen `koed/pds/v1` source manifests and package bytes remain unchanged. Separately signed `koed/pds-artifact/v1` portable artifacts retain their artifact-specific compatibility contracts and hashes; they never alter source bytes. V1 uses its implemented fixed operational Authority/Relay host topology; its consolidated persistence baseline is Drizzle migration `0020_zippy_apocalypse`. PDS cryptographic epochs such as `current_epoch` are not Processing epochs.
+No global application version replaces those namespaces. PDS governance is separate canonical security, identity, consent, and lifecycle control, not processing state. Frozen `koed/pds/v1` source manifests and package bytes remain unchanged. Separately signed `koed/pds-artifact/v1` portable artifacts retain their artifact-specific compatibility contracts and hashes; they never alter source bytes. V1 uses its implemented fixed operational Authority/Relay host topology. The current database baseline is the complete Drizzle journal recorded by the inventory, not a single PDS migration. PDS cryptographic epochs such as `current_epoch` are not Processing epochs.
 
 ### Deterministic compatibility identities
 
