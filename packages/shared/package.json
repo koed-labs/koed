@@ -19,6 +19,10 @@
       "types": "./dist/personal-desktop-contract.d.ts",
       "import": "./dist/personal-desktop-contract.js"
     },
+    "./conversation-display": {
+      "types": "./dist/conversation-display.d.ts",
+      "import": "./dist/conversation-display.js"
+    },
     "./secure-upstream-fetch": {
       "types": "./dist/secure-upstream-fetch.d.ts",
       "import": "./dist/secure-upstream-fetch.js"
