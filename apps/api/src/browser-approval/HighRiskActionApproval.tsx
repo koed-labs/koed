@@ -32,6 +32,17 @@ const terminalStates = new Set<PageState>([
   "error"
 ]);
 
+const autoCloseStates = new Set<PageState>([
+  "approved",
+  "consumed",
+  "denied",
+  "revoked",
+  "canceled",
+  "expired",
+  "invalid",
+  "unknown"
+]);
+
 export function HighRiskActionApproval({
   selector
 }: {
@@ -80,7 +91,12 @@ export function HighRiskActionApproval({
 
   useEffect(() => void load(), [load]);
   useEffect(() => {
-    if (terminalStates.has(state)) statusRef.current?.focus();
+    if (!terminalStates.has(state)) return;
+    statusRef.current?.focus();
+    if (!autoCloseStates.has(state)) return;
+    if (window.opener === null || window.closed) return;
+    const closeFrame = window.requestAnimationFrame(() => window.close());
+    return () => window.cancelAnimationFrame(closeFrame);
   }, [state]);
 
   const copy = useMemo(
@@ -229,23 +245,23 @@ const stateMessage = (state: PageState): string => {
     case "approved":
       return "Approved — Koed Desktop is retrieving the result. You can safely close this page and return to Koed.";
     case "consumed":
-      return "Completed — this one-use approval was consumed and cannot be replayed.";
+      return "Completed — this one-use approval was consumed and cannot be replayed. You can safely close this page and return to Koed.";
     case "denied":
-      return "Denied — no change was authorized.";
+      return "Denied — no change was authorized. You can safely close this page and return to Koed.";
     case "revoked":
-      return "Canceled — authority for this request was revoked.";
+      return "Canceled — authority for this request was revoked. You can safely close this page and return to Koed.";
     case "canceled":
-      return "Canceled — no change was authorized.";
+      return "Canceled — no change was authorized. You can safely close this page and return to Koed.";
     case "expired":
-      return "Expired — no change was authorized. Return to Koed and start the action again.";
+      return "Expired — no change was authorized. You can safely close this page, return to Koed, and start the action again.";
     case "unauthenticated":
       return "Sign in again to confirm this sensitive action.";
     case "unreconciled":
       return "Outcome unknown — Koed has not confirmed whether your decision was recorded.";
     case "invalid":
-      return "Unavailable — this confirmation is incomplete and no decision can be submitted.";
+      return "Unavailable — this confirmation is incomplete and no decision can be submitted. You can safely close this page and return to Koed.";
     case "unknown":
-      return "Unavailable — this confirmation is unknown or no longer available.";
+      return "Unavailable — this confirmation is unknown or no longer available. You can safely close this page and return to Koed.";
     case "error":
       return "Action lookup failed — no decision was submitted.";
     case "loading":

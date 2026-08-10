@@ -281,7 +281,9 @@ const buildServer = async (overrides?: {
         representation: input.selectedRepresentation,
         sourceRevision: 1
       },
-      effectivePolicyIntersection: input.allowedRepresentations
+      effectivePolicyIntersection: input.allowedRepresentations,
+      sourceOwnerPolicyWillActivate: false,
+      sourceOwnerPolicyWillReplace: false
     })),
     getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
       source: {
@@ -314,6 +316,8 @@ const buildServer = async (overrides?: {
         sourceRevision: 1
       },
       effectivePolicyIntersection: input.allowedRepresentations,
+      sourceOwnerPolicyWillActivate: false,
+      sourceOwnerPolicyWillReplace: false,
       grant: {
         id: input.shareGrantId,
         logicalMemoryId: input.logicalMemoryId,
@@ -1094,7 +1098,9 @@ describe("high-risk action grant routes", () => {
             representation: input.selectedRepresentation,
             sourceRevision: 1
           },
-          effectivePolicyIntersection: input.allowedRepresentations
+          effectivePolicyIntersection: input.allowedRepresentations,
+          sourceOwnerPolicyWillActivate: false,
+          sourceOwnerPolicyWillReplace: false
         }))
       }
     });
@@ -1293,9 +1299,14 @@ describe("high-risk action grant routes", () => {
     await fixture.app.close();
   });
 
-  it("requires a fresh browser session for activation decisions", async () => {
+  it("requires a fresh browser session before showing or deciding an activation", async () => {
     const fixture = await buildServer();
 
+    const staleInspection = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/high-risk/browser-activations/${binding.selector}`,
+      headers: { cookie: "cm_session=stale-session" }
+    });
     const stale = await fixture.app.inject({
       method: "POST",
       url: `/v1/high-risk/browser-activations/${binding.selector}/decision`,
@@ -1309,6 +1320,7 @@ describe("high-risk action grant routes", () => {
       payload: { decision: "approve" }
     });
 
+    expect(staleInspection.statusCode).toBe(403);
     expect(stale.statusCode).toBe(403);
     expect(fresh.statusCode).toBe(200);
     expect(

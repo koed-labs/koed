@@ -2172,10 +2172,20 @@ function SharedMemoryOwnerModal({
           !currentEntry.logicalMemoryId ||
           !currentEntry.hasSynchronizedRevision
         ) {
+          setCurrentEntry((current) => ({
+            ...current,
+            syncState:
+              current.syncState === "not_started"
+                ? "processing"
+                : current.syncState
+          }));
+          const prepared = await client.prepareSharedMemorySource({
+            sessionId: currentEntry.id
+          });
           setCurrentEntry(
-            await client.prepareSharedMemorySource({
-              sessionId: currentEntry.id
-            })
+            prepared.syncState === "not_started"
+              ? { ...prepared, syncState: "processing" }
+              : prepared
           );
         }
       } catch (cause) {
@@ -2214,7 +2224,12 @@ function SharedMemoryOwnerModal({
           sessionId: currentEntry.id
         });
         if (!active) return;
-        setCurrentEntry(nextEntry);
+        setCurrentEntry((current) =>
+          nextEntry.syncState === "not_started" &&
+          current.syncState !== "not_started"
+            ? { ...nextEntry, syncState: current.syncState }
+            : nextEntry
+        );
         if (nextEntry.hasSynchronizedRevision) return;
         if (
           nextEntry.syncState === "paused" ||
@@ -2474,12 +2489,7 @@ function SharedMemoryOwnerModal({
     >
       <ModalHeader title={entry.title} onClose={onClose} />
       <div className="collab-form collab-share-memory-form">
-        {loadingGrants ? (
-          <div className="collab-modal-state" role="status">
-            <LoaderCircle className="collab-spin" aria-hidden="true" />
-            Loading shared destinations
-          </div>
-        ) : preparingPreview ? (
+        {preparingPreview ? (
           <div
             className="collab-modal-state collab-share-preparing"
             role="status"
@@ -2493,6 +2503,11 @@ function SharedMemoryOwnerModal({
             <strong>{preparationCopy.title}</strong>
             <p>{preparationCopy.detail}</p>
             <small>Current status: {preparationCopy.label}</small>
+          </div>
+        ) : loadingGrants ? (
+          <div className="collab-modal-state" role="status">
+            <LoaderCircle className="collab-spin" aria-hidden="true" />
+            Loading shared destinations
           </div>
         ) : workflow === null ? (
           <>

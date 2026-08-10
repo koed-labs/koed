@@ -404,6 +404,7 @@ export const registerHighRiskRoutes = (
         request.params
       );
       const session = await authenticateBrowserSession(request, context);
+      requireFreshAuthentication(session);
       const activation = await context
         .requireRepository()
         .getBrowserActivation({

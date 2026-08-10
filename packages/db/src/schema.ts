@@ -4896,21 +4896,9 @@ export const sharedSourceArtifacts = pgTable(
       foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
       name: "shared_source_artifacts_workspace_team_fk"
     }).onDelete("restrict"),
-    foreignKey({
-      columns: [
-        table.sourceOwnerPolicyId,
-        table.sourceOwnerPolicyVersion,
-        table.logicalMemoryId,
-        table.ownerPrincipalId
-      ],
-      foreignColumns: [
-        sourceOwnerRepresentationPolicies.policyId,
-        sourceOwnerRepresentationPolicies.version,
-        sourceOwnerRepresentationPolicies.logicalMemoryId,
-        sourceOwnerRepresentationPolicies.sourceOwnerPrincipalId
-      ],
-      name: "shared_source_artifacts_owner_policy_fk"
-    }).onDelete("restrict"),
+    // The owner-policy binding can be an inactive proposal until the final
+    // reviewed bundle activates it. Repository validation binds the proposal
+    // through the artifact and representation-policy hashes.
     foreignKey({
       columns: [table.teamPolicyId, table.teamPolicyVersion, table.teamId],
       foreignColumns: [

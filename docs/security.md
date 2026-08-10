@@ -223,13 +223,16 @@ Shared Memory definitions keep Personal Memory ownership, Cross-Identity Sync
 provenance, Workspace Access, source-owner consent, Share Grant authority, and
 materialized representations as separate checks. Preview admission verifies the
 exact owner-private replica and destination policies. It remains Direct only
-when the source-owner policy is unchanged; creating or replacing that policy is
-Step-up because replacement pauses active consents and invalidates affected
-Share Grants. Share and representation-change admission validate the persisted
-preview, three-policy intersection, current share permission, and exact grant
-version. Raw `memory_events` sharing and fidelity increases remain Step-up,
-while derived sharing, fidelity decreases, and owner revocation remain Native
-review.
+and persists only an inactive, artifact-bound source-owner policy proposal.
+The final reviewed bundle revalidates and activates that exact proposal in the
+same transaction as consent and grant mutation; only then can replacement pause
+active consents and invalidate affected Share Grants. Share and
+representation-change admission validate the persisted preview, proposed
+three-policy intersection, current share permission, and exact grant version.
+First-time raw `memory_events` shares use one Step-up at the final share
+decision; their preview remains Direct. Derived shares use Native review.
+Representation fidelity increases remain Step-up, while fidelity decreases and
+owner revocation remain Native review.
 Consent is not a requestable catalog action: supported Desktop flows bind it
 inside the exact share or representation-change bundle and consume the one-use
 Action Grant atomically with both repository stages. Revocation is authorized

@@ -2670,8 +2670,17 @@ pnpm test
       syncState: "ready" as const
     };
     const client = createClient(snapshot);
+    let resolveOwnedGrants!: (value: never[]) => void;
+    const ownedGrants = new Promise<never[]>((resolve) => {
+      resolveOwnedGrants = resolve;
+    });
+    vi.mocked(client.listOwnedSharedMemoryGrants).mockReturnValue(ownedGrants);
+    let resolveInitialPreparation!: (value: typeof processing) => void;
+    const initialPreparation = new Promise<typeof processing>((resolve) => {
+      resolveInitialPreparation = resolve;
+    });
     vi.mocked(client.prepareSharedMemorySource)
-      .mockResolvedValueOnce(processing)
+      .mockReturnValueOnce(initialPreparation)
       .mockResolvedValue(ready);
     const modal = {
       kind: "share_personal_memory" as const,
@@ -2701,6 +2710,9 @@ pnpm test
 
     await click(container, "Review source");
 
+    expect(document.body.textContent).toContain("Current status: Processing");
+    expect(document.body.textContent).not.toContain("Current status: Starting");
+    await act(async () => resolveInitialPreparation(processing));
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain("Syncing this memory")
     );
@@ -2733,6 +2745,33 @@ pnpm test
     );
     expect(document.body.textContent).toContain("Current status: Processing");
     expect(document.body.textContent).not.toContain("Current status: Starting");
+
+    const processingSnapshot = collaborationSnapshotSchema.parse({
+      ...snapshot,
+      navigation: {
+        ...snapshot.navigation,
+        personal: {
+          ...snapshot.navigation.personal,
+          memory: [processing]
+        }
+      }
+    });
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          markdownAdapters={markdownAdapters}
+          modal={modal}
+          onModalChange={vi.fn()}
+          snapshot={processingSnapshot}
+        />
+      )
+    );
+    expect(document.body.textContent).toContain("Current status: Processing");
+    expect(document.body.textContent).not.toContain(
+      "Loading shared destinations"
+    );
+    await act(async () => resolveOwnedGrants([]));
 
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(document.body.querySelector(".collab-preview-list")).not.toBeNull();

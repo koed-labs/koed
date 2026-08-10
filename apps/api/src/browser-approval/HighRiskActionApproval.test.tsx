@@ -80,6 +80,7 @@ describe("HighRiskActionApproval", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
   });
 
   it("shows authoritative review copy and records one explicit decision", async () => {
@@ -237,6 +238,40 @@ describe("HighRiskActionApproval", () => {
       expect(api.decide).not.toHaveBeenCalled();
     }
   );
+
+  it("closes a script-opened browser handoff after rendering a terminal result", async () => {
+    const openerDescriptor = Object.getOwnPropertyDescriptor(window, "opener");
+    Object.defineProperty(window, "opener", {
+      configurable: true,
+      value: {}
+    });
+    const close = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    api.load.mockResolvedValue({
+      ...activation,
+      status: { ...activation.status, state: "denied", activationPath: null }
+    });
+
+    await act(async () =>
+      root.render(
+        <HighRiskActionApproval selector={activation.status.selector} />
+      )
+    );
+    await settle();
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    expect(container.textContent).toContain("safely close this page");
+    expect(close).toHaveBeenCalledOnce();
+    if (openerDescriptor) {
+      Object.defineProperty(window, "opener", openerDescriptor);
+    } else {
+      Object.defineProperty(window, "opener", {
+        configurable: true,
+        value: null
+      });
+    }
+  });
 
   it("keeps an unreconciled decision open for an authoritative retry", async () => {
     api.load
