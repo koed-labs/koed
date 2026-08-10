@@ -9320,7 +9320,7 @@ describeDb("memory repository visibility", () => {
           liveStartOffset: 0,
           liveStartLine: 0,
           currentSourceLength: 24,
-          sourceCreatedAt,
+          sourceCreatedAt: sourceCreatedAt.toISOString(),
           storageProvider: "filesystem",
           storagePrefix: `team-source-share-${randomUUID()}`,
           originDeploymentId: `deployment-${randomUUID()}`,
