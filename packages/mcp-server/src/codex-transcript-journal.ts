@@ -144,6 +144,7 @@ export interface CodexTranscriptJournalResult {
   providerBytesAdvanced: number;
   canonicalCursorOffset: number;
   cursorAdvanced: boolean;
+  turnOpen: boolean;
   turnBoundaryHandled: boolean;
   recordsConsumed: number;
   itemsPersisted: number;
@@ -651,6 +652,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: false,
       turnBoundaryHandled: true,
       recordsConsumed: 0,
       itemsPersisted: persisted.length,
@@ -664,6 +666,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: Boolean(cursor.parserState.activeTurnId),
       turnBoundaryHandled: false,
       recordsConsumed: 0,
       itemsPersisted: 0,
@@ -717,6 +720,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: Boolean(cursor.parserState.activeTurnId),
       turnBoundaryHandled: false,
       recordsConsumed: 0,
       itemsPersisted: 0,
@@ -783,6 +787,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: Boolean(parsed.checkpoint.activeTurnId),
       turnBoundaryHandled: false,
       recordsConsumed: parsed.records.length,
       itemsPersisted: persisted.length,
@@ -825,6 +830,7 @@ export const ingestCodexTranscriptJournal = async (input: {
     providerBytesAdvanced: artifact.providerCursorOffset - providerOffsetBefore,
     canonicalCursorOffset,
     cursorAdvanced,
+    turnOpen: !completedTurn && Boolean(activeTurnId),
     turnBoundaryHandled:
       turnBoundaryAtCheckpoint &&
       canonicalCursorOffset >= parsed.checkpoint.offset &&

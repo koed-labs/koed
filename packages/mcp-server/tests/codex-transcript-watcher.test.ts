@@ -357,6 +357,8 @@ const watcherConfig = (
   roots: [path.join(root, "codex", "sessions")],
   koedHome: path.join(root, "koed"),
   debounceMs: 60_000,
+  pollMs: 60_000,
+  turnBoundarySettleMs: 25,
   maxEntriesPerScan: 1_000,
   maxFilesPerScan: 100,
   maxBytesPerBatch: 64 * 1024,
@@ -925,6 +927,119 @@ describe("Codex Transcript Watcher source journal", () => {
         externalTurnId: stoppedTurnId
       })
     );
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      artifact.providerCursorOffset
+    );
+  });
+
+  it("catches assistant records flushed after the Stop wake without another Hook signal", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const config = watcherConfig(root, { debounceMs: 5 });
+    const watcher = trackedWatcher(client, config);
+
+    // Activate before the transcript root exists so the later append cannot be
+    // recovered by an exact filesystem notification in this regression.
+    await watcher.scanNow();
+    const transcript = transcriptPath(root, "rollout-post-stop-flush.jsonl");
+    writeFileSync(
+      transcript,
+      line(sessionRecord("post-stop-flush")) + line(userRecord("question"))
+    );
+    await watcher.scanNow();
+
+    signalCodexTranscriptWatcher(
+      { KOED_HOME: config.koedHome },
+      {
+        sourceSessionId: "post-stop-flush",
+        transcriptPath: transcript,
+        turnBoundary: true
+      }
+    );
+    await watcher.scanNow();
+
+    appendFileSync(
+      transcript,
+      line(assistantResponseRecord("flushed after the Stop hook"))
+    );
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "flushed after the Stop hook")
+    );
+  });
+
+  it("polls an open turn until its terminal assistant records are flushed", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const config = watcherConfig(root, {
+      debounceMs: 5,
+      turnBoundarySettleMs: 10
+    });
+    const watcher = trackedWatcher(client, config);
+
+    // Activate before the root exists so neither Hook nor filesystem delivery
+    // can complete this turn after its initial user record is processed.
+    await watcher.scanNow();
+    const transcript = transcriptPath(root, "rollout-open-turn.jsonl");
+    writeFileSync(
+      transcript,
+      line(sessionRecord("open-turn")) + line(userRecord("question"))
+    );
+    await watcher.scanNow();
+
+    appendFileSync(
+      transcript,
+      line(assistantResponseRecord("terminal records without another wake")) +
+        line(controlRecord())
+    );
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some(
+          (item) => item.rawText === "terminal records without another wake"
+        )
+    );
+    const artifact = client.artifacts.get("open-turn")!;
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      artifact.providerCursorOffset
+    );
+  });
+
+  it("discovers and completes a turn when Hook and filesystem signals are both missed", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const config = watcherConfig(root, {
+      debounceMs: 5,
+      pollMs: 10,
+      turnBoundarySettleMs: 10
+    });
+    const watcher = trackedWatcher(client, config);
+
+    // No root exists when filesystem hints are installed, and this test sends
+    // no explicit watcher wake after activation.
+    await watcher.scanNow();
+    const transcript = transcriptPath(root, "rollout-missed-signals.jsonl");
+    writeFileSync(
+      transcript,
+      line(sessionRecord("missed-signals")) + line(userRecord("question"))
+    );
+    await waitFor(() => client.artifacts.has("missed-signals"));
+
+    appendFileSync(
+      transcript,
+      line(assistantResponseRecord("captured without signals")) +
+        line(controlRecord())
+    );
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "captured without signals")
+    );
+    const artifact = client.artifacts.get("missed-signals")!;
     expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
       artifact.providerCursorOffset
     );

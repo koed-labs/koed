@@ -112,9 +112,18 @@ observed by the Hook. The Hook makes those boundary files durable before it
 publishes the watcher wake, so the watcher cannot consume a Stop wake without
 seeing its matching frontier. The matching watcher journals through that
 frontier, persists one idempotent `codex-hook-signal-v1` lifecycle control for
-the active transcript turn, and only then processes newer bytes. The control
-is content-free and cannot render or embed by itself. No prompt, response,
-tool payload, raw path, or session identifier is retained in the signal files.
+the active transcript turn, and schedules one trailing catch-up after Codex has
+had time to flush records written after the Stop Hook returned. It only then
+processes newer bytes. The control is content-free and cannot render or embed
+by itself. No prompt, response, tool payload, raw path, or session identifier is
+retained in the signal files.
+Independently of Hook and filesystem notification delivery, a one-second
+catch-up tick checks a bounded rotation of known sources and the newest
+discovery page. A canonical cursor with an open turn additionally rechecks only
+its own transcript until `task_complete` or `turn_aborted` is consumed.
+Unchanged open turns back off to a five-second interval; terminal turns stop
+rechecking immediately. Exact hints and active sources are always serviced
+before discovery work.
 Missing signals can delay a fallback turn seal until later transcript evidence
 arrives; duplicate, delayed, or reordered signals cannot seal a later frontier
 or create duplicate content. Transcript JSONL remains the only content,
@@ -156,6 +165,8 @@ Transcript Watcher settings:
 ```text
 MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true
 MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS=200
+MEMORY_CODEX_TRANSCRIPT_POLL_MS=1000
+MEMORY_CODEX_TRANSCRIPT_TURN_SETTLE_MS=500
 MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN=4000
 MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN=200
 MEMORY_CODEX_TRANSCRIPT_MAX_BYTES_PER_BATCH=1048576

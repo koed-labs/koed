@@ -52,6 +52,8 @@ export interface CodexTranscriptWatcherConfig {
   roots: string[];
   koedHome: string;
   debounceMs: number;
+  pollMs: number;
+  turnBoundarySettleMs: number;
   maxEntriesPerScan: number;
   maxFilesPerScan: number;
   maxBytesPerBatch: number;
@@ -120,6 +122,13 @@ export const resolveCodexTranscriptWatcherConfig = (
       "MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS",
       200,
       10_000
+    ),
+    pollMs: positiveInt(env, "MEMORY_CODEX_TRANSCRIPT_POLL_MS", 1_000, 60_000),
+    turnBoundarySettleMs: positiveInt(
+      env,
+      "MEMORY_CODEX_TRANSCRIPT_TURN_SETTLE_MS",
+      500,
+      5_000
     ),
     maxEntriesPerScan: positiveInt(
       env,
@@ -421,6 +430,15 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private readonly watchers: FSWatcher[] = [];
   private readonly hintedTranscriptPaths = new Set<string>();
   private readonly processing = new Set<string>();
+  private readonly openTurnPolls = new Map<
+    string,
+    {
+      timer?: NodeJS.Timeout;
+      delayMs: number;
+      size: number;
+      modifiedAt: string;
+    }
+  >();
   private readonly identities = new Map<
     string,
     { sessionId: string; context: TranscriptContext; fileKey: string }
@@ -440,9 +458,13 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private failureCount = 0;
   private scanPromise: Promise<void> | null = null;
   private scanRequested = false;
+  private periodicPollRequested = false;
+  private knownSourcePollCursor = 0;
   private discoverySweepActive = false;
   private discoverySweepPending = false;
   private debounceTimer?: NodeJS.Timeout;
+  private periodicTimer?: NodeJS.Timeout;
+  private turnBoundarySettleTimer?: NodeJS.Timeout;
   private stopped = false;
 
   constructor(
@@ -475,6 +497,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.installFilesystemHints();
     if (this.activatedAt !== null) this.metrics.state = "running";
     this.wake();
+    this.periodicTimer = setInterval(() => {
+      this.periodicPollRequested = true;
+      this.requestScan();
+    }, this.config.pollMs);
+    this.periodicTimer.unref();
   }
 
   snapshot(): WatcherSnapshot {
@@ -519,6 +546,14 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    if (this.periodicTimer) clearInterval(this.periodicTimer);
+    if (this.turnBoundarySettleTimer) {
+      clearTimeout(this.turnBoundarySettleTimer);
+    }
+    for (const poll of this.openTurnPolls.values()) {
+      if (poll.timer) clearTimeout(poll.timer);
+    }
+    this.openTurnPolls.clear();
     for (const watcher of this.watchers) watcher.close();
     await this.scanPromise;
     this.discovery.close();
@@ -568,15 +603,27 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.metrics.lastScanAt = new Date().toISOString();
     const failuresBefore = this.failureCount;
     try {
+      const periodicPoll = this.periodicPollRequested;
+      this.periodicPollRequested = false;
       await this.serviceFilesystemHints();
-      await this.serviceKnownSources();
+      await this.serviceKnownSources(
+        periodicPoll ? this.config.maxFilesPerScan : undefined
+      );
       if (!this.discoverySweepActive && this.discoverySweepPending) {
         this.discoverySweepPending = false;
         this.discoverySweepActive = true;
       }
-      const discovery = this.discoverySweepActive
-        ? await this.discovery.scan()
-        : { files: [], cycleComplete: true };
+      let discovery = { files: [] as string[], cycleComplete: true };
+      if (this.discoverySweepActive) {
+        discovery = await this.discovery.scan();
+      } else if (periodicPoll) {
+        const newest = new BoundedTranscriptDiscovery(this.config);
+        try {
+          discovery = await newest.scan();
+        } finally {
+          newest.close();
+        }
+      }
       this.metrics.filesDiscovered += discovery.files.length;
       for (const transcriptPath of discovery.files) {
         if (this.stopped) break;
@@ -636,8 +683,20 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     }
   }
 
-  private async serviceKnownSources(): Promise<void> {
-    const observations = [...this.sourcePaths.values()];
+  private async serviceKnownSources(limit?: number): Promise<void> {
+    const available = [...this.sourcePaths.values()];
+    const observations =
+      limit === undefined || available.length <= limit
+        ? available
+        : Array.from({ length: limit }, (_, index) => {
+            const position =
+              (this.knownSourcePollCursor + index) % available.length;
+            return available[position]!;
+          });
+    if (limit !== undefined && available.length > 0) {
+      this.knownSourcePollCursor =
+        (this.knownSourcePollCursor + observations.length) % available.length;
+    }
     for (const observation of observations) {
       if (this.stopped || !existsSync(observation.transcriptPath)) continue;
       await this.serviceFilesystemHints();
@@ -716,6 +775,9 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       turnBoundary !== null && turnBoundary.sourceOffset <= boundary
         ? turnBoundary
         : undefined;
+    if (confirmedTurnBoundary !== undefined) {
+      this.scheduleTurnBoundarySettle();
+    }
     if (sourceUnchanged && confirmedTurnBoundary === undefined) {
       return;
     }
@@ -836,6 +898,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       this.metrics.batchesIngested += 1;
       this.metrics.recordsIngested += result.recordsConsumed;
     }
+    this.updateOpenTurnPoll(transcriptPath, before, result.turnOpen);
     if (
       result.artifact.providerCursorOffset < boundary ||
       result.canonicalCursorOffset < result.artifact.providerCursorOffset
@@ -848,6 +911,60 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       before,
       result.canonicalCursorOffset
     );
+  }
+
+  private scheduleTurnBoundarySettle(): void {
+    if (this.stopped) return;
+    if (this.turnBoundarySettleTimer) {
+      clearTimeout(this.turnBoundarySettleTimer);
+    }
+    this.turnBoundarySettleTimer = setTimeout(() => {
+      this.turnBoundarySettleTimer = undefined;
+      this.wake();
+    }, this.config.turnBoundarySettleMs);
+    this.turnBoundarySettleTimer.unref();
+  }
+
+  private updateOpenTurnPoll(
+    transcriptPath: string,
+    file: Stats,
+    turnOpen: boolean
+  ): void {
+    const existing = this.openTurnPolls.get(transcriptPath);
+    if (!turnOpen) {
+      if (existing?.timer) clearTimeout(existing.timer);
+      this.openTurnPolls.delete(transcriptPath);
+      return;
+    }
+    if (existing?.timer) clearTimeout(existing.timer);
+    const modifiedAt = file.mtime.toISOString();
+    const sourceChanged =
+      !existing ||
+      existing.size !== file.size ||
+      existing.modifiedAt !== modifiedAt;
+    const delayMs = sourceChanged
+      ? this.config.turnBoundarySettleMs
+      : Math.min(existing.delayMs * 2, 5_000);
+    const poll: {
+      timer?: NodeJS.Timeout;
+      delayMs: number;
+      size: number;
+      modifiedAt: string;
+    } = {
+      delayMs,
+      size: file.size,
+      modifiedAt
+    };
+    const timer = setTimeout(() => {
+      const current = this.openTurnPolls.get(transcriptPath);
+      if (current?.timer !== timer || this.stopped) return;
+      current.timer = undefined;
+      this.hintedTranscriptPaths.add(transcriptPath);
+      this.requestScan();
+    }, delayMs);
+    timer.unref();
+    poll.timer = timer;
+    this.openTurnPolls.set(transcriptPath, poll);
   }
 
   private sourcePathUnchanged(transcriptPath: string, file: Stats): boolean {

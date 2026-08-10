@@ -452,7 +452,13 @@ with `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` and provide Personal API
 Token access. Transcript roots default to `CODEX_HOME/sessions` and may be
 replaced with explicit local roots. Each Supported Capture Hook wake completes
 one bounded, paginated discovery sweep, with concurrent wakes coalesced into a
-refreshed sweep. The local `koed-server` then registers this server as an
+refreshed sweep. A Stop boundary also schedules one trailing catch-up so records
+that Codex flushes after the Hook returns do not wait for the next incoming
+message. While a canonical cursor has an open turn, the watcher also rechecks
+only that transcript with bounded backoff until it consumes terminal evidence.
+A one-second catch-up tick checks only a bounded rotation of known sources and
+the newest discovery page, covering missed Hook and filesystem delivery without
+continuous full scans. The local `koed-server` then registers this server as an
 upstream and routes approved Team Workspace recall, Share
 Grant, sync/offload, or remote capture-bearing operations through local-edge
 policy. This keeps watcher capture in Personal Memory and avoids exposing
