@@ -89,6 +89,12 @@ and historical consumers then parse those retained bytes into canonical raw
 items before Projection selects records for display, Memory Events, embedding,
 and LCM. None writes semantic `memory_events` directly.
 
+Conversation Source Journal custody does not make source bytes Team-visible.
+Team access requires both an active Captured Session Share Grant and a separate
+Conversation Source Access grant. Semantic expansion level and raw-source
+access are independent controls. See
+[Team Conversation Source Sharing](team-conversation-source-sharing.md).
+
 The Supported Capture Hook never supplies conversation content or provider item
 identity. It writes a private wake timestamp and, for Stop events, a matched
 boundary under hashed source-routing identities containing only the observation

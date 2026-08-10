@@ -226,6 +226,54 @@ export const sharedMemoryRevokeActionGrantBinding = (input: {
     }
   });
 
+export const sharedMemoryTranscriptAccessActionGrantBinding = (input: {
+  referenceId: string;
+  mutationId: string;
+  teamId: string;
+  shareGrantId: string;
+  expectedVersion: number;
+  mode: "snapshot" | "continuous";
+}): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.transcript_access.${input.mode}`,
+    teamId: input.teamId,
+    targetId: input.shareGrantId,
+    method: "PUT",
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/transcript-access`,
+    body: {
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      expectedVersion: input.expectedVersion,
+      mode: input.mode,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const sharedMemoryTranscriptRevokeActionGrantBinding = (input: {
+  referenceId: string;
+  mutationId: string;
+  teamId: string;
+  shareGrantId: string;
+  expectedVersion: number;
+  reasonCode: string;
+}): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: "shared_memory.transcript_access.revoke",
+    teamId: input.teamId,
+    targetId: input.shareGrantId,
+    method: "POST",
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/transcript-access/revoke`,
+    body: {
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      expectedVersion: input.expectedVersion,
+      reasonCode: input.reasonCode,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
 export const sharedMemoryRepresentationActionGrantBinding = (input: {
   referenceId: string;
   mutationId: string;

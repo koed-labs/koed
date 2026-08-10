@@ -33,6 +33,7 @@ export type HighRiskActionDefinitionRepository = Pick<
   | "getSharedMemoryShareReview"
   | "getSharedMemoryRevokeReview"
   | "getSharedMemoryRepresentationChangeReview"
+  | "getTeamConversationSourceGrantReview"
   | "getManagedConversationExecution"
   | "listDeviceCredentials"
   | "getTeamEntitlementGate"

@@ -16,7 +16,9 @@ import {
 import {
   createSourceOwnerConsentSchema,
   createSharedMemoryPreviewSchema,
+  putTeamConversationSourceGrantSchema,
   revokeShareGrantSchema,
+  revokeTeamConversationSourceGrantSchema,
   selectGrantRepresentationSchema
 } from "../shared-memory/schemas.js";
 import {
@@ -42,6 +44,8 @@ import {
   bindTeamWorkspaceLifecycleOperation
 } from "./workspace-action-definitions.js";
 import {
+  bindConversationSourceGrantOperation,
+  bindConversationSourceRevokeOperation,
   bindSharedMemoryPreviewOperation,
   bindSharedMemoryRepresentationChangeOperation,
   bindSharedMemoryRevokeOperation,
@@ -236,6 +240,28 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       shareGrantId: uuidSchema,
       expectedGrantVersion: revokeShareGrantSchema.shape.expectedGrantVersion,
       reasonCode: revokeShareGrantSchema.shape.reasonCode
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.conversation_source_grant"),
+      mutationId: uuidSchema,
+      teamId: uuidSchema,
+      shareGrantId: uuidSchema,
+      expectedVersion:
+        putTeamConversationSourceGrantSchema.shape.expectedVersion,
+      mode: putTeamConversationSourceGrantSchema.shape.mode
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.conversation_source_revoke"),
+      mutationId: uuidSchema,
+      teamId: uuidSchema,
+      shareGrantId: uuidSchema,
+      expectedVersion:
+        revokeTeamConversationSourceGrantSchema.shape.expectedVersion,
+      reasonCode: revokeTeamConversationSourceGrantSchema.shape.reasonCode
     })
     .strict(),
   z
@@ -613,6 +639,24 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         expectedGrantVersion: intent.expectedGrantVersion,
         reasonCode: intent.reasonCode
       };
+    case "collaboration.share_conversation_source":
+      return {
+        action: "shared_memory.conversation_source_grant",
+        mutationId: intent.mutationId,
+        teamId: intent.teamId,
+        shareGrantId: intent.shareGrantId,
+        expectedVersion: intent.expectedVersion,
+        mode: intent.mode
+      };
+    case "collaboration.revoke_conversation_source":
+      return {
+        action: "shared_memory.conversation_source_revoke",
+        mutationId: intent.mutationId,
+        teamId: intent.teamId,
+        shareGrantId: intent.shareGrantId,
+        expectedVersion: intent.expectedVersion,
+        reasonCode: intent.reasonCode
+      };
     case "collaboration.change_shared_memory_representation":
       return resolved?.sharedMemoryPreviewId
         ? {
@@ -740,6 +784,10 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return bindSharedMemoryShareOperation(intent, clientRequestId);
     case "shared_memory.revoke":
       return bindSharedMemoryRevokeOperation(intent, clientRequestId);
+    case "shared_memory.conversation_source_grant":
+      return bindConversationSourceGrantOperation(intent, clientRequestId);
+    case "shared_memory.conversation_source_revoke":
+      return bindConversationSourceRevokeOperation(intent, clientRequestId);
     case "shared_memory.change_representation":
       return bindSharedMemoryRepresentationChangeOperation(
         intent,

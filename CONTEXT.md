@@ -49,6 +49,23 @@ _Avoid_: Conversation, thread, transcript
 An AI-client interaction thread whose activity may be captured.
 _Avoid_: Thread, chat, transcript
 
+**Conversation Source Artifact**:
+An owner-scoped, verified generation of exact AI-client source records retained
+in the Conversation Source Journal. It is provenance and portability material,
+not Memory and not a Team-visible representation by default.
+_Avoid_: Memory Event, transcript copy, shared memory representation
+
+**Conversation Source Access**:
+An explicit, separately revocable capability attached to a Captured Session
+Share Grant that permits authorized Team members to read verified source
+segments. It may be a fixed snapshot or follow later source generations.
+_Avoid_: expansion level, automatic transcript sharing, ownership transfer
+
+**Conversation Source Fork Snapshot**:
+A verified, bounded source snapshot exported at a completed turn boundary so a
+User may explicitly create a new Conversation lineage in an AI Client.
+_Avoid_: live collaboration, ownership transfer, continuing the owner's Conversation
+
 **Diagnostic Memory Tool**:
 A low-level memory tool exposed only for debugging or inspection.
 _Avoid_: Supported recall path, normal memory tool
