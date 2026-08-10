@@ -27,6 +27,7 @@ const buildFixture = async (options?: {
   streaming?: boolean;
   successfulFork?: boolean;
   forkRecords?: string[];
+  listenerConnectGate?: Promise<void>;
 }) => {
   const ids = {
     owner: randomUUID(),
@@ -192,6 +193,7 @@ const buildFixture = async (options?: {
   let notificationListener:
     | ((message: { channel: string; payload?: string }) => void)
     | null = null;
+  let listenerReleaseCount = 0;
   const listenClient = {
     async query() {
       return undefined;
@@ -204,6 +206,7 @@ const buildFixture = async (options?: {
       }
     },
     release() {
+      listenerReleaseCount += 1;
       notificationListener = null;
     }
   };
@@ -267,6 +270,7 @@ const buildFixture = async (options?: {
     pool: options?.streaming
       ? {
           async connect() {
+            await options.listenerConnectGate;
             return listenClient;
           }
         }
@@ -279,6 +283,9 @@ const buildFixture = async (options?: {
     ids,
     auditActions,
     forkBytes,
+    get listenerReleaseCount() {
+      return listenerReleaseCount;
+    },
     cleanup() {
       rmSync(koedHome, { recursive: true, force: true });
     },
@@ -324,6 +331,25 @@ const buildFixture = async (options?: {
 };
 
 describe("Team Conversation source routes", () => {
+  it("releases a listener connection that completes during shutdown", async () => {
+    let releaseConnect: (() => void) | null = null;
+    const listenerConnectGate = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    const fixture = await buildFixture({
+      streaming: true,
+      listenerConnectGate
+    });
+
+    const closing = fixture.service.close();
+    releaseConnect!();
+    await closing;
+
+    expect(fixture.listenerReleaseCount).toBe(1);
+    await fixture.app.close();
+    fixture.cleanup();
+  });
+
   it("replays, pushes, and revokes a durable source stream without polling", async () => {
     const fixture = await buildFixture({ streaming: true });
     const baseUrl = await fixture.app.listen({ host: "127.0.0.1", port: 0 });

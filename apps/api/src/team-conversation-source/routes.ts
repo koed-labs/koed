@@ -242,6 +242,7 @@ export const createTeamConversationSourceService = (options: {
   const cursorSecret = context.config.collaborationRealtime.cursorSecret;
   const clients = new Map<string, StreamClient>();
   let listener: ListenClient | null = null;
+  let listenerConnection: Promise<void> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
 
@@ -391,59 +392,88 @@ export const createTeamConversationSourceService = (options: {
     }
   };
 
-  const connectListener = async (): Promise<void> => {
-    if (!pool || closed || listener) return;
-    try {
-      const next = await pool.connect();
-      await next.query("listen koed_conversation_source_replication");
-      await next.query("listen koed_team_conversation_source");
-      await next.query("listen koed_collaboration_realtime");
-      next.on("notification", (message) => {
-        if (message.channel === "koed_team_conversation_source") {
-          try {
-            const payload = JSON.parse(message.payload ?? "{}") as {
-              shareGrantId?: unknown;
-            };
-            wakeClients(
-              typeof payload.shareGrantId === "string"
-                ? payload.shareGrantId
-                : undefined
-            );
-          } catch {
-            wakeClients();
-          }
+  const scheduleReconnect = (): void => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void connectListener();
+    }, 500);
+  };
+
+  const connectListener = (): Promise<void> => {
+    if (!pool || closed || listener) return Promise.resolve();
+    if (listenerConnection) return listenerConnection;
+
+    const establishListener = async (): Promise<void> => {
+      let next: ListenClient | null = null;
+      try {
+        next = await pool.connect();
+        if (closed) {
+          next.release();
           return;
         }
-        if (message.channel === "koed_collaboration_realtime") {
-          try {
-            const payload = JSON.parse(message.payload ?? "{}") as {
-              teamId?: unknown;
-            };
-            const teamId =
-              typeof payload.teamId === "string" ? payload.teamId : null;
-            for (const client of clients.values()) {
-              if (!teamId || client.teamId === teamId) void flush(client);
+        await next.query("listen koed_conversation_source_replication");
+        await next.query("listen koed_team_conversation_source");
+        await next.query("listen koed_collaboration_realtime");
+        if (closed) {
+          await next.query("unlisten *").catch(() => undefined);
+          next.release();
+          return;
+        }
+        const activeListener = next;
+        activeListener.on("notification", (message) => {
+          if (message.channel === "koed_team_conversation_source") {
+            try {
+              const payload = JSON.parse(message.payload ?? "{}") as {
+                shareGrantId?: unknown;
+              };
+              wakeClients(
+                typeof payload.shareGrantId === "string"
+                  ? payload.shareGrantId
+                  : undefined
+              );
+            } catch {
+              wakeClients();
             }
-          } catch {
-            wakeClients();
+            return;
           }
-          return;
-        }
-        wakeClients();
-      });
-      next.on("error", () => {
-        if (listener === next) listener = null;
-        next.release();
-        if (!closed) {
-          reconnectTimer = setTimeout(() => void connectListener(), 500);
-        }
-      });
-      listener = next;
-    } catch {
-      if (!closed) {
-        reconnectTimer = setTimeout(() => void connectListener(), 500);
+          if (message.channel === "koed_collaboration_realtime") {
+            try {
+              const payload = JSON.parse(message.payload ?? "{}") as {
+                teamId?: unknown;
+              };
+              const teamId =
+                typeof payload.teamId === "string" ? payload.teamId : null;
+              for (const client of clients.values()) {
+                if (!teamId || client.teamId === teamId) void flush(client);
+              }
+            } catch {
+              wakeClients();
+            }
+            return;
+          }
+          wakeClients();
+        });
+        activeListener.on("error", () => {
+          if (listener === activeListener) {
+            listener = null;
+            activeListener.release();
+            scheduleReconnect();
+          }
+        });
+        listener = activeListener;
+        next = null;
+      } catch {
+        next?.release();
+        scheduleReconnect();
       }
-    }
+    };
+    const connection = establishListener();
+    listenerConnection = connection;
+    void connection.then(() => {
+      if (listenerConnection === connection) listenerConnection = null;
+    });
+    return connection;
   };
 
   app.get(
@@ -794,9 +824,11 @@ export const createTeamConversationSourceService = (options: {
     async close(): Promise<void> {
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
       for (const client of [...clients.values()]) {
         closeClient(client, "server_shutdown");
       }
+      await listenerConnection;
       if (listener) {
         const current = listener;
         listener = null;
