@@ -20,7 +20,6 @@ import type {
   LocalRuntimeCallerContext,
   LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
-import { logger } from "./logger.js";
 import {
   memoryAccessCheckInputSchema,
   memoryAnswerInputSchema,
@@ -122,14 +121,7 @@ export const createKoedMcpServer = async (
     .then((capabilities) => ({
       curatedMemoryIntakeAvailable:
         capabilities.curatedMemoryIntakeAvailable === true
-    }))
-    .catch((error) => {
-      logger.warn(
-        { err: error },
-        "local AI runtime unavailable while constructing MCP tool list"
-      );
-      return { curatedMemoryIntakeAvailable: false };
-    });
+    }));
   const activeTools = exposedTools(
     resolveToolExposureConfig(environment),
     runtimeCapabilities

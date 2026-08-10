@@ -79,8 +79,8 @@ The Transcript Watcher owns automatic-capture correctness for externally
 managed Codex Conversations. It runs inside the Local AI Runtime supervised by
 `koed-server`, starts after API readiness and local credential provisioning,
 and stops before the API. Developer and local-personal runtime modes enable it
-by default; external runtime mode requires
-`MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` explicitly.
+by default. External runtime mode does not run a Local AI Runtime or Transcript
+Watcher; user-local capture belongs on the User's local `koed-server`.
 
 By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when
 `CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default

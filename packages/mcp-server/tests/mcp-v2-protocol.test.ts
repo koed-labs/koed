@@ -105,6 +105,19 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     ]);
   });
 
+  it("fails initialization while Local AI Runtime capabilities are unavailable", async () => {
+    const runtimeClient = {
+      capabilities: async () => {
+        throw new Error("runtime is starting");
+      },
+      callTool: vi.fn()
+    } as unknown as LocalAiRuntimeClient;
+
+    await expect(
+      createKoedMcpServer({} as never, { runtimeClient })
+    ).rejects.toThrow("runtime is starting");
+  });
+
   it("forwards per-request caller metadata and returns structured content", async () => {
     const callTool = vi.fn(
       async (

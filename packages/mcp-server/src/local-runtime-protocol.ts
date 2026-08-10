@@ -59,10 +59,15 @@ export type LocalRuntimeRegistration = z.infer<typeof registrationSchema>;
 
 export const resolveKoedHome = (
   environment: NodeJS.ProcessEnv = process.env
-): string =>
-  path.resolve(
-    environment.KOED_HOME?.trim() || path.join(os.homedir(), ".koed")
-  );
+): string => {
+  const configured = environment.KOED_HOME?.trim();
+  if (!configured) return path.join(os.homedir(), ".koed");
+  if (configured === "~") return os.homedir();
+  if (configured.startsWith("~/") || configured.startsWith("~\\")) {
+    return path.resolve(os.homedir(), configured.slice(2));
+  }
+  return path.resolve(configured);
+};
 
 export const localRuntimeRegistrationPath = (koedHome: string): string =>
   path.join(koedHome, "run", "local-ai-runtime.json");

@@ -14,7 +14,6 @@ import {
   defaultAnswerScope,
   localMemoryAgentSettingFor,
   memoryAccessCheck,
-  unavailableBackendToolCapabilities,
   workerOverridesFromLocalMemorySetting,
   type BackendToolCapabilities
 } from "./index.js";
@@ -125,16 +124,7 @@ export class MemoryToolExecutor {
   ) {}
 
   async capabilities(): Promise<BackendToolCapabilities> {
-    return await this.client
-      .capabilities()
-      .then(backendToolCapabilitiesFrom)
-      .catch((error) => {
-        logger.warn(
-          { err: error, apiUrl: this.client.config.apiUrl },
-          "backend capabilities unavailable; capability-gated MCP tools disabled"
-        );
-        return unavailableBackendToolCapabilities;
-      });
+    return backendToolCapabilitiesFrom(await this.client.capabilities());
   }
 
   async execute(

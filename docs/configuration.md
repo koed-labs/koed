@@ -96,7 +96,7 @@ email-bound, backend-bound, one-time invite token. A deployment without that
 verified identity path remains fail-closed for those Team-authority operations.
 
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
-- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it; external runtime mode disables it and requires explicit `true`. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
+- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it. External runtime mode cannot enable it because that mode does not own a Local AI Runtime; attempting to do so fails configuration. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
 - `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
 - `KOED_EXTERNAL_REDIS_URL` or `REDIS_URL`: Operator-managed Redis/BullMQ URL when the queue backend is `bullmq`.
 - `KOED_EXTERNAL_EMBEDDING_SERVICE_URL` or `EMBEDDING_SERVICE_URL`: Operator-managed Embedding Service URL in external mode.
@@ -692,7 +692,7 @@ supervised Local AI Runtime:
 
 - `CODEX_HOME`: Codex state root. Transcript Watcher defaults to its `sessions` directory, or `~/.codex/sessions` when unset.
 - `MEMORY_CODEX_TRANSCRIPT_ROOTS`: optional platform path-delimited list of explicit transcript roots. When non-empty, replaces the `CODEX_HOME/sessions` default; it never broadens scanning to arbitrary home directories.
-- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: watcher supervisor switch. Default `true` for developer/local-personal runtime modes and `false` for external mode unless explicitly set to `true`.
+- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: watcher supervisor switch. Default `true` for developer/local-personal runtime modes. External runtime mode cannot enable the watcher; capture must run through a local-personal `koed-server`.
 - `MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS`: coalescing delay for filesystem notifications and Capture Hook wake signals. Default `200`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN`: maximum filesystem entries inspected per scan. Default `4000`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN`: maximum transcript files processed per scan. Default `200`.

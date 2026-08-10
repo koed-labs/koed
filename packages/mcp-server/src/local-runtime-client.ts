@@ -5,8 +5,6 @@ import {
   type LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
 
-const DEFAULT_TIMEOUT_MS = 10 * 60_000;
-
 const responseJson = async (
   response: Response
 ): Promise<Record<string, unknown>> => {
@@ -29,21 +27,26 @@ const responseJson = async (
 
 const requestSignal = (
   callerSignal: AbortSignal | undefined,
-  timeoutMs: number
+  timeoutMs?: number
 ): { signal: AbortSignal; dispose: () => void } => {
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () =>
-      controller.abort(new Error("Koed local AI runtime request timed out")),
-    timeoutMs
-  );
-  timeout.unref?.();
+  const timeout =
+    timeoutMs === undefined
+      ? undefined
+      : setTimeout(
+          () =>
+            controller.abort(
+              new Error("Koed local AI runtime request timed out")
+            ),
+          timeoutMs
+        );
+  timeout?.unref?.();
   const abort = () => controller.abort(callerSignal?.reason);
   callerSignal?.addEventListener("abort", abort, { once: true });
   return {
     signal: controller.signal,
     dispose: () => {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       callerSignal?.removeEventListener("abort", abort);
     }
   };
@@ -59,7 +62,7 @@ export class LocalAiRuntimeClient {
     pathname: string,
     init: RequestInit,
     signal?: AbortSignal,
-    timeoutMs = DEFAULT_TIMEOUT_MS
+    timeoutMs?: number
   ): Promise<Record<string, unknown>> {
     const registration = readLocalRuntimeRegistration(this.environment);
     const bounded = requestSignal(signal, timeoutMs);

@@ -1,18 +1,21 @@
 import { createServer } from "node:net";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync
+  statSync,
+  writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalAiRuntimeClient } from "../src/local-runtime-client.js";
 import {
   localRuntimeRegistrationPath,
-  readLocalRuntimeRegistration
+  readLocalRuntimeRegistration,
+  resolveKoedHome
 } from "../src/local-runtime-protocol.js";
 import {
   startLocalAiRuntime,
@@ -28,6 +31,7 @@ const tempHome = (): string => {
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -47,6 +51,59 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 });
 
 describe("Local AI Runtime", () => {
+  it("expands a home-relative KOED_HOME from Codex TOML", () => {
+    expect(resolveKoedHome({ KOED_HOME: "~" })).toBe(homedir());
+    expect(resolveKoedHome({ KOED_HOME: "~/.koed-test" })).toBe(
+      join(homedir(), ".koed-test")
+    );
+  });
+
+  it("leaves tool duration to the runtime worker and caller cancellation", async () => {
+    vi.useFakeTimers();
+    const koedHome = tempHome();
+    const registrationPath = localRuntimeRegistrationPath(koedHome);
+    mkdirSync(resolve(koedHome, "run"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      registrationPath,
+      JSON.stringify({
+        protocolVersion: 1,
+        url: "http://127.0.0.1:32123",
+        authorization: `Bearer ${"a".repeat(32)}`,
+        pid: process.pid,
+        startedAt: new Date().toISOString()
+      }),
+      { mode: 0o600 }
+    );
+    let requestSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolveResponse, rejectResponse) => {
+          requestSignal = init?.signal ?? undefined;
+          requestSignal?.addEventListener(
+            "abort",
+            () => rejectResponse(requestSignal?.reason),
+            { once: true }
+          );
+        })
+    );
+    const caller = new AbortController();
+    const pending = new LocalAiRuntimeClient(
+      { KOED_HOME: koedHome },
+      fetchImpl as typeof fetch
+    ).callTool(
+      "memory_answer",
+      { query: "long answer" },
+      { cwd: "/work" },
+      caller.signal
+    );
+
+    await vi.waitFor(() => expect(requestSignal).toBeDefined());
+    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1);
+    expect(requestSignal?.aborted).toBe(false);
+    caller.abort();
+    await expect(pending).rejects.toThrow("cancelled");
+  });
+
   it("publishes an owner-only registration and authenticates adapter calls", async () => {
     const koedHome = tempHome();
     const environment = { KOED_HOME: koedHome };
