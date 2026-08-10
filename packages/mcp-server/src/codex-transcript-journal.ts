@@ -167,6 +167,18 @@ const responseValue = <T>(
   return value as T;
 };
 
+const isConcurrentCanonicalCursorAdvance = (error: unknown): boolean => {
+  if (!(error instanceof MemoryApiError) || error.status !== 409) return false;
+  const payload =
+    error.payload && typeof error.payload === "object"
+      ? (error.payload as { code?: unknown })
+      : null;
+  return (
+    payload?.code === "conversation_source_consumer_cursor_conflict" ||
+    error.message === "Conversation source consumer cursor conflict"
+  );
+};
+
 const readSourceRange = (
   transcriptPath: string,
   start: number,
@@ -778,33 +790,45 @@ export const ingestCodexTranscriptJournal = async (input: {
     };
   }
   const completedTurn = sourceCompletedTurn || boundaryControl !== null;
-  await input.client.advanceConversationSourceCursor(artifact.id, {
-    consumerKind: "canonical_live",
-    expectedSourceOffset: cursor.sourceOffset,
-    sourceOffset: parsed.checkpoint.offset,
-    sourceLine: parsed.checkpoint.lineCount,
-    segmentIndex: checkpointSegment.segmentIndex,
-    lastVerifiedDigest: checkpointSegment.plaintextDigest,
-    parserState: {
-      ...(parsed.checkpoint.lastEventTime
-        ? { lastEventTime: parsed.checkpoint.lastEventTime }
-        : {}),
-      ...(activeTurnId ? { activeTurnId } : {}),
-      ...(parsed.checkpoint.assistantMessagePreference
-        ? {
-            assistantMessagePreference:
-              parsed.checkpoint.assistantMessagePreference
-          }
-        : {})
-    }
-  });
+  let canonicalCursorOffset = parsed.checkpoint.offset;
+  let cursorAdvanced = true;
+  try {
+    await input.client.advanceConversationSourceCursor(artifact.id, {
+      consumerKind: "canonical_live",
+      expectedSourceOffset: cursor.sourceOffset,
+      sourceOffset: parsed.checkpoint.offset,
+      sourceLine: parsed.checkpoint.lineCount,
+      segmentIndex: checkpointSegment.segmentIndex,
+      lastVerifiedDigest: checkpointSegment.plaintextDigest,
+      parserState: {
+        ...(parsed.checkpoint.lastEventTime
+          ? { lastEventTime: parsed.checkpoint.lastEventTime }
+          : {}),
+        ...(activeTurnId ? { activeTurnId } : {}),
+        ...(parsed.checkpoint.assistantMessagePreference
+          ? {
+              assistantMessagePreference:
+                parsed.checkpoint.assistantMessagePreference
+            }
+          : {})
+      }
+    });
+  } catch (error) {
+    if (!isConcurrentCanonicalCursorAdvance(error)) throw error;
+    const winningCursor = await canonicalCursor(input.client, artifact);
+    if (winningCursor.sourceOffset < parsed.checkpoint.offset) throw error;
+    canonicalCursorOffset = winningCursor.sourceOffset;
+    cursorAdvanced = false;
+  }
   return {
     artifact,
     providerBytesAdvanced: artifact.providerCursorOffset - providerOffsetBefore,
-    canonicalCursorOffset: parsed.checkpoint.offset,
-    cursorAdvanced: true,
+    canonicalCursorOffset,
+    cursorAdvanced,
     turnBoundaryHandled:
-      turnBoundaryAtCheckpoint && (completedTurn || !activeTurnId),
+      turnBoundaryAtCheckpoint &&
+      canonicalCursorOffset >= parsed.checkpoint.offset &&
+      (completedTurn || !activeTurnId),
     recordsConsumed: parsed.records.length,
     itemsPersisted: persisted.length,
     items

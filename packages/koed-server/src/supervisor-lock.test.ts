@@ -4,7 +4,10 @@ import { resolve } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
-import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
+import {
+  acquireKoedServerSupervisorLock,
+  releaseKoedServerSupervisorLock
+} from "./supervisor-lock.js";
 
 const pathsForTest = () => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-supervisor-lock-"));
@@ -143,6 +146,29 @@ describe("koed-server supervisor lock", () => {
     expect(JSON.parse(readFileSync(first.lockPath, "utf8"))).toMatchObject({
       pid: 101,
       processIdentity: "live-owner"
+    });
+  });
+
+  it("does not release a lock that a newer supervisor owns", () => {
+    const paths = pathsForTest();
+    const first = acquireKoedServerSupervisorLock(paths, {
+      pid: 101,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: () => "first-owner"
+    });
+    writeFileSync(
+      first.lockPath,
+      `${JSON.stringify({
+        pid: 202,
+        acquiredAt: "2026-01-02T00:00:00.000Z",
+        processIdentity: "replacement-owner"
+      })}\n`
+    );
+
+    expect(releaseKoedServerSupervisorLock(first, 101)).toBe(false);
+    expect(JSON.parse(readFileSync(first.lockPath, "utf8"))).toMatchObject({
+      pid: 202,
+      processIdentity: "replacement-owner"
     });
   });
 });

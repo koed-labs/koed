@@ -93,21 +93,28 @@ with a platform path-delimited list of explicit transcript roots. Filesystem
 notifications enqueue the exact changed transcript ahead of other work.
 Supported Capture Hook signals coalesce additional wakeups without carrying
 content. Known active transcripts are serviced before bounded discovery, and
-discovery traverses timestamped Codex paths newest-first. The watcher does not
-poll: a missed filesystem notification is recovered by the next Hook signal,
-source event, explicit verification, or process restart through the same
-idempotent source cursor.
+discovery traverses timestamped Codex paths newest-first. Each Hook signal
+requests one complete discovery sweep: bounded pages continue automatically
+until the sweep completes, and a signal received during a sweep coalesces into
+one refreshed sweep afterward. This prevents a newly created Conversation from
+being hidden by an older directory snapshot. During initial activation, the
+same bounded continuation records the complete baseline before live capture
+begins. The watcher does not poll after activation: a missed filesystem
+notification is recovered by the next Hook signal, source event, explicit
+verification, or process restart through the same idempotent source cursor.
 
 The TypeScript Supported Capture Hook is only a low-latency signal. It receives
 no API credentials and reads only bounded source-routing and lifecycle fields
 from stdin. Ordinary events write a private timestamp wake hint. `Stop` and
 `SubagentStop` additionally write an atomic boundary timestamp under hashed
 session/path identities together with the exact complete JSONL byte frontier
-observed by the Hook. The matching watcher journals through that frontier,
-persists one idempotent `codex-hook-signal-v1` lifecycle control for the active
-transcript turn, and only then processes newer bytes. The control is
-content-free and cannot render or embed by itself. No prompt, response, tool
-payload, raw path, or session identifier is retained in the signal files.
+observed by the Hook. The Hook makes those boundary files durable before it
+publishes the watcher wake, so the watcher cannot consume a Stop wake without
+seeing its matching frontier. The matching watcher journals through that
+frontier, persists one idempotent `codex-hook-signal-v1` lifecycle control for
+the active transcript turn, and only then processes newer bytes. The control
+is content-free and cannot render or embed by itself. No prompt, response,
+tool payload, raw path, or session identifier is retained in the signal files.
 Missing signals can delay a fallback turn seal until later transcript evidence
 arrives; duplicate, delayed, or reordered signals cannot seal a later frontier
 or create duplicate content. Transcript JSONL remains the only content,

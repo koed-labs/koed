@@ -440,6 +440,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private failureCount = 0;
   private scanPromise: Promise<void> | null = null;
   private scanRequested = false;
+  private discoverySweepActive = false;
+  private discoverySweepPending = false;
   private debounceTimer?: NodeJS.Timeout;
   private stopped = false;
 
@@ -481,22 +483,35 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
 
   wake(): void {
     if (this.stopped) return;
+    this.discoverySweepPending = true;
+    this.requestScan();
+  }
+
+  private requestScan(): void {
+    if (this.stopped) return;
     this.scanRequested = true;
     if (this.scanPromise || this.debounceTimer) return;
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = undefined;
-      void this.scanNow();
+      void this.runRequestedScan();
     }, this.config.debounceMs);
     this.debounceTimer.unref();
   }
 
   async scanNow(): Promise<void> {
     if (this.stopped) return;
+    this.discoverySweepPending = true;
+    this.scanRequested = true;
+    return this.runRequestedScan();
+  }
+
+  private async runRequestedScan(): Promise<void> {
+    if (this.stopped) return;
     if (this.scanPromise) return this.scanPromise;
     this.scanRequested = false;
     this.scanPromise = this.runScan().finally(() => {
       this.scanPromise = null;
-      if (this.scanRequested) this.wake();
+      if (this.scanRequested) this.requestScan();
     });
     return this.scanPromise;
   }
@@ -517,8 +532,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       try {
         this.watchers.push(
           watch(root, { recursive: true }, (_eventType, filename) => {
-            this.rememberFilesystemHint(root, filename);
-            this.wake();
+            if (this.rememberFilesystemHint(root, filename)) {
+              this.requestScan();
+            } else {
+              this.wake();
+            }
           })
         );
       } catch {
@@ -552,16 +570,32 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     try {
       await this.serviceFilesystemHints();
       await this.serviceKnownSources();
-      const discovery = await this.discovery.scan();
+      if (!this.discoverySweepActive && this.discoverySweepPending) {
+        this.discoverySweepPending = false;
+        this.discoverySweepActive = true;
+      }
+      const discovery = this.discoverySweepActive
+        ? await this.discovery.scan()
+        : { files: [], cycleComplete: true };
       this.metrics.filesDiscovered += discovery.files.length;
       for (const transcriptPath of discovery.files) {
         if (this.stopped) break;
         await this.serviceFilesystemHints();
         await this.processPathOnce(transcriptPath);
       }
-      if (this.activatedAt === null && discovery.cycleComplete) {
-        this.activatedAt = activate(this.config, this.baselineFileFrontiers);
-        this.metrics.state = "running";
+      if (this.activatedAt === null) {
+        if (discovery.cycleComplete) {
+          this.activatedAt = activate(this.config, this.baselineFileFrontiers);
+          this.metrics.state = "running";
+        }
+      }
+      if (this.discoverySweepActive) {
+        if (discovery.cycleComplete) {
+          this.discoverySweepActive = false;
+          if (this.discoverySweepPending) this.scanRequested = true;
+        } else {
+          this.scanRequested = true;
+        }
       }
       if (this.failureCount === failuresBefore) {
         this.metrics.lastSuccessAt = new Date().toISOString();
@@ -577,8 +611,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private rememberFilesystemHint(
     root: string,
     filename: string | Buffer | null
-  ): void {
-    if (filename === null) return;
+  ): boolean {
+    if (filename === null) return false;
     const candidate = path.resolve(root, filename.toString());
     const relative = path.relative(root, candidate);
     if (
@@ -587,9 +621,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       path.isAbsolute(relative) ||
       !TRANSCRIPT_PATTERN.test(path.basename(candidate))
     ) {
-      return;
+      return false;
     }
     this.hintedTranscriptPaths.add(candidate);
+    return true;
   }
 
   private async serviceFilesystemHints(): Promise<void> {

@@ -71,7 +71,7 @@ Startup and `status --json` also inspect clone-safe local identity without block
 
 Use `identity rotate --json` only for explicit repair/replacement: it preserves deployment ID, creates a new device ID/proof, preserves local Memory, disables local routes, and invalidates local enrollment references where possible. Koed does not self-revoke remote credentials without authorized upstream flow. If remote revocation remains pending, rotation stays `repair_required` with redacted `pendingRemoteRevocation` state and never reports healthy; revoke remotely, run `identity rotate` again as Operator acknowledgement, then re-enroll.
 
-`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
+`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged, and a terminating supervisor removes the shared lock only while it still owns that lock. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
 API, Worker, and the bundled-local native Embedding Service are
 essential managed children. After startup, an unexpected exit or process error
@@ -450,8 +450,10 @@ server also supervises the Transcript Watcher. The watcher is enabled by default
 for developer/local-personal runtime modes. External runtime mode must opt in
 with `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` and provide Personal API
 Token access. Transcript roots default to `CODEX_HOME/sessions` and may be
-replaced with explicit local roots. The local `koed-server` then registers
-this server as an upstream and routes approved Team Workspace recall, Share
+replaced with explicit local roots. Each Supported Capture Hook wake completes
+one bounded, paginated discovery sweep, with concurrent wakes coalesced into a
+refreshed sweep. The local `koed-server` then registers this server as an
+upstream and routes approved Team Workspace recall, Share
 Grant, sync/offload, or remote capture-bearing operations through local-edge
 policy. This keeps watcher capture in Personal Memory and avoids exposing
 upstream/cloud/device credentials to MCP Server, Transcript Watcher, or Capture

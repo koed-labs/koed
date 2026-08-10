@@ -51,7 +51,10 @@ import {
 import { allocateAndPersistLocalPorts } from "./ports.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { collectKoedServerStatus } from "./status.js";
-import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
+import {
+  acquireKoedServerSupervisorLock,
+  releaseKoedServerSupervisorLock
+} from "./supervisor-lock.js";
 import { maintainSupervisorLog } from "./supervisor-log.js";
 import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
@@ -1390,6 +1393,6 @@ export const startKoedServer = async ({
     if (runtimeStateWritten && runtimeStateOwnedByCurrentProcess()) {
       rmSync(paths.runtimeStatePath, { force: true });
     }
-    rmSync(supervisorLock.lockPath, { force: true });
+    releaseKoedServerSupervisorLock(supervisorLock);
   }
 };

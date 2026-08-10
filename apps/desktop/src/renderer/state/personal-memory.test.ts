@@ -248,7 +248,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -302,7 +302,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadOlder(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -362,7 +362,7 @@ describe("PersonalMemoryStore", () => {
     });
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -425,7 +425,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -495,7 +495,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -554,7 +554,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {

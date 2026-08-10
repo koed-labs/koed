@@ -147,6 +147,7 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
   policyPaused = false;
   policyVisibility = "personal";
   failProjection = false;
+  conflictNextCanonicalCursor = false;
   private nextItem = 0;
 
   async ensureConversationSourceArtifact(input: Record<string, unknown>) {
@@ -319,6 +320,16 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
       parserState: (input.parserState ?? {}) as Record<string, unknown>
     };
     this.cursors.set(artifactId, cursor);
+    if (this.conflictNextCanonicalCursor) {
+      this.conflictNextCanonicalCursor = false;
+      throw new MemoryApiError("Conversation source consumer cursor conflict", {
+        status: 409,
+        payload: {
+          error: "Conversation source consumer cursor conflict",
+          code: "conversation_source_consumer_cursor_conflict"
+        }
+      });
+    }
     this.operationOrder.push("canonical_cursor");
     return { cursor };
   }
@@ -371,6 +382,94 @@ describe("Codex Transcript Watcher source journal", () => {
     );
 
     expect(discovered).toEqual([newTranscript]);
+  });
+
+  it("automatically completes a bounded activation cycle before ingesting live growth", async () => {
+    const root = temporaryDirectory();
+    const transcripts = Array.from({ length: 3 }, (_, index) => {
+      const transcript = transcriptPath(
+        root,
+        `rollout-2026-01-0${index + 1}.jsonl`
+      );
+      writeFileSync(transcript, line(sessionRecord(`baseline-${index}`)));
+      return transcript;
+    });
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      watcherConfig(root, {
+        debounceMs: 5,
+        maxFilesPerScan: 1
+      })
+    );
+
+    await waitFor(() => watcher.snapshot().state === "running");
+
+    expect(watcher.snapshot().scans).toBeGreaterThan(1);
+    expect(client.artifacts.size).toBe(0);
+
+    appendFileSync(
+      transcripts.at(-1)!,
+      line(userRecord("live after activation"))
+    );
+    watcher.wake();
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "live after activation")
+    );
+  });
+
+  it("refreshes a stale directory snapshot after a Hook wake during a bounded live sweep", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      watcherConfig(root, {
+        debounceMs: 25,
+        maxFilesPerScan: 1
+      })
+    );
+
+    // Activate while the transcript root is absent so no filesystem watcher can
+    // provide an exact-path hint for the file created later in this test.
+    await watcher.scanNow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const scansBeforeSweep = watcher.snapshot().scans;
+
+    for (let index = 0; index < 12; index += 1) {
+      writeFileSync(
+        transcriptPath(root, `rollout-baseline-${index}.jsonl`),
+        line(
+          sessionRecord(
+            `stale-baseline-${index}`,
+            "/tmp/project",
+            "2025-01-01T00:00:00.000Z"
+          )
+        )
+      );
+    }
+
+    watcher.wake();
+    await waitFor(() => watcher.snapshot().scans > scansBeforeSweep);
+
+    const liveTranscript = transcriptPath(root, "rollout-zzzz-live.jsonl");
+    writeFileSync(
+      liveTranscript,
+      line(sessionRecord("stale-snapshot-live")) +
+        line(userRecord("discover me after refreshing the snapshot"))
+    );
+    watcher.wake();
+
+    await waitFor(() => client.artifacts.has("stale-snapshot-live"), 3_000);
+    expect(
+      client.itemBatches
+        .flat()
+        .some(
+          (item) => item.rawText === "discover me after refreshing the snapshot"
+        )
+    ).toBe(true);
   });
 
   it("reads one final byte for a complete large transcript boundary", () => {
@@ -658,6 +757,31 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
       artifact.providerCursorOffset
     );
+  });
+
+  it("reconciles a canonical cursor advanced by another watcher", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const transcript = transcriptPath(root);
+    writeFileSync(
+      transcript,
+      line(sessionRecord("concurrent-cursor")) +
+        line(userRecord("captured once"))
+    );
+    client.conflictNextCanonicalCursor = true;
+
+    await watcher.scanNow();
+
+    const artifact = client.artifacts.get("concurrent-cursor")!;
+    expect(watcher.snapshot().lastErrorCode).toBeNull();
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      artifact.providerCursorOffset
+    );
+    expect(
+      client.itemBatches.flat().some((item) => item.rawText === "captured once")
+    ).toBe(true);
   });
 
   it("holds an assistant event until the stable response arrives in a later segment", async () => {
