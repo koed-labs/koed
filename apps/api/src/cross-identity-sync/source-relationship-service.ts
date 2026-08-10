@@ -421,7 +421,7 @@ export const prepareSourceSyncRelationship = async (
     relationshipId,
     localUserId: input.localUserId
   });
-  if (!activated && created.relationship.state === "failed") {
+  if (!activated) {
     const retried = await repository.retryCrossIdentitySyncRelationship(
       { userId: input.localUserId },
       relationshipId

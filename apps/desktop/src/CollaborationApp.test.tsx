@@ -2639,6 +2639,7 @@ pnpm test
   });
 
   it("keeps the share modal open until the first synchronized revision is ready", async () => {
+    vi.useFakeTimers();
     const localSessionId = uuid(307);
     const logicalMemoryId = uuid(308);
     const current = baseSnapshot();
@@ -2663,8 +2664,15 @@ pnpm test
       hasSynchronizedRevision: false,
       syncState: "processing" as const
     };
+    const ready = {
+      ...processing,
+      hasSynchronizedRevision: true,
+      syncState: "ready" as const
+    };
     const client = createClient(snapshot);
-    vi.mocked(client.prepareSharedMemorySource).mockResolvedValue(processing);
+    vi.mocked(client.prepareSharedMemorySource)
+      .mockResolvedValueOnce(processing)
+      .mockResolvedValue(ready);
     const modal = {
       kind: "share_personal_memory" as const,
       sessionId: localSessionId,
@@ -2702,18 +2710,13 @@ pnpm test
     );
     expect(client.previewSharedMemory).not.toHaveBeenCalled();
 
-    const ready = {
-      ...processing,
-      hasSynchronizedRevision: true,
-      syncState: "ready" as const
-    };
-    const readySnapshot = collaborationSnapshotSchema.parse({
+    const staleSnapshot = collaborationSnapshotSchema.parse({
       ...snapshot,
       navigation: {
         ...snapshot.navigation,
         personal: {
           ...snapshot.navigation.personal,
-          memory: [ready]
+          memory: [modal.localEntry]
         }
       }
     });
@@ -2724,14 +2727,16 @@ pnpm test
           markdownAdapters={markdownAdapters}
           modal={modal}
           onModalChange={vi.fn()}
-          snapshot={readySnapshot}
+          snapshot={staleSnapshot}
         />
       )
     );
+    expect(document.body.textContent).toContain("Current status: Processing");
+    expect(document.body.textContent).not.toContain("Current status: Starting");
 
-    await vi.waitFor(() =>
-      expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
-    );
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(document.body.querySelector(".collab-preview-list")).not.toBeNull();
+    expect(client.prepareSharedMemorySource).toHaveBeenCalledTimes(2);
     expect(client.previewSharedMemory).toHaveBeenCalledTimes(1);
     expect(client.previewSharedMemory).toHaveBeenCalledWith(
       expect.objectContaining({ logicalMemoryId })

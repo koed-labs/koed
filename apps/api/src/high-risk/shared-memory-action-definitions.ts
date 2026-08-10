@@ -73,6 +73,23 @@ const representationRank: Record<SharedMemoryRepresentation, number> = {
   memory_events: 2
 };
 
+const representationLabel = (
+  representation: SharedMemoryRepresentation
+): string => {
+  switch (representation) {
+    case "memory_events":
+      return "Memory Events";
+    case "lcm_leaves":
+      return "LCM Leaves";
+    case "lcm_rollups":
+      return "LCM Rollups";
+  }
+};
+
+const representationListLabel = (
+  representations: readonly SharedMemoryRepresentation[]
+): string => representations.map(representationLabel).join(", ");
+
 const sourceName = (review: {
   source: { title: string; logicalMemoryId: string };
 }): string => review.source.title.trim() || "Captured Session";
@@ -174,7 +191,10 @@ const shareReview = (
         { label: "Logical Memory", value: review.source.logicalMemoryId },
         { label: "Team", value: review.team.name },
         { label: "Workspace", value: review.workspace.name },
-        { label: "Representation", value: intent.selectedRepresentation },
+        {
+          label: "Representation",
+          value: representationLabel(intent.selectedRepresentation)
+        },
         { label: "Mode", value: intent.mode },
         { label: "Expiry", value: intent.expiresAt ?? "No expiry" }
       ]
@@ -197,10 +217,15 @@ const previewPolicy = (
           { label: "Logical Memory", value: review.source.logicalMemoryId },
           { label: "Team", value: review.team.name },
           { label: "Workspace", value: review.workspace.name },
-          { label: "Representation", value: review.representation },
+          {
+            label: "Representation",
+            value: representationLabel(review.representation)
+          },
           {
             label: "Allowed representations",
-            value: review.requestedAllowedRepresentations.join(", ")
+            value: representationListLabel(
+              review.requestedAllowedRepresentations
+            )
           }
         ]
       })
@@ -224,7 +249,9 @@ const revokeReview = (
       { label: "Workspace", value: review.workspace.name },
       {
         label: "Representation",
-        value: review.grant.activeRepresentation ?? "Unavailable"
+        value: review.grant.activeRepresentation
+          ? representationLabel(review.grant.activeRepresentation)
+          : "Unavailable"
       },
       { label: "Share Grant", value: intent.shareGrantId }
     ]
@@ -261,8 +288,14 @@ const representationChangeReview = (
       { label: "Logical Memory", value: review.source.logicalMemoryId },
       { label: "Team", value: review.team.name },
       { label: "Workspace", value: review.workspace.name },
-      { label: "Current representation", value: current },
-      { label: "New representation", value: intent.representation },
+      {
+        label: "Current representation",
+        value: representationLabel(current)
+      },
+      {
+        label: "New representation",
+        value: representationLabel(intent.representation)
+      },
       { label: "Mode", value: intent.mode },
       { label: "Expiry", value: intent.expiresAt ?? "No expiry" }
     ]

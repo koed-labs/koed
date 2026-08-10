@@ -238,8 +238,8 @@ const principalIdForThread = (
 
 const representationLabel = (value: SharedMemoryRepresentation): string => {
   if (value === "memory_events") return "Memory Events";
-  if (value === "lcm_leaves") return "LCM leaves";
-  return "LCM rollups";
+  if (value === "lcm_leaves") return "LCM Leaves";
+  return "LCM Rollups";
 };
 
 const liveStateLabel = (value: SharedMemorySession["liveState"]): string =>
@@ -1975,6 +1975,9 @@ const SHARED_MEMORY_REPRESENTATIONS = [
   "lcm_rollups"
 ] as const satisfies readonly SharedMemoryRepresentation[];
 
+const SHARED_MEMORY_PREPARATION_REFRESH_MS = 1_000;
+const SHARED_MEMORY_PREPARATION_MAX_REFRESHES = 20;
+
 const sharedMemoryPreparationCopy = (
   syncState: PersonalMemoryEntry["syncState"]
 ): { detail: string; label: string; title: string } => {
@@ -2061,6 +2064,7 @@ function SharedMemoryOwnerModal({
   >(entry.logicalMemoryId ? null : { kind: "new" });
   const [preview, setPreview] = useState<SharedMemoryPreview | null>(null);
   const [preparingPreview, setPreparingPreview] = useState(false);
+  const preparationRefreshAttempts = useRef(0);
   const [revokingGrantId, setRevokingGrantId] = useState<string | null>(null);
   const [stoppingSync, setStoppingSync] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -2085,8 +2089,19 @@ function SharedMemoryOwnerModal({
     const liveEntry = snapshot.navigation.personal.memory.find(
       (candidate) => candidate.id === entry.id
     );
-    if (liveEntry) setCurrentEntry(liveEntry);
-  }, [entry.id, snapshot.navigation.personal.memory]);
+    if (liveEntry) {
+      setCurrentEntry((current) => {
+        if (
+          preparingPreview &&
+          current.syncState !== "not_started" &&
+          liveEntry.syncState === "not_started"
+        ) {
+          return current;
+        }
+        return liveEntry;
+      });
+    }
+  }, [entry.id, preparingPreview, snapshot.navigation.personal.memory]);
 
   useEffect(() => {
     let active = true;
@@ -2149,6 +2164,7 @@ function SharedMemoryOwnerModal({
 
   const prepareAndPreview = () =>
     run(async () => {
+      preparationRefreshAttempts.current = 0;
       setPreparingPreview(true);
       try {
         requireDestination();
@@ -2167,6 +2183,89 @@ function SharedMemoryOwnerModal({
         throw cause;
       }
     });
+
+  useEffect(() => {
+    if (
+      !preparingPreview ||
+      !currentEntry.logicalMemoryId ||
+      currentEntry.hasSynchronizedRevision
+    ) {
+      return;
+    }
+    if (
+      currentEntry.syncState === "paused" ||
+      currentEntry.syncState === "failed" ||
+      currentEntry.syncState === "revoked"
+    ) {
+      setPreparingPreview(false);
+      setError(
+        currentEntry.syncState === "failed"
+          ? "Memory preparation failed. Try Review source again to retry it."
+          : "Memory preparation stopped before the source review was ready."
+      );
+      return;
+    }
+
+    let active = true;
+    let refreshTimer: number | undefined;
+    const refresh = async () => {
+      try {
+        const nextEntry = await client.prepareSharedMemorySource({
+          sessionId: currentEntry.id
+        });
+        if (!active) return;
+        setCurrentEntry(nextEntry);
+        if (nextEntry.hasSynchronizedRevision) return;
+        if (
+          nextEntry.syncState === "paused" ||
+          nextEntry.syncState === "failed" ||
+          nextEntry.syncState === "revoked"
+        ) {
+          return;
+        }
+        preparationRefreshAttempts.current += 1;
+        if (
+          preparationRefreshAttempts.current >=
+          SHARED_MEMORY_PREPARATION_MAX_REFRESHES
+        ) {
+          setPreparingPreview(false);
+          setError(
+            "Memory preparation is taking longer than expected. Try Review source again to refresh its status."
+          );
+          return;
+        }
+        refreshTimer = window.setTimeout(
+          () => void refresh(),
+          SHARED_MEMORY_PREPARATION_REFRESH_MS
+        );
+      } catch (cause) {
+        if (!active) return;
+        setPreparingPreview(false);
+        setError(
+          failureMessage(
+            cause,
+            "Memory preparation status could not be refreshed."
+          )
+        );
+      }
+    };
+
+    refreshTimer = window.setTimeout(
+      () => void refresh(),
+      SHARED_MEMORY_PREPARATION_REFRESH_MS
+    );
+    return () => {
+      active = false;
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
+  }, [
+    client,
+    currentEntry.hasSynchronizedRevision,
+    currentEntry.id,
+    currentEntry.logicalMemoryId,
+    currentEntry.syncState,
+    preparingPreview
+  ]);
 
   useEffect(() => {
     if (

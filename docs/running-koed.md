@@ -312,8 +312,11 @@ Cross-Identity Sync is available only when the complete path is reported by
 capabilities. Relationship creation runs on a `local_personal` or `developer`
 source after explicit User consent and a validated upstream enrollment whose
 device credential includes the `sync` operation family. Remote intake runs only
-on `private_vps`, `team_self_hosted`, or `koed_managed_cloud` targets. Personal
-API Tokens and Capture Hooks cannot exercise this authority.
+on `private_vps`, `team_self_hosted`, or `koed_managed_cloud` targets, except
+for an isolated `developer` target explicitly enabled with
+`KOED_DEVELOPER_TEAM_BACKEND_ENABLED=true`. That local-testing target still
+requires application-layer encryption and a ready Cross-Identity Sync Worker.
+Personal API Tokens and Capture Hooks cannot exercise this authority.
 
 The source remains usable offline. Canonical changes accumulate in its durable
 outbox and resume from the last acknowledged cursor when the target returns.

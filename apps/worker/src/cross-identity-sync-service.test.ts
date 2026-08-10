@@ -850,8 +850,11 @@ describe("Cross-Identity Sync summary transport", () => {
       recipientKey: recipient
     };
     const summaryNodes = [
-      summaryNodeFixture(1, "x".repeat(260_000)),
-      summaryNodeFixture(2, "x".repeat(800))
+      // The summary text is repeated in the structured summary, so this node
+      // exercises a valid record that is larger than the former 512 KiB
+      // plaintext chunk ceiling.
+      summaryNodeFixture(1, "x".repeat(340_000)),
+      summaryNodeFixture(2, "x".repeat(240_000))
     ];
     const entry: SyncQueueEntryRecord = {
       ...queueEntry(),
@@ -1180,7 +1183,7 @@ describe("Cross-Identity Sync summary transport", () => {
         summaryRevisionHash: crossIdentitySyncDigest([])
       }
     });
-  }, 10_000);
+  }, 30_000);
 
   it("rejects a validly encrypted package whose summary content was tampered", async () => {
     const relationshipId = queueEntry().syncRelationshipId;

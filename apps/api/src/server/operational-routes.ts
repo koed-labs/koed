@@ -27,11 +27,13 @@ import { z } from "zod";
 import type { ApiRouteContext } from "./context.js";
 import {
   buildCapabilitiesResponse,
+  type DeploymentProfile,
   type CommercialBillingInput,
   type CommercialEntitlementInput
 } from "./capabilities.js";
 import { openApiDocument } from "./openapi.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
+import { isCrossIdentitySyncTargetProfile } from "../cross-identity-sync/deployment-role.js";
 import {
   readLocalEdgeUpstreamRegistry,
   resolveLocalEdgeRouteDecision,
@@ -71,6 +73,35 @@ const applicationLayerEncryptionCapability = (
   return provider.mode === "local_test_key"
     ? ("partial" as const)
     : ("available" as const);
+};
+
+export const resolveCrossIdentitySyncCapability = async (input: {
+  deploymentProfile: DeploymentProfile;
+  teamCollaborationEnabled: boolean;
+  developerTeamBackendEnabled: boolean;
+  applicationLayerEncryptionAvailable: boolean;
+  isWorkerReady: () => Promise<boolean>;
+  hasRoutableUpstream: () => boolean;
+}) => {
+  if (!input.applicationLayerEncryptionAvailable) {
+    return "unavailable" as const;
+  }
+  const isTarget = isCrossIdentitySyncTargetProfile(input);
+  const isLocalSyncSource =
+    input.deploymentProfile === "local_personal" ||
+    (input.deploymentProfile === "developer" && !isTarget);
+  if (isLocalSyncSource) {
+    return input.hasRoutableUpstream()
+      ? ("available" as const)
+      : ("unavailable" as const);
+  }
+  try {
+    return (await input.isWorkerReady())
+      ? ("available" as const)
+      : ("unavailable" as const);
+  } catch {
+    return "unavailable" as const;
+  }
 };
 
 const assertOpsOperatorSession = async (
@@ -556,42 +587,36 @@ export const registerOperationalRoutes = (
     }
   };
   const crossIdentitySyncCapability = async () => {
-    if (
-      applicationLayerEncryptionCapability(
-        options.envelopeEncryptionProvider
-      ) === "unavailable"
-    ) {
-      return "unavailable" as const;
-    }
-    if (!["developer", "local_personal"].includes(config.deploymentProfile)) {
-      try {
-        return (await requireRepository().isCrossIdentitySyncWorkerReady())
-          ? ("available" as const)
-          : ("unavailable" as const);
-      } catch {
-        return "unavailable" as const;
+    return resolveCrossIdentitySyncCapability({
+      deploymentProfile: config.deploymentProfile,
+      teamCollaborationEnabled: config.teamCollaborationEnabled,
+      developerTeamBackendEnabled: config.developerTeamBackendEnabled,
+      applicationLayerEncryptionAvailable:
+        applicationLayerEncryptionCapability(
+          options.envelopeEncryptionProvider
+        ) !== "unavailable",
+      isWorkerReady: () => requireRepository().isCrossIdentitySyncWorkerReady(),
+      hasRoutableUpstream: () => {
+        const registry = readLocalEdgeUpstreamRegistry(
+          context.localEdge.upstreamBackendsPath
+        );
+        return registry.backends.some((backend) => {
+          const authorization =
+            context.localEdge.resolveUpstreamAuthorization(backend);
+          return (
+            upstreamAdvertisesCapability(backend, "memory.crossIdentitySync") &&
+            resolveLocalEdgeRouteDecision({
+              operationFamily: "sync",
+              upstreamBackend: backend,
+              upstreamBackendId: backend.id,
+              upstreamCredentialAvailable: Boolean(authorization),
+              identityRemoteOperationsAllowed:
+                context.localEdge.remoteOperationsAllowed()
+            }).action === "queued_sync_handoff"
+          );
+        });
       }
-    }
-    const registry = readLocalEdgeUpstreamRegistry(
-      context.localEdge.upstreamBackendsPath
-    );
-    return registry.backends.some((backend) => {
-      const authorization =
-        context.localEdge.resolveUpstreamAuthorization(backend);
-      return (
-        upstreamAdvertisesCapability(backend, "memory.crossIdentitySync") &&
-        resolveLocalEdgeRouteDecision({
-          operationFamily: "sync",
-          upstreamBackend: backend,
-          upstreamBackendId: backend.id,
-          upstreamCredentialAvailable: Boolean(authorization),
-          identityRemoteOperationsAllowed:
-            context.localEdge.remoteOperationsAllowed()
-        }).action === "queued_sync_handoff"
-      );
-    })
-      ? ("available" as const)
-      : ("unavailable" as const);
+    });
   };
   const {
     dbPool,

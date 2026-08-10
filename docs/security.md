@@ -50,7 +50,8 @@ is redacted and raw payload bytes remain encrypted. Future support bundles and
 object payloads must use the same package envelope before they can carry raw
 customer content.
 
-Cross-Identity Sync encrypts each bounded package chunk to the target
+Cross-Identity Sync limits each plaintext package chunk to 1 MiB and each
+complete package to 64 MiB. It encrypts each bounded chunk to the target
 deployment's versioned RSA-OAEP recipient key in addition to transport TLS. The
 target recipient private key is itself wrapped by the configured root envelope
 provider. The source, browser, MCP Server, Capture Hook, database, queue rows,

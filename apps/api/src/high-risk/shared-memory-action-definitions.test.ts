@@ -214,7 +214,11 @@ describe("Shared Memory action definitions", () => {
         disposition: "step_up",
         review: {
           title: "Change the source policy and preview this Memory?",
-          confirmLabel: "Change policy and preview"
+          confirmLabel: "Change policy and preview",
+          details: expect.arrayContaining([
+            { label: "Representation", value: "LCM Rollups" },
+            { label: "Allowed representations", value: "LCM Rollups" }
+          ])
         }
       }
     });
@@ -246,7 +250,16 @@ describe("Shared Memory action definitions", () => {
       }),
       policy: { disposition: "native_review" }
     });
-    expect(admittedRaw).toMatchObject({ policy: { disposition: "step_up" } });
+    expect(admittedRaw).toMatchObject({
+      policy: {
+        disposition: "step_up",
+        review: {
+          details: expect.arrayContaining([
+            { label: "Representation", value: "Memory Events" }
+          ])
+        }
+      }
+    });
   });
 
   it("authorizes revocation from the exact source-owned grant without destination read state", async () => {
@@ -277,6 +290,7 @@ describe("Shared Memory action definitions", () => {
         review: {
           details: expect.arrayContaining([
             { label: "Personal Memory", value: source.title },
+            { label: "Representation", value: "LCM Leaves" },
             { label: "Share Grant", value: ids.shareGrant }
           ])
         }
@@ -330,7 +344,15 @@ describe("Shared Memory action definitions", () => {
         expectedGrantVersion: 7,
         expiresAt: null
       }),
-      policy: { disposition: "step_up" }
+      policy: {
+        disposition: "step_up",
+        review: {
+          details: expect.arrayContaining([
+            { label: "Current representation", value: "LCM Leaves" },
+            { label: "New representation", value: "Memory Events" }
+          ])
+        }
+      }
     });
     expect(reactivation).toMatchObject({
       policy: {

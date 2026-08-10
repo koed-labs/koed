@@ -4,6 +4,7 @@ import {
   crossIdentitySyncDigest
 } from "@koed/shared";
 import type { DeviceCredentialAuthContext } from "@koed/db";
+import { crossIdentitySyncTargetProfiles } from "./deployment-role.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   applyRemoteSyncRevocationSchema,
@@ -108,11 +109,10 @@ export const registerCrossIdentitySyncRoutes = (
 ): void => {
   const repo = context.requireRepository;
   const { memoryRead, memoryWrite } = context.rateLimit;
-  const targetProfiles = new Set([
-    "private_vps",
-    "team_self_hosted",
-    "koed_managed_cloud"
-  ]);
+  const targetProfiles = crossIdentitySyncTargetProfiles({
+    teamCollaborationEnabled: context.config.teamCollaborationEnabled,
+    developerTeamBackendEnabled: context.config.developerTeamBackendEnabled
+  });
   const assertTargetDeployment = () => {
     if (!targetProfiles.has(context.config.deploymentProfile)) {
       throw Object.assign(new Error("Sync intake is unavailable"), {
