@@ -1483,7 +1483,7 @@ describeDb("Shared Memory repository", () => {
       `select 1 from source_owner_representation_policies
         where logical_memory_id=$1 and source_owner_principal_id=$2
           and effective_at<=now() and superseded_at is null`,
-      [source.logicalMemoryId, fixture.ownerPrincipalId]
+      [source.logicalMemoryId, source.ownerPrincipalId]
     );
     expect(beforeShare.rowCount).toBe(0);
 
@@ -1526,7 +1526,7 @@ describeDb("Shared Memory repository", () => {
          from source_owner_representation_policies
         where logical_memory_id=$1 and source_owner_principal_id=$2
           and effective_at<=now() and superseded_at is null`,
-      [source.logicalMemoryId, fixture.ownerPrincipalId]
+      [source.logicalMemoryId, source.ownerPrincipalId]
     );
     expect(afterShare.rows).toEqual([
       { allowed_representations: ["memory_events"], version: 1 }

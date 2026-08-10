@@ -883,8 +883,12 @@ describe("collaboration Shared Memory control", () => {
         }
       ]
     });
+    const ordinaryAssistantItem = result.data.preview.items[2];
+    if (ordinaryAssistantItem?.representation !== "memory_events") {
+      throw new Error("expected a Memory Events preview item");
+    }
     expect(
-      result.data.preview.items[2]?.sourceItems[0]?.approvalDecisionDisplay
+      ordinaryAssistantItem.sourceItems[0]?.approvalDecisionDisplay
     ).toBeUndefined();
   });
 
