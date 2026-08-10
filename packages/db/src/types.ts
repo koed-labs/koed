@@ -2384,6 +2384,7 @@ export interface MemorySourceRepository
     eventId: string,
     input?: {
       includeInvalidated?: boolean;
+      includeContent?: boolean;
       includeRaw?: boolean;
     }
   ): Promise<LcmGraphEvent | null>;

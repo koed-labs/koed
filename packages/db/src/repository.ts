@@ -7454,6 +7454,7 @@ export const createMemorySourceRepository = (
       const events = await this.listLcmGraphEvents(actor, {
         eventId,
         includeInvalidated: input.includeInvalidated,
+        includeContent: input.includeContent,
         includeRaw: input.includeRaw,
         limit: 1
       });
