@@ -1,4 +1,5 @@
 import type { PersonalDesktopConversationEvent } from "@koed/shared/personal-desktop";
+import { conversationToolKindAndLabel } from "@koed/shared";
 import { parseSourcePatch, type SourcePatchDetails } from "@koed/memory-ui";
 
 export type DesktopConversationEvent = PersonalDesktopConversationEvent;
@@ -58,40 +59,15 @@ export function conversationEventText(event: DesktopConversationEvent): string {
   return (event.content ?? event.contentPreview ?? "").trim();
 }
 
-const humanizeToolName = (value: string): string => {
-  const label = value.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
-  return label
-    ? label.charAt(0).toLocaleUpperCase() + label.slice(1)
-    : "Tool call";
-};
-
 export function conversationEventToolDisplay(
   event: DesktopConversationEvent
 ): DesktopToolDisplay {
   if (event.toolDisplay) return event.toolDisplay;
   const toolName = event.metadata.toolName;
   const name = typeof toolName === "string" ? toolName : "";
-  const searchableName = name.toLocaleLowerCase().replace(/[_-]+/gu, " ");
-  const kind: DesktopToolDisplay["kind"] =
-    /\b(exec|shell|bash|terminal|command|run)\b/u.test(searchableName)
-      ? "command"
-      : /\b(write|edit|patch|save|change|diff)\b/u.test(searchableName)
-        ? "file_change"
-        : /\b(read|open|cat|view|file)\b/u.test(searchableName)
-          ? "file_read"
-          : /\b(search|find|grep|rg|list)\b/u.test(searchableName)
-            ? "search"
-            : "tool";
-  const fallbackLabels: Record<DesktopToolDisplay["kind"], string> = {
-    command: "Ran command",
-    file_change: "Changed files",
-    file_read: "Read file",
-    search: "Searched files",
-    tool: name ? humanizeToolName(name) : "Tool call"
-  };
+  const classification = conversationToolKindAndLabel(name);
   return {
-    kind,
-    label: fallbackLabels[kind],
+    ...classification,
     preview:
       conversationEventText(event).split(/\r?\n/u)[0] || "No preview available",
     ...(name ? { toolName: name } : {})

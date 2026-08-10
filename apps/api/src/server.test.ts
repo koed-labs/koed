@@ -7711,7 +7711,7 @@ describe("account and access flows", () => {
   });
 
   it("enrolls and revokes device credentials independently from API Tokens", async () => {
-    process.env.BROWSER_PUBLIC_URL = "https://app.example.test";
+    process.env.BROWSER_PUBLIC_URL = "https://app.example.test/koed";
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",
@@ -7890,7 +7890,9 @@ describe("account and access flows", () => {
     expect(createdChallenge.statusCode).toBe(200);
     expect(
       jsonBody<{ activationUrl: string }>(createdChallenge).activationUrl
-    ).toMatch(/^https:\/\/app\.example\.test\/device-enrollment\/[0-9a-f-]+$/);
+    ).toMatch(
+      /^https:\/\/app\.example\.test\/koed\/device-enrollment\/[0-9a-f-]+$/
+    );
     expect(deniedAdminChallenge.statusCode).toBe(400);
     expect(deniedOverScopedRedeem.statusCode).toBe(400);
     expect(deniedPublicKeyRedeem.statusCode).toBe(400);
@@ -9241,7 +9243,7 @@ describe("account and access flows", () => {
   });
 
   it("rejects cross-origin browser-session writes without blocking bearer API tokens", async () => {
-    process.env.CORS_ORIGINS = "http://console.example.test";
+    process.env.BROWSER_PUBLIC_URL = "http://console.example.test/koed";
 
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({

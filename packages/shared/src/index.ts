@@ -321,6 +321,7 @@ export type {
 export {
   buildConversationApprovalDisplay,
   buildConversationToolDisplay,
+  conversationToolKindAndLabel,
   type ConversationApprovalDisplay,
   type ConversationToolDisplay
 } from "./conversation-display.js";

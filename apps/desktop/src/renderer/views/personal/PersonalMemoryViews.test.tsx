@@ -53,6 +53,7 @@ vi.mock("../../../NativeConversationSurface.js", () => ({
 }));
 
 const sessionId = "00000000-0000-4000-8000-000000000001";
+const threadLatestAt = "2026-07-23T00:00:00.000Z";
 
 const thread = (
   index: number,
@@ -61,7 +62,7 @@ const thread = (
   eventCount: 1_000,
   id: `thread-${index}`,
   invalidatedCount: index === 1 ? 2 : 0,
-  latestAt: new Date().toISOString(),
+  latestAt: threadLatestAt,
   name: `Captured Session ${index}`,
   projectAssignmentSource: "detected",
   projectId: "project-1",
@@ -204,6 +205,7 @@ describe("PersonalMemoryWorkspace", () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-24T00:00:00Z"));
     (
       globalThis as typeof globalThis & {
         IS_REACT_ACT_ENVIRONMENT?: boolean;

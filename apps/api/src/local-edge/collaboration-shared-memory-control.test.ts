@@ -821,9 +821,26 @@ describe("collaboration Shared Memory control", () => {
           sourceRevision: 4,
           occurredAt: iso,
           content: {
+            approvalReview: true,
             text: JSON.stringify({
               outcome: "allow",
               rationale: "The patch is within the requested scope.",
+              risk_level: "low",
+              user_authorization: "medium"
+            })
+          }
+        },
+        {
+          itemType: "assistant_message" as const,
+          schemaVersion: 1 as const,
+          sourceId: uuidFor(152),
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 4,
+          occurredAt: iso,
+          content: {
+            text: JSON.stringify({
+              outcome: "allow",
+              rationale: "This is ordinary assistant JSON.",
               risk_level: "low",
               user_authorization: "medium"
             })
@@ -866,6 +883,9 @@ describe("collaboration Shared Memory control", () => {
         }
       ]
     });
+    expect(
+      result.data.preview.items[2]?.sourceItems[0]?.approvalDecisionDisplay
+    ).toBeUndefined();
   });
 
   it("keeps an LCM preview local and retryable until the exact summary snapshot is synced", async () => {

@@ -7,6 +7,7 @@ describe("Personal Memory Auto Approval display projection", () => {
     expect(
       buildPersonalApprovalDisplay({
         actor: "agent",
+        metadata: { approvalReview: true },
         content: JSON.stringify({
           risk_level: "medium",
           user_authorization: "high",
@@ -28,6 +29,7 @@ describe("Personal Memory Auto Approval display projection", () => {
     expect(
       buildPersonalApprovalDisplay({
         actor: "subagent",
+        metadata: { approvalReview: true },
         content: JSON.stringify({
           risk_level: "high",
           user_authorization: "low",
@@ -39,12 +41,35 @@ describe("Personal Memory Auto Approval display projection", () => {
   });
 
   it.each([
-    ["user actor", { actor: "user", content: "{}" }],
-    ["ordinary prose", { actor: "agent", content: "Approval allowed" }],
+    [
+      "missing approval-review provenance",
+      {
+        actor: "agent",
+        content: JSON.stringify({
+          risk_level: "medium",
+          user_authorization: "medium",
+          outcome: "allow",
+          rationale: "Ordinary assistant JSON."
+        })
+      }
+    ],
+    [
+      "user actor",
+      { actor: "user", content: "{}", metadata: { approvalReview: true } }
+    ],
+    [
+      "ordinary prose",
+      {
+        actor: "agent",
+        content: "Approval allowed",
+        metadata: { approvalReview: true }
+      }
+    ],
     [
       "unknown fields",
       {
         actor: "agent",
+        metadata: { approvalReview: true },
         content: JSON.stringify({
           risk_level: "medium",
           user_authorization: "medium",
@@ -58,6 +83,7 @@ describe("Personal Memory Auto Approval display projection", () => {
       "unsupported values",
       {
         actor: "agent",
+        metadata: { approvalReview: true },
         content: JSON.stringify({
           risk_level: "critical",
           user_authorization: "medium",

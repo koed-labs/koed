@@ -186,6 +186,21 @@ describe("Shared Memory source-content policy", () => {
         }
       }
     });
+    expect(
+      redactEligibleSharedMemorySourceItem({
+        representation: "memory_events",
+        logicalMemoryId,
+        sourceRevision,
+        item: {
+          itemType: "assistant_message",
+          schemaVersion: 1,
+          sourceId: randomUUID(),
+          sourceLogicalMemoryId: logicalMemoryId,
+          sourceRevision,
+          content: { text: "decision", approvalReview: true }
+        }
+      }).content
+    ).toEqual({ text: "decision", approvalReview: true });
 
     const base: SharedMemorySourceItemInput = {
       itemType: "user_message",

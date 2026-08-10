@@ -14,6 +14,7 @@ export type ConversationApprovalDisplay = NonNullable<
 type ApprovalEventSource = {
   actor?: unknown;
   content?: unknown;
+  metadata?: unknown;
 };
 
 type ToolEventSource = {
@@ -38,7 +39,9 @@ const record = (value: unknown): Record<string, unknown> =>
 export const buildConversationApprovalDisplay = (
   source: ApprovalEventSource
 ): ConversationApprovalDisplay | undefined => {
+  const metadata = record(source.metadata);
   if (
+    metadata.approvalReview !== true ||
     !["agent", "assistant", "subagent"].includes(String(source.actor)) ||
     typeof source.content !== "string" ||
     source.content.length > 16_384
@@ -122,15 +125,34 @@ const patchText = (...values: unknown[]): string | undefined => {
   return undefined;
 };
 
-const kindAndLabel = (
+export const conversationToolKindAndLabel = (
   toolName: string,
   signals: {
     command?: string;
     path?: string;
     query?: string;
     patchSource?: string;
-  }
+  } = {}
 ): Pick<ConversationToolDisplay, "kind" | "label"> => {
+  const canonicalName =
+    toolName
+      .toLocaleLowerCase()
+      .split(/__|[.:/]/u)
+      .at(-1)
+      ?.trim() ?? "";
+  const explicitKinds: Record<
+    string,
+    Pick<ConversationToolDisplay, "kind" | "label">
+  > = {
+    apply_patch: { kind: "file_change", label: "Changed files" },
+    exec_command: { kind: "command", label: "Ran command" },
+    read_file: { kind: "file_read", label: "Read file" },
+    rg: { kind: "search", label: "Searched files" },
+    view_image: { kind: "file_read", label: "Read file" },
+    write_stdin: { kind: "command", label: "Ran command" }
+  };
+  const explicit = explicitKinds[canonicalName];
+  if (explicit) return explicit;
   const lowerName = toolName.toLocaleLowerCase().replace(/[_-]+/gu, " ");
   if (
     signals.command ||
@@ -209,7 +231,7 @@ export const buildConversationToolDisplay = (
     metadata.input,
     source.content
   );
-  const classification = kindAndLabel(toolName, {
+  const classification = conversationToolKindAndLabel(toolName, {
     ...(command ? { command } : {}),
     ...(path ? { path } : {}),
     ...(query ? { query } : {}),

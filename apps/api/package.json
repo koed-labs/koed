@@ -28,7 +28,7 @@
     "build": "pnpm run build:server && pnpm run build:browser && pnpm run verify:browser-build",
     "build:server": "tsc -b tsconfig.json",
     "build:browser": "vite build",
-    "dev": "tsx watch src/index.ts",
+    "dev": "pnpm run build:browser && tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",

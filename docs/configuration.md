@@ -585,11 +585,12 @@ policy, or full URLs containing customer content.
 
 - `BROWSER_PUBLIC_URL`: optional public browser-reachable base URL for the
   existing API process, used when device-enrollment links cannot be built from
-  the registered backend URL. Set it to the externally reachable API origin,
-  for example `https://koed.example.com`. Paths are rejected because approval
-  routes and assets must share that API origin. It is
-  not the URL of a separate browser service. Step-up and device-enrollment
-  pages, authentication, and approval JSON all remain on this same origin.
+  the registered backend URL. Set it to the externally reachable API URL, for
+  example `https://koed.example.com` or `https://example.com/koed`. A path
+  prefix is preserved in generated approval links and asset requests. It is not
+  the URL of a separate browser service. Step-up and device-enrollment pages,
+  authentication, and approval JSON all remain on this same origin. Its HTTP
+  origin is automatically trusted for same-origin browser writes.
   With TLS termination, also configure secure cookies and make the WorkOS
   callback use this public API origin.
   Registered backend URLs may still contain a reverse-proxy base path. The

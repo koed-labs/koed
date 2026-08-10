@@ -741,7 +741,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
                   content: autoApprovalContent,
                   contentPreview: autoApprovalContent,
                   invalidatedAt: null,
-                  metadata: {}
+                  metadata: { approvalReview: true }
                 }
               ]
             }),
@@ -1067,7 +1067,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });
     writeFileSync(
-      resolve(koedHome, "config/explorer-token.json"),
+      resolve(koedHome, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "main_only_token" })
     );
     const visibleEventId = "11111111-1111-4111-8111-111111111111";

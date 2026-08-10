@@ -101,16 +101,12 @@ describe("resolveApiServerConfig", () => {
   });
 
   it("validates and normalizes the public browser URL", () => {
-    expect(
-      resolveApiServerConfig({
-        BROWSER_PUBLIC_URL: "https://app.example.test/"
-      }).browserPublicUrl
-    ).toBe("https://app.example.test");
-    expect(() =>
-      resolveApiServerConfig({
-        BROWSER_PUBLIC_URL: "https://app.example.test/koed"
-      })
-    ).toThrow(/origin without a path/);
+    const config = resolveApiServerConfig({
+      NODE_ENV: "production",
+      BROWSER_PUBLIC_URL: "https://app.example.test/koed/"
+    });
+    expect(config.browserPublicUrl).toBe("https://app.example.test/koed");
+    expect([...config.corsOrigins]).toContain("https://app.example.test");
     expect(() =>
       resolveApiServerConfig({
         BROWSER_PUBLIC_URL: "https://user:secret@app.example.test"

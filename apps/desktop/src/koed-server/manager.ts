@@ -472,7 +472,8 @@ const personalEventsData = (payload: Record<string, unknown>) => {
       });
       const approvalDecisionDisplay = buildPersonalApprovalDisplay({
         actor: event.actor,
-        content: event.content
+        content: event.content,
+        metadata
       });
       const transcriptDisplay =
         approvalReviewTranscriptDisplaySchema.safeParse(

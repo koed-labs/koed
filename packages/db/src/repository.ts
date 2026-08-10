@@ -6780,16 +6780,28 @@ export const createMemorySourceRepository = (
               'displaySource', 'message'
             ) || coalesce(
               (
-                select jsonb_build_object(
+                select jsonb_strip_nulls(jsonb_build_object(
                   'approvalReviewTranscriptDisplay',
-                  ci.metadata -> 'approvalReviewTranscriptDisplay'
-                )
+                  ci.metadata -> 'approvalReviewTranscriptDisplay',
+                  'approvalReview',
+                  case
+                    when ci.metadata ->> 'approvalReview' = 'true'
+                      then 'true'::jsonb
+                    else null
+                  end
+                ))
                 from conversation_items ci
                 where ci.owner_user_id = msg.owner_user_id
                   and ci.visibility = msg.visibility
-                  and ci.logical_source_id is not null
-                  and msg.idempotency_key = 'message:' || ci.logical_source_id
-                  and ci.metadata ? 'approvalReviewTranscriptDisplay'
+                  and msg.idempotency_key = 'message:' || coalesce(
+                    ci.metadata ->> 'canonicalConversationItemKey',
+                    ci.canonical_item_key,
+                    ci.logical_source_id
+                  )
+                  and (
+                    ci.metadata ? 'approvalReviewTranscriptDisplay'
+                    or ci.metadata ->> 'approvalReview' = 'true'
+                  )
                 order by ci.created_at asc, ci.id asc
                 limit 1
               ),

@@ -22,7 +22,7 @@ describe("Personal Memory renderer boundary", () => {
       /explorerApiToken|explorer_credential|authorization\s*:|fetch\s*\(/
     );
     expect(conversation).not.toMatch(
-      /apiBaseUrl|apiToken|authorization|fetch\s*\(/
+      /apiBaseUrl|apiToken|authorization\s*:|Bearer\s|fetch\s*\(/
     );
   });
 

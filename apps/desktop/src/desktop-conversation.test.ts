@@ -139,6 +139,17 @@ describe("native Desktop conversation contract", () => {
     );
   });
 
+  it("classifies write_stdin as terminal activity in renderer fallback", () => {
+    expect(
+      conversationEventToolDisplay(
+        event("stdin", "2026-07-13T11:00:00.000Z", {
+          actor: "tool",
+          metadata: { toolName: "write_stdin" }
+        })
+      )
+    ).toMatchObject({ kind: "command", label: "Ran command" });
+  });
+
   it("recognizes a source diff only when tool identity or content supports it", () => {
     const patch = event("patch", "2026-07-13T11:00:00.000Z", {
       actor: "tool",

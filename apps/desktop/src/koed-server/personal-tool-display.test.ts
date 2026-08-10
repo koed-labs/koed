@@ -5,6 +5,7 @@ import { buildPersonalToolDisplay } from "./personal-tool-display.js";
 describe("Personal Memory tool display projection", () => {
   it.each([
     ["exec_command", { input: { cmd: "pnpm test" } }, "command", "Ran command"],
+    ["write_stdin", {}, "command", "Ran command"],
     ["read_file", { input: { path: "src/app.ts" } }, "file_read", "Read file"],
     ["rg", { input: { query: "SecureMarkdown" } }, "search", "Searched files"],
     [

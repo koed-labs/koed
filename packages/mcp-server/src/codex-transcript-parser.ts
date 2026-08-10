@@ -1591,6 +1591,15 @@ export const buildCodexTranscriptConversationItems = (
       };
     }
   );
+  const approvalReview =
+    input.threadKind === "subagent" &&
+    observations.some((observation) =>
+      observation.parsedItems.some(
+        (parsedItem) =>
+          parsedItem.item?.metadata.approvalReviewTranscriptDisplay !==
+          undefined
+      )
+    );
   const adaptedItems = adaptCodexTranscriptV1({
     observations,
     sessionId: input.sessionId,
@@ -1598,7 +1607,8 @@ export const buildCodexTranscriptConversationItems = (
     sourceTransport: input.sourceTransport,
     sourceFingerprint: input.sourceFingerprint,
     threadKind: input.threadKind,
-    parentThreadId: input.parentThreadId
+    parentThreadId: input.parentThreadId,
+    approvalReview
   });
   if (!preferProviderResponseItems) return adaptedItems;
 
@@ -1808,6 +1818,7 @@ export const buildCodexTranscriptConversationItems = (
             : {}),
           threadKind: input.threadKind,
           parentThreadId: input.parentThreadId,
+          ...(approvalReview ? { approvalReview: true } : {}),
           ...(input.sourceTransport === "historical_import"
             ? { observedViaHistoricalImport: true }
             : { observedViaTranscript: true }),

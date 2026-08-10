@@ -1054,7 +1054,10 @@ const mapSourceItems = (
               ? {
                   approvalDecisionDisplay: buildConversationApprovalDisplay({
                     actor: "assistant",
-                    content: text.body
+                    content: text.body,
+                    metadata: {
+                      approvalReview: item.content.approvalReview === true
+                    }
                   })
                 }
               : {}),

@@ -135,12 +135,13 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       ],
       sourceSessionId: "approval-review-session",
       sourceTransport: "transcript",
-      threadKind: "conversation"
+      threadKind: "subagent"
     });
 
     expect(items).toHaveLength(1);
     expect(items[0]?.rawText).toBe(message);
     expect(items[0]?.metadata).toMatchObject({
+      approvalReview: true,
       approvalReviewTranscriptDisplay: {
         kind: "approval_review",
         version: 1,
@@ -152,6 +153,21 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         ]
       }
     });
+    const ordinaryConversationItems = buildCodexTranscriptConversationItems({
+      records: [
+        {
+          timestamp: "2026-07-01T12:00:00.000Z",
+          type: "event_msg",
+          payload: { type: "user_message", message }
+        }
+      ],
+      sourceSessionId: "ordinary-session",
+      sourceTransport: "transcript",
+      threadKind: "conversation"
+    });
+    expect(
+      ordinaryConversationItems[0]?.metadata.approvalReview
+    ).toBeUndefined();
   });
 
   it("uses item discriminator to keep multiple logical rows at one transcript position distinct", () => {

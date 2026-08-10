@@ -139,19 +139,6 @@ const optionalPublicHttpUrl = (
   return url.toString().replace(/\/$/, "");
 };
 
-const optionalPublicHttpOrigin = (
-  value: string | undefined,
-  name: string
-): string | undefined => {
-  const configured = optionalPublicHttpUrl(value, name);
-  if (!configured) return undefined;
-  const url = new URL(configured);
-  if (url.pathname !== "/") {
-    throw new Error(`${name} must be an HTTP or HTTPS origin without a path`);
-  }
-  return url.origin;
-};
-
 const resolveRuntimeMode = (
   value: string | undefined
 ): ApiServerConfig["runtimeMode"] =>
@@ -161,7 +148,8 @@ const resolveRuntimeMode = (
 
 const resolveCorsOrigins = (
   environment: NodeJS.ProcessEnv,
-  nodeEnv: string
+  nodeEnv: string,
+  browserPublicUrl?: string
 ): Set<string> => {
   const configured = parseCsv(environment.CORS_ORIGINS);
   const derived = [environment.PUBLIC_APP_URL, environment.API_BASE_URL].filter(
@@ -176,8 +164,13 @@ const resolveCorsOrigins = (
           "http://localhost:3300"
         ];
 
+  const browserPublicOrigin = browserPublicUrl
+    ? [new URL(browserPublicUrl).origin]
+    : [];
   return new Set(
-    [...configured, ...derived, ...development].map(normalizeOrigin)
+    [...configured, ...derived, ...browserPublicOrigin, ...development].map(
+      normalizeOrigin
+    )
   );
 };
 
@@ -193,6 +186,10 @@ export const resolveApiServerConfig = (
   const runtimeMode = resolveRuntimeMode(environment.KOED_RUNTIME_MODE);
   const dependencyMode = resolveRuntimeDependencyMode(
     environment.KOED_DEPENDENCY_MODE
+  );
+  const browserPublicUrl = optionalPublicHttpUrl(
+    environment.BROWSER_PUBLIC_URL,
+    "BROWSER_PUBLIC_URL"
   );
   const memoryRateLimitWindowMs = positiveIntEnv(
     environment,
@@ -231,10 +228,7 @@ export const resolveApiServerConfig = (
     dependencyMode,
     apiPort: optionalEnv(environment.API_PORT),
     koedHome,
-    browserPublicUrl: optionalPublicHttpOrigin(
-      environment.BROWSER_PUBLIC_URL,
-      "BROWSER_PUBLIC_URL"
-    ),
+    browserPublicUrl,
     upstreamBackendsPath: resolve(koedHome, "config", "upstream-backends.json"),
     upstreamEnrollmentsPath: resolve(
       koedHome,
@@ -256,7 +250,7 @@ export const resolveApiServerConfig = (
       environment,
       "KOED_DEVELOPER_TEAM_BACKEND_ENABLED"
     ),
-    corsOrigins: resolveCorsOrigins(environment, nodeEnv),
+    corsOrigins: resolveCorsOrigins(environment, nodeEnv, browserPublicUrl),
     rateLimit: {
       store: optionalEnv(environment.RATE_LIMIT_STORE) ?? "memory",
       redisUrl: optionalEnv(environment.RATE_LIMIT_REDIS_URL) ?? redisUrl,

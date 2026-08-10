@@ -7,7 +7,7 @@ import { highRiskBrowserActivationParamsSchema } from "../high-risk/schemas.js";
 import { deviceEnrollmentChallengeParamsSchema } from "../local-edge/schemas.js";
 
 const defaultAssetRoot = fileURLToPath(
-  new URL("../browser-approval/", import.meta.url)
+  new URL("../../dist/browser-approval/", import.meta.url)
 );
 
 const contentTypes: Record<string, string> = {

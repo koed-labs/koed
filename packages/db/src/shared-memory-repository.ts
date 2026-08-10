@@ -885,11 +885,18 @@ const redactStructuredValue = (
 const requiredString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
-const validateTextContent = (content: unknown): Record<string, unknown> => {
+const validateTextContent = (
+  content: unknown,
+  allowApprovalReview = false
+): Record<string, unknown> => {
   if (
     !isPlainObject(content) ||
-    !exactObjectKeys(content, ["text"]) ||
-    !requiredString(content.text)
+    !exactObjectKeys(
+      content,
+      allowApprovalReview ? ["text", "approvalReview"] : ["text"]
+    ) ||
+    !requiredString(content.text) ||
+    (content.approvalReview !== undefined && content.approvalReview !== true)
   ) {
     throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
   }
@@ -897,7 +904,10 @@ const validateTextContent = (content: unknown): Record<string, unknown> => {
     text: redactStructuredValue(content.text, {
       depth: 0,
       keys: { count: 0 }
-    })
+    }),
+    ...(allowApprovalReview && content.approvalReview === true
+      ? { approvalReview: true }
+      : {})
   };
 };
 
@@ -1056,7 +1066,7 @@ export const redactEligibleSharedMemorySourceItem = (input: {
   const itemType = item.itemType as SharedMemorySourceItemType;
   const content =
     itemType === "user_message" || itemType === "assistant_message"
-      ? validateTextContent(item.content)
+      ? validateTextContent(item.content, itemType === "assistant_message")
       : itemType === "tool_call" || itemType === "tool_result"
         ? validateToolContent(item.content)
         : validateLcmContent(item.content);
@@ -2451,7 +2461,13 @@ export const createSharedMemoryRepository = (
       itemType,
       sourceId: input.contributor.originItemId,
       occurredAt: input.contributor.sourceEventTime,
-      content: { text: textContent }
+      content: {
+        text: textContent,
+        ...(itemType === "assistant_message" &&
+        input.contributor.metadata.approvalReview === true
+          ? { approvalReview: true }
+          : {})
+      }
     });
   };
 
