@@ -162,14 +162,18 @@ const buildFixture = async (options?: {
   let authorized = options?.authorized !== false;
   const segments = [segment];
   const auditActions: string[] = [];
+  let accessReads = 0;
+  let manifestReads = 0;
   const repository = {
     async getTeamConversationSourceAccess() {
+      accessReads += 1;
       return authorized ? { grant, artifact } : null;
     },
     async getTeamConversationSourceManifest(
       _actor: unknown,
       input: { afterSegmentIndex: number; limit: number }
     ) {
+      manifestReads += 1;
       return authorized
         ? {
             grant,
@@ -286,6 +290,9 @@ const buildFixture = async (options?: {
     get listenerReleaseCount() {
       return listenerReleaseCount;
     },
+    get sourceReadCounts() {
+      return { accessReads, manifestReads };
+    },
     cleanup() {
       rmSync(koedHome, { recursive: true, force: true });
     },
@@ -315,10 +322,13 @@ const buildFixture = async (options?: {
     revoke() {
       authorized = false;
     },
-    notify() {
+    notify(input?: { logicalSourceId?: string; sourceGenerationId?: string }) {
       notificationListener?.({
         channel: "koed_conversation_source_replication",
-        payload: "{}"
+        payload: JSON.stringify({
+          logicalSourceId: input?.logicalSourceId ?? ids.logicalSource,
+          sourceGenerationId: input?.sourceGenerationId ?? ids.generation
+        })
       });
     },
     notifyTeam() {
@@ -391,6 +401,77 @@ describe("Team Conversation source routes", () => {
       "team_conversation_source.stream_opened",
       "team_conversation_source.stream_authorization_lost"
     ]);
+
+    controller.abort();
+    await fixture.service.close();
+    await fixture.app.close();
+    fixture.cleanup();
+  });
+
+  it("routes source notifications without waking unrelated streams", async () => {
+    const fixture = await buildFixture({ streaming: true });
+    const baseUrl = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    const response = await fetch(
+      `${baseUrl}/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/stream`,
+      { signal: controller.signal }
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    while (!received.includes('"segmentIndex":0')) {
+      const read = await reader.read();
+      if (read.done) break;
+      received += decoder.decode(read.value, { stream: true });
+    }
+    const before = fixture.sourceReadCounts;
+
+    fixture.notify({
+      logicalSourceId: randomUUID(),
+      sourceGenerationId: randomUUID()
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fixture.sourceReadCounts).toEqual(before);
+
+    controller.abort();
+    await fixture.service.close();
+    await fixture.app.close();
+    fixture.cleanup();
+  });
+
+  it("replays source changes committed before the listener is ready", async () => {
+    let releaseConnect: (() => void) | null = null;
+    const listenerConnectGate = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    const fixture = await buildFixture({
+      streaming: true,
+      listenerConnectGate
+    });
+    const baseUrl = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    const response = await fetch(
+      `${baseUrl}/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/stream`,
+      { signal: controller.signal }
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    while (!received.includes('"segmentIndex":0')) {
+      const read = await reader.read();
+      if (read.done) break;
+      received += decoder.decode(read.value, { stream: true });
+    }
+
+    fixture.appendSegment();
+    releaseConnect!();
+    const deadline = Date.now() + 2_000;
+    while (!received.includes('"segmentIndex":1') && Date.now() < deadline) {
+      const read = await reader.read();
+      if (read.done) break;
+      received += decoder.decode(read.value, { stream: true });
+    }
+    expect(received).toContain('"segmentIndex":1');
 
     controller.abort();
     await fixture.service.close();

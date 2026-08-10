@@ -186,7 +186,10 @@ type StreamClient = {
   teamWorkspaceId: string;
   ownerUserId: string;
   sourceGrantId: string;
+  mode: "snapshot" | "continuous";
   artifactId: string;
+  logicalSourceId: string;
+  sourceGenerationId: string;
   segmentIndex: number;
   closed: boolean;
   flushing: boolean;
@@ -331,6 +334,8 @@ export const createTeamConversationSourceService = (options: {
             sourceGenerationId: access.artifact.sourceGenerationId
           });
           client.artifactId = access.artifact.id;
+          client.logicalSourceId = access.artifact.logicalSourceId;
+          client.sourceGenerationId = access.artifact.sourceGenerationId;
           client.segmentIndex = -1;
         }
         const page = await context
@@ -392,6 +397,21 @@ export const createTeamConversationSourceService = (options: {
     }
   };
 
+  const wakeSourceClients = (input: {
+    logicalSourceId?: string;
+    sourceGenerationId?: string;
+  }): void => {
+    if (!input.logicalSourceId && !input.sourceGenerationId) return;
+    for (const client of clients.values()) {
+      const sameGeneration =
+        input.sourceGenerationId === client.sourceGenerationId;
+      const continuousSuccessor =
+        client.mode === "continuous" &&
+        input.logicalSourceId === client.logicalSourceId;
+      if (sameGeneration || continuousSuccessor) void flush(client);
+    }
+  };
+
   const scheduleReconnect = (): void => {
     if (closed || reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
@@ -422,6 +442,27 @@ export const createTeamConversationSourceService = (options: {
         }
         const activeListener = next;
         activeListener.on("notification", (message) => {
+          if (message.channel === "koed_conversation_source_replication") {
+            try {
+              const payload = JSON.parse(message.payload ?? "{}") as {
+                logicalSourceId?: unknown;
+                sourceGenerationId?: unknown;
+              };
+              wakeSourceClients({
+                logicalSourceId:
+                  typeof payload.logicalSourceId === "string"
+                    ? payload.logicalSourceId
+                    : undefined,
+                sourceGenerationId:
+                  typeof payload.sourceGenerationId === "string"
+                    ? payload.sourceGenerationId
+                    : undefined
+              });
+            } catch {
+              // Identity-less replication work cannot be routed to a source stream.
+            }
+            return;
+          }
           if (message.channel === "koed_team_conversation_source") {
             try {
               const payload = JSON.parse(message.payload ?? "{}") as {
@@ -463,6 +504,8 @@ export const createTeamConversationSourceService = (options: {
         });
         listener = activeListener;
         next = null;
+        // PostgreSQL is the durable source; replay anything committed while LISTEN was absent.
+        wakeClients();
       } catch {
         next?.release();
         scheduleReconnect();
@@ -798,7 +841,10 @@ export const createTeamConversationSourceService = (options: {
         teamWorkspaceId: access.grant.teamWorkspaceId,
         ownerUserId: access.grant.ownerUserId,
         sourceGrantId: access.grant.id,
+        mode: access.grant.mode,
         artifactId: access.artifact.id,
+        logicalSourceId: access.artifact.logicalSourceId,
+        sourceGenerationId: access.artifact.sourceGenerationId,
         segmentIndex,
         closed: false,
         flushing: false,

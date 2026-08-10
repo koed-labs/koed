@@ -65,6 +65,7 @@ export interface TeamConversationSourceRepository {
     input: {
       mutationId: string;
       shareGrantId: string;
+      teamId: string;
       expectedVersion: number;
       mode: TeamConversationSourceGrantMode;
       creatorAuthority: string;
@@ -75,6 +76,7 @@ export interface TeamConversationSourceRepository {
     input: {
       mutationId: string;
       shareGrantId: string;
+      teamId: string;
       expectedVersion: number;
       reasonCode: string;
     }
@@ -440,6 +442,18 @@ export const createTeamConversationSourceRepository = (
             and workspace.team_id = share_grant.team_id
             and workspace.lifecycle = 'active'
             and workspace.archived_at is null
+           join team_memberships source_membership
+             on source_membership.team_id = share_grant.team_id
+            and source_membership.user_id = $2
+            and source_membership.status = 'enabled'
+            and source_membership.disabled_at is null
+           join team_workspace_access_grants source_access
+             on source_access.team_workspace_id = share_grant.team_workspace_id
+            and source_access.team_id = share_grant.team_id
+            and source_access.user_id = $2
+            and source_access.access = 'write'
+            and source_access.can_share_owned_memory = true
+            and source_access.disabled_at is null
            join source_owner_representation_consents consent
              on consent.id = share_grant.consent_id
             and consent.state = 'active'
@@ -447,11 +461,12 @@ export const createTeamConversationSourceRepository = (
             and (consent.expires_at is null or consent.expires_at > now())
           where share_grant.id = $1
             and share_grant.owner_user_id = $2
+            and share_grant.team_id = $3
             and share_grant.lifecycle = 'active'
             and share_grant.revoked_at is null
             and share_grant.personal_deleted_at is null
           for update of share_grant`,
-        [input.shareGrantId, actor.userId]
+        [input.shareGrantId, actor.userId, input.teamId]
       );
       const parentRow = parent.rows[0];
       if (!parentRow || !parentRow.local_session_id) {
@@ -615,13 +630,16 @@ export const createTeamConversationSourceRepository = (
             and source_grant.lifecycle = 'active'
             and share_grant.id = source_grant.share_grant_id
             and share_grant.owner_user_id = $2
+            and source_grant.team_id = $6
+            and share_grant.team_id = $6
           returning source_grant.*`,
         [
           input.shareGrantId,
           actor.userId,
           input.mutationId,
           input.expectedVersion,
-          input.reasonCode
+          input.reasonCode,
+          input.teamId
         ]
       );
       const row = result.rows[0];
@@ -634,8 +652,10 @@ export const createTeamConversationSourceRepository = (
             where source_grant.share_grant_id = $1
               and source_grant.mutation_id = $3
               and source_grant.lifecycle = 'revoked'
-              and share_grant.owner_user_id = $2`,
-          [input.shareGrantId, actor.userId, input.mutationId]
+              and share_grant.owner_user_id = $2
+              and source_grant.team_id = $4
+              and share_grant.team_id = $4`,
+          [input.shareGrantId, actor.userId, input.mutationId, input.teamId]
         );
         if (!replay.rows[0]) {
           throw new TeamConversationSourceConflictError();

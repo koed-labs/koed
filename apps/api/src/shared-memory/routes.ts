@@ -1161,14 +1161,12 @@ export const registerSharedMemoryRoutes = (
               {
                 mutationId: input.mutationId,
                 shareGrantId: params.shareGrantId,
+                teamId: input.teamId,
                 expectedVersion: input.expectedVersion,
                 reasonCode: input.reasonCode
               }
             );
-            if (
-              grant.teamId !== input.teamId ||
-              grant.lifecycle !== "revoked"
-            ) {
+            if (grant.lifecycle !== "revoked") {
               return null;
             }
             return {
@@ -1214,12 +1212,12 @@ export const registerSharedMemoryRoutes = (
               {
                 mutationId: input.mutationId,
                 shareGrantId: params.shareGrantId,
+                teamId: input.teamId,
                 expectedVersion: input.expectedVersion,
                 mode: input.mode,
                 creatorAuthority: `${authenticated.authority.source}:${authenticated.authority.referenceId}`
               }
             );
-            if (grant.teamId !== input.teamId) return null;
             return {
               statusCode: input.expectedVersion === 0 ? 201 : 200,
               body: { transcriptAccess: transcriptAccessDto(grant) }

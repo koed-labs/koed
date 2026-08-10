@@ -597,6 +597,7 @@ const createFixture = () => {
       if (
         actor.userId !== ids.alice ||
         input.shareGrantId !== ids.grant ||
+        input.teamId !== ids.teamA ||
         input.expectedVersion !== sourceGrantVersion
       ) {
         throw new SharedMemoryAuthorizationError("private source detail");
@@ -615,6 +616,7 @@ const createFixture = () => {
       if (
         actor.userId !== ids.alice ||
         input.shareGrantId !== ids.grant ||
+        input.teamId !== ids.teamA ||
         input.expectedVersion !== sourceGrantVersion
       ) {
         throw new SharedMemoryAuthorizationError("private source detail");

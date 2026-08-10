@@ -9363,6 +9363,25 @@ describeDb("memory repository visibility", () => {
     };
 
     const first = await createArtifact(new Date("2026-08-10T00:00:00.000Z"));
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: randomUUID(),
+          expectedVersion: 0,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("not authorized");
+    await expect(
+      pool.query(
+        "select count(*)::int as count from team_conversation_source_grants where share_grant_id=$1",
+        [shareGrant.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
     await pool.query(
       `update source_owner_representation_consents
           set expires_at=now()-interval '1 second'
@@ -9375,6 +9394,7 @@ describeDb("memory repository visibility", () => {
         {
           mutationId: randomUUID(),
           shareGrantId: shareGrant.id,
+          teamId: team.id,
           expectedVersion: 0,
           mode: "continuous",
           creatorAuthority: "repository_test"
@@ -9395,6 +9415,7 @@ describeDb("memory repository visibility", () => {
         {
           mutationId: randomUUID(),
           shareGrantId: shareGrant.id,
+          teamId: team.id,
           expectedVersion: 0,
           mode: "continuous",
           creatorAuthority: "repository_test"
@@ -9411,6 +9432,7 @@ describeDb("memory repository visibility", () => {
       {
         mutationId: grantMutationId,
         shareGrantId: shareGrant.id,
+        teamId: team.id,
         expectedVersion: 0,
         mode: "continuous",
         creatorAuthority: "repository_test"
@@ -9429,6 +9451,7 @@ describeDb("memory repository visibility", () => {
         {
           mutationId: grantMutationId,
           shareGrantId: shareGrant.id,
+          teamId: team.id,
           expectedVersion: 0,
           mode: "continuous",
           creatorAuthority: "repository_test"
@@ -9441,6 +9464,7 @@ describeDb("memory repository visibility", () => {
         {
           mutationId: grantMutationId,
           shareGrantId: shareGrant.id,
+          teamId: team.id,
           expectedVersion: 0,
           mode: "snapshot",
           creatorAuthority: "repository_test"
@@ -9494,6 +9518,7 @@ describeDb("memory repository visibility", () => {
       {
         mutationId: randomUUID(),
         shareGrantId: shareGrant.id,
+        teamId: team.id,
         expectedVersion: 1,
         mode: "snapshot",
         creatorAuthority: "repository_test"
@@ -9560,12 +9585,45 @@ describeDb("memory repository visibility", () => {
       [shareGrant.consentId]
     );
 
+    await pool.query(
+      `update team_workspace_access_grants
+          set can_share_owned_memory=false
+        where team_workspace_id=$1 and user_id=$2`,
+      [workspace!.id, owner.id]
+    );
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 2,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("not authorized");
+    await expect(
+      repo.revokeTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: randomUUID(),
+          expectedVersion: 2,
+          reasonCode: "owner_revoked"
+        }
+      )
+    ).rejects.toThrow();
+
     const revokeMutationId = randomUUID();
     const revoked = await repo.revokeTeamConversationSourceGrant(
       { userId: owner.id },
       {
         mutationId: revokeMutationId,
         shareGrantId: shareGrant.id,
+        teamId: team.id,
         expectedVersion: 2,
         reasonCode: "owner_revoked"
       }
@@ -9577,6 +9635,7 @@ describeDb("memory repository visibility", () => {
         {
           mutationId: revokeMutationId,
           shareGrantId: shareGrant.id,
+          teamId: team.id,
           expectedVersion: 2,
           reasonCode: "different_reason"
         }
