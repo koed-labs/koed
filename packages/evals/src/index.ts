@@ -61,7 +61,7 @@ const scoreText = (query: string, text: string): number => {
   const exact = normalizedText.includes(normalizedQuery) ? 100 : 0;
   const semantic =
     normalizedQuery.includes("hosting") &&
-    normalizedText.includes("hetzner vps")
+    normalizedText.includes("deployment target")
       ? 25
       : 0;
   return (
