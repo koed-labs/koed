@@ -1,5 +1,7 @@
-import type { PersonalDesktopConversationEvent } from "@koed/shared/personal-desktop";
-import { conversationToolKindAndLabel } from "@koed/shared/conversation-display";
+import {
+  conversationToolKindAndLabel,
+  type PersonalDesktopConversationEvent
+} from "@koed/shared/personal-desktop";
 import { parseSourcePatch, type SourcePatchDetails } from "@koed/memory-ui";
 
 export type DesktopConversationEvent = PersonalDesktopConversationEvent;

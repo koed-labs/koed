@@ -457,6 +457,71 @@ export type PersonalDesktopRequest = z.infer<
 >;
 export type PersonalDesktopResult = z.infer<typeof personalDesktopResultSchema>;
 
+export const conversationToolKindAndLabel = (
+  toolName: string,
+  signals: {
+    command?: string;
+    path?: string;
+    query?: string;
+    patchSource?: string;
+  } = {}
+): Pick<
+  NonNullable<PersonalDesktopConversationEvent["toolDisplay"]>,
+  "kind" | "label"
+> => {
+  const canonicalName =
+    toolName
+      .toLocaleLowerCase()
+      .split(/__|[.:/]/u)
+      .at(-1)
+      ?.trim() ?? "";
+  const explicitKinds: Record<
+    string,
+    Pick<
+      NonNullable<PersonalDesktopConversationEvent["toolDisplay"]>,
+      "kind" | "label"
+    >
+  > = {
+    apply_patch: { kind: "file_change", label: "Changed files" },
+    exec_command: { kind: "command", label: "Ran command" },
+    read_file: { kind: "file_read", label: "Read file" },
+    rg: { kind: "search", label: "Searched files" },
+    view_image: { kind: "file_read", label: "Read file" },
+    write_stdin: { kind: "command", label: "Ran command" }
+  };
+  const explicit = explicitKinds[canonicalName];
+  if (explicit) return explicit;
+  const lowerName = toolName.toLocaleLowerCase().replace(/[_-]+/gu, " ");
+  if (
+    signals.command ||
+    /\b(exec|shell|bash|terminal|command|run)\b/u.test(lowerName)
+  ) {
+    return { kind: "command", label: "Ran command" };
+  }
+  if (
+    signals.patchSource ||
+    /\b(write|edit|patch|save|change|diff)\b/u.test(lowerName)
+  ) {
+    return { kind: "file_change", label: "Changed files" };
+  }
+  if (signals.path || /\b(read|open|cat|view|file)\b/u.test(lowerName)) {
+    return { kind: "file_read", label: "Read file" };
+  }
+  if (signals.query || /\b(search|find|grep|rg|list)\b/u.test(lowerName)) {
+    return { kind: "search", label: "Searched files" };
+  }
+  const humanized = toolName
+    .replace(/[_-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return {
+    kind: "tool",
+    label: humanized
+      ? humanized.charAt(0).toLocaleUpperCase() + humanized.slice(1)
+      : "Tool call"
+  };
+};
+
 export interface PersonalDesktopApi {
   listProjects: () => Promise<PersonalDesktopProject[]>;
   loadEventPage: (
