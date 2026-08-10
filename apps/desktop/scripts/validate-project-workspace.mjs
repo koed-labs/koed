@@ -765,6 +765,14 @@ const run = async () => {
     assert.ok(railAfterEnd.scrollTop > 0);
     assert.equal(railAfterEnd.addTeamVisible, true);
 
+    const initialActivityCommands = await window.webContents.executeJavaScript(
+      `window.__koedBrowserCommands ?? []`
+    );
+    assert.ok(
+      initialActivityCommands.includes("collaboration.report_team_activity"),
+      JSON.stringify({ initialActivityCommands })
+    );
+
     const teamSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -788,7 +796,11 @@ const run = async () => {
         requestAnimationFrame(() => resolve(performance.now() - startedAt))
       );
     })()`);
-    await delay(50);
+    await waitFor(
+      window,
+      `(window.__koedBrowserUserCommands?.length ?? 0) >= ${teamSelectionUserCommandIndex + 3}`,
+      "Team selection commands"
+    );
     const afterTeamSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -803,13 +815,12 @@ const run = async () => {
     const teamSelectionCommands = await window.webContents.executeJavaScript(
       `window.__koedBrowserCommands?.slice(${teamSelectionCommandIndex}) ?? []`
     );
-    // Team activation selects People, loads its authorized invitation page,
-    // records delivery, and reports current-user Team activity.
+    // Initial focus has already reported Team activity. Navigation within the
+    // write-throttle window must not generate another activity write.
     assert.deepEqual(teamSelectionCommands, [
       "collaboration.select",
       "collaboration.list_invitations",
-      "collaboration.mark_delivered",
-      "collaboration.report_team_activity"
+      "collaboration.mark_delivered"
     ]);
     assert.deepEqual(teamSelectionUserCommands, [
       "collaboration.select",
@@ -850,7 +861,11 @@ const run = async () => {
     await window.webContents.executeJavaScript(
       `document.querySelectorAll('.desktop-workspace-section .desktop-sidebar-nav-item')[1]?.click()`
     );
-    await delay(50);
+    await waitFor(
+      window,
+      `(window.__koedBrowserUserCommands?.length ?? 0) >= ${workspaceSelectionUserCommandIndex + 2}`,
+      "Workspace selection commands"
+    );
     const afterWorkspaceSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -865,8 +880,7 @@ const run = async () => {
       );
     assert.deepEqual(workspaceSelectionCommands, [
       "collaboration.select",
-      "collaboration.mark_delivered",
-      "collaboration.report_team_activity"
+      "collaboration.mark_delivered"
     ]);
     assert.deepEqual(workspaceSelectionUserCommands, [
       "collaboration.select",

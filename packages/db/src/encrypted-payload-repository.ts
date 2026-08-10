@@ -287,12 +287,10 @@ const backfillSources: Partial<
       "query",
       "answer_markdown",
       "error_message",
-      "last_error_message",
       "evidence",
       "citations",
       "retrieval",
       "local_memory_worker",
-      "local_memory_worker_config",
       "response"
     ]),
     valueSql: jsonbValue,
@@ -393,12 +391,7 @@ const redactionForBackfillSource = (
       };
     }
     if (
-      [
-        "retrieval",
-        "local_memory_worker",
-        "local_memory_worker_config",
-        "response"
-      ].includes(sourceColumn)
+      ["retrieval", "local_memory_worker", "response"].includes(sourceColumn)
     ) {
       return {
         cast: "jsonb",

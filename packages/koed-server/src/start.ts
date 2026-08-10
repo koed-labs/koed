@@ -962,10 +962,15 @@ export const startKoedServer = async ({
     paths
   );
   const useBundledLocalDependencies = config.dependencyMode === "bundled-local";
+  const localAiRuntimeEnabled = config.runtimeMode !== "external";
   const runtimeServices = useBundledLocalDependencies
     ? ["postgres-native", "embedding-service-native"]
     : [];
-  const appServices = ["api", "worker"];
+  const appServices = [
+    "api",
+    "worker",
+    ...(localAiRuntimeEnabled ? ["local-ai-runtime"] : [])
+  ];
   const childEnv = initialServiceEnv;
 
   if (appRuntime.kind === "source") {
@@ -1034,7 +1039,7 @@ export const startKoedServer = async ({
     cleanupPromise = (async () => {
       const cleanupErrors: string[] = [];
       const shutdownOrder = [
-        "codexTranscriptWatcher",
+        "localAiRuntime",
         "worker",
         "api",
         "embeddingService"
@@ -1264,6 +1269,40 @@ export const startKoedServer = async ({
       }
     }
 
+    let localAiRuntime: ChildProcess | undefined;
+    if (localAiRuntimeEnabled) {
+      const finalApiToken = resolveActiveIntegrationApiToken(
+        paths,
+        refreshedEnv,
+        refreshedRepoEnv
+      )?.token;
+      if (!finalApiToken) {
+        throw new Error(
+          "A Personal API Token is required to start the local AI runtime."
+        );
+      }
+      localAiRuntime = spawnManagedProcess(
+        paths,
+        "Local AI Runtime",
+        process.execPath,
+        [appRuntime.localAiRuntime],
+        {
+          ...refreshedEnv,
+          KOED_HOME: paths.koedHome,
+          MEMORY_API_URL: apiUrl,
+          MEMORY_API_TOKEN: finalApiToken,
+          MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: String(
+            config.codexTranscriptWatcherEnabled
+          )
+        },
+        spawn,
+        appRuntime.kind === "packaged"
+          ? resolve(appRuntime.root, "mcp-server")
+          : resolve(paths.repoRoot, "packages", "mcp-server")
+      );
+      manageChild("localAiRuntime", localAiRuntime);
+    }
+
     const worker =
       appRuntime.kind === "packaged"
         ? spawnManagedProcess(
@@ -1288,6 +1327,7 @@ export const startKoedServer = async ({
     runtime.services = [...runtimeServices, ...appServices];
     runtime.processes = {
       ...runtime.processes,
+      ...(localAiRuntime ? { localAiRuntime: localAiRuntime.pid ?? 0 } : {}),
       worker: worker.pid ?? 0
     };
     persistRuntime();
@@ -1313,37 +1353,7 @@ export const startKoedServer = async ({
       collectStatus
     });
 
-    const finalApiToken = resolveActiveIntegrationApiToken(
-      paths,
-      refreshedEnv,
-      refreshedRepoEnv
-    )?.token;
-    if (config.codexTranscriptWatcherEnabled && finalApiToken) {
-      const watcher = spawnManagedProcess(
-        paths,
-        "Codex Transcript Watcher",
-        process.execPath,
-        [appRuntime.mcpCli, "watch-codex-transcripts"],
-        {
-          ...refreshedEnv,
-          KOED_HOME: paths.koedHome,
-          MEMORY_API_URL: apiUrl,
-          MEMORY_API_TOKEN: finalApiToken
-        },
-        spawn,
-        appRuntime.kind === "packaged"
-          ? resolve(appRuntime.root, "mcp-server")
-          : resolve(paths.repoRoot, "packages", "mcp-server")
-      );
-      manageChild("codexTranscriptWatcher", watcher);
-      runtime.services.push("codex-transcript-watcher");
-      runtime.processes = {
-        ...runtime.processes,
-        codexTranscriptWatcher: watcher.pid ?? 0
-      };
-      persistRuntime();
-      status = await collectStatus(refreshedEnv);
-    }
+    status = await collectStatus(refreshedEnv);
     console.log(
       JSON.stringify(
         {

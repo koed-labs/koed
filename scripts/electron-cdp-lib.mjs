@@ -361,10 +361,23 @@ export const ensureKoedElectronSetup = async (
     return { changed, state: "ready" };
   }
 
+  await client.waitForBody(
+    (text) =>
+      document.querySelector('[aria-label="Koed scopes"]') !== null ||
+      text.includes("Set up Koed") ||
+      text.includes("Koed is ready") ||
+      text.includes("How Koed handles your Memory"),
+    [],
+    10_000
+  );
+  if (await hasApplicationShell()) {
+    return { changed, state: "ready" };
+  }
+
   let currentText = await client.bodyText();
   if (currentText.includes("Koed is ready")) {
     await continueFromReady();
-  } else {
+  } else if (!currentText.includes("How Koed handles your Memory")) {
     const opened = await client.clickButton("Set up Koed", "first");
     if (!opened.clicked) {
       throw new Error("Could not open the Koed setup confirmation.");

@@ -5895,7 +5895,6 @@ export const createMemorySourceRepository = (
         live_projection_rows: string;
         historical_import_rows: string;
         historical_import_bytes: string;
-        interactive_question_rows: string;
       }>(
         `
         select
@@ -5911,12 +5910,7 @@ export const createMemorySourceRepository = (
             + octet_length(coalesce(ci.transport_chunk_text, ''))
           ) filter (
             where ci.projection_work_class = 'historical_import_backfill'
-          ), 0)::text as historical_import_bytes,
-          (
-            select count(*)::text
-            from memory_questions
-            where visibility = 'personal' and status = 'pending'
-          ) as interactive_question_rows
+          ), 0)::text as historical_import_bytes
         from conversation_items ci
         left join sessions s on s.id = ci.session_id
         where ci.projection_status in ('pending', 'error')
@@ -5936,8 +5930,7 @@ export const createMemorySourceRepository = (
       return {
         liveProjectionRows: Number(row?.live_projection_rows ?? 0),
         historicalImportRows: Number(row?.historical_import_rows ?? 0),
-        historicalImportBytes: Number(row?.historical_import_bytes ?? 0),
-        interactiveQuestionRows: Number(row?.interactive_question_rows ?? 0)
+        historicalImportBytes: Number(row?.historical_import_bytes ?? 0)
       } satisfies ConversationProjectionBacklog;
     },
 

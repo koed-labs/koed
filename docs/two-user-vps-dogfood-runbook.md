@@ -307,9 +307,12 @@ This drives the actual Electron renderer bridges and verifies:
 - no renderer exception or non-canceled network failure occurred during the
   run.
 
-The runner observes the renderer's existing subscription and does not create a
-polling loop or acknowledge deliveries on the renderer's behalf. It writes no
-credentials or message bodies to the report beyond unique synthetic markers.
+The runner observes the renderer bridge and does not create a polling loop or
+acknowledge deliveries on the renderer's behalf. It creates and removes
+explicit Personal realtime subscriptions for the duration of the proof, so the
+result does not depend on which collaboration view either renderer currently
+displays. It writes no credentials or message bodies to the report beyond
+unique synthetic markers.
 
 The same gate can run as part of the broader launch validator:
 

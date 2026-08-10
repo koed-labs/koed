@@ -31,15 +31,15 @@ const spawnResult = (stdout: string, status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
 
 const codexIntegrationConfig = (
-  apiUrl = "http://localhost:3300",
-  apiToken = "token"
+  repoRoot: string,
+  koedHome = repoRoot
 ) => `# >>> koed
 [mcp_servers.koed]
 command = "node"
+args = ["${resolve(repoRoot, "packages/mcp-server/dist/cli.js")}"]
 
 [mcp_servers.koed.env]
-MEMORY_API_URL = "${apiUrl}"
-MEMORY_API_TOKEN = "${apiToken}"
+KOED_HOME = "${koedHome}"
 
 ${[
   "SessionStart",
@@ -540,7 +540,7 @@ describe("status and doctor JSON contracts", () => {
     expect(doctor.checks.map((check) => check.id)).toContain("mcpServer");
   });
 
-  it("uses environment API Tokens for status and MCP doctor checks", async () => {
+  it("keeps API Tokens out of MCP doctor checks", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
@@ -569,17 +569,19 @@ describe("status and doctor JSON contracts", () => {
     expect(status.apiToken.state).toBe("healthy");
     expect(status.apiToken.configured).toBe(true);
     expect(status.mcpServer.state).toBe("healthy");
-    expect(doctorEnvironments[0]?.MEMORY_API_TOKEN).toBe("env_token");
+    expect(doctorEnvironments[0]?.MEMORY_API_TOKEN).toBeUndefined();
+    expect(doctorEnvironments[0]?.MEMORY_API_URL).toBeUndefined();
+    expect(doctorEnvironments[0]?.KOED_HOME).toBe(root);
   });
 
-  it("reports a Codex API URL mismatch while signal hooks remain configured", async () => {
+  it("reports a Codex KOED_HOME mismatch while signal hooks remain configured", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
     writeFileSync(
       resolve(root, ".codex/config.toml"),
-      codexIntegrationConfig()
+      codexIntegrationConfig(root, resolve(root, "stale-koed-home"))
     );
 
     const status = await collectKoedServerStatus(
@@ -610,7 +612,39 @@ describe("status and doctor JSON contracts", () => {
     );
 
     expect(status.codex.state).toBe("needs_attention");
-    expect(status.codex.message).toContain("localhost:3300");
+    expect(status.codex.message).toContain("different Local AI Runtime");
+    expect(status.captureHook.state).toBe("healthy");
+  });
+
+  it("rejects retired API credentials in the Codex MCP environment", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, ".codex"), { recursive: true });
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, ".codex/config.toml"),
+      codexIntegrationConfig(root).replace(
+        `KOED_HOME = "${root}"`,
+        `KOED_HOME = "${root}"\nMEMORY_API_URL = "http://localhost:3300"\nMEMORY_API_TOKEN = "retired-token"`
+      )
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(false, 503, {}),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.codex.state).toBe("needs_attention");
+    expect(status.codex.message).toContain("retired API credentials");
     expect(status.captureHook.state).toBe("healthy");
   });
 
@@ -622,7 +656,7 @@ describe("status and doctor JSON contracts", () => {
     writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
     writeFileSync(
       resolve(codexHome, "config.toml"),
-      codexIntegrationConfig("http://localhost:43300")
+      codexIntegrationConfig(root)
     );
 
     const status = await collectKoedServerStatus(
@@ -668,7 +702,7 @@ describe("status and doctor JSON contracts", () => {
     writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=token\n");
     writeFileSync(
       resolve(root, ".codex/config.toml"),
-      codexIntegrationConfig()
+      codexIntegrationConfig(root)
     );
     writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
     mkdirSync(resolve(root, "run"), { recursive: true });
@@ -734,7 +768,7 @@ describe("status and doctor JSON contracts", () => {
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     writeFileSync(
       resolve(root, ".codex/config.toml"),
-      codexIntegrationConfig("http://localhost:43300", "desktop-token")
+      codexIntegrationConfig(root)
     );
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
@@ -754,13 +788,13 @@ describe("status and doctor JSON contracts", () => {
           "embedding-service-native",
           "api",
           "worker",
-          "codex-transcript-watcher"
+          "local-ai-runtime"
         ],
         codexTranscriptWatcherEnabled: true,
         processes: {
           api: 43,
           worker: 44,
-          codexTranscriptWatcher: 46
+          localAiRuntime: 46
         }
       })
     );

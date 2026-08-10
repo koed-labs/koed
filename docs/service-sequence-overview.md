@@ -3,16 +3,19 @@
 This overview describes the high-level service flow for Koed ingestion,
 LCM summarisation, and retrieval. It follows the current self-hosted boundary:
 the backend stores, projects, embeds, and retrieves memory, while the connected
-AI Client performs Answer Synthesis and creates LCM Summaries through local
-MCP-side workers.
+AI Client performs Answer Synthesis and creates LCM Summaries through the Local
+AI Runtime.
 
 ## Services In Scope
 
 - **AI Client**: Codex is the supported AI Client in this build.
 - **Transcript Watcher**: the local background service that owns correctness for externally managed Codex transcript growth.
 - **Capture Hook**: the TypeScript hook that provides content-free, low-latency wake signals.
-- **MCP Server**: the local process that exposes `memory_answer`, runs local
-  memory-answer work, and runs the LCM Summary Service.
+- **MCP Server**: a thin local MCP `2026-07-28` adapter that exposes Koed tools
+  and forwards typed requests to the Local AI Runtime.
+- **Local AI Runtime**: the single `koed-server`-supervised process per
+  `KOED_HOME` that owns Memory Answer workers, LCM Summary work, Curated Memory
+  review, and transcript watching.
 - **API**: the Fastify backend that authenticates API Tokens, persists raw
   records, runs Projection, and serves recall endpoints.
 - **Worker**: background process that consumes priority-ordered BullMQ or
@@ -105,13 +108,13 @@ MCP-side workers.
    reembedding. Cross-Identity Sync, retention purge, collaboration replay
    pruning, and other Team collaboration jobs are not started.
    After the API is healthy and a local API Token exists, the supervisor starts
-   `@koed/mcp-server` command `watch-codex-transcripts` when enabled.
+   one Local AI Runtime. The runtime hosts the Transcript Watcher when enabled.
 7. `koed-server start --daemon --json` starts a detached `koed-server start`
    supervisor and returns machine-readable startup intent for Desktop and
    scripts. `koed-server stop --json` stops supervised processes in
-   dependency-safe order: Transcript Watcher, Worker, API, native
+   dependency-safe order: Local AI Runtime, Worker, API, native
    Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
-   watcher before the API lets its active scan finish or terminate without
+   Local AI Runtime before the API lets active local work finish or terminate without
    losing the API dependency. Stop treats stale process IDs as an idempotent
    no-op and does not stop Docker Compose or Operator-managed dependencies.
    `koed-server restart --json` runs the same stop lifecycle, starts a detached
@@ -122,7 +125,8 @@ MCP-side workers.
    output, Supported Capture Hook config, Codex config, LCM Summary Service
    availability, and last verification metadata. Status compares the active
    local API URL/token against the Koed-managed Codex MCP block and separately
-   verifies the credential-free Capture Hook command path. Stale ports,
+   verifies the credential-free Capture Hook command path. MCP configuration
+   contains `KOED_HOME` rather than API credentials. Stale ports,
    credentials, or runtime paths show as explicit integration mismatches.
    Readiness gates include Postgres reachability and version,
    current migrations, pgvector, local or BullMQ queue backend availability,
@@ -879,7 +883,7 @@ sequenceDiagram
 
 1. Projection and compaction create LCM Placeholder Memory Nodes from
    token-bounded Memory Event spans or lower-level Memory Nodes.
-2. The MCP Server starts the local LCM Summary Service on a timer and can also
+2. The Local AI Runtime starts the LCM Summary Service on a timer and can also
    nudge it after capture.
 3. The LCM Summary Service asks the API for pending session titles and pending
    LCM summaries.
@@ -925,19 +929,19 @@ does not automatically regenerate already completed summaries.
 ```mermaid
 sequenceDiagram
   participant DB as Database
-  participant MCP as MCP Server
+  participant Runtime as Local AI Runtime
   participant API as API
   participant Codex as Codex App Server
   participant Worker as Worker
   participant Embed as Embedding Service
 
   DB-->>API: Pending LCM Placeholder nodes
-  MCP->>API: GET pending LCM summaries
-  API-->>MCP: Nodes and source items
-  MCP->>Codex: Local LCM summary prompt
-  Codex-->>MCP: Structured LCM Summary
-  MCP->>API: Persist raw-only telemetry and token usage
-  MCP->>API: POST completed LCM Summary
+  Runtime->>API: GET pending LCM summaries
+  API-->>Runtime: Nodes and source items
+  Runtime->>Codex: Local LCM summary prompt
+  Codex-->>Runtime: Structured LCM Summary
+  Runtime->>API: Persist raw-only telemetry and token usage
+  Runtime->>API: POST completed LCM Summary
   API->>DB: Update Memory Node summary
   API->>Worker: Enqueue Memory Node embedding
   Worker->>Embed: Embed completed summary
@@ -1192,7 +1196,8 @@ grant-based visibility model.
 
 1. The AI Client calls the MCP Server's `memory_answer` tool with a query,
    Retrieval Scope, and Search Domain.
-2. The MCP Server starts a local memory-answer worker in Codex app-server mode.
+2. The MCP adapter forwards the validated call to the Local AI Runtime, which
+   starts a fresh memory-answer worker in Codex app-server mode.
    The worker is given only Koed dynamic RAG tools: `scan`, `search`, and
    `expand`.
 3. The local memory-answer worker calls API search through the MCP client's
@@ -1234,8 +1239,8 @@ grant-based visibility model.
    `expand` to fetch underlying source items.
 7. The local memory-answer worker performs Answer Synthesis from the retrieved
    Evidence Bundle and returns structured answer JSON.
-8. The MCP Server compacts the response according to `response_detail`.
-9. The MCP Server persists the Memory Question result and records token usage
+8. The Local AI Runtime compacts the response according to `response_detail`.
+9. The Local AI Runtime persists the Memory Question result and records token usage
    for the local app-server answer work. In paid Koed-managed cloud, stored
    Memory Question query, answer, evidence, citation, retrieval, local
    memory-worker, response, and error payloads are redacted in operational
@@ -1272,13 +1277,15 @@ treating the pending summary as complete.
 sequenceDiagram
   participant Client as AI Client
   participant MCP as MCP Server
+  participant Runtime as Local AI Runtime
   participant Answer as Local Memory Answer Worker
   participant API as API
   participant DB as Database
   participant Embed as Embedding Service
 
   Client->>MCP: memory_answer(query, Search Domain)
-  MCP->>Answer: Start local Codex app-server worker
+  MCP->>Runtime: Authenticated typed local request
+  Runtime->>Answer: Start local Codex app-server worker
   Answer->>API: scan/search dynamic RAG calls
   API->>Embed: Query embedding when semantic retrieval runs
   API->>DB: Search Memory Nodes and fallback evidence
@@ -1286,9 +1293,10 @@ sequenceDiagram
   API-->>Answer: Evidence Bundle candidates
   Answer->>API: expand relevant Memory Nodes
   API-->>Answer: Underlying source items
-  Answer-->>MCP: Structured Memory Answer
-  MCP->>API: Persist Memory Question and token usage
-  MCP-->>Client: Compact Memory Answer
+  Answer-->>Runtime: Structured Memory Answer
+  Runtime->>API: Persist Memory Question and token usage
+  Runtime-->>MCP: Compact Memory Answer
+  MCP-->>Client: MCP tool result
 ```
 
 ## Implementation Anchors
@@ -1301,7 +1309,8 @@ sequenceDiagram
 - LCM summary worker: `packages/mcp-server/src/lcm-summary-worker.ts`
 - LCM API routes: `apps/api/src/memory/lcm-routes.ts`
 - Koed Server control plane: `packages/koed-server/src/cli.ts`
-- MCP `memory_answer`: `packages/mcp-server/src/cli.ts`
+- MCP server factory: `packages/mcp-server/src/mcp-server-factory.ts`
+- Local AI Runtime: `packages/mcp-server/src/local-runtime-server.ts`
 - Memory answer worker: `packages/mcp-server/src/answer-worker.ts`
 - Recall API routes: `apps/api/src/memory/recall-routes.ts`
 - Core recall contract: `packages/core/src/index.ts`

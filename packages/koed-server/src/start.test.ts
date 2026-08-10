@@ -89,6 +89,7 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/worker/dist/index.js",
     "koed-runtime/embedding-service/dist/index.js",
     "koed-runtime/mcp-server/dist/cli.js",
+    "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
     "koed-runtime/api/node_modules/@koed/db/dist/index.js",
     "koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
@@ -577,8 +578,9 @@ describe("start supervisor", () => {
   it("coordinates sibling shutdown and rejects when one essential child exits", async () => {
     const root = tempDir();
     const api = controlledChild(1);
-    const worker = controlledChild(2);
-    const spawned = [api, worker];
+    const localAiRuntime = controlledChild(2);
+    const worker = controlledChild(3);
+    const spawned = [api, localAiRuntime, worker];
     let scheduledFailure = false;
 
     await expect(
@@ -589,7 +591,8 @@ describe("start supervisor", () => {
           KOED_DEPENDENCY_MODE: "external",
           DATABASE_URL: "postgres://operator/db",
           REDIS_URL: "redis://operator:6379",
-          EMBEDDING_SERVICE_URL: "http://operator:8000"
+          EMBEDDING_SERVICE_URL: "http://operator:8000",
+          MEMORY_API_TOKEN: "test-runtime-token"
         },
         timeoutMs: 1,
         pollIntervalMs: 1,
@@ -608,14 +611,16 @@ describe("start supervisor", () => {
     );
 
     expect(worker.signals).toEqual(["SIGTERM"]);
+    expect(localAiRuntime.signals).toEqual(["SIGTERM"]);
     expect(api.signals).toEqual([]);
   });
 
   it("propagates a managed child error after stopping live siblings", async () => {
     const root = tempDir();
     const api = controlledChild(1);
-    const worker = controlledChild(2);
-    const spawned = [api, worker];
+    const localAiRuntime = controlledChild(2);
+    const worker = controlledChild(3);
+    const spawned = [api, localAiRuntime, worker];
     let scheduledFailure = false;
 
     await expect(
@@ -626,7 +631,8 @@ describe("start supervisor", () => {
           KOED_DEPENDENCY_MODE: "external",
           DATABASE_URL: "postgres://operator/db",
           REDIS_URL: "redis://operator:6379",
-          EMBEDDING_SERVICE_URL: "http://operator:8000"
+          EMBEDDING_SERVICE_URL: "http://operator:8000",
+          MEMORY_API_TOKEN: "test-runtime-token"
         },
         timeoutMs: 1,
         pollIntervalMs: 1,
@@ -648,6 +654,7 @@ describe("start supervisor", () => {
 
     expect(worker.signals).toEqual(["SIGTERM"]);
     expect(api.signals).toEqual(["SIGTERM"]);
+    expect(localAiRuntime.signals).toEqual(["SIGTERM"]);
     expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(false);
     expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(false);
   });
@@ -655,8 +662,9 @@ describe("start supervisor", () => {
   it("treats an independently terminated essential child as a failure", async () => {
     const root = tempDir();
     const api = controlledChild(1);
-    const worker = controlledChild(2);
-    const spawned = [api, worker];
+    const localAiRuntime = controlledChild(2);
+    const worker = controlledChild(3);
+    const spawned = [api, localAiRuntime, worker];
     let scheduledStop = false;
 
     await expect(
@@ -667,7 +675,8 @@ describe("start supervisor", () => {
           KOED_DEPENDENCY_MODE: "external",
           DATABASE_URL: "postgres://operator/db",
           REDIS_URL: "redis://operator:6379",
-          EMBEDDING_SERVICE_URL: "http://operator:8000"
+          EMBEDDING_SERVICE_URL: "http://operator:8000",
+          MEMORY_API_TOKEN: "test-runtime-token"
         },
         timeoutMs: 1,
         pollIntervalMs: 1,
@@ -687,6 +696,7 @@ describe("start supervisor", () => {
 
     expect(worker.signals).toEqual([]);
     expect(api.signals).toEqual(["SIGTERM"]);
+    expect(localAiRuntime.signals).toEqual(["SIGTERM"]);
     expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(false);
     expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(false);
   });
@@ -756,7 +766,8 @@ describe("start supervisor", () => {
         REDIS_URL: "redis://operator:6379",
         EMBEDDING_SERVICE_URL: "http://operator:3800",
         EMBEDDING_SERVICE_TOKEN: "operator-token",
-        API_COOKIE_SECURE: "true"
+        API_COOKIE_SECURE: "true",
+        MEMORY_API_TOKEN: "test-runtime-token"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -828,6 +839,7 @@ describe("start supervisor", () => {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         KOED_DEPENDENCY_MODE: "bundled-local",
+        MEMORY_API_TOKEN: "test-runtime-token",
         POSTGRES_HOST_PORT: "25432",
         EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081",
         EMBEDDING_LLAMA_RERANKER_SERVER_PORT: "19081"
@@ -899,7 +911,8 @@ describe("start supervisor", () => {
       "postgres-native",
       "embedding-service-native",
       "api",
-      "worker"
+      "worker",
+      "local-ai-runtime"
     ]);
   });
 
@@ -1120,6 +1133,7 @@ describe("start supervisor", () => {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         KOED_DEPENDENCY_MODE: "bundled-local",
+        MEMORY_API_TOKEN: "test-runtime-token",
         KOED_EMBEDDING_MODEL_PATH: resolve(embeddingDir, "embedding.gguf"),
         KOED_RERANKER_MODEL_PATH: resolve(rerankerDir, "reranker.gguf")
       },
@@ -1192,7 +1206,8 @@ describe("start supervisor", () => {
       signal: cleanShutdownSignal(),
       environment: {
         KOED_HOME: root,
-        KOED_REPO_ROOT: root
+        KOED_REPO_ROOT: root,
+        MEMORY_API_TOKEN: "test-runtime-token"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -1218,6 +1233,7 @@ describe("start supervisor", () => {
         KOED_REPO_ROOT: root,
         DATABASE_URL: "postgres://operator/db",
         EMBEDDING_SERVICE_URL: "http://operator:8000",
+        MEMORY_API_TOKEN: "test-runtime-token",
         WORK_QUEUE_BACKEND: "local"
       },
       timeoutMs: 1,
@@ -1446,7 +1462,8 @@ describe("start supervisor", () => {
         KOED_DEPENDENCY_MODE: "external",
         DATABASE_URL: "postgres://operator/db",
         REDIS_URL: "redis://operator:6379",
-        EMBEDDING_SERVICE_URL: "http://operator:8000"
+        EMBEDDING_SERVICE_URL: "http://operator:8000",
+        MEMORY_API_TOKEN: "test-runtime-token"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -1471,18 +1488,21 @@ describe("start supervisor", () => {
       resolve(root, "koed-runtime/api/dist/index.js")
     ]);
     expect(spawned[1]?.args).toEqual([
+      resolve(root, "koed-runtime/mcp-server/dist/local-runtime-cli.js")
+    ]);
+    expect(spawned[2]?.args).toEqual([
       resolve(root, "koed-runtime/worker/dist/index.js")
     ]);
-    expect(spawned[1]?.env?.EMBEDDING_SERVICE_TOKEN).toBeDefined();
-    expect(spawned[1]?.env?.EMBEDDING_SERVICE_TOKEN).not.toBe("");
+    expect(spawned[2]?.env?.EMBEDDING_SERVICE_TOKEN).toBeDefined();
+    expect(spawned[2]?.env?.EMBEDDING_SERVICE_TOKEN).not.toBe("");
     expect(
       spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY
     ).toBeDefined();
     expect(spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).not.toBe(
       spawned[0]?.env?.DATA_ENCRYPTION_KEY
     );
-    expect(spawned[1]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
-    expect(spawned).toHaveLength(2);
+    expect(spawned[2]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
+    expect(spawned).toHaveLength(3);
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");
   });
 
@@ -1535,7 +1555,7 @@ describe("start supervisor", () => {
     ).toThrow();
   });
 
-  it("starts Transcript Watcher after readiness check with final API Token", async () => {
+  it("starts the Local AI Runtime after readiness with the final API Token", async () => {
     const root = tempDir();
     const controller = new AbortController();
     const spawned: Array<{
@@ -1564,26 +1584,27 @@ describe("start supervisor", () => {
       collectStatus: async () => healthyStatus(root)
     });
     while (
-      !spawned.some((entry) => entry.args.includes("watch-codex-transcripts"))
+      !spawned.some((entry) =>
+        entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+      )
     ) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 1));
     }
 
     try {
-      const watcher = spawned.find((entry) =>
-        entry.args.includes("watch-codex-transcripts")
+      const localAiRuntime = spawned.find((entry) =>
+        entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
       );
-      expect(watcher?.args).toEqual([
-        resolve(root, "packages/mcp-server/dist/cli.js"),
-        "watch-codex-transcripts"
+      expect(localAiRuntime?.args).toEqual([
+        resolve(root, "packages/mcp-server/dist/local-runtime-cli.js")
       ]);
-      expect(watcher?.env?.MEMORY_API_TOKEN).toBe("watcher-token");
-      expect(watcher?.env?.KOED_HOME).toBe(root);
+      expect(localAiRuntime?.env?.MEMORY_API_TOKEN).toBe("watcher-token");
+      expect(localAiRuntime?.env?.KOED_HOME).toBe(root);
       const runtime = JSON.parse(
         readFileSync(resolve(root, "run/koed-server.json"), "utf8")
       ) as { services: string[]; processes: Record<string, number> };
-      expect(runtime.services).toContain("codex-transcript-watcher");
-      expect(runtime.processes.codexTranscriptWatcher).toBeGreaterThan(0);
+      expect(runtime.services).toContain("local-ai-runtime");
+      expect(runtime.processes.localAiRuntime).toBeGreaterThan(0);
     } finally {
       controller.abort();
       await running;
@@ -1602,7 +1623,8 @@ describe("start supervisor", () => {
         KOED_REPO_ROOT: root,
         DATABASE_URL: "postgres://operator/db",
         REDIS_URL: "redis://operator:6379",
-        EMBEDDING_SERVICE_URL: "http://operator:8000"
+        EMBEDDING_SERVICE_URL: "http://operator:8000",
+        MEMORY_API_TOKEN: "test-runtime-token"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -1626,7 +1648,53 @@ describe("start supervisor", () => {
     );
     expect(spawned.map((entry) => entry.args.join(" "))).toEqual([
       resolve(root, "apps/api/dist/index.js"),
+      resolve(root, "packages/mcp-server/dist/local-runtime-cli.js"),
       resolve(root, "apps/worker/dist/index.js")
     ]);
+  });
+
+  it("does not start the Local AI Runtime for an external server", async () => {
+    const root = tempDir();
+    const controller = new AbortController();
+    const spawned: Array<{ command: string; args: string[] }> = [];
+
+    const running = startKoedServer({
+      signal: controller.signal,
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://operator:8000"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: () => spawnResult(),
+      spawn: (command, args) => {
+        spawned.push({ command, args });
+        return child(spawned.length);
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+    while (spawned.length < 2) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1));
+    }
+
+    try {
+      expect(
+        spawned.some((entry) =>
+          entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+        )
+      ).toBe(false);
+      const runtime = JSON.parse(
+        readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+      ) as { services: string[]; processes: Record<string, number> };
+      expect(runtime.services).not.toContain("local-ai-runtime");
+      expect(runtime.processes).not.toHaveProperty("localAiRuntime");
+    } finally {
+      controller.abort();
+      await running;
+    }
   });
 });

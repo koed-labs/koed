@@ -6,8 +6,7 @@ const config = {
   maxConcurrency: 1,
   maxRows: 100,
   maxRuntimeMs: 15_000,
-  maxLiveProjectionRows: 0,
-  maxInteractiveQuestionRows: 0
+  maxLiveProjectionRows: 0
 };
 
 const input = {
@@ -16,24 +15,17 @@ const input = {
   embeddingServiceHealthy: true,
   historicalImportRows: 10,
   liveProjectionRows: 0,
-  interactiveQuestionRows: 0,
   activeHistoricalBatches: 0
 };
 
 describe("historical import admission", () => {
-  it("admits only when live and interactive pressure are below thresholds", () => {
+  it("admits only when live pressure is below its threshold", () => {
     expect(decideHistoricalAdmission(input, config)).toEqual({
       admitted: true
     });
     expect(
       decideHistoricalAdmission({ ...input, liveProjectionRows: 1 }, config)
     ).toEqual({ admitted: false, reason: "live_projection_pressure" });
-    expect(
-      decideHistoricalAdmission(
-        { ...input, interactiveQuestionRows: 1 },
-        config
-      )
-    ).toEqual({ admitted: false, reason: "interactive_pressure" });
   });
 
   it("pauses historical admission for every degraded dependency", () => {

@@ -273,13 +273,6 @@ export const resolveWorkerEnv = (
         0,
         0,
         10_000
-      ),
-      maxInteractiveQuestionRows: boundedIntEnv(
-        environment,
-        "MEMORY_HISTORICAL_IMPORT_INTERACTIVE_BACKLOG_MAX",
-        0,
-        0,
-        10_000
       )
     },
     ...(historicalImportApiReadyUrl ? { historicalImportApiReadyUrl } : {}),

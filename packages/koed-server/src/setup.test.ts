@@ -524,9 +524,12 @@ describe("Codex setup wrapper", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
-      'MEMORY_API_URL = "http://localhost:43300"'
-    );
+    expect(
+      readFileSync(resolve(codexHome, "config.toml"), "utf8")
+    ).not.toContain("MEMORY_API_URL");
+    expect(
+      readFileSync(resolve(codexHome, "config.toml"), "utf8")
+    ).not.toContain("MEMORY_API_TOKEN");
     expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
       `\\"--koed-home\\" \\"${root}\\"`
     );
@@ -562,12 +565,12 @@ describe("Codex setup wrapper", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
-      'MEMORY_API_TOKEN = "desktop_token"'
-    );
-    expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
-      'MEMORY_API_URL = "http://localhost:43300"'
-    );
+    expect(
+      readFileSync(resolve(codexHome, "config.toml"), "utf8")
+    ).not.toContain("MEMORY_API_TOKEN");
+    expect(
+      readFileSync(resolve(codexHome, "config.toml"), "utf8")
+    ).not.toContain("MEMORY_API_URL");
     expect(
       readFileSync(resolve(codexHome, "config.toml"), "utf8")
     ).not.toContain("repo_token");
@@ -610,8 +613,8 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(true);
     expect(checkedPids).toEqual([424_242]);
     expect(result.apiUrl).toBe("https://external.example.test");
-    expect(readFileSync(codexConfigPath, "utf8")).toContain(
-      'MEMORY_API_URL = "https://external.example.test"'
+    expect(readFileSync(codexConfigPath, "utf8")).not.toContain(
+      "MEMORY_API_URL"
     );
     expect(readFileSync(codexConfigPath, "utf8")).not.toContain(
       "http://localhost:43300"

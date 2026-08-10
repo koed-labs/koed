@@ -71,7 +71,7 @@ describe("stopKoedServer", () => {
         processes: {
           api: 10,
           worker: 11,
-          codexTranscriptWatcher: 13
+          localAiRuntime: 13
         }
       })
     );

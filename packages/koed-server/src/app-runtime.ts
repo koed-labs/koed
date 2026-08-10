@@ -19,6 +19,7 @@ export interface KoedAppRuntime {
   workerEntry: string;
   embeddingServiceEntry: string;
   mcpCli: string;
+  localAiRuntime: string;
   captureHook: string;
   dbPackageRoot: string;
   missing: string[];
@@ -44,6 +45,12 @@ const packagedRuntime = (
     "index.js"
   );
   const mcpCli = resolve(root, "mcp-server", "dist", "cli.js");
+  const localAiRuntime = resolve(
+    root,
+    "mcp-server",
+    "dist",
+    "local-runtime-cli.js"
+  );
   const captureHook = resolve(root, "mcp-server", "dist", "capture-hook.js");
   const dbPackageRoot = resolve(root, "api", "node_modules", "@koed", "db");
   const required = [
@@ -51,6 +58,7 @@ const packagedRuntime = (
     workerEntry,
     embeddingServiceEntry,
     mcpCli,
+    localAiRuntime,
     captureHook,
     resolve(dbPackageRoot, "dist", "index.js"),
     resolve(dbPackageRoot, "drizzle", "meta", "_journal.json")
@@ -63,6 +71,7 @@ const packagedRuntime = (
     workerEntry,
     embeddingServiceEntry,
     mcpCli,
+    localAiRuntime,
     captureHook,
     dbPackageRoot,
     missing: required.filter((entry) => !exists(entry))
@@ -84,6 +93,13 @@ const sourceRuntime = (
     "index.js"
   );
   const mcpCli = resolve(root, "packages", "mcp-server", "dist", "cli.js");
+  const localAiRuntime = resolve(
+    root,
+    "packages",
+    "mcp-server",
+    "dist",
+    "local-runtime-cli.js"
+  );
   const captureHook = resolve(
     root,
     "packages",
@@ -107,6 +123,7 @@ const sourceRuntime = (
     workerEntry,
     embeddingServiceEntry,
     mcpCli,
+    localAiRuntime,
     captureHook,
     dbPackageRoot,
     missing: required.filter((entry) => !exists(entry))

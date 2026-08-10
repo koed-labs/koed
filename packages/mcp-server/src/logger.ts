@@ -145,6 +145,3 @@ export const createMcpLogger = (
 };
 
 export const logger = createMcpLogger("koed-mcp-server");
-export const answerBridgeLogger = logger.child({
-  service_component: "memory-answer-bridge"
-});

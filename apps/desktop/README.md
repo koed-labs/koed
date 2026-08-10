@@ -139,13 +139,14 @@ downloaded and total bytes from the pinned artifact response before checksum
 verification. Retrying re-inspects local state and resumes from the first
 incomplete stage.
 
-Desktop also compares the active local API URL/token with the supported Codex
-MCP and Capture Hook configuration in `~/.codex/config.toml` and
-`~/.koed/config.json`. If those user-owned files point at stale local ports or
-credentials, the AI Client Integration and Capture Path cards show an explicit
-mismatch and offer **Fix Codex integration**. The repair action rewrites the
-Koed-managed Codex block and hook config for the currently running Desktop API;
-restart Codex and trust updated hooks if prompted before expecting new captures.
+Desktop verifies that the supported Codex MCP block points at the thin adapter
+with the active `KOED_HOME`, and separately checks the credential-free Capture
+Hook configuration in `~/.codex/config.toml` and `~/.koed/config.json`. The MCP
+block contains no API URL or token. If those user-owned files are stale, the AI
+Client Integration and Capture Path cards show an explicit mismatch and offer
+**Fix Codex integration**. The repair action rewrites the Koed-managed Codex
+block and hook config; restart Codex and trust updated hooks if prompted before
+expecting new captures.
 
 ## Packaged First-Run
 

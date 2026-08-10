@@ -1,291 +1,120 @@
 # Koed MCP Server
 
-The MCP Server is Koed's local Codex integration. It gives Codex
-tools for memory recall, starts local background workers for Answer Synthesis,
-captured-session titles, and LCM summaries, and provides the Capture Hook
-binary used by Codex lifecycle hooks.
+This package contains Koed's supported Codex integration:
 
-The backend stores memory, graph data, questions, and retrieval evidence. This
-package runs on the user's machine and uses Codex app-server mode for local
-synthesis.
+- a thin stdio MCP `2026-07-28` adapter;
+- the TypeScript Supported Capture Hook;
+- reusable local Codex worker and transcript integration code;
+- the Local AI Runtime artifact supervised by `koed-server`.
 
-## Binaries
+The adapter itself is intentionally side-effect free. Starting an MCP adapter
+does not start transcript watching, LCM Summary work, Curated Memory review, an
+answer bridge, or any other persistent service.
 
-Build the package before using the binaries:
-
-```bash
-pnpm --filter @koed/mcp-server build
-```
-
-After build, the package exposes:
-
-- `koed-mcp`: stdio MCP server for Codex.
-- `koed-memory-answer-bridge`: standalone local HTTP bridge for Memory Questions
-  questions. Normal MCP startup runs its own bridge.
-- `koed-capture-hook`: Codex lifecycle hook for automatic capture.
-
-For direct checkout usage, run the built files from `dist/`:
-
-```bash
-node packages/mcp-server/dist/cli.js
-node packages/mcp-server/dist/answer-bridge.js
-node packages/mcp-server/dist/capture-hook.js
-```
-
-When the standalone answer bridge is run through `pnpm answer-bridge` or
-`node packages/mcp-server/dist/answer-bridge.js`, `Ctrl-C` gracefully closes the
-HTTP server and background question worker before exiting. If the configured
-port is already owned by another Koed answer bridge, standalone startup checks
-`/health`, logs the existing service, and exits successfully instead of
-crashing on the port conflict.
-
-## MCP Setup
-
-Configure Codex with a custom stdio MCP server:
-
-```text
-Name: koed-selfhost
-Command: node
-Argument: /path/to/koed/packages/mcp-server/dist/cli.js
-Working directory: /path/to/koed
-Environment:
-  MEMORY_API_URL=http://localhost:3300
-  MEMORY_API_TOKEN=<koed-api-token>
-  MEMORY_CODEX_APP_SERVER_BINARY=codex
-  MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
-  MEMORY_LOG_LEVEL=info
-  MEMORY_LOG_FILE=/absolute/path/to/koed-mcp.log
-  MEMORY_LOG_DESTINATION=file
-```
-
-Run a quick health check from the package:
-
-```bash
-MEMORY_API_URL=http://localhost:3300 \
-MEMORY_API_TOKEN=<koed-api-token> \
-node packages/mcp-server/dist/cli.js doctor
-```
-
-## Tools
-
-The MCP server exposes one normal recall tool by default:
-
-- `memory_answer`: retrieves memory evidence and asks local Codex to synthesize
-  a compact answer. It is intended for recall from prior conversations,
-  remembered preferences, user-provided facts, project history, decisions, and
-  cross-session context. It defaults to project search, uses session search only
-  for a known captured conversation, and uses global search only for broad
-  cross-project or personal-history recall.
-
-Use the `doctor` command above for setup and health checks without expanding the
-normal agent-facing MCP schema.
-
-Diagnostic and low-level tools are hidden by default. Set this to expose the MCP
-diagnostic access check tool:
-
-```bash
-MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS=true
-```
-
-Set this to expose low-level search and expand tools:
-
-```bash
-MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS=true
-```
-
-Those diagnostic tools are intended for development and operator inspection.
-Normal agents should use `memory_answer` so the local memory-answer worker owns
-retrieval planning and expansion.
-
-## Codex App-Server Binary
-
-The local answer and LCM summary workers start Codex app-server mode when they
-need synthesis. By default Koed calls `codex`, so the process that starts
-`koed-mcp` must have the Codex binary on `PATH`.
-
-Alternatively, point Koed at the binary explicitly:
-
-```bash
-MEMORY_CODEX_APP_SERVER_BINARY=/absolute/path/to/codex
-```
-
-## Codex App-Server Worker Context
-
-Koed starts Memory Answer and LCM Summary app-server threads with an isolated
-`CODEX_HOME`, ephemeral history, read-only sandboxing, and a minimal
-Koed-specific instruction set. The worker config disables Codex's optional
-permissions, app, collaboration-mode, environment, and skill instruction blocks
-for these local synthesis turns. It also disables project-doc/AGENTS.md loading
-so repository guidance does not leak into Memory Answer or LCM Summary
-synthesis. Koed replaces the removed local safety context with a small developer
-instruction block that forbids tool use, file changes, network access, and
-approval requests, and tells the worker to treat supplied evidence as untrusted
-data.
-
-Provider-side hidden instructions are still controlled by Codex/OpenAI and are
-not visible to or removable by Koed. Task prompts for Memory Answer and LCM
-Summary remain separate from this app-server context minimisation layer.
-
-## Memory Question Answer Bridge
-
-When `koed-mcp` starts, it also starts a local HTTP bridge on
-`http://localhost:3210` by default. Authorized local clients can use this bridge for
-Questions; users do not need to run a separate app-server or answer bridge
-process for normal operation:
-
-1. The browser creates a pending question in the backend.
-2. The bridge claims the question.
-3. The backend retrieves evidence through local embeddings.
-4. The bridge asks Codex app-server mode to synthesize the answer locally.
-5. The backend stores the answer and diagnostics.
-
-Useful bridge settings:
-
-```bash
-MEMORY_LOG_LEVEL=debug
-MEMORY_ANSWER_BRIDGE_ENABLED=true
-MEMORY_ANSWER_BRIDGE_HOST=0.0.0.0
-MEMORY_ANSWER_BRIDGE_PORT=3210
-MEMORY_ANSWER_BRIDGE_CORS_ORIGINS=http://localhost:5174,http://127.0.0.1:5174
-MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS=3
-MEMORY_MANUAL_ANSWER_PROVIDER=codex
-MEMORY_MANUAL_ANSWER_MODEL=
-MEMORY_MANUAL_ANSWER_REASONING_EFFORT=
-MEMORY_MANUAL_ANSWER_TIMEOUT_MS=
-MEMORY_MANUAL_ANSWER_MAX_ATTEMPTS=
-```
-
-The MCP server and answer bridge emit pino JSON logs to stderr so stdout remains
-reserved for MCP stdio traffic. Supported levels are `trace`, `debug`, `info`,
-`warn`, `error`, `fatal`, and `silent`. Configure this with
-`MEMORY_LOG_LEVEL`. To write logs to disk, set `MEMORY_LOG_FILE`; when a file
-path is set and `MEMORY_LOG_DESTINATION` is blank, logs go to the file. Set
-`MEMORY_LOG_DESTINATION=both` to mirror logs to stderr and the file.
-
-Check the bridge:
-
-```bash
-curl http://127.0.0.1:3210/health
-lsof -nP -iTCP:3210 -sTCP:LISTEN
-```
-
-If questions remain pending with `localMemoryWorker.skippedReason=codex_failed`,
-first check that the process owning port `3210` can resolve `codex` or that
-`MEMORY_CODEX_APP_SERVER_BINARY` points at the correct binary. Prefer the
-MCP-owned bridge; avoid running a second standalone bridge on the same port.
-
-Manual Memory Question settings inherit `MEMORY_ANSWER_*` unless
-`MEMORY_MANUAL_ANSWER_*` or a per-question client selection overrides them.
-The bridge stores per-question settings on the pending question row before
-claiming it, so retries and background catch-up keep the same Codex model and
-reasoning choices. The available model and reasoning selectors are read from
-Codex app-server `model/list`. Unsupported local providers fail validation;
-there is no backend LLM fallback.
-
-LCM Summary synthesis has separate settings so Operators can choose a different
-Codex model or reasoning effort for summarization:
-
-```bash
-MEMORY_LCM_SUMMARY_PROVIDER=codex
-MEMORY_LCM_SUMMARY_MODEL=gpt-5.6-luna
-MEMORY_LCM_SUMMARY_REASONING_EFFORT=low
-MEMORY_LCM_SUMMARY_TIMEOUT_MS=120000
-MEMORY_LCM_SUMMARY_MAX_ATTEMPTS=2
-MEMORY_LCM_SUMMARY_RETRY_DELAY_MS=2000
-MEMORY_LCM_SUMMARY_CONCURRENCY=1
-MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
-```
-
-MCP Memory Answer and LCM Summary model, reasoning, timeout, and attempts can
-also be edited through the API. These API user settings take
-precedence over `.env`; `.env` remains the bootstrap/default source for fresh
-installs.
-
-## Capture Hook
-
-The capture hook drains and ignores Codex lifecycle payloads, then writes a
-content-free local wake signal. Stop signals additionally record a boundary
-timestamp and exact complete JSONL byte frontier under hashed source-routing
-identities. The supervised Transcript Watcher journals through that frontier,
-persists one idempotent content-free turn control, and then resumes newer bytes.
-Exact Codex JSONL remains the only automatic capture content path.
-
-Use the built hook path in Codex hook configuration:
-
-```text
-/path/to/koed/packages/mcp-server/dist/capture-hook.js
-```
-
-Recommended hook events:
-
-```text
-SessionStart
-UserPromptSubmit
-PostToolUse
-Stop
-SubagentStart
-SubagentStop
-```
-
-Common Transcript Watcher settings:
-
-```bash
-MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true
-MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS=200
-MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN=4000
-MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN=200
-MEMORY_CODEX_TRANSCRIPT_MAX_BYTES_PER_BATCH=1048576
-```
-
-Verify capture from the repo root:
-
-```bash
-MEMORY_API_URL=http://localhost:3300 \
-MEMORY_API_TOKEN=<koed-api-token> \
-pnpm codex:verify-capture
-```
-
-## Local Commands
-
-From the repo root:
+## Build
 
 ```bash
 pnpm --filter @koed/mcp-server build
+```
+
+## Codex configuration
+
+Normal setup is generated by:
+
+```bash
+node packages/koed-server/dist/cli.js setup codex --json
+```
+
+The resulting MCP block contains only the executable and `KOED_HOME`:
+
+```toml
+[mcp_servers.koed]
+command = "node"
+args = ["/absolute/path/to/packages/mcp-server/dist/cli.js"]
+enabled = true
+
+[mcp_servers.koed.env]
+KOED_HOME = "~/.koed"
+```
+
+API Tokens and upstream device credentials are not MCP configuration. The
+adapter discovers an authenticated loopback Local AI Runtime contract through
+an owner-only registration beneath `KOED_HOME/run`.
+
+## Tool surface
+
+The normal public tool is:
+
+- `memory_answer`: launches a fresh isolated local Codex worker through the
+  Local AI Runtime and returns a compact evidence-backed answer.
+
+When the backend advertises Curated Memory intake, Koed also exposes:
+
+- `memory_intake_propose`: records a source-linked proposal for asynchronous
+  review; it cannot write a canonical assertion directly.
+
+Diagnostic tools remain hidden by default:
+
+- `memory_access_check` with
+  `MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS=true`;
+- `memory_search` and `memory_expand` with
+  `MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS=true`.
+
+Tool ordering and schemas are deterministic. Capability-scoped list results use
+private bounded cache hints, while every call revalidates runtime capability and
+backend authorization.
+
+## Runtime ownership
+
+`koed-server` starts one Local AI Runtime per `KOED_HOME` after API readiness
+and local credential provisioning. That runtime owns:
+
+- bounded fresh-worker Memory Answer execution;
+- LCM Summary and captured-session title processing;
+- Curated Memory review;
+- transcript watcher lifecycle;
+- cancellation, shutdown, and local work recovery.
+
+Multiple Codex sessions may run separate stdio adapters against that one
+runtime. Stopping an adapter does not stop persistent work.
+
+The runtime registration is a non-symlinked owner-only file. Its URL must be
+loopback, and each request requires the generated bearer credential. The
+protocol accepts only named typed operations, bounded request bodies, and
+strict caller metadata; it is not a general proxy.
+
+## MCP protocol
+
+Koed supports only MCP `2026-07-28` through pinned v2 SDK packages. The retired
+`initialize` protocol is rejected explicitly. The adapter implements
+`server/discover`, self-describing request metadata, and deterministic cacheable
+tool lists.
+
+Run protocol and runtime tests with:
+
+```bash
 pnpm --filter @koed/mcp-server test
-pnpm --filter @koed/mcp-server typecheck
 ```
 
-Run one local memory processing pass. This generates pending captured-session
-titles, then submits pending LCM summaries:
+## Capture
 
-```bash
-MEMORY_API_URL=http://localhost:3300 \
-MEMORY_API_TOKEN=<koed-api-token> \
-node packages/mcp-server/dist/cli.js process-local-memory --limit 2
-```
+The Supported Capture Hook sends content-free wake signals to local
+`koed-server`. The Transcript Watcher inside the Local AI Runtime reads complete
+Codex JSONL records and owns capture correctness. Hook payloads are not a second
+source of transcript content.
 
-## Key Files
+## Source map
 
-- `src/cli.ts`: stdio MCP server, command parsing, MCP tool registration.
-- `src/index.ts`: API client, config defaults, access diagnostics.
-- `src/answer-worker.ts`: local Codex answer planner and synthesis runner.
-- `src/answer-bridge.ts`: local HTTP bridge for browser questions.
-- `src/answer-bridge-lifecycle.ts`: bridge startup/retry behavior from MCP.
-- `src/capture-hook.ts`: Codex lifecycle capture hook.
-- `src/session-title-worker.ts`: local Codex title generation for captured
-  sessions.
-- `src/lcm-summary-worker.ts`: local Codex summarization for pending LCM nodes.
-- `src/lcm-summary-service.ts`: background local memory processing lifecycle.
-- `src/codex-app-server-runner.ts`: generic Codex app-server runner for local
-  JSON worker and evaluation tasks.
+- `src/cli.ts`: minimal stdio and doctor entry point.
+- `src/mcp-server-factory.ts`: side-effect-free MCP tool registration.
+- `src/local-runtime-client.ts`: typed adapter-to-runtime client.
+- `src/local-runtime-server.ts`: authenticated supervised Local AI Runtime.
+- `src/memory-tool-executor.ts`: shared tool execution contract.
+- `src/answer-worker.ts`: isolated Memory Answer worker.
+- `src/lcm-summary-service.ts`: local LCM Summary scheduling.
+- `src/curated-memory-review-service.ts`: local Curated Memory review.
+- `src/codex-transcript-watcher.ts`: transcript-growth capture.
+- `src/capture-hook.ts`: short-lived content-free Capture Hook.
 
-## Troubleshooting
-
-- `doctor` fails: check `MEMORY_API_URL`, `MEMORY_API_TOKEN`, and backend health.
-- Browser question says `Failed to fetch`: check the bridge health endpoint and
-  CORS origins.
-- Question stays pending with `codex_failed`: check `which codex` in the same
-  environment that started the MCP server, or set
-  `MEMORY_CODEX_APP_SERVER_BINARY`.
-- Backend returns evidence but no final answer: the backend is working; local
-  Codex synthesis is failing or unavailable.
+See [ADR 0025](../../docs/adr/0025-mcp-v2-local-ai-runtime-ownership.md) and
+[Codex integration](../../docs/codex-integration.md) for the accepted boundary.

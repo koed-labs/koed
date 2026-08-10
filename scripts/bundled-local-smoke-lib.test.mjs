@@ -105,7 +105,14 @@ test("builds isolated native bundled-local environment with unique ports", async
   assert.match(context.koedHome, /koed-bundled-smoke-home-test$/);
   assert.equal(context.env.KOED_ENV_PATH, `${context.koedHome}/repo.env`);
   assert.equal(context.env.KOED_REPO_ROOT, "/repo");
+  assert.equal(context.env.KOED_RUNTIME_MODE, "local-personal");
   assert.equal(context.env.KOED_DEPENDENCY_MODE, "bundled-local");
+  assert.equal(context.env.KOED_AUTO_PORTS, "1");
+  assert.equal(context.env.CODEX_HOME, `${context.koedHome}/codex`);
+  assert.equal(
+    context.env.CODEX_CONFIG_PATH,
+    `${context.koedHome}/codex/config.toml`
+  );
   assert.equal(context.env.WORK_QUEUE_BACKEND, "bullmq");
   assert.equal(context.env.KOED_BUNDLED_POSTGRES_MODE, "native");
   assert.equal(context.env.KOED_BUNDLED_EMBEDDING_MODE, "native");

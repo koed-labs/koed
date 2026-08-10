@@ -58,6 +58,7 @@ const createPackagedRuntime = (root: string) => {
     "koed-runtime/worker/dist/index.js",
     "koed-runtime/embedding-service/dist/index.js",
     "koed-runtime/mcp-server/dist/cli.js",
+    "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
     "koed-runtime/api/node_modules/@koed/db/dist/index.js",
     "koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
@@ -72,6 +73,7 @@ const createKoedHomeRuntime = (root: string) => {
     "runtime/koed-runtime/worker/dist/index.js",
     "runtime/koed-runtime/embedding-service/dist/index.js",
     "runtime/koed-runtime/mcp-server/dist/cli.js",
+    "runtime/koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "runtime/koed-runtime/mcp-server/dist/capture-hook.js",
     "runtime/koed-runtime/api/node_modules/@koed/db/dist/index.js",
     "runtime/koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
@@ -86,6 +88,7 @@ const createKoedHomeServerPackageRuntime = (root: string) => {
     "runtime/koed-server/current/koed-runtime/worker/dist/index.js",
     "runtime/koed-server/current/koed-runtime/embedding-service/dist/index.js",
     "runtime/koed-server/current/koed-runtime/mcp-server/dist/cli.js",
+    "runtime/koed-server/current/koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "runtime/koed-server/current/koed-runtime/mcp-server/dist/capture-hook.js",
     "runtime/koed-server/current/koed-runtime/api/node_modules/@koed/db/dist/index.js",
     "runtime/koed-server/current/koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
