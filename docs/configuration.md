@@ -105,9 +105,9 @@ Example external `KOED_HOME/config/server.json`:
 
 ```json
 {
-  "runtimeMode": "developer",
+  "runtimeMode": "external",
   "dependencyMode": "external",
-  "codexTranscriptWatcherEnabled": true,
+  "codexTranscriptWatcherEnabled": false,
   "external": {
     "databaseUrl": "postgres://koed:password@127.0.0.1:15432/koed",
     "redisUrl": "redis://127.0.0.1:16379",

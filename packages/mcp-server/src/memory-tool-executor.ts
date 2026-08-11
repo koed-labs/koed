@@ -114,6 +114,7 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
 export interface MemoryToolExecutorServices {
   lcmSummaryService?: LcmSummaryServiceHandle | null;
   curatedMemoryReviewService?: LocalCuratedMemoryReviewServiceHandle | null;
+  answerWithMemoryWorker?: typeof answerWithMemoryWorker;
 }
 
 export class MemoryToolExecutor {
@@ -196,12 +197,15 @@ export class MemoryToolExecutor {
       .listLocalMemoryAgentSettings()
       .then((response) => response.settings)
       .catch(() => []);
-    const workerConfig = resolveMemoryAnswerWorkerConfig(
-      this.environment,
-      workerOverridesFromLocalMemorySetting(
-        localMemoryAgentSettingFor(localAgentSettings, "mcp_memory_answer")
-      )
-    );
+    const workerConfig = {
+      ...resolveMemoryAnswerWorkerConfig(
+        this.environment,
+        workerOverridesFromLocalMemorySetting(
+          localMemoryAgentSettingFor(localAgentSettings, "mcp_memory_answer")
+        )
+      ),
+      cwd: caller.cwd
+    };
     const projectId =
       input.search_domain === "project"
         ? normalizeProjectId(input.project_id, caller)
@@ -273,7 +277,9 @@ export class MemoryToolExecutor {
         retrieval: { mode: "app_server_dynamic_tools" }
       }
     };
-    const answer = await answerWithMemoryWorker(evidence, {
+    const answer = await (
+      this.services.answerWithMemoryWorker ?? answerWithMemoryWorker
+    )(evidence, {
       config: workerConfig,
       client: retrievalClient,
       retrievalScope,

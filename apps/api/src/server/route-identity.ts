@@ -964,13 +964,6 @@ export const routeIdentityContracts = [
     "Read local Memory Question."
   ),
   route(
-    "PATCH",
-    "/v1/memory/questions/{questionId}",
-    "session_or_api_token",
-    "local_synthesis",
-    "Update local Memory Question."
-  ),
-  route(
     "GET",
     "/v1/memory/local-agent-settings",
     "session_or_api_token",

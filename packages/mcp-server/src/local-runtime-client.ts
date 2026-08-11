@@ -42,7 +42,11 @@ const requestSignal = (
         );
   timeout?.unref?.();
   const abort = () => controller.abort(callerSignal?.reason);
-  callerSignal?.addEventListener("abort", abort, { once: true });
+  if (callerSignal?.aborted) {
+    abort();
+  } else {
+    callerSignal?.addEventListener("abort", abort, { once: true });
+  }
   return {
     signal: controller.signal,
     dispose: () => {

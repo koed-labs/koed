@@ -104,6 +104,44 @@ describe("Local AI Runtime", () => {
     await expect(pending).rejects.toThrow("cancelled");
   });
 
+  it("propagates a caller signal that was aborted before dispatch", async () => {
+    const koedHome = tempHome();
+    const registrationPath = localRuntimeRegistrationPath(koedHome);
+    mkdirSync(resolve(koedHome, "run"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      registrationPath,
+      JSON.stringify({
+        protocolVersion: 1,
+        url: "http://127.0.0.1:32123",
+        authorization: `Bearer ${"a".repeat(32)}`,
+        pid: process.pid,
+        startedAt: new Date().toISOString()
+      }),
+      { mode: 0o600 }
+    );
+    const caller = new AbortController();
+    caller.abort(new Error("caller stopped"));
+    const fetchImpl = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.signal?.aborted).toBe(true);
+        throw init?.signal?.reason;
+      }
+    );
+
+    await expect(
+      new LocalAiRuntimeClient(
+        { KOED_HOME: koedHome },
+        fetchImpl as typeof fetch
+      ).callTool(
+        "memory_answer",
+        { query: "cancelled answer" },
+        { cwd: "/work" },
+        caller.signal
+      )
+    ).rejects.toThrow("cancelled");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("publishes an owner-only registration and authenticates adapter calls", async () => {
     const koedHome = tempHome();
     const environment = { KOED_HOME: koedHome };

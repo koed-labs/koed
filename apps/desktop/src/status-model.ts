@@ -170,8 +170,7 @@ export const statusCards = [
   {
     id: "api",
     title: "Core API",
-    role:
-      "HTTP API used by Desktop, Capture Hook, the Local AI Runtime, and recall.",
+    role: "HTTP API used by Desktop, Capture Hook, the Local AI Runtime, and recall.",
     impact:
       "Capture, recall, settings, and Desktop calls fail when unreachable.",
     componentKeys: ["api"],

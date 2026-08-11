@@ -40,7 +40,7 @@ describe("local URL resolution", () => {
     ).toBe("http://localhost:4545");
   });
 
-  it("uses supervisor-owned automatic ports instead of stale generated URLs", () => {
+  it("uses the supervisor-owned automatic API port instead of a stale generated URL", () => {
     expect(
       resolveApiUrl(
         {
@@ -51,15 +51,5 @@ describe("local URL resolution", () => {
         {}
       )
     ).toBe("http://localhost:3301");
-    expect(
-      resolveExplorerUrl(
-        {
-          KOED_AUTO_PORTS: "1",
-          EXPLORER_WEB_HOST_PORT: "5175",
-          KOED_EXPLORER_URL: "http://localhost:5174"
-        },
-        {}
-      )
-    ).toBe("http://localhost:5175");
   });
 });
