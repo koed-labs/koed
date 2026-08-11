@@ -15,6 +15,7 @@ import {
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   collaborationSubscriptionSchema,
+  cancelReadable,
   isTeamCollaborationSelection,
   readBoundedJsonObject,
   type CollaborationCommandResult,
@@ -396,6 +397,27 @@ const readSse = async (
   ) => Promise<"continue" | "terminal">
 ): Promise<"ended" | "terminal"> => {
   const reader = body.getReader();
+  let rejectAbort: ((reason?: unknown) => void) | null = null;
+  const abortPromise = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = () => {
+    const reason: unknown =
+      signal.reason ??
+      new DOMException("The operation was aborted", "AbortError");
+    cancelReadable(reader, reason);
+    rejectAbort?.(reason);
+  };
+  if (signal.aborted) {
+    try {
+      cancelReadable(reader, signal.reason);
+    } catch {
+      // Best-effort cancellation; release the lock synchronously.
+    }
+    reader.releaseLock();
+    return "terminal";
+  }
+  signal.addEventListener("abort", onAbort, { once: true });
   const decoder = new TextDecoder();
   let buffer = "";
 
@@ -429,7 +451,7 @@ const readSse = async (
   try {
     for (;;) {
       if (signal.aborted) return "terminal";
-      const chunk = await reader.read();
+      const chunk = await Promise.race([reader.read(), abortPromise]);
       if (chunk.done) break;
       buffer += decoder
         .decode(chunk.value, { stream: true })
@@ -454,8 +476,17 @@ const readSse = async (
     }
     return "ended";
   } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    signal.removeEventListener("abort", onAbort);
+    try {
+      cancelReadable(reader);
+    } catch {
+      // Best-effort cancellation; lock release is unconditional.
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released by the underlying stream.
+    }
   }
 };
 
@@ -764,7 +795,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
             ?.toLowerCase()
             .startsWith("text/event-stream")
         ) {
-          await response.body?.cancel().catch(() => undefined);
+          if (response.body) cancelReadable(response.body);
           if ([401, 403, 410].includes(response.status)) {
             emitConnection(
               subscription,
@@ -908,9 +939,11 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           signal: linked.controller.signal
         }
       );
-      const payload = await readBoundedJsonObject(response, 1024 * 1024).catch(
-        () => null
-      );
+      const payload = await readBoundedJsonObject(
+        response,
+        1024 * 1024,
+        linked.controller.signal
+      ).catch(() => null);
       if (!response.ok) {
         if ([401, 403, 410].includes(response.status)) {
           emitTerminalControl(subscription, "access_revoked");
@@ -997,7 +1030,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           signal: linked.controller.signal
         }
       );
-      await response.body?.cancel().catch(() => undefined);
+      if (response.body) cancelReadable(response.body);
       if (!response.ok) {
         if ([401, 403, 409, 410].includes(response.status)) {
           emitTerminalControl(subscription, "access_revoked");
@@ -1073,7 +1106,8 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       );
       const payload = await readBoundedJsonObject(
         response,
-        commandResponseMaxBytes
+        commandResponseMaxBytes,
+        linked.controller.signal
       ).catch(() => null);
       const result = parseCorrelatedResult(payload, command);
       if (!response.ok || !result?.ok || !("snapshot" in result.data)) {
@@ -1181,7 +1215,8 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       );
       const payload = await readBoundedJsonObject(
         response,
-        commandResponseMaxBytes
+        commandResponseMaxBytes,
+        linked.controller.signal
       ).catch(() => null);
       if (
         authorityGeneration(context.ownerId) !== expectedAuthorityGeneration
@@ -1348,7 +1383,8 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       );
       const payload = await readBoundedJsonObject(
         response,
-        commandResponseMaxBytes
+        commandResponseMaxBytes,
+        linked.controller.signal
       ).catch(() => null);
       const result = parseCorrelatedResult(payload, command);
       if (!result) {
@@ -1439,7 +1475,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           signal: linked.controller.signal
         }
       );
-      await response.body?.cancel().catch(() => undefined);
+      if (response.body) cancelReadable(response.body);
       return response.ok;
     } catch {
       return false;

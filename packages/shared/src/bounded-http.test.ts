@@ -107,4 +107,98 @@ describe("bounded HTTP helpers", () => {
     expect(result.response.status).toBe(409);
     expect(result.payload).toEqual({ code: "conflict" });
   });
+
+  it("composes caller abort with the bounded request timeout", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const request = fetchBoundedJsonObject(
+      async (_input, init) => {
+        receivedSignal = init?.signal ?? undefined;
+        return await new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new Error("caller aborted")),
+            { once: true }
+          );
+        });
+      },
+      new URL("https://example.com"),
+      {},
+      { timeoutMs: 10_000, maxBytes: 1_000, signal: controller.signal }
+    );
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+
+  it("rejects an already-aborted bounded request without starting the fetch", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetcher = vi.fn();
+    await expect(
+      fetchBoundedJsonObject(
+        fetcher,
+        new URL("https://example.com"),
+        {},
+        { timeoutMs: 10_000, maxBytes: 1_000, signal: controller.signal }
+      )
+    ).rejects.toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("cancels an active never-ending response body when the caller aborts", async () => {
+    const controller = new AbortController();
+    let canceled = false;
+    const request = fetchBoundedJsonObject(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(new TextEncoder().encode("{"));
+            },
+            cancel() {
+              canceled = true;
+            }
+          })
+        ),
+      new URL("https://example.com"),
+      {},
+      { timeoutMs: 10_000, maxBytes: 1_000, signal: controller.signal }
+    );
+    await Promise.resolve();
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    expect(canceled).toBe(true);
+  });
+
+  it("rejects promptly when fetch ignores the caller signal", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const request = fetchBoundedJsonObject(
+      async () => {
+        calls += 1;
+        return await new Promise<Response>(() => undefined);
+      },
+      new URL("https://example.com"),
+      {},
+      { timeoutMs: 10_000, maxBytes: 1_000, signal: controller.signal }
+    );
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+
+  it("composes two caller signals and rejects if either aborts", async () => {
+    const first = new AbortController();
+    const second = new AbortController();
+    const request = fetchBoundedJsonObject(
+      async () => await new Promise<Response>(() => undefined),
+      new URL("https://example.com"),
+      { signal: first.signal },
+      { timeoutMs: 10_000, maxBytes: 1_000, signal: second.signal }
+    );
+    second.abort();
+    await expect(request).rejects.toThrow();
+    expect(first.signal.aborted).toBe(false);
+  });
 });

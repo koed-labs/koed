@@ -1,8 +1,38 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { startDesktopWindowAndRuntime } from "./startup.js";
+import {
+  createDesktopWindowIfAllowed,
+  startDesktopWindowAndRuntime
+} from "./startup.js";
 
 describe("Desktop startup", () => {
+  it("does not create a window after quit cancellation and checks again after await", async () => {
+    let allowed = false;
+    const createWindow = vi.fn(async () => undefined);
+    await expect(
+      createDesktopWindowIfAllowed({
+        canStart: () => allowed,
+        createWindow
+      })
+    ).resolves.toBe(false);
+    expect(createWindow).not.toHaveBeenCalled();
+
+    allowed = true;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const creating = createDesktopWindowIfAllowed({
+      canStart: () => allowed,
+      createWindow: async () => {
+        await pending;
+      }
+    });
+    allowed = false;
+    release();
+    await expect(creating).resolves.toBe(false);
+  });
+
   it("shows the window without waiting for runtime recovery", async () => {
     let releaseRuntime!: () => void;
     const runtime = new Promise<void>((resolve) => {

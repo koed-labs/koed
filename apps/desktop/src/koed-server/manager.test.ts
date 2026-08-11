@@ -2444,6 +2444,411 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(calls.filter((args) => args.includes("--daemon"))).toHaveLength(1);
   });
 
+  it("settles resume after stop wins during delayed daemon start", async () => {
+    const calls: string[][] = [];
+    let releaseStart!: () => void;
+    let startRequested = false;
+    const delayedStart = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: "/home/test/.koed" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: "/home/test/.koed" }
+      }),
+      existsSync: (path) =>
+        path === "/repo/cli.js" ||
+        path === "/home/test/.koed/run/last-verification.json",
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        if (args.includes("start")) {
+          startRequested = true;
+          void delayedStart.then(() =>
+            callback(null, JSON.stringify({ ok: true, state: "starting" }), "")
+          );
+          return;
+        }
+        if (args.includes("stop")) {
+          callback(null, JSON.stringify({ ok: true, state: "stopped" }), "");
+          return;
+        }
+        callback(
+          null,
+          JSON.stringify({
+            ok: false,
+            state: "needs_attention",
+            api: { state: "needs_attention" },
+            apiToken: { state: "needs_attention" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    const resuming = manager.resume();
+    await waitFor(() => startRequested);
+    const stopping = manager.stop();
+    await waitFor(
+      () => calls.filter((args) => args.includes("stop")).length >= 1
+    );
+    releaseStart();
+
+    await expect(resuming).resolves.toMatchObject({
+      ok: false,
+      state: "stopped"
+    });
+    await expect(stopping).resolves.toMatchObject({
+      ok: true,
+      state: "stopped"
+    });
+    expect(calls.filter((args) => args.includes("start"))).toHaveLength(1);
+    expect(calls.filter((args) => args.includes("stop"))).toHaveLength(2);
+    await expect(manager.resume()).resolves.toMatchObject({
+      ok: false,
+      state: "stopped"
+    });
+    expect(calls.filter((args) => args.includes("start"))).toHaveLength(1);
+  });
+
+  it("admits public starts only before shutdown and never starts after a delayed status", async () => {
+    const calls: string[][] = [];
+    let releaseStatus!: () => void;
+    let statusRequested = false;
+    const delayedStatus = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        if (args.includes("status")) {
+          statusRequested = true;
+          void delayedStatus.then(() =>
+            callback(
+              null,
+              JSON.stringify({
+                ok: false,
+                state: "needs_attention",
+                api: { state: "needs_attention" }
+              }),
+              ""
+            )
+          );
+          return;
+        }
+        if (args.includes("stop")) {
+          callback(null, JSON.stringify({ ok: true, state: "stopped" }), "");
+          return;
+        }
+        callback(null, JSON.stringify({ ok: false }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    const starting = manager.handlers.start!();
+    await waitFor(() => statusRequested);
+    const stopping = manager.stop();
+    releaseStatus();
+    await expect(starting).resolves.toMatchObject({
+      ok: false,
+      state: "stopped"
+    });
+    await expect(stopping).resolves.toMatchObject({ state: "stopped" });
+    expect(calls.filter((args) => args.includes("start"))).toHaveLength(0);
+    await expect(manager.handlers.start_daemon!()).resolves.toMatchObject({
+      ok: false,
+      state: "stopped"
+    });
+    expect(calls.filter((args) => args.includes("start"))).toHaveLength(0);
+  });
+
+  it("returns stable stopped results for mutating handlers after shutdown", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("stop")
+              ? { ok: true, state: "stopped" }
+              : { ok: true, state: "healthy" }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.stop();
+    const stoppedHandlers = [
+      manager.handlers.setup_codex!(),
+      manager.handlers.runtime_install!({ operatorConsented: true }),
+      manager.handlers.models_install!(),
+      manager.handlers.package_install!({ operatorConsented: true }),
+      manager.handlers.personal_sync_pause!({ groupId: "group" }),
+      manager.handlers.personal_sync_revoke!({
+        groupId: "group",
+        deviceId: "device"
+      }),
+      manager.handlers.upstream_connect!({ url: "https://example.test" })
+    ];
+    for (const result of await Promise.all(stoppedHandlers)) {
+      expect(result).toMatchObject({ ok: false, state: "stopped" });
+    }
+    expect(() =>
+      manager.handlers.setup_run!(
+        { operatorConsented: true },
+        {
+          ownerId: "owner",
+          signal: new AbortController().signal,
+          emitCollaborationEvent: vi.fn(),
+          emitSetupProgress: vi.fn()
+        }
+      )
+    ).toThrow();
+    expect(calls.filter((args) => !args.includes("stop"))).toHaveLength(0);
+  });
+
+  it("cancels Personal Device status before relay creation and closes a late pairing server once", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-pds-race-"));
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    let releaseFactory!: () => void;
+    let factoryRequested = false;
+    const delayedFactory = new Promise<void>((resolve) => {
+      releaseFactory = resolve;
+    });
+    const closePairingServer = vi.fn(async () => undefined);
+    const startPairingServer = vi.fn(async () => {
+      factoryRequested = true;
+      await delayedFactory;
+      return {
+        port: 3310,
+        createInvitation: vi.fn(),
+        waitForRequest: vi.fn(),
+        approve: vi.fn(),
+        waitForCompletion: vi.fn(),
+        cancel: vi.fn(),
+        inspect: vi.fn(() => []),
+        close: closePairingServer
+      };
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("stop")) {
+          callback(null, JSON.stringify({ ok: true, state: "stopped" }), "");
+          return;
+        }
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:3300" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      startPairingServer,
+      personalMemoryFetch: (async (_input, init) => {
+        await new Promise<void>((resolve, reject) => {
+          if (init?.signal?.aborted) {
+            reject(new Error("aborted"));
+            return;
+          }
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new Error("aborted")),
+            { once: true }
+          );
+          setTimeout(resolve, 0);
+        });
+        return new Response(
+          JSON.stringify({
+            groups: [{ group_id: "group-one", members: [] }],
+            pairing_invitation_group_ids: ["group-one"]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }) as typeof fetch
+    });
+    try {
+      const status = manager.handlers.personal_sync_status!();
+      await waitFor(() => factoryRequested);
+      const stopping = manager.stop();
+      releaseFactory();
+      await expect(status).resolves.toMatchObject({
+        ok: false,
+        state: "stopped"
+      });
+      await expect(stopping).resolves.toMatchObject({ state: "stopped" });
+      expect(startPairingServer).toHaveBeenCalledTimes(1);
+      expect(closePairingServer).toHaveBeenCalledTimes(1);
+      await expect(
+        manager.handlers.personal_sync_status!()
+      ).resolves.toMatchObject({
+        ok: false,
+        state: "stopped"
+      });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts an in-flight Personal Device status operation before relay startup", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-pds-status-race-")
+    );
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    let fetchRequested = false;
+    const startPairingServer = vi.fn();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo", KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("stop")) {
+          callback(null, JSON.stringify({ ok: true, state: "stopped" }), "");
+          return;
+        }
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:3300" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      startPairingServer,
+      personalMemoryFetch: (async (_input, init) => {
+        fetchRequested = true;
+        await new Promise<void>((_resolve, reject) => {
+          if (init?.signal?.aborted) {
+            reject(new Error("aborted"));
+            return;
+          }
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(new Error("aborted"));
+            },
+            { once: true }
+          );
+        });
+        throw new Error("status should be canceled");
+      }) as typeof fetch
+    });
+    try {
+      const status = manager.handlers.personal_sync_status!();
+      await waitFor(() => fetchRequested);
+      const stopping = manager.stop();
+      await expect(status).resolves.toMatchObject({
+        ok: false,
+        state: "stopped"
+      });
+      await expect(stopping).resolves.toMatchObject({ state: "stopped" });
+      expect(startPairingServer).not.toHaveBeenCalled();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unsuccessful daemon stop and retries it without repeating success", async () => {
+    let stopAttempts = 0;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("stop")) {
+          stopAttempts += 1;
+          callback(
+            null,
+            JSON.stringify(
+              stopAttempts === 1
+                ? { ok: false, state: "needs_attention" }
+                : { ok: true, state: "stopped" }
+            ),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.stop()).rejects.toThrow();
+    await expect(manager.stop()).resolves.toMatchObject({
+      ok: true,
+      state: "stopped"
+    });
+    expect(stopAttempts).toBe(2);
+  });
+
   it("opens a verified Desktop install into recovery when resume fails", async () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",

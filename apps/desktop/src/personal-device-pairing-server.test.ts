@@ -314,17 +314,19 @@ describe("Personal Device LAN pairing server", () => {
         }
       );
       expect(response.status).toBe(202);
-      expect(forwardControl).toHaveBeenCalledWith({
-        mode: "relay",
-        method: "PUT",
-        path: "/v1/personal-device-sync/relay/packages/package-1",
-        headers: expect.objectContaining({
-          "content-type": "application/json",
-          "x-pds-membership-certificate": "certificate",
-          "x-pds-relay-proof": "proof"
-        }),
-        body: JSON.stringify({ encrypted: true })
-      });
+      expect(forwardControl).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "relay",
+          method: "PUT",
+          path: "/v1/personal-device-sync/relay/packages/package-1",
+          headers: expect.objectContaining({
+            "content-type": "application/json",
+            "x-pds-membership-certificate": "certificate",
+            "x-pds-relay-proof": "proof"
+          }),
+          body: JSON.stringify({ encrypted: true })
+        })
+      );
     } finally {
       await server.close();
     }

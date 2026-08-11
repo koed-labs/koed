@@ -68,7 +68,10 @@ type PendingInvitation = {
   view: PersonalDevicePairingView;
   request: JsonObject | null;
   requestCanonical: string | null;
-  requestWaiters: Array<(request: JsonObject) => void>;
+  requestWaiters: Array<{
+    resolve: (request: JsonObject) => void;
+    reject: (error: Error) => void;
+  }>;
   completionWaiters: Array<{
     resolve: () => void;
     reject: (error: Error) => void;
@@ -108,6 +111,7 @@ type PairingServerOptions = {
     headers: Record<string, string>;
     body?: string;
     mode: "pairing" | "relay";
+    signal?: AbortSignal;
   }): Promise<{
     status: number;
     headers?: Record<string, string>;
@@ -277,6 +281,9 @@ export const startPersonalDevicePairingServer = async (
   const configuredPort = options.port ?? PERSONAL_DEVICE_PAIRING_DEFAULT_PORT;
   const now = options.now ?? (() => new Date());
   const invitations = new Map<string, PendingInvitation>();
+  const activeControlAbortControllers = new Set<AbortController>();
+  let closed = false;
+  let closeInFlight: Promise<void> | null = null;
 
   const expire = (
     pending: PendingInvitation,
@@ -292,7 +299,15 @@ export const startPersonalDevicePairingServer = async (
       )
     );
     pending.submission = null;
-    pending.requestWaiters.splice(0);
+    for (const waiter of pending.requestWaiters.splice(0)) {
+      waiter.reject(
+        new Error(
+          state === "expired"
+            ? "Pairing invitation expired."
+            : "Pairing invitation was cancelled."
+        )
+      );
+    }
     for (const waiter of pending.completionWaiters.splice(0)) {
       waiter.reject(
         new Error(
@@ -459,7 +474,7 @@ export const startPersonalDevicePairingServer = async (
           pending.view.state = "approval_required";
           pending.view.joiningDeviceLabel = deviceLabel;
           for (const waiter of pending.requestWaiters.splice(0)) {
-            waiter(pending.request);
+            waiter.resolve(pending.request);
           }
           const approval = await new Promise<{ approved: true }>(
             (resolve, reject) => {
@@ -512,15 +527,23 @@ export const startPersonalDevicePairingServer = async (
             json(response, 404, { error: "Pairing route is unavailable." });
             return;
           }
-          const forwarded = await options.forwardControl({
-            method,
-            path: controlPath,
-            headers: pairingControlHeaders(decrypted.value.headers),
-            ...(method === "POST" && typeof decrypted.value.body === "string"
-              ? { body: decrypted.value.body }
-              : {}),
-            mode: "pairing"
-          });
+          const controlAbortController = new AbortController();
+          activeControlAbortControllers.add(controlAbortController);
+          let forwarded: Awaited<ReturnType<typeof options.forwardControl>>;
+          try {
+            forwarded = await options.forwardControl({
+              method,
+              path: controlPath,
+              headers: pairingControlHeaders(decrypted.value.headers),
+              ...(method === "POST" && typeof decrypted.value.body === "string"
+                ? { body: decrypted.value.body }
+                : {}),
+              mode: "pairing",
+              signal: controlAbortController.signal
+            });
+          } finally {
+            activeControlAbortControllers.delete(controlAbortController);
+          }
           encryptedResponse(response, pending, decrypted.messageId, {
             status: forwarded.status,
             headers: forwarded.headers ?? {},
@@ -561,15 +584,23 @@ export const startPersonalDevicePairingServer = async (
           request.method === "POST" ||
           request.method === "PUT")
       ) {
-        const forwarded = await options.forwardControl({
-          method: request.method,
-          path: url.pathname.slice("/pds".length) + url.search,
-          headers: requestHeaders(request),
-          ...(request.method === "GET"
-            ? {}
-            : { body: await readBody(request) }),
-          mode: "relay"
-        });
+        const controlAbortController = new AbortController();
+        activeControlAbortControllers.add(controlAbortController);
+        let forwarded: Awaited<ReturnType<typeof options.forwardControl>>;
+        try {
+          forwarded = await options.forwardControl({
+            method: request.method,
+            path: url.pathname.slice("/pds".length) + url.search,
+            headers: requestHeaders(request),
+            ...(request.method === "GET"
+              ? {}
+              : { body: await readBody(request) }),
+            mode: "relay",
+            signal: controlAbortController.signal
+          });
+        } finally {
+          activeControlAbortControllers.delete(controlAbortController);
+        }
         response.writeHead(forwarded.status, {
           "cache-control": "no-store",
           "content-type":
@@ -673,17 +704,23 @@ export const startPersonalDevicePairingServer = async (
       if (!pending) throw new Error("Pairing invitation is unavailable.");
       if (pending.request) return pending.request;
       return await new Promise<JsonObject>((resolve, reject) => {
-        const done = (request: JsonObject) => {
-          signal?.removeEventListener("abort", aborted);
-          resolve(request);
+        const waiter = {
+          resolve: (request: JsonObject) => {
+            signal?.removeEventListener("abort", aborted);
+            resolve(request);
+          },
+          reject: (error: Error) => {
+            signal?.removeEventListener("abort", aborted);
+            reject(error);
+          }
         };
         const aborted = () => {
-          const index = pending.requestWaiters.indexOf(done);
+          const index = pending.requestWaiters.indexOf(waiter);
           if (index >= 0) pending.requestWaiters.splice(index, 1);
           reject(new Error("Pairing wait was cancelled."));
         };
         signal?.addEventListener("abort", aborted, { once: true });
-        pending.requestWaiters.push(done);
+        pending.requestWaiters.push(waiter);
       });
     },
     approve(id) {
@@ -741,13 +778,37 @@ export const startPersonalDevicePairingServer = async (
         .map((pending) => ({ ...pending.view }));
     },
     async close() {
-      for (const pending of invitations.values()) {
-        expire(pending, "cancelled");
+      if (closed) return;
+      if (closeInFlight) return closeInFlight;
+      const operation = (async () => {
+        for (const controller of activeControlAbortControllers) {
+          controller.abort();
+        }
+        activeControlAbortControllers.clear();
+        for (const pending of invitations.values()) {
+          expire(pending, "cancelled");
+        }
+        await new Promise<void>((resolve, reject) => {
+          if (!server.listening) {
+            resolve();
+            return;
+          }
+          server.close((error) =>
+            error &&
+            (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING"
+              ? reject(error)
+              : resolve()
+          );
+          server.closeAllConnections();
+        });
+        closed = true;
+      })();
+      closeInFlight = operation;
+      try {
+        await operation;
+      } finally {
+        if (closeInFlight === operation) closeInFlight = null;
       }
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeAllConnections();
-      });
     }
   };
 };

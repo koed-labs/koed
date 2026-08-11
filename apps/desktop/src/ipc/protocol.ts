@@ -69,3 +69,8 @@ export const personalDevicePairingProgressChannel =
 export { managedConversationCommandChannel } from "./managed-conversation-protocol.js";
 export const setupCommandChannel = "koed:setup:command";
 export const setupProgressEventChannel = "koed:setup:progress";
+export const desktopUpdateCommandChannel = "koed:desktop-update:command";
+export const desktopUpdateGetStateChannel = "koed:desktop-update:get-state";
+export const desktopUpdateSubscribeChannel = "koed:desktop-update:subscribe";
+export const desktopUpdateStateEventChannel = "koed:desktop-update:state";
+export const desktopUpdateVersionChannel = "koed:desktop-update:version";

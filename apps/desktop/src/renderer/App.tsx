@@ -62,6 +62,8 @@ import {
   setupIsReady
 } from "./views/onboarding/index.js";
 import { PreferencesView } from "./views/preferences/index.js";
+import { DesktopUpdateIndicator } from "./update/DesktopUpdate.js";
+import { useDesktopUpdate } from "./update/use-desktop-update.js";
 import { DevicesModal } from "./devices/DevicesModal.js";
 import "./app.css";
 
@@ -263,6 +265,7 @@ export type AppProps = {
   personalMemoryApi?: PersonalDesktopApi | null;
   statusReadyOverride?: boolean;
   statusStoreOverride?: DesktopStatusStore;
+  version?: string;
 };
 
 export function App({
@@ -273,9 +276,14 @@ export function App({
   managedConversations = window.koedDesktop?.managedConversations ?? null,
   personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
   statusReadyOverride,
-  statusStoreOverride
+  statusStoreOverride,
+  version = "unknown"
 }: AppProps = {}) {
   const activeStatusStore = statusStoreOverride ?? statusStore;
+  const updateController = useDesktopUpdate(
+    window.koedDesktop?.update,
+    version
+  );
   const [navigation, dispatch] = useReducer(
     navigationReducer,
     undefined,
@@ -816,7 +824,8 @@ export function App({
         onThemeChange={(preference) => void themeStore.set(preference)}
         statusStore={activeStatusStore}
         theme={theme.preference}
-        version="0.4.4"
+        update={updateController}
+        version={version}
       />
     );
   } else if (snapshot) {
@@ -964,6 +973,7 @@ export function App({
         scopeLine={<ScopeLine>{scopeLine}</ScopeLine>}
         teams={teamRail}
         routeFocusKey={JSON.stringify(route)}
+        update={<DesktopUpdateIndicator controller={updateController} />}
       >
         {collaboration.announcement ? (
           <div className="desktop-global-notice" role="status">

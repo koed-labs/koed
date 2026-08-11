@@ -35,7 +35,8 @@ import {
   pdsPublicKeyCommitment,
   signPdsGroupDraft,
   signPdsRecord,
-  validatePdsGroupStatement
+  validatePdsGroupStatement,
+  fetchBoundedJsonObject
 } from "@koed/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import type { KoedServerPaths } from "./paths.js";
@@ -124,6 +125,7 @@ export interface PersonalSyncResult {
 export interface PersonalSyncDependencies {
   now?: () => Date;
   fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
   sessionCookie?: string;
   desktopAuthorization?: string;
   pairingToken?: string;
@@ -563,21 +565,11 @@ const browserSession = (environment: NodeJS.ProcessEnv): string => {
   return value;
 };
 
-const strictResponse = async (
-  response: Response
-): Promise<Record<string, unknown>> => {
-  const length = Number(response.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > MAX_CONTROL_RESPONSE_BYTES)
-    fail("PDS control response exceeds maximum size.");
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_CONTROL_RESPONSE_BYTES)
-    fail("PDS control response exceeds maximum size.");
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    fail("PDS control response is invalid.");
-  }
+const strictResponse = (
+  response: Response,
+  parsed?: Record<string, unknown>
+): Record<string, unknown> => {
+  const value = parsed;
   if (!value || typeof value !== "object" || Array.isArray(value))
     fail("PDS control response is invalid.");
   if (!response.ok) {
@@ -612,8 +604,8 @@ const control = async (input: {
     desktopAuthorization || pairingToken
       ? null
       : (input.deps.sessionCookie ?? browserSession(input.environment));
-  const timeout = AbortSignal.timeout(10_000);
-  const response = await fetcher(
+  const { response, payload } = await fetchBoundedJsonObject(
+    fetcher,
     `${controlOrigin(input.environment)}${input.path}`,
     {
       method: input.method,
@@ -629,11 +621,16 @@ const control = async (input: {
               }),
         ...(input.body ? { "content-type": "application/json" } : {})
       },
-      ...(input.body ? { body: JSON.stringify(input.body) } : {}),
-      signal: timeout
+      ...(input.body ? { body: JSON.stringify(input.body) } : {})
+    },
+    {
+      timeoutMs: 10_000,
+      maxBytes: MAX_CONTROL_RESPONSE_BYTES,
+      readErrorBody: true,
+      signal: input.deps.signal
     }
   );
-  return strictResponse(response);
+  return strictResponse(response, payload);
 };
 
 const generatedKey = (kind: "ed25519" | "x25519"): GeneratedKey => {

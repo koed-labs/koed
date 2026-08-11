@@ -146,10 +146,38 @@ jobs:
           test -d "${runtime_root}/koed-runtime"
           pnpm native-runtime:validate -- --runtime-root "${runtime_root}/koed-runtime" --platform darwin --json
 
+      - name: Select explicitly approved public stable feed config
+        run: >-
+          node scripts/prepare-desktop-update-config.mjs
+          --mode public
+          --url https://updates.koed.ai/R2/stable/
+          --allow-public-target
+          --out apps/desktop/electron-builder.public.yml
+          --json
+
       - name: Build unsigned Desktop artifacts
         env:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-recovery/koed-runtime
-        run: pnpm desktop:package:internal:mac
+        run: >-
+          node scripts/package-desktop-update-artifacts.mjs
+          --config apps/desktop/electron-builder.public.yml
+          --json
+
+      - name: Validate packaged app public feed selection
+        run: >-
+          node scripts/validate-desktop-update-feed-selection.mjs
+          --app apps/desktop/release/mac/Koed.app
+          --mode public
+          --json
+
+      - name: Validate Desktop updater artifact set
+        env:
+          TAG: ${{ inputs.tag }}
+        run: >-
+          node scripts/validate-desktop-update-artifacts.mjs
+          --root apps/desktop/release
+          --version "${TAG#v}"
+          --json
 
       - name: Verify Desktop artifact code integrity
         run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app --dmg release/Koed-*-arm64.dmg
@@ -178,6 +206,9 @@ jobs:
           gh release upload "${{ inputs.tag }}" --repo "${GITHUB_REPOSITORY}" \
             apps/desktop/release/Koed-*-arm64.dmg \
             apps/desktop/release/Koed-*-arm64.zip \
+            apps/desktop/release/Koed-*-arm64.dmg.blockmap \
+            apps/desktop/release/Koed-*-arm64.zip.blockmap \
+            apps/desktop/release/latest-mac.yml \
             apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
             --clobber
 
@@ -209,6 +240,9 @@ jobs:
             "koed-release-artifacts-${version}.json" \
             'Koed-*-arm64.dmg' \
             'Koed-*-arm64.zip' \
+            'Koed-*-arm64.dmg.blockmap' \
+            'Koed-*-arm64.zip.blockmap' \
+            'latest-mac.yml' \
             'koed-desktop-macos-arm64-unsigned.sha256'; do
             if ! asset_present "${pattern}"; then
               echo "Missing required release asset: ${pattern}" >&2

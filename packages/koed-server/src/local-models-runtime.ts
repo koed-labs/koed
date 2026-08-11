@@ -11,6 +11,7 @@ import {
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { basename, dirname, resolve } from "node:path";
+import { cancelReadable, fetchWithTimeout } from "@koed/shared";
 import type { KoedServerPaths } from "./paths.js";
 
 export type LocalModelKind = "embedding" | "reranker";
@@ -51,6 +52,7 @@ export interface LocalModelInstallResult extends LocalModelStatus {
 export interface LocalModelInstallDependencies {
   fetch?: typeof fetch;
   onProgress?: (progress: LocalModelInstallProgress) => void;
+  signal?: AbortSignal;
 }
 
 export interface LocalModelInstallProgress {
@@ -90,6 +92,8 @@ const MODEL_DEFINITIONS: Record<
     pathEnv: "KOED_RERANKER_MODEL_PATH"
   }
 };
+
+const MAX_MODEL_DOWNLOAD_BYTES = 4 * 1024 * 1024 * 1024;
 
 export const localModelKinds: LocalModelKind[] = ["embedding", "reranker"];
 
@@ -220,7 +224,8 @@ export const installLocalModel = async (
   environment: NodeJS.ProcessEnv = process.env,
   {
     fetch: fetcher = globalThis.fetch.bind(globalThis),
-    onProgress
+    onProgress,
+    signal
   }: LocalModelInstallDependencies = {}
 ): Promise<LocalModelInstallResult> => {
   const manifest = resolveLocalModelManifest(paths, kind, environment);
@@ -285,7 +290,16 @@ export const installLocalModel = async (
   mkdirSync(paths.cacheDir, { recursive: true, mode: 0o700 });
   rmSync(tempPath, { force: true });
 
-  const response = await fetcher(manifest.url);
+  const downloadDeadline = AbortSignal.timeout(10 * 60 * 1_000);
+  const downloadSignal = signal
+    ? AbortSignal.any([signal, downloadDeadline])
+    : downloadDeadline;
+  const response = await fetchWithTimeout(
+    fetcher,
+    manifest.url,
+    { signal: downloadSignal },
+    10 * 60 * 1_000
+  );
   if (!response.ok || !response.body) {
     return {
       ok: false,
@@ -305,6 +319,17 @@ export const installLocalModel = async (
     Number.isSafeInteger(contentLength) && contentLength >= 0
       ? contentLength
       : null;
+  if (totalBytes !== null && totalBytes > MAX_MODEL_DOWNLOAD_BYTES) {
+    cancelReadable(response.body);
+    return {
+      ok: false,
+      state: "missing",
+      message: `${manifest.key} model artifact exceeds the maximum download size.`,
+      action: "Use a smaller trusted model artifact.",
+      modelPath: manifest.modelPath,
+      manifest
+    };
+  }
   let completedBytes = 0;
   let lastReportedBytes = 0;
   let lastReportedAt = 0;
@@ -316,6 +341,12 @@ export const installLocalModel = async (
   const progress = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       completedBytes += chunk.byteLength;
+      if (completedBytes > MAX_MODEL_DOWNLOAD_BYTES) {
+        callback(
+          new Error("Model artifact exceeds the maximum download size.")
+        );
+        return;
+      }
       const now = Date.now();
       if (
         completedBytes === totalBytes ||
@@ -333,17 +364,37 @@ export const installLocalModel = async (
       callback(null, chunk);
     }
   });
-  await pipeline(
-    Readable.fromWeb(response.body as never),
-    progress,
-    createWriteStream(tempPath, { mode: 0o600 })
-  );
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body as never),
+      progress,
+      createWriteStream(tempPath, { mode: 0o600 }),
+      { signal: downloadSignal }
+    );
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
+  if (downloadSignal.aborted) {
+    rmSync(tempPath, { force: true });
+    throw (
+      downloadSignal.reason ??
+      new DOMException("The operation was aborted", "AbortError")
+    );
+  }
   onProgress?.({
     completedBytes,
     phase: "verifying",
     totalBytes
   });
   const actual = await sha256File(tempPath);
+  if (downloadSignal.aborted) {
+    rmSync(tempPath, { force: true });
+    throw (
+      downloadSignal.reason ??
+      new DOMException("The operation was aborted", "AbortError")
+    );
+  }
   if (actual !== manifest.sha256) {
     rmSync(tempPath, { force: true });
     return {

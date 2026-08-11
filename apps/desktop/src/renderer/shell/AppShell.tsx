@@ -59,6 +59,7 @@ export type AppShellProps = {
   onOpenDevices: () => void;
   onOpenPreferences: () => void;
   onToggleInspector: () => void;
+  update?: ReactNode;
   personalUnreadCount: number;
   scopeLine: ReactNode;
   teams: readonly TeamRailItem[];
@@ -306,7 +307,8 @@ export function AppShell({
   personalUnreadCount,
   scopeLine,
   teams,
-  routeFocusKey
+  routeFocusKey,
+  update
 }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mainPaneWidth, setMainPaneWidth] = useState(0);
@@ -486,6 +488,7 @@ export function AppShell({
               )}
             </button>
           ) : null}
+          {update}
           {inspector ? (
             <button
               aria-expanded={inspectorOpen}

@@ -1,0 +1,193 @@
+.desktop-update-control {
+  position: relative;
+  flex: 0 0 32px;
+  inline-size: 32px;
+  block-size: 32px;
+}
+
+.desktop-update-trigger {
+  display: grid;
+  position: relative;
+  inline-size: 32px;
+  block-size: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.desktop-update-trigger:hover,
+.desktop-update-trigger:focus-visible {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.desktop-update-trigger[data-state="available"],
+.desktop-update-trigger[data-state="ready"] {
+  color: var(--primary);
+}
+
+.desktop-update-trigger[data-state="error"] {
+  color: var(--destructive);
+}
+
+.desktop-update-trigger[data-state="checking"] svg,
+.desktop-update-trigger[data-state="downloading"] svg,
+.desktop-update-trigger[data-state="installing"] svg {
+  animation: desktop-spin 800ms linear infinite;
+}
+
+.desktop-update-trigger > svg {
+  inline-size: 17px;
+  block-size: 17px;
+}
+
+.desktop-update-dot {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
+  inline-size: 7px;
+  block-size: 7px;
+  border: 2px solid var(--background);
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.desktop-update-surface {
+  display: grid;
+  position: absolute;
+  z-index: 20;
+  inline-size: min(360px, calc(100vw - 28px));
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--background);
+  box-shadow: 0 14px 38px color-mix(in oklch, #101114 20%, transparent);
+  color: var(--foreground);
+}
+
+.desktop-update-surface-popover {
+  inset-block-start: 38px;
+  inset-inline-end: 0;
+}
+
+.desktop-update-surface-preferences {
+  position: relative;
+  inline-size: auto;
+  margin-block-start: 16px;
+  box-shadow: none;
+}
+
+.desktop-update-surface > header,
+.desktop-update-surface > footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.desktop-update-kicker {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.desktop-update-surface h2 {
+  margin: 3px 0 0;
+  font-size: 16px;
+}
+
+.desktop-update-close {
+  display: grid;
+  inline-size: 28px;
+  block-size: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.desktop-update-close:hover,
+.desktop-update-close:focus-visible {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.desktop-update-close svg {
+  inline-size: 16px;
+  block-size: 16px;
+}
+
+.desktop-update-copy {
+  display: grid;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.desktop-update-copy p {
+  margin: 0;
+}
+
+.desktop-update-release {
+  display: grid;
+  gap: 6px;
+  padding-block-start: 4px;
+  color: var(--foreground);
+}
+
+.desktop-update-release > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.desktop-update-release span {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.desktop-update-release p {
+  max-block-size: 96px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.desktop-update-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.desktop-update-progress progress {
+  inline-size: 100%;
+  block-size: 7px;
+  accent-color: var(--primary);
+}
+
+.desktop-update-warning {
+  color: var(--warning-foreground, var(--foreground));
+}
+
+.desktop-update-error {
+  color: var(--destructive-foreground);
+}
+
+@media (max-width: 620px) {
+  .desktop-update-surface-popover {
+    position: fixed;
+    inset-block-start: 52px;
+    inset-inline-end: 14px;
+  }
+}

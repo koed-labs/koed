@@ -130,4 +130,27 @@ describe("PreferencesView", () => {
     );
     expect(container.textContent).not.toContain("sk-");
   });
+
+  it("exposes user-controlled update actions in About preferences", async () => {
+    await renderPreferences({
+      initialSection: "about",
+      update: {
+        api: null,
+        busy: null,
+        check: vi.fn(),
+        closeSurface: vi.fn(),
+        download: vi.fn(),
+        install: vi.fn(),
+        manualError: null,
+        notice: null,
+        open: false,
+        openSurface: vi.fn(),
+        state: { status: "idle" },
+        version: "0.4.4"
+      }
+    });
+    expect(container.textContent).toContain("Updates");
+    expect(container.textContent).toContain("Check for updates");
+    expect(container.textContent).toContain("Current version 0.4.4");
+  });
 });

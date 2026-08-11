@@ -123,4 +123,34 @@ describe("desktop setup workflow", () => {
       state: "failed"
     });
   });
+
+  it("passes the lifecycle signal to stages and prevents later stages after cancellation", async () => {
+    const controller = new AbortController();
+    const runStage = vi.fn(
+      async (
+        stage: DesktopSetupStageId,
+        _onProgress: unknown,
+        signal?: AbortSignal
+      ) => {
+        expect(signal).toBe(controller.signal);
+        if (stage === "package") {
+          controller.abort();
+          throw new Error("Setup was interrupted.");
+        }
+        return { ok: true, message: `${stage} complete` };
+      }
+    );
+    const workflow = createDesktopSetupWorkflow({
+      inspectStage: async () => ({ complete: false, message: "Needs setup" }),
+      runStage
+    });
+
+    await expect(
+      workflow.run(() => undefined, controller.signal)
+    ).resolves.toMatchObject({
+      state: "failed",
+      error: "Setup was interrupted."
+    });
+    expect(runStage).toHaveBeenCalledTimes(1);
+  });
 });

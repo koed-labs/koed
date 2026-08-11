@@ -9,6 +9,10 @@ import {
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema
 } from "@koed/shared/collaboration";
+import {
+  desktopUpdateStateSchema,
+  desktopUpdateVersionSchema
+} from "@koed/shared";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
@@ -17,6 +21,11 @@ import {
   desktopCommandNames,
   setupCommandChannel,
   setupProgressEventChannel,
+  desktopUpdateCommandChannel,
+  desktopUpdateGetStateChannel,
+  desktopUpdateStateEventChannel,
+  desktopUpdateSubscribeChannel,
+  desktopUpdateVersionChannel,
   themePreferenceGetChannel,
   themePreferenceSetChannel
 } from "./ipc/protocol.js";
@@ -77,6 +86,60 @@ contextBridge.exposeInMainWorld("koedDesktop", {
         ipcRenderer.removeListener(setupProgressEventChannel, wrapped);
       };
     }
+  }),
+  update: Object.freeze({
+    getState: async () =>
+      desktopUpdateStateSchema.parse(
+        await ipcRenderer.invoke(desktopUpdateGetStateChannel)
+      ),
+    check: async () =>
+      desktopUpdateStateSchema.parse(
+        await ipcRenderer.invoke(desktopUpdateCommandChannel, "check")
+      ),
+    download: async () =>
+      desktopUpdateStateSchema.parse(
+        await ipcRenderer.invoke(desktopUpdateCommandChannel, "download")
+      ),
+    install: async () =>
+      desktopUpdateStateSchema.parse(
+        await ipcRenderer.invoke(desktopUpdateCommandChannel, "install")
+      ),
+    subscribe: (listener: (state: unknown) => void) => {
+      if (typeof listener !== "function") {
+        throw new TypeError("Update state listener is required.");
+      }
+      let active = true;
+      let receivedEvent = false;
+      const wrapped = (_ipcEvent: unknown, value: unknown) => {
+        if (!active) return;
+        const parsed = desktopUpdateStateSchema.safeParse(value);
+        if (parsed.success) listener(parsed.data);
+        if (parsed.success) receivedEvent = true;
+      };
+      ipcRenderer.on(desktopUpdateStateEventChannel, wrapped);
+      void ipcRenderer
+        .invoke(desktopUpdateSubscribeChannel)
+        .then((value: unknown) => {
+          if (!active || receivedEvent) return;
+          const parsed = desktopUpdateStateSchema.safeParse(value);
+          if (parsed.success) listener(parsed.data);
+        })
+        .catch(() => {
+          // A disposed main process cannot leave a renderer listener active.
+          if (!active) return;
+          active = false;
+          ipcRenderer.removeListener(desktopUpdateStateEventChannel, wrapped);
+        });
+      return () => {
+        if (!active) return;
+        active = false;
+        ipcRenderer.removeListener(desktopUpdateStateEventChannel, wrapped);
+      };
+    },
+    getVersion: async () =>
+      desktopUpdateVersionSchema.parse(
+        await ipcRenderer.invoke(desktopUpdateVersionChannel)
+      )
   }),
   collaboration: Object.freeze({
     command: async (
