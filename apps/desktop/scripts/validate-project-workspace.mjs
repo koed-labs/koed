@@ -285,7 +285,7 @@ const run = async () => {
     assert.equal(wide.previewOverflow, false);
     assert.equal(wide.titleTextOverflow, "clip");
     assert.equal(wide.previewTextOverflow, "clip");
-    assert.equal(wide.sourceAiClient, true);
+    assert.equal(wide.sourceAiClient, false);
     assert.equal(wide.rawMetadataExposed, false);
     assert.ok(
       contrastRatio(wide.foreground, wide.background) >= 4.5,
@@ -459,7 +459,7 @@ const run = async () => {
         before,
         after: document.querySelectorAll('.native-event-wrap').length,
         frameMs: performance.now() - startedAt,
-        hasTenThousandLabel: document.body.textContent.includes('10000 Memory Events'),
+        hasTenThousandLabel: Boolean(document.querySelector('[aria-label*="10000 Memory Events"]')),
         scrollable: Boolean(timeline && timeline.scrollHeight > timeline.clientHeight),
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
       })));
@@ -629,13 +629,13 @@ const run = async () => {
     assert.equal(narrow.masterDisplay, "none");
 
     await window.webContents.executeJavaScript(
-      `document.querySelector('.personal-session-detail nav button')?.click()`
+      `document.querySelector('.desktop-breadcrumb button')?.click()`
     );
-    await delay(50);
-    const focus = await window.webContents.executeJavaScript(
-      `document.activeElement?.getAttribute('data-personal-route-focus')`
+    await waitFor(
+      window,
+      `document.querySelector('.personal-memory-workspace')?.classList.contains('route-projects')`,
+      "top-bar breadcrumb navigation"
     );
-    assert.equal(focus, "projects");
 
     await setEmulatedViewport(window, 1440, 900);
     await window.loadFile(pagePath, { query: { view: "chat" } });
@@ -788,7 +788,16 @@ const run = async () => {
         requestAnimationFrame(() => resolve(performance.now() - startedAt))
       );
     })()`);
-    await delay(50);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.collab-team-admin'))`,
+      "Team People view"
+    );
+    await waitFor(
+      window,
+      `window.__koedBrowserCommands?.slice(${teamSelectionCommandIndex}).includes('collaboration.mark_delivered')`,
+      "Team People delivery marker"
+    );
     const afterTeamSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -804,17 +813,15 @@ const run = async () => {
       `window.__koedBrowserCommands?.slice(${teamSelectionCommandIndex}) ?? []`
     );
     // Team activation selects People, loads its authorized invitation page,
-    // records delivery, and reports current-user Team activity.
+    // and records delivery. Activity reporting is independently throttled.
     assert.deepEqual(teamSelectionCommands, [
       "collaboration.select",
       "collaboration.list_invitations",
-      "collaboration.mark_delivered",
-      "collaboration.report_team_activity"
+      "collaboration.mark_delivered"
     ]);
     assert.deepEqual(teamSelectionUserCommands, [
       "collaboration.select",
-      "collaboration.list_invitations",
-      "collaboration.mark_delivered"
+      "collaboration.list_invitations"
     ]);
     assert.equal(
       afterTeamSelectionCommandCount - teamSelectionCommandCount,
@@ -850,7 +857,11 @@ const run = async () => {
     await window.webContents.executeJavaScript(
       `document.querySelectorAll('.desktop-workspace-section .desktop-sidebar-nav-item')[1]?.click()`
     );
-    await delay(50);
+    await waitFor(
+      window,
+      `window.__koedBrowserCommands?.slice(${workspaceSelectionCommandIndex}).includes('collaboration.mark_delivered')`,
+      "Workspace delivery marker"
+    );
     const afterWorkspaceSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -865,13 +876,9 @@ const run = async () => {
       );
     assert.deepEqual(workspaceSelectionCommands, [
       "collaboration.select",
-      "collaboration.mark_delivered",
-      "collaboration.report_team_activity"
-    ]);
-    assert.deepEqual(workspaceSelectionUserCommands, [
-      "collaboration.select",
       "collaboration.mark_delivered"
     ]);
+    assert.deepEqual(workspaceSelectionUserCommands, ["collaboration.select"]);
     assert.equal(
       afterWorkspaceSelectionCommandCount - workspaceSelectionCommandCount,
       workspaceSelectionUserCommands.length,

@@ -437,7 +437,14 @@ const run = async () => {
       "Bob realtime DM receive"
     );
     await trustedClick(bob, `${byText(".desktop-sidebar-nav-item", "People")}`);
-    await waitFor(bob, bodyIncludes("Team membership"), "Bob People view");
+    await waitFor(bob, bodyIncludes("Members"), "Bob People view");
+    assert.equal(
+      await bob.webContents.executeJavaScript(
+        'document.body.innerText.includes("Membership") || document.body.innerText.includes("Invites")'
+      ),
+      false,
+      "Bob must not see invitation administration without permission"
+    );
     const memberAuthority = await evaluate(
       bob,
       `(() => ({
@@ -458,11 +465,7 @@ const run = async () => {
       alice,
       `${byText(".desktop-sidebar-nav-item", "People")}`
     );
-    await waitFor(
-      alice,
-      bodyIncludes("Pending invitations"),
-      "People administration"
-    );
+    await waitFor(alice, bodyIncludes("Invites"), "People administration");
     alice.setSize(1150, 800);
     await delay(50);
     const memberLayout = await evaluate(

@@ -180,6 +180,9 @@ export const compactHealthSummary = (
   if (status.state === "starting") {
     return { label: "Koed is starting", state: "starting" };
   }
+  if (status.state !== "needs_attention") {
+    return { label: "Koed is starting", state: "starting" };
+  }
   const faults = setupStepsFromStatus(status).filter(
     ({ state }) => state !== "healthy"
   ).length;

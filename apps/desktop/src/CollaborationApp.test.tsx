@@ -1037,6 +1037,8 @@ const click = async (container: HTMLElement, label: string) => {
   const button = [...document.body.querySelectorAll("button")].find(
     (item) =>
       item.getAttribute("aria-label") === label ||
+      item.querySelector(".desktop-sidebar-nav-label")?.textContent?.trim() ===
+        label ||
       item.textContent?.replace(/\s+/g, " ").trim() === label
   ) as HTMLButtonElement | undefined;
   if (!button) throw new Error(`Missing button: ${label}`);
@@ -1792,6 +1794,8 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).toContain("Alex Chen");
     expect(document.body.textContent).toContain("Leave Team");
     expect(document.body.textContent).not.toContain("Invite member");
+    expect(document.body.textContent).not.toContain("Invites");
+    expect(document.body.textContent).not.toContain("Membership");
     expect(document.body.textContent).not.toContain("Create Workspace");
     expect(document.body.textContent).not.toContain("Pending invitations");
     expect(
@@ -1801,6 +1805,12 @@ describe("CollaborationApp", () => {
       document.body.querySelector('select[aria-label*="access for"]')
     ).toBeNull();
     expect(client.listInvitations).not.toHaveBeenCalled();
+
+    expect(
+      document.body.querySelector(
+        '.collab-person-admin-row[data-current-user="true"] .collab-presence-controls'
+      )
+    ).not.toBeNull();
 
     await click(container, "Leave Team");
     expect(client.leaveTeam).toHaveBeenCalledWith({
@@ -1861,6 +1871,10 @@ describe("CollaborationApp", () => {
     });
     const client = await render(createClient(presenceSnapshot));
 
+    const firstMember = document.body.querySelector(".collab-person-admin-row");
+    expect(firstMember?.textContent).toContain("Mark Fixture");
+    expect(firstMember?.textContent).toContain("Me");
+
     const auto = document.body.querySelector<HTMLInputElement>(
       '.collab-presence-auto input[type="checkbox"]'
     );
@@ -1912,7 +1926,7 @@ describe("CollaborationApp", () => {
     expect(document.body.querySelector('[title="Inactive"]')).not.toBeNull();
     expect(
       document.body.querySelector(".collab-person-identity > span")?.textContent
-    ).toContain("offline");
+    ).toContain("Inactive");
   });
 
   it("renders pushed activity against the current clock", async () => {
@@ -2103,6 +2117,143 @@ describe("CollaborationApp", () => {
     );
   });
 
+  it("automatically dismisses a transient top-centred notice", async () => {
+    const client = await render();
+    vi.useFakeTimers();
+    await act(async () =>
+      client.emit(
+        requireCurrent(client),
+        "Collaboration is temporarily unavailable.",
+        "connection"
+      )
+    );
+    expect(document.body.querySelector("[data-toast]")).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(5_001));
+    expect(document.body.querySelector("[data-toast]")).toBeNull();
+  });
+
+  it("shows the other User and Team Presence in a direct-message header", async () => {
+    await render();
+    await click(container, "Atlas Research");
+    await click(container, "Alex Chen");
+    expect(
+      document.body.querySelector(".collab-header-avatar")?.textContent
+    ).toBe("AC");
+    expect(
+      document.body.querySelector(".collab-direct-presence")?.textContent
+    ).toContain("active");
+    expect(document.body.textContent).not.toContain("Team · Direct message");
+  });
+
+  it("uses concise, page-specific breadcrumbs across Personal and Team routes", async () => {
+    await render();
+    expect(
+      document.body.querySelector('[aria-label="Breadcrumb: Notes to self"]')
+    ).not.toBeNull();
+    expect(document.body.querySelector(".collab-day-divider")).toBeNull();
+
+    await click(container, "Inbox");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector('[aria-label="Breadcrumb: Inbox"]')
+      ).not.toBeNull()
+    );
+
+    await click(container, "Atlas Research");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector(
+          '[aria-label="Breadcrumb: Atlas Research / People"]'
+        )
+      ).not.toBeNull()
+    );
+    expect(
+      document.body.querySelector(".collab-content-header h1")?.textContent
+    ).toBe("People");
+    expect(
+      document.body.querySelector(".collab-content-header p")?.textContent
+    ).toBe("Atlas Research");
+
+    await click(container, "Alex Chen");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector(
+          '[aria-label="Breadcrumb: Atlas Research / Direct messages / Alex Chen"]'
+        )
+      ).not.toBeNull()
+    );
+
+    await click(container, "Launch Plans");
+    await click(container, "general");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector(
+          '[aria-label="Breadcrumb: Atlas Research / Launch Plans / general"]'
+        )
+      ).not.toBeNull()
+    );
+
+    await click(container, "Shared Memory");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector(
+          '[aria-label="Breadcrumb: Atlas Research / Launch Plans / Shared Memory"]'
+        )
+      ).not.toBeNull()
+    );
+    await click(container, "Realtime capture review");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector(
+          '[aria-label="Breadcrumb: Atlas Research / Launch Plans / Shared Memory / Realtime capture review"]'
+        )
+      ).not.toBeNull()
+    );
+  });
+
+  it("shows a spinner while an empty chat selection is loading", async () => {
+    const initial = collaborationSnapshotSchema.parse({
+      ...baseSnapshot(),
+      view: {
+        kind: "thread",
+        thread: notes(),
+        messages: page(ids.notes)
+      }
+    });
+    const client = createClient(initial);
+    let finishSelection:
+      | ((snapshot: CollaborationSnapshot) => void)
+      | undefined;
+    vi.mocked(client.select).mockImplementationOnce(
+      () =>
+        new Promise<CollaborationSnapshot>((resolve) => {
+          finishSelection = resolve;
+        })
+    );
+    await render(client);
+
+    await click(container, "research");
+    expect(
+      document.body.querySelector('[aria-label="Loading messages"]')
+    ).not.toBeNull();
+    expect(document.body.textContent).not.toContain("No messages yet.");
+
+    const selected = viewFor(initial, {
+      kind: "personal_channel",
+      threadId: ids.personalChannel
+    });
+    await act(async () => {
+      client.emit(selected);
+      finishSelection?.(selected);
+    });
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("No messages yet.")
+    );
+    expect(
+      document.body.querySelector('[aria-label="Loading messages"]')
+    ).toBeNull();
+  });
+
   it("keeps cached Team People visible during a transient outage", async () => {
     const selected = viewFor(baseSnapshot(), {
       kind: "team_people",
@@ -2285,6 +2436,7 @@ pnpm test
     );
 
     expect(container.querySelector(".memory-markdown h2")).not.toBeNull();
+    expect(container.textContent).not.toContain("Team · Workspace");
     expect(container.querySelector(".memory-markdown table")).not.toBeNull();
     expect(
       container.querySelector(".memory-markdown blockquote")
@@ -2788,10 +2940,10 @@ pnpm test
       'textarea[aria-label="Message Notes to self"]'
     )!;
     await act(async () => setValue(textarea, "変換中"));
-    expect(document.body.textContent).toContain("Personal · Private to you");
-    expect(
-      document.body.querySelector('[aria-label="9 of 32,768 UTF-8 bytes"]')
-    ).not.toBeNull();
+    expect(document.body.textContent).not.toContain(
+      "Personal · Private to you"
+    );
+    expect(document.body.textContent).not.toContain("32,768 UTF-8 bytes");
     await act(async () => {
       textarea.dispatchEvent(
         new CompositionEvent("compositionstart", {
@@ -2982,13 +3134,13 @@ pnpm test
       }
     });
     const client = await render(createClient(withTeamLifecycle("suspended")));
-    expect(document.body.textContent).toContain("Personal · Private to you");
+    expect(document.body.textContent).toContain("Personal");
     expect(document.body.textContent).not.toContain(
       "Welcome to Atlas Research."
     );
 
     await act(async () => client.emit(withTeamLifecycle("deletion_requested")));
-    expect(document.body.textContent).toContain("Personal · Private to you");
+    expect(document.body.textContent).toContain("Personal");
     expect(document.body.textContent).not.toContain(
       "Welcome to Atlas Research."
     );
@@ -3022,7 +3174,7 @@ pnpm test
         }
       })
     );
-    expect(document.body.textContent).toContain("Personal · Private to you");
+    expect(document.body.textContent).toContain("Personal");
     expect(document.body.textContent).not.toContain(
       "Welcome to Atlas Research."
     );

@@ -85,7 +85,7 @@ export type CollaborationController = {
   actionGrants: readonly CollaborationActionGrantProjection[];
   announcement: string;
   choose: (selection: CollaborationSelection) => void;
-  clearAnnouncement: () => void;
+  clearAnnouncement: (expected?: string) => void;
   drafts: DraftStore;
   error: string | null;
   liveAnnouncement: { id: string; text: string } | null;
@@ -94,6 +94,7 @@ export type CollaborationController = {
   modal: CollaborationModalState | null;
   retry: () => void;
   selectionFailure: CollaborationSelectionFailure | null;
+  selectionLoading: boolean;
   setModal: (modal: CollaborationModalState | null) => void;
   snapshot: CollaborationSnapshot | null;
 };
@@ -113,7 +114,14 @@ export const useCollaborationController = (
   const [failureRevision, setFailureRevision] = useState(0);
   const [selectionFailure, setSelectionFailure] =
     useState<CollaborationSelectionFailure | null>(null);
+  const [selectionLoading, setSelectionLoading] = useState(false);
+  const selectionRun = useRef(0);
   const [announcement, setAnnouncement] = useState("");
+  const clearAnnouncement = useCallback((expected?: string) => {
+    setAnnouncement((current) =>
+      expected === undefined || current === expected ? "" : current
+    );
+  }, []);
   const [liveAnnouncement, setLiveAnnouncement] = useState<{
     id: string;
     text: string;
@@ -259,15 +267,23 @@ export const useCollaborationController = (
 
   const choose = useCallback(
     (selection: CollaborationSelection) => {
+      const run = ++selectionRun.current;
       setSelectionFailure(null);
-      void client.select(selection).catch((cause) => {
-        setSelectionFailure({
-          message: safeFailure(cause, "Selection is unavailable."),
-          retryable:
-            cause instanceof CollaborationClientError && cause.retryable,
-          selection
+      setSelectionLoading(true);
+      void client
+        .select(selection)
+        .catch((cause) => {
+          if (run !== selectionRun.current) return;
+          setSelectionFailure({
+            message: safeFailure(cause, "Selection is unavailable."),
+            retryable:
+              cause instanceof CollaborationClientError && cause.retryable,
+            selection
+          });
+        })
+        .finally(() => {
+          if (run === selectionRun.current) setSelectionLoading(false);
         });
-      });
     },
     [client]
   );
@@ -276,7 +292,7 @@ export const useCollaborationController = (
     actionGrants,
     announcement,
     choose,
-    clearAnnouncement: () => setAnnouncement(""),
+    clearAnnouncement,
     drafts,
     error,
     liveAnnouncement,
@@ -285,6 +301,7 @@ export const useCollaborationController = (
     modal,
     retry,
     selectionFailure,
+    selectionLoading,
     setModal,
     snapshot
   };

@@ -134,6 +134,16 @@ describe("SetupChecklist", () => {
     });
   });
 
+  it("reserves the compact error state for confirmed attention", () => {
+    expect(compactHealthSummary(statusFixture("not_configured"))).toEqual({
+      label: "Koed is starting",
+      state: "starting"
+    });
+    expect(compactHealthSummary(statusFixture("needs_attention")).state).toBe(
+      "fault"
+    );
+  });
+
   it("inspects existing state and requires consent before setup", async () => {
     const status = statusFixture("needs_attention");
     const inspect = vi.fn(async () => setupFixture());

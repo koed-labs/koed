@@ -150,6 +150,33 @@ describe("NativeConversationSurface", () => {
     });
   });
 
+  it("shows an icon-only spinner while the Conversation loads", async () => {
+    await act(async () => {
+      root.render(
+        <NativeConversationSurface
+          markdownAdapters={markdownAdapters}
+          model={{
+            error: "",
+            events: [],
+            hasOlderEvents: false,
+            status: "loading"
+          }}
+          onLoadOlder={vi.fn()}
+          onRetry={vi.fn()}
+          thread={thread}
+        />
+      );
+    });
+
+    expect(
+      container.querySelector('[aria-label="Loading Conversation"]')
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".native-conversation-loading-icon")
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain("Loading Conversation");
+  });
+
   it("renders rich Markdown and copies fenced code through the Desktop adapter", async () => {
     const source = `# Captured decision
 
@@ -380,7 +407,7 @@ const ready = true;
     expect(onInspectEvent).toHaveBeenCalledWith(changed);
   });
 
-  it("offers Retry after an actionable loader error", async () => {
+  it("offers a primary Retry button after an actionable loader error", async () => {
     const loadEventsPage = vi
       .fn()
       .mockRejectedValueOnce(new Error("Local API unavailable"))
@@ -391,9 +418,11 @@ const ready = true;
       expect(container.textContent).toContain("Local API unavailable")
     );
     const retry = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Retry loading"
+      (button) => button.textContent === "Retry"
     );
     expect(retry).toBeDefined();
+    expect(retry?.classList.contains("personal-retry-button")).toBe(true);
+    expect(container.querySelector(".native-conversation-icon")).not.toBeNull();
 
     await act(async () => retry?.click());
     await vi.waitFor(() =>

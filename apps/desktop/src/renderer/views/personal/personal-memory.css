@@ -57,8 +57,19 @@
 }
 
 .personal-project-search input {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   box-sizing: border-box;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.65rem;
   width: 100%;
+}
+
+.personal-project-search input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 22%, transparent);
+  outline: none;
 }
 
 .personal-project-list {
@@ -66,7 +77,6 @@
   padding: 0 0.5rem 1rem;
 }
 
-.personal-project-list section > h2,
 .personal-inactive-toggle {
   align-items: center;
   color: var(--muted-foreground);
@@ -125,6 +135,40 @@
   gap: 0.15rem;
 }
 
+.personal-project-row-copy > strong,
+.personal-session-copy strong {
+  font-weight: 500;
+}
+
+.personal-project-overview,
+.personal-project-overview > span,
+.personal-memory-event-count {
+  align-items: center;
+  display: inline-flex;
+}
+
+.personal-project-overview {
+  color: var(--muted-foreground);
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.personal-project-overview > span,
+.personal-memory-event-count {
+  gap: 0.25rem;
+}
+
+.personal-project-overview svg,
+.personal-memory-event-count svg {
+  flex: 0 0 auto;
+  height: 0.95em;
+  width: 0.95em;
+}
+
+.personal-project-row .personal-project-overview {
+  font-size: 0.75rem;
+}
+
 .personal-project-row-copy > *,
 .personal-session-copy > *,
 .personal-session-meta > * {
@@ -150,6 +194,48 @@
   justify-content: center;
   padding: 2rem;
   text-align: center;
+}
+
+.personal-memory-empty-detail > div {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-width: 24rem;
+}
+
+.personal-memory-empty-detail h2,
+.personal-memory-empty-detail p {
+  margin: 0;
+}
+
+.personal-memory-empty-detail p {
+  color: var(--muted-foreground);
+}
+
+.personal-memory-empty-detail .personal-error-icon {
+  color: var(--destructive);
+  height: 1.5rem;
+  margin-bottom: 0.2rem;
+  width: 1.5rem;
+}
+
+.personal-memory-empty-detail .personal-loading-icon {
+  animation: personal-managed-spin 900ms linear infinite;
+  color: var(--muted-foreground);
+  height: 1.5rem;
+  width: 1.5rem;
+}
+
+.personal-memory-empty-detail .personal-empty-icon {
+  color: var(--muted-foreground);
+  height: 1.5rem;
+  margin-bottom: 0.2rem;
+  width: 1.5rem;
+}
+
+.personal-memory-empty-detail .personal-retry-button {
+  margin-top: 0.3rem;
 }
 
 .personal-project-detail > nav,
@@ -183,6 +269,12 @@
   display: inline-flex;
   flex: 0 0 auto;
   gap: 0.4rem;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  color: var(--primary-foreground);
+  min-height: 2.25rem;
+  padding: 0.45rem 0.8rem;
 }
 
 .personal-new-conversation svg,
@@ -213,8 +305,25 @@
   overflow-wrap: anywhere;
 }
 
-.personal-sessions > header {
-  border-bottom: 1px solid var(--border);
+.personal-project-details dl {
+  margin: 0.5rem 0 0;
+}
+
+.personal-project-details dl > div {
+  align-items: baseline;
+  display: flex;
+  gap: 0.35rem;
+  min-width: 0;
+  padding-block: 0.2rem;
+}
+
+.personal-project-details dt {
+  flex: 0 0 auto;
+}
+
+.personal-project-details dd {
+  margin: 0;
+  min-width: 0;
 }
 
 .personal-session-row {
@@ -251,15 +360,20 @@
   border-bottom: 1px solid var(--border);
 }
 
+.personal-session-detail > header .personal-memory-event-count {
+  color: var(--muted-foreground);
+  margin: 0.2rem 0 0;
+}
+
 .personal-share-button {
   flex: 0 0 auto;
 }
 
 .personal-session-assignment form {
-  align-items: end;
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.75rem;
   padding-top: 0.75rem;
 }
 
@@ -267,12 +381,42 @@
   align-items: center;
   display: flex;
   gap: 0.75rem;
-  justify-content: space-between;
 }
 
-.personal-session-assignment label {
-  display: grid;
-  gap: 0.25rem;
+.personal-session-assignment > summary > svg {
+  flex: 0 0 auto;
+  height: 1rem;
+  transition: transform 150ms ease;
+  width: 1rem;
+}
+
+.personal-session-assignment[open] > summary > svg {
+  transform: rotate(180deg);
+}
+
+.personal-session-assignment-label {
+  flex: 1;
+}
+
+.personal-session-assignment .personal-session-move-control {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.personal-session-move-control > span {
+  flex: 0 0 auto;
+}
+
+.personal-session-move-control select {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  min-height: 2.25rem;
+  min-width: 12rem;
+  padding: 0.45rem 2rem 0.45rem 0.65rem;
 }
 
 .personal-conversation-host {
@@ -296,29 +440,66 @@
 .personal-managed-composer {
   background: var(--background);
   border-top: 1px solid var(--border);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 0.75rem clamp(0.75rem, 3vw, 1.5rem) 0.5rem;
+  padding: 8px 18px 14px;
 }
 
-.personal-managed-composer label {
+.personal-managed-composer-field {
+  align-items: flex-end;
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  display: flex;
+  gap: 8px;
+  min-height: 42px;
+  padding: 5px 5px 5px 10px;
+}
+
+.personal-managed-composer-field:focus-within {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 1px var(--ring);
+}
+
+.personal-managed-composer-field label {
+  flex: 1;
   min-width: 0;
 }
 
 .personal-managed-composer textarea {
+  background: transparent;
+  border: 0;
   box-sizing: border-box;
   display: block;
-  max-height: 10rem;
-  min-height: 4.5rem;
-  resize: vertical;
+  field-sizing: content;
+  font-size: 13px;
+  line-height: 1.45;
+  max-height: 130px;
+  min-height: 28px;
+  outline: 0;
+  padding: 4px 0;
+  resize: none;
   width: 100%;
 }
 
-.personal-managed-composer > button {
-  align-self: end;
-  height: 2.25rem;
-  margin: 0 0 0 0.5rem;
-  width: 2.5rem;
+.personal-managed-composer-field > button {
+  align-items: center;
+  align-self: flex-end;
+  background: var(--primary);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--primary-foreground);
+  display: inline-flex;
+  flex: 0 0 32px;
+  height: 32px;
+  justify-content: center;
+  margin: 0;
+  min-height: 32px;
+  padding: 5px;
+  width: 32px;
+}
+
+.personal-managed-composer-field > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .personal-managed-composer > p {
@@ -329,6 +510,17 @@
   min-height: 1rem;
 }
 
+.personal-retry-button,
+.personal-move-button,
+.personal-share-button {
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  color: var(--primary-foreground);
+  min-height: 2.25rem;
+  padding: 0.45rem 0.8rem;
+}
+
 .personal-managed-composer.state-error > p,
 .personal-managed-composer.state-reconciling > p {
   color: var(--destructive);
@@ -336,7 +528,6 @@
 
 .personal-managed-transfer {
   border-top: 1px solid var(--border);
-  grid-column: 1 / -1;
   margin-top: 0.35rem;
   padding-top: 0.45rem;
 }
@@ -725,6 +916,25 @@
   font-size: 0.8rem;
 }
 
+.native-conversation-loading-icon,
+.native-conversation-icon {
+  block-size: 1.5rem;
+  inline-size: 1.5rem;
+  margin-block-end: 0.2rem;
+}
+
+.native-conversation-loading-icon {
+  animation: personal-managed-spin 900ms linear infinite;
+}
+
+.native-conversation-state.error .native-conversation-icon {
+  color: var(--destructive);
+}
+
+.native-conversation-state.error .personal-retry-button {
+  margin-block-start: 0.7rem;
+}
+
 .native-conversation-state.error strong,
 .native-older-status.error {
   color: var(--destructive);
@@ -772,7 +982,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .personal-memory-empty-detail .personal-loading-icon,
+  .native-conversation-loading-icon,
+  .personal-session-assignment > summary > svg,
   .native-tool-group-disclosure {
+    animation: none;
     transition: none;
   }
 }

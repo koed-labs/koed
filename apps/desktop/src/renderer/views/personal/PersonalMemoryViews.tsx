@@ -5,7 +5,16 @@ import type {
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
-import { GitFork, LoaderCircle, MonitorSmartphone, Send } from "lucide-react";
+import {
+  BookText,
+  Brain,
+  ChevronDown,
+  CircleAlert,
+  GitFork,
+  LoaderCircle,
+  MonitorSmartphone,
+  Send
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -79,6 +88,31 @@ export type PersonalMemoryWorkspaceProps = {
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
+function ProjectOverview({
+  eventCount,
+  sessionCount
+}: {
+  eventCount: number;
+  sessionCount: number;
+}) {
+  return (
+    <span
+      aria-label={`${countLabel(sessionCount, "Captured Session")} · ${countLabel(eventCount, "Memory Event")}`}
+      className="personal-project-overview"
+    >
+      <span>
+        {sessionCount}
+        <BookText aria-hidden="true" />
+      </span>
+      <span aria-hidden="true">·</span>
+      <span>
+        {eventCount}
+        <Brain aria-hidden="true" />
+      </span>
+    </span>
+  );
+}
+
 const projectActivity = (project: PersonalDesktopProject): string | null =>
   project.threads
     .map((thread) => thread.latestAt)
@@ -90,7 +124,7 @@ const sourceAiClientLabel = (
   source: PersonalDesktopProjectThread["sourceAiClient"]
 ): string | null => {
   if (source === "codex") return "Codex";
-  if (source === "codex-cli") return "Codex CLI";
+  if (source === "codex-cli") return null;
   return null;
 };
 
@@ -116,13 +150,10 @@ function ProjectRow({
       </span>
       <span className="personal-project-row-copy">
         <strong>{project.name}</strong>
-        <small>
-          {countLabel(project.threads.length, "Captured Session")} ·{" "}
-          {countLabel(project.eventCount, "Memory Event")}
-        </small>
-        <small title={project.path ?? undefined}>
-          {project.path ?? "Project path unavailable"}
-        </small>
+        <ProjectOverview
+          eventCount={project.eventCount}
+          sessionCount={project.threads.length}
+        />
       </span>
       <time dateTime={projectActivity(project) ?? undefined}>
         {relativeTime(projectActivity(project))}
@@ -134,14 +165,12 @@ function ProjectRow({
 function ProjectsPane({
   error,
   loading,
-  onRetry,
   onSelect,
   projects,
   selectedProjectId
 }: {
   error: string | null;
   loading: boolean;
-  onRetry: () => void;
   onSelect: (projectId: string) => void;
   projects: readonly PersonalDesktopProject[];
   selectedProjectId: string | null;
@@ -174,12 +203,9 @@ function ProjectsPane({
   return (
     <aside className="personal-projects-pane" aria-label="Projects">
       <header>
-        <div>
-          <small>Personal Memory</small>
-          <h1 data-personal-route-focus="projects" tabIndex={-1}>
-            Projects
-          </h1>
-        </div>
+        <h1 data-personal-route-focus="projects" tabIndex={-1}>
+          Projects
+        </h1>
         <span aria-label={`${projects.length} Projects`}>
           {projects.length}
         </span>
@@ -194,19 +220,8 @@ function ProjectsPane({
         />
       </label>
       <div className="personal-project-list">
-        {loading && projects.length === 0 ? (
-          <div className="personal-memory-state" role="status">
-            Loading Projects…
-          </div>
-        ) : error && projects.length === 0 ? (
-          <div className="personal-memory-state error" role="alert">
-            <strong>Projects could not be loaded</strong>
-            <p>{error}</p>
-            <button onClick={onRetry} type="button">
-              Retry
-            </button>
-          </div>
-        ) : projects.length === 0 ? (
+        {loading && projects.length === 0 ? null : error &&
+          projects.length === 0 ? null : projects.length === 0 ? (
           <div className="personal-memory-state" role="status">
             <strong>No Projects yet</strong>
             <p>
@@ -220,10 +235,7 @@ function ProjectsPane({
           </div>
         ) : (
           <>
-            <section aria-labelledby="personal-active-projects">
-              <h2 id="personal-active-projects">
-                Active <span>{active.length}</span>
-              </h2>
+            <section aria-label="Active Projects">
               {active.map((project) => (
                 <ProjectRow
                   key={project.id}
@@ -296,7 +308,13 @@ function SessionRow({
         <small>{sessionPreview(thread)}</small>
       </span>
       <span className="personal-session-meta">
-        <strong>{countLabel(thread.eventCount, "Memory Event")}</strong>
+        <span
+          aria-label={countLabel(thread.eventCount, "Memory Event")}
+          className="personal-memory-event-count"
+        >
+          {thread.eventCount}
+          <Brain aria-hidden="true" />
+        </span>
         <time dateTime={thread.latestAt}>{relativeTime(thread.latestAt)}</time>
       </span>
     </button>
@@ -304,19 +322,23 @@ function SessionRow({
 }
 
 function ProjectDetail({
+  error,
+  loading,
   managedConversationRevision,
   managedConversations,
   onManagedConversationStarted,
-  onOpenProjects,
+  onRetry,
   onSelectSession,
   project
 }: {
+  error: string | null;
+  loading: boolean;
   managedConversationRevision: number;
   managedConversations?: ManagedConversationDesktopApi | null;
   onManagedConversationStarted: (
     conversation: ManagedConversationIdentity
   ) => void;
-  onOpenProjects: () => void;
+  onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: PersonalDesktopProject | null;
 }) {
@@ -377,10 +399,42 @@ function ProjectDetail({
     startState.executionId,
     startState.status
   ]);
+  if (!project && loading) {
+    return (
+      <section
+        aria-label="Loading Projects"
+        className="personal-memory-empty-detail"
+        role="status"
+      >
+        <LoaderCircle aria-hidden="true" className="personal-loading-icon" />
+      </section>
+    );
+  }
+  if (!project && error) {
+    return (
+      <section className="personal-memory-empty-detail error" role="alert">
+        <div>
+          <CircleAlert aria-hidden="true" className="personal-error-icon" />
+          <h2 data-personal-route-focus="project" tabIndex={-1}>
+            Projects unavailable
+          </h2>
+          <p>Koed could not load your Projects.</p>
+          <button
+            className="personal-retry-button"
+            onClick={onRetry}
+            type="button"
+          >
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
   if (!project) {
     return (
       <section className="personal-memory-empty-detail">
         <div>
+          <BookText aria-hidden="true" className="personal-empty-icon" />
           <h2 data-personal-route-focus="project" tabIndex={-1}>
             Select a Project
           </h2>
@@ -394,27 +448,18 @@ function ProjectDetail({
   );
   return (
     <section className="personal-project-detail">
-      <nav aria-label="Breadcrumb">
-        <button onClick={onOpenProjects} type="button">
-          Projects
-        </button>
-        <span aria-hidden="true">/</span>
-        <strong>{project.name}</strong>
-      </nav>
       <header>
         <span className="personal-project-monogram" aria-hidden="true">
           {Array.from(project.name)[0]?.toLocaleUpperCase() ?? "P"}
         </span>
         <div>
-          <small>Personal · Project · Private to you</small>
           <h2 data-personal-route-focus="project" tabIndex={-1}>
             {project.name}
           </h2>
-          <p>
-            {countLabel(project.threads.length, "Captured Session")} ·{" "}
-            {countLabel(project.eventCount, "Memory Event")} ·{" "}
-            {relativeTime(projectActivity(project))}
-          </p>
+          <ProjectOverview
+            eventCount={project.eventCount}
+            sessionCount={project.threads.length}
+          />
         </div>
         <button
           className="personal-new-conversation"
@@ -462,9 +507,7 @@ function ProjectDetail({
           {startState.status === "starting" ? (
             <LoaderCircle aria-hidden="true" />
           ) : null}
-          {startState.status === "starting"
-            ? "Starting Conversation…"
-            : "New Conversation"}
+          {startState.status === "starting" ? "Starting Conversation…" : "New"}
         </button>
       </header>
       {startState.message ? (
@@ -483,19 +526,12 @@ function ProjectDetail({
         <summary>Project details</summary>
         <dl>
           <div>
-            <dt>Local path</dt>
+            <dt>Local path:</dt>
             <dd>{project.path ?? "Unavailable"}</dd>
           </div>
         </dl>
       </details>
-      <section className="personal-sessions" aria-labelledby="sessions-heading">
-        <header>
-          <div>
-            <small>Project activity</small>
-            <h3 id="sessions-heading">Captured Sessions</h3>
-          </div>
-          <span>{threads.length}</span>
-        </header>
+      <section className="personal-sessions" aria-label="Captured Sessions">
         {threads.length ? (
           <div>
             {threads.map((thread) => (
@@ -675,6 +711,7 @@ function ManagedConversationComposer({
     prompt: string;
   } | null>(null);
   const submissionInFlightRef = useRef(false);
+  const composingRef = useRef(false);
 
   useEffect(() => {
     const executionId = resolvedConversation.executionId;
@@ -820,52 +857,54 @@ function ManagedConversationComposer({
         void submit();
       }}
     >
-      <label>
-        <span className="sr-only">Prompt Codex</span>
-        <textarea
-          aria-describedby="personal-managed-composer-status"
-          disabled={disabled}
-          onChange={(event) => {
-            setDraft(event.currentTarget.value);
-            submissionRef.current = null;
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              void submit();
+      <div className="personal-managed-composer-field">
+        <label>
+          <span className="sr-only">Prompt Codex</span>
+          <textarea
+            disabled={disabled}
+            onChange={(event) => {
+              setDraft(event.currentTarget.value);
+              submissionRef.current = null;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+            }}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onKeyDown={(event) => {
+              const nativeEvent = event.nativeEvent as KeyboardEvent;
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !nativeEvent.isComposing &&
+                !composingRef.current
+              ) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            placeholder={
+              state.status === "ready"
+                ? "Ask Codex to work in this Project"
+                : "Prompt unavailable"
             }
-          }}
-          placeholder={
-            state.status === "ready"
-              ? "Ask Codex to work in this Project"
-              : "Prompt unavailable"
-          }
-          rows={3}
-          value={draft}
-        />
-      </label>
-      <button
-        aria-label="Send prompt"
-        disabled={disabled || !draft.trim()}
-        type="submit"
-      >
-        {state.status === "sending" ? (
-          <LoaderCircle aria-hidden="true" />
-        ) : (
-          <Send aria-hidden="true" />
-        )}
-      </button>
-      <p
-        id="personal-managed-composer-status"
-        role={
-          state.status === "error" || state.status === "reconciling"
-            ? "alert"
-            : "status"
-        }
-      >
-        {state.message ||
-          (state.status === "ready" ? "Send with ⌘↵ or Ctrl+Enter" : "\u00a0")}
-      </p>
+            rows={1}
+            value={draft}
+          />
+        </label>
+        <button
+          aria-label="Send prompt"
+          disabled={disabled || !draft.trim()}
+          type="submit"
+        >
+          {state.status === "sending" ? (
+            <LoaderCircle aria-hidden="true" />
+          ) : (
+            <Send aria-hidden="true" />
+          )}
+        </button>
+      </div>
       {state.status === "ready" &&
       resolvedConversation.executionId &&
       authorizeTransfer ? (
@@ -1030,7 +1069,7 @@ function ShareAffordance({
       }
       type="button"
     >
-      Share to Workspace…
+      Share
     </button>
   );
 }
@@ -1100,14 +1139,8 @@ function SessionAssignment({
   return (
     <details className="personal-session-assignment">
       <summary>
-        Project assignment
-        <span>
-          {thread.projectAssignmentSource === "user_override"
-            ? "Manual"
-            : thread.projectAssignmentSource === "detected"
-              ? "Automatic"
-              : "Unassigned"}
-        </span>
+        <ChevronDown aria-hidden="true" />
+        <span className="personal-session-assignment-label">Manage</span>
       </summary>
       <form
         aria-busy={busy}
@@ -1124,8 +1157,8 @@ function SessionAssignment({
           });
         }}
       >
-        <label>
-          Move to another Project
+        <label className="personal-session-move-control">
+          <span>Move to Project:</span>
           <select
             defaultValue=""
             disabled={busy || targets.length === 0}
@@ -1142,7 +1175,11 @@ function SessionAssignment({
             ))}
           </select>
         </label>
-        <button disabled={busy || targets.length === 0} type="submit">
+        <button
+          className="personal-move-button"
+          disabled={busy || targets.length === 0}
+          type="submit"
+        >
           {busy ? "Saving…" : "Move"}
         </button>
         {thread.projectAssignmentSource === "user_override" ? (
@@ -1178,7 +1215,6 @@ function SessionDetail({
   markdownAdapters,
   onAssigned,
   onInspectEvent,
-  onNavigate,
   onShare,
   project,
   projects,
@@ -1196,7 +1232,6 @@ function SessionDetail({
   markdownAdapters?: MarkdownPlatformAdapters;
   onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
   onInspectEvent?: PersonalMemoryWorkspaceProps["onInspectEvent"];
-  onNavigate: PersonalMemoryWorkspaceProps["onNavigate"];
   onShare?: PersonalMemoryWorkspaceProps["onShareToWorkspace"];
   project: PersonalDesktopProject;
   projects: readonly PersonalDesktopProject[];
@@ -1208,29 +1243,18 @@ function SessionDetail({
 }) {
   return (
     <section className="personal-session-detail">
-      <nav aria-label="Breadcrumb">
-        <button onClick={() => onNavigate({ kind: "projects" })} type="button">
-          Projects
-        </button>
-        <span aria-hidden="true">/</span>
-        <button
-          onClick={() => onNavigate({ kind: "project", projectId: project.id })}
-          type="button"
-        >
-          {project.name}
-        </button>
-        <span aria-hidden="true">/</span>
-        <strong>{thread.name || "Untitled session"}</strong>
-      </nav>
       <header>
         <div>
-          <small>Personal · Captured Session · Private to you</small>
+          <small>{project.name} · Private to you</small>
           <h2 data-personal-route-focus="session" tabIndex={-1}>
             {thread.name || "Untitled session"}
           </h2>
-          <p>
-            {countLabel(thread.eventCount, "Memory Event")} ·{" "}
-            {relativeTime(thread.latestAt)} · {project.name}
+          <p
+            aria-label={countLabel(thread.eventCount, "Memory Event")}
+            className="personal-memory-event-count"
+          >
+            {thread.eventCount}
+            <Brain aria-hidden="true" />
           </p>
         </div>
         <ShareAffordance
@@ -1365,7 +1389,6 @@ export function PersonalMemoryWorkspace({
       <ProjectsPane
         error={snapshot.error}
         loading={snapshot.loading}
-        onRetry={() => void store.loadProjects()}
         onSelect={(projectId) => onNavigate({ kind: "project", projectId })}
         projects={projects}
         selectedProjectId={selectedProject?.id ?? null}
@@ -1383,7 +1406,6 @@ export function PersonalMemoryWorkspace({
             markdownAdapters={markdownAdapters}
             onAssigned={onSessionProjectAssigned}
             onInspectEvent={onInspectEvent}
-            onNavigate={onNavigate}
             onShare={onShareToWorkspace}
             project={selectedProject}
             projects={projects}
@@ -1395,6 +1417,8 @@ export function PersonalMemoryWorkspace({
           />
         ) : (
           <ProjectDetail
+            error={projects.length === 0 ? snapshot.error : null}
+            loading={snapshot.loading && projects.length === 0}
             managedConversationRevision={managedConversationRevision}
             managedConversations={managedConversations}
             onManagedConversationStarted={(conversation) => {
@@ -1425,7 +1449,7 @@ export function PersonalMemoryWorkspace({
                 sessionId: conversation.capturedSessionId
               });
             }}
-            onOpenProjects={() => onNavigate({ kind: "projects" })}
+            onRetry={() => void store.loadProjects()}
             onSelectSession={(sessionId) => {
               if (!selectedProject) return;
               onNavigate({

@@ -12,7 +12,6 @@ import {
   type SharedMemorySourceItem,
   type SharedMemorySourcePage,
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
-  coarsePresenceFromTeamPresence,
   deriveTeamPresenceSnapshot
 } from "@koed/shared/collaboration";
 import {
@@ -87,6 +86,7 @@ export type CollaborationModalState =
   | { kind: "create_or_join" }
   | { kind: "create_team" }
   | { kind: "join_team" }
+  | { kind: "workspace"; teamId: string }
   | { kind: "personal_channel" }
   | { kind: "edit_personal_channel"; threadId: string }
   | {
@@ -159,6 +159,14 @@ export const modalIsAuthorized = (
           workspace.lifecycle === "active" &&
           workspace.access === "write"
       )
+    );
+  }
+  if (modal.kind === "workspace") {
+    return snapshot.navigation.teams.some(
+      (team) =>
+        team.id === modal.teamId &&
+        team.lifecycle === "active" &&
+        (team.role === "owner" || team.role === "admin")
     );
   }
   if (modal.kind === "direct_message") {
@@ -422,6 +430,11 @@ export function PeopleView({
   )!;
   const canManage = team.role === "owner" || team.role === "admin";
   const principalId = snapshot.navigation.teamPrincipal?.id ?? "";
+  const orderedPeople = [...view.people].sort((left, right) => {
+    if (left.id === principalId) return -1;
+    if (right.id === principalId) return 1;
+    return left.displayName.localeCompare(right.displayName);
+  });
   const currentPerson = team.people.find((person) => person.id === principalId);
   const enabledOwners = team.people.filter(
     (person) =>
@@ -650,9 +663,7 @@ export function PeopleView({
     if (
       utf8ByteLength(description) > snapshot.limits.topicDescriptionMaxUtf8Bytes
     ) {
-      setOperationError(
-        `Descriptions can be at most ${snapshot.limits.topicDescriptionMaxUtf8Bytes} bytes.`
-      );
+      setOperationError("This description is too long.");
       return;
     }
     const completed = await runOperation(
@@ -953,11 +964,11 @@ export function PeopleView({
               ))}
             </ul>
           ) : null}
-          {view.people.length === 0 ? (
+          {orderedPeople.length === 0 ? (
             <p className="collab-admin-empty">No Team members available.</p>
           ) : (
             <div className="collab-people-list">
-              {view.people.map((person) => {
+              {orderedPeople.map((person) => {
                 const management = person.management;
                 const isCurrent = person.id === principalId;
                 const canChangeTarget =
@@ -967,24 +978,30 @@ export function PeopleView({
                 const targetLastOwner =
                   management?.role === "owner" && enabledOwners <= 1;
                 return (
-                  <div key={person.id} className="collab-person-admin-row">
-                    <span className="collab-avatar">
+                  <div
+                    key={person.id}
+                    className="collab-person-admin-row"
+                    data-current-user={isCurrent || undefined}
+                  >
+                    <span className="collab-avatar collab-person-avatar">
                       {initials(person.displayName)}
+                      <span
+                        className="collab-presence-icon"
+                        title={presenceLabel(person)}
+                      >
+                        {presenceIcon(person)}
+                      </span>
                     </span>
                     <div className="collab-person-identity">
                       <strong>
-                        <span
-                          className="collab-presence-icon"
-                          title={presenceLabel(person)}
-                        >
-                          {presenceIcon(person)}
-                        </span>
                         {person.displayName}
+                        {isCurrent ? (
+                          <span className="collab-me-badge">Me</span>
+                        ) : null}
                       </strong>
                       <span>
-                        {management?.email ??
-                          coarsePresenceFromTeamPresence(presenceAt(person))}
-                        {isCurrent ? " · You" : ""}
+                        {presenceLabel(person)}
+                        {management?.email ? ` · ${management.email}` : ""}
                       </span>
                     </div>
                     {isCurrent ? (
@@ -1173,7 +1190,7 @@ export function PeopleView({
             aria-labelledby="invites-heading"
           >
             <header>
-              <h2 id="invites-heading">Pending invitations</h2>
+              <h2 id="invites-heading">Invites</h2>
               {invitationState === "denied" ? (
                 <button
                   type="button"
@@ -1247,37 +1264,40 @@ export function PeopleView({
           </section>
         ) : null}
 
-        <section className="collab-admin-section collab-leave-section">
-          <header>
-            <h2>Team membership</h2>
-          </header>
-          {membershipVersion ? (
-            <button
-              type="button"
-              className="danger-secondary"
-              disabled={Boolean(busyKey) || lastOwner}
-              title={
-                lastOwner ? "Add another owner before leaving." : undefined
-              }
-              onClick={() =>
-                void runOperation(
-                  "leave-team",
-                  () =>
-                    client.leaveTeam({
-                      teamId: team.id,
-                      expectedVersion: membershipVersion
-                    }),
-                  "The Team could not be left."
-                )
-              }
-            >
-              <LogOut aria-hidden="true" /> Leave Team
-            </button>
-          ) : null}
-          {lastOwner ? (
-            <p>The last owner must assign another owner before leaving.</p>
-          ) : null}
-        </section>
+        {membershipVersion || lastOwner ? (
+          <section
+            aria-label="Team membership actions"
+            className="collab-leave-section"
+            data-invites-visible={canManage || undefined}
+          >
+            {membershipVersion ? (
+              <button
+                type="button"
+                className="danger-secondary"
+                disabled={Boolean(busyKey) || lastOwner}
+                title={
+                  lastOwner ? "Add another owner before leaving." : undefined
+                }
+                onClick={() =>
+                  void runOperation(
+                    "leave-team",
+                    () =>
+                      client.leaveTeam({
+                        teamId: team.id,
+                        expectedVersion: membershipVersion
+                      }),
+                    "The Team could not be left."
+                  )
+                }
+              >
+                <LogOut aria-hidden="true" /> Leave Team
+              </button>
+            ) : null}
+            {lastOwner ? (
+              <p>The last owner must assign another owner before leaving.</p>
+            ) : null}
+          </section>
+        ) : null}
       </div>
 
       {workspaceOpen ? (
@@ -1490,7 +1510,7 @@ export function SharedMemoryIndex({
               </time>
               {session.unreadCompanionCount > 0 ? (
                 <span
-                  className="collab-nav-unread"
+                  className="collab-nav-unread koed-inbox-unread-count"
                   aria-label={`${session.unreadCompanionCount} unread discussion messages`}
                 >
                   {session.unreadCompanionCount > 99
@@ -1872,7 +1892,7 @@ export function SharedSessionView({
           <MessageCircle aria-hidden="true" /> Discussion
           {session.unreadCompanionCount > 0 ? (
             <span
-              className="collab-nav-unread"
+              className="collab-nav-unread koed-inbox-unread-count"
               aria-label={`${session.unreadCompanionCount} unread`}
             >
               {session.unreadCompanionCount > 99
@@ -2909,7 +2929,7 @@ function ModalLayer({
   };
   const validateTopic = (topic: string) => {
     if (utf8ByteLength(topic) > snapshot.limits.topicDescriptionMaxUtf8Bytes) {
-      return `Topics can be at most ${snapshot.limits.topicDescriptionMaxUtf8Bytes} bytes.`;
+      return "This text is too long.";
     }
     return "";
   };
@@ -3043,6 +3063,32 @@ function ModalLayer({
         const topicIssue = validateTopic(topic);
         if (topicIssue) throw new CollaborationInputError(topicIssue);
         return client.createPersonalChannel({ name, topic: topic || null });
+      }
+    );
+  }
+  if (modal.kind === "workspace") {
+    return form(
+      "Create Workspace",
+      <>
+        <label>
+          Name
+          <input name="name" autoComplete="off" />
+        </label>
+        <label>
+          Description
+          <textarea name="description" />
+        </label>
+      </>,
+      async (target) => {
+        const name = value(target, "name");
+        const description = value(target, "description");
+        const issue = validateName(name) || validateTopic(description);
+        if (issue) throw new CollaborationInputError(issue);
+        return client.createWorkspace({
+          teamId: modal.teamId,
+          name,
+          description: description || null
+        });
       }
     );
   }
@@ -3354,7 +3400,8 @@ function MainContent({
   snapshot,
   onEditChannel,
   onSharePersonalMemory,
-  onSelect
+  onSelect,
+  selectionLoading
 }: {
   client: CollaborationRendererClient;
   drafts: CollaborationDrafts;
@@ -3363,6 +3410,7 @@ function MainContent({
   onEditChannel: (threadId: string) => void;
   onSharePersonalMemory: (sessionId: string) => void;
   onSelect: (selection: CollaborationSelection) => void;
+  selectionLoading: boolean;
 }) {
   const teamId = selectionTeamId(snapshot.selection);
   const team = teamId
@@ -3457,6 +3505,7 @@ function MainContent({
           snapshot={snapshot}
           thread={snapshot.view.thread}
           page={snapshot.view.messages}
+          loading={selectionLoading}
         />
       );
     case "team_people":
@@ -3519,6 +3568,7 @@ export type CollaborationRoutesProps = {
   onModalChange: (modal: CollaborationModalState | null) => void;
   onRequestSelection: (selection: CollaborationSelection) => void;
   selectionFailure?: CollaborationSelectionFailure | null;
+  selectionLoading?: boolean;
   snapshot: CollaborationSnapshot;
 };
 
@@ -3581,6 +3631,7 @@ export function CollaborationRoutes({
   onModalChange,
   onRequestSelection,
   selectionFailure = null,
+  selectionLoading = false,
   snapshot
 }: CollaborationRoutesProps) {
   const lastActivityReportAt = useRef(0);
@@ -3673,6 +3724,7 @@ export function CollaborationRoutes({
             onModalChange({ kind: "share_personal_memory", sessionId })
           }
           onSelect={onRequestSelection}
+          selectionLoading={selectionLoading}
         />
       )}
     </div>

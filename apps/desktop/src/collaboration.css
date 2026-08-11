@@ -188,6 +188,7 @@
 }
 
 :is(.collab-route-root, .collab-modal) .collab-shared-row {
+  align-items: center;
   background: transparent;
   border-color: transparent;
   border-radius: 0;
@@ -195,13 +196,39 @@
   color: var(--collab-text);
   display: grid;
   font-weight: 500;
-  gap: 12px;
-  grid-template-columns: 22px minmax(0, 1fr) 128px 18px;
+  gap: 10px;
+  grid-template-columns: 22px minmax(0, 1fr) 112px 28px 18px;
   justify-content: initial;
   min-height: 62px;
-  padding: 9px 18px;
+  padding: 9px 14px;
   text-align: left;
   width: 100%;
+}
+
+.collab-shared-row > svg:first-child {
+  grid-column: 1;
+}
+
+.collab-shared-row > span:first-of-type {
+  grid-column: 2;
+}
+
+.collab-shared-row > time {
+  grid-column: 3;
+}
+
+.collab-shared-row > .collab-nav-unread {
+  align-items: center;
+  display: inline-flex;
+  flex-direction: row;
+  grid-column: 4;
+  justify-content: center;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.collab-shared-row > svg:last-child {
+  grid-column: 5;
 }
 
 :is(.collab-route-root, .collab-modal) .collab-shared-row:hover {
@@ -222,8 +249,25 @@
   white-space: nowrap;
 }
 
+.collab-loading-messages > svg {
+  animation: collab-spin 900ms linear infinite;
+  block-size: 22px;
+  color: var(--collab-muted);
+  inline-size: 22px;
+}
+
+.collab-loading-messages {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  min-height: 0;
+  padding: 0;
+}
+
 .collab-shared-row strong {
   font-size: 13px;
+  font-weight: 500;
 }
 
 .collab-shared-row small,
@@ -273,6 +317,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.collab-header-avatar {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--collab-hover);
+  color: var(--collab-accent);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.collab-direct-presence {
+  text-transform: capitalize;
 }
 
 .collab-content-header p {
@@ -378,6 +439,14 @@
   position: relative;
 }
 
+.chat-markdown {
+  color: var(--foreground);
+  font-size: 0.84rem;
+  font-weight: 400;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
 .collab-message-actions {
   position: absolute;
   inset-block-start: -4px;
@@ -460,6 +529,7 @@
 
 .collab-message-content header strong {
   font-size: 13px;
+  font-weight: 500;
 }
 
 .collab-message-content header time,
@@ -584,7 +654,8 @@
   min-width: 0;
   outline: 0;
   padding: 4px 0;
-  resize: vertical;
+  field-sizing: content;
+  resize: none;
 }
 
 :is(.collab-route-root, .collab-modal) .collab-send-button {
@@ -721,11 +792,18 @@
   background: transparent;
   border: 0;
   color: var(--collab-text);
+  display: grid;
   flex: 1 1 auto;
+  gap: 10px;
+  grid-template-columns: 34px minmax(0, 1fr);
   justify-content: flex-start;
   min-width: 0;
   padding: 4px 0;
   text-align: left;
+}
+
+.collab-row-link > svg {
+  justify-self: center;
 }
 
 :is(.collab-route-root, .collab-modal) .collab-row-link:hover {
@@ -786,6 +864,11 @@
   display: flex;
   gap: 8px;
   min-width: 138px;
+  justify-self: end;
+}
+
+.collab-person-admin-row[data-current-user] .collab-presence-controls {
+  grid-column: -2 / -1;
 }
 
 .collab-presence-auto {
@@ -851,6 +934,35 @@
   padding: 9px 18px;
 }
 
+.collab-person-avatar {
+  position: relative;
+}
+
+.collab-person-avatar .collab-presence-icon {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--collab-surface);
+  border-radius: 50%;
+  background: var(--collab-surface);
+}
+
+.collab-person-avatar .collab-presence-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.collab-me-badge {
+  border-radius: 999px;
+  background: var(--collab-hover);
+  color: var(--collab-accent);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+}
+
 .collab-member-role {
   grid-column: 4;
 }
@@ -901,6 +1013,10 @@
     grid-column: 4;
     justify-self: end;
   }
+
+  .collab-person-admin-row[data-current-user] .collab-presence-controls {
+    grid-column: 3;
+  }
 }
 
 @container team-people-list (max-width: 620px) {
@@ -917,6 +1033,10 @@
     grid-column: 2 / -1;
   }
 
+  .collab-person-admin-row[data-current-user] .collab-presence-controls {
+    grid-column: 2 / -1;
+  }
+
   .collab-member-disable {
     grid-column: 3;
   }
@@ -924,6 +1044,10 @@
 
 .collab-leave-section {
   padding-bottom: 16px;
+}
+
+.collab-leave-section[data-invites-visible] {
+  border-bottom: 1px solid var(--collab-border);
 }
 
 .collab-leave-section > button,
@@ -1407,7 +1531,8 @@
   margin-top: 6px;
   min-height: 38px;
   padding: 8px 9px;
-  resize: vertical;
+  field-sizing: content;
+  resize: none;
   width: 100%;
 }
 

@@ -5,9 +5,10 @@ import type {
   CollaborationThreadReference
 } from "@koed/shared/collaboration";
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
-import { Button } from "@koed/ui";
-import { AlertTriangle, LoaderCircle, X } from "lucide-react";
+import { Button, ToastProvider } from "@koed/ui";
+import { AlertTriangle, LoaderCircle } from "lucide-react";
 import {
+  useCallback,
   lazy,
   Suspense,
   useEffect,
@@ -26,7 +27,10 @@ import type {
   PersonalMemoryInspectorEvent,
   PersonalMemoryRoute
 } from "./views/personal/index.js";
-import { ActionGrantStatus } from "./collaboration/ActionGrantStatus.js";
+import {
+  ActionGrantStatus,
+  CollaborationAnnouncementToast
+} from "./collaboration/ActionGrantStatus.js";
 import { useCollaborationController } from "./collaboration/useCollaborationController.js";
 import {
   createNavigationState,
@@ -42,6 +46,7 @@ import {
 } from "./command-palette.js";
 import { DesktopStatusStore } from "./services/desktop-commands.js";
 import { PersonalMemoryStore } from "./state/personal-memory.js";
+import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
 import { ThemeStore } from "./state/theme.js";
 import { useDesktopStatus } from "./state/use-status.js";
@@ -170,6 +175,22 @@ const selectionEntry = (
 
 const routeTeamId = (route: DesktopRoute): string | null =>
   "teamId" in route ? route.teamId : null;
+
+function StaticBreadcrumb({ labels }: { labels: readonly string[] }) {
+  return (
+    <nav
+      aria-label={`Breadcrumb: ${labels.join(" / ")}`}
+      className="desktop-breadcrumb"
+    >
+      {labels.map((label, index) => (
+        <span key={`${index}:${label}`}>
+          {index > 0 ? <span aria-hidden="true">/</span> : null}
+          {index === labels.length - 1 ? <strong>{label}</strong> : label}
+        </span>
+      ))}
+    </nav>
+  );
+}
 
 const entryAuthorized = (
   entry: NavigationEntry,
@@ -303,6 +324,20 @@ export function App({
     () =>
       personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
     [personalMemoryApi]
+  );
+  const subscribePersonalMemory = useCallback(
+    (listener: () => void) =>
+      personalMemoryStore?.subscribe(listener) ?? (() => undefined),
+    [personalMemoryStore]
+  );
+  const readPersonalMemory = useCallback(
+    () => personalMemoryStore?.current() ?? null,
+    [personalMemoryStore]
+  );
+  const personalMemorySnapshot = useSyncExternalStore(
+    subscribePersonalMemory,
+    readPersonalMemory,
+    readPersonalMemory
   );
   const desktopStatus = useDesktopStatus(activeStatusStore);
   const localSetupReady =
@@ -547,19 +582,22 @@ export function App({
             route.threadId === thread.id,
           unreadCount: thread.unreadCount
         }))}
-        onCreateChannel={() => {
-          const workspace = team.workspaces.find(
-            ({ lifecycle, access }) =>
-              lifecycle === "active" && access === "write"
-          );
-          if (workspace) {
-            collaboration.setModal({
-              kind: "workspace_channel",
-              teamId: team.id,
-              workspaceId: workspace.id
-            });
-          }
-        }}
+        onCreateChannel={(workspaceId) =>
+          collaboration.setModal({
+            kind: "workspace_channel",
+            teamId: team.id,
+            workspaceId
+          })
+        }
+        onCreateWorkspace={
+          team.role === "owner" || team.role === "admin"
+            ? () =>
+                collaboration.setModal({
+                  kind: "workspace",
+                  teamId: team.id
+                })
+            : undefined
+        }
         onOpenPeople={() => choose({ kind: "team_people", teamId: team.id })}
         onOpenSharedMemory={(workspaceId) =>
           choose({
@@ -596,6 +634,8 @@ export function App({
         workspaces={team.workspaces
           .filter(({ lifecycle }) => lifecycle !== "purged")
           .map((workspace) => ({
+            canCreateChannel:
+              workspace.lifecycle === "active" && workspace.access === "write",
             channels: workspace.channels.map((thread) => ({
               archived: thread.lifecycle === "archived",
               id: thread.id,
@@ -656,12 +696,153 @@ export function App({
       />
     );
 
+  const personalBreadcrumb = (() => {
+    if (!route.kind.startsWith("personal-memory")) return null;
+    const selectedProject =
+      "projectId" in route
+        ? personalMemorySnapshot?.projectsById.get(route.projectId)
+        : null;
+    const selectedThread =
+      route.kind === "personal-memory-session"
+        ? selectedProject?.threads.find(
+            (thread) => sessionSelectionId(thread) === route.sessionId
+          )
+        : null;
+    return (
+      <nav className="desktop-breadcrumb" aria-label="Breadcrumb">
+        <span>Personal</span>
+        <span aria-hidden="true">/</span>
+        <button
+          type="button"
+          onClick={() =>
+            navigate({
+              authority: {
+                backendId: null,
+                principalId:
+                  snapshot?.navigation.personalOwner.id ?? "local-personal"
+              },
+              route: { kind: "personal-memory-projects" }
+            })
+          }
+        >
+          Projects
+        </button>
+        {selectedProject ? (
+          <>
+            <span aria-hidden="true">/</span>
+            {route.kind === "personal-memory-session" ? (
+              <button
+                type="button"
+                onClick={() =>
+                  navigate({
+                    authority: {
+                      backendId: null,
+                      principalId:
+                        snapshot?.navigation.personalOwner.id ??
+                        "local-personal"
+                    },
+                    route: {
+                      kind: "personal-memory-project",
+                      projectId: selectedProject.id
+                    }
+                  })
+                }
+              >
+                {selectedProject.name}
+              </button>
+            ) : (
+              <strong>{selectedProject.name}</strong>
+            )}
+          </>
+        ) : null}
+        {route.kind === "personal-memory-session" ? (
+          <>
+            <span aria-hidden="true">/</span>
+            <strong>{selectedThread?.name || "Captured Session"}</strong>
+          </>
+        ) : null}
+      </nav>
+    );
+  })();
+  const collaborationBreadcrumb = (() => {
+    if (route.kind === "inbox") {
+      return <StaticBreadcrumb labels={["Inbox"]} />;
+    }
+    if (route.kind === "personal-chat") {
+      if (
+        route.threadId === "notes-to-self" ||
+        snapshot?.selection.kind === "notes_to_self"
+      ) {
+        return <StaticBreadcrumb labels={["Notes to self"]} />;
+      }
+      const channel = snapshot?.navigation.personal.channels.find(
+        ({ id }) => id === route.threadId
+      );
+      return (
+        <StaticBreadcrumb labels={["Personal", channel?.name ?? "Channel"]} />
+      );
+    }
+    if (!team || !("teamId" in route)) return null;
+    if (route.kind === "team-people") {
+      return <StaticBreadcrumb labels={[team.name, "People"]} />;
+    }
+    if (route.kind === "team-direct-message") {
+      const thread = team.directMessages.find(
+        ({ id }) => id === route.threadId
+      );
+      const otherPeople = thread?.participants
+        .filter(({ id }) => id !== snapshot?.navigation.teamPrincipal?.id)
+        .map(({ displayName }) => displayName)
+        .join(", ");
+      return (
+        <StaticBreadcrumb
+          labels={[
+            team.name,
+            "Direct messages",
+            thread?.name || otherPeople || "Direct message"
+          ]}
+        />
+      );
+    }
+    const workspace = team.workspaces.find(
+      ({ id }) => id === route.workspaceId
+    );
+    const workspaceName = workspace?.name ?? "Workspace";
+    if (route.kind === "workspace-channel") {
+      const channel = workspace?.channels.find(
+        ({ id }) => id === route.threadId
+      );
+      return (
+        <StaticBreadcrumb
+          labels={[team.name, workspaceName, channel?.name ?? "Channel"]}
+        />
+      );
+    }
+    if (route.kind === "workspace-shared-memory") {
+      return (
+        <StaticBreadcrumb
+          labels={[team.name, workspaceName, "Shared Memory"]}
+        />
+      );
+    }
+    const session = workspace?.sharedMemory.find(
+      ({ id }) => id === route.sharedSessionId
+    );
+    return (
+      <StaticBreadcrumb
+        labels={[
+          team.name,
+          workspaceName,
+          "Shared Memory",
+          session?.title ?? "Captured Session"
+        ]}
+      />
+    );
+  })();
   const scopeLine =
-    activeScope === "inbox"
-      ? "Inbox · Authorized activity"
-      : typeof activeScope === "object" && team
-        ? `Team · ${team.name}${"workspaceId" in route ? " · Workspace" : ""}`
-        : "Personal · Private to you";
+    personalBreadcrumb ??
+    collaborationBreadcrumb ??
+    "Personal · Private to you";
 
   let content;
   if (route.kind === "inbox") {
@@ -837,6 +1018,7 @@ export function App({
           onModalChange={collaboration.setModal}
           onRequestSelection={choose}
           selectionFailure={collaboration.selectionFailure}
+          selectionLoading={collaboration.selectionLoading}
           snapshot={snapshot}
         />
       </Suspense>
@@ -869,7 +1051,7 @@ export function App({
   }
 
   return (
-    <>
+    <ToastProvider>
       <AppShell
         activeScope={activeScope}
         canGoBack={navigation.index > 0}
@@ -965,18 +1147,10 @@ export function App({
         teams={teamRail}
         routeFocusKey={JSON.stringify(route)}
       >
-        {collaboration.announcement ? (
-          <div className="desktop-global-notice" role="status">
-            <span>{collaboration.announcement}</span>
-            <button
-              aria-label="Dismiss notice"
-              onClick={collaboration.clearAnnouncement}
-              type="button"
-            >
-              <X aria-hidden="true" />
-            </button>
-          </div>
-        ) : null}
+        <CollaborationAnnouncementToast
+          announcement={collaboration.announcement}
+          clearAnnouncement={collaboration.clearAnnouncement}
+        />
         <ActionGrantStatus
           actionGrants={collaboration.actionGrants}
           client={client}
@@ -1024,7 +1198,7 @@ export function App({
           </span>
         ) : null}
       </div>
-    </>
+    </ToastProvider>
   );
 }
 

@@ -15,6 +15,7 @@ import {
   useRef,
   useState
 } from "react";
+import { BookText, LoaderCircle } from "lucide-react";
 
 import {
   conversationEventPatch,
@@ -526,18 +527,30 @@ function ConversationPresentation({
     visibleEvents.length === 0
   ) {
     return (
-      <div className="native-conversation-state" role="status">
-        Loading Conversation…
+      <div
+        aria-label="Loading Conversation"
+        className="native-conversation-state"
+        role="status"
+      >
+        <LoaderCircle
+          aria-hidden="true"
+          className="native-conversation-loading-icon"
+        />
       </div>
     );
   }
   if (model.error && visibleEvents.length === 0) {
     return (
       <div className="native-conversation-state error" role="alert">
+        <BookText aria-hidden="true" className="native-conversation-icon" />
         <strong>Conversation could not be loaded</strong>
         <p>{model.error}</p>
-        <button type="button" onClick={() => void onRetry()}>
-          Retry loading
+        <button
+          className="personal-retry-button"
+          type="button"
+          onClick={() => void onRetry()}
+        >
+          Retry
         </button>
       </div>
     );
