@@ -18,8 +18,11 @@ import type {
 } from "@koed/db";
 import {
   assertConversationSourceReplicationJsonlSegment,
+  assertSupportedAiClientSourceAdapter,
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   calculateConversationSourceClosureDigest,
+  calculateConversationSourceClosureOperationContentDigest,
+  calculateConversationSourceSetClosureDigest,
   calculateConversationSourceGenerationRegistrationDigest,
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
@@ -33,6 +36,7 @@ import {
   inspectDeviceIdentityAtKoedHome,
   parseConversationSourceReplicationSegmentEnvelope,
   parseSignedConversationSourceClosureManifest,
+  parseSignedConversationSourceSetClosureManifest,
   parseConversationSourceOriginKeyRegistration,
   parseConversationSourceReplicationSourceDescriptor,
   readLocalEdgeUpstreamRegistry,
@@ -54,6 +58,7 @@ import {
   parseTranscriptJournalBytes,
   type TranscriptJournalParserState
 } from "@koed/mcp-server/codex-transcript-parser";
+import { parseClaudeTranscriptJournalBytes } from "@koed/mcp-server/claude-transcript-parser";
 import type { Logger } from "pino";
 
 const maxSegmentBytes = 16 * 1024 * 1024;
@@ -127,32 +132,48 @@ const sourceDescriptor = (
   sourceSession: NonNullable<
     Awaited<ReturnType<MemorySourceRepository["getCapturedSession"]>>
   >
-): ConversationSourceReplicationSourceDescriptor => ({
-  sourceKind: "codex",
-  logicalSessionId: sourceSession.logicalSessionId,
-  externalSessionId: artifact.externalSessionId,
-  forkedFromExternalThreadId: sourceSession.forkedFromExternalThreadId ?? null,
-  sourceFingerprint: artifact.sourceFingerprint,
-  artifactFormat: "codex_rollout_jsonl",
-  artifactFormatVersion: 1,
-  sourceAdapterVersion: "codex-transcript-v1",
-  sourceRuntime: artifact.sourceRuntime,
-  redactedSourceLabel: artifact.redactedSourceLabel,
-  originDeploymentId: artifact.originDeploymentId,
-  originDeviceId: artifact.originDeviceId,
-  journalStartOffset: artifact.journalStartOffset,
-  journalStartLine: artifact.journalStartLine,
-  liveStartOffset: artifact.liveStartOffset,
-  liveStartLine: artifact.liveStartLine,
-  project:
-    sourceSession.project &&
-    portableProjectIdPattern.test(sourceSession.project.id)
-      ? {
-          id: sourceSession.project.id,
-          name: sourceSession.project.name
-        }
-      : null
-});
+): ConversationSourceReplicationSourceDescriptor => {
+  const adapter = {
+    sourceKind: artifact.sourceKind,
+    sourceRuntime: artifact.sourceRuntime,
+    artifactFormat: artifact.artifactFormat,
+    artifactFormatVersion: artifact.artifactFormatVersion,
+    sourceAdapterVersion: artifact.sourceAdapterVersion
+  };
+  assertSupportedAiClientSourceAdapter(adapter);
+  return parseConversationSourceReplicationSourceDescriptor({
+    sourceKind: adapter.sourceKind,
+    sourceComponentSchemaVersion: 1,
+    sourceComponentId: artifact.sourceComponentId,
+    sourceComponentRole: artifact.sourceComponentRole,
+    parentSourceComponentId: artifact.parentSourceComponentId,
+    contentFraming: artifact.contentFraming,
+    logicalSessionId: sourceSession.logicalSessionId,
+    externalSessionId: artifact.externalSessionId,
+    forkedFromExternalThreadId:
+      sourceSession.forkedFromExternalThreadId ?? null,
+    sourceFingerprint: artifact.sourceFingerprint,
+    artifactFormat: adapter.artifactFormat,
+    artifactFormatVersion: adapter.artifactFormatVersion,
+    sourceAdapterVersion: adapter.sourceAdapterVersion,
+    sourceRuntime: adapter.sourceRuntime,
+    redactedSourceLabel: artifact.redactedSourceLabel,
+    originDeploymentId: artifact.originDeploymentId,
+    originDeviceId: artifact.originDeviceId,
+    journalStartOffset: artifact.journalStartOffset,
+    journalStartLine: artifact.journalStartLine,
+    liveStartOffset: artifact.liveStartOffset,
+    liveStartLine: artifact.liveStartLine,
+    project:
+      sourceSession.project &&
+      portableProjectIdPattern.test(sourceSession.project.id)
+        ? {
+            id: sourceSession.project.id,
+            name: sourceSession.project.name
+          }
+        : null
+  });
+};
 
 const originKeyRegistration = (
   artifact: ConversationSourceArtifactRecord
@@ -756,11 +777,41 @@ export const createConversationSourceReplicationService = (options: {
         manifest: claim.artifact.closureManifest,
         signature: claim.artifact.closureSignature
       });
-      const contentDigest =
+      const artifactClosureDigest =
         calculateConversationSourceClosureDigest(signedClosure);
+      const signedSourceSetClosure =
+        claim.artifact.sourceComponentId === "main"
+          ? claim.artifact.sourceSetClosureManifest &&
+            claim.artifact.sourceSetClosureSignature
+            ? parseSignedConversationSourceSetClosureManifest({
+                manifest: claim.artifact.sourceSetClosureManifest,
+                signature: claim.artifact.sourceSetClosureSignature
+              })
+            : null
+          : null;
+      if (
+        claim.artifact.sourceComponentId === "main" &&
+        !signedSourceSetClosure
+      ) {
+        throw new SourceReplicationError(
+          "SourceReplicationSourceSetPendingError",
+          "Conversation source-set closure is not ready",
+          true
+        );
+      }
+      const sourceSetClosureDigest = signedSourceSetClosure
+        ? calculateConversationSourceSetClosureDigest(signedSourceSetClosure)
+        : null;
+      const contentDigest =
+        calculateConversationSourceClosureOperationContentDigest(
+          artifactClosureDigest,
+          sourceSetClosureDigest
+        );
       if (
         claim.artifact.lifecycle !== "finalized" ||
-        contentDigest !== claim.artifact.closureHash
+        artifactClosureDigest !== claim.artifact.closureHash ||
+        (signedSourceSetClosure &&
+          sourceSetClosureDigest !== claim.artifact.sourceSetClosureHash)
       ) {
         throw new SourceReplicationError(
           "SourceReplicationClosureDigestError",
@@ -794,7 +845,8 @@ export const createConversationSourceReplicationService = (options: {
             payload: {
               protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
               operation: "close_generation",
-              closure: signedClosure
+              closure: signedClosure,
+              sourceSetClosure: signedSourceSetClosure
             }
           })
         }
@@ -909,13 +961,6 @@ export const createConversationSourceReplicationService = (options: {
       chunks.push(chunk);
     }
     if (chunks.length === 0) return false;
-    const parsed = parseTranscriptJournalBytes({
-      bytes: Buffer.concat(chunks),
-      absoluteStartOffset: startOffset,
-      lineIndexOffset: startLine,
-      prior: parserState(cursor?.parserState)
-    });
-    if (parsed.checkpoint.offset <= startOffset) return false;
     const sourceSession = await options.repository.getCapturedSession(
       actor,
       artifact.sessionId
@@ -927,13 +972,40 @@ export const createConversationSourceReplicationService = (options: {
         false
       );
     }
-    const transcriptContext = extractTranscriptSessionMetadata(parsed.records);
+    const materializedBytes = Buffer.concat(chunks);
+    const claudeSource =
+      artifact.sourceAdapterVersion === "claude-code-transcript-v1";
+    const claudeParsed = claudeSource
+      ? parseClaudeTranscriptJournalBytes({
+          bytes: materializedBytes,
+          absoluteStartOffset: startOffset,
+          lineIndexOffset: startLine,
+          sessionId: artifact.sessionId,
+          externalSessionId: artifact.externalSessionId,
+          sourceFingerprint: artifact.sourceFingerprint,
+          sourceComponentId: artifact.sourceComponentId,
+          prior: cursor?.parserState as { currentTurnId?: string } | undefined
+        })
+      : null;
+    const codexParsed = claudeSource
+      ? null
+      : parseTranscriptJournalBytes({
+          bytes: materializedBytes,
+          absoluteStartOffset: startOffset,
+          lineIndexOffset: startLine,
+          prior: parserState(cursor?.parserState)
+        });
+    const checkpoint = (claudeParsed ?? codexParsed)!.checkpoint;
+    if (checkpoint.offset <= startOffset) return false;
+    const transcriptContext = codexParsed
+      ? extractTranscriptSessionMetadata(codexParsed.records)
+      : null;
     const transcriptCwd =
-      typeof transcriptContext.transcriptMetadata.cwd === "string"
+      typeof transcriptContext?.transcriptMetadata.cwd === "string"
         ? transcriptContext.transcriptMetadata.cwd
         : undefined;
     const transcriptModel =
-      typeof transcriptContext.transcriptMetadata.model === "string"
+      typeof transcriptContext?.transcriptMetadata.model === "string"
         ? transcriptContext.transcriptMetadata.model
         : undefined;
     await options.repository.createCapturedSession(actor, {
@@ -958,8 +1030,8 @@ export const createConversationSourceReplicationService = (options: {
     });
     const containing = segments.find(
       (segment) =>
-        segment.sourceStartOffset < parsed.checkpoint.offset &&
-        segment.sourceEndOffset >= parsed.checkpoint.offset
+        segment.sourceStartOffset < checkpoint.offset &&
+        segment.sourceEndOffset >= checkpoint.offset
     );
     if (!containing) {
       throw new SourceReplicationError(
@@ -968,15 +1040,17 @@ export const createConversationSourceReplicationService = (options: {
         false
       );
     }
-    const items = buildCodexTranscriptConversationItems({
-      records: parsed.records,
-      indexOffset: parsed.indexOffset,
-      sessionId: artifact.sessionId,
-      sourceSessionId: artifact.externalSessionId,
-      sourceTransport: "transcript",
-      sourceFingerprint: artifact.sourceFingerprint,
-      threadKind: "conversation"
-    });
+    const items =
+      claudeParsed?.items ??
+      buildCodexTranscriptConversationItems({
+        records: codexParsed!.records,
+        indexOffset: codexParsed!.indexOffset,
+        sessionId: artifact.sessionId,
+        sourceSessionId: artifact.externalSessionId,
+        sourceTransport: "transcript",
+        sourceFingerprint: artifact.sourceFingerprint,
+        threadKind: "conversation"
+      });
     if (items.length > 0) {
       await options.repository.createConversationItems(actor, {
         items: items as ConversationItemInput[]
@@ -986,21 +1060,21 @@ export const createConversationSourceReplicationService = (options: {
       artifactId: artifact.id,
       consumerKind: "remote_processing",
       expectedSourceOffset: startOffset,
-      sourceOffset: parsed.checkpoint.offset,
-      sourceLine: parsed.checkpoint.lineCount,
+      sourceOffset: checkpoint.offset,
+      sourceLine: checkpoint.lineCount,
       segmentIndex: containing.segmentIndex,
       lastVerifiedDigest: containing.plaintextDigest,
-      parserState: {
-        ...(parsed.checkpoint.lastEventTime
-          ? { lastEventTime: parsed.checkpoint.lastEventTime }
+      parserState: claudeParsed?.parserState ?? {
+        ...(codexParsed!.checkpoint.lastEventTime
+          ? { lastEventTime: codexParsed!.checkpoint.lastEventTime }
           : {}),
-        ...(parsed.checkpoint.activeTurnId
-          ? { activeTurnId: parsed.checkpoint.activeTurnId }
+        ...(codexParsed!.checkpoint.activeTurnId
+          ? { activeTurnId: codexParsed!.checkpoint.activeTurnId }
           : {}),
-        ...(parsed.checkpoint.assistantMessagePreference
+        ...(codexParsed!.checkpoint.assistantMessagePreference
           ? {
               assistantMessagePreference:
-                parsed.checkpoint.assistantMessagePreference
+                codexParsed!.checkpoint.assistantMessagePreference
             }
           : {})
       }

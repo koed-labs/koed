@@ -41,6 +41,9 @@ const opaqueIdPattern = /^[\x21-\x7e]{1,240}$/;
 const relayIdPattern = /^[A-Za-z0-9_-]{22}$/;
 const sourceMetadataKeys = new Set([
   "contentType",
+  "parentSourceComponentId",
+  "sourceComponentId",
+  "sourceComponentRole",
   "sourceRole",
   "toolCallId",
   "toolName"
@@ -58,7 +61,16 @@ export interface PdsConversationSourceItem {
   type: string;
   content: string;
   metadata: Partial<
-    Record<"contentType" | "sourceRole" | "toolCallId" | "toolName", string>
+    Record<
+      | "contentType"
+      | "parentSourceComponentId"
+      | "sourceComponentId"
+      | "sourceComponentRole"
+      | "sourceRole"
+      | "toolCallId"
+      | "toolName",
+      string
+    >
   >;
 }
 

@@ -340,7 +340,7 @@ describe("MCP memory_answer schema wording", () => {
 
   it("keeps the memory_answer tool description concise and scope-explicit", () => {
     expect(memoryAnswerToolDescription).toContain(
-      "captured Codex conversations"
+      "captured AI Client conversations"
     );
     expect(memoryAnswerToolDescription).toContain(
       "remembered user preferences"
@@ -978,6 +978,7 @@ describe("LCM summary background service", () => {
           ownerUserId: "user-1",
           flowKey: "lcm_summary",
           provider: "codex",
+          aiClientInstanceId: "codex.default",
           model: "gpt-persisted",
           reasoningEffort: "high",
           timeoutMs: 122_000,
@@ -1007,6 +1008,7 @@ describe("LCM summary background service", () => {
           ownerUserId: "user-1",
           flowKey: "lcm_summary",
           provider: "codex",
+          aiClientInstanceId: "codex.default",
           model: "gpt-persisted",
           reasoningEffort: "high",
           timeoutMs: 122_000,

@@ -12,6 +12,7 @@ import {
   signalCodexTranscriptWatcher,
   watcherWakePath
 } from "../src/codex-transcript-watcher-signal.js";
+import { claudeWatcherSignalDirectory } from "../src/claude-transcript-watcher-signal.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -122,5 +123,84 @@ describe("Codex Capture Hook signal", () => {
     fs.writeFileSync(notADirectory, "occupied");
 
     expect(() => signalCaptureHook({ KOED_HOME: notADirectory })).not.toThrow();
+  });
+
+  it("routes Claude hooks to the Claude watcher without creating a Codex wake", () => {
+    const koedHome = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-"));
+    temporaryDirectories.push(koedHome);
+    const environment = { KOED_HOME: koedHome };
+
+    signalCaptureHook(
+      environment,
+      {
+        hookEventName: "PostToolUse",
+        sourceSessionId: "claude-session",
+        transcriptPath: path.join(
+          os.homedir(),
+          ".claude",
+          "projects",
+          "project",
+          "claude-session.jsonl"
+        ),
+        cwd: "/tmp/project"
+      },
+      ["--source", "claude"]
+    );
+
+    const signalFiles = fs.readdirSync(
+      claudeWatcherSignalDirectory(environment)
+    );
+    expect(signalFiles).toHaveLength(1);
+    expect(fs.existsSync(watcherWakePath(environment))).toBe(false);
+    const signal: unknown = JSON.parse(
+      fs.readFileSync(
+        path.join(claudeWatcherSignalDirectory(environment), signalFiles[0]!),
+        "utf8"
+      )
+    );
+    expect(signal).toMatchObject({
+      sourceSessionId: "claude-session",
+      hookEventName: "PostToolUse",
+      cwd: "/tmp/project"
+    });
+  });
+
+  it("preserves a Claude turn boundary while later wakes are coalesced", () => {
+    const koedHome = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-"));
+    temporaryDirectories.push(koedHome);
+    const environment = { KOED_HOME: koedHome };
+    const metadata = {
+      sourceSessionId: "claude-session",
+      transcriptPath: path.join(
+        os.homedir(),
+        ".claude",
+        "projects",
+        "project",
+        "claude-session.jsonl"
+      ),
+      cwd: "/tmp/project"
+    };
+
+    signalCaptureHook(environment, { ...metadata, hookEventName: "Stop" }, [
+      "--source",
+      "claude"
+    ]);
+    signalCaptureHook(
+      environment,
+      { ...metadata, hookEventName: "PostToolUse" },
+      ["--source", "claude"]
+    );
+
+    const [name] = fs.readdirSync(claudeWatcherSignalDirectory(environment));
+    const signal: unknown = JSON.parse(
+      fs.readFileSync(
+        path.join(claudeWatcherSignalDirectory(environment), name!),
+        "utf8"
+      )
+    );
+    expect(signal).toMatchObject({
+      hookEventName: "PostToolUse",
+      turnBoundary: true
+    });
   });
 });

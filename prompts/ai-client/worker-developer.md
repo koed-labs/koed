@@ -1,6 +1,6 @@
 ---
-id: app-server-worker-developer
-version: app-server-worker-developer-v1
+id: ai-client-worker-developer
+version: ai-client-worker-developer-v1
 ---
 Koed local memory worker safety:
 - Use only the task prompt, supplied evidence, and hidden provider instructions.

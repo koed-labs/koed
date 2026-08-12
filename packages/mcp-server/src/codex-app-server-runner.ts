@@ -626,8 +626,8 @@ export const koedAppServerMinimalContextConfig = {
   }
 } as const;
 
-export const koedAppServerWorkerDeveloperInstructions = loadPrompt(
-  "app-server-worker-developer"
+export const koedAiClientWorkerDeveloperInstructions = loadPrompt(
+  "ai-client-worker-developer"
 ).body;
 
 const createIsolatedCodexHome = (
@@ -2156,7 +2156,7 @@ export const runCodexAppServerJsonTask = (
       clientName: config.clientName,
       baseInstructions: config.baseInstructions,
       developerInstructions:
-        config.developerInstructions ?? koedAppServerWorkerDeveloperInstructions
+        config.developerInstructions ?? koedAiClientWorkerDeveloperInstructions
     },
     timeoutMs
   );

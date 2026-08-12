@@ -54,7 +54,9 @@ describe("koed-server config", () => {
 
     expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
       runtimeMode: "developer",
-      dependencyMode: "external"
+      dependencyMode: "external",
+      codexTranscriptWatcherEnabled: true,
+      claudeTranscriptWatcherEnabled: true
     });
   });
 
@@ -83,12 +85,14 @@ describe("koed-server config", () => {
       resolve(root, "config/server.json"),
       JSON.stringify({
         runtimeMode: "local-personal",
-        codexTranscriptWatcherEnabled: false
+        codexTranscriptWatcherEnabled: false,
+        claudeTranscriptWatcherEnabled: false
       })
     );
 
     expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
-      codexTranscriptWatcherEnabled: false
+      codexTranscriptWatcherEnabled: false,
+      claudeTranscriptWatcherEnabled: false
     });
     expect(
       resolveKoedServerConfig(paths(root), {
@@ -101,8 +105,16 @@ describe("koed-server config", () => {
       })
     ).toMatchObject({ codexTranscriptWatcherEnabled: true });
     expect(
+      resolveKoedServerConfig(paths(root), {
+        MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "true"
+      })
+    ).toMatchObject({ claudeTranscriptWatcherEnabled: true });
+    expect(
       resolveKoedServerConfig(paths(root), { KOED_RUNTIME_MODE: "external" })
-    ).toMatchObject({ codexTranscriptWatcherEnabled: false });
+    ).toMatchObject({
+      codexTranscriptWatcherEnabled: false,
+      claudeTranscriptWatcherEnabled: false
+    });
   });
 
   it("rejects Transcript Watcher ownership in external runtime mode", () => {
@@ -113,7 +125,7 @@ describe("koed-server config", () => {
         KOED_RUNTIME_MODE: "external",
         MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "true"
       })
-    ).toThrow("Codex Transcript Watcher cannot run in external runtime mode");
+    ).toThrow("Transcript Watchers cannot run in external runtime mode");
   });
 
   it("loads server config and lets environment override it", () => {

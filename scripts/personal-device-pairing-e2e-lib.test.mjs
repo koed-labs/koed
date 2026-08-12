@@ -17,6 +17,7 @@ test("reconciles and verifies the joining device through a distinct local API", 
     authorityControlUrl: "http://127.0.0.1:3300",
     joiningControlUrl: "http://127.0.0.1:4300",
     browserCookie: "cm_session=joining",
+    browserOrigin: "http://127.0.0.1:5174/path-is-normalized",
     groupId,
     localGroupReconciliation: reconciliation,
     fetch: async (url, init) => {
@@ -42,6 +43,7 @@ test("reconciles and verifies the joining device through a distinct local API", 
   assert.equal(calls.length, 2);
   assert.equal(calls[0].init.headers.cookie, "cm_session=joining");
   assert.equal(calls[0].init.headers.origin, "http://127.0.0.1:4300");
+  assert.equal(calls[0].init.headers["sec-fetch-site"], "same-origin");
   assert.equal(
     calls[0].url,
     "http://127.0.0.1:4300/v1/personal-device-sync/local-group-reconciliation"
@@ -54,6 +56,7 @@ test("rejects a one-database pairing fixture", async () => {
       authorityControlUrl: "http://127.0.0.1:3300",
       joiningControlUrl: "http://127.0.0.1:3300/",
       browserCookie: "cm_session=joining",
+      browserOrigin: "http://127.0.0.1:5174",
       groupId,
       localGroupReconciliation: reconciliation,
       fetch: async () => {

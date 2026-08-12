@@ -1,4 +1,8 @@
-import { MemoryApiError, type MemoryApiClient } from "./index.js";
+import {
+  MemoryApiError,
+  workerOverridesFromLocalMemorySetting,
+  type MemoryApiClient
+} from "./index.js";
 import {
   CURATED_MEMORY_REVIEW_PROMPT_VERSION,
   resolveCuratedMemoryReviewConfig,
@@ -6,6 +10,7 @@ import {
   type CuratedMemoryReviewBundle,
   type CuratedMemoryReviewConfig
 } from "./curated-memory-review-worker.js";
+import { aiClientExecutionIdentity } from "./ai-client-runner.js";
 
 export interface CuratedMemoryReviewServiceHandle {
   stop(): void;
@@ -33,15 +38,9 @@ const reviewWorkerConfig = async (
   );
   return setting
     ? resolveCuratedMemoryReviewConfig(fallback.env, {
-        provider: setting.provider,
-        model: setting.model,
-        reasoningEffort: setting.reasoningEffort,
-        timeoutMs: setting.timeoutMs,
-        maxAttempts: setting.maxAttempts,
+        ...workerOverridesFromLocalMemorySetting(setting),
         retryDelayMs: fallback.retryDelayMs,
-        maxPromptTokens: fallback.maxPromptTokens,
-        appServerBinary: fallback.appServerBinary,
-        cwd: fallback.cwd
+        maxPromptTokens: fallback.maxPromptTokens
       })
     : fallback;
 };
@@ -124,8 +123,18 @@ export const startCuratedMemoryReviewService = (
         );
         try {
           const result = await reviewer(bundle, config);
+          const identity = aiClientExecutionIdentity(
+            config.provider,
+            config.aiClientInstanceId
+          );
           const telemetry = {
-            reviewer: "local_codex_app_server",
+            reviewer:
+              identity.provider === "codex"
+                ? "local_codex_app_server"
+                : "local_claude_agent_sdk",
+            provider: identity.provider,
+            aiClientInstanceId: identity.aiClientInstanceId,
+            transport: identity.transport,
             promptVersion: CURATED_MEMORY_REVIEW_PROMPT_VERSION,
             model: result.model,
             promptTokens: result.promptTokens,
@@ -178,6 +187,10 @@ export const startCuratedMemoryReviewService = (
             ) ||
               attemptCount >= config.maxAttempts);
           if (terminal) {
+            const identity = aiClientExecutionIdentity(
+              config.provider,
+              config.aiClientInstanceId
+            );
             await client.submitCuratedMemoryReview(proposalId, {
               outcome: "rejected",
               attempt_count: attemptCount,
@@ -185,7 +198,13 @@ export const startCuratedMemoryReviewService = (
               candidate_assertion_ids: candidateIds,
               decision_reason: message,
               worker_result: {
-                reviewer: "local_codex_app_server",
+                reviewer:
+                  identity.provider === "codex"
+                    ? "local_codex_app_server"
+                    : "local_claude_agent_sdk",
+                provider: identity.provider,
+                aiClientInstanceId: identity.aiClientInstanceId,
+                transport: identity.transport,
                 promptVersion: CURATED_MEMORY_REVIEW_PROMPT_VERSION,
                 terminalFailure: true
               }

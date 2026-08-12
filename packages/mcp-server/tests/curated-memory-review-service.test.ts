@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
 import { startCuratedMemoryReviewService } from "../src/curated-memory-review-service.js";
@@ -160,7 +163,12 @@ describe("Curated Memory review service", () => {
     }
   });
 
-  it("applies stored reviewer selection without losing resolved runtime fields", async () => {
+  it("resolves stored Claude settings without inheriting the startup Codex runtime", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-curated-claude-")
+    );
+    const claudeExecutable = path.join(directory, "claude");
+    fs.writeFileSync(claudeExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     const submit = vi
       .fn()
       .mockResolvedValue({ proposal: { status: "stored" } });
@@ -170,7 +178,8 @@ describe("Curated Memory review service", () => {
         {
           ownerUserId: "44444444-4444-4444-8444-444444444444",
           flowKey: "curated_memory_review",
-          provider: "codex",
+          provider: "claude",
+          aiClientInstanceId: "claude.default",
           model: "selected-review-model",
           reasoningEffort: "high",
           timeoutMs: 2_000,
@@ -194,10 +203,13 @@ describe("Curated Memory review service", () => {
       attemptIndex: 1
     });
     const workerConfig = resolveCuratedMemoryReviewConfig(
-      { TEST_CURATED_RUNTIME: "preserved" },
+      {
+        TEST_CURATED_RUNTIME: "preserved",
+        KOED_CLAUDE_CODE_EXECUTABLE: claudeExecutable
+      },
       {
         model: "fallback-model",
-        appServerBinary: "/opt/koed/bin/codex",
+        executablePath: "/opt/koed/bin/codex",
         cwd: "/opt/koed/runtime",
         maxPromptTokens: 12_345,
         retryDelayMs: 321
@@ -213,18 +225,34 @@ describe("Curated Memory review service", () => {
         | CuratedMemoryReviewConfig
         | undefined;
       expect(receivedConfig).toMatchObject({
+        provider: "claude",
+        aiClientInstanceId: "claude.default",
         model: "selected-review-model",
         reasoningEffort: "high",
         timeoutMs: 2_000,
         maxAttempts: 3,
-        appServerBinary: "/opt/koed/bin/codex",
-        cwd: "/opt/koed/runtime",
+        executablePath: fs.realpathSync(claudeExecutable),
+        cwd: process.cwd(),
         maxPromptTokens: 12_345,
         retryDelayMs: 321,
-        env: { TEST_CURATED_RUNTIME: "preserved" }
+        env: {
+          TEST_CURATED_RUNTIME: "preserved",
+          KOED_CLAUDE_CODE_EXECUTABLE: claudeExecutable
+        }
+      });
+      expect(submit).toHaveBeenCalledOnce();
+      expect(submit.mock.calls[0]?.[0]).toBe(proposalId);
+      expect(submit.mock.calls[0]?.[1]).toMatchObject({
+        worker_result: {
+          reviewer: "local_claude_agent_sdk",
+          provider: "claude",
+          aiClientInstanceId: "claude.default",
+          transport: "agent_sdk"
+        }
       });
     } finally {
       service.stop();
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 });

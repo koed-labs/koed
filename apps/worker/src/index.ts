@@ -379,6 +379,7 @@ const managedConversationService =
         apiToken: workerEnv.managedConversationApiToken,
         appServerBinary: workerEnv.managedConversationAppServerBinary,
         model: workerEnv.managedConversationModel,
+        claudeModel: workerEnv.managedConversationClaudeModel,
         reasoningEffort: workerEnv.managedConversationReasoningEffort,
         koedHome: workerEnv.koedHome,
         envelopeEncryptionProvider,

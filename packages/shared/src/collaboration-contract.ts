@@ -13,6 +13,7 @@ import {
   approvalDecisionDisplaySchema,
   personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
+import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 3;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
@@ -2760,7 +2761,12 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
         .object({
           id: z.uuid(),
           projectId: z.string().trim().min(1).max(2_048),
-          provider: z.literal("codex"),
+          provider: z
+            .string()
+            .trim()
+            .min(1)
+            .max(96)
+            .regex(aiClientIdentifierPattern),
           state: z.enum([
             "starting",
             "running",

@@ -2,11 +2,10 @@ import { z } from "zod";
 import { codexIdePromptUserText } from "@koed/core";
 import {
   CodexAppServerTurnError,
-  koedAppServerWorkerDeveloperInstructions,
-  runCodexAppServerTurn,
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
+import { runAiClientJsonTask } from "./ai-client-runner.js";
 import type { MemoryApiClient } from "./index.js";
 import {
   acquireLocalSummaryLock,
@@ -56,7 +55,7 @@ type SessionTitlePromptResult = {
   rawEvents?: CodexAppServerRawEvent[];
 };
 
-export type CodexSessionTitleRunner = (
+export type SessionTitleRunner = (
   prompt: string,
   config: LcmSummaryWorkerConfig,
   timeoutMs: number
@@ -130,22 +129,28 @@ export const buildSessionTitlePrompt = (
   session: SessionTitleCandidate
 ): string => buildVersionedSessionTitlePrompt(session).text;
 
-export const runCodexAppServerSessionTitle: CodexSessionTitleRunner = async (
+export const runSessionTitle: SessionTitleRunner = async (
   prompt,
   config,
   timeoutMs
 ): Promise<SessionTitlePromptResult> => {
-  const result = await runCodexAppServerTurn(
+  const result = await runAiClientJsonTask(
     prompt,
     {
-      appServerBinary: config.appServerBinary,
+      provider: config.provider,
+      executablePath: config.executablePath,
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       cwd: config.cwd,
       env: config.env,
       clientName: "koed-session-title-worker",
-      baseInstructions: loadPrompt("app-server-session-title-base").body,
-      developerInstructions: koedAppServerWorkerDeveloperInstructions
+      systemPrompt: loadPrompt("ai-client-session-title-base").body,
+      outputSchema: {
+        type: "object",
+        properties: { title: { type: "string", minLength: 1, maxLength: 120 } },
+        required: ["title"],
+        additionalProperties: false
+      }
     },
     timeoutMs
   );
@@ -158,7 +163,7 @@ export const runCodexAppServerSessionTitle: CodexSessionTitleRunner = async (
 const runPromptWithRetries = async (
   prompt: string,
   config: LcmSummaryWorkerConfig,
-  runner: CodexSessionTitleRunner
+  runner: SessionTitleRunner
 ): Promise<SessionTitlePromptResult> => {
   let lastError: unknown;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
@@ -184,7 +189,7 @@ const generateSessionTitle = async (
   client: MemoryApiClient,
   session: SessionTitleCandidate,
   config: LcmSummaryWorkerConfig,
-  runner: CodexSessionTitleRunner
+  runner: SessionTitleRunner
 ): Promise<SessionTitleResult> => {
   try {
     const prompt = buildVersionedSessionTitlePrompt(session, config.env);
@@ -239,23 +244,10 @@ export const generatePendingSessionTitles = async (
     limit?: number;
     minUserEvents?: number;
     config?: LcmSummaryWorkerConfig;
-    runner?: CodexSessionTitleRunner;
+    runner?: SessionTitleRunner;
   } = {}
 ) => {
   const config = options.config ?? resolveLcmSummaryWorkerConfig();
-  if (config.provider !== "codex") {
-    return {
-      requestedLimit: options.limit ?? 5,
-      minUserEvents: options.minUserEvents ?? 3,
-      processedCount: 0,
-      submittedCount: 0,
-      failedCount: 0,
-      skippedReason: `session title provider is ${config.provider}`,
-      localOnly: true,
-      results: []
-    };
-  }
-
   const requestedLimit = options.limit ?? 5;
   const minUserEvents = options.minUserEvents ?? 3;
   const releaseLock = acquireLocalSummaryLock(
@@ -279,7 +271,7 @@ export const generatePendingSessionTitles = async (
         maxAttempts: config.maxAttempts,
         retryDelayMs: config.retryDelayMs,
         concurrency: config.concurrency,
-        appServerBinary: config.appServerBinary
+        executablePath: config.executablePath
       },
       results: []
     };
@@ -291,7 +283,7 @@ export const generatePendingSessionTitles = async (
       minUserEvents
     })) as { sessions?: SessionTitleCandidate[] };
     const sessions = pending.sessions ?? [];
-    const runner = options.runner ?? runCodexAppServerSessionTitle;
+    const runner = options.runner ?? runSessionTitle;
     const results = await runWithConcurrency(
       sessions,
       config.concurrency,
@@ -313,7 +305,7 @@ export const generatePendingSessionTitles = async (
         maxAttempts: config.maxAttempts,
         retryDelayMs: config.retryDelayMs,
         concurrency: config.concurrency,
-        appServerBinary: config.appServerBinary
+        executablePath: config.executablePath
       },
       results
     };

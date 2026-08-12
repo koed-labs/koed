@@ -485,9 +485,9 @@ docker compose --env-file .env -f examples/server-compose/docker-compose.yml exe
 ```
 
 Do not point normal AI Client integrations directly at this remote/server API.
-Each User's Codex MCP adapter and Supported Capture Hook should normally use
+Each User's AI Client MCP adapter and Supported Capture Hook should normally use
 that User's local `koed-server`. That server supervises an authenticated Local
-AI Runtime, which hosts the Transcript Watcher. External runtime mode does not
+AI Runtime, which hosts the Codex and Claude Transcript Watchers. External runtime mode does not
 run either user-local component. Transcript roots default to
 `CODEX_HOME/sessions` and may be replaced with explicit local roots. Each
 Supported Capture Hook wake completes one bounded, paginated discovery sweep,
@@ -497,7 +497,9 @@ returns do not wait for the next incoming message. While a canonical cursor has
 an open turn, the watcher also rechecks only that transcript with bounded
 backoff until it consumes terminal evidence. A one-second catch-up tick checks
 only a bounded rotation of known sources and the newest discovery page,
-covering missed Hook and filesystem delivery without continuous full scans. The
+covering missed Hook and filesystem delivery without continuous full scans.
+Claude capture uses content-free lifecycle signals and reads provider-native
+Conversation Sources from the configured Claude home. The
 local `koed-server` then registers this server as an upstream and routes
 approved Team Workspace recall, Share
 Grant, sync/offload, or remote capture-bearing operations through local-edge

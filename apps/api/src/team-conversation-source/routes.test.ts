@@ -27,6 +27,7 @@ const buildFixture = async (options?: {
   completeArtifact?: boolean;
   streaming?: boolean;
   successfulFork?: boolean;
+  multiComponent?: boolean;
   forkRecords?: string[];
   listenerConnectGate?: Promise<void>;
   authorizationRecheckMs?: number;
@@ -39,9 +40,11 @@ const buildFixture = async (options?: {
     workspace: randomUUID(),
     session: randomUUID(),
     artifact: randomUUID(),
+    auxiliaryArtifact: randomUUID(),
     logicalSource: randomUUID(),
     generation: randomUUID(),
     segment: randomUUID(),
+    auxiliarySegment: randomUUID(),
     sourceGrant: randomUUID()
   };
   const viewer: UserRecord = {
@@ -55,6 +58,7 @@ const buildFixture = async (options?: {
     shareGrantId: ids.shareGrant,
     artifactId: ids.artifact,
     logicalSourceId: ids.logicalSource,
+    sourceGenerationId: ids.generation,
     ownerUserId: ids.owner,
     sessionId: ids.session,
     teamId: ids.team,
@@ -79,6 +83,10 @@ const buildFixture = async (options?: {
     sessionId: ids.session,
     logicalSourceId: ids.logicalSource,
     sourceGenerationId: ids.generation,
+    sourceComponentId: "main",
+    sourceComponentRole: "primary",
+    parentSourceComponentId: null,
+    contentFraming: "jsonl",
     replicaRole: "origin_local",
     sourceKind: "codex",
     sourceRuntime: "codex",
@@ -87,7 +95,7 @@ const buildFixture = async (options?: {
     artifactFormat: "jsonl",
     artifactFormatVersion: 1,
     sourceAdapterVersion: "codex-transcript-v1",
-    lifecycle: "active",
+    lifecycle: "finalized",
     journalStartOffset: options?.completeArtifact === false ? 128 : 0,
     journalStartLine: options?.completeArtifact === false ? 2 : 0,
     liveStartOffset: 0,
@@ -100,9 +108,13 @@ const buildFixture = async (options?: {
     sourceModifiedAt: iso,
     storageProvider: "envelope_db",
     storagePrefix: "must-not-leak/storage-prefix",
-    closureHash: null,
-    closureManifest: null,
-    closureSignature: null,
+    closureHash: "2".repeat(64),
+    closureManifest: { protocol: "koed/source-component-closure/v1" },
+    closureSignature: "3".repeat(86),
+    sourceSetClosureHash: null,
+    sourceSetClosureManifest: null,
+    sourceSetClosureSignature: null,
+    sourceSetFinalizedAt: null,
     originDeploymentId: "must-not-leak-deployment",
     originDeviceId: "must-not-leak-device",
     originKeyId: "must-not-leak-key",
@@ -112,9 +124,10 @@ const buildFixture = async (options?: {
     redactedSourceLabel: "Codex session",
     createdAt: iso,
     updatedAt: iso,
-    finalizedAt: null
+    finalizedAt: iso
   };
   const koedHome = mkdtempSync(join(tmpdir(), "koed-team-source-route-"));
+  const sourceStorage = createFilesystemConversationSourceStorage(koedHome);
   const forkRecords = options?.forkRecords ?? [
     JSON.stringify({
       type: "response_item",
@@ -148,7 +161,7 @@ const buildFixture = async (options?: {
     sealedAt: iso
   };
   if (options?.successfulFork) {
-    const stored = createFilesystemConversationSourceStorage(koedHome).put({
+    const stored = sourceStorage.put({
       artifactId: ids.artifact,
       plaintextDigest: forkDigest,
       bytes: forkBytes
@@ -161,40 +174,126 @@ const buildFixture = async (options?: {
     artifact.providerCursorOffset = forkBytes.byteLength;
     artifact.currentSourceLength = forkBytes.byteLength;
   }
+  if (options?.multiComponent) {
+    artifact.sourceSetClosureHash = "9".repeat(64);
+    artifact.sourceSetClosureManifest = { componentCount: 2 };
+    artifact.sourceSetClosureSignature = "8".repeat(86);
+    artifact.sourceSetFinalizedAt = iso;
+  }
+  const auxiliaryArtifact: ConversationSourceArtifactRecord | null =
+    options?.multiComponent
+      ? {
+          ...artifact,
+          id: ids.auxiliaryArtifact,
+          sourceComponentId: "agent.worker-1",
+          sourceComponentRole: "auxiliary",
+          parentSourceComponentId: "main",
+          contentFraming: "jsonl",
+          sourceFingerprint: "7".repeat(64),
+          storagePrefix: "must-not-leak/auxiliary-storage-prefix",
+          closureHash: "6".repeat(64),
+          sourceSetClosureHash: null,
+          sourceSetClosureManifest: null,
+          sourceSetClosureSignature: null,
+          sourceSetFinalizedAt: null,
+          redactedSourceLabel: "Claude auxiliary session"
+        }
+      : null;
+  const auxiliarySegment: ConversationSourceSegmentRecord | null =
+    auxiliaryArtifact
+      ? {
+          ...segment,
+          id: ids.auxiliarySegment,
+          artifactId: auxiliaryArtifact.id,
+          plaintextDigest: "5".repeat(64),
+          contentDigest: "4".repeat(64),
+          storageKey: "must-not-leak-auxiliary-storage-key"
+        }
+      : null;
+  if (auxiliaryArtifact && auxiliarySegment) {
+    const bytes = Buffer.from('{"type":"assistant","message":"auxiliary"}\n');
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const stored = sourceStorage.put({
+      artifactId: auxiliaryArtifact.id,
+      plaintextDigest: digest,
+      bytes
+    });
+    auxiliaryArtifact.storageProvider = "filesystem";
+    auxiliaryArtifact.providerCursorOffset = bytes.byteLength;
+    auxiliaryArtifact.currentSourceLength = bytes.byteLength;
+    auxiliarySegment.storageProvider = "filesystem";
+    auxiliarySegment.storageKey = stored.storageKey;
+    auxiliarySegment.plaintextDigest = digest;
+    auxiliarySegment.plaintextSize = bytes.byteLength;
+    auxiliarySegment.storedSize = stored.storedSize;
+    auxiliarySegment.sourceEndOffset = bytes.byteLength;
+    auxiliarySegment.encryptionEnvelope = null;
+  }
   let authorized = options?.authorized !== false;
   let consentActive = true;
   let credentialAuthorized = true;
   const sessionId = randomUUID();
   const deviceCredentialId = randomUUID();
   const credentialExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
-  const segments = [segment];
+  const components = auxiliaryArtifact
+    ? [artifact, auxiliaryArtifact]
+    : [artifact];
+  const segments = auxiliarySegment ? [segment, auxiliarySegment] : [segment];
   const auditActions: string[] = [];
   let accessReads = 0;
   let manifestReads = 0;
   const repository = {
     async getTeamConversationSourceAccess() {
       accessReads += 1;
-      return authorized && consentActive ? { grant, artifact } : null;
+      return authorized && consentActive
+        ? { grant, artifact, components }
+        : null;
     },
     async getTeamConversationSourceManifest(
       _actor: unknown,
-      input: { afterSegmentIndex: number; limit: number }
+      input: {
+        sourceComponentId?: string;
+        afterSegmentIndex: number;
+        limit: number;
+      }
     ) {
       manifestReads += 1;
       return authorized && consentActive
         ? {
             grant,
             artifact,
+            components,
+            selectedComponent:
+              components.find(
+                (component) =>
+                  component.sourceComponentId ===
+                  (input.sourceComponentId ?? "main")
+              ) ?? artifact,
             segments: segments
               .filter(
-                (candidate) => candidate.segmentIndex > input.afterSegmentIndex
+                (candidate) =>
+                  candidate.artifactId ===
+                    (components.find(
+                      (component) =>
+                        component.sourceComponentId ===
+                        (input.sourceComponentId ?? "main")
+                    )?.id ?? artifact.id) &&
+                  candidate.segmentIndex > input.afterSegmentIndex
               )
               .slice(0, input.limit)
           }
         : null;
     },
-    async getTeamConversationSourceSegment() {
-      return authorized && consentActive ? { grant, artifact, segment } : null;
+    async getTeamConversationSourceSegment(
+      _actor: unknown,
+      input: { segmentId: string }
+    ) {
+      const selected = segments.find(
+        (candidate) => candidate.id === input.segmentId
+      );
+      return authorized && consentActive
+        ? { grant, artifact, components, segment: selected ?? segment }
+        : null;
     },
     async recordAuditEvent(input: { action: string }) {
       auditActions.push(input.action);
@@ -346,6 +445,7 @@ const buildFixture = async (options?: {
         contentDigest: "1".repeat(64)
       };
       segments.push(next);
+      artifact.currentJournalSequence = next.segmentIndex;
       return next;
     },
     corruptDigest() {
@@ -645,6 +745,59 @@ describe("Team Conversation source routes", () => {
     fixture.cleanup();
   });
 
+  it("serves every verified source component without exposing local custody", async () => {
+    const fixture = await buildFixture({ multiComponent: true });
+    const manifest = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/manifest?sourceComponentId=agent.worker-1`
+    });
+
+    expect(manifest.statusCode).toBe(200);
+    expect(manifest.json()).toMatchObject({
+      artifact: {
+        sourceGenerationId: fixture.ids.generation,
+        sourceComponentId: "main"
+      },
+      components: [
+        { sourceComponentId: "main", sourceComponentRole: "primary" },
+        {
+          sourceComponentId: "agent.worker-1",
+          sourceComponentRole: "auxiliary",
+          parentSourceComponentId: "main"
+        }
+      ],
+      selectedComponent: {
+        id: fixture.ids.auxiliaryArtifact,
+        sourceComponentId: "agent.worker-1"
+      },
+      segments: [
+        {
+          id: fixture.ids.auxiliarySegment,
+          artifactId: fixture.ids.auxiliaryArtifact
+        }
+      ]
+    });
+    for (const privateValue of [
+      "auxiliary-storage-prefix",
+      "auxiliary-storage-key",
+      "must-not-leak-device",
+      "redacted-external-session"
+    ]) {
+      expect(manifest.body).not.toContain(privateValue);
+    }
+
+    const segment = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/segments/${fixture.ids.auxiliarySegment}`
+    });
+    expect(segment.statusCode).toBe(200);
+    expect(segment.body).toContain('"message":"auxiliary"');
+
+    await fixture.service.close();
+    await fixture.app.close();
+    fixture.cleanup();
+  });
+
   it("fails closed for API Tokens, unauthorized viewers, and unavailable streaming", async () => {
     const authorized = await buildFixture();
     const bearer = await authorized.app.inject({
@@ -724,9 +877,8 @@ describe("Team Conversation source routes", () => {
           )
           .digest("hex"),
         shareGrantId: fixture.ids.shareGrant,
-        artifactId: fixture.ids.artifact,
-        segmentIndex: 0,
-        contentDigest: "f".repeat(64),
+        sourceGenerationId: fixture.ids.generation,
+        componentPositions: { main: 0 },
         expiresAt: Date.now() - 1
       }
     });
@@ -754,6 +906,34 @@ describe("Team Conversation source routes", () => {
     fixture.cleanup();
   });
 
+  it("streams independent positions for every source component", async () => {
+    const fixture = await buildFixture({
+      streaming: true,
+      multiComponent: true
+    });
+    const baseUrl = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    const response = await fetch(
+      `${baseUrl}/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/stream`,
+      { signal: controller.signal }
+    );
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    let body = "";
+    while (!body.includes('"sourceComponentId":"agent.worker-1"')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      body += new TextDecoder().decode(value);
+    }
+    expect(body).toContain('"sourceComponentId":"main"');
+    expect(body).toContain('"sourceComponentId":"agent.worker-1"');
+    expect((body.match(/^id: /gm) ?? []).length).toBe(2);
+    controller.abort();
+    await fixture.service.close();
+    await fixture.app.close();
+    fixture.cleanup();
+  });
+
   it("requires a fresh browser session and POST for fork snapshot export", async () => {
     const stale = await buildFixture({
       freshSession: false,
@@ -762,17 +942,17 @@ describe("Team Conversation source routes", () => {
     const staleResponse = await stale.app.inject({
       method: "POST",
       url: `/v1/shared-memory/share-grants/${stale.ids.shareGrant}/transcript/fork-snapshot`,
-      payload: { throughSegmentIndex: 0 }
+      payload: { expectedSourceGenerationId: stale.ids.generation }
     });
     const getResponse = await stale.app.inject({
       method: "GET",
-      url: `/v1/shared-memory/share-grants/${stale.ids.shareGrant}/transcript/fork-snapshot?throughSegmentIndex=0`
+      url: `/v1/shared-memory/share-grants/${stale.ids.shareGrant}/transcript/fork-snapshot`
     });
     const fresh = await buildFixture({ completeArtifact: false });
     const incomplete = await fresh.app.inject({
       method: "POST",
       url: `/v1/shared-memory/share-grants/${fresh.ids.shareGrant}/transcript/fork-snapshot`,
-      payload: { throughSegmentIndex: 0 }
+      payload: { expectedSourceGenerationId: fresh.ids.generation }
     });
 
     expect(staleResponse.statusCode).toBe(403);
@@ -786,21 +966,41 @@ describe("Team Conversation source routes", () => {
     fresh.cleanup();
   });
 
-  it("exports an exact verified snapshot through a completed turn", async () => {
+  it("exports an exact verified source-generation snapshot", async () => {
     const fixture = await buildFixture({ successfulFork: true });
     const response = await fixture.app.inject({
       method: "POST",
       url: `/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/fork-snapshot`,
-      payload: { throughSegmentIndex: 0 }
+      payload: { expectedSourceGenerationId: fixture.ids.generation }
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.rawPayload).toEqual(fixture.forkBytes);
+    const body = response.json();
+    expect(body).toMatchObject({
+      protocol: "koed/team-conversation-source-snapshot/v1",
+      parent: {
+        sessionId: fixture.ids.session,
+        shareGrantId: fixture.ids.shareGrant,
+        sourceGenerationId: fixture.ids.generation
+      },
+      components: [
+        {
+          artifact: { sourceComponentId: "main" },
+          verification: {
+            originKeyId: "must-not-leak-key",
+            originPublicKey: "a".repeat(43)
+          }
+        }
+      ]
+    });
+    expect(
+      Buffer.from(body.components[0].segments[0].bytes, "base64url")
+    ).toEqual(fixture.forkBytes);
     expect(response.headers["x-koed-parent-session-id"]).toBe(
       fixture.ids.session
     );
     expect(response.headers["x-koed-snapshot-digest"]).toBe(
-      createHash("sha256").update(fixture.forkBytes).digest("hex")
+      createHash("sha256").update(response.body).digest("hex")
     );
     expect(fixture.auditActions).toEqual([
       "team_conversation_source.fork_snapshot_exported"
@@ -810,29 +1010,66 @@ describe("Team Conversation source routes", () => {
     fixture.cleanup();
   });
 
-  it("rejects digest, JSONL, and source-chain integrity failures", async () => {
+  it("exports every verified component in a multi-component source set", async () => {
+    const fixture = await buildFixture({
+      successfulFork: true,
+      multiComponent: true
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/fork-snapshot`,
+      payload: { expectedSourceGenerationId: fixture.ids.generation }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      parent: {
+        logicalSourceId: fixture.ids.logicalSource,
+        sourceGenerationId: fixture.ids.generation
+      },
+      sourceSetVerification: {
+        closureHash: "9".repeat(64),
+        closureManifest: { componentCount: 2 },
+        closureSignature: "8".repeat(86)
+      },
+      components: [
+        { artifact: { sourceComponentId: "main" } },
+        {
+          artifact: {
+            sourceComponentId: "agent.worker-1",
+            parentSourceComponentId: "main"
+          }
+        }
+      ]
+    });
+    for (const privateValue of [
+      "storage-prefix",
+      "storage-key",
+      "must-not-leak-device",
+      "redacted-external-session"
+    ]) {
+      expect(response.body).not.toContain(privateValue);
+    }
+
+    await fixture.service.close();
+    await fixture.app.close();
+    fixture.cleanup();
+  });
+
+  it("rejects generation races, digest failures, and invalid source chains", async () => {
+    const race = await buildFixture({ successfulFork: true });
+    const wrongGeneration = await race.app.inject({
+      method: "POST",
+      url: `/v1/shared-memory/share-grants/${race.ids.shareGrant}/transcript/fork-snapshot`,
+      payload: { expectedSourceGenerationId: randomUUID() }
+    });
+
     const digest = await buildFixture({ successfulFork: true });
     digest.corruptDigest();
     const wrongDigest = await digest.app.inject({
       method: "POST",
       url: `/v1/shared-memory/share-grants/${digest.ids.shareGrant}/transcript/fork-snapshot`,
-      payload: { throughSegmentIndex: 0 }
-    });
-
-    const malformed = await buildFixture({
-      successfulFork: true,
-      forkRecords: [
-        "not-json",
-        JSON.stringify({
-          type: "event_msg",
-          payload: { type: "task_complete" }
-        })
-      ]
-    });
-    const malformedJsonl = await malformed.app.inject({
-      method: "POST",
-      url: `/v1/shared-memory/share-grants/${malformed.ids.shareGrant}/transcript/fork-snapshot`,
-      payload: { throughSegmentIndex: 0 }
+      payload: { expectedSourceGenerationId: digest.ids.generation }
     });
 
     const chain = await buildFixture({ successfulFork: true });
@@ -840,15 +1077,15 @@ describe("Team Conversation source routes", () => {
     const reordered = await chain.app.inject({
       method: "POST",
       url: `/v1/shared-memory/share-grants/${chain.ids.shareGrant}/transcript/fork-snapshot`,
-      payload: { throughSegmentIndex: 1 }
+      payload: { expectedSourceGenerationId: chain.ids.generation }
     });
 
     expect([
+      wrongGeneration.statusCode,
       wrongDigest.statusCode,
-      malformedJsonl.statusCode,
       reordered.statusCode
     ]).toEqual([409, 409, 409]);
-    for (const fixture of [digest, malformed, chain]) {
+    for (const fixture of [race, digest, chain]) {
       await fixture.service.close();
       await fixture.app.close();
       fixture.cleanup();

@@ -1,5 +1,6 @@
 import { createHash, sign, verify, type KeyObject } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
+import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 
 import {
   pdsEd25519PrivateKey,
@@ -45,7 +46,7 @@ export interface ManagedConversationHandoffManifest {
   sourceClosureHash: string;
   sourceEndByteCursor: number;
   sourceEndItemCursor: number;
-  provider: "codex";
+  provider: string;
   providerThreadId: string;
   providerArtifactRelativePath: string;
   providerCliVersion: string;
@@ -323,7 +324,11 @@ export const parseManagedConversationHandoffManifest = (
   if (input.protocol !== MANAGED_CONVERSATION_TRANSFER_PROTOCOL) {
     throw new TypeError("Managed Conversation transfer protocol is invalid");
   }
-  if (input.provider !== "codex") {
+  if (
+    typeof input.provider !== "string" ||
+    input.provider.length > 96 ||
+    !aiClientIdentifierPattern.test(input.provider)
+  ) {
     throw new TypeError("Managed Conversation provider is invalid");
   }
   const providerArtifactRelativePath =

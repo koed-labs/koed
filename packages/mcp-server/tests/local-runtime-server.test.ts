@@ -18,10 +18,13 @@ import {
   resolveKoedHome
 } from "../src/local-runtime-protocol.js";
 import {
+  startDefaultLocalAiRuntimeServices,
   startLocalAiRuntime,
+  type LocalAiRuntimeServiceDependencies,
   type LocalAiRuntimeServiceFactory,
   type LocalAiRuntimeToolExecutor
 } from "../src/local-runtime-server.js";
+import { MemoryApiClient } from "../src/index.js";
 
 const roots: string[] = [];
 const tempHome = (): string => {
@@ -51,6 +54,74 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 });
 
 describe("Local AI Runtime", () => {
+  it("owns and stops both transcript watchers", async () => {
+    const lcmStop = vi.fn();
+    const lcmWorkStop = vi.fn();
+    const curatedStop = vi.fn();
+    const codexStop = vi.fn(async () => undefined);
+    const claudeStop = vi.fn(async () => undefined);
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => ({
+        stop: lcmStop,
+        nudge: vi.fn()
+      })),
+      watchKoedLocalWork: vi.fn(async () => ({ stop: lcmWorkStop })),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: curatedStop })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: codexStop })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: claudeStop })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+
+    const services = await startDefaultLocalAiRuntimeServices(
+      { apiClient, environment: {}, koedHome: tempHome() },
+      dependencies
+    );
+
+    expect(dependencies.startCodexTranscriptWatcher).toHaveBeenCalledWith(
+      apiClient
+    );
+    expect(dependencies.startClaudeTranscriptWatcher).toHaveBeenCalledWith(
+      apiClient,
+      {}
+    );
+    await services.close();
+    expect(codexStop).toHaveBeenCalledTimes(1);
+    expect(claudeStop).toHaveBeenCalledTimes(1);
+    expect(lcmWorkStop).toHaveBeenCalledTimes(1);
+    expect(lcmStop).toHaveBeenCalledTimes(1);
+    expect(curatedStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start disabled transcript watchers", async () => {
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(),
+      startClaudeTranscriptWatcher: vi.fn(),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const services = await startDefaultLocalAiRuntimeServices(
+      {
+        apiClient: new MemoryApiClient({ apiUrl: "http://127.0.0.1:3300" }),
+        environment: {
+          MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
+          MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false"
+        },
+        koedHome: tempHome()
+      },
+      dependencies
+    );
+
+    expect(dependencies.startCodexTranscriptWatcher).not.toHaveBeenCalled();
+    expect(dependencies.startClaudeTranscriptWatcher).not.toHaveBeenCalled();
+    await services.close();
+  });
+
   it("expands a home-relative KOED_HOME from Codex TOML", () => {
     expect(resolveKoedHome({ KOED_HOME: "~" })).toBe(homedir());
     expect(resolveKoedHome({ KOED_HOME: "~/.koed-test" })).toBe(

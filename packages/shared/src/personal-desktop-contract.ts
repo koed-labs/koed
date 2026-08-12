@@ -203,7 +203,7 @@ export const personalDesktopProjectThreadSchema = z
     id: identifierSchema,
     name: z.string().max(512),
     sessionId: z.uuid().nullable(),
-    sourceAiClient: z.enum(["codex", "codex-cli"]).nullable(),
+    sourceAiClient: z.enum(["codex", "codex-cli", "claude-code"]).nullable(),
     projectId: identifierSchema,
     projectName: projectNameSchema,
     projectPath: localProjectPathSchema.nullable(),
@@ -244,6 +244,9 @@ export const personalDesktopConversationEventSchema = z
     toolDisplay: personalDesktopToolDisplaySchema.optional(),
     metadata: z
       .object({
+        parentSourceComponentId: identifierSchema.optional(),
+        sourceComponentId: identifierSchema.optional(),
+        sourceComponentRole: z.enum(["primary", "auxiliary"]).optional(),
         toolName: z.string().max(256).optional()
       })
       .strict()

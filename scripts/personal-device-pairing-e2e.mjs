@@ -381,6 +381,7 @@ try {
       joiningControlUrl,
       desktopAuthorization: joiningDesktopAuthorization,
       browserCookie: joiningBrowserCookie,
+      browserOrigin,
       groupId,
       localGroupReconciliation,
       fetch

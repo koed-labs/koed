@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { signalCodexTranscriptWatcher } from "./codex-transcript-watcher-signal.js";
+import { signalClaudeTranscriptWatcher } from "./claude-transcript-watcher-signal.js";
 
 export const captureHookEnvironment = (
   environment: NodeJS.ProcessEnv = process.env,
@@ -19,6 +20,7 @@ const readRoutingMetadata = async (): Promise<{
   hookEventName?: string;
   sourceSessionId?: string;
   transcriptPath?: string;
+  cwd?: string;
 }> => {
   let encoded = "";
   for await (const chunk of process.stdin) {
@@ -38,7 +40,8 @@ const readRoutingMetadata = async (): Promise<{
         : {}),
       ...(typeof payload.transcript_path === "string"
         ? { transcriptPath: payload.transcript_path }
-        : {})
+        : {}),
+      ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {})
     };
   } catch {
     return {};
@@ -51,8 +54,31 @@ export const signalCaptureHook = (
     hookEventName?: string;
     sourceSessionId?: string;
     transcriptPath?: string;
-  } = {}
+    cwd?: string;
+  } = {},
+  args: string[] = process.argv.slice(2)
 ): void => {
+  const sourceFlag = args.indexOf("--source");
+  const source =
+    args
+      .find((argument) => argument.startsWith("--source="))
+      ?.slice("--source=".length) ??
+    (sourceFlag >= 0 ? args[sourceFlag + 1] : undefined);
+  if (source === "claude") {
+    if (metadata.sourceSessionId && metadata.transcriptPath && metadata.cwd) {
+      signalClaudeTranscriptWatcher(environment, {
+        sourceSessionId: metadata.sourceSessionId,
+        transcriptPath: metadata.transcriptPath,
+        cwd: metadata.cwd,
+        hookEventName: metadata.hookEventName,
+        turnBoundary:
+          metadata.hookEventName === "Stop" ||
+          metadata.hookEventName === "StopFailure" ||
+          metadata.hookEventName === "SessionEnd"
+      });
+    }
+    return;
+  }
   signalCodexTranscriptWatcher(environment, {
     sourceSessionId: metadata.sourceSessionId,
     transcriptPath: metadata.transcriptPath,
@@ -63,7 +89,11 @@ export const signalCaptureHook = (
 };
 
 const main = async (): Promise<void> => {
-  signalCaptureHook(captureHookEnvironment(), await readRoutingMetadata());
+  signalCaptureHook(
+    captureHookEnvironment(),
+    await readRoutingMetadata(),
+    process.argv.slice(2)
+  );
 };
 
 if (

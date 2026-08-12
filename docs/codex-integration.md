@@ -1,6 +1,8 @@
 # Codex Integration
 
-Codex is currently the only supported AI Client for Koed.
+Codex and Claude Code are supported AI Clients. This page covers Codex; see
+[Claude Code integration](claude-code-integration.md) for Claude setup,
+capture, managed Conversations, and local synthesis.
 
 ## Recommended Setup
 
@@ -68,10 +70,11 @@ Memory Questions persisted by `memory_answer` remain available through the API
 for inspection. Question submission and synthesis happen through the calling AI
 Client and the Local AI Runtime. There is no browser answer bridge.
 
-`koed-server` starts Codex app-server mode internally when it needs local answer,
-Curated Memory review, or LCM Summary synthesis. Users do not run a separate
-app-server command. `MEMORY_CODEX_APP_SERVER_BINARY` can override the `codex`
-binary path when needed; the default is correct for normal Codex installs.
+The Local AI Runtime starts the provider selected for each synthesis flow.
+Codex-backed work uses app-server mode; Claude-backed work uses the pinned
+Claude Agent SDK with the confirmed local Claude Code executable. Users do not
+run a separate worker command. `MEMORY_CODEX_APP_SERVER_BINARY` can override
+the Codex binary path when needed.
 
 ## Transcript Watcher and Capture Hook
 
@@ -250,7 +253,7 @@ are not part of the normal agent-facing surface.
 The watcher reads only complete JSONL records. Its first bounded full discovery cycle is the activation baseline: every candidate file observed before activation is durably marked baseline even when parsing it fails, so a malformed file cannot block later live capture or be replayed as live after recovery. Baseline files register at their immutable complete-record frontier; files first observed after activation start with a zero frontier and are live from their first complete record. Restart resumes post-frontier growth from an independent durable live cursor and compares bounded SHA-256 first/last prefix sentinels plus offset; it never derives from or updates the historical checkpoint. Sentinel-covered prefix mutation, malformed complete records, and truncation fail visibly without advancing it; mutations outside sentinel windows are intentionally not detected by this bounded check. Partial trailing records hold the cursor. Capture Policy and Capture Pause are checked before session creation and every batch. Output converges through `codex-transcript-v1`, canonical raw ingestion, and Projection as Personal Memory only; the watcher grants no Team authority and performs no backend synthesis.
 
 Captured-session titles and LCM summaries are processed by the Local AI Runtime
-through Codex app-server mode. If that local service is
+through the provider selected for each flow. If that local service is
 delayed or fails, Koed still returns pending placeholders as degraded evidence
 and reports the backlog through diagnostics instead of marking the backend
 unhealthy.

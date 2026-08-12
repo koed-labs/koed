@@ -10,6 +10,7 @@ export interface KoedServerConfig {
   runtimeMode: KoedServerRuntimeMode;
   dependencyMode: KoedDependencyMode;
   codexTranscriptWatcherEnabled: boolean;
+  claudeTranscriptWatcherEnabled: boolean;
   external?: {
     databaseUrl?: string;
     redisUrl?: string;
@@ -20,7 +21,8 @@ export interface KoedServerConfig {
 export const defaultKoedServerConfig: KoedServerConfig = {
   runtimeMode: "developer",
   dependencyMode: "external",
-  codexTranscriptWatcherEnabled: true
+  codexTranscriptWatcherEnabled: true,
+  claudeTranscriptWatcherEnabled: true
 };
 
 export interface KoedServerConfigDeps {
@@ -53,6 +55,8 @@ const codexTranscriptWatcherSetting = (
   if (value === false || value === "false") return false;
   return undefined;
 };
+
+const claudeTranscriptWatcherSetting = codexTranscriptWatcherSetting;
 
 const readConfig = (
   paths: KoedServerPaths,
@@ -87,12 +91,17 @@ export const resolveKoedServerConfig = (
     codexTranscriptWatcherSetting(
       environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
     ) ?? codexTranscriptWatcherSetting(file.codexTranscriptWatcherEnabled);
+  const resolvedClaudeTranscriptWatcherSetting =
+    claudeTranscriptWatcherSetting(
+      environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED
+    ) ?? claudeTranscriptWatcherSetting(file.claudeTranscriptWatcherEnabled);
   if (
     resolvedRuntimeMode === "external" &&
-    resolvedTranscriptWatcherSetting === true
+    (resolvedTranscriptWatcherSetting === true ||
+      resolvedClaudeTranscriptWatcherSetting === true)
   ) {
     throw new Error(
-      "Codex Transcript Watcher cannot run in external runtime mode; run capture through a local-personal koed-server."
+      "Transcript Watchers cannot run in external runtime mode; run capture through a local-personal koed-server."
     );
   }
   return {
@@ -103,6 +112,9 @@ export const resolveKoedServerConfig = (
       defaultKoedServerConfig.dependencyMode,
     codexTranscriptWatcherEnabled:
       resolvedTranscriptWatcherSetting ?? resolvedRuntimeMode !== "external",
+    claudeTranscriptWatcherEnabled:
+      resolvedClaudeTranscriptWatcherSetting ??
+      resolvedRuntimeMode !== "external",
     external: {
       databaseUrl:
         trim(environment.KOED_EXTERNAL_DATABASE_URL) ??

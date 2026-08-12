@@ -410,6 +410,8 @@ export const createRawProjectionService = (
       const rebuild = await processRebuildActors(config);
       const embeddingAdmissionFailed = await reconcileEmbeddingJobs(config);
       await reconcileTerminalHistoricalLcmJobs(config);
+      const historicalCompletion =
+        await config.repository.reconcileHistoricalImportCompletion();
       const lcmAdmissionFailed = await reconcileLcmCompactionJobs(config);
       logHistoricalDecision(
         config.logger,
@@ -425,7 +427,9 @@ export const createRawProjectionService = (
         continueImmediately:
           live.projected > 0 ||
           historical.report.projected > 0 ||
-          rebuild.jobs > 0,
+          rebuild.jobs > 0 ||
+          historicalCompletion.sourcesCompleted > 0 ||
+          historicalCompletion.runsCompleted > 0,
         nextRebuildDueAt,
         recoveryNeeded:
           embeddingAdmissionFailed ||

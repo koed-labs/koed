@@ -21,6 +21,8 @@ import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-s
 import type {
   ActorContext,
   ActivationAnalyticsFunnelRecord,
+  AiClientCapabilitySnapshotRecord,
+  AiClientInstanceRecord,
   AuditEventRecord,
   ApiTokenRecord,
   AcceptedTeamInviteRecord,
@@ -748,6 +750,11 @@ const createFakeRepository = () => {
     string,
     LocalMemoryAgentSettingRecord
   >();
+  const aiClientInstances = new Map<string, AiClientInstanceRecord>();
+  const aiClientCapabilitySnapshots = new Map<
+    string,
+    AiClientCapabilitySnapshotRecord
+  >();
   const pushTeamAudit = (input: {
     actorUserId: string;
     action: string;
@@ -1072,6 +1079,20 @@ const createFakeRepository = () => {
     );
     const historicalCursorOffset =
       cursor?.sourceOffset ?? artifact.journalStartOffset;
+    const cursorCurrentTurnId = cursor?.parserState.currentTurnId;
+    const cursorHasControlCharacter =
+      typeof cursorCurrentTurnId === "string" &&
+      [...cursorCurrentTurnId].some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code === 127;
+      });
+    const historicalCursorCurrentTurnId =
+      typeof cursorCurrentTurnId === "string" &&
+      cursorCurrentTurnId.length > 0 &&
+      cursorCurrentTurnId.length <= 512 &&
+      !cursorHasControlCharacter
+        ? cursorCurrentTurnId
+        : undefined;
     const imported = historicalCursorOffset >= artifact.liveStartOffset;
     return {
       ...source,
@@ -1084,6 +1105,9 @@ const createFakeRepository = () => {
       historicalCursorOffset,
       historicalCursorLine: cursor?.sourceLine ?? artifact.journalStartLine,
       historicalCursorDigest: cursor?.lastVerifiedDigest ?? null,
+      ...(historicalCursorCurrentTurnId
+        ? { historicalCursorCurrentTurnId }
+        : {}),
       providerCursorOffset: artifact.providerCursorOffset,
       providerCursorLine: artifact.providerCursorLine,
       sourceSizeBytes: artifact.currentSourceLength,
@@ -2795,7 +2819,8 @@ const createFakeRepository = () => {
         (artifact) =>
           artifact.ownerUserId === actor.userId &&
           artifact.sourceKind === input.sourceKind &&
-          artifact.externalSessionId === input.externalSessionId
+          artifact.externalSessionId === input.externalSessionId &&
+          artifact.sourceComponentId === input.sourceComponentId
       );
       if (existing) {
         if (
@@ -2820,6 +2845,10 @@ const createFakeRepository = () => {
         sessionId: input.sessionId,
         logicalSourceId: input.logicalSourceId,
         sourceGenerationId: input.sourceGenerationId,
+        sourceComponentId: input.sourceComponentId ?? "main",
+        sourceComponentRole: input.sourceComponentRole ?? "primary",
+        parentSourceComponentId: input.parentSourceComponentId ?? null,
+        contentFraming: input.contentFraming ?? "jsonl",
         replicaRole: input.replicaRole,
         sourceKind: input.sourceKind,
         sourceRuntime: input.sourceRuntime,
@@ -2844,6 +2873,10 @@ const createFakeRepository = () => {
         closureHash: null,
         closureManifest: null,
         closureSignature: null,
+        sourceSetClosureHash: null,
+        sourceSetClosureManifest: null,
+        sourceSetClosureSignature: null,
+        sourceSetFinalizedAt: null,
         originDeploymentId: input.originDeploymentId,
         originDeviceId: input.originDeviceId,
         originKeyId: input.originKeyId,
@@ -2886,12 +2919,17 @@ const createFakeRepository = () => {
           )[0] ?? null
       );
     },
-    async getConversationSourceArtifactByGeneration(actor, sourceGenerationId) {
+    async getConversationSourceArtifactByGeneration(
+      actor,
+      sourceGenerationId,
+      sourceComponentId = "main"
+    ) {
       return (
         [...conversationSourceArtifacts.values()].find(
           (artifact) =>
             artifact.ownerUserId === actor.userId &&
-            artifact.sourceGenerationId === sourceGenerationId
+            artifact.sourceGenerationId === sourceGenerationId &&
+            artifact.sourceComponentId === sourceComponentId
         ) ?? null
       );
     },
@@ -3231,6 +3269,7 @@ const createFakeRepository = () => {
         artifactId: artifact.id,
         aiClient: input.aiClient,
         sourceKind: artifact.sourceKind,
+        sourceAdapterVersion: artifact.sourceAdapterVersion,
         sourceSessionId: artifact.externalSessionId,
         sourceFingerprint: artifact.sourceFingerprint,
         sessionId: artifact.sessionId,
@@ -3450,9 +3489,7 @@ const createFakeRepository = () => {
       const source = [...historicalImportSources.values()].find(
         (source) =>
           source.ownerUserId === actor.userId &&
-          source.aiClient === identity.aiClient &&
-          source.sourceKind === identity.sourceKind &&
-          source.sourceSessionId === identity.sourceSessionId
+          source.artifactId === identity.artifactId
       );
       return source ? currentHistoricalSource(source) : null;
     },
@@ -3963,6 +4000,59 @@ const createFakeRepository = () => {
       const question = memoryQuestions.get(questionId);
       return question?.ownerUserId === actor.userId ? question : null;
     },
+    async listAiClientInstances(actor) {
+      return [...aiClientInstances.values()]
+        .filter((instance) => instance.ownerUserId === actor.userId)
+        .sort((left, right) => left.instanceId.localeCompare(right.instanceId));
+    },
+    async upsertAiClientInstance(actor, input) {
+      const key = `${actor.userId}:${input.instanceId}`;
+      const existing = aiClientInstances.get(key);
+      const now = new Date().toISOString();
+      const instance: AiClientInstanceRecord = {
+        ownerUserId: actor.userId,
+        instanceId: input.instanceId,
+        driverId: input.driverId,
+        displayName: input.displayName,
+        configIdentityHash: input.configIdentityHash ?? null,
+        enabled: input.enabled ?? true,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      };
+      aiClientInstances.set(key, instance);
+      return instance;
+    },
+    async recordAiClientCapabilitySnapshot(actor, input) {
+      const snapshot: AiClientCapabilitySnapshotRecord = {
+        id: randomUUID(),
+        ownerUserId: actor.userId,
+        instanceId: input.instanceId,
+        installationIdentityHash: input.installationIdentityHash,
+        clientVersion: input.clientVersion ?? null,
+        authenticationState: input.authenticationState,
+        healthState: input.healthState,
+        models: input.models,
+        capabilities: input.capabilities,
+        observedAt: input.observedAt,
+        expiresAt: input.expiresAt,
+        createdAt: new Date().toISOString()
+      };
+      aiClientCapabilitySnapshots.set(
+        `${actor.userId}:${input.instanceId}`,
+        snapshot
+      );
+      return snapshot;
+    },
+    async listCurrentAiClientCapabilitySnapshots(actor) {
+      const now = Date.now();
+      return [...aiClientCapabilitySnapshots.values()]
+        .filter(
+          (snapshot) =>
+            snapshot.ownerUserId === actor.userId &&
+            Date.parse(snapshot.expiresAt) > now
+        )
+        .sort((left, right) => left.instanceId.localeCompare(right.instanceId));
+    },
     async listLocalMemoryAgentSettings(actor) {
       return [...localMemoryAgentSettings.values()]
         .filter((setting) => setting.ownerUserId === actor.userId)
@@ -3976,6 +4066,7 @@ const createFakeRepository = () => {
         ownerUserId: actor.userId,
         flowKey: input.flowKey,
         provider: input.provider,
+        aiClientInstanceId: input.aiClientInstanceId,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
         timeoutMs: input.timeoutMs,
@@ -4510,7 +4601,7 @@ const createFakeRepository = () => {
             id: string;
             name: string;
             sessionId: string | null;
-            sourceAiClient: "codex" | "codex-cli" | null;
+            sourceAiClient: "codex" | "codex-cli" | "claude-code" | null;
             projectId: string;
             projectName: string;
             projectPath: string | null;
@@ -4532,7 +4623,7 @@ const createFakeRepository = () => {
           id: string;
           name: string;
           sessionId: string | null;
-          sourceAiClient: "codex" | "codex-cli" | null;
+          sourceAiClient: "codex" | "codex-cli" | "claude-code" | null;
           projectId: string;
           projectName: string;
           projectPath: string | null;
@@ -12858,6 +12949,42 @@ describe("account and access flows", () => {
     const artifactId = jsonBody<{
       artifact: { id: string };
     }>(artifactResponse).artifact.id;
+    const claudeArtifactResponse = await app.inject({
+      method: "POST",
+      url: "/v1/conversation-source-artifacts",
+      headers: ownerHeaders,
+      payload: {
+        ...artifactPayload,
+        sourceSession: {
+          ...artifactPayload.sourceSession,
+          externalSessionId: "claude-session",
+          sourceRuntime: "claude-code",
+          idempotencyKey: "journal-session:claude-session"
+        },
+        sourceKind: "claude-code",
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        externalSessionId: "claude-session",
+        sourceFingerprint: "b".repeat(64),
+        artifactFormat: "claude_session_jsonl"
+      }
+    });
+    expect(claudeArtifactResponse.statusCode, claudeArtifactResponse.body).toBe(
+      200
+    );
+    expect(
+      jsonBody<{
+        session: {
+          sourceRuntime: string;
+          sourceKind: string;
+          sourceAdapterVersion: string;
+        };
+      }>(claudeArtifactResponse).session
+    ).toMatchObject({
+      sourceRuntime: "claude-code",
+      sourceKind: "claude-code",
+      sourceAdapterVersion: "claude-code-transcript-v1"
+    });
     const segmentPayload = {
       expectedProviderOffset: 0,
       expectedProviderLine: 0,
@@ -12962,8 +13089,7 @@ describe("account and access flows", () => {
     expect(sourceResponse.statusCode, sourceResponse.body).toBe(200);
     const sourceId = jsonBody<{ source: { id: string } }>(sourceResponse).source
       .id;
-    const lookupUrl =
-      "/v1/historical-import-sources/lookup?aiClient=codex&sourceKind=codex&sourceSessionId=historical-session";
+    const lookupUrl = `/v1/historical-import-sources/lookup?artifactId=${artifactId}`;
     const lookup = await app.inject({
       method: "GET",
       url: lookupUrl,
@@ -13105,6 +13231,10 @@ describe("account and access flows", () => {
       sourceLine: 1,
       segmentIndex: 0,
       lastVerifiedDigest: journalDigest,
+      parserState: {
+        currentTurnId: "turn-1",
+        rawTranscript: "must-not-be-presented"
+      },
       malformedRecordCount: 1,
       items: [
         {
@@ -13287,6 +13417,11 @@ describe("account and access flows", () => {
       url: `/v1/conversation-source-artifacts/generations/${finalizedArtifact.sourceGenerationId}`,
       headers: ownerHeaders
     });
+    const resumedLookup = await app.inject({
+      method: "GET",
+      url: lookupUrl,
+      headers: ownerHeaders
+    });
     await app.close();
 
     expect(parserBypass.statusCode).toBe(400);
@@ -13308,6 +13443,7 @@ describe("account and access flows", () => {
       })
     ]);
     expect(imported.body).not.toContain("/Users/alice");
+    expect(imported.body).not.toContain("historicalCursorCurrentTurnId");
     expect(
       jsonBody<{
         source: {
@@ -13363,6 +13499,13 @@ describe("account and access flows", () => {
     expect(successorConflict.statusCode).toBe(409);
     expect(successorWithSessionOnly.statusCode).toBe(401);
     expect(exactGeneration.statusCode).toBe(200);
+    expect(resumedLookup.statusCode).toBe(200);
+    expect(resumedLookup.body).not.toContain("must-not-be-presented");
+    expect(
+      jsonBody<{
+        source: { historicalCursorCurrentTurnId?: string };
+      }>(resumedLookup).source.historicalCursorCurrentTurnId
+    ).toBe("turn-1");
     expect(
       jsonBody<{ artifact: { sourceGenerationId: string } }>(exactGeneration)
         .artifact.sourceGenerationId
@@ -13395,7 +13538,7 @@ describe("account and access flows", () => {
     });
     const lookup = await app.inject({
       method: "GET",
-      url: "/v1/historical-import-sources/lookup?aiClient=codex&sourceKind=codex&sourceSessionId=remote-session",
+      url: "/v1/historical-import-sources/lookup?artifactId=11111111-1111-4111-8111-111111111111",
       headers
     });
     const liveCursor = await app.inject({
@@ -15177,6 +15320,35 @@ describe("account and access flows", () => {
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
     };
+    const instance = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/ai-client-instances/codex.default",
+      headers,
+      payload: {
+        driver_id: "codex",
+        display_name: "Codex",
+        enabled: true
+      }
+    });
+    const now = Date.now();
+    const snapshot = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ai-client-instances/codex.default/capability-snapshots",
+      headers,
+      payload: {
+        installation_identity_hash: "a".repeat(64),
+        client_version: "test",
+        authentication_state: "authenticated",
+        health_state: "healthy",
+        models: [
+          { model: "gpt-5.4", provenance: "reported" },
+          { model: "gpt-5.4-mini", provenance: "reported" }
+        ],
+        capabilities: { localSynthesis: true },
+        observed_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 300_000).toISOString()
+      }
+    });
 
     const savedMcp = await app.inject({
       method: "PUT",
@@ -15221,6 +15393,8 @@ describe("account and access flows", () => {
     });
     await app.close();
 
+    expect(instance.statusCode, instance.body).toBe(200);
+    expect(snapshot.statusCode, snapshot.body).toBe(200);
     expect(savedMcp.statusCode).toBe(200);
     expect(savedLcm.statusCode).toBe(200);
     expect(savedCuratedReview.statusCode).toBe(200);
@@ -15376,6 +15550,171 @@ describe("account and access flows", () => {
     expect(jsonBody<SessionResponse>(latest).session.id).not.toBe(
       jsonBody<SessionResponse>(older).session.id
     );
+  });
+
+  it("fails closed when a workflow assignment is not backed by a current matching AI Client capability", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "invalid-agent-assignment@example.com",
+        password: "password123"
+      }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(registered)),
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+    const assignment = (model: string) =>
+      app.inject({
+        method: "PUT",
+        url: "/v1/memory/local-agent-settings/mcp_memory_answer",
+        headers,
+        payload: {
+          provider: "codex",
+          ai_client_instance_id: "codex.work",
+          model,
+          reasoning_effort: "low",
+          timeout_ms: 120000,
+          max_attempts: 1
+        }
+      });
+
+    const missing = await assignment("gpt-5.4");
+    await app.inject({
+      method: "PUT",
+      url: "/v1/memory/ai-client-instances/codex.work",
+      headers,
+      payload: {
+        driver_id: "codex",
+        display_name: "Work Codex",
+        enabled: false
+      }
+    });
+    const disabled = await assignment("gpt-5.4");
+    await app.inject({
+      method: "PUT",
+      url: "/v1/memory/ai-client-instances/codex.work",
+      headers,
+      payload: {
+        driver_id: "codex",
+        display_name: "Work Codex",
+        enabled: true
+      }
+    });
+    const withoutSnapshot = await assignment("gpt-5.4");
+    const now = Date.now();
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/ai-client-instances/codex.work/capability-snapshots",
+      headers,
+      payload: {
+        installation_identity_hash: "b".repeat(64),
+        client_version: "test",
+        authentication_state: "authenticated",
+        health_state: "healthy",
+        models: [{ model: "gpt-5.4", provenance: "reported" }],
+        capabilities: { localSynthesis: true },
+        observed_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 300_000).toISOString()
+      }
+    });
+    const unknownModel = await assignment("not-reported");
+    const valid = await assignment("gpt-5.4");
+    await app.close();
+
+    expect(missing.statusCode).toBe(409);
+    expect(disabled.statusCode).toBe(409);
+    expect(withoutSnapshot.statusCode).toBe(409);
+    expect(unknownModel.statusCode).toBe(409);
+    expect(valid.statusCode).toBe(200);
+  });
+
+  it("validates Claude reasoning effort against the reported model capability", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "claude-option-validation@example.com",
+        password: "password123"
+      }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(registered)),
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+    await app.inject({
+      method: "PUT",
+      url: "/v1/memory/ai-client-instances/claude.default",
+      headers,
+      payload: {
+        driver_id: "claude",
+        display_name: "Claude Code",
+        enabled: true
+      }
+    });
+    const now = Date.now();
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/ai-client-instances/claude.default/capability-snapshots",
+      headers,
+      payload: {
+        installation_identity_hash: "c".repeat(64),
+        client_version: "2.1.227",
+        authentication_state: "authenticated",
+        health_state: "healthy",
+        models: [
+          {
+            model: "claude-haiku",
+            provenance: "reported",
+            supportedReasoningEfforts: [{ reasoningEffort: "low" }]
+          },
+          {
+            model: "claude-no-effort",
+            provenance: "reported",
+            supportedReasoningEfforts: [{ reasoningEffort: "none" }]
+          }
+        ],
+        capabilities: { localSynthesis: true },
+        observed_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 300_000).toISOString()
+      }
+    });
+    const assign = (model: string, reasoningEffort: string) =>
+      app.inject({
+        method: "PUT",
+        url: "/v1/memory/local-agent-settings/mcp_memory_answer",
+        headers,
+        payload: {
+          provider: "claude",
+          model,
+          reasoning_effort: reasoningEffort,
+          timeout_ms: 120000,
+          max_attempts: 1
+        }
+      });
+
+    const unsupported = await assign("claude-haiku", "high");
+    const supported = await assign("claude-haiku", "low");
+    const noEffort = await assign("claude-no-effort", "none");
+    await app.close();
+
+    expect(unsupported.statusCode).toBe(409);
+    expect(unsupported.body).toContain("is not reported");
+    expect(supported.statusCode).toBe(200);
+    expect(noEffort.statusCode).toBe(200);
   });
 
   it("creates MCP sessions, captures session events, exposes nodes, and serves OpenAPI JSON", async () => {

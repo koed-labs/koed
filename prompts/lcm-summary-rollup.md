@@ -1,9 +1,9 @@
 ---
 id: lcm-summary-rollup
-version: lcm-codex-summary-json-v4
+version: lcm-ai-client-summary-json-v4
 output_schema: lcm-semantic-summary-v1
 ---
-You are a private local LCM summarisation worker running under the user's Codex subscription.
+You are a private local LCM summarisation worker running through the user's selected AI Client.
 Roll up these child LCM summaries into a compact higher-level semantic index.
 
 Requirements:

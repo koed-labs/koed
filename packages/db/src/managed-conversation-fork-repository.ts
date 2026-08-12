@@ -209,7 +209,7 @@ type ExecutionRow = {
   id: string;
   owner_user_id: string;
   project_id: string;
-  provider: "codex";
+  provider: string;
   state: ManagedConversationExecutionRecord["state"];
   state_version: number;
   execution_generation: number;
@@ -726,7 +726,7 @@ export const createManagedConversationForkRepository = (
         sourceClosureHash: input.sourceClosureHash,
         sourceEndByteCursor: input.sourceEndByteCursor,
         sourceEndItemCursor: input.sourceEndItemCursor,
-        provider: "codex",
+        provider: parent.provider,
         providerThreadId: parent.provider_thread_id,
         providerArtifactRelativePath: input.providerArtifactRelativePath,
         providerCliVersion: parent.provider_cli_version,
@@ -1115,14 +1115,15 @@ export const createManagedConversationForkRepository = (
       const fencingToken = randomBytes(32).toString("base64url");
       const child = await client.query<ExecutionRow>(
         `insert into managed_conversation_executions (
-           id, owner_user_id, project_id, fencing_token_hash,
+           id, owner_user_id, project_id, provider, fencing_token_hash,
            runner_deployment_id, runner_device_id
-         ) values ($1,$2,$3,$4,$5,$6)
+         ) values ($1,$2,$3,$4,$5,$6,$7)
          returning ${EXECUTION_COLUMNS}`,
         [
           childId,
           actor.userId,
           parent.rows[0].project_id,
+          parent.rows[0].provider,
           sha256(fencingToken),
           fork.target_deployment_id,
           fork.target_device_id

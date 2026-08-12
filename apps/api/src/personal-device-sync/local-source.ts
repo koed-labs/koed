@@ -41,6 +41,9 @@ export interface PdsSecureKeyProvider {
 
 const exportedMetadata = new Set([
   "contentType",
+  "parentSourceComponentId",
+  "sourceComponentId",
+  "sourceComponentRole",
   "sourceRole",
   "toolCallId",
   "toolName"
@@ -132,16 +135,40 @@ const semanticActor = (item: PdsClosureSource["items"][number]): string => {
   return "system";
 };
 
-const sourceMetadata = (metadata: Record<string, unknown>, actor: string) => ({
-  ...Object.fromEntries(
-    [...exportedMetadata]
-      .map((key) => [key, metadata[key]] as const)
-      .filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string"
-      )
-  ),
-  sourceRole: actor
-});
+const sourceMetadata = (metadata: Record<string, unknown>, actor: string) => {
+  const sourceComponentId =
+    typeof metadata.sourceComponentId === "string"
+      ? metadata.sourceComponentId
+      : undefined;
+  const sourceComponentRole =
+    metadata.sourceComponentRole === "primary" ||
+    metadata.sourceComponentRole === "auxiliary"
+      ? metadata.sourceComponentRole
+      : sourceComponentId
+        ? sourceComponentId === "main"
+          ? "primary"
+          : "auxiliary"
+        : undefined;
+  const parentSourceComponentId =
+    typeof metadata.parentSourceComponentId === "string"
+      ? metadata.parentSourceComponentId
+      : sourceComponentRole === "auxiliary"
+        ? "main"
+        : undefined;
+  return {
+    ...Object.fromEntries(
+      [...exportedMetadata]
+        .map((key) => [key, metadata[key]] as const)
+        .filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string"
+        )
+    ),
+    sourceRole: actor,
+    ...(sourceComponentId ? { sourceComponentId } : {}),
+    ...(sourceComponentRole ? { sourceComponentRole } : {}),
+    ...(parentSourceComponentId ? { parentSourceComponentId } : {})
+  };
+};
 
 /** Builds immutable protocol source records. Never serializes arbitrary raw JSON. */
 export const pdsConversationItemsForClosure = (

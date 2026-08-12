@@ -22,7 +22,7 @@ A client-side integration point that sends conversation activity to Koed for cap
 _Avoid_: MCP server, recall tool, backend poller
 
 **Transcript Watcher**:
-A local background service that continuously discovers Codex transcript growth and ingests complete records into Koed.
+A local background service that reads an AI Client's transcript source of truth and ingests complete records into Koed.
 _Avoid_: Capture Hook, historical import, backend poller, Team sync
 
 **Capture Pause**:
@@ -225,7 +225,7 @@ An AI-client integration that supports automatic capture through the Transcript 
 _Avoid_: Recall-only integration, MCP-only integration
 
 **Supported Capture Hook**:
-The TypeScript Codex capture hook used for low-latency capture signals and high-confidence completion evidence.
+The TypeScript capture hook used by a supported AI-client integration to signal that its transcript source of truth may have changed.
 _Avoid_: Python capture hook, correctness owner, fallback hook, MCP capture endpoint
 
 **Synthesis**:
@@ -324,7 +324,7 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - The **Local AI Runtime** is supervised by **Koed Server Control Plane** and owns persistent local AI-client work
 - A **Diagnostic Memory Tool** is hidden unless explicitly enabled
 - The **Transcript Watcher** owns transcript-growth capture correctness
-- The **Supported Capture Hook** is the TypeScript Codex capture hook
+- The **Supported Capture Hook** is the TypeScript hook configured for the selected supported AI client
 - A **Supported Capture Hook** may wake the **Transcript Watcher** without providing transcript content
 - Missing, duplicate, delayed, or reordered **Supported Capture Hook** signals do not create capture gaps or duplicate **Memory Events**
 - A **Transcript Watcher** may create a **Captured Session**

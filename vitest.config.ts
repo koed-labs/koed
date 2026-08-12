@@ -31,6 +31,10 @@ export default defineConfig({
         replacement: `${root}packages/mcp-server/src/codex-transcript-parser.ts`
       },
       {
+        find: "@koed/mcp-server/claude-transcript-parser",
+        replacement: `${root}packages/mcp-server/src/claude-transcript-parser.ts`
+      },
+      {
         find: "@koed/mcp-server",
         replacement: `${root}packages/mcp-server/src/index.ts`
       },

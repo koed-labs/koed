@@ -8,12 +8,15 @@ import {
   calculateConversationSourceClosureDigest,
   calculateConversationSourceDiscoveryRequestHash,
   calculateConversationSourceDiscoveryScopeHash,
+  calculateConversationSourceDownloadRequestHash,
+  calculateConversationSourceDownloadScopeHash,
   calculateConversationSourceOriginKeyRegistrationDigest,
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
   calculateConversationSourceReplicationOperationDigest,
   calculateConversationSourceReplicationPlaintextDigest,
   calculateConversationSourceRootDigest,
+  calculateConversationSourceComponentSetDigest,
   canonicalizeConversationSourceClosureManifest,
   canonicalizeConversationSourceReplicationManifest,
   exportConversationSourceReplicationPublicKey,
@@ -26,12 +29,15 @@ import {
   parseConversationSourceReplicationManifest,
   parseConversationSourceReplicationSegmentEnvelope,
   parseConversationSourceReplicationSourceDescriptor,
+  parseConversationSourceSetClosureManifest,
   parseSignedConversationSourceReplicationManifest,
   signConversationSourceClosureManifest,
   signConversationSourceReplicationManifest,
+  signConversationSourceSetClosureManifest,
   verifyConversationSourceReplicationManifestForAcceptance,
   verifyConversationSourceClosureManifestSignature,
   verifyConversationSourceReplicationManifestSignature,
+  verifyConversationSourceSetClosureManifestSignature,
   type ConversationSourceOriginKeyPin,
   type ConversationSourceOriginKeyRegistration,
   type ConversationSourceClosureManifest,
@@ -48,6 +54,11 @@ const manifestFor = (
   overrides: Partial<ConversationSourceReplicationManifest> = {}
 ): ConversationSourceReplicationManifest => ({
   protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  sourceComponentSchemaVersion: 1,
+  sourceComponentId: "main",
+  sourceComponentRole: "primary",
+  parentSourceComponentId: null,
+  contentFraming: "jsonl",
   logicalSourceId,
   sourceGenerationId,
   originKeyId,
@@ -106,11 +117,11 @@ describe("conversation source replication content protocol", () => {
     );
 
     expect(canonical).toBe(
-      '{"adapterVersion":"codex-transcript-v1","endByteCursor":34,"endItemCursor":1,"logicalSourceId":"018f47f2-e195-7c5b-a33c-2ef5f7036a11","originKeyId":"' +
+      '{"adapterVersion":"codex-transcript-v1","contentFraming":"jsonl","endByteCursor":34,"endItemCursor":1,"logicalSourceId":"018f47f2-e195-7c5b-a33c-2ef5f7036a11","originKeyId":"' +
         keys.originKeyId +
-        '","plaintextDigest":"1e5205389de552a1a3149a2dc24024dead327d5b4d29a2e8262d0b33f0878969","previousContentDigest":null,"priorGenerationClosure":{"closedAt":"2026-07-27T12:30:00.000Z","contentDigest":"' +
+        '","parentSourceComponentId":null,"plaintextDigest":"1e5205389de552a1a3149a2dc24024dead327d5b4d29a2e8262d0b33f0878969","previousContentDigest":null,"priorGenerationClosure":{"closedAt":"2026-07-27T12:30:00.000Z","contentDigest":"' +
         "1".repeat(64) +
-        '","sourceGenerationId":"018f47f2-e195-7c5b-a33c-2ef5f7036a13"},"protocol":"koed.conversation-source-replication/v1","segmentIndex":0,"sourceCreatedAt":"2026-07-27T12:34:56.789Z","sourceFormat":"codex-jsonl","sourceGenerationId":"018f47f2-e195-7c5b-a33c-2ef5f7036a12","startByteCursor":0,"startItemCursor":0}'
+        '","sourceGenerationId":"018f47f2-e195-7c5b-a33c-2ef5f7036a13"},"protocol":"koed.conversation-source-replication/v1","segmentIndex":0,"sourceComponentId":"main","sourceComponentRole":"primary","sourceComponentSchemaVersion":1,"sourceCreatedAt":"2026-07-27T12:34:56.789Z","sourceFormat":"codex-jsonl","sourceGenerationId":"018f47f2-e195-7c5b-a33c-2ef5f7036a12","startByteCursor":0,"startItemCursor":0}'
     );
     expect(calculateConversationSourceReplicationManifestDigest(manifest)).toBe(
       createHash("sha256").update(canonical).digest("hex")
@@ -153,6 +164,11 @@ describe("conversation source replication content protocol", () => {
     );
     const source = {
       sourceKind: "codex",
+      sourceComponentSchemaVersion: 1,
+      sourceComponentId: "main",
+      sourceComponentRole: "primary",
+      parentSourceComponentId: null,
+      contentFraming: "jsonl",
       logicalSessionId: "018f47f2-e195-7c5b-a33c-2ef5f7036a16",
       externalSessionId: "session-1",
       forkedFromExternalThreadId: "parent-session-1",
@@ -183,6 +199,15 @@ describe("conversation source replication content protocol", () => {
     );
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
     expect(
+      calculateConversationSourceGenerationRegistrationDigest(
+        registrationFor(
+          "018f47f2-e195-7c5b-a33c-2ef5f7036a17",
+          "BHtaRmWABosXMF50mHI_79w0PSPFxYMfi9uaebMRRWA"
+        ),
+        source
+      )
+    ).toBe("8338c6de06920498becfd69c885e6abb0185342b39b087d811523937afd3b5d1");
+    expect(
       calculateConversationSourceGenerationRegistrationDigest(registration, {
         ...source,
         journalStartOffset: 25,
@@ -195,6 +220,22 @@ describe("conversation source replication content protocol", () => {
         forkedFromExternalThreadId: "different-parent-session"
       })
     ).not.toBe(digest);
+    expect(
+      calculateConversationSourceGenerationRegistrationDigest(registration, {
+        ...source,
+        sourceComponentId: "attachment.notes",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main",
+        contentFraming: "immutable_blob",
+        artifactFormat: "codex_attachment_blob"
+      })
+    ).not.toBe(digest);
+    expect(() =>
+      parseConversationSourceReplicationSourceDescriptor({
+        ...source,
+        sourceComponentSchemaVersion: 2
+      })
+    ).toThrow("version is invalid");
     expect(() =>
       parseConversationSourceReplicationSourceDescriptor({
         ...source,
@@ -207,6 +248,107 @@ describe("conversation source replication content protocol", () => {
         liveStartOffset: 23
       })
     ).toThrow("precedes");
+  });
+
+  it("accepts Claude Code V1 and rejects unsupported source adapter tuples", () => {
+    const claudeSource = {
+      sourceKind: "claude-code",
+      sourceComponentSchemaVersion: 1,
+      sourceComponentId: "main",
+      sourceComponentRole: "primary",
+      parentSourceComponentId: null,
+      contentFraming: "jsonl",
+      logicalSessionId: "018f47f2-e195-7c5b-a33c-2ef5f7036a16",
+      externalSessionId: "claude-session-1",
+      forkedFromExternalThreadId: null,
+      sourceFingerprint: "2".repeat(64),
+      artifactFormat: "claude_session_jsonl",
+      artifactFormatVersion: 1,
+      sourceAdapterVersion: "claude-code-transcript-v1",
+      sourceRuntime: "claude-code",
+      redactedSourceLabel: "Conversation source",
+      originDeploymentId: "018f47f2-e195-7c5b-a33c-2ef5f7036a14",
+      originDeviceId: "018f47f2-e195-7c5b-a33c-2ef5f7036a15",
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0,
+      project: null
+    } as const;
+
+    expect(
+      parseConversationSourceReplicationSourceDescriptor(claudeSource)
+    ).toEqual(claudeSource);
+    expect(() =>
+      parseConversationSourceReplicationSourceDescriptor({
+        ...claudeSource,
+        artifactFormat: "codex_rollout_jsonl"
+      })
+    ).toThrow("format is invalid");
+    expect(() =>
+      parseConversationSourceReplicationSourceDescriptor({
+        ...claudeSource,
+        sourceAdapterVersion: "unknown-adapter-v1"
+      })
+    ).toThrow("format is invalid");
+  });
+
+  it("signs canonical source-set membership and rejects noncanonical closure sets", () => {
+    const keys = generateConversationSourceReplicationOriginKeyPair();
+    const components = [
+      {
+        sourceComponentId: "attachment.notes",
+        sourceComponentRole: "auxiliary" as const,
+        parentSourceComponentId: "main",
+        contentFraming: "immutable_blob" as const,
+        artifactClosureDigest: "2".repeat(64)
+      },
+      {
+        sourceComponentId: "main",
+        sourceComponentRole: "primary" as const,
+        parentSourceComponentId: null,
+        contentFraming: "jsonl" as const,
+        artifactClosureDigest: "1".repeat(64)
+      }
+    ];
+    const manifest = {
+      protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+      sourceSetClosureVersion: 1 as const,
+      sourceComponentSchemaVersion: 1 as const,
+      logicalSourceId,
+      sourceGenerationId,
+      signingComponentId: "main",
+      originKeyId: keys.originKeyId,
+      components,
+      componentSetDigest:
+        calculateConversationSourceComponentSetDigest(components),
+      closedAt: "2026-07-27T12:40:00.000Z"
+    } as const;
+    const signed = signConversationSourceSetClosureManifest(
+      manifest,
+      keys.privateKey
+    );
+    expect(parseConversationSourceSetClosureManifest(manifest)).toEqual(
+      manifest
+    );
+    expect(
+      verifyConversationSourceSetClosureManifestSignature(
+        signed,
+        keys.publicKey
+      )
+    ).toBe(true);
+    expect(() =>
+      parseConversationSourceSetClosureManifest({
+        ...manifest,
+        sourceSetClosureVersion: 2
+      })
+    ).toThrow("version is invalid");
+    expect(() =>
+      parseConversationSourceSetClosureManifest({
+        ...manifest,
+        components: [...components].reverse()
+      })
+    ).toThrow("canonically ordered");
   });
 
   it("rejects malformed, partial, empty, and mismatched JSONL segments", () => {
@@ -261,6 +403,53 @@ describe("conversation source replication content protocol", () => {
     ).toThrow(/limit/);
   });
 
+  it("binds source downloads to the exact selected component", () => {
+    const recipientKey = {
+      algorithm: "RSA-OAEP-SHA256" as const,
+      keyId: "sync-recipient:test",
+      keyVersion: 1,
+      publicJwk: {
+        kty: "RSA" as const,
+        n: "test-modulus",
+        e: "AQAB",
+        alg: "RSA-OAEP-256" as const,
+        key_ops: ["encrypt"] as ["encrypt"],
+        ext: true as const,
+        kid: "sync-recipient:test",
+        use: "enc" as const
+      }
+    };
+    const common = {
+      sourceGenerationId,
+      targetDeploymentId: "018f47f2-e195-7c5b-a33c-2ef5f7036a14",
+      recipientKey
+    };
+    expect(
+      calculateConversationSourceDownloadScopeHash({
+        ...common,
+        sourceComponentId: "agent.researcher"
+      })
+    ).not.toBe(
+      calculateConversationSourceDownloadScopeHash({
+        ...common,
+        sourceComponentId: "main"
+      })
+    );
+    expect(
+      calculateConversationSourceDownloadRequestHash({
+        ...common,
+        sourceComponentId: "agent.researcher",
+        firstSegmentIndex: 0
+      })
+    ).not.toBe(
+      calculateConversationSourceDownloadRequestHash({
+        ...common,
+        sourceComponentId: "main",
+        firstSegmentIndex: 0
+      })
+    );
+  });
+
   it("rejects manifest and signature tampering", () => {
     const keys = generateConversationSourceReplicationOriginKeyPair();
     const signed = signConversationSourceReplicationManifest(
@@ -305,6 +494,12 @@ describe("conversation source replication content protocol", () => {
     expect(() =>
       parseConversationSourceReplicationManifest({ ...valid, recipientId: "x" })
     ).toThrow("unknown or missing");
+    expect(() =>
+      parseConversationSourceReplicationManifest({
+        ...valid,
+        sourceComponentSchemaVersion: 2
+      })
+    ).toThrow("version is invalid");
 
     const missing = { ...valid } as Record<string, unknown>;
     delete missing.adapterVersion;
@@ -533,6 +728,11 @@ describe("conversation source replication content protocol", () => {
     ];
     const manifest: ConversationSourceClosureManifest = {
       protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+      sourceComponentSchemaVersion: 1,
+      sourceComponentId: "main",
+      sourceComponentRole: "primary",
+      parentSourceComponentId: null,
+      contentFraming: "jsonl",
       logicalSourceId,
       sourceGenerationId,
       originKeyId: keys.originKeyId,

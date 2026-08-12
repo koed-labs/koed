@@ -44,6 +44,7 @@
     "release:version": "changeset version && node scripts/sync-product-release.mjs --consume-changesets",
     "release:notes": "node scripts/product-release-notes.mjs",
     "codex:configure": "node scripts/configure-codex.mjs",
+    "claude:configure": "node scripts/configure-claude.mjs",
     "codex:verify-capture": "node scripts/verify-codex-capture-hook.mjs",
     "env:setup": "node scripts/setup-env.mjs",
     "env:sync": "node scripts/sync-app-env-examples.mjs",

@@ -4,6 +4,37 @@ import { createHash } from "node:crypto";
 export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
 
 export {
+  aiClientSourceAdapterRegistry,
+  assertSupportedAiClientSourceAdapter,
+  isSupportedAiClientSourceAdapter,
+  resolveAiClientSourceAdapter
+} from "./ai-client-source-adapters.js";
+export type {
+  AiClientSourceAdapter,
+  AiClientSourceAdapterCandidate,
+  AiClientSourceAdapterVersion,
+  AiClientSourceArtifactFormat,
+  AiClientSourceArtifactFormatVersion,
+  AiClientSourceKind,
+  AiClientSourceRuntime
+} from "./ai-client-source-adapters.js";
+export {
+  aiClientIdentifierPattern,
+  assertAiClientDriverId,
+  assertAiClientInstanceId,
+  defaultAiClientInstanceId,
+  isSupportedAiClientDriverId,
+  supportedAiClientDriverIds
+} from "./ai-client-contract.js";
+export type {
+  AiClientDriverId,
+  AiClientInstanceId,
+  AiClientModelCapability,
+  AiClientModelProvenance,
+  SupportedAiClientDriverId
+} from "./ai-client-contract.js";
+
+export {
   resolveTeamCollaborationEnabled,
   teamCollaborationFeatureEnvironmentName
 } from "./team-collaboration-feature.js";
@@ -35,20 +66,25 @@ export {
   CONVERSATION_SOURCE_DOWNLOAD_AUTHORIZATION_TTL_MS,
   CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES,
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION,
   assertConversationSourceOriginKeyAcceptsManifest,
   calculateConversationSourceDownloadRequestHash,
   calculateConversationSourceDownloadScopeHash,
   calculateConversationSourceClosureDigest,
+  calculateConversationSourceClosureOperationContentDigest,
   calculateConversationSourceDiscoveryRequestHash,
   calculateConversationSourceDiscoveryScopeHash,
   calculateConversationSourceGenerationRegistrationDigest,
   calculateConversationSourceOriginKeyRegistrationDigest,
   calculateConversationSourceRootDigest,
+  calculateConversationSourceComponentSetDigest,
+  calculateConversationSourceSetClosureDigest,
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
   calculateConversationSourceReplicationOperationDigest,
   calculateConversationSourceReplicationPlaintextDigest,
   canonicalizeConversationSourceClosureManifest,
+  canonicalizeConversationSourceSetClosureManifest,
   canonicalizeConversationSourceReplicationManifest,
   conversationSourceOriginKeyLifecycles,
   exportConversationSourceReplicationPublicKey,
@@ -61,15 +97,22 @@ export {
   parseConversationSourceReplicationManifest,
   parseConversationSourceReplicationSegmentEnvelope,
   parseConversationSourceReplicationSourceDescriptor,
+  parseConversationSourceSetClosureManifest,
   parseSignedConversationSourceClosureManifest,
   parseSignedConversationSourceReplicationManifest,
+  parseSignedConversationSourceSetClosureManifest,
   signConversationSourceClosureManifest,
   signConversationSourceReplicationManifest,
+  signConversationSourceSetClosureManifest,
   verifyConversationSourceClosureManifestSignature,
   verifyConversationSourceReplicationManifestForAcceptance,
-  verifyConversationSourceReplicationManifestSignature
+  verifyConversationSourceReplicationManifestSignature,
+  verifyConversationSourceSetClosureManifestSignature
 } from "./conversation-source-replication.js";
 export type {
+  ConversationSourceComponentIdentity,
+  ConversationSourceComponentRole,
+  ConversationSourceContentFraming,
   ConversationSourceClosureManifest,
   ConversationSourceOriginKeyLifecycle,
   ConversationSourceOriginKeyPair,
@@ -79,8 +122,11 @@ export type {
   ConversationSourceReplicationManifest,
   ConversationSourceReplicationSegmentEnvelope,
   ConversationSourceReplicationSourceDescriptor,
+  ConversationSourceSetClosureManifest,
+  ConversationSourceSetClosureMember,
   SignedConversationSourceClosureManifest,
-  SignedConversationSourceReplicationManifest
+  SignedConversationSourceReplicationManifest,
+  SignedConversationSourceSetClosureManifest
 } from "./conversation-source-replication.js";
 export {
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
@@ -784,7 +830,8 @@ export const rawConversationTransportChunkGroupId = (input: {
     )
     .digest("hex");
 
-export const codexCanonicalConversationItemKey = (input: {
+export const canonicalConversationItemKey = (input: {
+  provider: string;
   externalThreadId: string;
   externalTurnId?: string;
   stableItemId: string;
@@ -794,7 +841,7 @@ export const codexCanonicalConversationItemKey = (input: {
     .update(
       JSON.stringify({
         version: 3,
-        provider: "codex",
+        provider: input.provider,
         externalThreadId: input.externalThreadId,
         externalTurnId: input.externalTurnId ?? null,
         stableItemId: input.stableItemId,
@@ -802,6 +849,10 @@ export const codexCanonicalConversationItemKey = (input: {
       })
     )
     .digest("hex")}`;
+
+export const codexCanonicalConversationItemKey = (
+  input: Omit<Parameters<typeof canonicalConversationItemKey>[0], "provider">
+): string => canonicalConversationItemKey({ provider: "codex", ...input });
 
 export const workerQueueNames = [
   memoryEmbedQueueName,

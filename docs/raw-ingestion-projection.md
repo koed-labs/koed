@@ -112,6 +112,12 @@ approval envelope receives a bounded unavailable-history row instead of raw
 synthetic prompt text. The original outer message remains retained as raw
 provenance.
 
+Conversation Source Journal custody does not make source bytes Team-visible.
+Team access requires both an active Captured Session Share Grant and a separate
+Conversation Source Access grant. Semantic expansion level and raw-source
+access are independent controls. See
+[Team Conversation Source Sharing](team-conversation-source-sharing.md).
+
 The Supported Capture Hook never supplies conversation content or provider item
 identity. It writes a private wake timestamp and, for Stop events, a matched
 boundary under hashed source-routing identities containing only the observation

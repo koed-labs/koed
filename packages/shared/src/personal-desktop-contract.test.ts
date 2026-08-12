@@ -205,7 +205,12 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
       sourceSequence: 1,
       contentPreview: "pnpm test",
       invalidatedAt: null,
-      metadata: { toolName: "exec_command" }
+      metadata: {
+        toolName: "exec_command",
+        sourceComponentId: "subagent.researcher",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main"
+      }
     };
     const result = {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,

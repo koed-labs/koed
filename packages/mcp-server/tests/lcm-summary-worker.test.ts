@@ -942,6 +942,74 @@ describe("LCM summary worker", () => {
     });
   });
 
+  it("records Claude usage with Agent SDK execution identity", async () => {
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000091",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 20,
+      sourceItems: [{ kind: "memory_event", text: "A durable decision." }]
+    };
+    const submitted: unknown[] = [];
+    const tokenUsageRequests: unknown[] = [];
+    const client = {
+      async listPendingLcmSummaries() {
+        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      },
+      async recordTokenUsage(input: unknown) {
+        tokenUsageRequests.push(input);
+        return { tokenUsage: { id: "usage-claude" } };
+      },
+      async submitLcmSummary(_nodeId: string, input: unknown) {
+        submitted.push(input);
+        return { ok: true };
+      }
+    };
+    const config = resolveLcmSummaryWorkerConfig(
+      { MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath() },
+      {
+        provider: "claude",
+        aiClientInstanceId: "claude.default",
+        executablePath: process.execPath,
+        maxAttempts: 1
+      }
+    );
+
+    const result = await summarizePendingLcmNodes(client as never, {
+      limit: 1,
+      config,
+      runner: async () => ({
+        text: summaryJson("Claude summarized"),
+        model: "claude-sonnet",
+        threadId: "claude-session",
+        tokenUsage: {
+          modelContextWindow: 200_000,
+          last: { inputTokens: 10, outputTokens: 4, totalTokens: 14 }
+        }
+      })
+    });
+
+    expect(result.submittedCount).toBe(1);
+    expect(tokenUsageRequests).toHaveLength(1);
+    expect(tokenUsageRequests[0]).toMatchObject({
+      sourceRuntime: "claude-code",
+      sourceKind: "claude-code",
+      sourceAdapterVersion: "claude-agent-sdk-v1",
+      usageSource: "connector_native",
+      connectorClient: "claude",
+      inputTokens: 10,
+      outputTokens: 4,
+      totalTokens: 14,
+      metadata: {
+        provider: "claude",
+        aiClientInstanceId: "claude.default",
+        transport: "agent_sdk"
+      }
+    });
+  });
+
   it("ignores oversized source payload metadata so it does not block catch-up", async () => {
     const node: LcmSummaryNode = {
       id: "00000000-0000-4000-8000-000000000001",

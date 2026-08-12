@@ -1,6 +1,7 @@
 import type { MemorySourceRepository } from "@koed/db";
 import {
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  assertSupportedAiClientSourceAdapter,
   calculateConversationSourceClosureDigest,
   parseConversationSourceOriginKeyRegistration,
   parseSignedConversationSourceClosureManifest,
@@ -18,13 +19,15 @@ export const resolveConversationSourceDownloadMaterial = async (input: {
   repository: MemorySourceRepository;
   ownerUserId: string;
   sourceGenerationId: string;
+  sourceComponentId: string;
   allowedReplicaRoles: ReadonlySet<string>;
 }) => {
   const actor = { userId: input.ownerUserId };
   const artifact =
     await input.repository.getConversationSourceArtifactByGeneration(
       actor,
-      input.sourceGenerationId
+      input.sourceGenerationId,
+      input.sourceComponentId
     );
   if (
     !artifact ||
@@ -48,17 +51,30 @@ export const resolveConversationSourceDownloadMaterial = async (input: {
     sourceCreatedAt: artifact.sourceCreatedAt,
     priorGenerationClosure: artifact.priorGenerationClosure
   });
+  const adapter = {
+    sourceKind: artifact.sourceKind,
+    sourceRuntime: artifact.sourceRuntime,
+    artifactFormat: artifact.artifactFormat,
+    artifactFormatVersion: artifact.artifactFormatVersion,
+    sourceAdapterVersion: artifact.sourceAdapterVersion
+  };
+  assertSupportedAiClientSourceAdapter(adapter);
   const source = parseConversationSourceReplicationSourceDescriptor({
-    sourceKind: "codex",
+    sourceKind: adapter.sourceKind,
+    sourceComponentSchemaVersion: 1,
+    sourceComponentId: artifact.sourceComponentId,
+    sourceComponentRole: artifact.sourceComponentRole,
+    parentSourceComponentId: artifact.parentSourceComponentId,
+    contentFraming: artifact.contentFraming,
     logicalSessionId: sourceSession.logicalSessionId,
     externalSessionId: artifact.externalSessionId,
     forkedFromExternalThreadId:
       sourceSession.forkedFromExternalThreadId ?? null,
     sourceFingerprint: artifact.sourceFingerprint,
-    artifactFormat: "codex_rollout_jsonl",
-    artifactFormatVersion: 1,
-    sourceAdapterVersion: "codex-transcript-v1",
-    sourceRuntime: artifact.sourceRuntime,
+    artifactFormat: adapter.artifactFormat,
+    artifactFormatVersion: adapter.artifactFormatVersion,
+    sourceAdapterVersion: adapter.sourceAdapterVersion,
+    sourceRuntime: adapter.sourceRuntime,
     redactedSourceLabel: artifact.redactedSourceLabel,
     originDeploymentId: artifact.originDeploymentId,
     originDeviceId: artifact.originDeviceId,

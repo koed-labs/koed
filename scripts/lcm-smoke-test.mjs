@@ -62,6 +62,14 @@ const summaryModel =
   args.get("summary-model") ??
   process.env.LCM_SMOKE_SUMMARY_MODEL ??
   "gpt-5.6-luna";
+const summaryProvider =
+  args.get("summary-provider") ??
+  process.env.LCM_SMOKE_SUMMARY_PROVIDER ??
+  "codex";
+const summaryAiClientInstance =
+  args.get("summary-ai-client-instance") ??
+  process.env.LCM_SMOKE_SUMMARY_AI_CLIENT_INSTANCE ??
+  `${summaryProvider}.default`;
 const summaryReasoningEffort =
   args.get("summary-reasoning-effort") ??
   process.env.LCM_SMOKE_SUMMARY_REASONING_EFFORT ??
@@ -326,11 +334,6 @@ const getDbState = () =>
         from marked_nodes
         where summary_model is null
       ),
-      'codexSummaryCount', (
-        select count(*)
-        from marked_nodes
-        where summary_model like 'codex%'
-      ),
       'structuredSummaryCount', (
         select count(*)
         from marked_nodes
@@ -357,6 +360,36 @@ const getDbState = () =>
           from marked_nodes
           group by coalesce(summary_model, 'pending')
         ) model_counts
+      ),
+      'summaryProviders', (
+        select coalesce(jsonb_object_agg(provider, count), '{}'::jsonb)
+        from (
+          select
+            coalesce(wtu.metadata ->> 'provider', 'unknown') as provider,
+            count(*) as count
+          from workflow_token_usage wtu
+          join marked_nodes mn on mn.id::text = wtu.workflow_id
+          where wtu.workflow_type = 'lcm_summary'
+          group by coalesce(wtu.metadata ->> 'provider', 'unknown')
+        ) provider_counts
+      ),
+      'summaryAiClientInstances', (
+        select coalesce(jsonb_object_agg(ai_client_instance_id, count), '{}'::jsonb)
+        from (
+          select
+            coalesce(
+              wtu.metadata ->> 'aiClientInstanceId',
+              'unknown'
+            ) as ai_client_instance_id,
+            count(*) as count
+          from workflow_token_usage wtu
+          join marked_nodes mn on mn.id::text = wtu.workflow_id
+          where wtu.workflow_type = 'lcm_summary'
+          group by coalesce(
+            wtu.metadata ->> 'aiClientInstanceId',
+            'unknown'
+          )
+        ) ai_client_instance_counts
       ),
       'leafSummaryHeaderCount', (
         select count(*)
@@ -440,7 +473,6 @@ const waitForLocalSummaries = async () => {
     if (
       totalNodes >= 3 &&
       Number(lastState.summarizedNodeCount) >= totalNodes &&
-      Number(lastState.codexSummaryCount) >= totalNodes &&
       Number(lastState.structuredSummaryCount) >= totalNodes &&
       Number(lastState.pendingSummaryCount) === 0 &&
       Number(lastState.embeddedNodeCount) >= totalNodes
@@ -451,7 +483,7 @@ const waitForLocalSummaries = async () => {
     lastState = getDbState();
   }
   throw new Error(
-    `Timed out waiting for local Codex LCM summaries and updated embeddings:\n${JSON.stringify(lastState, null, 2)}`
+    `Timed out waiting for local AI Client LCM summaries and updated embeddings:\n${JSON.stringify(lastState, null, 2)}`
   );
 };
 
@@ -469,7 +501,7 @@ const main = async () => {
     `Database inspection: ${databaseUrl ? "psql" : `Docker Compose project ${composeProject}`}`
   );
   console.log(
-    `Local LCM summary model: ${summaryModel} (${summaryReasoningEffort})`
+    `Local LCM summary AI Client: ${summaryAiClientInstance}; model: ${summaryModel} (${summaryReasoningEffort})`
   );
   if (process.env.LCM_SMOKE_REQUIRE_COMPOSE_APP_PROFILE === "1") {
     assertRunningSmokeProfile();
@@ -621,9 +653,12 @@ const main = async () => {
         MEMORY_API_URL: apiUrl,
         MEMORY_API_TOKEN: token,
         MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
+        MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false",
         MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS: "1",
         MEMORY_LCM_BACKGROUND_INTERVAL_MS: String(timeoutMs),
         MEMORY_LCM_BACKGROUND_BATCH_LIMIT: "10",
+        MEMORY_LCM_SUMMARY_PROVIDER: summaryProvider,
+        MEMORY_LCM_SUMMARY_AI_CLIENT_INSTANCE: summaryAiClientInstance,
         MEMORY_LCM_SUMMARY_MODEL: summaryModel,
         MEMORY_LCM_SUMMARY_REASONING_EFFORT: summaryReasoningEffort
       },
@@ -670,7 +705,17 @@ const main = async () => {
     if (runtime.exitCode === null) runtime.kill("SIGKILL");
     fs.rmSync(runtimeHome, { recursive: true, force: true });
   }
-  console.log("DB summary state after local Codex summarisation:");
+  assert(
+    Number(state.summaryProviders?.[summaryProvider] ?? 0) > 0,
+    "LCM summary telemetry did not record the selected AI Client provider",
+    state
+  );
+  assert(
+    Number(state.summaryAiClientInstances?.[summaryAiClientInstance] ?? 0) > 0,
+    "LCM summary telemetry did not record the selected AI Client instance",
+    state
+  );
+  console.log("DB summary state after local AI Client summarisation:");
   console.log(JSON.stringify(state, null, 2));
 
   const search = await requestJson("/v1/memory/search", {

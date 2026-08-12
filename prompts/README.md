@@ -7,7 +7,7 @@ local AI Client:
 - Memory Answer worker task prompt
 - LCM Summary worker prompts
 - Session title worker prompt
-- Codex app-server base and developer instructions for local workers
+- AI Client base and developer instructions for local workers
 - Prompt-bearing eval judge templates
 
 Self-hosted Operators may override these files by setting `KOED_PROMPT_DIR` to
@@ -21,7 +21,7 @@ Prompt files use simple Markdown plus frontmatter:
 ```markdown
 ---
 id: memory-answer-worker
-version: memory-answer-codex-worker-v4
+version: memory-answer-worker-v4
 ---
 
 Prompt body with {{placeholder_name}} values.

@@ -142,6 +142,7 @@ Please review the IDE parser parity fix.`;
       minUserEvents: 3,
       config: {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         model: "codex-app-server:test",
         reasoningEffort: "low",
         timeoutMs: 1,
@@ -149,7 +150,7 @@ Please review the IDE parser parity fix.`;
         retryDelayMs: 0,
         concurrency: 1,
         maxPromptTokens: 1000,
-        appServerBinary: "codex",
+        executablePath: "codex",
         cwd: process.cwd(),
         env: {
           ...process.env,
@@ -197,6 +198,7 @@ Please review the IDE parser parity fix.`;
       limit: 1,
       config: {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         model: "codex-app-server:test",
         reasoningEffort: "low",
         timeoutMs: 1,
@@ -204,7 +206,7 @@ Please review the IDE parser parity fix.`;
         retryDelayMs: 0,
         concurrency: 1,
         maxPromptTokens: 1000,
-        appServerBinary: "codex",
+        executablePath: "codex",
         cwd: process.cwd(),
         env: {
           ...process.env,

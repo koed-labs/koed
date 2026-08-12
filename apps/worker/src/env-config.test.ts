@@ -45,6 +45,7 @@ describe("resolveWorkerEnv", () => {
       logDestination: { destination: "stderr" },
       managedConversationAppServerBinary: "codex",
       managedConversationModel: "gpt-5.4",
+      managedConversationClaudeModel: "claude-haiku-4-5-20251001",
       managedConversationReasoningEffort: "high",
       nodeEnv: "development",
       production: false

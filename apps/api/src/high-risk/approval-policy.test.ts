@@ -253,6 +253,7 @@ const matrixCases: Array<{
     intent: {
       action: "conversation_source.download",
       sourceGenerationId: uuid(10),
+      sourceComponentId: "agent.researcher",
       targetDeploymentId: uuid(11),
       firstSegmentIndex: 0,
       recipientKey: {
@@ -322,7 +323,8 @@ describe("action approval policy", () => {
         clientRequestId: uuid(99),
         intent,
         resolveWorkspaceTeamId: async () => uuid(1),
-        resolveLegalHoldTeamId: async () => uuid(1)
+        resolveLegalHoldTeamId: async () => uuid(1),
+        resolveConversationSourceArtifactId: async () => uuid(20)
       });
       expect(operation).not.toBeNull();
       expect(operation?.operationFamily).toBe(definition.operationFamily);

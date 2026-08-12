@@ -618,6 +618,7 @@ const createFixture = () => {
     shareGrantId: ids.grant,
     artifactId: ids.sourceArtifact,
     logicalSourceId: randomUUID(),
+    sourceGenerationId: randomUUID(),
     ownerUserId: ids.alice,
     sessionId: ids.sourceSession,
     teamId: ids.teamA,

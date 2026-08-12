@@ -122,4 +122,72 @@ describe("PDS source closure sanitizer", () => {
       })
     ).toThrow("PDS source adapter payload is not exportable");
   });
+
+  it("preserves Claude source-set component identity", () => {
+    const items = pdsConversationItemsForClosure({
+      ...source,
+      sourceAdapter: "claude-code",
+      sourceAdapterVersion: "claude-code-transcript-v1",
+      items: [
+        {
+          ...source.items[0]!,
+          sourceKind: "claude-code",
+          metadata: {
+            canonicalConversationItemActor: "user",
+            sourceComponentId: "main",
+            sourceComponentRole: "primary"
+          }
+        },
+        {
+          ...source.items[0]!,
+          externalItemId: "subagent-item",
+          sourceKind: "claude-code",
+          metadata: {
+            canonicalConversationItemActor: "subagent",
+            sourceComponentId: "subagent.researcher",
+            sourceComponentRole: "auxiliary",
+            parentSourceComponentId: "main"
+          }
+        }
+      ]
+    });
+
+    expect(items.map((item) => item.metadata)).toEqual([
+      {
+        sourceRole: "user",
+        sourceComponentId: "main",
+        sourceComponentRole: "primary"
+      },
+      {
+        sourceRole: "subagent",
+        sourceComponentId: "subagent.researcher",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main"
+      }
+    ]);
+  });
+
+  it("derives missing Claude component relationships from the stable component id", () => {
+    const [item] = pdsConversationItemsForClosure({
+      ...source,
+      sourceAdapter: "claude-code",
+      items: [
+        {
+          ...source.items[0]!,
+          sourceKind: "claude-code",
+          metadata: {
+            canonicalConversationItemActor: "subagent",
+            sourceComponentId: "subagent.researcher"
+          }
+        }
+      ]
+    });
+
+    expect(item?.metadata).toEqual({
+      sourceRole: "subagent",
+      sourceComponentId: "subagent.researcher",
+      sourceComponentRole: "auxiliary",
+      parentSourceComponentId: "main"
+    });
+  });
 });

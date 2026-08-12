@@ -38,7 +38,11 @@ const updatedNow = () =>
   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
 
 export const visibilityScope = pgEnum("visibility_scope", ["personal"]);
-export const sourceRuntime = pgEnum("source_runtime", ["codex", "codex-cli"]);
+export const sourceRuntime = pgEnum("source_runtime", [
+  "codex",
+  "codex-cli",
+  "claude-code"
+]);
 export const captureMethod = pgEnum("capture_method", [
   "transcript",
   "mcp",
@@ -1032,6 +1036,12 @@ export const conversationSourceArtifacts = pgTable(
       .references(() => sessions.id, { onDelete: "cascade" }),
     logicalSourceId: uuid("logical_source_id").notNull(),
     sourceGenerationId: uuid("source_generation_id").notNull(),
+    sourceComponentId: text("source_component_id").notNull().default("main"),
+    sourceComponentRole: text("source_component_role")
+      .notNull()
+      .default("primary"),
+    parentSourceComponentId: text("parent_source_component_id"),
+    contentFraming: text("content_framing").notNull().default("jsonl"),
     replicaRole: conversationSourceReplicaRole("replica_role").notNull(),
     sourceKind: text("source_kind").notNull(),
     sourceRuntime: sourceRuntime("source_runtime").notNull(),
@@ -1070,6 +1080,14 @@ export const conversationSourceArtifacts = pgTable(
     closureHash: text("closure_hash"),
     closureManifest: jsonb("closure_manifest").$type<Record<string, unknown>>(),
     closureSignature: text("closure_signature"),
+    sourceSetClosureHash: text("source_set_closure_hash"),
+    sourceSetClosureManifest: jsonb("source_set_closure_manifest").$type<
+      Record<string, unknown>
+    >(),
+    sourceSetClosureSignature: text("source_set_closure_signature"),
+    sourceSetFinalizedAt: timestamp("source_set_finalized_at", {
+      withTimezone: true
+    }),
     originDeploymentId: text("origin_deployment_id").notNull(),
     originDeviceId: text("origin_device_id").notNull(),
     originKeyId: text("origin_key_id").notNull(),
@@ -1086,16 +1104,38 @@ export const conversationSourceArtifacts = pgTable(
     finalizedAt: timestamp("finalized_at", { withTimezone: true })
   },
   (table) => [
-    uniqueIndex("conversation_source_artifacts_generation_unique").on(
+    unique("conversation_source_artifacts_generation_component_unique").on(
       table.ownerUserId,
       table.logicalSourceId,
-      table.sourceGenerationId
+      table.sourceGenerationId,
+      table.sourceComponentId
     ),
+    unique("conversation_source_artifacts_generation_lookup_unique").on(
+      table.ownerUserId,
+      table.sourceGenerationId,
+      table.sourceComponentId
+    ),
+    foreignKey({
+      columns: [
+        table.ownerUserId,
+        table.logicalSourceId,
+        table.sourceGenerationId,
+        table.parentSourceComponentId
+      ],
+      foreignColumns: [
+        table.ownerUserId,
+        table.logicalSourceId,
+        table.sourceGenerationId,
+        table.sourceComponentId
+      ],
+      name: "conversation_source_artifacts_parent_component_fk"
+    }).onDelete("restrict"),
     uniqueIndex("conversation_source_artifacts_provider_identity_unique").on(
       table.ownerUserId,
       table.sourceKind,
       table.externalSessionId,
-      table.sourceGenerationId
+      table.sourceGenerationId,
+      table.sourceComponentId
     ),
     unique("conversation_source_artifacts_id_owner_unique").on(
       table.id,
@@ -1105,6 +1145,18 @@ export const conversationSourceArtifacts = pgTable(
       table.ownerUserId,
       table.sessionId,
       table.updatedAt.desc()
+    ),
+    check(
+      "conversation_source_artifacts_component_check",
+      sql`${table.sourceComponentId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and ${table.sourceComponentRole} in ('primary', 'auxiliary')
+        and ${table.contentFraming} in ('jsonl', 'immutable_blob')
+        and (
+          (${table.sourceComponentRole} = 'primary' and ${table.parentSourceComponentId} is null)
+          or (${table.sourceComponentRole} = 'auxiliary'
+              and ${table.parentSourceComponentId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+              and ${table.parentSourceComponentId} <> ${table.sourceComponentId})
+        )`
     ),
     check(
       "conversation_source_artifacts_fingerprint_check",
@@ -1146,6 +1198,20 @@ export const conversationSourceArtifacts = pgTable(
           and ${table.closureSignature} ~ '^[A-Za-z0-9_-]{86}$'
           and ${table.finalizedAt} is not null
         )`
+    ),
+    check(
+      "conversation_source_artifacts_source_set_closure_check",
+      sql`(${table.sourceSetClosureHash} is null
+          and ${table.sourceSetClosureManifest} is null
+          and ${table.sourceSetClosureSignature} is null
+          and ${table.sourceSetFinalizedAt} is null)
+        or (${table.sourceComponentId} = 'main'
+          and ${table.sourceComponentRole} = 'primary'
+          and ${table.sourceSetClosureHash} ~ '^[0-9a-f]{64}$'
+          and jsonb_typeof(${table.sourceSetClosureManifest}) = 'object'
+          and ${table.sourceSetClosureManifest} <> '{}'::jsonb
+          and ${table.sourceSetClosureSignature} ~ '^[A-Za-z0-9_-]{86}$'
+          and ${table.sourceSetFinalizedAt} is not null)`
     ),
     check(
       "conversation_source_artifacts_origin_identity_check",
@@ -3079,7 +3145,7 @@ export const managedConversationExecutions = pgTable(
     ),
     check(
       "managed_conversation_executions_provider_check",
-      sql`${table.provider} = 'codex'`
+      sql`${table.provider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'`
     ),
     check(
       "managed_conversation_executions_generation_check",
@@ -5717,6 +5783,7 @@ export const teamConversationSourceGrants = pgTable(
         onDelete: "restrict"
       }),
     logicalSourceId: uuid("logical_source_id").notNull(),
+    sourceGenerationId: uuid("source_generation_id").notNull(),
     ownerUserId: uuid("owner_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -5766,7 +5833,11 @@ export const teamConversationSourceGrants = pgTable(
       .on(table.artifactId, table.updatedAt.desc())
       .where(sql`${table.lifecycle} = 'active'`),
     index("team_conversation_source_grants_logical_source_active_idx")
-      .on(table.logicalSourceId, table.updatedAt.desc())
+      .on(
+        table.logicalSourceId,
+        table.sourceGenerationId,
+        table.updatedAt.desc()
+      )
       .where(sql`${table.lifecycle} = 'active'`),
     check(
       "team_conversation_source_grants_mode_check",
@@ -9017,6 +9088,94 @@ export const localWorkQueue = pgTable(
   ]
 );
 
+export const aiClientInstances = pgTable(
+  "ai_client_instances",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    instanceId: text("instance_id").notNull(),
+    driverId: text("driver_id").notNull(),
+    displayName: text("display_name").notNull(),
+    configIdentityHash: text("config_identity_hash"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.instanceId] }),
+    index("ai_client_instances_owner_driver_idx").on(
+      table.ownerUserId,
+      table.driverId,
+      table.updatedAt.desc()
+    ),
+    check(
+      "ai_client_instances_identity_check",
+      sql`${table.instanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and ${table.driverId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'`
+    ),
+    check(
+      "ai_client_instances_config_identity_check",
+      sql`${table.configIdentityHash} is null
+        or ${table.configIdentityHash} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const aiClientCapabilitySnapshots = pgTable(
+  "ai_client_capability_snapshots",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    instanceId: text("instance_id").notNull(),
+    installationIdentityHash: text("installation_identity_hash").notNull(),
+    clientVersion: text("client_version"),
+    authenticationState: text("authentication_state").notNull(),
+    healthState: text("health_state").notNull(),
+    models: jsonb("models")
+      .$type<Array<Record<string, unknown>>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    capabilities: jsonb("capabilities")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.instanceId],
+      foreignColumns: [
+        aiClientInstances.ownerUserId,
+        aiClientInstances.instanceId
+      ],
+      name: "ai_client_capability_snapshots_instance_fk"
+    }).onDelete("cascade"),
+    index("ai_client_capability_snapshots_current_idx").on(
+      table.ownerUserId,
+      table.instanceId,
+      table.observedAt.desc()
+    ),
+    check(
+      "ai_client_capability_snapshots_identity_check",
+      sql`${table.installationIdentityHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "ai_client_capability_snapshots_state_check",
+      sql`${table.authenticationState} in ('authenticated', 'unauthenticated', 'unknown')
+        and ${table.healthState} in ('healthy', 'unavailable', 'incompatible', 'error')`
+    ),
+    check(
+      "ai_client_capability_snapshots_expiry_check",
+      sql`${table.expiresAt} > ${table.observedAt}`
+    )
+  ]
+);
+
 export const localMemoryAgentSettings = pgTable(
   "local_memory_agent_settings",
   {
@@ -9025,6 +9184,9 @@ export const localMemoryAgentSettings = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     flowKey: text("flow_key").notNull(),
     provider: text("provider").notNull().default("codex"),
+    aiClientInstanceId: text("ai_client_instance_id")
+      .notNull()
+      .default("codex.default"),
     model: text("model").notNull(),
     reasoningEffort: text("reasoning_effort").notNull(),
     timeoutMs: integer("timeout_ms").notNull(),
@@ -9040,11 +9202,12 @@ export const localMemoryAgentSettings = pgTable(
     ),
     check(
       "local_memory_agent_settings_flow_key_check",
-      sql`${table.flowKey} in ('mcp_memory_answer', 'lcm_summary', 'curated_memory_review')`
+      sql`${table.flowKey} in ('mcp_memory_answer', 'manual_memory_answer', 'lcm_summary', 'curated_memory_review', 'session_title')`
     ),
     check(
       "local_memory_agent_settings_provider_check",
-      sql`${table.provider} = 'codex'`
+      sql`${table.provider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and ${table.aiClientInstanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'`
     ),
     check("local_memory_agent_settings_model_check", sql`${table.model} <> ''`),
     check(

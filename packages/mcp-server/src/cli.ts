@@ -42,7 +42,7 @@ if (command) {
 }
 
 const handle = serveStdio((context) => createKoedMcpServer(context), {
-  legacy: "reject",
+  legacy: "serve",
   onerror: (error) => logger.error({ err: error }, "koed MCP transport error")
 });
 

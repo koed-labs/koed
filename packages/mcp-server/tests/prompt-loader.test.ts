@@ -45,7 +45,7 @@ describe("prompt loader", () => {
     const prompt = loadPrompt("memory-answer-worker");
 
     expect(prompt.id).toBe("memory-answer-worker");
-    expect(prompt.version).toBe("memory-answer-codex-worker-v4");
+    expect(prompt.version).toBe("memory-answer-worker-v4");
     expect(prompt.overridden).toBe(false);
     expect(prompt.body).toContain(
       "You are a private local memory/RAG answer worker"

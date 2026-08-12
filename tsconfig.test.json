@@ -8,6 +8,12 @@
       "@koed/core": ["packages/core/src/index.ts"],
       "@koed/db": ["packages/db/src/index.ts"],
       "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "@koed/mcp-server/codex-transcript-parser": [
+        "packages/mcp-server/src/codex-transcript-parser.ts"
+      ],
+      "@koed/mcp-server/claude-transcript-parser": [
+        "packages/mcp-server/src/claude-transcript-parser.ts"
+      ],
       "@koed/shared": ["packages/shared/src/index.ts"]
     }
   },

@@ -2,16 +2,19 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ConversationSourceSegmentRecord } from "@koed/db";
 import {
   calculateConversationSourceRootDigest,
+  calculateConversationSourceComponentSetDigest,
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
   canonicalizeConversationSourceClosureManifest,
   canonicalizeConversationSourceReplicationManifest,
+  canonicalizeConversationSourceSetClosureManifest,
   createDeviceBoundSourceSigner,
   decryptEnvelopeToUtf8,
   exportConversationSourceReplicationPublicKey,
   importConversationSourceReplicationPublicKey,
   parseConversationSourceReplicationSegmentEnvelope,
   type ConversationSourceClosureManifest,
+  type ConversationSourceSetClosureManifest,
   type DeviceBoundSourceSigner,
   type EncryptedPayloadEnvelope,
   type ConversationSourceReplicationManifest
@@ -26,6 +29,7 @@ import {
   conversationSourceCursorLookupSchema,
   conversationSourceCursorSchema,
   conversationSourceGenerationParamsSchema,
+  conversationSourceGenerationLookupSchema,
   conversationSourceSegmentAppendSchema,
   conversationSourceSegmentListSchema,
   conversationSourceSegmentParamsSchema,
@@ -148,6 +152,25 @@ const decodeCompleteJsonlSegment = (
   return bytes;
 };
 
+const decodeImmutableBlobSegment = (
+  bytesBase64: string,
+  expectedSize: number,
+  expectedDigest: string
+): Uint8Array => {
+  const bytes = decodeCanonicalBase64(bytesBase64);
+  if (
+    bytes.byteLength !== expectedSize ||
+    bytes.byteLength === 0 ||
+    sha256(bytes) !== expectedDigest
+  ) {
+    throw Object.assign(
+      new Error("Conversation source immutable blob is invalid"),
+      { statusCode: 400 }
+    );
+  }
+  return bytes;
+};
+
 const safeSegment = (segment: ConversationSourceSegmentRecord) => {
   const { storageKey, encryptionEnvelope, ...safe } = segment;
   void storageKey;
@@ -250,7 +273,8 @@ export const registerConversationSourceJournalRoutes = (
           { userId: user.id },
           {
             sourceKind: input.sourceKind,
-            externalSessionId: input.externalSessionId
+            externalSessionId: input.externalSessionId,
+            sourceComponentId: input.sourceComponentId
           }
         );
       if (existing) {
@@ -278,39 +302,77 @@ export const registerConversationSourceJournalRoutes = (
         );
       }
       const artifactIdPrefix = createHash("sha256")
-        .update(`${user.id}:${input.sourceKind}:${input.externalSessionId}`)
+        .update(
+          `${user.id}:${input.sourceKind}:${input.externalSessionId}:${input.sourceComponentId}`
+        )
         .digest("hex")
         .slice(0, 24);
       const { sourceSession, ...artifactInput } = input;
-      const logicalSourceId = randomUUID();
-      const sourceGenerationId = randomUUID();
+      const primaryArtifact =
+        input.sourceComponentRole === "auxiliary"
+          ? await repo.getConversationSourceArtifactByProviderIdentity(
+              { userId: user.id },
+              {
+                sourceKind: input.sourceKind,
+                externalSessionId: input.externalSessionId,
+                sourceComponentId: input.parentSourceComponentId ?? "main"
+              }
+            )
+          : null;
+      if (input.sourceComponentRole === "auxiliary" && !primaryArtifact) {
+        throw Object.assign(
+          new Error("Conversation source parent component not found"),
+          { statusCode: 409 }
+        );
+      }
+      const logicalSourceId = primaryArtifact?.logicalSourceId ?? randomUUID();
+      const sourceGenerationId =
+        primaryArtifact?.sourceGenerationId ?? randomUUID();
       const originKeyId = randomUUID();
       const signer = sourceSignerFactory({
         koedHome: context.config.koedHome,
         sourceGenerationId,
         originKeyId
       });
-      const result =
-        await repo.ensureConversationSourceArtifactForCapturedSession(
-          { userId: user.id },
-          {
-            session: sourceSession,
-            artifact: {
-              ...artifactInput,
-              logicalSourceId,
-              sourceGenerationId,
-              replicaRole: "origin_local",
-              sourceRuntime: sourceSession.sourceRuntime,
-              sourceAdapterVersion: "codex-transcript-v1",
-              storageProvider: storage.provider,
-              storagePrefix: artifactIdPrefix,
-              originDeploymentId: signer.deploymentId,
-              originDeviceId: signer.deviceInstanceId,
-              originKeyId,
-              originPublicKey: signer.publicKey
-            }
+      const artifact = {
+        ...artifactInput,
+        logicalSourceId,
+        sourceGenerationId,
+        replicaRole: "origin_local" as const,
+        sourceRuntime: sourceSession.sourceRuntime,
+        sourceAdapterVersion:
+          input.sourceKind === "claude-code"
+            ? "claude-code-transcript-v1"
+            : "codex-transcript-v1",
+        storageProvider: storage.provider,
+        storagePrefix: artifactIdPrefix,
+        originDeploymentId: signer.deploymentId,
+        originDeviceId: signer.deviceInstanceId,
+        originKeyId,
+        originPublicKey: signer.publicKey
+      };
+      const result = primaryArtifact
+        ? {
+            session: await repo.getCapturedSession(
+              { userId: user.id },
+              primaryArtifact.sessionId
+            ),
+            artifact: await repo.ensureConversationSourceArtifact(
+              { userId: user.id },
+              { ...artifact, sessionId: primaryArtifact.sessionId }
+            )
           }
-        );
+        : await repo.ensureConversationSourceArtifactForCapturedSession(
+            { userId: user.id },
+            {
+              session: {
+                ...sourceSession,
+                sourceKind: artifact.sourceKind,
+                sourceAdapterVersion: artifact.sourceAdapterVersion
+              },
+              artifact
+            }
+          );
       return result;
     }
   );
@@ -323,11 +385,14 @@ export const registerConversationSourceJournalRoutes = (
       const user = await context.auth.authenticateApiToken(request);
       const { sourceGenerationId } =
         conversationSourceGenerationParamsSchema.parse(request.params);
+      const { source_component_id: sourceComponentId } =
+        conversationSourceGenerationLookupSchema.parse(request.query);
       const artifact = await context
         .requireRepository()
         .getConversationSourceArtifactByGeneration(
           { userId: user.id },
-          sourceGenerationId
+          sourceGenerationId,
+          sourceComponentId
         );
       if (!artifact) {
         throw Object.assign(
@@ -336,6 +401,136 @@ export const registerConversationSourceJournalRoutes = (
         );
       }
       return { artifact };
+    }
+  );
+
+  app.get(
+    "/v1/conversation-source-artifacts/generations/:sourceGenerationId/components",
+    { preHandler: context.rateLimit.sourceJournal },
+    async (request) => {
+      requireLocalJournalSurface(context);
+      const user = await context.auth.authenticateApiToken(request);
+      const { sourceGenerationId } =
+        conversationSourceGenerationParamsSchema.parse(request.params);
+      const artifacts = await context
+        .requireRepository()
+        .listConversationSourceArtifactsByGeneration(
+          { userId: user.id },
+          sourceGenerationId
+        );
+      if (artifacts.length === 0) {
+        throw Object.assign(
+          new Error("Conversation source generation not found"),
+          {
+            statusCode: 404
+          }
+        );
+      }
+      return {
+        sourceGenerationId,
+        components: artifacts.map((artifact) => ({
+          sourceComponentId: artifact.sourceComponentId,
+          sourceComponentRole: artifact.sourceComponentRole,
+          parentSourceComponentId: artifact.parentSourceComponentId,
+          contentFraming: artifact.contentFraming,
+          artifact
+        })),
+        sourceSetClosure:
+          artifacts.find((artifact) => artifact.sourceComponentId === "main")
+            ?.sourceSetClosureManifest ?? null
+      };
+    }
+  );
+
+  app.post(
+    "/v1/conversation-source-artifacts/generations/:sourceGenerationId/finalize-source-set",
+    { preHandler: context.rateLimit.sourceJournal },
+    async (request) => {
+      requireLocalJournalSurface(context);
+      const user = await context.auth.authenticateApiToken(request);
+      const { sourceGenerationId } =
+        conversationSourceGenerationParamsSchema.parse(request.params);
+      const repository = context.requireRepository();
+      const artifacts =
+        await repository.listConversationSourceArtifactsByGeneration(
+          { userId: user.id },
+          sourceGenerationId
+        );
+      const main = artifacts.find(
+        (artifact) =>
+          artifact.sourceComponentId === "main" &&
+          artifact.sourceComponentRole === "primary"
+      );
+      if (
+        !main ||
+        artifacts.some(
+          (artifact) =>
+            artifact.lifecycle !== "finalized" || !artifact.closureHash
+        )
+      ) {
+        throw Object.assign(
+          new Error("Conversation source-set components are not finalized"),
+          { statusCode: 409 }
+        );
+      }
+      if (
+        main.sourceSetClosureHash &&
+        main.sourceSetClosureManifest &&
+        main.sourceSetClosureSignature &&
+        main.sourceSetFinalizedAt
+      ) {
+        return { artifacts, replayed: true };
+      }
+      const components = artifacts
+        .map((artifact) => ({
+          sourceComponentId: artifact.sourceComponentId,
+          sourceComponentRole: artifact.sourceComponentRole,
+          parentSourceComponentId: artifact.parentSourceComponentId,
+          contentFraming: artifact.contentFraming,
+          artifactClosureDigest: artifact.closureHash!
+        }))
+        .sort((left, right) =>
+          left.sourceComponentId.localeCompare(right.sourceComponentId)
+        );
+      const signer = sourceSignerFactory({
+        koedHome: context.config.koedHome,
+        sourceGenerationId,
+        originKeyId: main.originKeyId
+      });
+      if (signer.publicKey !== main.originPublicKey) {
+        throw Object.assign(
+          new Error("Conversation source-set signing authority is unavailable"),
+          { statusCode: 409 }
+        );
+      }
+      const manifest: ConversationSourceSetClosureManifest = {
+        protocol: "koed.conversation-source-replication/v1",
+        sourceSetClosureVersion: 1,
+        sourceComponentSchemaVersion: 1,
+        logicalSourceId: main.logicalSourceId,
+        sourceGenerationId,
+        signingComponentId: "main",
+        originKeyId: main.originKeyId,
+        components,
+        componentSetDigest:
+          calculateConversationSourceComponentSetDigest(components),
+        closedAt: new Date().toISOString()
+      };
+      return repository.finalizeConversationSourceSet(
+        { userId: user.id },
+        {
+          sourceGenerationId,
+          signedClosure: {
+            manifest,
+            signature: signer.sign(
+              Buffer.from(
+                canonicalizeConversationSourceSetClosureManifest(manifest),
+                "utf8"
+              )
+            )
+          }
+        }
+      );
     }
   );
 
@@ -352,7 +547,8 @@ export const registerConversationSourceJournalRoutes = (
           { userId: user.id },
           {
             sourceKind: input.source_kind,
-            externalSessionId: input.external_session_id
+            externalSessionId: input.external_session_id,
+            sourceComponentId: input.source_component_id
           }
         );
       if (!artifact) {
@@ -378,12 +574,6 @@ export const registerConversationSourceJournalRoutes = (
         request.params
       );
       const input = conversationSourceSegmentAppendSchema.parse(request.body);
-      const bytes = decodeCompleteJsonlSegment(
-        input.bytesBase64,
-        input.plaintextSize,
-        input.plaintextDigest,
-        input.sourceEndLine - input.expectedProviderLine
-      );
       const artifact = await context
         .requireRepository()
         .getConversationSourceArtifact({ userId: user.id }, artifactId);
@@ -393,6 +583,31 @@ export const registerConversationSourceJournalRoutes = (
           { statusCode: 404 }
         );
       }
+      if (
+        artifact.contentFraming === "immutable_blob" &&
+        (input.expectedProviderOffset !== artifact.journalStartOffset ||
+          input.expectedProviderLine !== artifact.journalStartLine ||
+          input.sourceEndOffset !== input.currentSourceLength ||
+          input.sourceEndLine !== input.expectedProviderLine + 1)
+      ) {
+        throw Object.assign(
+          new Error("Conversation source immutable blob range is invalid"),
+          { statusCode: 409 }
+        );
+      }
+      const bytes =
+        artifact.contentFraming === "immutable_blob"
+          ? decodeImmutableBlobSegment(
+              input.bytesBase64,
+              input.plaintextSize,
+              input.plaintextDigest
+            )
+          : decodeCompleteJsonlSegment(
+              input.bytesBase64,
+              input.plaintextSize,
+              input.plaintextDigest,
+              input.sourceEndLine - input.expectedProviderLine
+            );
       if (
         input.expectedProviderOffset < artifact.providerCursorOffset ||
         input.expectedProviderLine < artifact.providerCursorLine
@@ -480,6 +695,11 @@ export const registerConversationSourceJournalRoutes = (
       }
       const manifest: ConversationSourceReplicationManifest = {
         protocol: "koed.conversation-source-replication/v1",
+        sourceComponentSchemaVersion: 1,
+        sourceComponentId: artifact.sourceComponentId,
+        sourceComponentRole: artifact.sourceComponentRole,
+        parentSourceComponentId: artifact.parentSourceComponentId,
+        contentFraming: artifact.contentFraming,
         logicalSourceId: artifact.logicalSourceId,
         sourceGenerationId: artifact.sourceGenerationId,
         originKeyId: artifact.originKeyId,
@@ -679,6 +899,11 @@ export const registerConversationSourceJournalRoutes = (
       }
       const manifest: ConversationSourceClosureManifest = {
         protocol: "koed.conversation-source-replication/v1",
+        sourceComponentSchemaVersion: 1,
+        sourceComponentId: artifact.sourceComponentId,
+        sourceComponentRole: artifact.sourceComponentRole,
+        parentSourceComponentId: artifact.parentSourceComponentId,
+        contentFraming: artifact.contentFraming,
         logicalSourceId: artifact.logicalSourceId,
         sourceGenerationId: artifact.sourceGenerationId,
         originKeyId: artifact.originKeyId,

@@ -47,6 +47,7 @@ type HighRiskRepository = Pick<
   | "getSharedMemoryRevokeReview"
   | "getSharedMemoryRepresentationChangeReview"
   | "getTeamConversationSourceGrantReview"
+  | "getConversationSourceArtifactByGeneration"
   | "getManagedConversationExecution"
   | "listDeviceCredentials"
   | "getTeamEntitlementGate"

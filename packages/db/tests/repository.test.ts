@@ -1129,7 +1129,7 @@ describeDb("memory repository visibility", () => {
         sourceFingerprint: createHash("sha256")
           .update(externalSessionId)
           .digest("hex"),
-        artifactFormat: "jsonl",
+        artifactFormat: "codex_rollout_jsonl",
         artifactFormatVersion: 1,
         sourceAdapterVersion: "codex-transcript-v1",
         journalStartOffset: 0,
@@ -1171,6 +1171,141 @@ describeDb("memory repository visibility", () => {
         source_generation_id: sourceGenerationId
       }
     ]);
+  });
+
+  it("claims auxiliary source closures before the main source-set closure", async () => {
+    const owner = await repo.createUser({
+      email: `source-closure-order-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const externalSessionId = `source-closure-order-${randomUUID()}`;
+    const sourceGenerationId = randomUUID();
+    const logicalSourceId = randomUUID();
+    const sourceCreatedAt = new Date();
+    await repo.upsertPersonalSourceReplicationPolicy(actor, {
+      enabled: true,
+      targetUpstreamId: "remote-personal",
+      mode: "hosted_personal",
+      effectiveFrom: new Date(sourceCreatedAt.getTime() - 1_000).toISOString()
+    });
+    const session = await repo.createCapturedSession(actor, {
+      externalSessionId,
+      sourceRuntime: "claude-code",
+      captureMethod: "transcript"
+    });
+    const artifactInput = {
+      sessionId: session.id,
+      logicalSourceId,
+      sourceGenerationId,
+      replicaRole: "origin_local" as const,
+      sourceKind: "claude-code",
+      sourceRuntime: "claude-code" as const,
+      externalSessionId,
+      artifactFormat: "claude_session_jsonl",
+      artifactFormatVersion: 1,
+      sourceAdapterVersion: "claude-code-transcript-v1",
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0,
+      currentSourceLength: 0,
+      sourceCreatedAt: sourceCreatedAt.toISOString(),
+      storageProvider: "filesystem",
+      originDeploymentId: randomUUID(),
+      originDeviceId: randomUUID(),
+      originKeyId: randomUUID(),
+      originPublicKey: Buffer.alloc(32, 9).toString("base64url")
+    };
+    const main = await repo.ensureConversationSourceArtifact(actor, {
+      ...artifactInput,
+      sourceFingerprint: createHash("sha256")
+        .update(`${externalSessionId}:main`)
+        .digest("hex"),
+      storagePrefix: `source-closure-order-main-${randomUUID()}`,
+      redactedSourceLabel: "Claude main session"
+    });
+    const auxiliary = await repo.ensureConversationSourceArtifact(actor, {
+      ...artifactInput,
+      sourceComponentId: "agent.worker-1",
+      sourceComponentRole: "auxiliary",
+      parentSourceComponentId: "main",
+      sourceFingerprint: createHash("sha256")
+        .update(`${externalSessionId}:auxiliary`)
+        .digest("hex"),
+      storagePrefix: `source-closure-order-aux-${randomUUID()}`,
+      redactedSourceLabel: "Claude auxiliary session"
+    });
+    await pool.query(
+      `update conversation_source_artifacts
+          set lifecycle = 'finalized',
+              closure_hash = case when id = $2 then $4 else $5 end,
+              closure_manifest = jsonb_build_object('version', 1),
+              closure_signature = repeat('a', 86),
+              finalized_at = now(),
+              source_set_closure_hash = case when id = $2 then $6 else null end,
+              source_set_closure_manifest =
+                case when id = $2 then '{"version":1}'::jsonb else null end,
+              source_set_closure_signature =
+                case when id = $2 then repeat('b', 86) else null end,
+              source_set_finalized_at =
+                case when id = $2 then now() else null end
+        where owner_user_id = $1 and id in ($2, $3)`,
+      [
+        owner.id,
+        main.id,
+        auxiliary.id,
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64)
+      ]
+    );
+    await pool.query(
+      `update conversation_source_replication_outbox
+          set state = 'succeeded', succeeded_at = now(), updated_at = now()
+        where owner_user_id = $1 and operation_kind = 'registration'`,
+      [owner.id]
+    );
+    await pool.query(
+      `insert into conversation_source_replication_outbox (
+         owner_user_id, artifact_id, operation_kind, target_upstream_id, mode
+       ) values
+         ($1, $2, 'closure', 'remote-personal', 'hosted_personal'),
+         ($1, $3, 'closure', 'remote-personal', 'hosted_personal')`,
+      [owner.id, main.id, auxiliary.id]
+    );
+
+    const auxiliaryClaims = await repo.claimConversationSourceReplicationOutbox(
+      actor,
+      {
+        workerId: "source-closure-order-worker",
+        leaseMs: 60_000,
+        limit: 10
+      }
+    );
+
+    expect(auxiliaryClaims).toHaveLength(1);
+    expect(auxiliaryClaims[0]).toMatchObject({
+      artifactId: auxiliary.id,
+      operationKind: "closure"
+    });
+    await repo.completeConversationSourceReplicationOutbox(actor, {
+      outboxId: auxiliaryClaims[0]!.id,
+      leaseToken: auxiliaryClaims[0]!.leaseToken!
+    });
+
+    const mainClaims = await repo.claimConversationSourceReplicationOutbox(
+      actor,
+      {
+        workerId: "source-closure-order-worker",
+        leaseMs: 60_000,
+        limit: 10
+      }
+    );
+    expect(mainClaims).toHaveLength(1);
+    expect(mainClaims[0]).toMatchObject({
+      artifactId: main.id,
+      operationKind: "closure"
+    });
   });
 
   it("binds local sync deployment to verified protocol identity without replacement", async () => {
@@ -1527,6 +1662,7 @@ describeDb("memory repository visibility", () => {
     const managed = await repo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "managed-blocked-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1604,6 +1740,7 @@ describeDb("memory repository visibility", () => {
     const managed = await repo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "managed-runtime-ready-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1678,6 +1815,7 @@ describeDb("memory repository visibility", () => {
     const managed = await protectedRepo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "managed-abandoned-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1779,6 +1917,7 @@ describeDb("memory repository visibility", () => {
     const managed = await protectedRepo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "managed-reacquire-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1866,6 +2005,7 @@ describeDb("memory repository visibility", () => {
     const managed = await protectedRepo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "managed-fork-failure-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1969,6 +2109,7 @@ describeDb("memory repository visibility", () => {
     const managed = await protectedRepo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "managed-idle-handoff-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2068,6 +2209,7 @@ describeDb("memory repository visibility", () => {
     const managed = await protectedRepo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "managed-source-generation-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2163,6 +2305,7 @@ describeDb("memory repository visibility", () => {
     const managed = await protectedRepo.createManagedConversation(
       { userId: owner.id },
       {
+        provider: "codex",
         projectId: "workspace-chunks-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -3691,7 +3834,7 @@ describeDb("memory repository visibility", () => {
         nodeId: node.id,
         summaryText: "Managed cloud finished summary sentinel 731f3c",
         summaryModel: "codex:test",
-        summaryPromptVersion: "lcm-codex-summary-json-v3",
+        summaryPromptVersion: "lcm-ai-client-summary-json-v4",
         summaryTokenEstimate: 23,
         summaryStructuredJson: structured,
         summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
@@ -9485,23 +9628,31 @@ describeDb("memory repository visibility", () => {
       teamWorkspaceId: workspace!.id
     });
     const logicalSourceId = randomUUID();
-    const createArtifact = async (sourceCreatedAt: Date) => {
+    const createArtifact = async (
+      sourceCreatedAt: Date,
+      withAuxiliary = false
+    ) => {
+      const sourceGenerationId = randomUUID();
       const artifact = await repo.ensureConversationSourceArtifact(
         { userId: owner.id },
         {
           sessionId: session.id,
           logicalSourceId,
-          sourceGenerationId: randomUUID(),
+          sourceGenerationId,
           replicaRole: "origin_local",
-          sourceKind: "codex",
-          sourceRuntime: "codex",
+          sourceKind: withAuxiliary ? "claude-code" : "codex",
+          sourceRuntime: withAuxiliary ? "claude-code" : "codex",
           externalSessionId,
           sourceFingerprint: createHash("sha256")
             .update(`${externalSessionId}:${sourceCreatedAt.toISOString()}`)
             .digest("hex"),
-          artifactFormat: "jsonl",
+          artifactFormat: withAuxiliary
+            ? "claude_session_jsonl"
+            : "codex_rollout_jsonl",
           artifactFormatVersion: 1,
-          sourceAdapterVersion: "codex-transcript-v1",
+          sourceAdapterVersion: withAuxiliary
+            ? "claude-code-transcript-v1"
+            : "codex-transcript-v1",
           journalStartOffset: 0,
           journalStartLine: 0,
           liveStartOffset: 0,
@@ -9542,11 +9693,119 @@ describeDb("memory repository visibility", () => {
         `update conversation_source_artifacts
             set current_journal_sequence=0, provider_cursor_offset=24,
                 provider_cursor_line=1, current_source_length=24,
-                source_modified_at=$2, updated_at=$2
+                source_modified_at=$2, updated_at=$2,
+                lifecycle='finalized', closure_hash=$3,
+                closure_manifest='{"version":1}'::jsonb,
+                closure_signature=$4, finalized_at=$2
           where id=$1`,
-        [artifact.id, sourceCreatedAt]
+        [
+          artifact.id,
+          sourceCreatedAt,
+          randomBytes(32).toString("hex"),
+          "a".repeat(86)
+        ]
       );
-      return { artifactId: artifact.id, segmentId: segment.rows[0]!.id };
+      let auxiliaryArtifactId: string | null = null;
+      let auxiliarySegmentId: string | null = null;
+      if (withAuxiliary) {
+        const auxiliary = await repo.ensureConversationSourceArtifact(
+          { userId: owner.id },
+          {
+            sessionId: session.id,
+            logicalSourceId,
+            sourceGenerationId,
+            sourceComponentId: "agent.worker-1",
+            sourceComponentRole: "auxiliary",
+            parentSourceComponentId: "main",
+            contentFraming: "jsonl",
+            replicaRole: "origin_local",
+            sourceKind: "claude-code",
+            sourceRuntime: "claude-code",
+            externalSessionId,
+            sourceFingerprint: createHash("sha256")
+              .update(
+                `${externalSessionId}:aux:${sourceCreatedAt.toISOString()}`
+              )
+              .digest("hex"),
+            artifactFormat: "claude_session_jsonl",
+            artifactFormatVersion: 1,
+            sourceAdapterVersion: "claude-code-transcript-v1",
+            journalStartOffset: 0,
+            journalStartLine: 0,
+            liveStartOffset: 0,
+            liveStartLine: 0,
+            currentSourceLength: 12,
+            sourceCreatedAt: sourceCreatedAt.toISOString(),
+            storageProvider: "filesystem",
+            storagePrefix: `team-source-share-aux-${randomUUID()}`,
+            originDeploymentId: artifact.originDeploymentId,
+            originDeviceId: artifact.originDeviceId,
+            originKeyId: artifact.originKeyId,
+            originPublicKey: artifact.originPublicKey,
+            redactedSourceLabel: "Claude auxiliary session"
+          }
+        );
+        const auxiliaryDigest = randomBytes(32).toString("hex");
+        const auxiliarySegment = await pool.query<{ id: string }>(
+          `insert into conversation_source_segments (
+             artifact_id, segment_index, source_start_offset, source_end_offset,
+             source_start_line, source_end_line, plaintext_digest,
+             plaintext_size, stored_size, storage_key, storage_provider,
+             signed_manifest, origin_signature, manifest_digest,
+             previous_content_digest, content_digest
+           ) values (
+             $1, 0, 0, 12, 0, 1, $2, 12, 12, $3, 'filesystem',
+             '{"version":1}'::jsonb, $4, $5, null, $6
+           ) returning id`,
+          [
+            auxiliary.id,
+            auxiliaryDigest,
+            `${auxiliary.storagePrefix}/00000000.jsonl`,
+            "b".repeat(86),
+            randomBytes(32).toString("hex"),
+            randomBytes(32).toString("hex")
+          ]
+        );
+        await pool.query(
+          `update conversation_source_artifacts
+              set current_journal_sequence=0, provider_cursor_offset=12,
+                  provider_cursor_line=1, current_source_length=12,
+                  source_modified_at=$2, updated_at=$2,
+                  lifecycle='finalized', closure_hash=$3,
+                  closure_manifest='{"version":1}'::jsonb,
+                  closure_signature=$4, finalized_at=$2
+            where id=$1`,
+          [
+            auxiliary.id,
+            sourceCreatedAt,
+            randomBytes(32).toString("hex"),
+            "b".repeat(86)
+          ]
+        );
+        await pool.query(
+          `update conversation_source_artifacts
+              set source_set_closure_hash=$2,
+                  source_set_closure_manifest='{"version":1,"components":2}'::jsonb,
+                  source_set_closure_signature=$3,
+                  source_set_finalized_at=$4
+            where id=$1`,
+          [
+            artifact.id,
+            randomBytes(32).toString("hex"),
+            "c".repeat(86),
+            sourceCreatedAt
+          ]
+        );
+        auxiliaryArtifactId = auxiliary.id;
+        auxiliarySegmentId = auxiliarySegment.rows[0]!.id;
+      }
+      return {
+        artifactId: artifact.id,
+        segmentId: segment.rows[0]!.id,
+        sourceGenerationId,
+        auxiliaryArtifactId,
+        auxiliarySegmentId
+      };
     };
 
     const first = await createArtifact(new Date("2026-08-10T00:00:00.000Z"));
@@ -9628,6 +9887,7 @@ describeDb("memory repository visibility", () => {
     expect(grant).toMatchObject({
       artifactId: first.artifactId,
       logicalSourceId,
+      sourceGenerationId: first.sourceGenerationId,
       mode: "continuous",
       version: 1,
       lifecycle: "active"
@@ -9674,13 +9934,25 @@ describeDb("memory repository visibility", () => {
       )
     ).resolves.toBeNull();
 
-    const second = await createArtifact(new Date("2026-08-10T00:01:00.000Z"));
+    const second = await createArtifact(
+      new Date("2026-08-10T00:01:00.000Z"),
+      true
+    );
     await expect(
       repo.getTeamConversationSourceAccess(
         { userId: member.id },
         { shareGrantId: shareGrant.id }
       )
-    ).resolves.toMatchObject({ artifact: { id: second.artifactId } });
+    ).resolves.toMatchObject({
+      artifact: { id: second.artifactId },
+      components: [
+        { id: second.artifactId, sourceComponentId: "main" },
+        {
+          id: second.auxiliaryArtifactId,
+          sourceComponentId: "agent.worker-1"
+        }
+      ]
+    });
     await expect(
       repo.getTeamConversationSourceManifest(
         { userId: member.id },
@@ -9689,6 +9961,23 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       artifact: { id: second.artifactId },
       segments: [{ id: second.segmentId, segmentIndex: 0 }]
+    });
+    await expect(
+      repo.getTeamConversationSourceManifest(
+        { userId: member.id },
+        {
+          shareGrantId: shareGrant.id,
+          sourceComponentId: "agent.worker-1",
+          afterSegmentIndex: -1,
+          limit: 100
+        }
+      )
+    ).resolves.toMatchObject({
+      selectedComponent: {
+        id: second.auxiliaryArtifactId,
+        sourceComponentId: "agent.worker-1"
+      },
+      segments: [{ id: second.auxiliarySegmentId, segmentIndex: 0 }]
     });
     await expect(
       repo.getTeamConversationSourceSegment(
@@ -9713,6 +10002,7 @@ describeDb("memory repository visibility", () => {
     );
     expect(snapshotGrant).toMatchObject({
       artifactId: second.artifactId,
+      sourceGenerationId: second.sourceGenerationId,
       mode: "snapshot",
       maximumSegmentIndex: 0,
       version: 2
@@ -17241,6 +17531,372 @@ describeDb("memory repository visibility", () => {
     expect(rawRows.rows).toEqual([{ canonical_key: null }]);
   });
 
+  it("preserves Claude provenance through session, turn, display, and memory projection", async () => {
+    const alice = await repo.createUser({
+      email: `alice-claude-provenance-${randomUUID()}@example.com`
+    });
+    const projectId = randomUUID();
+    const externalSessionId = `claude-provenance-${randomUUID()}`;
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        projectId,
+        externalSessionId,
+        sourceRuntime: "claude-code",
+        sourceKind: "claude-code",
+        sourceAdapterVersion: "claude-code-transcript-v1",
+        captureMethod: "api",
+        idempotencyKey: `claude-provenance-session-${randomUUID()}`
+      }
+    );
+    const externalTurnId = randomUUID();
+
+    const policyRows = await pool.query<{
+      transcript_type: string;
+      project_to_ui: boolean;
+      create_memory_event: boolean;
+      include_in_embedding: boolean;
+      include_in_lcm: boolean;
+    }>(
+      `
+        select
+          transcript_type,
+          project_to_ui,
+          create_memory_event,
+          include_in_embedding,
+          include_in_lcm
+        from projection_policy_rules
+        where source_kind = 'claude-code'
+          and source_adapter_version = 'claude-code-transcript-v1'
+        order by transcript_type asc
+      `
+    );
+    expect(policyRows.rows).toEqual([
+      {
+        transcript_type: "agent_message",
+        project_to_ui: true,
+        create_memory_event: true,
+        include_in_embedding: true,
+        include_in_lcm: true
+      },
+      {
+        transcript_type: "agent_reasoning",
+        project_to_ui: false,
+        create_memory_event: false,
+        include_in_embedding: false,
+        include_in_lcm: false
+      },
+      {
+        transcript_type: "subagent_message",
+        project_to_ui: true,
+        create_memory_event: true,
+        include_in_embedding: true,
+        include_in_lcm: true
+      },
+      {
+        transcript_type: "system_message",
+        project_to_ui: false,
+        create_memory_event: false,
+        include_in_embedding: false,
+        include_in_lcm: false
+      },
+      {
+        transcript_type: "tool_call",
+        project_to_ui: true,
+        create_memory_event: true,
+        include_in_embedding: true,
+        include_in_lcm: true
+      },
+      {
+        transcript_type: "tool_result",
+        project_to_ui: true,
+        create_memory_event: true,
+        include_in_embedding: true,
+        include_in_lcm: true
+      },
+      {
+        transcript_type: "unknown",
+        project_to_ui: false,
+        create_memory_event: false,
+        include_in_embedding: false,
+        include_in_lcm: false
+      },
+      {
+        transcript_type: "user_message",
+        project_to_ui: true,
+        create_memory_event: true,
+        include_in_embedding: true,
+        include_in_lcm: true
+      }
+    ]);
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "claude-code",
+            sourceAdapterVersion: "claude-code-transcript-v1",
+            sourceTransport: "transcript",
+            externalSessionId,
+            externalThreadId: externalSessionId,
+            externalTurnId,
+            sourceRecordType: "claude_transcript_record",
+            sourceEventType: "user_message",
+            sourceSequence: 1,
+            eventTime: "2026-08-11T12:00:00.000Z",
+            rawJson: {
+              type: "user",
+              uuid: externalTurnId,
+              message: {
+                content: [{ type: "text", text: "Claude provenance marker" }]
+              }
+            },
+            rawText: "Claude provenance marker",
+            sourceHash: `claude-provenance-${randomUUID()}`,
+            idempotencyKey: `claude-provenance-item-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              actor: "user",
+              transcriptType: "user_message",
+              sourceRuntime: "claude-code",
+              sourceComponentId: "main"
+            }
+          }
+        ]
+      }
+    );
+
+    await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+
+    const provenance = await pool.query<{
+      session_runtime: string;
+      session_kind: string;
+      session_adapter: string;
+      turn_runtime: string;
+      message_runtime: string;
+      memory_runtime: string;
+    }>(
+      `
+        select
+          s.source_runtime as session_runtime,
+          s.source_kind as session_kind,
+          s.source_adapter_version as session_adapter,
+          t.source_runtime as turn_runtime,
+          m.source_runtime as message_runtime,
+          me.source_runtime as memory_runtime
+        from sessions s
+        join turns t on t.session_id = s.id
+        join messages m on m.session_id = s.id
+        join memory_events me on me.session_id = s.id
+        where s.id = $1
+      `,
+      [session.id]
+    );
+
+    expect(provenance.rows).toEqual([
+      {
+        session_runtime: "claude-code",
+        session_kind: "claude-code",
+        session_adapter: "claude-code-transcript-v1",
+        turn_runtime: "claude-code",
+        message_runtime: "claude-code",
+        memory_runtime: "claude-code"
+      }
+    ]);
+  });
+
+  it("applies token accounting and whole-item rollover to Claude turns", async () => {
+    const previousMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
+    process.env.MEMORY_EVENT_MAX_TOKENS = "29";
+    try {
+      const alice = await repo.createUser({
+        email: `alice-claude-token-boundary-${randomUUID()}@example.com`
+      });
+      const projectId = randomUUID();
+      const externalSessionId = `claude-token-boundary-${randomUUID()}`;
+      const session = await repo.createCapturedSession(
+        { userId: alice.id },
+        {
+          projectId,
+          externalSessionId,
+          sourceRuntime: "claude-code",
+          sourceKind: "claude-code",
+          sourceAdapterVersion: "claude-code-transcript-v1",
+          captureMethod: "transcript",
+          idempotencyKey: `claude-token-boundary-session-${randomUUID()}`
+        }
+      );
+      const externalTurnId = randomUUID();
+      const callId = `claude-tool-${randomUUID()}`;
+      const agentItems = [
+        "I will inspect the repository.",
+        "Tool call: rg -n projection",
+        "Tool output: projection entry point found",
+        "The search confirms the projection entry point."
+      ];
+      const firstContent = agentItems.slice(0, 3).join("\n\n");
+      const joinedContent = agentItems.join("\n\n");
+      expect(
+        estimateTokens(firstContent, { model: "gpt-5.4-mini" })
+      ).toBeLessThanOrEqual(29);
+      expect(
+        estimateTokens(joinedContent, { model: "gpt-5.4-mini" })
+      ).toBeGreaterThan(29);
+
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            ...agentItems.map((text, index) => ({
+              sessionId: session.id,
+              sourceKind: "claude-code" as const,
+              sourceAdapterVersion: "claude-code-transcript-v1" as const,
+              sourceTransport: "transcript" as const,
+              externalSessionId,
+              externalThreadId: externalSessionId,
+              externalTurnId,
+              sourceRecordType: "claude_transcript_record",
+              sourceEventType:
+                index === 1
+                  ? "tool_call"
+                  : index === 2
+                    ? "tool_result"
+                    : "agent_message",
+              sourceSequence: index,
+              eventTime: `2026-08-11T12:00:0${index}.000Z`,
+              rawJson: {
+                type: "assistant",
+                uuid: `${externalTurnId}-${index}`,
+                message: { content: [{ type: "text", text }] }
+              },
+              rawText: text,
+              sourceHash: `claude-token-boundary-${index}-${randomUUID()}`,
+              idempotencyKey: `claude-token-boundary-item-${index}-${randomUUID()}`,
+              projectionStatus: "pending" as const,
+              metadata: {
+                actor: index === 1 || index === 2 ? "tool" : "agent",
+                transcriptType:
+                  index === 1
+                    ? "function_call"
+                    : index === 2
+                      ? "function_call_output"
+                      : "agent_message",
+                sourceRuntime: "claude-code",
+                sourceComponentId: "main",
+                ...(index === 1
+                  ? {
+                      toolName: "rg",
+                      toolCall: {
+                        kind: "call",
+                        id: callId,
+                        name: "rg",
+                        input: { pattern: "projection" }
+                      }
+                    }
+                  : index === 2
+                    ? {
+                        toolName: "rg",
+                        toolCall: {
+                          kind: "output",
+                          id: callId,
+                          name: "rg",
+                          output: "projection entry point found"
+                        }
+                      }
+                    : {})
+              }
+            })),
+            {
+              sessionId: session.id,
+              sourceKind: "claude-code",
+              sourceAdapterVersion: "claude-code-transcript-v1",
+              sourceTransport: "transcript",
+              externalSessionId,
+              externalThreadId: externalSessionId,
+              externalTurnId: randomUUID(),
+              sourceRecordType: "claude_transcript_record",
+              sourceEventType: "user_message",
+              sourceSequence: agentItems.length,
+              eventTime: "2026-08-11T12:00:04.000Z",
+              rawJson: {
+                type: "user",
+                uuid: randomUUID(),
+                message: {
+                  content: [{ type: "text", text: "Continue from here." }]
+                }
+              },
+              rawText: "Continue from here.",
+              sourceHash: `claude-token-boundary-user-${randomUUID()}`,
+              idempotencyKey: `claude-token-boundary-user-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: {
+                actor: "user",
+                transcriptType: "user_message",
+                sourceRuntime: "claude-code",
+                sourceComponentId: "main"
+              }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 20 }
+      );
+      const events = await pool.query<{
+        content: string;
+        source_runtime: string | null;
+        token_count: number | null;
+        sealed_reason: string | null;
+      }>(
+        `
+          select
+            payload ->> 'content' as content,
+            source_runtime,
+            token_count,
+            payload #>> '{metadata,semanticBundleSealedReason}' as sealed_reason
+          from memory_events
+          where session_id = $1
+            and payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+          order by source_sequence asc nulls last, created_at asc
+        `,
+        [session.id]
+      );
+
+      expect(projection.memoryEventsCreated).toBe(3);
+      expect(events.rows.map((row) => row.content)).toEqual([
+        firstContent,
+        agentItems[3]
+      ]);
+      expect(events.rows.map((row) => row.sealed_reason)).toEqual([
+        "token_limit",
+        "next_user_turn"
+      ]);
+      expect(
+        events.rows.every((row) => row.source_runtime === "claude-code")
+      ).toBe(true);
+      expect(
+        events.rows.every(
+          (row) =>
+            row.token_count ===
+            estimateTokens(row.content, { model: "gpt-5.4-mini" })
+        )
+      ).toBe(true);
+    } finally {
+      if (previousMaxTokens === undefined) {
+        delete process.env.MEMORY_EVENT_MAX_TOKENS;
+      } else {
+        process.env.MEMORY_EVENT_MAX_TOKENS = previousMaxTokens;
+      }
+    }
+  });
+
   it("updates existing message projections when source hash wins the conflict", async () => {
     const alice = await repo.createUser({
       email: `alice-message-source-hash-conflict-${randomUUID()}@example.com`
@@ -21460,6 +22116,7 @@ describeDb("memory repository visibility", () => {
       {
         flowKey: "mcp_memory_answer",
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         model: "gpt-5.4",
         reasoningEffort: "high",
         timeoutMs: 180000,
@@ -21471,6 +22128,7 @@ describeDb("memory repository visibility", () => {
       {
         flowKey: "mcp_memory_answer",
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         model: "gpt-5.4-mini",
         reasoningEffort: "medium",
         timeoutMs: 120000,
@@ -21482,6 +22140,7 @@ describeDb("memory repository visibility", () => {
       {
         flowKey: "lcm_summary",
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         model: "gpt-5.4-mini",
         reasoningEffort: "low",
         timeoutMs: 90000,
@@ -21493,6 +22152,7 @@ describeDb("memory repository visibility", () => {
       {
         flowKey: "curated_memory_review",
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         model: "gpt-5.4-mini",
         reasoningEffort: "high",
         timeoutMs: 150000,
@@ -21516,6 +22176,155 @@ describeDb("memory repository visibility", () => {
     expect(await repo.listLocalMemoryAgentSettings({ userId: bob.id })).toEqual(
       []
     );
+  });
+
+  it("returns the newest unexpired capability snapshot instead of a newer expired snapshot", async () => {
+    const user = await repo.createUser({
+      email: `capability-snapshot-${randomUUID()}@example.com`
+    });
+    const actor = { userId: user.id };
+    await repo.upsertAiClientInstance(actor, {
+      instanceId: "codex.work",
+      driverId: "codex",
+      displayName: "Work Codex"
+    });
+    await repo.upsertAiClientInstance(actor, {
+      instanceId: "claude.expired",
+      driverId: "claude",
+      displayName: "Expired Claude"
+    });
+    await repo.upsertAiClientInstance(actor, {
+      instanceId: "claude.transient",
+      driverId: "claude",
+      displayName: "Transient Claude"
+    });
+    const now = Date.now();
+    const olderUnexpired = await repo.recordAiClientCapabilitySnapshot(actor, {
+      instanceId: "codex.work",
+      installationIdentityHash: "a".repeat(64),
+      authenticationState: "authenticated",
+      healthState: "healthy",
+      models: [{ model: "gpt-current" }],
+      capabilities: { localSynthesis: true },
+      observedAt: new Date(now - 10 * 60_000).toISOString(),
+      expiresAt: new Date(now + 60 * 60_000).toISOString()
+    });
+    await repo.recordAiClientCapabilitySnapshot(actor, {
+      instanceId: "codex.work",
+      installationIdentityHash: "b".repeat(64),
+      authenticationState: "unknown",
+      healthState: "unavailable",
+      models: [],
+      capabilities: { localSynthesis: false },
+      observedAt: new Date(now - 2 * 60_000).toISOString(),
+      expiresAt: new Date(now - 60_000).toISOString()
+    });
+    await repo.recordAiClientCapabilitySnapshot(actor, {
+      instanceId: "claude.expired",
+      installationIdentityHash: "c".repeat(64),
+      authenticationState: "unauthenticated",
+      healthState: "unavailable",
+      models: [],
+      capabilities: { localSynthesis: false },
+      observedAt: new Date(now - 2 * 60_000).toISOString(),
+      expiresAt: new Date(now - 60_000).toISOString()
+    });
+    await repo.recordAiClientCapabilitySnapshot(actor, {
+      instanceId: "claude.transient",
+      installationIdentityHash: "d".repeat(64),
+      authenticationState: "authenticated",
+      healthState: "healthy",
+      models: [{ model: "claude-reported", provenance: "reported" }],
+      capabilities: { localSynthesis: true },
+      observedAt: new Date(now - 20 * 60_000).toISOString(),
+      expiresAt: new Date(now - 10 * 60_000).toISOString()
+    });
+    const transientFailure = await repo.recordAiClientCapabilitySnapshot(
+      actor,
+      {
+        instanceId: "claude.transient",
+        installationIdentityHash: "d".repeat(64),
+        authenticationState: "unknown",
+        healthState: "unavailable",
+        models: [{ model: "claude-custom", provenance: "configured" }],
+        capabilities: { localSynthesis: false },
+        observedAt: new Date(now - 60_000).toISOString(),
+        expiresAt: new Date(now + 5 * 60_000).toISOString()
+      }
+    );
+
+    expect(await repo.listCurrentAiClientCapabilitySnapshots(actor)).toEqual([
+      {
+        ...transientFailure,
+        models: [
+          { model: "claude-custom", provenance: "configured" },
+          { model: "claude-reported", provenance: "last-known-good" }
+        ],
+        capabilities: {
+          localSynthesis: false,
+          lastKnownGoodObservedAt: new Date(now - 20 * 60_000).toISOString()
+        }
+      },
+      olderUnexpired
+    ]);
+  });
+
+  it("refreshes identical capability heartbeats without stale freshness regression", async () => {
+    const user = await repo.createUser({
+      email: `capability-heartbeat-${randomUUID()}@example.com`
+    });
+    const actor = { userId: user.id };
+    await repo.upsertAiClientInstance(actor, {
+      instanceId: "claude.default",
+      driverId: "claude",
+      displayName: "Claude Code"
+    });
+    const now = Date.now();
+    const capability = {
+      instanceId: "claude.default",
+      installationIdentityHash: "e".repeat(64),
+      clientVersion: "1.2.3",
+      authenticationState: "authenticated" as const,
+      healthState: "healthy" as const,
+      models: [{ model: "claude-current" }],
+      capabilities: { localSynthesis: true }
+    };
+    const initial = await repo.recordAiClientCapabilitySnapshot(actor, {
+      ...capability,
+      observedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 10 * 60_000).toISOString()
+    });
+    const freshObservedAt = new Date(now + 60_000).toISOString();
+    const freshExpiresAt = new Date(now + 20 * 60_000).toISOString();
+    const refreshed = await repo.recordAiClientCapabilitySnapshot(actor, {
+      ...capability,
+      observedAt: freshObservedAt,
+      expiresAt: freshExpiresAt
+    });
+    const stale = await repo.recordAiClientCapabilitySnapshot(actor, {
+      ...capability,
+      observedAt: new Date(now + 30_000).toISOString(),
+      expiresAt: new Date(now + 15 * 60_000).toISOString()
+    });
+
+    expect(refreshed).toMatchObject({
+      id: initial.id,
+      observedAt: freshObservedAt,
+      expiresAt: freshExpiresAt
+    });
+    expect(stale).toMatchObject({
+      id: initial.id,
+      observedAt: freshObservedAt,
+      expiresAt: freshExpiresAt
+    });
+    await expect(
+      pool.query<{ count: number }>(
+        `select count(*)::int as count
+           from ai_client_capability_snapshots
+          where owner_user_id = $1 and instance_id = $2`,
+        [user.id, capability.instanceId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
   });
 
   it("resolves capture policy precedence, pause inheritance, and deletion", async () => {
@@ -26604,7 +27413,7 @@ describeDb("memory repository visibility", () => {
       nodeId: node.id,
       summaryText: "Structured summary text",
       summaryModel: "codex:test",
-      summaryPromptVersion: "lcm-codex-summary-json-v3",
+      summaryPromptVersion: "lcm-ai-client-summary-json-v4",
       summaryTokenEstimate: 17,
       summaryStructuredJson: structured,
       summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
@@ -26947,7 +27756,7 @@ describeDb("memory repository visibility", () => {
       summaryText:
         "Use scoped device credentials; determine the revocation TTL.",
       summaryModel: "codex:test",
-      summaryPromptVersion: "lcm-codex-summary-json-v3",
+      summaryPromptVersion: "lcm-ai-client-summary-json-v4",
       summaryTokenEstimate: 11,
       summaryStructuredJson: {
         schema_version: "lcm-semantic-summary-v1",

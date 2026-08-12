@@ -1,5 +1,6 @@
 import { createHash, verify, type KeyObject } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
+import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 
 import { pdsEd25519PublicKey } from "./personal-device-sync.js";
 
@@ -25,7 +26,7 @@ export interface ManagedConversationForkManifest {
   sourceClosureHash: string;
   sourceEndByteCursor: number;
   sourceEndItemCursor: number;
-  provider: "codex";
+  provider: string;
   providerThreadId: string;
   providerArtifactRelativePath: string;
   providerCliVersion: string;
@@ -184,7 +185,9 @@ export const parseManagedConversationForkManifest = (
   );
   if (
     input.protocol !== MANAGED_CONVERSATION_FORK_PROTOCOL ||
-    input.provider !== "codex"
+    typeof input.provider !== "string" ||
+    input.provider.length > 96 ||
+    !aiClientIdentifierPattern.test(input.provider)
   ) {
     throw new TypeError("Managed Conversation fork protocol is invalid");
   }

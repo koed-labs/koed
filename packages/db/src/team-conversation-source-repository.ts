@@ -14,6 +14,7 @@ export interface TeamConversationSourceGrantRecord {
   shareGrantId: string;
   artifactId: string;
   logicalSourceId: string;
+  sourceGenerationId: string;
   ownerUserId: string;
   sessionId: string;
   teamId: string;
@@ -36,9 +37,11 @@ export interface TeamConversationSourceGrantRecord {
 export interface TeamConversationSourceAccessRecord {
   grant: TeamConversationSourceGrantRecord;
   artifact: ConversationSourceArtifactRecord;
+  components: ConversationSourceArtifactRecord[];
 }
 
 export interface TeamConversationSourceManifestRecord extends TeamConversationSourceAccessRecord {
+  selectedComponent: ConversationSourceArtifactRecord;
   segments: ConversationSourceSegmentRecord[];
 }
 
@@ -89,6 +92,7 @@ export interface TeamConversationSourceRepository {
     actor: ActorContext,
     input: {
       shareGrantId: string;
+      sourceComponentId?: string;
       afterSegmentIndex: number;
       limit: number;
       recordAudit?: boolean;
@@ -155,6 +159,9 @@ const mapGrant = (row: Row): TeamConversationSourceGrantRecord => ({
   shareGrantId: stringValue(row.share_grant_id),
   artifactId: stringValue(row.artifact_id),
   logicalSourceId: stringValue(row.logical_source_id),
+  sourceGenerationId: stringValue(
+    row.grant_source_generation_id ?? row.source_generation_id
+  ),
   ownerUserId: stringValue(row.owner_user_id),
   sessionId: stringValue(row.session_id),
   teamId: stringValue(row.team_id),
@@ -186,6 +193,18 @@ const mapArtifact = (row: Row): ConversationSourceArtifactRecord => ({
   sessionId: stringValue(row.artifact_session_id),
   logicalSourceId: stringValue(row.logical_source_id),
   sourceGenerationId: stringValue(row.source_generation_id),
+  sourceComponentId: stringValue(row.source_component_id),
+  sourceComponentRole: stringValue(
+    row.source_component_role
+  ) as ConversationSourceArtifactRecord["sourceComponentRole"],
+  parentSourceComponentId:
+    row.parent_source_component_id === null ||
+    row.parent_source_component_id === undefined
+      ? null
+      : stringValue(row.parent_source_component_id),
+  contentFraming: stringValue(
+    row.content_framing
+  ) as ConversationSourceArtifactRecord["contentFraming"],
   replicaRole: stringValue(
     row.replica_role
   ) as ConversationSourceArtifactRecord["replicaRole"],
@@ -219,6 +238,15 @@ const mapArtifact = (row: Row): ConversationSourceArtifactRecord => ({
   closureSignature: row.closure_signature
     ? stringValue(row.closure_signature)
     : null,
+  sourceSetClosureHash: row.source_set_closure_hash
+    ? stringValue(row.source_set_closure_hash)
+    : null,
+  sourceSetClosureManifest:
+    (row.source_set_closure_manifest as Record<string, unknown> | null) ?? null,
+  sourceSetClosureSignature: row.source_set_closure_signature
+    ? stringValue(row.source_set_closure_signature)
+    : null,
+  sourceSetFinalizedAt: nullableIso(row.source_set_finalized_at),
   originDeploymentId: stringValue(row.origin_deployment_id),
   originDeviceId: stringValue(row.origin_device_id),
   originKeyId: stringValue(row.origin_key_id),
@@ -268,6 +296,8 @@ const artifactColumns = `
   artifact.owner_user_id as artifact_owner_user_id,
   artifact.session_id as artifact_session_id,
   artifact.logical_source_id, artifact.source_generation_id,
+  artifact.source_component_id, artifact.source_component_role,
+  artifact.parent_source_component_id, artifact.content_framing,
   artifact.replica_role, artifact.source_kind, artifact.source_runtime,
   artifact.external_session_id, artifact.source_fingerprint,
   artifact.artifact_format, artifact.artifact_format_version,
@@ -279,6 +309,8 @@ const artifactColumns = `
   artifact.source_created_at, artifact.source_modified_at,
   artifact.storage_provider, artifact.storage_prefix,
   artifact.closure_hash, artifact.closure_manifest, artifact.closure_signature,
+  artifact.source_set_closure_hash, artifact.source_set_closure_manifest,
+  artifact.source_set_closure_signature, artifact.source_set_finalized_at,
   artifact.origin_deployment_id, artifact.origin_device_id,
   artifact.origin_key_id, artifact.origin_public_key, artifact.origin_key_status,
   artifact.prior_generation_closure, artifact.redacted_source_label,
@@ -298,14 +330,31 @@ const authorizedAccessFromSql = `
      where candidate.owner_user_id = source_grant.owner_user_id
        and candidate.session_id = source_grant.session_id
        and candidate.logical_source_id = source_grant.logical_source_id
+       and candidate.source_component_id = 'main'
+       and candidate.source_component_role = 'primary'
        and (source_grant.mode = 'continuous'
-         or candidate.id = source_grant.artifact_id)
+         or candidate.source_generation_id = source_grant.source_generation_id)
        and ($3::uuid is null or exists (
-         select 1 from conversation_source_segments requested_segment
+         select 1
+           from conversation_source_segments requested_segment
+           join conversation_source_artifacts requested_artifact
+             on requested_artifact.id = requested_segment.artifact_id
           where requested_segment.id = $3
-            and requested_segment.artifact_id = candidate.id
+            and requested_artifact.owner_user_id = candidate.owner_user_id
+            and requested_artifact.logical_source_id = candidate.logical_source_id
+            and requested_artifact.source_generation_id = candidate.source_generation_id
        ))
-       and candidate.lifecycle not in ('deleted','deletion_pending','failed','conflicted')
+       and candidate.lifecycle = 'finalized'
+       and (
+         candidate.source_set_finalized_at is not null
+         or not exists (
+           select 1 from conversation_source_artifacts sibling
+            where sibling.owner_user_id = candidate.owner_user_id
+              and sibling.logical_source_id = candidate.logical_source_id
+              and sibling.source_generation_id = candidate.source_generation_id
+              and sibling.id <> candidate.id
+         )
+       )
      order by candidate.source_created_at desc, candidate.id desc
      limit 1
   ) artifact on true
@@ -339,8 +388,47 @@ const authorizedAccessWhereSql = `
     and source_grant.lifecycle = 'active' and source_grant.revoked_at is null
     and share_grant.lifecycle = 'active' and share_grant.revoked_at is null
     and share_grant.personal_deleted_at is null
-    and artifact.lifecycle not in ('deleted','deletion_pending','failed','conflicted')
+    and artifact.lifecycle = 'finalized'
 `;
+
+const listVerifiedComponents = async (
+  client: pg.Pool | pg.PoolClient,
+  artifact: ConversationSourceArtifactRecord
+): Promise<ConversationSourceArtifactRecord[]> => {
+  const result = await client.query<Row>(
+    `select ${artifactColumns}
+       from conversation_source_artifacts artifact
+      where artifact.owner_user_id = $1
+        and artifact.session_id = $2
+        and artifact.logical_source_id = $3
+        and artifact.source_generation_id = $4
+        and artifact.lifecycle = 'finalized'
+      order by case when artifact.source_component_role = 'primary' then 0 else 1 end,
+               artifact.source_component_id`,
+    [
+      artifact.ownerUserId,
+      artifact.sessionId,
+      artifact.logicalSourceId,
+      artifact.sourceGenerationId
+    ]
+  );
+  const components = result.rows.map(mapArtifact);
+  const primary = components.find(
+    (component) =>
+      component.sourceComponentId === "main" &&
+      component.sourceComponentRole === "primary"
+  );
+  if (
+    components.length === 0 ||
+    !primary ||
+    (components.length > 1 && primary.sourceSetFinalizedAt === null)
+  ) {
+    throw new TeamConversationSourceConflictError(
+      "Conversation Source component set is incomplete"
+    );
+  }
+  return components;
+};
 
 const notifySourceGrant = (
   client: pg.Pool | pg.PoolClient,
@@ -473,9 +561,21 @@ export const createTeamConversationSourceRepository = (
         throw new TeamConversationSourceAuthorizationError();
       }
       const artifactResult = await client.query<Row>(
-        `select * from conversation_source_artifacts
-          where owner_user_id = $1 and session_id = $2
-            and lifecycle not in ('deleted','deletion_pending','failed','conflicted')
+        `select candidate.* from conversation_source_artifacts candidate
+          where candidate.owner_user_id = $1 and candidate.session_id = $2
+            and candidate.source_component_id = 'main'
+            and candidate.source_component_role = 'primary'
+            and candidate.lifecycle = 'finalized'
+            and (
+              candidate.source_set_finalized_at is not null
+              or not exists (
+                select 1 from conversation_source_artifacts sibling
+                 where sibling.owner_user_id = candidate.owner_user_id
+                   and sibling.logical_source_id = candidate.logical_source_id
+                   and sibling.source_generation_id = candidate.source_generation_id
+                   and sibling.id <> candidate.id
+              )
+            )
           order by source_created_at desc, id desc
           limit 1
           for share`,
@@ -531,6 +631,7 @@ export const createTeamConversationSourceRepository = (
         ? await client.query<Row>(
             `update team_conversation_source_grants
                 set artifact_id = $3, logical_source_id = $11,
+                    source_generation_id = $12,
                     owner_user_id = $2, session_id = $4,
                     mode = $5, maximum_segment_index = $6,
                     maximum_source_offset = $7, version = version + 1,
@@ -551,17 +652,19 @@ export const createTeamConversationSourceRepository = (
               input.mutationId,
               input.creatorAuthority,
               input.expectedVersion,
-              artifact.logical_source_id
+              artifact.logical_source_id,
+              artifact.source_generation_id
             ]
           )
         : await client.query<Row>(
             `insert into team_conversation_source_grants (
                share_grant_id, artifact_id, logical_source_id,
+               source_generation_id,
                owner_user_id, session_id,
                team_id, team_workspace_id, mode, maximum_segment_index,
                maximum_source_offset, mutation_id, granted_by_user_id,
                creator_authority
-             ) values ($1,$2,$12,$3,$4,$5,$6,$7,$8,$9,$10,$3,$11)
+             ) values ($1,$2,$12,$13,$3,$4,$5,$6,$7,$8,$9,$10,$3,$11)
              returning *`,
             [
               input.shareGrantId,
@@ -575,7 +678,8 @@ export const createTeamConversationSourceRepository = (
               maximumSourceOffset,
               input.mutationId,
               input.creatorAuthority,
-              artifact.logical_source_id
+              artifact.logical_source_id,
+              artifact.source_generation_id
             ]
           );
       const row = result.rows[0];
@@ -702,14 +806,22 @@ export const createTeamConversationSourceRepository = (
 
   async getTeamConversationSourceAccess(actor, input) {
     const result = await pool.query<Row>(
-      `select source_grant.*, ${artifactColumns}
+      `select source_grant.*,
+              source_grant.source_generation_id as grant_source_generation_id,
+              ${artifactColumns}
        ${authorizedAccessFromSql}
        ${authorizedAccessWhereSql}
        limit 1`,
       [input.shareGrantId, actor.userId, null]
     );
     const row = result.rows[0];
-    return row ? { grant: mapGrant(row), artifact: mapArtifact(row) } : null;
+    if (!row) return null;
+    const artifact = mapArtifact(row);
+    return {
+      grant: mapGrant(row),
+      artifact,
+      components: await listVerifiedComponents(pool, artifact)
+    };
   },
 
   async getTeamConversationSourceManifest(actor, input) {
@@ -719,7 +831,9 @@ export const createTeamConversationSourceRepository = (
       await client.query("begin");
       await client.query("set transaction isolation level repeatable read");
       const access = await client.query<Row>(
-        `select source_grant.*, ${artifactColumns}
+        `select source_grant.*,
+                source_grant.source_generation_id as grant_source_generation_id,
+                ${artifactColumns}
          ${authorizedAccessFromSql}
          ${authorizedAccessWhereSql}
          limit 1`,
@@ -732,6 +846,19 @@ export const createTeamConversationSourceRepository = (
       }
       const grant = mapGrant(row);
       const artifact = mapArtifact(row);
+      const components = await listVerifiedComponents(client, artifact);
+      const selectedComponent = input.sourceComponentId
+        ? components.find(
+            (component) =>
+              component.sourceComponentId === input.sourceComponentId
+          )
+        : components.find(
+            (component) => component.sourceComponentRole === "primary"
+          );
+      if (!selectedComponent) {
+        await client.query("rollback");
+        return null;
+      }
       const segmentRows = await client.query<Row>(
         `select segment.id as segment_id,
                 segment.artifact_id as segment_artifact_id,
@@ -750,7 +877,15 @@ export const createTeamConversationSourceRepository = (
             and ($3::integer is null or segment.segment_index <= $3)
           order by segment.segment_index
           limit $4`,
-        [artifact.id, input.afterSegmentIndex, grant.maximumSegmentIndex, limit]
+        [
+          selectedComponent.id,
+          input.afterSegmentIndex,
+          grant.mode === "snapshot" &&
+          selectedComponent.sourceComponentRole === "primary"
+            ? grant.maximumSegmentIndex
+            : null,
+          limit
+        ]
       );
       if (input.recordAudit !== false) {
         await recordAuditEventWithClient(client, {
@@ -773,6 +908,8 @@ export const createTeamConversationSourceRepository = (
       return {
         grant,
         artifact,
+        components,
+        selectedComponent,
         segments: segmentRows.rows.map(mapSegment)
       };
     } catch (error) {
@@ -785,7 +922,9 @@ export const createTeamConversationSourceRepository = (
 
   async getTeamConversationSourceSegment(actor, input) {
     const result = await pool.query<Row>(
-      `select source_grant.*, ${artifactColumns},
+      `select source_grant.*,
+              source_grant.source_generation_id as grant_source_generation_id,
+              ${artifactColumns},
               segment.id as segment_id,
               segment.artifact_id as segment_artifact_id,
               segment.segment_index, segment.source_start_offset,
@@ -799,22 +938,30 @@ export const createTeamConversationSourceRepository = (
               segment.previous_content_digest, segment.content_digest,
               segment.created_at as segment_created_at, segment.sealed_at
        ${authorizedAccessFromSql}
+       join conversation_source_artifacts segment_artifact
+         on segment_artifact.owner_user_id = source_grant.owner_user_id
+        and segment_artifact.session_id = source_grant.session_id
+        and segment_artifact.logical_source_id = source_grant.logical_source_id
+        and segment_artifact.source_generation_id = artifact.source_generation_id
+        and segment_artifact.lifecycle = 'finalized'
        join conversation_source_segments segment
-         on segment.artifact_id = artifact.id
+         on segment.artifact_id = segment_artifact.id
         and segment.id = $3
         and (source_grant.maximum_segment_index is null
+          or segment_artifact.source_component_role <> 'primary'
           or segment.segment_index <= source_grant.maximum_segment_index)
        ${authorizedAccessWhereSql}
        limit 1`,
       [input.shareGrantId, actor.userId, input.segmentId]
     );
     const row = result.rows[0];
-    return row
-      ? {
-          grant: mapGrant(row),
-          artifact: mapArtifact(row),
-          segment: mapSegment(row)
-        }
-      : null;
+    if (!row) return null;
+    const artifact = mapArtifact(row);
+    return {
+      grant: mapGrant(row),
+      artifact,
+      components: await listVerifiedComponents(pool, artifact),
+      segment: mapSegment(row)
+    };
   }
 });

@@ -34,7 +34,7 @@ export type Visibility = "personal";
 
 export type CaptureMethod = "transcript" | "mcp" | "web" | "api";
 
-export type SourceRuntime = "codex" | "codex-cli";
+export type SourceRuntime = "codex" | "codex-cli" | "claude-code";
 
 export type SourceAiClient = SourceRuntime;
 
@@ -90,8 +90,10 @@ export type CuratedMemorySourceRole =
 
 export type LocalMemoryAgentSettingsFlowKey =
   | "mcp_memory_answer"
+  | "manual_memory_answer"
   | "lcm_summary"
-  | "curated_memory_review";
+  | "curated_memory_review"
+  | "session_title";
 
 export interface ActorContext {
   userId: string;
@@ -713,9 +715,7 @@ export interface HistoricalImportRunRecord extends HistoricalImportCounters {
 }
 
 export interface HistoricalImportSourceIdentity {
-  aiClient: string;
-  sourceKind: string;
-  sourceSessionId: string;
+  artifactId: string;
 }
 
 export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
@@ -726,6 +726,7 @@ export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
   artifactId: string;
   aiClient: string;
   sourceKind: string;
+  sourceAdapterVersion: string;
   sourceSessionId: string;
   sourceFingerprint: string;
   sessionId: string;
@@ -734,6 +735,7 @@ export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
   historicalCursorOffset: number;
   historicalCursorLine: number;
   historicalCursorDigest: string | null;
+  historicalCursorCurrentTurnId?: string;
   providerCursorOffset: number;
   providerCursorLine: number;
   sourceSizeBytes: number;
@@ -805,6 +807,8 @@ export type ConversationSourceReplicaRole =
   | "peer_personal";
 
 export type ConversationSourceOriginKeyStatus = "active" | "lost" | "revoked";
+export type ConversationSourceComponentRole = "primary" | "auxiliary";
+export type ConversationSourceContentFraming = "jsonl" | "immutable_blob";
 
 export type PersonalSourceReplicationMode = "hosted_personal" | "peer_personal";
 
@@ -825,6 +829,10 @@ export interface ConversationSourceArtifactRecord {
   sessionId: string;
   logicalSourceId: string;
   sourceGenerationId: string;
+  sourceComponentId: string;
+  sourceComponentRole: ConversationSourceComponentRole;
+  parentSourceComponentId: string | null;
+  contentFraming: ConversationSourceContentFraming;
   replicaRole: ConversationSourceReplicaRole;
   sourceKind: string;
   sourceRuntime: SourceRuntime;
@@ -849,6 +857,10 @@ export interface ConversationSourceArtifactRecord {
   closureHash: string | null;
   closureManifest: Record<string, unknown> | null;
   closureSignature: string | null;
+  sourceSetClosureHash: string | null;
+  sourceSetClosureManifest: Record<string, unknown> | null;
+  sourceSetClosureSignature: string | null;
+  sourceSetFinalizedAt: string | null;
   originDeploymentId: string;
   originDeviceId: string;
   originKeyId: string;
@@ -1573,13 +1585,40 @@ export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
 export interface LocalMemoryAgentSettingRecord {
   ownerUserId: string;
   flowKey: LocalMemoryAgentSettingsFlowKey;
-  provider: "codex";
+  provider: string;
+  aiClientInstanceId: string;
   model: string;
   reasoningEffort: string;
   timeoutMs: number;
   maxAttempts: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AiClientInstanceRecord {
+  ownerUserId: string;
+  instanceId: string;
+  driverId: string;
+  displayName: string;
+  configIdentityHash: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiClientCapabilitySnapshotRecord {
+  id: string;
+  ownerUserId: string;
+  instanceId: string;
+  installationIdentityHash: string;
+  clientVersion: string | null;
+  authenticationState: "authenticated" | "unauthenticated" | "unknown";
+  healthState: "healthy" | "unavailable" | "incompatible" | "error";
+  models: Array<Record<string, unknown>>;
+  capabilities: Record<string, unknown>;
+  observedAt: string;
+  expiresAt: string;
+  createdAt: string;
 }
 
 export interface CuratedMemoryTopicRecord {
@@ -2237,6 +2276,10 @@ export interface MemorySourceRepository
   listHistoricalImportSourcesNeedingLcmFinalization(): Promise<
     Array<{ sourceId: string; ownerUserId: string; sessionId: string }>
   >;
+  reconcileHistoricalImportCompletion(): Promise<{
+    sourcesCompleted: number;
+    runsCompleted: number;
+  }>;
   listSemanticMemoryRebuildActors(input?: {
     limit?: number;
   }): Promise<ActorContext[]>;
@@ -2248,11 +2291,40 @@ export interface MemorySourceRepository
   listLocalMemoryAgentSettings(
     actor: ActorContext
   ): Promise<LocalMemoryAgentSettingRecord[]>;
+  listAiClientInstances(actor: ActorContext): Promise<AiClientInstanceRecord[]>;
+  upsertAiClientInstance(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      driverId: string;
+      displayName: string;
+      configIdentityHash?: string | null;
+      enabled?: boolean;
+    }
+  ): Promise<AiClientInstanceRecord>;
+  recordAiClientCapabilitySnapshot(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      installationIdentityHash: string;
+      clientVersion?: string | null;
+      authenticationState: "authenticated" | "unauthenticated" | "unknown";
+      healthState: "healthy" | "unavailable" | "incompatible" | "error";
+      models: Array<Record<string, unknown>>;
+      capabilities: Record<string, unknown>;
+      observedAt: string;
+      expiresAt: string;
+    }
+  ): Promise<AiClientCapabilitySnapshotRecord>;
+  listCurrentAiClientCapabilitySnapshots(
+    actor: ActorContext
+  ): Promise<AiClientCapabilitySnapshotRecord[]>;
   upsertLocalMemoryAgentSetting(
     actor: ActorContext,
     input: {
       flowKey: LocalMemoryAgentSettingsFlowKey;
-      provider: "codex";
+      provider: string;
+      aiClientInstanceId: string;
       model: string;
       reasoningEffort: string;
       timeoutMs: number;

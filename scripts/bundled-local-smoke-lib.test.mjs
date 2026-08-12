@@ -120,7 +120,9 @@ test("builds isolated native bundled-local environment with unique ports", async
     "postgres-native",
     "embedding-service-native"
   ]);
-  assert.equal(new Set(Object.values(context.ports)).size, 4);
+  assert.equal(new Set(Object.values(context.ports)).size, 6);
+  assert.equal(context.env.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT, "4105");
+  assert.equal(context.env.EMBEDDING_LLAMA_RERANKER_SERVER_PORT, "4106");
 });
 
 test("full preflight does not require Docker", () => {

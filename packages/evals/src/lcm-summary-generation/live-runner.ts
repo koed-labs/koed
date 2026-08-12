@@ -55,7 +55,7 @@ const outputPath = outputOption
 const config = resolveLcmSummaryWorkerConfig(process.env, {
   ...(model ? { model } : {}),
   ...(reasoningEffort ? { reasoningEffort } : {}),
-  ...(codexBinary ? { appServerBinary: codexBinary } : {})
+  ...(codexBinary ? { executablePath: codexBinary } : {})
 });
 
 const report = await runLcmSummaryBenchmark({
@@ -72,7 +72,7 @@ const finalReport = semanticJudgeEnabled
       semanticJudge: await runLcmSummarySemanticJudgeReport({
         report,
         config: {
-          appServerBinary: config.appServerBinary,
+          appServerBinary: config.executablePath,
           model: judgeModel ?? config.model,
           reasoningEffort: judgeReasoningEffort ?? config.reasoningEffort,
           timeoutMs: config.timeoutMs,

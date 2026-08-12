@@ -47,7 +47,7 @@ export const registerLcmRoutes = (
         count: sessions.length,
         localOnly: true,
         instructions:
-          "Generate short captured-session titles locally through the user's Codex subscription, then submit each title back to /v1/memory/session-titles/{sessionId}."
+          "Generate short captured-session titles locally through the user's selected AI Client, then submit each title back to /v1/memory/session-titles/{sessionId}."
       };
     }
   );
@@ -101,7 +101,7 @@ export const registerLcmRoutes = (
         count: nodes.length,
         localOnly: true,
         instructions:
-          "Run LCM summarisation locally through the user's Codex subscription, then submit each summary back to /v1/memory/lcm/summaries/{nodeId}. Backend workers do not call LLMs for LCM summaries."
+          "Run LCM summarisation locally through the user's selected AI Client, then submit each summary back to /v1/memory/lcm/summaries/{nodeId}. Backend workers do not call LLMs for LCM summaries."
       };
     }
   );

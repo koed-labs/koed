@@ -97,6 +97,7 @@ verified identity path remains fail-closed for those Team-authority operations.
 
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
 - `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it. External runtime mode cannot enable it because that mode does not own a Local AI Runtime; attempting to do so fails configuration. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
+- `MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED`: enables the Claude Transcript Watcher in the same supervised Local AI Runtime. It has the same runtime-mode defaults and environment-over-file precedence; the equivalent server config field is `claudeTranscriptWatcherEnabled`.
 - `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
 - `KOED_EXTERNAL_REDIS_URL` or `REDIS_URL`: Operator-managed Redis/BullMQ URL when the queue backend is `bullmq`.
 - `KOED_EXTERNAL_EMBEDDING_SERVICE_URL` or `EMBEDDING_SERVICE_URL`: Operator-managed Embedding Service URL in external mode.
@@ -108,6 +109,7 @@ Example external `KOED_HOME/config/server.json`:
   "runtimeMode": "external",
   "dependencyMode": "external",
   "codexTranscriptWatcherEnabled": false,
+  "claudeTranscriptWatcherEnabled": false,
   "external": {
     "databaseUrl": "postgres://koed:password@127.0.0.1:15432/koed",
     "redisUrl": "redis://127.0.0.1:16379",
@@ -122,7 +124,8 @@ Example bundled-local `KOED_HOME/config/server.json`:
 {
   "runtimeMode": "developer",
   "dependencyMode": "bundled-local",
-  "codexTranscriptWatcherEnabled": true
+  "codexTranscriptWatcherEnabled": true,
+  "claudeTranscriptWatcherEnabled": true
 }
 ```
 
@@ -705,12 +708,13 @@ policy, or full URLs containing customer content.
 
 ## Transcript Watcher Values
 
-`koed-server` passes these local values to the Transcript Watcher hosted by its
-supervised Local AI Runtime:
+`koed-server` passes these local values to the provider Transcript Watchers
+hosted by its supervised Local AI Runtime:
 
 - `CODEX_HOME`: Codex state root. Transcript Watcher defaults to its `sessions` directory, or `~/.codex/sessions` when unset.
 - `MEMORY_CODEX_TRANSCRIPT_ROOTS`: optional platform path-delimited list of explicit transcript roots. When non-empty, replaces the `CODEX_HOME/sessions` default; it never broadens scanning to arbitrary home directories.
 - `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: watcher supervisor switch. Default `true` for developer/local-personal runtime modes. External runtime mode cannot enable the watcher; capture must run through a local-personal `koed-server`.
+- `MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED`: Claude watcher switch with the same runtime-mode boundary. Claude capture uses private Hook signals and provider source files under the configured Claude home rather than Codex transcript roots.
 - `MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS`: coalescing delay for filesystem notifications and Capture Hook wake signals. Default `200`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN`: maximum filesystem entries inspected per scan. Default `4000`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN`: maximum transcript files processed per scan. Default `200`.
@@ -757,9 +761,13 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS`: when `true`, exposes diagnostic MCP tools such as `memory_access_check`. Default `false`; use the MCP `doctor` CLI command for normal setup checks.
 - `MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS`: when `true`, exposes low-level diagnostic MCP retrieval tools such as `memory_search` and `memory_expand`. Default `false`; normal recall should use `memory_answer`.
 - `MEMORY_CODEX_APP_SERVER_BINARY`: Codex app-server binary used by local Synthesis flows. Default `codex`.
-- `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Default and only supported value: `codex`.
-- `MEMORY_ANSWER_MODEL`: Codex model for MCP Memory Answer synthesis. Default `gpt-5.6-luna`.
-- `MEMORY_ANSWER_REASONING_EFFORT`: Codex reasoning effort for MCP Memory Answer synthesis. Default `low`.
+- `KOED_CLAUDE_CODE_EXECUTABLE`: optional absolute path to a separately installed Claude Code executable. Koed otherwise discovers and validates the local installation; it never accepts an Anthropic API key or bundles Claude Code.
+- `KOED_CLAUDE_CODE_DISCOVERY_CACHE`: optional absolute local path for the owner-only confirmed installation record. Default `KOED_HOME/state/claude-code-installation.json`.
+- `KOED_MANAGED_CONVERSATION_CLAUDE_MODEL`: model used for Koed-managed Claude Conversations. Default `claude-haiku-4-5-20251001`.
+- `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Supported values are `codex` and `claude`; default `codex`.
+- `MEMORY_ANSWER_AI_CLIENT_INSTANCE`: selected local AI Client instance. Default `<provider>.default`.
+- `MEMORY_ANSWER_MODEL`: provider model for MCP Memory Answer synthesis. The Codex default is `gpt-5.6-luna`.
+- `MEMORY_ANSWER_REASONING_EFFORT`: provider-supported reasoning effort. Default `low`.
 - `MEMORY_ANSWER_TIMEOUT_MS`: timeout for each local MCP Memory Answer app-server turn.
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
@@ -768,9 +776,10 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_MAX_EVIDENCE_ITEMS`: maximum evidence items admitted to one Memory Answer prompt. Default `50`; valid range `1`–`200`.
 - `MEMORY_ANSWER_MAX_EVIDENCE_TOKENS`: maximum estimated evidence tokens admitted to one Memory Answer prompt. Default `12000`; valid range `256`–`100000`.
 - `MEMORY_ANSWER_MAX_PROMPT_TOKENS`: maximum estimated complete Memory Answer prompt tokens. Default `24000`; valid range `512`–`200000`.
-- `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary synthesis. Default and only supported value: `codex`.
-- `MEMORY_LCM_SUMMARY_MODEL`: Codex model for LCM Summary synthesis. Default `gpt-5.6-luna`.
-- `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: Codex reasoning effort for LCM Summary synthesis. Default `low`.
+- `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary and session-title synthesis. Supported values are `codex` and `claude`; default `codex`.
+- `MEMORY_LCM_SUMMARY_AI_CLIENT_INSTANCE`: selected local AI Client instance. Default `<provider>.default`.
+- `MEMORY_LCM_SUMMARY_MODEL`: provider model for LCM Summary synthesis. The Codex default is `gpt-5.6-luna`.
+- `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: provider-supported reasoning effort. Default `low`.
 - `MEMORY_LCM_SUMMARY_TIMEOUT_MS`: timeout for each local LCM Summary app-server turn.
 - `MEMORY_LCM_SUMMARY_MAX_ATTEMPTS`: maximum local LCM Summary synthesis attempts.
 - `MEMORY_LCM_SUMMARY_RETRY_DELAY_MS`: delay between local LCM Summary retry attempts.
@@ -785,9 +794,9 @@ These values are copied into the AI Client configuration and are not consumed au
 
 `koed-server` supervises one Local AI Runtime after its startup readiness check
 and local API Token resolution, and stops it before the API. The runtime owns
-the Transcript Watcher, LCM Summary Service, Curated Memory review, and fresh
+the Codex and Claude Transcript Watchers, LCM Summary Service, Curated Memory review, and fresh
 Memory Answer workers. If the API is still recovering, bounded watcher rescans
-keep retrying. Configure Codex to run the Supported Capture Hook for
+keep retrying. Configure each supported AI Client to run its Supported Capture Hook for
 `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and
 `SubagentStop`. The Hook supplies a low-latency content-free wake hint; Stop
 events also record a timestamped boundary under hashed source-routing identities
@@ -799,7 +808,7 @@ identities and linkage from journaled JSONL.
 
 Koed relies on the connected AI Client for Synthesis; backend LLM provider configuration and server-side synthesis are unsupported in this build.
 The Local AI Runtime is enabled by default in this build. It generates
-captured-session titles and LCM summaries through local Codex app-server mode.
+captured-session titles and LCM summaries through the selected local AI Client.
 Failures are reported as diagnostics and pending summaries remain searchable as
 degraded evidence. The API stores per-user Memory Answer and LCM Summary
 settings; the Local AI Runtime reads them at execution time. `.env` values are
@@ -810,8 +819,9 @@ LCM summary prompt-version changes are forward-only. Existing completed
 summaries are not automatically regenerated; new prompts apply to new or
 naturally invalidated LCM nodes.
 
-If Codex app-server cannot be started, local Synthesis fails visibly instead of
-falling back to a backend LLM path.
+If the selected AI Client cannot be started or authenticated, local Synthesis
+fails visibly instead of switching provider or falling back to a backend LLM
+path.
 
 Capture Policy state `ask` currently blocks automatic capture. It is reserved
 for a future AI-client approval flow and is not an implemented backend prompt.

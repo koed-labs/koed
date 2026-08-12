@@ -8,12 +8,28 @@ import {
   type KeyObject
 } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
+import {
+  resolveAiClientSourceAdapter,
+  type AiClientSourceRuntime
+} from "./ai-client-source-adapters.js";
 import type { RecipientPublicKeyMaterial } from "./envelope-encryption.js";
 
 export const CONVERSATION_SOURCE_REPLICATION_PROTOCOL =
   "koed.conversation-source-replication/v1" as const;
 export const CONVERSATION_SOURCE_REPLICATION_MAX_SEGMENT_BYTES =
   16 * 1024 * 1024;
+export const CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION = 1 as const;
+
+export type ConversationSourceComponentRole = "primary" | "auxiliary";
+export type ConversationSourceContentFraming = "jsonl" | "immutable_blob";
+
+export interface ConversationSourceComponentIdentity {
+  sourceComponentSchemaVersion: typeof CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION;
+  sourceComponentId: string;
+  sourceComponentRole: ConversationSourceComponentRole;
+  parentSourceComponentId: string | null;
+  contentFraming: ConversationSourceContentFraming;
+}
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -65,7 +81,7 @@ export interface ConversationSourcePriorGenerationClosure {
   closedAt: string;
 }
 
-export interface ConversationSourceReplicationManifest {
+export interface ConversationSourceReplicationManifest extends ConversationSourceComponentIdentity {
   protocol: typeof CONVERSATION_SOURCE_REPLICATION_PROTOCOL;
   logicalSourceId: string;
   sourceGenerationId: string;
@@ -88,7 +104,7 @@ export interface SignedConversationSourceReplicationManifest {
   signature: string;
 }
 
-export interface ConversationSourceClosureManifest {
+export interface ConversationSourceClosureManifest extends ConversationSourceComponentIdentity {
   protocol: typeof CONVERSATION_SOURCE_REPLICATION_PROTOCOL;
   logicalSourceId: string;
   sourceGenerationId: string;
@@ -105,6 +121,31 @@ export interface ConversationSourceClosureManifest {
 
 export interface SignedConversationSourceClosureManifest {
   manifest: ConversationSourceClosureManifest;
+  signature: string;
+}
+
+export interface ConversationSourceSetClosureMember extends Omit<
+  ConversationSourceComponentIdentity,
+  "sourceComponentSchemaVersion"
+> {
+  artifactClosureDigest: string;
+}
+
+export interface ConversationSourceSetClosureManifest {
+  protocol: typeof CONVERSATION_SOURCE_REPLICATION_PROTOCOL;
+  sourceSetClosureVersion: 1;
+  sourceComponentSchemaVersion: typeof CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION;
+  logicalSourceId: string;
+  sourceGenerationId: string;
+  signingComponentId: string;
+  originKeyId: string;
+  components: ConversationSourceSetClosureMember[];
+  componentSetDigest: string;
+  closedAt: string;
+}
+
+export interface SignedConversationSourceSetClosureManifest {
+  manifest: ConversationSourceSetClosureManifest;
   signature: string;
 }
 
@@ -146,16 +187,21 @@ export interface ConversationSourceOriginKeyRegistration extends ConversationSou
   lifecycle: ConversationSourceOriginKeyLifecycle;
 }
 
-export interface ConversationSourceReplicationSourceDescriptor {
-  sourceKind: "codex";
+export type ConversationSourceReplicationSourceDescriptor = {
+  sourceKind: "codex" | "claude-code";
+  sourceRuntime: AiClientSourceRuntime;
+  artifactFormat: string;
+  artifactFormatVersion: number;
+  sourceAdapterVersion: string;
+  sourceComponentSchemaVersion: typeof CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION;
+  sourceComponentId: string;
+  sourceComponentRole: ConversationSourceComponentRole;
+  parentSourceComponentId: string | null;
+  contentFraming: ConversationSourceContentFraming;
   logicalSessionId: string;
   externalSessionId: string;
   forkedFromExternalThreadId: string | null;
   sourceFingerprint: string;
-  artifactFormat: "codex_rollout_jsonl";
-  artifactFormatVersion: 1;
-  sourceAdapterVersion: "codex-transcript-v1";
-  sourceRuntime: "codex" | "codex-cli";
   redactedSourceLabel: string;
   originDeploymentId: string;
   originDeviceId: string;
@@ -167,7 +213,7 @@ export interface ConversationSourceReplicationSourceDescriptor {
     id: string;
     name: string;
   } | null;
-}
+};
 
 export interface ConversationSourceOriginKeyPair {
   originKeyId: string;
@@ -261,6 +307,69 @@ const requireAsciiMetadata = (value: unknown, label: string): string => {
   return value;
 };
 
+const SOURCE_COMPONENT_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/;
+
+const requireSourceComponentId = (value: unknown, label: string): string => {
+  if (typeof value !== "string" || !SOURCE_COMPONENT_ID_PATTERN.test(value)) {
+    throw new TypeError(`${label} sourceComponentId is invalid`);
+  }
+  return value;
+};
+
+const parseSourceComponentIdentity = (
+  value: JsonRecord,
+  label: string
+): ConversationSourceComponentIdentity => {
+  if (
+    value.sourceComponentSchemaVersion !==
+    CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION
+  ) {
+    throw new TypeError(`${label} component schema version is invalid`);
+  }
+  if (
+    typeof value.sourceComponentId !== "string" ||
+    !SOURCE_COMPONENT_ID_PATTERN.test(value.sourceComponentId)
+  ) {
+    throw new TypeError(`${label} sourceComponentId is invalid`);
+  }
+  if (
+    value.sourceComponentRole !== "primary" &&
+    value.sourceComponentRole !== "auxiliary"
+  ) {
+    throw new TypeError(`${label} sourceComponentRole is invalid`);
+  }
+  const parentSourceComponentId = value.parentSourceComponentId;
+  if (
+    parentSourceComponentId !== null &&
+    (typeof parentSourceComponentId !== "string" ||
+      !SOURCE_COMPONENT_ID_PATTERN.test(parentSourceComponentId) ||
+      parentSourceComponentId === value.sourceComponentId)
+  ) {
+    throw new TypeError(`${label} parentSourceComponentId is invalid`);
+  }
+  if (
+    (value.sourceComponentRole === "primary" &&
+      parentSourceComponentId !== null) ||
+    (value.sourceComponentRole === "auxiliary" &&
+      parentSourceComponentId === null)
+  ) {
+    throw new TypeError(`${label} component relationship is invalid`);
+  }
+  if (
+    value.contentFraming !== "jsonl" &&
+    value.contentFraming !== "immutable_blob"
+  ) {
+    throw new TypeError(`${label} contentFraming is invalid`);
+  }
+  return {
+    sourceComponentSchemaVersion: CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION,
+    sourceComponentId: value.sourceComponentId,
+    sourceComponentRole: value.sourceComponentRole,
+    parentSourceComponentId,
+    contentFraming: value.contentFraming
+  };
+};
+
 const decodeBase64url = (
   value: unknown,
   label: string,
@@ -319,6 +428,11 @@ export const parseConversationSourceReplicationManifest = (
     manifest,
     [
       "protocol",
+      "sourceComponentSchemaVersion",
+      "sourceComponentId",
+      "sourceComponentRole",
+      "parentSourceComponentId",
+      "contentFraming",
       "logicalSourceId",
       "sourceGenerationId",
       "originKeyId",
@@ -338,6 +452,7 @@ export const parseConversationSourceReplicationManifest = (
   );
 
   const parsed: ConversationSourceReplicationManifest = {
+    ...parseSourceComponentIdentity(manifest, "Manifest"),
     protocol: requireProtocol(manifest.protocol),
     logicalSourceId: requireUuid(
       manifest.logicalSourceId,
@@ -441,6 +556,11 @@ export const parseConversationSourceClosureManifest = (
     manifest,
     [
       "protocol",
+      "sourceComponentSchemaVersion",
+      "sourceComponentId",
+      "sourceComponentRole",
+      "parentSourceComponentId",
+      "contentFraming",
       "logicalSourceId",
       "sourceGenerationId",
       "originKeyId",
@@ -456,6 +576,7 @@ export const parseConversationSourceClosureManifest = (
     "Conversation source closure manifest"
   );
   const parsed: ConversationSourceClosureManifest = {
+    ...parseSourceComponentIdentity(manifest, "Closure"),
     protocol: requireProtocol(manifest.protocol),
     logicalSourceId: requireUuid(
       manifest.logicalSourceId,
@@ -529,6 +650,237 @@ export const calculateConversationSourceRootDigest = (
     .digest("hex");
 };
 
+const parseConversationSourceSetClosureMembers = (
+  value: unknown
+): ConversationSourceSetClosureMember[] => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 256) {
+    throw new TypeError("Source-set closure components are invalid");
+  }
+  const members = value.map((candidate, index) => {
+    const member = ownRecord(
+      candidate,
+      `Source-set closure component ${index}`
+    );
+    requireExactKeys(
+      member,
+      [
+        "sourceComponentId",
+        "sourceComponentRole",
+        "parentSourceComponentId",
+        "contentFraming",
+        "artifactClosureDigest"
+      ],
+      `Source-set closure component ${index}`
+    );
+    const identity = parseSourceComponentIdentity(
+      {
+        ...member,
+        sourceComponentSchemaVersion:
+          CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION
+      },
+      `Source-set closure component ${index}`
+    );
+    return {
+      sourceComponentId: identity.sourceComponentId,
+      sourceComponentRole: identity.sourceComponentRole,
+      parentSourceComponentId: identity.parentSourceComponentId,
+      contentFraming: identity.contentFraming,
+      artifactClosureDigest: requireDigest(
+        member.artifactClosureDigest,
+        `Source-set closure component ${index} artifactClosureDigest`
+      )
+    };
+  });
+  const ids = members.map((member) => member.sourceComponentId);
+  const sortedIds = [...ids].sort();
+  if (
+    ids.some((id, index) => id !== sortedIds[index]) ||
+    new Set(ids).size !== ids.length
+  ) {
+    throw new TypeError(
+      "Source-set closure components must be unique and canonically ordered"
+    );
+  }
+  const primaries = members.filter(
+    (member) => member.sourceComponentRole === "primary"
+  );
+  if (primaries.length !== 1 || primaries[0]?.sourceComponentId !== "main") {
+    throw new TypeError(
+      "Source-set closure must contain main as its sole primary component"
+    );
+  }
+  for (const member of members) {
+    if (
+      member.parentSourceComponentId !== null &&
+      !ids.includes(member.parentSourceComponentId)
+    ) {
+      throw new TypeError(
+        "Source-set closure component parent is not a member"
+      );
+    }
+    const visited = new Set<string>([member.sourceComponentId]);
+    let parentId = member.parentSourceComponentId;
+    while (parentId !== null) {
+      if (visited.has(parentId)) {
+        throw new TypeError("Source-set closure component ancestry is cyclic");
+      }
+      visited.add(parentId);
+      parentId =
+        members.find((candidate) => candidate.sourceComponentId === parentId)
+          ?.parentSourceComponentId ?? null;
+    }
+    if (!visited.has("main")) {
+      throw new TypeError("Source-set closure component is not rooted at main");
+    }
+  }
+  return members;
+};
+
+export const calculateConversationSourceComponentSetDigest = (
+  components: readonly ConversationSourceSetClosureMember[]
+): string =>
+  createHash("sha256")
+    .update(
+      canonicalize(parseConversationSourceSetClosureMembers(components)),
+      "utf8"
+    )
+    .digest("hex");
+
+export const parseConversationSourceSetClosureManifest = (
+  value: unknown
+): ConversationSourceSetClosureManifest => {
+  const manifest = ownRecord(value, "Conversation source-set closure manifest");
+  requireExactKeys(
+    manifest,
+    [
+      "protocol",
+      "sourceSetClosureVersion",
+      "sourceComponentSchemaVersion",
+      "logicalSourceId",
+      "sourceGenerationId",
+      "signingComponentId",
+      "originKeyId",
+      "components",
+      "componentSetDigest",
+      "closedAt"
+    ],
+    "Conversation source-set closure manifest"
+  );
+  if (
+    manifest.sourceSetClosureVersion !== 1 ||
+    manifest.sourceComponentSchemaVersion !==
+      CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION
+  ) {
+    throw new TypeError("Conversation source-set closure version is invalid");
+  }
+  const components = parseConversationSourceSetClosureMembers(
+    manifest.components
+  );
+  const componentSetDigest = requireDigest(
+    manifest.componentSetDigest,
+    "Source-set closure componentSetDigest"
+  );
+  if (
+    componentSetDigest !==
+    calculateConversationSourceComponentSetDigest(components)
+  ) {
+    throw new TypeError("Source-set closure component digest is invalid");
+  }
+  if (manifest.signingComponentId !== "main") {
+    throw new TypeError("Source-set closure signing component is invalid");
+  }
+  return {
+    protocol: requireProtocol(manifest.protocol),
+    sourceSetClosureVersion: 1,
+    sourceComponentSchemaVersion: CONVERSATION_SOURCE_COMPONENT_SCHEMA_VERSION,
+    logicalSourceId: requireUuid(
+      manifest.logicalSourceId,
+      "Source-set closure logicalSourceId"
+    ),
+    sourceGenerationId: requireUuid(
+      manifest.sourceGenerationId,
+      "Source-set closure sourceGenerationId"
+    ),
+    signingComponentId: "main",
+    originKeyId: requireUuid(
+      manifest.originKeyId,
+      "Source-set closure originKeyId"
+    ),
+    components,
+    componentSetDigest,
+    closedAt: requireIsoTimestamp(
+      manifest.closedAt,
+      "Source-set closure closedAt"
+    )
+  };
+};
+
+export const canonicalizeConversationSourceSetClosureManifest = (
+  manifest: ConversationSourceSetClosureManifest
+): string => canonicalize(parseConversationSourceSetClosureManifest(manifest));
+
+export const calculateConversationSourceSetClosureDigest = (
+  signedClosure: SignedConversationSourceSetClosureManifest
+): string => {
+  const parsed = parseSignedConversationSourceSetClosureManifest(signedClosure);
+  return createHash("sha256")
+    .update(canonicalize(parsed), "utf8")
+    .digest("hex");
+};
+
+export const signConversationSourceSetClosureManifest = (
+  manifest: ConversationSourceSetClosureManifest,
+  privateKey: KeyObject
+): SignedConversationSourceSetClosureManifest => {
+  assertEd25519Key(privateKey, "private");
+  const parsed = parseConversationSourceSetClosureManifest(manifest);
+  return {
+    manifest: parsed,
+    signature: sign(
+      null,
+      Buffer.from(canonicalize(parsed), "utf8"),
+      privateKey
+    ).toString("base64url")
+  };
+};
+
+export const parseSignedConversationSourceSetClosureManifest = (
+  value: unknown
+): SignedConversationSourceSetClosureManifest => {
+  const signed = ownRecord(value, "Signed conversation source-set closure");
+  requireExactKeys(
+    signed,
+    ["manifest", "signature"],
+    "Signed conversation source-set closure"
+  );
+  return {
+    manifest: parseConversationSourceSetClosureManifest(signed.manifest),
+    signature: decodeBase64url(
+      signed.signature,
+      "Source-set closure signature",
+      64
+    ).toString("base64url")
+  };
+};
+
+export const verifyConversationSourceSetClosureManifestSignature = (
+  signedClosure: SignedConversationSourceSetClosureManifest,
+  publicKey: KeyObject | string
+): boolean => {
+  const parsed = parseSignedConversationSourceSetClosureManifest(signedClosure);
+  const key =
+    typeof publicKey === "string"
+      ? importConversationSourceReplicationPublicKey(publicKey)
+      : publicKey;
+  assertEd25519Key(key, "public");
+  return verify(
+    null,
+    Buffer.from(canonicalize(parsed.manifest), "utf8"),
+    key,
+    decodeBase64url(parsed.signature, "Source-set closure signature", 64)
+  );
+};
+
 export const signConversationSourceClosureManifest = (
   manifest: ConversationSourceClosureManifest,
   privateKey: KeyObject
@@ -589,6 +941,26 @@ export const calculateConversationSourceClosureDigest = (
     )
     .digest("hex");
 
+export const calculateConversationSourceClosureOperationContentDigest = (
+  artifactClosureDigest: string,
+  sourceSetClosureDigest: string | null
+): string =>
+  createHash("sha256")
+    .update(
+      canonicalize({
+        artifactClosureDigest: requireDigest(
+          artifactClosureDigest,
+          "Artifact closure digest"
+        ),
+        sourceSetClosureDigest:
+          sourceSetClosureDigest === null
+            ? null
+            : requireDigest(sourceSetClosureDigest, "Source-set closure digest")
+      }),
+      "utf8"
+    )
+    .digest("hex");
+
 export const calculateConversationSourceReplicationPlaintextDigest = (
   plaintext: Uint8Array
 ): string => createHash("sha256").update(plaintext).digest("hex");
@@ -643,6 +1015,7 @@ export const calculateConversationSourceReplicationOperationDigest = (input: {
 
 export const calculateConversationSourceDownloadScopeHash = (input: {
   sourceGenerationId: string;
+  sourceComponentId: string;
   targetDeploymentId: string;
   recipientKey: RecipientPublicKeyMaterial;
 }): string =>
@@ -653,6 +1026,10 @@ export const calculateConversationSourceDownloadScopeHash = (input: {
           sourceGenerationId: requireUuid(
             input.sourceGenerationId,
             "Source download generation"
+          ),
+          sourceComponentId: requireSourceComponentId(
+            input.sourceComponentId,
+            "Source download"
           ),
           targetDeploymentId: requireUuid(
             input.targetDeploymentId,
@@ -670,6 +1047,7 @@ export const CONVERSATION_SOURCE_DOWNLOAD_AUTHORIZATION_TTL_MS =
 
 export const calculateConversationSourceDownloadRequestHash = (input: {
   sourceGenerationId: string;
+  sourceComponentId: string;
   targetDeploymentId: string;
   recipientKey: RecipientPublicKeyMaterial;
   firstSegmentIndex: number;
@@ -687,6 +1065,10 @@ export const calculateConversationSourceDownloadRequestHash = (input: {
           sourceGenerationId: requireUuid(
             input.sourceGenerationId,
             "Source download generation"
+          ),
+          sourceComponentId: requireSourceComponentId(
+            input.sourceComponentId,
+            "Source download"
           ),
           targetDeploymentId: requireUuid(
             input.targetDeploymentId,
@@ -959,6 +1341,11 @@ export const parseConversationSourceReplicationSourceDescriptor = (
     descriptor,
     [
       "sourceKind",
+      "sourceComponentSchemaVersion",
+      "sourceComponentId",
+      "sourceComponentRole",
+      "parentSourceComponentId",
+      "contentFraming",
       "logicalSessionId",
       "externalSessionId",
       "forkedFromExternalThreadId",
@@ -978,14 +1365,25 @@ export const parseConversationSourceReplicationSourceDescriptor = (
     ],
     "Conversation source descriptor"
   );
-  if (
-    descriptor.sourceKind !== "codex" ||
-    descriptor.artifactFormat !== "codex_rollout_jsonl" ||
-    descriptor.artifactFormatVersion !== 1 ||
-    descriptor.sourceAdapterVersion !== "codex-transcript-v1" ||
-    (descriptor.sourceRuntime !== "codex" &&
-      descriptor.sourceRuntime !== "codex-cli")
-  ) {
+  const componentIdentity = parseSourceComponentIdentity(
+    descriptor,
+    "Descriptor"
+  );
+  const sourceAdapter = resolveAiClientSourceAdapter(descriptor);
+  const immutableBlobAdapterValid =
+    componentIdentity.contentFraming === "immutable_blob" &&
+    Number.isSafeInteger(descriptor.artifactFormatVersion) &&
+    (descriptor.artifactFormatVersion as number) > 0 &&
+    typeof descriptor.artifactFormat === "string" &&
+    /^[a-z][a-z0-9_]{0,127}$/.test(descriptor.artifactFormat) &&
+    ((descriptor.sourceKind === "codex" &&
+      (descriptor.sourceRuntime === "codex" ||
+        descriptor.sourceRuntime === "codex-cli") &&
+      descriptor.sourceAdapterVersion === "codex-transcript-v1") ||
+      (descriptor.sourceKind === "claude-code" &&
+        descriptor.sourceRuntime === "claude-code" &&
+        descriptor.sourceAdapterVersion === "claude-code-transcript-v1"));
+  if (!sourceAdapter && !immutableBlobAdapterValid) {
     throw new TypeError("Conversation source descriptor format is invalid");
   }
   if (
@@ -1047,7 +1445,8 @@ export const parseConversationSourceReplicationSourceDescriptor = (
     );
   }
   return {
-    sourceKind: descriptor.sourceKind,
+    ...componentIdentity,
+    sourceKind: descriptor.sourceKind as "codex" | "claude-code",
     logicalSessionId: requireUuid(
       descriptor.logicalSessionId,
       "Descriptor logicalSessionId"
@@ -1061,10 +1460,17 @@ export const parseConversationSourceReplicationSourceDescriptor = (
       descriptor.sourceFingerprint,
       "Descriptor sourceFingerprint"
     ),
-    artifactFormat: descriptor.artifactFormat,
-    artifactFormatVersion: descriptor.artifactFormatVersion,
-    sourceAdapterVersion: descriptor.sourceAdapterVersion,
-    sourceRuntime: descriptor.sourceRuntime,
+    artifactFormat:
+      sourceAdapter?.artifactFormat ?? (descriptor.artifactFormat as string),
+    artifactFormatVersion:
+      sourceAdapter?.artifactFormatVersion ??
+      (descriptor.artifactFormatVersion as number),
+    sourceAdapterVersion:
+      sourceAdapter?.sourceAdapterVersion ??
+      (descriptor.sourceAdapterVersion as string),
+    sourceRuntime:
+      sourceAdapter?.sourceRuntime ??
+      (descriptor.sourceRuntime as AiClientSourceRuntime),
     redactedSourceLabel: descriptor.redactedSourceLabel.trim(),
     originDeploymentId: requireUuid(
       descriptor.originDeploymentId,
