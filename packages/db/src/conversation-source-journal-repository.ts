@@ -740,7 +740,8 @@ const OUTBOX_SELECT_COLUMNS = `
 const notifyConversationSourceReplication = (
   client: pg.Pool | pg.PoolClient,
   reason: "upload" | "restore" | "materialize" | "retry",
-  sourceGenerationId?: string
+  sourceGenerationId?: string,
+  logicalSourceId?: string
 ) =>
   client.query(
     `select pg_notify(
@@ -748,11 +749,12 @@ const notifyConversationSourceReplication = (
        json_strip_nulls(
          json_build_object(
            'reason', $1::text,
-           'sourceGenerationId', $2::uuid
+           'sourceGenerationId', $2::uuid,
+           'logicalSourceId', $3::uuid
          )
        )::text
      )`,
-    [reason, sourceGenerationId ?? null]
+    [reason, sourceGenerationId ?? null, logicalSourceId ?? null]
   );
 
 const ensureConversationSourceArtifactWithClient = async (
@@ -951,7 +953,8 @@ const ensureConversationSourceArtifactWithClient = async (
       await notifyConversationSourceReplication(
         client,
         "upload",
-        row.source_generation_id
+        row.source_generation_id,
+        row.logical_source_id
       );
     }
   }
@@ -1645,7 +1648,12 @@ export const createConversationSourceJournalRepository = (
          on conflict do nothing`,
         [actor.userId, input.artifactId, segmentRow.id]
       );
-      await notifyConversationSourceReplication(client, "upload");
+      await notifyConversationSourceReplication(
+        client,
+        "upload",
+        nextArtifact.rows[0]!.source_generation_id,
+        nextArtifact.rows[0]!.logical_source_id
+      );
       await client.query("commit");
       return {
         artifact: mapArtifact(nextArtifact.rows[0]!),
@@ -1845,7 +1853,12 @@ export const createConversationSourceJournalRepository = (
            on conflict do nothing`,
           [actor.userId, input.artifactId]
         );
-        await notifyConversationSourceReplication(client, "upload");
+        await notifyConversationSourceReplication(
+          client,
+          "upload",
+          finalizedArtifact.source_generation_id,
+          finalizedArtifact.logical_source_id
+        );
       }
       await client.query("commit");
       committed = true;
@@ -2071,7 +2084,12 @@ export const createConversationSourceJournalRepository = (
             and failure_code is null`,
         [input.artifactId]
       );
-      await notifyConversationSourceReplication(client, "materialize");
+      await notifyConversationSourceReplication(
+        client,
+        "materialize",
+        nextArtifact.rows[0]!.source_generation_id,
+        nextArtifact.rows[0]!.logical_source_id
+      );
       await client.query("commit");
       return {
         status: "accepted",

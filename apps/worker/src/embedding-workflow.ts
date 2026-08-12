@@ -11,13 +11,15 @@ export interface EmbeddedChunk {
   inputIndex: number;
   chunkIndex: number;
   chunkCount: number;
+  tokenCount: number;
   text: string;
   vector: number[];
 }
 
-interface EmbeddingResponse {
+export interface EmbeddingResponse {
   model: string;
   dimensions: number;
+  measuredTokens: number;
   vectors: number[][];
   chunks: EmbeddedChunk[];
 }
@@ -28,7 +30,12 @@ export interface EmbeddingWorkflow {
     sourceId: string
   ): Promise<
     | { skipped: true; reason: string }
-    | { dimensions: number; inserted: boolean; chunks: number }
+    | {
+        dimensions: number;
+        inserted: boolean;
+        chunks: number;
+        measuredTokens?: number;
+      }
   >;
   embedSources(
     sources: Array<{ sourceType: EmbeddableSourceType; sourceId: string }>,
@@ -73,6 +80,9 @@ const isEmbeddedChunk = (value: unknown): value is EmbeddedChunk => {
     Number.isInteger(value.chunkIndex) &&
     typeof value.chunkCount === "number" &&
     Number.isInteger(value.chunkCount) &&
+    typeof value.tokenCount === "number" &&
+    Number.isSafeInteger(value.tokenCount) &&
+    value.tokenCount >= 0 &&
     typeof value.text === "string" &&
     isNumberArray(value.vector)
   );
@@ -90,11 +100,15 @@ const parseEmbeddingResponse = (
     );
   }
 
-  const { model, dimensions, vectors, chunks } = payload;
+  const { model, dimensions, measuredTokens, vectors, chunks } = payload;
   const hasChunks = Array.isArray(chunks) && chunks.length > 0;
   if (
     model !== expectedModel ||
     dimensions !== expectedDimensions ||
+    (measuredTokens !== null &&
+      (typeof measuredTokens !== "number" ||
+        !Number.isSafeInteger(measuredTokens) ||
+        measuredTokens < 0)) ||
     !isVectorArray(vectors) ||
     vectors.length === 0 ||
     vectors.some((vector) => vector.length !== expectedDimensions)
@@ -104,15 +118,7 @@ const parseEmbeddingResponse = (
     );
   }
 
-  const normalizedChunks = hasChunks
-    ? (chunks as unknown[])
-    : vectors.map((vector, index) => ({
-        inputIndex: index,
-        chunkIndex: 0,
-        chunkCount: 1,
-        text: preparedTexts[index] ?? "",
-        vector
-      }));
+  const normalizedChunks = chunks as unknown[];
   if (
     vectors.length !==
       (hasChunks ? normalizedChunks.length : preparedTexts.length) ||
@@ -149,10 +155,12 @@ const parseEmbeddingResponse = (
       );
     }
   }
-
   return {
     model,
     dimensions: expectedDimensions,
+    measuredTokens:
+      measuredTokens ??
+      normalizedChunks.reduce((total, chunk) => total + chunk.tokenCount, 0),
     vectors,
     chunks: normalizedChunks
   };
@@ -209,7 +217,7 @@ const splitEmbeddingText = (
   return segments;
 };
 
-const embedTexts = async (
+export const embedTexts = async (
   texts: string[],
   config: {
     env: WorkerEnvConfig;
@@ -287,6 +295,7 @@ export const createEmbeddingWorkflow = (
       number,
       Array<EmbeddedChunk & { segmentIndex: number }>
     >();
+    const measuredTokensBySource = new Map<number, number>();
     for (let offset = 0; offset < transportSegments.length; ) {
       const requestSegments: EmbeddingTransportSegment[] = [];
       let requestCharacters = 0;
@@ -314,6 +323,17 @@ export const createEmbeddingWorkflow = (
           dispatcher
         }
       );
+      const requestSourceIndexes = new Set(
+        requestSegments.map((segment) => segment.sourceIndex)
+      );
+      if (requestSourceIndexes.size === 1) {
+        const [sourceIndex] = requestSourceIndexes;
+        measuredTokensBySource.set(
+          sourceIndex!,
+          (measuredTokensBySource.get(sourceIndex!) ?? 0) +
+            embedded.measuredTokens
+        );
+      }
       for (const chunk of embedded.chunks) {
         const segment = requestSegments[chunk.inputIndex];
         if (!segment) {
@@ -348,12 +368,16 @@ export const createEmbeddingWorkflow = (
             vector: chunk.vector,
             chunkIndex,
             chunkCount: chunks.length,
+            inputTokenCount: chunk.tokenCount,
             sourceText: chunk.text
           }))
         });
         return {
           inserted: stored.inserted,
-          chunks: stored.ids.length
+          chunks: stored.ids.length,
+          measuredTokens:
+            measuredTokensBySource.get(sourceIndex) ??
+            chunks.reduce((total, chunk) => total + chunk.tokenCount, 0)
         };
       })
     );
@@ -466,7 +490,8 @@ export const createEmbeddingWorkflow = (
       return {
         dimensions: config.env.embeddingDimensions,
         inserted: stored.inserted,
-        chunks: stored.chunks
+        chunks: stored.chunks,
+        measuredTokens: stored.measuredTokens
       };
     }
   };

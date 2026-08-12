@@ -3,7 +3,9 @@ import {
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
-  sharedMemoryShareBundleActionGrantBinding
+  sharedMemoryShareBundleActionGrantBinding,
+  sharedMemoryTranscriptAccessActionGrantBinding,
+  sharedMemoryTranscriptRevokeActionGrantBinding
 } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 
@@ -100,6 +102,18 @@ const repository = () => ({
       activeRepresentation: "lcm_leaves" as const
     },
     willReactivate: false
+  })),
+  getTeamConversationSourceGrantReview: vi.fn(async (_actor, input) => ({
+    shareGrantId: input.shareGrantId,
+    logicalMemoryId: ids.logicalMemory,
+    sourceTitle: source.title,
+    teamId: ids.team,
+    teamName: destination.team.name,
+    teamWorkspaceId: ids.workspace,
+    teamWorkspaceName: destination.workspace.name,
+    currentVersion: input.expectedVersion,
+    currentMode: input.expectedVersion === 0 ? null : "continuous",
+    currentLifecycle: input.expectedVersion === 0 ? null : "active"
   }))
 });
 
@@ -299,6 +313,48 @@ describe("Shared Memory action definitions", () => {
           ])
         }
       }
+    });
+  });
+
+  it("steps up source sharing and uses Native review for source revocation", async () => {
+    const grantIntent = {
+      action: "shared_memory.conversation_source_grant",
+      mutationId: ids.mutation,
+      teamId: ids.team,
+      shareGrantId: ids.shareGrant,
+      expectedVersion: 0,
+      mode: "continuous"
+    } as const satisfies HighRiskActionGrantIntent;
+    const revokeIntent = {
+      action: "shared_memory.conversation_source_revoke",
+      mutationId: ids.mutation,
+      teamId: ids.team,
+      shareGrantId: ids.shareGrant,
+      expectedVersion: 1,
+      reasonCode: "owner_revoked"
+    } as const satisfies HighRiskActionGrantIntent;
+
+    await expect(admit(grantIntent)).resolves.toMatchObject({
+      operation: sharedMemoryTranscriptAccessActionGrantBinding({
+        referenceId: ids.request,
+        mutationId: ids.mutation,
+        teamId: ids.team,
+        shareGrantId: ids.shareGrant,
+        expectedVersion: 0,
+        mode: "continuous"
+      }),
+      policy: { disposition: "step_up" }
+    });
+    await expect(admit(revokeIntent)).resolves.toMatchObject({
+      operation: sharedMemoryTranscriptRevokeActionGrantBinding({
+        referenceId: ids.request,
+        mutationId: ids.mutation,
+        teamId: ids.team,
+        shareGrantId: ids.shareGrant,
+        expectedVersion: 1,
+        reasonCode: "owner_revoked"
+      }),
+      policy: { disposition: "native_review" }
     });
   });
 

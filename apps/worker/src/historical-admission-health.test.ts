@@ -20,6 +20,7 @@ describe("historical admission health", () => {
       apiReadyTimeoutMs: 1000,
       embeddingQueue: createQueue(),
       repository: createRepository(),
+      capacityProfileAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({ status: "ok" })
@@ -29,7 +30,8 @@ describe("historical admission health", () => {
     await expect(health()).resolves.toEqual({
       apiHealthy: true,
       queueHealthy: true,
-      embeddingServiceHealthy: true
+      embeddingServiceHealthy: true,
+      capacityProfileHealthy: true
     });
   });
 
@@ -37,13 +39,15 @@ describe("historical admission health", () => {
     const missingUrl = createHistoricalAdmissionHealth({
       apiReadyTimeoutMs: 1000,
       embeddingQueue: createQueue(),
-      repository: createRepository()
+      repository: createRepository(),
+      capacityProfileAvailable: vi.fn().mockResolvedValue(true)
     });
     const degradedApi = createHistoricalAdmissionHealth({
       apiReadyUrl: "http://api.test/ready",
       apiReadyTimeoutMs: 1000,
       embeddingQueue: createQueue(),
       repository: createRepository(),
+      capacityProfileAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         ok: false,
         json: async () => ({ status: "error" })

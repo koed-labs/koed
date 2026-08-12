@@ -35,6 +35,15 @@ export const launchValidationGates = [
       "Captured Session is shared to a Workspace and represented to another authorized member."
   },
   {
+    id: "conversation-source-access",
+    area: "Shared Memory",
+    mode: "automated",
+    description:
+      "Independent Conversation Source Access grants cover encrypted exact reads, snapshot and continuous boundaries, revocation, API Token denial, fork export, bounded SSE authorization loss, and audit events.",
+    launchCriterion:
+      "Exact source access remains separately consented, encrypted, bounded, auditable, and revocable."
+  },
+  {
     id: "revoked-private-access",
     area: "Access control",
     mode: "automated",
@@ -284,6 +293,18 @@ export const automatedLaunchTestCommands = [
       "src/server/route-identity.test.ts",
       "--testNamePattern",
       "WorkOS|AuthKit|capabilities|support overview|activation analytics|billing seats|entitlement|redact|route identity|device|local-edge|ops|backup|export|return targets|encrypted Memory Event companions"
+    ]
+  },
+  {
+    id: "team-conversation-source-boundaries",
+    command: "pnpm",
+    args: [
+      "--filter",
+      "@koed/api",
+      "exec",
+      "vitest",
+      "run",
+      "src/team-conversation-source/routes.test.ts"
     ]
   },
   {

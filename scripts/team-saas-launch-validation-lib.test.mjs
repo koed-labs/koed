@@ -350,7 +350,7 @@ test("launch validation report separates automated and manual gates", () => {
   });
   const report = formatLaunchValidationReport(summary);
 
-  assert.equal(summary.byMode.automated, 13);
+  assert.equal(summary.byMode.automated, 14);
   assert.equal(summary.byMode.manual, 3);
   assert.equal(summary.byMode.staging, 4);
   assert.equal(summary.automatedTestStatus, "not_run");
@@ -361,6 +361,7 @@ test("launch validation report separates automated and manual gates", () => {
   assert.match(report, /Staging launch gates:/);
   assert.match(report, /Remote Shared Memory representations respect session/);
   assert.match(report, /Encrypted Team fixture cases prove/);
+  assert.match(report, /Independent Conversation Source Access grants/);
   assert.match(report, /Capability discovery and diagnostics/);
   assert.match(report, /without refresh or polling/);
   assert.match(report, /Any failed launch blocker/);

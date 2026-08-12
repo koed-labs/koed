@@ -24,6 +24,7 @@ ENV NODE_ENV=production \
   EMBEDDING_MAX_TOKENS=4096 \
   LLAMA_N_CTX=32768 \
   LLAMA_SERVER_BINARY=/opt/llama.cpp/llama-server \
+  KOED_EMBEDDING_RUNTIME_VERSION=sha256:c01037625b2dbac36439a76f2b6fa6e99c911b25e702414307520f37bed0c58d \
   LD_LIBRARY_PATH=/opt/llama.cpp
 
 RUN apt-get update \

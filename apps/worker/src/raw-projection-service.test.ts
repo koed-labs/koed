@@ -14,7 +14,8 @@ const batchConfig = {
 const healthy = {
   apiHealthy: true,
   queueHealthy: true,
-  embeddingServiceHealthy: true
+  embeddingServiceHealthy: true,
+  capacityProfileHealthy: true
 };
 
 const emptyBacklog = {
@@ -466,7 +467,8 @@ describe("raw Projection historical priority", () => {
       {
         apiHealthy: false,
         queueHealthy: true,
-        embeddingServiceHealthy: true
+        embeddingServiceHealthy: true,
+        capacityProfileHealthy: true
       }
     );
 

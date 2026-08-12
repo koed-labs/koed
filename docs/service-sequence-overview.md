@@ -366,6 +366,17 @@ raw-content break-glass flow must be separately scoped, approved, expiring,
 audited, and customer-visible; support/admin tooling must not use normal recall
 routes as an impersonation path.
 
+Embedding capacity telemetry follows
+[ADR 0027](adr/0027-embedding-capacity-telemetry.md). `/ops/status` includes a
+redacted Operator snapshot for configured Worker-owned embedding and LCM
+compaction-admission queues, measured-token throughput, semantic backlog, the
+active capacity profile, and an estimated drain range. These queue counters do
+not represent Local AI Runtime LCM Summary synthesis completion. The private `/internal/metrics` surface exports
+OpenMetrics-compatible aggregates under a dedicated monitoring credential and
+must not be exposed by the public gateway. Neither surface starts calibration;
+the Worker performs missing-profile calibration asynchronously after model
+readiness using synthetic inputs only.
+
 Hosted backup and restore checks are operator-run workflows. `pnpm
 hosted:backup -- create` writes a `pg_dump` custom archive encrypted through
 the configured envelope provider (`local_test_key`, `managed_kms`, `byok`, or
@@ -1003,6 +1014,16 @@ cwd is used only to resolve or display a Workspace.
     Session. Revocation is allowed by a current Workspace sharer or by the
     original source owner, preserving a User-controlled privacy exit even if
     their Workspace grant later changes.
+13. Exact Conversation source bytes remain owner-private unless the owner adds
+    a separate Conversation Source Access grant to the active Captured Session
+    Share Grant. Semantic expansion level never implies source access.
+14. Snapshot source access pins one verified artifact frontier. Continuous
+    source access follows verified generations for the same logical source and
+    publishes metadata-only SSE wake events; each manifest and segment read is
+    independently reauthorized.
+15. A Team member may request a bounded fork snapshot ending at a completed
+    turn boundary through a fresh browser session. The export does not mutate
+    the owner's Conversation or create a Koed-side Conversation automatically.
 
 Team chat is a separate collaboration path even when Desktop presents it beside
 Team-shared Captured Sessions. Team Chat Messages use dedicated encrypted tables

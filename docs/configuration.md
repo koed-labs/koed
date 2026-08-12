@@ -526,6 +526,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `KOED_OPS_REQUEST_METRICS_MAX_AGE_SECONDS`: maximum acceptable age for `checkedAt` in the request-metrics status file. Default `300`.
 - `KOED_OPS_MAX_RSS_BYTES`: maximum acceptable API process resident set size before `/ops/status` reports runtime resource pressure. Default `1610612736`.
 - `KOED_OPS_OPERATOR_EMAILS`: comma-separated allowlist of browser-session email addresses that may access hosted `/ops/status` and `/ops/test-alert` in `private_vps`, `team_self_hosted`, and `koed_managed_cloud` profiles. Local personal/developer profiles do not require this allowlist.
+- `KOED_OPS_METRICS_TOKEN`: dedicated monitoring-service bearer credential for the private `/internal/metrics` OpenMetrics endpoint. Keep this identity separate from User sessions, API Tokens, Capture Hook credentials, and device credentials. Do not route the endpoint through the public gateway.
 - `KOED_RUNBOOK_BASE_URL`: optional base URL used by `/ops/status` to attach runbook links to generated operational alerts.
 - `KOED_OPS_ALERT_WEBHOOK_URL`: optional HTTPS webhook endpoint used by `/ops/test-alert` to validate alert delivery. `/ops/status` reports only that a webhook sink is configured; it does not disclose the URL.
 - `KOED_OPS_ALERT_WEBHOOK_TOKEN`: optional bearer token sent only to `KOED_OPS_ALERT_WEBHOOK_URL` during test-alert delivery. It must not appear in `/ops/status`, `/ops/test-alert` responses, diagnostics, logs, or support exports.
@@ -670,6 +671,13 @@ policy, or full URLs containing customer content.
 - `EMBEDDING_REQUEST_TIMEOUT_MS`: maximum time the Worker allows an internal
   embedding request to run. Long LCM sources are submitted individually and
   retain their queue lease while this bounded request is active.
+- `EMBEDDING_CAPACITY_REFINED_DELAY_MS`: delay after Worker startup before the
+  longer refined capacity calibration runs. Default `1800000` (30 minutes);
+  accepted values range from `1000` to `86400000` milliseconds.
+- `KOED_EMBEDDING_POOL_KEY`: stable infrastructure identity for one equivalent
+  embedding worker pool. Different CPU, Metal, CUDA, model, or execution pools
+  must use different bounded keys so their profiles coexist. Default `default`
+  for a single local pool.
 - `EMBEDDING_MAX_TOKENS`: Koed adapter chunking limit and the hard cap for a single projected source item before forced split metadata is used. Default `4096`; values above `32768` are clamped by the embedding service and values above the configured llama context or batch envelope are reduced to that limit.
 - `EMBEDDING_MAX_TEXT_CHARS`: transport and abuse guard for the maximum characters accepted for any single embedding or reranking text before model processing. The Worker divides a larger logical source into bounded transport segments without splitting Unicode characters, then restores one continuous source-level embedding chunk sequence from the responses. It is not a semantic chunking limit.
 - `EMBEDDING_MAX_REQUEST_CHARS`: transport and abuse guard for the maximum total characters the Worker sends, and the Embedding Service accepts, in one embedding or reranking request before model processing. It is not a semantic chunking limit.

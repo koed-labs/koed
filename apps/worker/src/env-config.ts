@@ -28,6 +28,7 @@ export interface WorkerEnvConfig {
   databaseConfigured: boolean;
   embeddingServiceUrl: string;
   embeddingServiceToken?: string;
+  embeddingPoolKey: string;
   embeddingDimensions: number;
   embeddingVersion: string;
   embeddingModelArtifactHash: string;
@@ -39,6 +40,7 @@ export interface WorkerEnvConfig {
   embeddingMaxTextChars: number;
   embeddingMaxRequestChars: number;
   embeddingRequestTimeoutMs: number;
+  embeddingCapacityRefinedDelayMs: number;
   rawProjectionBatchLimit: number;
   rawProjectionActorLimit: number;
   crossIdentitySyncIntervalMs: number;
@@ -70,6 +72,16 @@ export const loadWorkerEnv = (): void => {
 const optionalEnv = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+};
+
+const embeddingPoolKey = (value: string | undefined): string => {
+  const key = optionalEnv(value) ?? "default";
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(key)) {
+    throw new Error(
+      "KOED_EMBEDDING_POOL_KEY must be 1-64 letters, numbers, dots, underscores, or hyphens"
+    );
+  }
+  return key;
 };
 
 const positiveIntEnv = (
@@ -164,6 +176,7 @@ export const resolveWorkerEnv = (
     embeddingServiceUrl:
       environment.EMBEDDING_SERVICE_URL ?? "http://embedding-service:8000",
     ...(embeddingServiceToken ? { embeddingServiceToken } : {}),
+    embeddingPoolKey: embeddingPoolKey(environment.KOED_EMBEDDING_POOL_KEY),
     embeddingDimensions: embeddingModel.dimensions,
     embeddingVersion: embeddingModel.key,
     embeddingModelArtifactHash:
@@ -192,6 +205,13 @@ export const resolveWorkerEnv = (
       environment,
       "EMBEDDING_REQUEST_TIMEOUT_MS",
       900_000
+    ),
+    embeddingCapacityRefinedDelayMs: boundedIntEnv(
+      environment,
+      "EMBEDDING_CAPACITY_REFINED_DELAY_MS",
+      30 * 60_000,
+      1_000,
+      24 * 60 * 60_000
     ),
     rawProjectionBatchLimit: positiveIntEnv(
       environment,

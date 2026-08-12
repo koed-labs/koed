@@ -2,6 +2,11 @@ import type pg from "pg";
 import { createDb } from "./connection.js";
 import { createConversationItemRepository } from "./conversation-item-repository.js";
 import { currentEmbeddingConfig } from "./embedding-coverage.js";
+import {
+  CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
+  EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS,
+  EMBEDDING_CAPACITY_CONTRACT_REVISION
+} from "./embedding-capacity-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
 import type {
   ActorContext,
@@ -140,6 +145,14 @@ type SourceRow = {
   projected_record_count: number;
   embedding_eligible_event_count: number;
   embedded_event_count: number;
+  embedding_eligible_estimated_token_count: string | number;
+  embedded_measured_token_count: string | number;
+  pending_embedding_estimated_token_count: string | number;
+  queue_ahead_estimated_token_count: string | number;
+  capacity_tokens_per_second: number | null;
+  capacity_calibration_mode: "quick" | "refined" | null;
+  oldest_embedded_source_time: Date | null;
+  newest_embedded_source_time: Date | null;
   lcm_eligible_event_count: number;
   lcm_completed_event_count: number;
   retry_count: number;
@@ -159,7 +172,9 @@ type SourceRow = {
   updated_at: Date;
 };
 
-const SOURCE_SELECT = `
+const sourceSelect = (): string => {
+  const embedding = currentEmbeddingConfig();
+  return `
   source.id, source.run_id, source.owner_user_id, source.state,
   source.artifact_id, source.ai_client,
   artifact.source_kind,
@@ -182,6 +197,34 @@ const SOURCE_SELECT = `
   source.skipped_record_count, source.malformed_record_count,
   source.raw_ingested_record_count, source.projected_record_count,
   source.embedding_eligible_event_count, source.embedded_event_count,
+  source.embedding_eligible_estimated_token_count,
+  source.embedded_measured_token_count,
+  source.pending_embedding_estimated_token_count,
+  coalesce(embedding_position.queue_ahead_estimated_tokens, 0)
+    as queue_ahead_estimated_token_count,
+  (select sum(profile.measured_tokens_per_second)
+     from embedding_capacity_profiles profile
+    where profile.state = 'usable'
+      and profile.invalidated_at is null
+      and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
+      and profile.capacity_contract_revision = '${EMBEDDING_CAPACITY_CONTRACT_REVISION}'
+      and profile.model_key = '${embedding.model}'
+      and profile.embedding_dimensions = ${embedding.dimensions})
+    as capacity_tokens_per_second,
+  (select case
+      when count(*) = 0 then null
+      when bool_and(profile.calibration_mode = 'refined') then 'refined'
+      else 'quick'
+    end
+     from embedding_capacity_profiles profile
+    where profile.state = 'usable'
+      and profile.invalidated_at is null
+      and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
+      and profile.capacity_contract_revision = '${EMBEDDING_CAPACITY_CONTRACT_REVISION}'
+      and profile.model_key = '${embedding.model}'
+      and profile.embedding_dimensions = ${embedding.dimensions})
+    as capacity_calibration_mode,
+  source.oldest_embedded_source_time, source.newest_embedded_source_time,
   source.lcm_eligible_event_count, source.lcm_completed_event_count,
   source.retry_count, source.failure_reason, source.next_retry_at,
   source.detected_project, source.discovered_at, source.eligible_at,
@@ -189,6 +232,7 @@ const SOURCE_SELECT = `
   source.skipped_at, source.completed_at, source.failed_at,
   source.last_observed_at, source.created_at, source.updated_at
 `;
+};
 
 const SOURCE_JOINS = `
   from historical_import_sources source
@@ -198,6 +242,86 @@ const SOURCE_JOINS = `
   left join conversation_source_consumer_cursors historical_cursor
     on historical_cursor.artifact_id = artifact.id
    and historical_cursor.consumer_kind = 'canonical_historical'
+  left join lateral (
+    select coalesce(sum(pending.tokens), 0)::bigint
+      as queue_ahead_estimated_tokens
+    from (
+      select greatest(coalesce(event.token_count, 0), 0)::bigint as tokens
+      from memory_events event
+      left join conversation_projection_processing_outbox processing
+        on processing.event_id = event.id
+      where event.session_id <> artifact.session_id
+        and event.invalidated_at is null
+        and event.personal_deleted_at is null
+        and event.include_in_embedding
+        and not exists (
+          select 1
+          from memory_embeddings embedding
+          where embedding.memory_event_id = event.id
+            and embedding.invalidated_at is null
+            and embedding.personal_deleted_at is null
+            and embedding.source_hash = event.source_hash
+          group by embedding.memory_event_id, embedding.source_hash
+          having count(*) = max(embedding.source_chunk_count)
+            and count(distinct embedding.source_chunk_index) =
+              max(embedding.source_chunk_count)
+            and min(embedding.source_chunk_index) = 0
+            and max(embedding.source_chunk_index) =
+              max(embedding.source_chunk_count) - 1
+        )
+        and (
+          coalesce(processing.work_class, 'normal_embedding_lcm') <>
+            'historical_import_backfill'
+          or coalesce(event.source_event_time, event.captured_at) > (
+            select min(coalesce(source_event.source_event_time,
+                                source_event.captured_at))
+            from memory_events source_event
+            where source_event.session_id = artifact.session_id
+              and source_event.invalidated_at is null
+              and source_event.personal_deleted_at is null
+              and source_event.include_in_embedding
+              and not exists (
+                select 1
+                from memory_embeddings source_embedding
+                where source_embedding.memory_event_id = source_event.id
+                  and source_embedding.invalidated_at is null
+                  and source_embedding.personal_deleted_at is null
+                  and source_embedding.source_hash = source_event.source_hash
+                group by source_embedding.memory_event_id,
+                         source_embedding.source_hash
+                having count(*) = max(source_embedding.source_chunk_count)
+                  and count(distinct source_embedding.source_chunk_index) =
+                    max(source_embedding.source_chunk_count)
+                  and min(source_embedding.source_chunk_index) = 0
+                  and max(source_embedding.source_chunk_index) =
+                    max(source_embedding.source_chunk_count) - 1
+              )
+          )
+        )
+      union all
+      select greatest(coalesce(node.summary_token_estimate,
+                               node.source_token_estimate, 0), 0)::bigint
+      from memory_nodes node
+      where node.invalidated_at is null
+        and node.personal_deleted_at is null
+        and length(btrim(coalesce(node.summary_text, ''))) > 0
+        and not exists (
+          select 1
+          from memory_embeddings embedding
+          where embedding.memory_node_id = node.id
+            and embedding.invalidated_at is null
+            and embedding.personal_deleted_at is null
+            and embedding.source_hash = node.source_hash
+          group by embedding.memory_node_id, embedding.source_hash
+          having count(*) = max(embedding.source_chunk_count)
+            and count(distinct embedding.source_chunk_index) =
+              max(embedding.source_chunk_count)
+            and min(embedding.source_chunk_index) = 0
+            and max(embedding.source_chunk_index) =
+              max(embedding.source_chunk_count) - 1
+        )
+    ) pending
+  ) embedding_position on true
 `;
 
 const iso = (value: Date | null): string | null => value?.toISOString() ?? null;
@@ -238,6 +362,26 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
     rawIngested && row.projected_record_count >= row.raw_ingested_record_count;
   const fullyEmbedded =
     row.embedding_eligible_event_count === row.embedded_event_count;
+  const pendingEstimatedTokens = Number(
+    row.pending_embedding_estimated_token_count
+  );
+  const queueAheadEstimatedTokens = Number(
+    row.queue_ahead_estimated_token_count
+  );
+  const capacityRate =
+    row.capacity_tokens_per_second ?? CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND;
+  const estimatedCompletionTokens =
+    pendingEstimatedTokens > 0
+      ? pendingEstimatedTokens + queueAheadEstimatedTokens
+      : 0;
+  const embeddingEtaLowerSeconds =
+    capacityRate && capacityRate > 0
+      ? Math.ceil(estimatedCompletionTokens / capacityRate)
+      : null;
+  const embeddingEtaUpperSeconds =
+    capacityRate && capacityRate > 0
+      ? Math.ceil(estimatedCompletionTokens / (capacityRate * 0.6))
+      : null;
   return {
     id: row.id,
     runId: row.run_id,
@@ -268,6 +412,22 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
     projectedRecordCount: row.projected_record_count,
     embeddingEligibleEventCount: row.embedding_eligible_event_count,
     embeddedEventCount: row.embedded_event_count,
+    embeddingEligibleEstimatedTokenCount: Number(
+      row.embedding_eligible_estimated_token_count
+    ),
+    embeddedMeasuredTokenCount: Number(row.embedded_measured_token_count),
+    pendingEmbeddingEstimatedTokenCount: pendingEstimatedTokens,
+    embeddingQueueAheadEstimatedTokenCount: queueAheadEstimatedTokens,
+    embeddingEtaLowerSeconds,
+    embeddingEtaUpperSeconds,
+    embeddingEtaConfidence:
+      row.capacity_calibration_mode === "refined"
+        ? "medium"
+        : row.capacity_calibration_mode === "quick"
+          ? "low"
+          : "conservative",
+    oldestEmbeddedSourceTime: iso(row.oldest_embedded_source_time),
+    newestEmbeddedSourceTime: iso(row.newest_embedded_source_time),
     lcmEligibleEventCount: row.lcm_eligible_event_count,
     lcmCompletedEventCount: row.lcm_completed_event_count,
     rawIngested,
@@ -378,7 +538,7 @@ const sourceQuery = async (
   values: unknown[]
 ): Promise<HistoricalImportSourceRecord | null> => {
   const result = await client.query<SourceRow>(
-    `select ${SOURCE_SELECT} ${SOURCE_JOINS}
+    `select ${sourceSelect()} ${SOURCE_JOINS}
       where source.owner_user_id = $1 and ${predicate}
       limit 1`,
     [ownerUserId, ...values]
@@ -513,6 +673,21 @@ const refreshSourceProgress = async (
               where event_source.memory_event_id = event.id
                 and observation.source_transport = 'historical_import'
             )) as embedding_eligible_count,
+         (select coalesce(sum(greatest(coalesce(event.token_count, 0), 0)), 0)::bigint
+          from memory_events event
+          where event.session_id = scope.session_id
+            and event.invalidated_at is null
+            and event.personal_deleted_at is null
+            and event.include_in_embedding
+            and exists (
+              select 1
+              from memory_event_sources event_source
+              join conversation_item_observations observation
+                on observation.conversation_item_id =
+                  event_source.conversation_item_id
+              where event_source.memory_event_id = event.id
+                and observation.source_transport = 'historical_import'
+            )) as embedding_eligible_tokens,
          (select count(*)::int
           from memory_events event
           where event.session_id = scope.session_id
@@ -548,6 +723,141 @@ const refreshSourceProgress = async (
                 and max(embedding.source_chunk_index) =
                   max(embedding.source_chunk_count) - 1
             )) as embedded_count,
+         (select coalesce(sum(complete.measured_tokens), 0)::bigint
+          from memory_events event
+          join lateral (
+            select sum(embedding.input_token_count)::bigint as measured_tokens
+            from memory_embeddings embedding
+            join ${embedding.table} vector on vector.memory_embedding_id = embedding.id
+            where embedding.memory_event_id = event.id
+              and embedding.invalidated_at is null
+              and embedding.personal_deleted_at is null
+              and embedding.embedding_model = $3
+              and embedding.embedding_dimensions = $4
+              and embedding.embedding_version = $5
+              and embedding.source_hash = event.source_hash
+            group by embedding.memory_event_id, embedding.source_hash
+            having count(*) = max(embedding.source_chunk_count)
+              and count(distinct embedding.source_chunk_index) = max(embedding.source_chunk_count)
+              and min(embedding.source_chunk_index) = 0
+              and max(embedding.source_chunk_index) = max(embedding.source_chunk_count) - 1
+          ) complete on true
+          where event.session_id = scope.session_id
+            and event.invalidated_at is null
+            and event.personal_deleted_at is null
+            and event.include_in_embedding
+            and exists (
+              select 1
+              from memory_event_sources event_source
+              join conversation_item_observations observation
+                on observation.conversation_item_id = event_source.conversation_item_id
+              where event_source.memory_event_id = event.id
+                and observation.source_transport = 'historical_import'
+            )) as embedded_tokens,
+         (select coalesce(sum(greatest(coalesce(event.token_count, 0), 0)), 0)::bigint
+          from memory_events event
+          where event.session_id = scope.session_id
+            and event.invalidated_at is null
+            and event.personal_deleted_at is null
+            and event.include_in_embedding
+            and exists (
+              select 1
+              from memory_event_sources event_source
+              join conversation_item_observations observation
+                on observation.conversation_item_id = event_source.conversation_item_id
+              where event_source.memory_event_id = event.id
+                and observation.source_transport = 'historical_import'
+            )
+            and not exists (
+              select 1
+              from memory_embeddings embedding
+              join ${embedding.table} vector
+                on vector.memory_embedding_id = embedding.id
+              where embedding.memory_event_id = event.id
+                and embedding.invalidated_at is null
+                and embedding.personal_deleted_at is null
+                and embedding.embedding_model = $3
+                and embedding.embedding_dimensions = $4
+                and embedding.embedding_version = $5
+                and embedding.source_hash = event.source_hash
+              group by embedding.memory_event_id, embedding.source_hash
+              having count(*) = max(embedding.source_chunk_count)
+                and count(distinct embedding.source_chunk_index) =
+                  max(embedding.source_chunk_count)
+                and min(embedding.source_chunk_index) = 0
+                and max(embedding.source_chunk_index) =
+                  max(embedding.source_chunk_count) - 1
+            )) as pending_embedding_estimated_tokens,
+         (select min(event.source_event_time)
+          from memory_events event
+          where event.session_id = scope.session_id
+            and event.invalidated_at is null
+            and event.personal_deleted_at is null
+            and event.include_in_embedding
+            and exists (
+              select 1
+              from memory_event_sources event_source
+              join conversation_item_observations observation
+                on observation.conversation_item_id =
+                  event_source.conversation_item_id
+              where event_source.memory_event_id = event.id
+                and observation.source_transport = 'historical_import'
+            )
+            and exists (
+              select 1
+              from memory_embeddings embedding
+              join ${embedding.table} vector
+                on vector.memory_embedding_id = embedding.id
+              where embedding.memory_event_id = event.id
+                and embedding.invalidated_at is null
+                and embedding.personal_deleted_at is null
+                and embedding.embedding_model = $3
+                and embedding.embedding_dimensions = $4
+                and embedding.embedding_version = $5
+                and embedding.source_hash = event.source_hash
+              group by embedding.memory_event_id, embedding.source_hash
+              having count(*) = max(embedding.source_chunk_count)
+                and count(distinct embedding.source_chunk_index) =
+                  max(embedding.source_chunk_count)
+                and min(embedding.source_chunk_index) = 0
+                and max(embedding.source_chunk_index) =
+                  max(embedding.source_chunk_count) - 1
+            )) as oldest_embedded_source_time,
+         (select max(event.source_event_time)
+          from memory_events event
+          where event.session_id = scope.session_id
+            and event.invalidated_at is null
+            and event.personal_deleted_at is null
+            and event.include_in_embedding
+            and exists (
+              select 1
+              from memory_event_sources event_source
+              join conversation_item_observations observation
+                on observation.conversation_item_id =
+                  event_source.conversation_item_id
+              where event_source.memory_event_id = event.id
+                and observation.source_transport = 'historical_import'
+            )
+            and exists (
+              select 1
+              from memory_embeddings embedding
+              join ${embedding.table} vector
+                on vector.memory_embedding_id = embedding.id
+              where embedding.memory_event_id = event.id
+                and embedding.invalidated_at is null
+                and embedding.personal_deleted_at is null
+                and embedding.embedding_model = $3
+                and embedding.embedding_dimensions = $4
+                and embedding.embedding_version = $5
+                and embedding.source_hash = event.source_hash
+              group by embedding.memory_event_id, embedding.source_hash
+              having count(*) = max(embedding.source_chunk_count)
+                and count(distinct embedding.source_chunk_index) =
+                  max(embedding.source_chunk_count)
+                and min(embedding.source_chunk_index) = 0
+                and max(embedding.source_chunk_index) =
+                  max(embedding.source_chunk_count) - 1
+            )) as newest_embedded_source_time,
          (select count(*)::int
           from memory_events event
           where event.session_id = scope.session_id
@@ -589,6 +899,12 @@ const refreshSourceProgress = async (
        projected_record_count = progress.projected_count,
        embedding_eligible_event_count = progress.embedding_eligible_count,
        embedded_event_count = progress.embedded_count,
+       embedding_eligible_estimated_token_count = progress.embedding_eligible_tokens,
+       embedded_measured_token_count = progress.embedded_tokens,
+       pending_embedding_estimated_token_count =
+         progress.pending_embedding_estimated_tokens,
+       oldest_embedded_source_time = progress.oldest_embedded_source_time,
+       newest_embedded_source_time = progress.newest_embedded_source_time,
        lcm_eligible_event_count = progress.lcm_eligible_count,
        lcm_completed_event_count = progress.lcm_completed_count
      from progress where source.id = progress.id`,
@@ -1136,7 +1452,7 @@ export const createHistoricalImportRepository = (
     await refreshRunCounters(pool, actor.userId, runId);
     const refreshedRun = await getRun(pool, actor, runId);
     const sources = await pool.query<SourceRow>(
-      `select ${SOURCE_SELECT} ${SOURCE_JOINS}
+      `select ${sourceSelect()} ${SOURCE_JOINS}
         where source.owner_user_id = $1 and source.run_id = $2
         order by source.discovered_at, source.id`,
       [actor.userId, runId]

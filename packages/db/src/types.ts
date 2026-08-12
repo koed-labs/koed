@@ -27,6 +27,7 @@ import type { PersonalDeviceSyncRelayRepository } from "./personal-device-sync-r
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
 import type { SharedMemoryRepository } from "./shared-memory-repository.js";
+import type { TeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 
 export type Visibility = "personal";
@@ -744,6 +745,15 @@ export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
   projectedRecordCount: number;
   embeddingEligibleEventCount: number;
   embeddedEventCount: number;
+  embeddingEligibleEstimatedTokenCount: number;
+  embeddedMeasuredTokenCount: number;
+  pendingEmbeddingEstimatedTokenCount: number;
+  embeddingQueueAheadEstimatedTokenCount: number;
+  embeddingEtaLowerSeconds: number | null;
+  embeddingEtaUpperSeconds: number | null;
+  embeddingEtaConfidence: "conservative" | "low" | "medium";
+  oldestEmbeddedSourceTime: string | null;
+  newestEmbeddedSourceTime: string | null;
   lcmEligibleEventCount: number;
   lcmCompletedEventCount: number;
   rawIngested: boolean;
@@ -1791,6 +1801,7 @@ export interface MemorySourceRepository
     MemoryNodeRepository,
     MemoryQuestionRepository,
     SharedMemoryRepository,
+    TeamConversationSourceRepository,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;
@@ -2445,6 +2456,7 @@ export interface MemorySourceRepository
     vector: number[];
     chunkIndex?: number;
     chunkCount?: number;
+    inputTokenCount?: number;
     sourceText?: string;
   }): Promise<{ id: string; inserted: boolean }>;
   replaceSourceEmbeddings(input: {
@@ -2461,6 +2473,7 @@ export interface MemorySourceRepository
       vector: number[];
       chunkIndex: number;
       chunkCount: number;
+      inputTokenCount: number;
       sourceText: string;
     }>;
   }): Promise<{ ids: string[]; inserted: boolean }>;

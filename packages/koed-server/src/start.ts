@@ -476,6 +476,11 @@ const localServiceEnv = (
     WORK_QUEUE_BACKEND: queueBackend,
     KOED_MODELS_DIR: modelsDir,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
+    KOED_EMBEDDING_POOL_KEY:
+      environment.WORKER_KOED_EMBEDDING_POOL_KEY ??
+      repoEnv.WORKER_KOED_EMBEDDING_POOL_KEY ??
+      environment.KOED_EMBEDDING_POOL_KEY ??
+      repoEnv.KOED_EMBEDDING_POOL_KEY,
     API_PORT: apiPort,
     DATABASE_URL:
       serverConfig.dependencyMode === "external"

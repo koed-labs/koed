@@ -43,7 +43,8 @@ const createRepository = () => ({
   claim: vi.fn().mockResolvedValue(null),
   complete: vi.fn().mockResolvedValue(true),
   fail: vi.fn().mockResolvedValue(true),
-  getJobCounts: vi.fn().mockResolvedValue({ pending: 1 })
+  getJobCounts: vi.fn().mockResolvedValue({ pending: 1 }),
+  getOldestPendingAgeMs: vi.fn().mockResolvedValue(250)
 });
 
 const logger = {
@@ -106,6 +107,57 @@ describe("createWorkerQueueProducer", () => {
     ]);
   });
 
+  it("reports oldest pending age for local and BullMQ queues", async () => {
+    const repository = createRepository();
+    const local = createWorkerQueueProducer("memory-embed", {
+      backend: "local",
+      redisUrl: "redis://localhost:6379",
+      localQueueRepository: repository
+    });
+    const now = Date.now();
+    bullQueue.getJobs.mockResolvedValueOnce([{ timestamp: now - 750 }]);
+    const bullmq = createWorkerQueueProducer("memory-embed", {
+      backend: "bullmq",
+      redisUrl: "redis://localhost:6379"
+    });
+
+    await expect(local.getOldestPendingAgeMs?.()).resolves.toBe(250);
+    await expect(
+      bullmq.getOldestPendingAgeMs?.()
+    ).resolves.toBeGreaterThanOrEqual(750);
+    expect(repository.getOldestPendingAgeMs).toHaveBeenCalledWith(
+      "memory-embed"
+    );
+    expect(bullQueue.getJobs).toHaveBeenCalledWith(
+      ["wait", "paused", "prioritized", "delayed"],
+      0,
+      0,
+      true
+    );
+  });
+
+  it("reports prioritized BullMQ jobs as waiting", async () => {
+    bullQueue.getJobCounts.mockResolvedValueOnce({
+      waiting: 2,
+      prioritized: 3,
+      active: 1
+    });
+    const queue = createWorkerQueueProducer("memory-embed", {
+      backend: "bullmq",
+      redisUrl: "redis://operator:6379"
+    });
+
+    await expect(queue.getJobCounts("waiting", "active")).resolves.toEqual({
+      waiting: 5,
+      active: 1
+    });
+    expect(bullQueue.getJobCounts).toHaveBeenCalledWith(
+      "waiting",
+      "active",
+      "prioritized"
+    );
+  });
+
   it("fails fast for local queue backend without database", () => {
     expect(() =>
       createWorkerQueueProducer("memory-embed", {
@@ -119,6 +171,7 @@ describe("createWorkerQueueProducer", () => {
 describe("createWorkerQueueRuntime", () => {
   it("claims and completes local jobs", async () => {
     const repository = createRepository();
+    const createdAt = new Date(Date.now() - 100);
     repository.claim.mockResolvedValueOnce({
       id: 1,
       queueName: "memory-embed",
@@ -127,9 +180,11 @@ describe("createWorkerQueueRuntime", () => {
       attemptCount: 1,
       maxAttempts: 5,
       priority: 5,
-      lockToken: "lock-1"
+      lockToken: "lock-1",
+      createdAt
     });
     const handleJob = vi.fn().mockResolvedValue({ ok: true });
+    const recordTelemetry = vi.fn().mockResolvedValue(undefined);
     const runtime = await createWorkerQueueRuntime({
       backend: "local",
       redisUrl: "redis://localhost:6379",
@@ -138,6 +193,7 @@ describe("createWorkerQueueRuntime", () => {
       lcmEmbedQueue: { add: vi.fn(), getJobCounts: vi.fn(), close: vi.fn() },
       handleJob,
       isTransientError: () => false,
+      recordTelemetry,
       pollIntervalMs: 60_000
     });
 
@@ -152,6 +208,17 @@ describe("createWorkerQueueRuntime", () => {
       id: 1,
       lockToken: "lock-1"
     });
+    expect(recordTelemetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queueName: "memory-embed",
+        data: { sourceId: "event-1" },
+        outcome: "completed",
+        result: { ok: true },
+        createdAt,
+        startedAt: expect.any(Date),
+        finishedAt: expect.any(Date)
+      })
+    );
   });
 
   it("recovers abandoned local jobs before workers start", async () => {
@@ -187,6 +254,54 @@ describe("createWorkerQueueRuntime", () => {
     );
     expect(runtimeLease.release).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    { transient: true, outcome: "retry" as const },
+    { transient: false, outcome: "failed" as const }
+  ])(
+    "records $outcome telemetry for failed local work",
+    async ({ transient, outcome }) => {
+      const repository = createRepository();
+      const createdAt = new Date(Date.now() - 100);
+      repository.claim.mockResolvedValueOnce({
+        id: 2,
+        queueName: "memory-embed",
+        jobName: "embed-source",
+        data: { sourceId: "event-2" },
+        attemptCount: 1,
+        maxAttempts: 5,
+        priority: 5,
+        lockToken: "lock-2",
+        createdAt
+      });
+      const recordTelemetry = vi.fn().mockResolvedValue(undefined);
+      const runtime = await createWorkerQueueRuntime({
+        backend: "local",
+        redisUrl: "redis://localhost:6379",
+        localQueueRepository: repository,
+        logger,
+        lcmEmbedQueue: { add: vi.fn(), getJobCounts: vi.fn(), close: vi.fn() },
+        handleJob: vi.fn().mockRejectedValue(new Error("embedding failed")),
+        isTransientError: () => transient,
+        recordTelemetry,
+        pollIntervalMs: 60_000
+      });
+
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      await runtime.close();
+
+      expect(repository.fail).toHaveBeenCalledWith({
+        id: 2,
+        lockToken: "lock-2",
+        errorMessage: "embedding failed",
+        retry: transient
+      });
+      expect(recordTelemetry).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome, createdAt })
+      );
+    }
+  );
 
   it("rejects a second Postgres-backed local queue runtime", async () => {
     const repository = createRepository();

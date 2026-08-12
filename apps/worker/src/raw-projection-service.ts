@@ -23,6 +23,7 @@ interface ProjectionReport {
 interface HistoricalAdmissionHealth {
   apiHealthy: boolean;
   embeddingServiceHealthy: boolean;
+  capacityProfileHealthy: boolean;
   queueHealthy: boolean;
 }
 

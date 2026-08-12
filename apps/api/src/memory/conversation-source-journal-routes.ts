@@ -155,7 +155,7 @@ const safeSegment = (segment: ConversationSourceSegmentRecord) => {
   return safe;
 };
 
-const readSegmentBytes = async (
+export const readConversationSourceSegmentBytes = async (
   context: ApiRouteContext,
   storage: ConversationSourceStorage,
   segment: ConversationSourceSegmentRecord
@@ -736,7 +736,11 @@ export const registerConversationSourceJournalRoutes = (
           { statusCode: 404 }
         );
       }
-      const bytes = await readSegmentBytes(context, storage, segment);
+      const bytes = await readConversationSourceSegmentBytes(
+        context,
+        storage,
+        segment
+      );
       return {
         segment: safeSegment(segment),
         bytesBase64: Buffer.from(bytes).toString("base64")

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 
 export const FIXTURE_VERSION = "team-saas-fixture-v1";
 export const FIXTURE_SOURCE_HASH_PREFIX = `${FIXTURE_VERSION}:`;
@@ -363,6 +363,78 @@ export const fixtureMemoryRows = fixtureMemories.map((memory, index) => ({
   idempotencyKey: `${FIXTURE_VERSION}:${memory.key}`
 }));
 
+export const fixtureConversationSources = [
+  {
+    key: "timeline-continuous-source",
+    memoryKey: "bob-electron-timeline",
+    mode: "continuous",
+    lifecycle: "active",
+    maximumSegmentIndex: null,
+    segments: [
+      [
+        {
+          type: "response_item",
+          payload: { role: "user", content: "Show the Workspace timeline." }
+        }
+      ],
+      [{ type: "event_msg", payload: { type: "task_complete" } }]
+    ]
+  },
+  {
+    key: "agent-rooms-snapshot-source",
+    memoryKey: "david-electron-agent-rooms",
+    mode: "snapshot",
+    lifecycle: "active",
+    maximumSegmentIndex: 0,
+    segments: [
+      [{ type: "event_msg", payload: { type: "task_complete" } }],
+      [
+        {
+          type: "response_item",
+          payload: {
+            role: "user",
+            content: "This later source record is outside the snapshot grant."
+          }
+        }
+      ]
+    ]
+  },
+  {
+    key: "revoked-experiment-source",
+    memoryKey: "david-electron-revoked-experiment",
+    mode: "continuous",
+    lifecycle: "revoked",
+    maximumSegmentIndex: null,
+    segments: [[{ type: "event_msg", payload: { type: "task_complete" } }]]
+  }
+].map((source) => ({
+  ...source,
+  id: fixtureUuid(`conversation-source:${source.key}:grant`),
+  artifactId: fixtureUuid(`conversation-source:${source.key}:artifact`),
+  logicalSourceId: fixtureUuid(`conversation-source:${source.key}:logical`),
+  sourceGenerationId: fixtureUuid(
+    `conversation-source:${source.key}:generation`
+  ),
+  originKeyId: fixtureUuid(`conversation-source:${source.key}:origin-key`),
+  mutationId: fixtureUuid(`conversation-source:${source.key}:mutation`),
+  segmentIds: source.segments.map((_, index) =>
+    fixtureUuid(`conversation-source:${source.key}:segment:${index}`)
+  )
+}));
+
+const fixtureConversationSourcePrivateKey = () => {
+  const seed = Buffer.from(
+    fixtureHash("conversation-source:origin-key"),
+    "hex"
+  );
+  const prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  return createPrivateKey({
+    key: Buffer.concat([prefix, seed]),
+    format: "der",
+    type: "pkcs8"
+  });
+};
+
 export const fixtureThreads = [
   {
     key: "alice-notes",
@@ -559,6 +631,8 @@ export const createFixtureRuntime = async (
     collaborationRepository: db.createCollaborationRepository(pool, {
       envelopeEncryptionProvider: teamProvider
     }),
+    teamConversationSourceRepository:
+      db.createTeamConversationSourceRepository(pool),
     sharedMemoryRepository: db.createSharedMemoryRepository(pool, {
       resolveTeamEncryptionProvider: () => teamProvider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
@@ -1276,6 +1350,228 @@ const seedCollaborationFixture = async (repository) => {
   }
 };
 
+const seedConversationSourceFixture = async (client, runtime) => {
+  const privateKey = fixtureConversationSourcePrivateKey();
+  const publicKey = runtime.shared.exportConversationSourceReplicationPublicKey(
+    createPublicKey(privateKey)
+  );
+  for (const source of fixtureConversationSources) {
+    const memory = fixtureMemoryRows.find(
+      (candidate) => candidate.key === source.memoryKey
+    );
+    if (!memory)
+      throw new Error(`Unknown source fixture memory: ${source.memoryKey}`);
+    const owner = fixtureUsers[memory.owner];
+    const originKeyId = source.originKeyId;
+    const sourceCreatedAt = memory.capturedAt;
+    const segmentRows = [];
+    let byteCursor = 0;
+    let itemCursor = 0;
+    let previousContentDigest = null;
+    for (const [segmentIndex, records] of source.segments.entries()) {
+      const bytes = Buffer.from(
+        `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+        "utf8"
+      );
+      const plaintextDigest = createHash("sha256").update(bytes).digest("hex");
+      const manifest = {
+        protocol: runtime.shared.CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+        logicalSourceId: source.logicalSourceId,
+        sourceGenerationId: source.sourceGenerationId,
+        originKeyId,
+        segmentIndex,
+        startByteCursor: byteCursor,
+        endByteCursor: byteCursor + bytes.byteLength,
+        startItemCursor: itemCursor,
+        endItemCursor: itemCursor + records.length,
+        previousContentDigest,
+        plaintextDigest,
+        sourceFormat: "jsonl",
+        adapterVersion: "codex-transcript-v1",
+        sourceCreatedAt,
+        priorGenerationClosure: null
+      };
+      const signedManifest =
+        runtime.shared.signConversationSourceReplicationManifest(
+          manifest,
+          privateKey
+        );
+      const contentDigest =
+        runtime.shared.calculateConversationSourceReplicationContentDigest(
+          signedManifest
+        );
+      const envelope = await runtime.teamProvider.encrypt({
+        plaintext: JSON.stringify({
+          signedManifest,
+          plaintextBytes: bytes.toString("base64url")
+        }),
+        scope: {
+          tenantId: owner.id,
+          objectClass: "conversation_source_segment"
+        },
+        provenance: {
+          rowFamily: "conversation_source_segments",
+          sourceId: `${source.artifactId}:${segmentIndex}`
+        },
+        ciphertextLocation: "conversation_source_segments.encryption_envelope",
+        aad: {
+          ownerUserId: owner.id,
+          logicalSourceId: source.logicalSourceId,
+          sourceGenerationId: source.sourceGenerationId,
+          segmentIndex,
+          contentDigest
+        }
+      });
+      segmentRows.push({
+        id: source.segmentIds[segmentIndex],
+        manifest,
+        signedManifest,
+        contentDigest,
+        envelope,
+        plaintextSize: bytes.byteLength,
+        storedSize: Buffer.byteLength(JSON.stringify(envelope), "utf8"),
+        ciphertextDigest: createHash("sha256")
+          .update(Buffer.from(envelope.ciphertext, "base64"))
+          .digest("hex")
+      });
+      byteCursor = manifest.endByteCursor;
+      itemCursor = manifest.endItemCursor;
+      previousContentDigest = contentDigest;
+    }
+    await client.query(
+      `insert into conversation_source_artifacts (
+         id, owner_user_id, session_id, logical_source_id,
+         source_generation_id, replica_role, source_kind, source_runtime,
+         external_session_id, source_fingerprint, artifact_format,
+         artifact_format_version, source_adapter_version, lifecycle,
+         journal_start_offset, journal_start_line, live_start_offset,
+         live_start_line, provider_cursor_offset, provider_cursor_line,
+         current_source_length, current_journal_sequence, source_created_at,
+         source_modified_at, storage_provider, storage_prefix,
+         origin_deployment_id, origin_device_id, origin_key_id,
+         origin_public_key, redacted_source_label
+       ) values (
+         $1,$2,$3,$4,$5,'origin_local','codex','codex',$6,$7,'jsonl',1,
+         'codex-transcript-v1','active',0,0,0,0,$8,$9,$8,$10,$11,$11,
+         'envelope_db',$12,$13,$14,$15,$16,'Fixture Codex session'
+       )`,
+      [
+        source.artifactId,
+        owner.id,
+        memory.sessionId,
+        source.logicalSourceId,
+        source.sourceGenerationId,
+        `${FIXTURE_VERSION}:${source.key}`,
+        fixtureHash(`conversation-source:${source.key}:fingerprint`),
+        byteCursor,
+        itemCursor,
+        segmentRows.length - 1,
+        sourceCreatedAt,
+        `${FIXTURE_VERSION}/${source.key}`,
+        fixtureInfrastructure.sourceDeploymentId,
+        fixtureUuid(`conversation-source:${source.key}:device`),
+        originKeyId,
+        publicKey
+      ]
+    );
+    for (const row of segmentRows) {
+      await client.query(
+        `insert into conversation_source_segments (
+           id, artifact_id, segment_index, source_start_offset,
+           source_end_offset, source_start_line, source_end_line,
+           plaintext_digest, ciphertext_digest, plaintext_size, stored_size,
+           storage_key, storage_provider, encryption_envelope, signed_manifest,
+           origin_signature, manifest_digest, previous_content_digest,
+           content_digest, sealed_at
+         ) values (
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'envelope_db',$13,$14,
+           $15,$16,$17,$18,$19
+         )`,
+        [
+          row.id,
+          source.artifactId,
+          row.manifest.segmentIndex,
+          row.manifest.startByteCursor,
+          row.manifest.endByteCursor,
+          row.manifest.startItemCursor,
+          row.manifest.endItemCursor,
+          row.manifest.plaintextDigest,
+          row.ciphertextDigest,
+          row.plaintextSize,
+          row.storedSize,
+          `${source.logicalSourceId}/${source.sourceGenerationId}/${row.manifest.segmentIndex}`,
+          json(row.envelope),
+          json(row.manifest),
+          row.signedManifest.signature,
+          runtime.shared.calculateConversationSourceReplicationManifestDigest(
+            row.manifest
+          ),
+          row.manifest.previousContentDigest,
+          row.contentDigest,
+          sourceCreatedAt
+        ]
+      );
+    }
+    const snapshotMaximumOffset =
+      source.mode === "snapshot"
+        ? segmentRows[source.maximumSegmentIndex].manifest.endByteCursor
+        : null;
+    await client.query(
+      `insert into team_conversation_source_grants (
+         id, share_grant_id, artifact_id, logical_source_id, owner_user_id,
+         session_id, team_id, team_workspace_id, mode,
+         maximum_segment_index, maximum_source_offset, version, lifecycle,
+         mutation_id, granted_by_user_id, creator_authority, created_at,
+         updated_at, revoked_at, revoked_by_user_id, revocation_reason
+       ) values (
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$5,
+         'fixture_seed',$14,$14,
+         case when $12='revoked' then $14::timestamptz else null end,
+         case when $12='revoked' then $5::uuid else null end,
+         case when $12='revoked' then 'fixture_revocation' else null end
+       )`,
+      [
+        source.id,
+        memory.shareGrantId,
+        source.artifactId,
+        source.logicalSourceId,
+        owner.id,
+        memory.sessionId,
+        fixtureTeam.id,
+        fixtureWorkspaces[memory.workspace].id,
+        source.mode,
+        source.maximumSegmentIndex,
+        snapshotMaximumOffset,
+        source.lifecycle,
+        source.mutationId,
+        sourceCreatedAt
+      ]
+    );
+    await client.query(
+      `insert into audit_events (
+         id, actor_user_id, owner_user_id, visibility, action, target_table,
+         target_id, metadata, created_at
+       ) values ($1,$2,$2,'personal',$3,'team_conversation_source_grants',$4,$5,$6)`,
+      [
+        fixtureUuid(`conversation-source:${source.key}:audit`),
+        owner.id,
+        source.lifecycle === "revoked"
+          ? "team_conversation_source.revoked"
+          : "team_conversation_source.granted",
+        source.id,
+        json({
+          fixture: FIXTURE_VERSION,
+          teamId: fixtureTeam.id,
+          teamWorkspaceId: fixtureWorkspaces[memory.workspace].id,
+          shareGrantId: memory.shareGrantId,
+          mode: source.mode
+        }),
+        sourceCreatedAt
+      ]
+    );
+  }
+};
+
 export const resetFixture = async (client) => {
   assertFixtureEnvironment();
   const fixtureLogicalMemoryIds = fixtureMemoryRows.map(
@@ -1307,6 +1603,18 @@ export const resetFixture = async (client) => {
          from team_session_share_grants
         where team_id = $1 or id = any($2::uuid[])`,
       [fixtureTeam.id, fixtureShareGrantIds]
+    );
+    await client.query(
+      `delete from audit_events
+        where id = any($1::uuid[])
+           or (target_table = 'team_conversation_source_grants'
+             and target_id = any($2::uuid[]))`,
+      [
+        fixtureConversationSources.map((source) =>
+          fixtureUuid(`conversation-source:${source.key}:audit`)
+        ),
+        fixtureConversationSources.map((source) => source.id)
+      ]
     );
     await client.query(
       `create temporary table fixture_reset_shared_artifacts
@@ -1575,6 +1883,16 @@ export const resetFixture = async (client) => {
     await client.query(
       `delete from team_session_share_grants
         where id in (select id from fixture_reset_share_grants)`
+    );
+    await client.query(
+      `delete from conversation_source_segments
+       where artifact_id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.artifactId)]
+    );
+    await client.query(
+      `delete from conversation_source_artifacts
+       where id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.artifactId)]
     );
     await client.query(
       `delete from source_owner_representation_consents
@@ -1940,7 +2258,7 @@ export const seedFixture = async (client, runtime) => {
           infrastructure.deviceCredentialId,
           owner.id,
           infrastructure.deviceCredentialKeyId,
-          `${FIXTURE_VERSION}-${userKey}-device-instance`,
+          fixtureUuid(`device-instance:${userKey}`),
           infrastructure.deviceCredentialLineageId,
           process.env.API_TOKEN_PEPPER?.trim()
             ? fixtureSessionHash(
@@ -2296,6 +2614,8 @@ export const seedFixture = async (client, runtime) => {
       await seedSharedMemoryTopology(client, runtime, memory);
     }
 
+    await seedConversationSourceFixture(client, runtime);
+
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -2485,6 +2805,7 @@ const normalizedRows = (table, rows) => {
   }[table];
   const randomized = new Set([
     "ciphertext",
+    "ciphertext_digest",
     "ciphertext_hash",
     "nonce",
     "tag",
@@ -2500,9 +2821,12 @@ const normalizedRows = (table, rows) => {
               key,
               table === "sessions" && key === "logical_session_id"
                 ? `<logical-session:${row.external_session_id}>`
-                : randomized.has(key)
+                : table === "conversation_source_segments" &&
+                    key === "encryption_envelope"
                   ? "<encrypted>"
-                  : value
+                  : randomized.has(key)
+                    ? "<encrypted>"
+                    : value
             ])
         )
       )
@@ -2667,6 +2991,30 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       [fixtureShareGrantIds]
     ],
     [
+      "conversation_source_artifacts",
+      "select * from conversation_source_artifacts where id = any($1::uuid[])",
+      [fixtureConversationSources.map((source) => source.artifactId)]
+    ],
+    [
+      "conversation_source_segments",
+      "select * from conversation_source_segments where artifact_id = any($1::uuid[])",
+      [fixtureConversationSources.map((source) => source.artifactId)]
+    ],
+    [
+      "team_conversation_source_grants",
+      "select * from team_conversation_source_grants where id = any($1::uuid[])",
+      [fixtureConversationSources.map((source) => source.id)]
+    ],
+    [
+      "conversation_source_audit_events",
+      `select actor_user_id, owner_user_id, visibility, action, target_table,
+              target_id, metadata
+         from audit_events
+        where target_table = 'team_conversation_source_grants'
+          and target_id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.id)]
+    ],
+    [
       "team_memory_representations",
       "select * from team_memory_representations where id = any($1::uuid[])",
       [representationIds]
@@ -2752,6 +3100,38 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
   snapshot.decryptedSharedMemory.sort((left, right) =>
     left.key.localeCompare(right.key)
   );
+  snapshot.decryptedConversationSources = [];
+  for (const source of fixtureConversationSources) {
+    const rows = await client.query(
+      `select segment_index, encryption_envelope
+         from conversation_source_segments
+        where artifact_id = $1
+        order by segment_index`,
+      [source.artifactId]
+    );
+    const records = [];
+    for (const row of rows.rows) {
+      const envelope =
+        runtime.shared.parseConversationSourceReplicationSegmentEnvelope(
+          JSON.parse(
+            await runtime.shared.decryptEnvelopeToUtf8(
+              runtime.teamProvider,
+              row.encryption_envelope
+            )
+          )
+        );
+      records.push({
+        segmentIndex: row.segment_index,
+        plaintext: Buffer.from(envelope.plaintextBytes, "base64url").toString(
+          "utf8"
+        )
+      });
+    }
+    snapshot.decryptedConversationSources.push({ key: source.key, records });
+  }
+  snapshot.decryptedConversationSources.sort((left, right) =>
+    left.key.localeCompare(right.key)
+  );
   return canonicalize(snapshot);
 };
 
@@ -2819,6 +3199,91 @@ export const validateFixture = async (client, runtime) => {
       .length,
     "Fixture encrypted Team representations"
   );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from team_conversation_source_grants
+      where id = any($1::uuid[])`,
+    [fixtureConversationSources.map((source) => source.id)],
+    fixtureConversationSources.length,
+    "Fixture independent Conversation Source Access grants"
+  );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from audit_events
+      where target_table = 'team_conversation_source_grants'
+        and target_id = any($1::uuid[])
+        and action in (
+          'team_conversation_source.granted',
+          'team_conversation_source.revoked'
+        )`,
+    [fixtureConversationSources.map((source) => source.id)],
+    fixtureConversationSources.length,
+    "Fixture Conversation Source audit events"
+  );
+
+  for (const source of fixtureConversationSources) {
+    const memory = fixtureMemoryRows.find(
+      (candidate) => candidate.key === source.memoryKey
+    );
+    const actor = { userId: fixtureUsers.carol.id };
+    const access =
+      await runtime.teamConversationSourceRepository.getTeamConversationSourceAccess(
+        actor,
+        { shareGrantId: memory.shareGrantId }
+      );
+    if (source.lifecycle === "revoked") {
+      if (access !== null) {
+        throw new Error(`${source.key}: revoked exact source was readable`);
+      }
+      continue;
+    }
+    if (!access || access.grant.mode !== source.mode) {
+      throw new Error(
+        `${source.key}: source grant mode or access is incorrect`
+      );
+    }
+    const manifest =
+      await runtime.teamConversationSourceRepository.getTeamConversationSourceManifest(
+        actor,
+        {
+          shareGrantId: memory.shareGrantId,
+          afterSegmentIndex: -1,
+          limit: 100,
+          recordAudit: false
+        }
+      );
+    const expectedSegmentCount =
+      source.mode === "snapshot"
+        ? source.maximumSegmentIndex + 1
+        : source.segments.length;
+    if (!manifest || manifest.segments.length !== expectedSegmentCount) {
+      throw new Error(
+        `${source.key}: snapshot/continuous boundary is incorrect`
+      );
+    }
+    for (const segment of manifest.segments) {
+      const restored =
+        runtime.shared.parseConversationSourceReplicationSegmentEnvelope(
+          JSON.parse(
+            await runtime.shared.decryptEnvelopeToUtf8(
+              runtime.teamProvider,
+              segment.encryptionEnvelope
+            )
+          )
+        );
+      const exact = Buffer.from(restored.plaintextBytes, "base64url").toString(
+        "utf8"
+      );
+      const expected = `${source.segments[segment.segmentIndex]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`;
+      if (exact !== expected) {
+        throw new Error(`${source.key}: encrypted exact source bytes drifted`);
+      }
+    }
+  }
   if (process.env.API_TOKEN_PEPPER?.trim()) {
     await assertCount(
       client,
@@ -3494,14 +3959,17 @@ export const validateFixture = async (client, runtime) => {
        coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
          from (select * from team_memory_representations where share_grant_id = any($5::uuid[])) row_data), ''),
        coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
-         from (select * from team_memory_representation_chunks where share_grant_id = any($5::uuid[])) row_data), '')
+         from (select * from team_memory_representation_chunks where share_grant_id = any($5::uuid[])) row_data), ''),
+       coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
+         from (select * from conversation_source_segments where artifact_id = any($6::uuid[])) row_data), '')
      ) as raw`,
     [
       fixtureThreadIds,
       fixtureThreadIds,
       fixtureMessages.rows.map((row) => row.id),
       sharedMemories.map((memory) => memory.logicalMemoryId),
-      sharedMemories.map((memory) => memory.shareGrantId)
+      sharedMemories.map((memory) => memory.shareGrantId),
+      fixtureConversationSources.map((source) => source.artifactId)
     ]
   );
   const rawText = String(rawStorage.rows[0]?.raw ?? "");
@@ -3512,7 +3980,12 @@ export const validateFixture = async (client, runtime) => {
       thread.key,
       ...thread.messages.map(([, body]) => body)
     ]),
-    ...fixtureMemoryRows.flatMap((memory) => [memory.title, memory.content])
+    ...fixtureMemoryRows.flatMap((memory) => [memory.title, memory.content]),
+    ...fixtureConversationSources.flatMap((source) =>
+      source.segments.flatMap((records) =>
+        records.map((record) => JSON.stringify(record))
+      )
+    )
   ].filter(Boolean);
   for (const value of sensitiveValues) {
     if (rawText.includes(value)) {
@@ -3563,6 +4036,7 @@ export const validateFixture = async (client, runtime) => {
       "Personal self-chat/channel and every Team thread kind are present",
       "DM, group-DM, and personal-thread direct reads enforce participant isolation",
       "Shared Memory representations decrypt through the authorized production path",
+      "Independent Conversation Source Access grants enforce encrypted exact-read, snapshot, continuous, revocation, and audit boundaries",
       "Companion discussion history and unread state are deterministic",
       "Collaboration names, topics, bodies, metadata, and provenance have exact encrypted payload coverage",
       "Shared source artifacts, previews, chunks, bindings, and outbox surfaces contain no sensitive plaintext"

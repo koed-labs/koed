@@ -5,6 +5,7 @@ import {
   FIXTURE_VERSION,
   assertFixtureEnvironment,
   createFixtureRuntime,
+  fixtureConversationSources,
   fixtureDeviceSecrets,
   fixtureMemoryRows,
   fixtureShareGrantIds,
@@ -43,6 +44,27 @@ test("Team SaaS fixture definition is deterministic and realistic", () => {
     "ingestion"
   ]);
   assert.equal(new Set(fixtureUserIds).size, fixtureUserIds.length);
+  assert.deepEqual(
+    fixtureConversationSources.map((source) => [source.mode, source.lifecycle]),
+    [
+      ["continuous", "active"],
+      ["snapshot", "active"],
+      ["continuous", "revoked"]
+    ]
+  );
+  for (const source of fixtureConversationSources) {
+    assert.match(
+      source.originKeyId,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+  }
+  assert.ok(
+    fixtureMemoryRows.filter((memory) => memory.shareState === "active")
+      .length >
+      fixtureConversationSources.filter(
+        (source) => source.lifecycle === "active"
+      ).length
+  );
   assert.equal(new Set(fixtureUserEmails).size, fixtureUserEmails.length);
   assert.deepEqual(
     Object.keys(fixtureDeviceSecrets).sort(),

@@ -228,6 +228,25 @@ export {
   type RunDbMigrationsOptions
 } from "./migrate.js";
 export {
+  CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
+  EMBEDDING_CAPACITY_CONTRACT_REVISION,
+  createEmbeddingCapacityRepository,
+  type EmbeddingBackendClass,
+  type EmbeddingCalibrationMode,
+  type EmbeddingCapacityProfileInput,
+  type EmbeddingCapacityProfileRecord,
+  type EmbeddingCapacityProfileState,
+  type EmbeddingCapacityRepository,
+  type EmbeddingCapacitySampleMeasurement,
+  type EmbeddingSemanticBacklog,
+  type EmbeddingTelemetryObservation,
+  type EmbeddingTelemetryCumulative,
+  type EmbeddingTelemetryOutcome,
+  type EmbeddingTelemetryQueueName,
+  type EmbeddingTelemetrySourceClass,
+  type EmbeddingTelemetryWindow
+} from "./embedding-capacity-repository.js";
+export {
   createMemorySourceRepository,
   localRerankingEnabled
 } from "./repository.js";
@@ -310,6 +329,18 @@ export {
   createTeamAccessRepository,
   type TeamAccessRepository
 } from "./team-access-repository.js";
+export {
+  createTeamConversationSourceRepository,
+  TeamConversationSourceAuthorizationError,
+  TeamConversationSourceConflictError,
+  type TeamConversationSourceAccessRecord,
+  type TeamConversationSourceGrantLifecycle,
+  type TeamConversationSourceGrantMode,
+  type TeamConversationSourceGrantRecord,
+  type TeamConversationSourceGrantReviewRecord,
+  type TeamConversationSourceManifestRecord,
+  type TeamConversationSourceRepository
+} from "./team-conversation-source-repository.js";
 export {
   createUserApiTokenRepository,
   mapUserRecord

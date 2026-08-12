@@ -33,6 +33,7 @@ import {
   userSessions
 } from "./schema.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
+import { createTeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 
 export const defaultHighRiskConfirmationTtlMs = 5 * 60 * 1000;
 export const defaultHighRiskActionGrantTtlMs = 60 * 1000;
@@ -139,6 +140,9 @@ export interface ExecuteHighRiskActionGrantInput<
     sharedMemory: ReturnType<typeof createSharedMemoryRepository>;
     sync: ReturnType<typeof createCrossIdentitySyncRepository>;
     sourceJournal: ReturnType<typeof createConversationSourceJournalRepository>;
+    teamConversationSource: ReturnType<
+      typeof createTeamConversationSourceRepository
+    >;
     managedConversation: ReturnType<
       typeof createManagedConversationRepository
     > &
@@ -468,6 +472,8 @@ const buildScopedRepositories = (
       envelopeEncryptionProvider: ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     sourceJournal: createConversationSourceJournalRepository(savepointPool),
+    teamConversationSource:
+      createTeamConversationSourceRepository(savepointPool),
     managedConversation: {
       ...createManagedConversationRepository(savepointPool, {
         envelopeEncryptionProvider

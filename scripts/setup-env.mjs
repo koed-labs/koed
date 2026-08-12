@@ -75,7 +75,8 @@ const generatedValues = new Map([
     "API_COLLABORATION_REALTIME_CURSOR_SECRET",
     randomBytes(48).toString("base64url")
   ],
-  ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")]
+  ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")],
+  ["KOED_OPS_METRICS_TOKEN", randomBytes(32).toString("base64url")]
 ]);
 
 const rendered = renderSetupEnv({ example, existing, generatedValues });

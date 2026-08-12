@@ -10,6 +10,8 @@ import {
   sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareBundleActionGrantBinding,
+  sharedMemoryTranscriptAccessActionGrantBinding,
+  sharedMemoryTranscriptRevokeActionGrantBinding,
   type CollaborationApprovalReview
 } from "@koed/shared";
 
@@ -28,6 +30,8 @@ type SharedMemoryAction =
   | "shared_memory.preview"
   | "shared_memory.share"
   | "shared_memory.revoke"
+  | "shared_memory.conversation_source_grant"
+  | "shared_memory.conversation_source_revoke"
   | "shared_memory.change_representation";
 
 export type SharedMemoryActionIntent = Extract<
@@ -41,6 +45,7 @@ type SharedMemoryActionRepository = Pick<
   | "getSharedMemoryShareReview"
   | "getSharedMemoryRevokeReview"
   | "getSharedMemoryRepresentationChangeReview"
+  | "getTeamConversationSourceGrantReview"
 >;
 
 interface SharedMemoryAdmissionInput {
@@ -164,6 +169,38 @@ export const bindSharedMemoryRepresentationChangeOperation = (
     previewRevision: intent.previewRevision,
     previewHash: intent.previewHash,
     expiresAt: intent.expiresAt
+  });
+
+export const bindConversationSourceGrantOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.conversation_source_grant" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryTranscriptAccessActionGrantBinding({
+    referenceId,
+    mutationId: intent.mutationId,
+    teamId: intent.teamId,
+    shareGrantId: intent.shareGrantId,
+    expectedVersion: intent.expectedVersion,
+    mode: intent.mode
+  });
+
+export const bindConversationSourceRevokeOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.conversation_source_revoke" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryTranscriptRevokeActionGrantBinding({
+    referenceId,
+    mutationId: intent.mutationId,
+    teamId: intent.teamId,
+    shareGrantId: intent.shareGrantId,
+    expectedVersion: intent.expectedVersion,
+    reasonCode: intent.reasonCode
   });
 
 const shareReview = (
@@ -414,9 +451,91 @@ const representationChangeDefinition = {
   }
 };
 
+const conversationSourceGrantDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.conversation_source_grant") {
+      return null;
+    }
+    const review = requireReview(
+      await input.repository.getTeamConversationSourceGrantReview(
+        { userId: input.userId },
+        {
+          shareGrantId: input.intent.shareGrantId,
+          teamId: input.intent.teamId,
+          expectedVersion: input.intent.expectedVersion
+        }
+      ),
+      "Conversation Source sharing"
+    );
+    return {
+      operation: bindConversationSourceGrantOperation(
+        input.intent,
+        input.clientRequestId
+      ),
+      policy: reviewed("step_up", {
+        title: "Share the Conversation Source?",
+        description:
+          "Allow authorized Workspace members to read the committed source records for this Captured Session.",
+        consequence:
+          "This is independent of semantic Memory sharing and may expose higher-fidelity source detail.",
+        confirmLabel: "Share source",
+        details: [
+          { label: "Captured Session", value: review.sourceTitle },
+          { label: "Team", value: review.teamName },
+          { label: "Workspace", value: review.teamWorkspaceName },
+          { label: "Mode", value: input.intent.mode }
+        ]
+      })
+    };
+  }
+};
+
+const conversationSourceRevokeDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.conversation_source_revoke") {
+      return null;
+    }
+    const review = requireReview(
+      await input.repository.getTeamConversationSourceGrantReview(
+        { userId: input.userId },
+        {
+          shareGrantId: input.intent.shareGrantId,
+          teamId: input.intent.teamId,
+          expectedVersion: input.intent.expectedVersion
+        }
+      ),
+      "Conversation Source revocation"
+    );
+    return {
+      operation: bindConversationSourceRevokeOperation(
+        input.intent,
+        input.clientRequestId
+      ),
+      policy: reviewed("native_review", {
+        title: "Stop sharing the Conversation Source?",
+        description:
+          "Remove read-only source access without deleting Personal Memory or changing its semantic Share Grant.",
+        consequence:
+          "Open source streams close and future segment or snapshot reads fail.",
+        confirmLabel: "Revoke source access",
+        details: [
+          { label: "Captured Session", value: review.sourceTitle },
+          { label: "Team", value: review.teamName },
+          { label: "Workspace", value: review.teamWorkspaceName }
+        ]
+      })
+    };
+  }
+};
+
 export const sharedMemoryActionDefinitions = {
   "shared_memory.preview": previewDefinition,
   "shared_memory.share": shareDefinition,
   "shared_memory.revoke": revokeDefinition,
+  "shared_memory.conversation_source_grant": conversationSourceGrantDefinition,
+  "shared_memory.conversation_source_revoke":
+    conversationSourceRevokeDefinition,
   "shared_memory.change_representation": representationChangeDefinition
 };

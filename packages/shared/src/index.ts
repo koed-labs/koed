@@ -475,7 +475,9 @@ export {
   sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareBundleActionGrantBinding,
-  sharedMemoryShareActionGrantBinding
+  sharedMemoryShareActionGrantBinding,
+  sharedMemoryTranscriptAccessActionGrantBinding,
+  sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";
 export type {
   SharedMemoryActionGrantBinding,
@@ -885,6 +887,7 @@ export interface KoedJobQueue<TJobData = unknown> {
     options?: KoedJobEnqueueOptions
   ): Promise<KoedJobHandle>;
   getJobCounts(...statuses: string[]): Promise<Record<string, number>>;
+  getOldestPendingAgeMs?(): Promise<number | null>;
   close(): Promise<void>;
 }
 

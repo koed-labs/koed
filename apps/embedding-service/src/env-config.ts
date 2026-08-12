@@ -51,6 +51,8 @@ export interface EmbeddingServiceEnv {
   rerankerParallel: number;
   rerankerPromptCacheEnabled: boolean;
   embeddingServiceToken: string;
+  backendClass: "cpu" | "metal" | "cuda" | "unknown";
+  runtimeVersion: string;
   logLevel: string;
 }
 
@@ -155,6 +157,18 @@ export const strEnv = (
 const trim = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+};
+
+const embeddingBackendClass = (
+  value: string | undefined
+): EmbeddingServiceEnv["backendClass"] => {
+  const normalized = value?.trim().toLowerCase() ?? "cpu";
+  if (!["cpu", "metal", "cuda", "unknown"].includes(normalized)) {
+    throw new Error(
+      "KOED_EMBEDDING_BACKEND_CLASS must be cpu, metal, cuda, or unknown"
+    );
+  }
+  return normalized as EmbeddingServiceEnv["backendClass"];
 };
 
 const firstEnv = (
@@ -452,6 +466,11 @@ export const resolveEnv = (
       true
     ),
     embeddingServiceToken: environment.EMBEDDING_SERVICE_TOKEN?.trim() ?? "",
+    backendClass: embeddingBackendClass(
+      environment.KOED_EMBEDDING_BACKEND_CLASS
+    ),
+    runtimeVersion:
+      trim(environment.KOED_EMBEDDING_RUNTIME_VERSION) ?? "unknown",
     logLevel:
       firstEnv(environment, ["LOG_LEVEL", "EMBEDDING_LOG_LEVEL"]) ?? "info"
   };
