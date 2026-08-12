@@ -34,8 +34,8 @@ connected AI Client through the `koed-server`-supervised Local AI Runtime.
   Projection endpoint.
 - `src/memory/recall-routes.ts`: Recall and Evidence Bundle endpoints.
 - `src/memory/lcm-routes.ts`: pending LCM Summary and submission routes.
-- `src/memory/questions-routes.ts`: Memory Question persistence and claim/update
-  routes.
+- `src/memory/questions-routes.ts`: Memory Question persistence, metadata-only
+  history listing, detail, and claim/update routes.
 - `src/memory/graph-routes.ts` and `src/memory/graph-stream.ts`: Desktop graph
   APIs and update stream.
 - `src/memory/jobs.ts`: embedding and LCM compaction job scheduling.

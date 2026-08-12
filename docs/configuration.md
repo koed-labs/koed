@@ -473,6 +473,18 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   in `managed_kms`, `byok`, or `cmek` mode. These values are required together
   for a KMS-backed owner-private provider and are never inherited from
   `MANAGED_KMS_*`.
+- `TEAM_MEMORY_DATA_ENCRYPTION_KEY` and
+  `TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER`: the independent Team
+  representation key family. Explicit Team Curated Memory requires this
+  provider and rejects a key ID shared with either the Personal/base or
+  owner-private replica provider. The supported modes match the other envelope
+  families.
+- `TEAM_MEMORY_MANAGED_KMS_KEY_ID`,
+  `TEAM_MEMORY_MANAGED_KMS_KEY_VERSION`,
+  `TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL`, and
+  `TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN`: isolated Team Memory KMS settings for
+  `managed_kms`, `byok`, or `cmek`. They are never inherited from the Personal
+  or owner-private KMS families.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
 - `API_CORS_ORIGINS`: comma-separated exact browser origins, including scheme,
   host, and port. Cookie-authenticated Shared Memory,
@@ -619,7 +631,7 @@ policy, or full URLs containing customer content.
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `KOED_MODELS_DIR`: optional shared model directory for bundled-local model install and Docker Compose model mounts. Defaults to `KOED_HOME/models`.
 - `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: optional custom artifact URL and expected SHA-256 used by `koed-server models install --kind embedding`. When unset, Koed installs the default pinned Qwen embedding model. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
-- `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind reranker`. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
+- `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind reranker`. The SHA-256 is required whenever reranking is enabled; Embedding Service startup hashes the exact GGUF passed to llama-server and rejects a mismatch. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
 - `KOED_BUNDLED_POSTGRES_MODE`: deprecated. Bundled-local Postgres is native-only; `compose` is ignored and missing native binaries report setup guidance.
 - `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, `psql`, `pg_dump`, and `pg_restore` binaries for bundled-local Postgres. Defaults to `KOED_HOME/runtime/postgres/bin`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/postgres/bin` only as a development fallback. Individual startup binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`; hosted backup commands may use `PSQL_BIN`, `PG_DUMP_BIN`, and `PG_RESTORE_BIN` for external database operators.
 - `KOED_POSTGRES_DATA_DIR`, `KOED_POSTGRES_RUN_DIR`, `KOED_POSTGRES_LOG_PATH`: optional native bundled-local Postgres data, socket/runtime, and log paths. Defaults live under `KOED_HOME`.
@@ -644,13 +656,11 @@ policy, or full URLs containing customer content.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: optional worker-visible API readiness override for historical admission. When omitted, Koed derives `/ready` from `MEMORY_API_URL`; if neither URL is configured, historical batches fail closed.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
-- `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
+- `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.
 - `MEMORY_RAG_RAW_FALLBACK_ENABLED`: set `false` to disable raw fallback retrieval.
-- `MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED`: explicit opt-in for plaintext
-  `lexical_search`. Koed-managed cloud disables plaintext lexical search by
-  default because encrypted Memory text should not be searched through raw
-  plaintext SQL columns. Leave unset for the profile default.
+- Production recall uses semantic candidate generation plus narrowed exact
+  checks. BM25 and lexical baselines exist only in the Retrieval Arena.
 - `MEMORY_RAG_ROLLUP_MIN_SCORE`, `MEMORY_RAG_SCOPED_LEAF_MIN_SCORE`, `MEMORY_RAG_LEAF_MIN_SCORE`, `MEMORY_RAG_FRESH_EVENT_MIN_SCORE`, `MEMORY_RAG_RAW_FALLBACK_MIN_SCORE`: optional per-stage minimum score thresholds. Leave blank to use the default threshold of `0`.
 - `MEMORY_EVENT_MAX_TOKENS`: soft token target for projected semantic Memory Event bundle rollover. Default `2048`; values above `32768` are clamped to the Qwen operational cap. Projection rolls over only between complete source items at this target.
 - `MEMORY_AGENT_TURN_STALE_MS`: quiet-time fallback for sealing an incomplete agent-turn Memory Event during catch-up if no turn-complete Capture Hook or next user prompt arrives. Default `900000` (15 minutes). Set `0` only in tests or controlled recovery runs to seal any incomplete agent turn immediately.
@@ -732,6 +742,15 @@ These values are copied into the AI Client configuration and are not consumed au
   titles persist the frontmatter version of the prompt that produced them.
 
 - `MEMORY_API_URL`: API URL used internally by the `koed-server`-supervised Local AI Runtime. The MCP adapter and Supported Capture Hook do not receive it through MCP configuration.
+- `KOED_EVAL_NO_LEXICAL_INDEX_MANIFEST` and
+  `KOED_EVAL_NO_LEXICAL_INDEX_PROOF_SHA256`: Retrieval Arena-only settings for
+  a separate no-anchor runtime. Both must be set together; the proof value is
+  the SHA-256 of the exact local manifest bytes. The API validates the manifest
+  against `MEMORY_API_URL`, the effective embedding model, and each document's
+  summary-only input, generation, source hash, and vector checksum in the exact
+  live isolated database/schema and document set before advertising the
+  isolated-index capability. Leave both unset for normal production retrieval. The older
+  `KOED_EVAL_RETRIEVAL_COMPOSITION` string is not trusted as a capability.
 - `MEMORY_API_TOKEN`: Personal API Token provisioned for the Local AI Runtime. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`; it is not written into MCP configuration.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for canonical conversation-item ingestion batches. Default `180000`. Oversized logical items use at most 64 transport chunks of 256 KiB each and fail before upload above the 16 MiB logical-item ceiling.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for Local AI Runtime API calls. Default `60_000`.
@@ -745,6 +764,10 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
 - `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum Koed RAG evidence expansion tool calls per MCP Memory Answer worker turn.
+- `MEMORY_ANSWER_MAX_CANDIDATES`: maximum internal candidates retained by one Memory Answer. Default `50`; valid range `1`–`200`.
+- `MEMORY_ANSWER_MAX_EVIDENCE_ITEMS`: maximum evidence items admitted to one Memory Answer prompt. Default `50`; valid range `1`–`200`.
+- `MEMORY_ANSWER_MAX_EVIDENCE_TOKENS`: maximum estimated evidence tokens admitted to one Memory Answer prompt. Default `12000`; valid range `256`–`100000`.
+- `MEMORY_ANSWER_MAX_PROMPT_TOKENS`: maximum estimated complete Memory Answer prompt tokens. Default `24000`; valid range `512`–`200000`.
 - `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary synthesis. Default and only supported value: `codex`.
 - `MEMORY_LCM_SUMMARY_MODEL`: Codex model for LCM Summary synthesis. Default `gpt-5.6-luna`.
 - `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: Codex reasoning effort for LCM Summary synthesis. Default `low`.
@@ -852,6 +875,13 @@ raw conversation-item source fields, projected message/tool payloads, Memory
 Event payloads, Memory Node text/source/structured-summary fields, embedding
 source text, and Memory Question query/answer/evidence/worker payloads through
 encrypted field companions and keep the operational source columns redacted.
+Memory Question sensitive fields are the exception to the profile distinction:
+their query, answer, error, evidence, citation, retrieval, worker, and response
+payloads always use redacted operational columns plus encrypted companions in
+every profile. History listing supports metadata filters and pagination only;
+it never performs a broad decrypted text scan.
+The encrypted retrieval payload includes caller retrieval hints and the bounded
+internal retrieval trace; neither belongs in ordinary logs or diagnostics.
 Paid Koed-managed cloud must use a KMS-backed envelope provider. Projection
 hydrates raw conversation-item companions inside the trusted repository boundary
 before deriving semantic rows. Authorized graph, embedding, retrieval, LCM, and

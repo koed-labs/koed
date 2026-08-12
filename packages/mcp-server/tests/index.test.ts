@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { storeLocalEdgeClientCredential } from "@koed/shared";
 import {
   MemoryApiClient,
   allTools,
@@ -43,6 +44,7 @@ import {
   resolveProjectTeamWorkspaceRoute,
   teamWorkspaceAutoResolutionEnabled
 } from "../src/project-team-workspace-links.js";
+import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
 
 const servers: http.Server[] = [];
 
@@ -191,7 +193,8 @@ const lcmSummaryJson = (summary_text: string) =>
   JSON.stringify({
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
     title: "Captured Memory Summary",
-    summary_text
+    summary_text,
+    lexical_anchors: []
   });
 
 const createApi = async (handler: http.RequestListener): Promise<string> => {
@@ -1222,6 +1225,7 @@ describe("LCM summary background service", () => {
     const nodeId = randomUUID();
     const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
     const searchBodies: Record<string, unknown>[] = [];
+    const authorizationBoundary = "server-issued-boundary";
     const apiUrl = await createApi((request, response) => {
       response.setHeader("content-type", "application/json");
       if (request.url === "/v1/memory/search") {
@@ -1273,6 +1277,7 @@ describe("LCM summary background service", () => {
       const answered = await answerWithMemoryWorker(
         {
           markdown: "",
+          authorizationBoundary,
           evidenceBundle: {
             query: "What did the Team decide?",
             evidence: [],
@@ -1302,6 +1307,11 @@ describe("LCM summary background service", () => {
       );
       expect(answered.localMemoryWorker.usedFallback).toBe(false);
       expect(searchBodies).toHaveLength(2);
+      expect(
+        searchBodies.every(
+          (body) => body.authorization_boundary === authorizationBoundary
+        )
+      ).toBe(true);
       expect(searchBodies).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -1315,6 +1325,160 @@ describe("LCM summary background service", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("routes a Memory Answer Team request through the scoped local-edge credential", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-mcp-team-"));
+    const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
+    const backendId = "fixture-team-backend";
+    const hintSentinel = "GARNET_HINT_MUST_STAY_ENCRYPTED";
+    const personalToken = "personal-token-must-not-reach-team-route";
+    const teamRequests: Array<{
+      authorization: string | undefined;
+      body: Record<string, unknown>;
+    }> = [];
+    const persistedQuestions: Record<string, unknown>[] = [];
+    let personalSearchCount = 0;
+    storeLocalEdgeClientCredential(directory, {
+      backendId,
+      secret: "fixture-local-edge-secret",
+      operationFamilies: ["team_memory"]
+    });
+    const appServerBinary = writeFakeMemoryAnswerAppServer(directory);
+    const apiUrl = await createApi((request, response) => {
+      response.setHeader("content-type", "application/json");
+      let body = "";
+      request.on("data", (chunk) => {
+        body += String(chunk);
+      });
+      request.on("end", () => {
+        const parsed = body
+          ? (JSON.parse(body) as Record<string, unknown>)
+          : {};
+        if (request.url === "/v1/capabilities") {
+          response.end(
+            JSON.stringify({ capabilitySchemaVersion: 4, capabilities: {} })
+          );
+          return;
+        }
+        if (request.url === "/v1/access/check") {
+          response.end(
+            JSON.stringify({ ok: true, defaultAnswerScope: "personal" })
+          );
+          return;
+        }
+        if (request.url === "/v1/memory/local-agent-settings") {
+          response.end(JSON.stringify({ settings: [] }));
+          return;
+        }
+        if (request.url === "/v1/local-edge/team-memory/search") {
+          teamRequests.push({
+            authorization: request.headers.authorization,
+            body: parsed
+          });
+          const input = parsed.input as Record<string, unknown>;
+          response.end(
+            JSON.stringify(
+              input.retrieval_stage === "score_scan"
+                ? {
+                    retrieval: {
+                      stages: [
+                        {
+                          name: "leaf_search",
+                          countAboveThreshold: 1,
+                          maxAllowed: 1
+                        }
+                      ]
+                    }
+                  }
+                : {
+                    hits: [
+                      {
+                        nodeId: "node-1",
+                        sourceType: "memory_node",
+                        sourceId: "node-1",
+                        sourceChunkIndex: 0,
+                        visibility: "team",
+                        summaryText:
+                          "The Team fixture uses the same Memory Answer worker flow."
+                      }
+                    ],
+                    retrieval: { stage: input.retrieval_stage }
+                  }
+            )
+          );
+          return;
+        }
+        if (request.url === "/v1/memory/search") {
+          personalSearchCount += 1;
+          response.statusCode = 500;
+          response.end(
+            JSON.stringify({ error: "personal route must not run" })
+          );
+          return;
+        }
+        if (request.url === "/v1/memory/questions/final") {
+          persistedQuestions.push(parsed);
+          response.end(JSON.stringify({ question: { id: randomUUID() } }));
+          return;
+        }
+        response.end(JSON.stringify({}));
+      });
+    });
+    const environment = {
+      ...process.env,
+      MEMORY_API_URL: apiUrl,
+      MEMORY_API_TOKEN: personalToken,
+      KOED_HOME: directory,
+      KOED_TEAM_UPSTREAM_BACKEND_ID: backendId,
+      MEMORY_ANSWER_PROVIDER: "codex",
+      MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+      MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+      MEMORY_ANSWER_MAX_SEARCHES: "6",
+      MEMORY_ANSWER_MAX_EXPANSIONS: "0"
+    } as NodeJS.ProcessEnv;
+    const executor = new MemoryToolExecutor(
+      new MemoryApiClient({ apiUrl, apiToken: personalToken }),
+      environment
+    );
+    try {
+      const result = await executor.execute(
+        "memory_answer",
+        {
+          query: "What did the Team decide?",
+          retrieval_hints: { exact: [hintSentinel] },
+          search_domain: "project",
+          project_id: "/repo/koed",
+          team_workspace_id: teamWorkspaceId
+        },
+        { cwd: "/repo/koed" }
+      );
+      expect(result.markdown).toEqual(expect.any(String));
+      expect(teamRequests.length).toBeGreaterThan(0);
+      expect(personalSearchCount).toBe(0);
+      expect(
+        teamRequests.every((entry) =>
+          entry.authorization?.startsWith("Koed-Device ")
+        )
+      ).toBe(true);
+      expect(
+        teamRequests.every(
+          (entry) => entry.authorization !== `Bearer ${personalToken}`
+        )
+      ).toBe(true);
+      expect(
+        teamRequests.every(
+          (entry) =>
+            entry.body.upstream_backend_id === backendId &&
+            (entry.body.input as Record<string, unknown>).team_workspace_id ===
+              teamWorkspaceId
+        )
+      ).toBe(true);
+      expect(JSON.stringify(teamRequests)).toContain(hintSentinel);
+      expect(persistedQuestions).toHaveLength(1);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it("covers capture hook to local LCM summary to one-tool recall", async () => {
     const sessionId = randomUUID();

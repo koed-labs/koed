@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertLaunchEmbeddingReadiness,
   assertSeparateLaunchTestDatabase,
   assertLaunchValidationEnvironment,
   automatedLaunchTestCommands,
@@ -12,6 +13,7 @@ import {
   runStagedRemoteValidation,
   summarizeLaunchValidation
 } from "./team-saas-launch-validation-lib.mjs";
+import { fixtureMemoryRows } from "./team-saas-fixture-lib.mjs";
 
 test("launch validation requires API_TOKEN_PEPPER for Auth gate coverage", () => {
   assert.doesNotThrow(() =>
@@ -24,6 +26,97 @@ test("launch validation requires API_TOKEN_PEPPER for Auth gate coverage", () =>
   assert.throws(
     () => assertLaunchValidationEnvironment({}),
     /API_TOKEN_PEPPER is required/
+  );
+});
+
+const completedEmbeddingRow = (memory) => ({
+  semantic_item_id: `${memory.representationId}:semantic`,
+  representation_id: memory.representationId,
+  item_type: {
+    memory_events: "user_message",
+    lcm_leaves: "lcm_leaf",
+    lcm_rollups: "lcm_rollup",
+    curated_assertions: "curated_assertion"
+  }[memory.representation],
+  embedding_state: "embedded",
+  embedding_model: "qwen3-0.6b",
+  embedding_dimensions: 1024,
+  embedding_version: "fixture-model-v1",
+  embedding_input_hash: "a".repeat(64),
+  embedded_at: new Date("2026-01-01T09:00:00.000Z"),
+  last_error_class: null,
+  has_vector: true
+});
+
+test("launch embedding readiness requires completed vectors for all four Team representations", async () => {
+  const visibleMemories = fixtureMemoryRows.filter(
+    (memory) => memory.expectedTeamVisible
+  );
+  const client = {
+    async query(sql, [representationIds]) {
+      for (const dimensions of [384, 1024, 1536, 3072]) {
+        assert.match(
+          sql,
+          new RegExp(`team_memory_semantic_vectors_${dimensions}`)
+        );
+      }
+      assert.deepEqual(
+        representationIds,
+        visibleMemories.map((memory) => memory.representationId)
+      );
+      return { rows: visibleMemories.map(completedEmbeddingRow) };
+    }
+  };
+
+  const proof = await assertLaunchEmbeddingReadiness(client);
+  assert.equal(proof.embeddedItems, visibleMemories.length);
+  assert.deepEqual(proof.representations, [
+    "memory_events",
+    "lcm_leaves",
+    "lcm_rollups",
+    "curated_assertions"
+  ]);
+});
+
+test("launch embedding readiness rejects pending and processing items", async () => {
+  const visibleMemories = fixtureMemoryRows.filter(
+    (memory) => memory.expectedTeamVisible
+  );
+  for (const embeddingState of ["pending", "processing"]) {
+    const rows = visibleMemories.map(completedEmbeddingRow);
+    rows[0] = {
+      ...rows[0],
+      embedding_state: embeddingState,
+      embedded_at: null,
+      has_vector: false
+    };
+    await assert.rejects(
+      () =>
+        assertLaunchEmbeddingReadiness({
+          async query() {
+            return { rows };
+          }
+        }),
+      new RegExp(`requires a completed embedding, got ${embeddingState}`)
+    );
+  }
+});
+
+test("launch embedding readiness rejects embedded metadata without a stored vector", async () => {
+  const visibleMemories = fixtureMemoryRows.filter(
+    (memory) => memory.expectedTeamVisible
+  );
+  const rows = visibleMemories.map(completedEmbeddingRow);
+  rows[0] = { ...rows[0], has_vector: false };
+
+  await assert.rejects(
+    () =>
+      assertLaunchEmbeddingReadiness({
+        async query() {
+          return { rows };
+        }
+      }),
+    /missing its vector or model provenance/
   );
 });
 
@@ -332,6 +425,16 @@ test("launch validation gates cover Team SaaS critical path areas", () => {
     )
   );
   assert.ok(
+    descriptions.some(
+      (description) =>
+        description.includes("Memory Event") &&
+        description.includes("LCM leaf") &&
+        description.includes("LCM rollup") &&
+        description.includes("Curated Memory") &&
+        description.includes("completed vector-backed embedding")
+    )
+  );
+  assert.ok(
     automatedLaunchTestCommands.some(
       (command) => command.id === "db-encrypted-tenant-boundaries"
     )
@@ -359,7 +462,10 @@ test("launch validation report separates automated and manual gates", () => {
   assert.match(report, /db-encrypted-tenant-boundaries/);
   assert.match(report, /Manual launch gates:/);
   assert.match(report, /Staging launch gates:/);
-  assert.match(report, /Remote Shared Memory representations respect session/);
+  assert.match(
+    report,
+    /Remote Shared Memory semantic evidence respects session/
+  );
   assert.match(report, /Encrypted Team fixture cases prove/);
   assert.match(report, /Independent Conversation Source Access grants/);
   assert.match(report, /Capability discovery and diagnostics/);
@@ -426,7 +532,7 @@ test("staged remote validation requires explicit route credentials", async () =>
   );
 });
 
-test("staged remote validation uses Shared Memory representations and fails generic Team surfaces closed", async () => {
+test("staged remote validation exercises Team semantic evidence and keeps graph/API Tokens closed", async () => {
   const calls = [];
   const result = await runStagedRemoteValidation(
     {
@@ -501,14 +607,51 @@ test("staged remote validation uses Shared Memory representations and fails gene
           headers: { "content-type": "application/json" }
         });
       }
-      if (
-        url.startsWith("http://hosted.local/v1/memory/") ||
-        url === "http://edge.local/v1/local-edge/team-memory/answer"
-      ) {
+      if (url.includes("/v1/memory/graph/")) {
         return new Response(JSON.stringify({ error: "not available" }), {
           status: 404,
           headers: { "content-type": "application/json" }
         });
+      }
+      if (
+        url === "http://hosted.local/v1/memory/answer" ||
+        url === "http://hosted.local/v1/memory/search"
+      ) {
+        return new Response(
+          JSON.stringify({
+            hits: [],
+            retrieval: {
+              retrievalMode: "semantic_vector",
+              stages: [
+                { name: "rollup_search", ran: true },
+                { name: "scoped_leaf_search", ran: true },
+                { name: "fresh_pending_search", ran: true }
+              ]
+            }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (
+        url.includes("/v1/memory/nodes/") &&
+        url.includes("/expand?team_workspace_id=")
+      ) {
+        return new Response(
+          JSON.stringify({ nodeId: "candidate", sourceItems: [] }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+      if (url === "http://edge.local/v1/local-edge/team-memory/answer") {
+        return new Response(
+          JSON.stringify({ ok: true, retrieval: { stages: [] } }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
       }
       if (url.includes("/v1/shared-memory/teams/") && url.includes("/items?")) {
         return new Response(
@@ -589,17 +732,19 @@ test("staged remote validation uses Shared Memory representations and fails gene
   );
   assert.ok(
     result.probes.some(
-      (probe) => probe.name === "local-edge-generic-team-answer-unavailable"
+      (probe) => probe.name === "local-edge-team-semantic-answer"
     )
   );
-  const genericTeamProbes = result.probes.filter((probe) =>
-    /generic-team|team-graph|team-node/.test(probe.name)
+  const semanticTeamProbes = result.probes.filter((probe) =>
+    /team-semantic|team-node-expand|local-edge-team-semantic/.test(probe.name)
   );
-  assert.ok(genericTeamProbes.length >= 13);
+  assert.ok(semanticTeamProbes.length >= 7);
+  assert.ok(semanticTeamProbes.every((probe) => probe.status === 200));
+  const graphProbes = result.probes.filter((probe) =>
+    /team-graph|team-node-detail/.test(probe.name)
+  );
   assert.ok(
-    genericTeamProbes.every(
-      (probe) => probe.status === 404 || probe.status === 403
-    )
+    graphProbes.every((probe) => probe.status === 404 || probe.status === 403)
   );
   assert.ok(
     calls.some((call) => call.url === "http://hosted.local/v1/capabilities")

@@ -1663,6 +1663,48 @@ describe("local collaboration realtime broker", () => {
     expect(incompatible.calls).toHaveLength(0);
   });
 
+  it("rejects non-Desktop credentials before parsing realtime inputs", async () => {
+    const harness = await createHarness();
+    harnesses.push(harness);
+    const headers = localHeaders("Bearer api-token");
+
+    const responses = await Promise.all([
+      harness.app.inject({
+        method: "POST",
+        url: "/v1/local-edge/collaboration/realtime/subscriptions",
+        headers,
+        payload: { invalid: true }
+      }),
+      harness.app.inject({
+        method: "POST",
+        url: "/v1/local-edge/collaboration/realtime/subscriptions/not-a-uuid/ack",
+        headers,
+        payload: { invalid: true }
+      }),
+      harness.app.inject({
+        method: "GET",
+        url: "/v1/local-edge/collaboration/realtime/subscriptions/not-a-uuid/stream?invalid=true",
+        headers
+      }),
+      harness.app.inject({
+        method: "DELETE",
+        url: "/v1/local-edge/collaboration/realtime/backends/backend-a/subscriptions",
+        headers
+      }),
+      harness.app.inject({
+        method: "DELETE",
+        url: "/v1/local-edge/collaboration/realtime/subscriptions/not-a-uuid",
+        headers,
+        payload: { invalid: true }
+      })
+    ]);
+
+    expect(responses.map((response) => response.statusCode)).toEqual([
+      401, 401, 401, 401, 401
+    ]);
+    expect(harness.calls).toHaveLength(0);
+  });
+
   it("persists snapshot custody before acknowledgement and activates it only after ack", async () => {
     const harness = await createHarness();
     harnesses.push(harness);

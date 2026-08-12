@@ -4,9 +4,10 @@ Status: Accepted for the Team SaaS launch plan.
 
 ## Context
 
-Koed stores Memory in Postgres, retrieves it through pgvector, lexical search,
-LCM Summaries, Evidence Bundles, graph expansion, and background worker jobs,
-and then returns evidence for Answer Synthesis by the connected AI Client. A
+Koed stores Memory in Postgres, retrieves it through pgvector, LCM Summaries,
+grounded exact checks over authorized semantic candidates, graph expansion, and
+background worker jobs, and then uses the connected AI Client's local Memory
+Answer worker for synthesis. A
 hosted commercial product must reduce the blast radius of database, backup, log,
 support, and infrastructure access without pretending that Koed-managed cloud is
 end-to-end encrypted or zero-knowledge.
@@ -121,25 +122,25 @@ Every encrypted payload must record:
 
 ## Data Class Matrix
 
-| Data class                                                        | Commercial/team target posture                                                                                                         | Notes                                                                                                                         |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Browser/session cookies                                           | Secure cookies in hosted HTTPS; session records contain no provider tokens.                                                            | WorkOS/AuthKit authenticates Users but does not provide Memory encryption.                                                    |
-| API Tokens, invite tokens, device credentials                     | Store hashes, prefixes, expiry, revocation, credential references, and status metadata only.                                           | Raw reusable credentials must never live in ordinary app rows.                                                                |
-| WorkOS/AuthKit API keys and provider secrets                      | Deployment secret manager or KMS-backed secret storage only.                                                                           | Never expose to Explorer, MCP Server, Capture Hook config, upstream registry, logs, diagnostics, or support bundles.          |
-| Database/provider/KMS credentials                                 | Deployment secret manager only, redacted everywhere.                                                                                   | These are control-plane secrets, not product data.                                                                            |
-| Raw source rows and transcript-derived conversation items         | Application-layer encrypted text/payload fields.                                                                                       | Projection and reprocessing decrypt only after internal authorization and job-boundary checks.                                |
-| Messages, tool events, Memory Events, Memory Nodes, LCM Summaries | Application-layer encrypted human-readable fields.                                                                                     | Retrieval workers decrypt inside the trusted backend boundary after candidate authorization.                                  |
-| Canonical embeddings                                              | Encrypted as sensitive payloads where stored for portability, rebuild, support, or export.                                             | Embeddings can leak semantic information and must be treated as customer data.                                                |
-| Queryable vectors                                                 | Tenant-scoped transformed or otherwise search-boundary-limited representation by default for managed SaaS.                             | This is not zero-knowledge. It is the minimum searchable representation for pgvector until stronger private search is proven. |
-| Lexical search material                                           | Disabled in managed SaaS until encrypted/search-derived indexing is designed, or stored as a documented leakage-bearing derived index. | Plaintext lexical fallback is incompatible with encrypting all human-readable Memory text.                                    |
-| Memory Questions, Evidence Bundles, citations, supporting context | Application-layer encrypted human-readable fields and redacted logs/support defaults.                                                  | Evidence is customer Memory derivative data.                                                                                  |
-| Team, Workspace, Share Grant, entitlement, lifecycle metadata     | Plaintext policy metadata without raw Memory or reusable secrets.                                                                      | Authorization needs inspectable IDs, statuses, and timestamps.                                                                |
-| Audit logs                                                        | Plaintext structured metadata only; no raw Memory, prompts, files, credentials, cookies, tokens, or database URLs.                     | Audit must be useful without becoming a content leak.                                                                         |
-| Operational logs, traces, diagnostics, status files               | Redacted metadata only, stored in encrypted hosted infrastructure.                                                                     | Operators need health and failure signals, not customer content.                                                              |
-| Object payloads, Memory Inbox originals, file imports             | Envelope-encrypted object storage.                                                                                                     | These are first-class application-layer encryption targets.                                                                   |
-| Sync packages and Offload payloads                                | Envelope-encrypted packages with explicit source/destination/provenance metadata.                                                      | Sync crosses deployment and identity boundaries.                                                                              |
-| Support bundles and exports                                       | Envelope-encrypted archives with expiry, reason, actor, target, approval state where applicable, and audit record.                     | Support/export workflows can intentionally contain sensitive data.                                                            |
-| Backups and restore bundles                                       | Provider/storage encryption plus KMS or Operator-managed backup encryption.                                                            | Restore drills must prove key availability, not only archive readability.                                                     |
+| Data class                                                        | Commercial/team target posture                                                                                     | Notes                                                                                                                             |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Browser/session cookies                                           | Secure cookies in hosted HTTPS; session records contain no provider tokens.                                        | WorkOS/AuthKit authenticates Users but does not provide Memory encryption.                                                        |
+| API Tokens, invite tokens, device credentials                     | Store hashes, prefixes, expiry, revocation, credential references, and status metadata only.                       | Raw reusable credentials must never live in ordinary app rows.                                                                    |
+| WorkOS/AuthKit API keys and provider secrets                      | Deployment secret manager or KMS-backed secret storage only.                                                       | Never expose to Explorer, MCP Server, Capture Hook config, upstream registry, logs, diagnostics, or support bundles.              |
+| Database/provider/KMS credentials                                 | Deployment secret manager only, redacted everywhere.                                                               | These are control-plane secrets, not product data.                                                                                |
+| Raw source rows and transcript-derived conversation items         | Application-layer encrypted text/payload fields.                                                                   | Projection and reprocessing decrypt only after internal authorization and job-boundary checks.                                    |
+| Messages, tool events, Memory Events, Memory Nodes, LCM Summaries | Application-layer encrypted human-readable fields.                                                                 | Retrieval workers decrypt inside the trusted backend boundary after candidate authorization.                                      |
+| Canonical embeddings                                              | Encrypted as sensitive payloads where stored for portability, rebuild, support, or export.                         | Embeddings can leak semantic information and must be treated as customer data.                                                    |
+| Queryable vectors                                                 | Tenant-scoped transformed or otherwise search-boundary-limited representation by default for managed SaaS.         | This is not zero-knowledge. It is the minimum searchable representation for pgvector until stronger private search is proven.     |
+| LCM lexical anchors                                               | Envelope-encrypted with each LCM Summary and included in that summary's queryable-vector input.                    | Anchors are exact-grounded synthesis output, not a standalone index; exact checks occur only over authorized semantic candidates. |
+| Memory Questions, Evidence Bundles, citations, supporting context | Application-layer encrypted human-readable fields and redacted logs/support defaults.                              | Evidence is customer Memory derivative data.                                                                                      |
+| Team, Workspace, Share Grant, entitlement, lifecycle metadata     | Plaintext policy metadata without raw Memory or reusable secrets.                                                  | Authorization needs inspectable IDs, statuses, and timestamps.                                                                    |
+| Audit logs                                                        | Plaintext structured metadata only; no raw Memory, prompts, files, credentials, cookies, tokens, or database URLs. | Audit must be useful without becoming a content leak.                                                                             |
+| Operational logs, traces, diagnostics, status files               | Redacted metadata only, stored in encrypted hosted infrastructure.                                                 | Operators need health and failure signals, not customer content.                                                                  |
+| Object payloads, Memory Inbox originals, file imports             | Envelope-encrypted object storage.                                                                                 | These are first-class application-layer encryption targets.                                                                       |
+| Sync packages and Offload payloads                                | Envelope-encrypted packages with explicit source/destination/provenance metadata.                                  | Sync crosses deployment and identity boundaries.                                                                                  |
+| Support bundles and exports                                       | Envelope-encrypted archives with expiry, reason, actor, target, approval state where applicable, and audit record. | Support/export workflows can intentionally contain sensitive data.                                                                |
+| Backups and restore bundles                                       | Provider/storage encryption plus KMS or Operator-managed backup encryption.                                        | Restore drills must prove key availability, not only archive readability.                                                         |
 
 ## Authorization Before Decrypt
 
@@ -208,11 +209,12 @@ use an encrypted package envelope with redacted manifests. Support bundles and
 object payloads must use the same envelope before they can carry customer
 content.
 
-Managed SaaS lexical fallback should be disabled or redesigned before encrypted
-Memory text becomes the default. Queryable vector representation must be
-documented as sensitive derived data and scoped per tenant/team. Stronger
-options such as tenant-side search, private data planes, or encrypted vector
-search remain future upgrades for high-assurance customers.
+Managed SaaS has no plaintext lexical fallback or global decrypted lexical
+scan. Queryable vector representation must be documented as sensitive derived
+data and scoped per tenant/team. Exact hints may seed semantic queries and be
+checked only over the bounded, authorized candidate set and validated encrypted
+LCM anchors. Stronger options such as tenant-side search, private data planes,
+or encrypted vector search remain future upgrades for high-assurance customers.
 
 ## Product Claims
 
@@ -243,8 +245,8 @@ Koed must not claim:
 - KOE-271: implement envelope encryption provider interface and
   `local_test_key` provider.
 - KOE-272: add encrypted Memory text/evidence field migrations and backfill.
-- KOE-273: define tenant-scoped queryable vector strategy and disable
-  plaintext lexical fallback for managed SaaS until redesigned.
+- KOE-273: define the tenant-scoped queryable vector strategy and keep
+  production Recall free of plaintext lexical indexes or decrypted global scans.
 - KOE-274: add managed KMS provider for paid Koed-managed cloud.
 - KOE-275: add backup/export/support bundle encryption and restore-key
   validation.

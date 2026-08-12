@@ -73,6 +73,7 @@ import {
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
+  createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
   inspectDeviceIdentityAtKoedHome,
   reconcileDeviceIdentityDeployment,
   embeddingDispatchKey,
@@ -164,6 +165,7 @@ export interface BuildServerOptions {
   inspectDeploymentIdentity?: () => DeviceIdentityInspection;
   workosClient?: WorkosAuthKitClient;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   collaborationSharedMemoryControl?: CollaborationSharedMemoryControl;
   collaborationActionGrantControl?: CollaborationActionGrantControl;
@@ -296,6 +298,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     | undefined =
     options.ownerPrivateReplicaEnvelopeEncryptionProvider ??
     createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment();
+  const teamEnvelopeEncryptionProvider =
+    options.teamEnvelopeEncryptionProvider ??
+    createTeamMemoryEnvelopeEncryptionProviderFromEnvironment();
   if (
     envelopeEncryptionProvider &&
     ownerPrivateReplicaEnvelopeEncryptionProvider &&
@@ -306,11 +311,23 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       "Owner-private replica envelope encryption must use a distinct key from the Team/general provider"
     );
   }
+  if (
+    teamEnvelopeEncryptionProvider &&
+    (teamEnvelopeEncryptionProvider.keyId ===
+      envelopeEncryptionProvider?.keyId ||
+      teamEnvelopeEncryptionProvider.keyId ===
+        ownerPrivateReplicaEnvelopeEncryptionProvider?.keyId)
+  ) {
+    throw new Error(
+      "Team Memory envelope encryption must use a distinct key from Personal and owner-private providers"
+    );
+  }
   const repository =
     options.repository ??
     (pool
       ? createMemorySourceRepository(pool, {
           envelopeEncryptionProvider,
+          teamEnvelopeEncryptionProvider,
           ownerPrivateReplicaEnvelopeEncryptionProvider
         })
       : null);
@@ -899,7 +916,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
     reply.status(statusCode).send({
       error: statusCode === 500 ? "Internal Server Error" : message,
-      ...(statusCode < 500 && errorCode ? { code: errorCode } : {})
+      ...(errorCode ? { code: errorCode } : {})
     });
   });
 

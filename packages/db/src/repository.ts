@@ -33,6 +33,7 @@ import {
   createCuratedMemoryRepository,
   suppressCuratedMemoryWithoutActiveEvidenceWithClient
 } from "./curated-memory-repository.js";
+import { activeCuratedMemoryEvidencePredicate } from "./curated-memory-policy.js";
 import { createDeviceCredentialRepository } from "./device-credential-repository.js";
 import {
   createEncryptedPayloadRepository,
@@ -71,7 +72,9 @@ import {
   codexIdePromptUserText,
   countTokensForModel,
   estimateTokens,
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   normalizeStoredLcmSummary,
+  structuredLcmSummarySchema,
   tokenCounterIdentity,
   type LcmSourceItem
 } from "@koed/core";
@@ -87,6 +90,8 @@ import type {
 } from "@koed/core";
 import {
   combineStorageSanitizationCounts,
+  DEFAULT_EMBEDDING_QUERY_INSTRUCTION,
+  formatEmbeddingRetrievalQuery,
   metadataWithStorageSanitization,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
@@ -123,6 +128,7 @@ import type {
 
 export interface MemorySourceRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   encryptedMemoryQuestionSearchBatchSize?: number;
 }
@@ -2014,6 +2020,63 @@ const sourceHash = (
     .update(`${sourceType}:${sourceId}:${text}`)
     .digest("hex");
 
+const assertCurrentEmbeddingSourceRevision = async (
+  client: pg.PoolClient,
+  source: {
+    sourceType: EmbeddableSourceType;
+    sourceId: string;
+    sourceHash: string;
+  }
+): Promise<void> => {
+  if (
+    source.sourceType !== "memory_node" &&
+    source.sourceType !== "curated_memory"
+  ) {
+    return;
+  }
+  if (source.sourceType === "curated_memory") {
+    const current = await client.query<{ source_hash: string }>(
+      `select encode(digest(
+         assertion.id::text || ':curated-memory-embedding-v1:' ||
+         extract(epoch from greatest(assertion.updated_at, coalesce(topic.updated_at, assertion.updated_at)))::text,
+         'sha256'
+       ), 'hex') as source_hash
+       from curated_memory_assertions assertion
+       left join curated_memory_topics topic on topic.id=assertion.topic_id
+       where assertion.id=$1
+         and assertion.status='current'
+         and assertion.suppressed_at is null
+         and (assertion.expires_at is null or assertion.expires_at > now())
+         and ${activeCuratedMemoryEvidencePredicate("assertion")}
+       for share of assertion`,
+      [source.sourceId]
+    );
+    if (current.rows[0]?.source_hash !== source.sourceHash) {
+      throw new Error(
+        "Curated Memory embedding source changed after embedding work began"
+      );
+    }
+    return;
+  }
+  const current = await client.query<{ source_hash: string }>(
+    `select encode(digest(
+       coalesce(source_hash, id::text)
+         || ':lcm-summary-embedding-anchors-v1:'
+         || summary_embedding_revision::text,
+       'sha256'
+     ), 'hex') as source_hash
+     from memory_nodes
+     where id=$1 and invalidated_at is null and personal_deleted_at is null
+     for share`,
+    [source.sourceId]
+  );
+  if (current.rows[0]?.source_hash !== source.sourceHash) {
+    throw new Error(
+      "Memory Node embedding source changed after embedding work began"
+    );
+  }
+};
+
 const vectorLiteral = (vector: number[]): string => `[${vector.join(",")}]`;
 
 const positiveIntEnv = (name: string, fallback: number): number => {
@@ -2035,34 +2098,8 @@ const booleanEnv = (name: string, fallback: boolean): boolean => {
   return fallback;
 };
 
-const optionalBooleanEnv = (name: string): boolean | null => {
-  const value = process.env[name]?.trim().toLowerCase();
-  if (!value) {
-    return null;
-  }
-  if (["1", "true", "yes", "on"].includes(value)) {
-    return true;
-  }
-  if (["0", "false", "no", "off"].includes(value)) {
-    return false;
-  }
-  return null;
-};
-
 const deploymentProfile = (): string =>
   process.env.KOED_DEPLOYMENT_PROFILE?.trim().toLowerCase() ?? "";
-
-const plaintextLexicalSearchEnabled = (): boolean => {
-  const explicit = optionalBooleanEnv(
-    "MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED"
-  );
-  if (explicit !== null) {
-    return explicit;
-  }
-  return !["koed_managed_cloud", "koed-managed-cloud", "cloud"].includes(
-    deploymentProfile()
-  );
-};
 
 const managedCloudPlaintextMemoryPayloadsDisabled = (): boolean => {
   const profile = deploymentProfile();
@@ -2497,6 +2534,31 @@ const persistEncryptedMemoryNodeFields = async (
   }
 };
 
+export const lcmSummaryEmbeddingText = (
+  summaryText: string,
+  structuredSummary: unknown,
+  options: { pending: boolean }
+): string => {
+  const parsed = structuredLcmSummarySchema.safeParse(structuredSummary);
+  if (!parsed.success) {
+    if (options.pending) {
+      return summaryText;
+    }
+    throw new Error(
+      "Completed LCM summary is incompatible with the anchor-aware structured summary contract"
+    );
+  }
+  if (parsed.data.lexical_anchors.length === 0) {
+    return summaryText;
+  }
+  return `${summaryText}\n\nLexical anchors:\n${parsed.data.lexical_anchors
+    .map((anchor) => `- ${anchor}`)
+    .join("\n")}`;
+};
+
+export const isAnchorAwareLcmSummary = (value: unknown): boolean =>
+  structuredLcmSummarySchema.safeParse(value).success;
+
 const decryptAuthorizedMemoryEventPayload = async (
   pool: pg.Pool,
   provider: EnvelopeEncryptionProvider | undefined,
@@ -2519,9 +2581,6 @@ const nonNegativeFloatEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
 
-const DEFAULT_EMBEDDING_QUERY_INSTRUCTION =
-  "Given a question about captured AI-client memory, retrieve relevant memory events, conversation items, and summaries that answer the question.";
-
 const embeddingQueryInstruction = (): string =>
   process.env.EMBEDDING_QUERY_INSTRUCTION?.trim() ||
   DEFAULT_EMBEDDING_QUERY_INSTRUCTION;
@@ -2531,9 +2590,10 @@ const embeddingQueryInstructionEnabled = (): boolean =>
   booleanEnv("EMBEDDING_QUERY_INSTRUCTION_ENABLED", true);
 
 const formatEmbeddingQuery = (query: string): string =>
-  embeddingQueryInstructionEnabled()
-    ? `Instruct: ${embeddingQueryInstruction()}\nQuery: ${query}`
-    : query;
+  formatEmbeddingRetrievalQuery(query, {
+    instruction: embeddingQueryInstruction(),
+    enabled: embeddingQueryInstructionEnabled()
+  });
 
 const DEFAULT_MEMORY_EVENT_MAX_TOKENS = 2_048;
 const DEFAULT_EMBEDDING_MAX_TOKENS = 4_096;
@@ -2825,6 +2885,7 @@ const defaultRetrievalMetadata = (
   textHitsCount: 0,
   embeddingModel: null,
   embeddingDimensions: null,
+  semanticRetrievalComplete: false,
   ...overrides
 });
 
@@ -3501,7 +3562,12 @@ const captureMethodForConversationItem = (
 
 const embedTexts = async (
   texts: string[]
-): Promise<{ model: string; dimensions: number; vectors: number[][] }> => {
+): Promise<{
+  model: string;
+  dimensions: number;
+  vectors: number[][];
+  measuredTokens: number | null;
+}> => {
   const baseUrl = localEmbeddingServiceUrl();
   if (!baseUrl) {
     throw new Error("EMBEDDING_SERVICE_URL is not configured");
@@ -3519,6 +3585,7 @@ const embedTexts = async (
     model?: string;
     dimensions?: number;
     vectors?: number[][];
+    measuredTokens?: number | null;
     detail?: string;
   };
 
@@ -3537,14 +3604,20 @@ const embedTexts = async (
   return {
     model: payload.model,
     dimensions: payload.dimensions,
-    vectors: payload.vectors
+    vectors: payload.vectors,
+    measuredTokens:
+      typeof payload.measuredTokens === "number" ? payload.measuredTokens : null
   };
 };
 
 const embedQueryTexts = (
   texts: string[]
-): Promise<{ model: string; dimensions: number; vectors: number[][] }> =>
-  embedTexts(texts.map(formatEmbeddingQuery));
+): Promise<{
+  model: string;
+  dimensions: number;
+  vectors: number[][];
+  measuredTokens: number | null;
+}> => embedTexts(texts.map(formatEmbeddingQuery));
 
 const rerankTexts = async (
   query: string,
@@ -3644,6 +3717,7 @@ const mapLcmNodeForSummarization = async (
       summary_text: string;
       summary_structured_json: Record<string, unknown> | null;
       summary_structured_schema_version: string | null;
+      summary_model: string | null;
     }>(
       `
         select
@@ -3652,7 +3726,8 @@ const mapLcmNodeForSummarization = async (
           child.depth,
           child.summary_text,
           child.summary_structured_json,
-          child.summary_structured_schema_version
+          child.summary_structured_schema_version,
+          child.summary_model
         from memory_node_children mnc
         join memory_nodes child on child.id = mnc.child_memory_node_id
         where mnc.parent_memory_node_id = $1
@@ -3670,7 +3745,8 @@ const mapLcmNodeForSummarization = async (
       hydratedChildren.map((child) => {
         const structured = normalizeStoredLcmSummary({
           summaryText: child.summary_text,
-          structuredSummary: child.summary_structured_json
+          structuredSummary: child.summary_structured_json,
+          pending: child.summary_model === null
         });
         return [
           child.id,
@@ -3731,9 +3807,6 @@ export const createMemorySourceRepository = (
   const db = createDb(pool);
   const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
   const settingsRepository = createSettingsRepository(db);
-  const curatedMemoryRepository = createCuratedMemoryRepository(pool, {
-    envelopeEncryptionProvider: options.envelopeEncryptionProvider
-  });
   const requireEnvelopeEncryptionProvider = (): EnvelopeEncryptionProvider => {
     if (!options.envelopeEncryptionProvider) {
       throw new Error(
@@ -3751,6 +3824,23 @@ export const createMemorySourceRepository = (
       }
       return options.ownerPrivateReplicaEnvelopeEncryptionProvider;
     };
+  const sharedMemoryRepository = createSharedMemoryRepository(pool, {
+    resolveTeamEncryptionProvider: () =>
+      Promise.resolve(
+        options.teamEnvelopeEncryptionProvider ??
+          requireEnvelopeEncryptionProvider()
+      ),
+    resolvePersonalEncryptionProvider: () =>
+      Promise.resolve(requireEnvelopeEncryptionProvider()),
+    resolveOwnerPrivateReplicaEncryptionProvider: () =>
+      Promise.resolve(requireOwnerPrivateReplicaEnvelopeEncryptionProvider())
+  });
+  const curatedMemoryRepository = createCuratedMemoryRepository(pool, {
+    envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+    onCuratedMemoryChanged: async (actor) => {
+      await sharedMemoryRepository.reconcileCuratedGrantRepresentations(actor);
+    }
+  });
   const hasMemoryEventEncryptionProvider =
     Boolean(options.envelopeEncryptionProvider) ||
     Boolean(options.ownerPrivateReplicaEnvelopeEncryptionProvider);
@@ -3826,12 +3916,7 @@ export const createMemorySourceRepository = (
     ...createCollaborationRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
-    ...createSharedMemoryRepository(pool, {
-      resolveTeamEncryptionProvider: () =>
-        Promise.resolve(requireEnvelopeEncryptionProvider()),
-      resolveOwnerPrivateReplicaEncryptionProvider: () =>
-        Promise.resolve(requireOwnerPrivateReplicaEnvelopeEncryptionProvider())
-    }),
+    ...sharedMemoryRepository,
     ...createTeamConversationSourceRepository(pool),
     ...createHighRiskActionRepository(db, {
       pool,
@@ -7653,6 +7738,8 @@ export const createMemorySourceRepository = (
         visibility: Visibility;
         source_hash: string | null;
         text: string | null;
+        summary_structured_json: unknown;
+        summary_model: string | null;
         work_class: KoedWorkClass;
         reconciliation_job_id: string | null;
       }>(
@@ -7663,7 +7750,14 @@ export const createMemorySourceRepository = (
             mn.id as source_id,
             mn.owner_user_id,
             mn.visibility,
-            mn.source_hash,
+            encode(digest(
+              coalesce(mn.source_hash, mn.id::text)
+                || ':lcm-summary-embedding-anchors-v1:'
+                || mn.summary_embedding_revision::text,
+              'sha256'
+            ), 'hex') as source_hash,
+            mn.summary_structured_json,
+            mn.summary_model,
             mn.work_class,
             null::text as reconciliation_job_id,
             null::timestamptz as source_event_time,
@@ -7686,6 +7780,8 @@ export const createMemorySourceRepository = (
             me.owner_user_id,
             me.visibility,
             me.source_hash,
+            null::jsonb as summary_structured_json,
+            null::text as summary_model,
             coalesce(
               processing.work_class,
               'normal_embedding_lcm'
@@ -7710,9 +7806,41 @@ export const createMemorySourceRepository = (
           where me.invalidated_at is null
             and pds_session_recall_ready(me.session_id)
             and me.personal_deleted_at is null
+
+          union all
+
+          select
+            'curated_memory'::text as source_type,
+            cma.id as source_id,
+            cma.owner_user_id,
+            cma.visibility,
+            encode(digest(
+              cma.id::text || ':curated-memory-embedding-v1:' ||
+              extract(epoch from greatest(cma.updated_at, coalesce(cmt.updated_at, cma.updated_at)))::text,
+              'sha256'
+            ), 'hex') as source_hash,
+            null::jsonb as summary_structured_json,
+            null::text as summary_model,
+            'normal_embedding_lcm'::text as work_class,
+            null::text as reconciliation_job_id,
+            cma.observed_at as source_event_time,
+            btrim(concat_ws(E'\n',
+              cma.assertion_text,
+              case when cmt.title is not null then 'Topic: ' || cmt.title end,
+              case when cardinality(cma.tags) > 0
+                then 'Tags: ' || array_to_string(cma.tags, ', ') end
+            )) as text,
+            cma.updated_at as created_at
+          from curated_memory_assertions cma
+          left join curated_memory_topics cmt on cmt.id = cma.topic_id
+          where cma.status = 'current'
+            and cma.suppressed_at is null
+            and (cma.expires_at is null or cma.expires_at > now())
+            and ${activeCuratedMemoryEvidencePredicate("cma")}
         )
         select source_type, source_id, owner_user_id, visibility, source_hash,
-          text, work_class, reconciliation_job_id
+          text, summary_structured_json, summary_model, work_class,
+          reconciliation_job_id
         from sources s
         where (
             length(trim(coalesce(s.text, ''))) > 0
@@ -7767,6 +7895,7 @@ export const createMemorySourceRepository = (
               and (
                 (s.source_type = 'memory_node' and me.memory_node_id = s.source_id)
                 or (s.source_type = 'memory_event' and me.memory_event_id = s.source_id)
+                or (s.source_type = 'curated_memory' and me.curated_memory_assertion_id = s.source_id)
               )
             group by me.source_hash
             having count(*) = max(me.source_chunk_count)
@@ -7875,12 +8004,48 @@ export const createMemorySourceRepository = (
 
       const hydratedRows = await Promise.all(
         result.rows.map(async (row) => {
+          if (row.source_type === "curated_memory") {
+            const assertion =
+              await curatedMemoryRepository.getCuratedMemoryAssertion(
+                { userId: row.owner_user_id! },
+                row.source_id
+              );
+            return assertion
+              ? {
+                  ...row,
+                  text: [
+                    assertion.assertionText,
+                    assertion.topicTitle
+                      ? `Topic: ${assertion.topicTitle}`
+                      : null,
+                    assertion.tags.length > 0
+                      ? `Tags: ${assertion.tags.join(", ")}`
+                      : null
+                  ]
+                    .filter((value): value is string => Boolean(value))
+                    .join("\n")
+                }
+              : null;
+          }
           if (row.source_type === "memory_node") {
             if (
               row.text !== ENCRYPTED_MEMORY_NODE_TEXT &&
               !row.text?.includes(ENCRYPTED_MEMORY_NODE_TEXT)
             ) {
-              return row;
+              if (
+                row.summary_model !== null &&
+                !isAnchorAwareLcmSummary(row.summary_structured_json)
+              ) {
+                return null;
+              }
+              return {
+                ...row,
+                text: lcmSummaryEmbeddingText(
+                  row.text ?? "",
+                  row.summary_structured_json,
+                  { pending: row.summary_model === null }
+                )
+              };
             }
             if (!hasMemoryEventEncryptionProvider) {
               throw new Error(
@@ -7910,15 +8075,33 @@ export const createMemorySourceRepository = (
                 sourceColumn: "body_text"
               }
             );
+            const structuredSummary =
+              await decryptAuthorizedEncryptedFieldPayload(pool, nodeProvider, {
+                ownerUserId: row.owner_user_id,
+                sourceTable: "memory_nodes",
+                sourceId: row.source_id,
+                sourceColumn: "summary_structured_json"
+              });
             const text =
               typeof bodyText === "string" &&
               bodyText.trim() &&
               bodyText.trim() !== String(summaryText).trim()
                 ? `${summaryText} ${bodyText}`
                 : summaryText;
+            if (
+              row.summary_model !== null &&
+              !isAnchorAwareLcmSummary(structuredSummary)
+            ) {
+              return null;
+            }
             return {
               ...row,
-              text: typeof text === "string" ? text : row.text
+              text:
+                typeof text === "string"
+                  ? lcmSummaryEmbeddingText(text, structuredSummary, {
+                      pending: row.summary_model === null
+                    })
+                  : row.text
             };
           }
           if (
@@ -7944,7 +8127,10 @@ export const createMemorySourceRepository = (
       );
 
       return hydratedRows
-        .filter((row) => row.text && row.text.trim().length > 0)
+        .filter(
+          (row): row is NonNullable<typeof row> =>
+            row !== null && Boolean(row.text && row.text.trim().length > 0)
+        )
         .map((row) => ({
           sourceType: row.source_type,
           sourceId: row.source_id,
@@ -7969,6 +8155,8 @@ export const createMemorySourceRepository = (
         visibility: Visibility;
         source_hash: string | null;
         text: string | null;
+        summary_structured_json: unknown;
+        summary_model: string | null;
       }>(
         `
         with sources as (
@@ -7977,7 +8165,14 @@ export const createMemorySourceRepository = (
             mn.id as source_id,
             mn.owner_user_id,
             mn.visibility,
-            mn.source_hash,
+            encode(digest(
+              coalesce(mn.source_hash, mn.id::text)
+                || ':lcm-summary-embedding-anchors-v1:'
+                || mn.summary_embedding_revision::text,
+              'sha256'
+            ), 'hex') as source_hash,
+            mn.summary_structured_json,
+            mn.summary_model,
             case
               when mn.body_text is null
                 or btrim(mn.body_text) = ''
@@ -7996,6 +8191,8 @@ export const createMemorySourceRepository = (
             me.owner_user_id,
             me.visibility,
             me.source_hash,
+            null::jsonb as summary_structured_json,
+            null::text as summary_model,
             case
               when me.include_in_embedding = false
                 then ''
@@ -8007,8 +8204,36 @@ export const createMemorySourceRepository = (
             end as text
           from memory_events me
           where me.invalidated_at is null and pds_session_recall_ready(me.session_id) and me.personal_deleted_at is null
+
+          union all
+
+          select
+            'curated_memory'::text as source_type,
+            cma.id as source_id,
+            cma.owner_user_id,
+            cma.visibility,
+            encode(digest(
+              cma.id::text || ':curated-memory-embedding-v1:' ||
+              extract(epoch from greatest(cma.updated_at, coalesce(cmt.updated_at, cma.updated_at)))::text,
+              'sha256'
+            ), 'hex') as source_hash,
+            null::jsonb as summary_structured_json,
+            null::text as summary_model,
+            btrim(concat_ws(E'\n',
+              cma.assertion_text,
+              case when cmt.title is not null then 'Topic: ' || cmt.title end,
+              case when cardinality(cma.tags) > 0
+                then 'Tags: ' || array_to_string(cma.tags, ', ') end
+            )) as text
+          from curated_memory_assertions cma
+          left join curated_memory_topics cmt on cmt.id = cma.topic_id
+          where cma.status = 'current'
+            and cma.suppressed_at is null
+            and (cma.expires_at is null or cma.expires_at > now())
+            and ${activeCuratedMemoryEvidencePredicate("cma")}
         )
-        select source_type, source_id, owner_user_id, visibility, source_hash, text
+        select source_type, source_id, owner_user_id, visibility, source_hash,
+          text, summary_structured_json, summary_model
         from sources
         where source_type = $1
           and source_id = $2
@@ -8040,15 +8265,65 @@ export const createMemorySourceRepository = (
                   and encrypted.source_table = 'memory_nodes'
                   and encrypted.source_id = sources.source_id
                   and encrypted.source_column = 'summary_text'
-                  and encrypted.invalidated_at is null
+                and encrypted.invalidated_at is null
               )
             )
+            or source_type = 'curated_memory'
           )
         limit 1
       `,
         [sourceType, sourceId]
       );
       const rawRow = result.rows[0];
+      if (rawRow?.source_type === "curated_memory") {
+        const assertion =
+          await curatedMemoryRepository.getCuratedMemoryAssertion(
+            { userId: rawRow.owner_user_id! },
+            rawRow.source_id
+          );
+        if (!assertion) return null;
+        const text = [
+          assertion.assertionText,
+          assertion.topicTitle ? `Topic: ${assertion.topicTitle}` : null,
+          assertion.tags.length > 0
+            ? `Tags: ${assertion.tags.join(", ")}`
+            : null
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join("\n");
+        return {
+          sourceType: rawRow.source_type,
+          sourceId: rawRow.source_id,
+          ownerUserId: rawRow.owner_user_id,
+          visibility: rawRow.visibility,
+          text,
+          sourceHash:
+            rawRow.source_hash ??
+            sourceHash(rawRow.source_type, rawRow.source_id, text)
+        };
+      }
+      if (
+        rawRow?.source_type === "memory_node" &&
+        rawRow.summary_model !== null
+      ) {
+        const structuredSummary = isEncryptedMemoryNodeJsonMarker(
+          rawRow.summary_structured_json
+        )
+          ? await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              await resolveMemoryNodeEncryptionProvider(rawRow.source_id),
+              {
+                ownerUserId: rawRow.owner_user_id,
+                sourceTable: "memory_nodes",
+                sourceId: rawRow.source_id,
+                sourceColumn: "summary_structured_json"
+              }
+            )
+          : rawRow.summary_structured_json;
+        if (!isAnchorAwareLcmSummary(structuredSummary)) {
+          return null;
+        }
+      }
       const row =
         rawRow?.source_type === "memory_node" &&
         (rawRow.text === ENCRYPTED_MEMORY_NODE_TEXT ||
@@ -8080,14 +8355,29 @@ export const createMemorySourceRepository = (
                     sourceColumn: "body_text"
                   }
                 );
+                const structuredSummary =
+                  await decryptAuthorizedEncryptedFieldPayload(
+                    pool,
+                    nodeProvider,
+                    {
+                      ownerUserId: rawRow.owner_user_id,
+                      sourceTable: "memory_nodes",
+                      sourceId: rawRow.source_id,
+                      sourceColumn: "summary_structured_json"
+                    }
+                  );
                 if (typeof summaryText !== "string") {
                   return rawRow.text;
                 }
-                return typeof bodyText === "string" &&
+                const text =
+                  typeof bodyText === "string" &&
                   bodyText.trim() &&
                   bodyText.trim() !== summaryText.trim()
-                  ? `${summaryText} ${bodyText}`
-                  : summaryText;
+                    ? `${summaryText} ${bodyText}`
+                    : summaryText;
+                return lcmSummaryEmbeddingText(text, structuredSummary, {
+                  pending: rawRow.summary_model === null
+                });
               })()
             }
           : rawRow?.source_type === "memory_event" &&
@@ -8109,7 +8399,16 @@ export const createMemorySourceRepository = (
                   return memoryEventEmbeddingContent(payload) ?? rawRow.text;
                 })()
               }
-            : rawRow;
+            : rawRow?.source_type === "memory_node"
+              ? {
+                  ...rawRow,
+                  text: lcmSummaryEmbeddingText(
+                    rawRow.text ?? "",
+                    rawRow.summary_structured_json,
+                    { pending: rawRow.summary_model === null }
+                  )
+                }
+              : rawRow;
       return row && row.text && row.text.trim().length > 0
         ? {
             sourceType: row.source_type,
@@ -8142,6 +8441,7 @@ export const createMemorySourceRepository = (
             ($5 = 'memory_node' and me.memory_node_id = $6::uuid)
             or ($5 = 'memory_event' and me.memory_event_id = $6::uuid)
             or ($5 = 'message' and me.message_id = $6::uuid)
+            or ($5 = 'curated_memory' and me.curated_memory_assertion_id = $6::uuid)
           )
         having min(me.source_chunk_count) = max(me.source_chunk_count)
           and count(*) = min(me.source_chunk_count)
@@ -8159,6 +8459,103 @@ export const createMemorySourceRepository = (
         ]
       );
       return result.rows[0]?.chunk_count ?? null;
+    },
+
+    async getRetrievalArenaIndexProof(input) {
+      const embeddingTable = embeddingTableForDimensions(input.dimensions);
+      const result = await pool.query<{
+        database_name: string;
+        schema_name: string;
+        source_id: string;
+        embedding_id: string;
+        source_hash: string;
+        source_text: string | null;
+        owner_user_id: string | null;
+        vector_sha256: string;
+      }>(
+        `select current_database() as database_name,
+                current_schema() as schema_name,
+                embedding.memory_node_id::text as source_id,
+                embedding.id::text as embedding_id,
+                embedding.source_hash,
+                embedding.source_text,
+                embedding.owner_user_id,
+                encode(digest(vector.embedding::text, 'sha256'), 'hex') as vector_sha256
+           from memory_embeddings embedding
+           join ${embeddingTable} vector on vector.memory_embedding_id=embedding.id
+           join memory_nodes node on node.id=embedding.memory_node_id
+          where embedding.invalidated_at is null
+            and embedding.personal_deleted_at is null
+            and embedding.embedding_model=$2
+            and embedding.embedding_dimensions=$3
+            and embedding.embedding_version=$4
+            and embedding.source_chunk_index=0
+            and embedding.source_chunk_count=1
+            and embedding.memory_node_id=any($1::uuid[])
+            and embedding.owner_user_id=$5::uuid
+            and node.owner_user_id=$5::uuid
+            and node.invalidated_at is null
+            and node.personal_deleted_at is null
+          order by embedding.memory_node_id, embedding.id`,
+        [
+          input.sourceIds,
+          input.model,
+          input.dimensions,
+          input.version,
+          input.ownerUserId
+        ]
+      );
+      if (
+        result.rows.length !== input.sourceIds.length ||
+        new Set(result.rows.map((row) => row.source_id)).size !==
+          input.sourceIds.length
+      ) {
+        throw new Error(
+          "isolated Retrieval Arena runtime index does not contain exactly one active vector for every declared document"
+        );
+      }
+      const documents = await Promise.all(
+        result.rows.map(async (row) => {
+          let sourceText = row.source_text;
+          if (sourceText === ENCRYPTED_EMBEDDING_SOURCE_TEXT) {
+            if (!options.envelopeEncryptionProvider) {
+              throw new Error(
+                "isolated Retrieval Arena proof cannot decrypt runtime embedding input"
+              );
+            }
+            const plaintext = await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id,
+                sourceTable: "memory_embeddings",
+                sourceId: row.embedding_id,
+                sourceColumn: "source_text"
+              }
+            );
+            sourceText = typeof plaintext === "string" ? plaintext : null;
+          }
+          if (!sourceText) {
+            throw new Error(
+              `isolated Retrieval Arena runtime embedding ${row.embedding_id} has no verifiable input`
+            );
+          }
+          return {
+            sourceId: row.source_id,
+            embeddingId: row.embedding_id,
+            sourceHash: row.source_hash,
+            embeddingInputSha256: createHash("sha256")
+              .update(sourceText, "utf8")
+              .digest("hex"),
+            vectorSha256: row.vector_sha256
+          };
+        })
+      );
+      return {
+        databaseName: result.rows[0]!.database_name,
+        schemaName: result.rows[0]!.schema_name,
+        documents
+      };
     },
 
     async getLcmNodeForSummarization(nodeId) {
@@ -8222,7 +8619,12 @@ export const createMemorySourceRepository = (
         from memory_nodes mn
         where mn.invalidated_at is null and mn.personal_deleted_at is null
           and mn.kind in ('leaf', 'rollup')
-          and mn.summary_model is null
+          and (
+            mn.summary_model is null
+            or mn.summary_structured_schema_version is distinct from $2
+            or coalesce(mn.summary_structured_json ->> 'contentEncrypted', 'false') = 'true'
+            or not coalesce(mn.summary_structured_json ? 'lexical_anchors', false)
+          )
           and (
             not exists (
               select 1
@@ -8252,28 +8654,57 @@ export const createMemorySourceRepository = (
               join memory_nodes child on child.id = mnc.child_memory_node_id
               where mnc.parent_memory_node_id = mn.id
                 and child.invalidated_at is null and child.personal_deleted_at is null
-                and child.summary_model is null
+                and (
+                  child.summary_model is null
+                  or child.summary_structured_schema_version is distinct from $2
+                  or (
+                    coalesce(child.summary_structured_json ->> 'contentEncrypted', 'false') <> 'true'
+                    and not coalesce(child.summary_structured_json ? 'lexical_anchors', false)
+                  )
+                )
             )
           )
           and mn.visibility = 'personal'
           and mn.owner_user_id = $1
         order by mn.depth asc, mn.created_at asc, mn.id asc
-        limit $2
       `,
-        [actor.userId, limit]
+        [actor.userId, LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION]
       );
 
-      return Promise.all(
-        result.rows.map(async (row) =>
-          mapLcmNodeForSummarization(
+      const candidates: LcmNodeForSummarization[] = [];
+      for (const row of result.rows) {
+        try {
+          const candidate = await mapLcmNodeForSummarization(
             pool,
             row,
             encryptedMemoryNodeColumns(row).size > 0
               ? await resolveMemoryNodeEncryptionProvider(row.id)
               : options.envelopeEncryptionProvider
-          )
-        )
-      );
+          );
+          if (
+            candidate.summaryModel === null ||
+            !isAnchorAwareLcmSummary(candidate.summaryStructuredJson)
+          ) {
+            candidates.push(candidate);
+          }
+        } catch (error) {
+          // Encrypted child summaries cannot be classified in SQL. Mapping the
+          // rollup decrypts and normalizes every child, so an incompatible
+          // encrypted child reaches this branch and keeps its parent blocked.
+          if (
+            error instanceof Error &&
+            error.message ===
+              "Completed LCM summary does not match the current structured summary schema"
+          ) {
+            continue;
+          }
+          throw error;
+        }
+        if (candidates.length >= limit) {
+          break;
+        }
+      }
+      return candidates;
     },
 
     async getVisibleLcmNodeForSummarization(actor, nodeId) {
@@ -8328,9 +8759,12 @@ export const createMemorySourceRepository = (
           kind: "leaf" | "rollup";
           summary_text: string;
           source_items_json: LcmSourceItem[] | null;
+          summary_structured_json: unknown;
+          summary_model: string | null;
         }>(
           `
-          select id, owner_user_id, session_id, visibility, kind, summary_text, source_items_json
+          select id, owner_user_id, session_id, visibility, kind, summary_text,
+            source_items_json, summary_structured_json, summary_model
           from memory_nodes
           where id = $1
             and invalidated_at is null
@@ -8354,7 +8788,15 @@ export const createMemorySourceRepository = (
           client,
           currentNode
         );
-        const previousSummary = hydratedCurrentNode.summary_text;
+        const previousEmbeddingText =
+          hydratedCurrentNode.summary_model === null ||
+          isAnchorAwareLcmSummary(hydratedCurrentNode.summary_structured_json)
+            ? lcmSummaryEmbeddingText(
+                hydratedCurrentNode.summary_text,
+                hydratedCurrentNode.summary_structured_json,
+                { pending: hydratedCurrentNode.summary_model === null }
+              )
+            : null;
         const suppressPlaintextPayload =
           managedCloudPlaintextMemoryPayloadsDisabled();
         if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
@@ -8368,6 +8810,13 @@ export const createMemorySourceRepository = (
           input.summaryStructuredJson !== null
             ? encryptedMemoryNodeJsonMarker()
             : input.summaryStructuredJson;
+        const embeddingTextChanged =
+          previousEmbeddingText !==
+          lcmSummaryEmbeddingText(
+            input.summaryText,
+            input.summaryStructuredJson,
+            { pending: false }
+          );
 
         await client.query(
           `
@@ -8380,6 +8829,10 @@ export const createMemorySourceRepository = (
             summary_token_estimate = $5,
             summary_structured_json = $6::jsonb,
             summary_structured_schema_version = $7,
+            summary_embedding_revision = case
+              when $8::boolean then gen_random_uuid()
+              else summary_embedding_revision
+            end,
             updated_at = now()
           where id = $1
         `,
@@ -8394,7 +8847,8 @@ export const createMemorySourceRepository = (
             summaryStructuredJsonForStorage === undefined
               ? null
               : JSON.stringify(summaryStructuredJsonForStorage),
-            input.summaryStructuredSchemaVersion ?? null
+            input.summaryStructuredSchemaVersion ?? null,
+            embeddingTextChanged
           ]
         );
         if (suppressPlaintextPayload && options.envelopeEncryptionProvider) {
@@ -8412,7 +8866,7 @@ export const createMemorySourceRepository = (
           );
         }
 
-        if (previousSummary !== input.summaryText) {
+        if (embeddingTextChanged) {
           await client.query(
             `
             update memory_embeddings
@@ -8421,6 +8875,47 @@ export const createMemorySourceRepository = (
               invalidation_reason = 'lcm_summary_updated'
             where memory_node_id = $1
               and invalidated_at is null
+          `,
+            [input.nodeId]
+          );
+
+          await client.query(
+            `
+            with recursive affected_ancestors(id) as (
+              select parent_memory_node_id
+              from memory_node_children
+              where child_memory_node_id = $1
+              union
+              select relationship.parent_memory_node_id
+              from memory_node_children relationship
+              join affected_ancestors ancestor
+                on relationship.child_memory_node_id = ancestor.id
+            ), requeued_ancestors as (
+              update memory_nodes ancestor
+              set
+                summary_model = null,
+                summary_prompt_version = null,
+                summary_token_estimate = null,
+                summary_structured_json = null,
+                summary_structured_schema_version = null,
+                summary_embedding_revision = gen_random_uuid(),
+                updated_at = now()
+              from affected_ancestors affected
+              where ancestor.id = affected.id
+                and ancestor.kind = 'rollup'
+                and ancestor.summary_model is not null
+                and ancestor.invalidated_at is null
+                and ancestor.personal_deleted_at is null
+              returning ancestor.id
+            )
+            update memory_embeddings embedding
+            set
+              invalidated_at = now(),
+              invalidation_reason = 'lcm_child_summary_updated'
+            where embedding.memory_node_id in (
+              select id from requeued_ancestors
+            )
+              and embedding.invalidated_at is null
           `,
             [input.nodeId]
           );
@@ -8558,12 +9053,14 @@ export const createMemorySourceRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        await assertCurrentEmbeddingSourceRevision(client, input.source);
         const embedding = await client.query<{ id: string; inserted: boolean }>(
           `
           insert into memory_embeddings (
             memory_node_id,
             memory_event_id,
             message_id,
+            curated_memory_assertion_id,
             owner_user_id,
             visibility,
             embedding_model,
@@ -8583,6 +9080,7 @@ export const createMemorySourceRepository = (
             case when $1 = 'memory_node' then $2::uuid else null end,
             case when $1 = 'memory_event' then $2::uuid else null end,
             case when $1 = 'message' then $2::uuid else null end,
+            case when $1 = 'curated_memory' then $2::uuid else null end,
             $3,
             $4,
             $5,
@@ -8638,6 +9136,7 @@ export const createMemorySourceRepository = (
                 ($5 = 'memory_node' and memory_node_id = $6::uuid)
                 or ($5 = 'memory_event' and memory_event_id = $6::uuid)
                 or ($5 = 'message' and message_id = $6::uuid)
+                or ($5 = 'curated_memory' and curated_memory_assertion_id = $6::uuid)
               )
             limit 1
           `,
@@ -8743,6 +9242,7 @@ export const createMemorySourceRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        await assertCurrentEmbeddingSourceRevision(client, input.source);
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
           [
@@ -8763,6 +9263,7 @@ export const createMemorySourceRepository = (
                 ($6 = 'memory_node' and memory_node_id = $7::uuid)
                 or ($6 = 'memory_event' and memory_event_id = $7::uuid)
                 or ($6 = 'message' and message_id = $7::uuid)
+                or ($6 = 'curated_memory' and curated_memory_assertion_id = $7::uuid)
               )
             order by source_chunk_index asc
           `,
@@ -8797,6 +9298,7 @@ export const createMemorySourceRepository = (
                 ($4 = 'memory_node' and memory_node_id = $5::uuid)
                 or ($4 = 'memory_event' and memory_event_id = $5::uuid)
                 or ($4 = 'message' and message_id = $5::uuid)
+                or ($4 = 'curated_memory' and curated_memory_assertion_id = $5::uuid)
               )
           `,
           [
@@ -8819,6 +9321,7 @@ export const createMemorySourceRepository = (
                 memory_node_id,
                 memory_event_id,
                 message_id,
+                curated_memory_assertion_id,
                 owner_user_id,
                 visibility,
                 embedding_model,
@@ -8839,6 +9342,7 @@ export const createMemorySourceRepository = (
                 case when $1 = 'memory_node' then $2::uuid else null end,
                 case when $1 = 'memory_event' then $2::uuid else null end,
                 case when $1 = 'message' then $2::uuid else null end,
+                case when $1 = 'curated_memory' then $2::uuid else null end,
                 $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                 $13, $14, $15, $16, $17
               )
@@ -9340,8 +9844,7 @@ export const createMemorySourceRepository = (
         | "leaf_search"
         | "curated_memory_search"
         | "fresh_pending_search"
-        | "raw_fallback_search"
-        | "lexical_search";
+        | "raw_fallback_search";
       type VectorRow = {
         id: string;
         embedding_id: string | null;
@@ -9363,9 +9866,13 @@ export const createMemorySourceRepository = (
         }> | null;
         visibility: Visibility;
         summary_text: string;
+        summary_structured_json: unknown;
+        lexical_anchors: string[] | null;
         rerank_text: string | null;
         lcm_summary_model: string | null;
         lcm_summary_pending: boolean;
+        source_generation: number | null;
+        occurred_at: Date | null;
         score: number;
         created_at: Date;
         embedding_model: string | null;
@@ -9391,8 +9898,7 @@ export const createMemorySourceRepository = (
         leaf_search: 3,
         curated_memory_search: 3,
         fresh_pending_search: 2,
-        raw_fallback_search: 1,
-        lexical_search: 2
+        raw_fallback_search: 1
       };
       const stageWeight: Record<RetrievalStageName, number> = {
         rollup_search: 1.1,
@@ -9400,8 +9906,7 @@ export const createMemorySourceRepository = (
         leaf_search: 1,
         curated_memory_search: 1,
         fresh_pending_search: 0.95,
-        raw_fallback_search: 0.7,
-        lexical_search: 1.2
+        raw_fallback_search: 0.7
       };
       const stageCandidateLimit = (name: string, fallback: number): number =>
         positiveIntEnv(name, fallback);
@@ -9423,10 +9928,6 @@ export const createMemorySourceRepository = (
       );
       const rawCandidateLimit = stageCandidateLimit(
         "MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT",
-        Math.max(requestedLimit, 20)
-      );
-      const lexicalCandidateLimit = stageCandidateLimit(
-        "MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT",
         Math.max(requestedLimit, 20)
       );
       const curatedMemoryCandidateLimit = stageCandidateLimit(
@@ -9462,8 +9963,7 @@ export const createMemorySourceRepository = (
         raw_fallback_search: nonNegativeFloatEnv(
           "MEMORY_RAG_RAW_FALLBACK_MIN_SCORE",
           0
-        ),
-        lexical_search: 0
+        )
       };
       const stageMaxAllowed: Record<RetrievalStageName, number> = {
         rollup_search: rollupCandidateLimit,
@@ -9471,32 +9971,24 @@ export const createMemorySourceRepository = (
         leaf_search: leafCandidateLimit,
         curated_memory_search: curatedMemoryCandidateLimit,
         fresh_pending_search: freshCandidateLimit,
-        raw_fallback_search: rawCandidateLimit,
-        lexical_search: lexicalCandidateLimit
+        raw_fallback_search: rawCandidateLimit
       };
       const requestedStage =
         input.retrievalStage && input.retrievalStage !== "score_scan"
           ? input.retrievalStage
           : null;
-      if (
-        requestedStage === "lexical_search" &&
-        !plaintextLexicalSearchEnabled()
-      ) {
-        throw Object.assign(
-          new Error(
-            "Plaintext lexical search is disabled for this deployment profile"
-          ),
-          {
-            statusCode: 400,
-            payload: {
-              error: "plaintext_lexical_search_disabled",
-              deploymentProfile: deploymentProfile() || null
-            }
-          }
-        );
-      }
       const scanOnly = input.retrievalStage === "score_scan";
       const vectorRows: VectorRow[] = [];
+      let databaseReads = requestedParentNodeIds.length > 0 ? 1 : 0;
+      let hydrationCount = 0;
+      let hydrationBytes = 0;
+      let decryptCount = 0;
+      let decryptBytes = 0;
+      const measuredByteLength = (value: unknown): number =>
+        Buffer.byteLength(
+          typeof value === "string" ? value : JSON.stringify(value ?? null),
+          "utf8"
+        );
       const filteredNodeSourceText = (
         items: VectorRow["filtered_source_items"]
       ): string | null => {
@@ -9526,432 +10018,13 @@ export const createMemorySourceRepository = (
         }
         return rows;
       };
-      const lexicalStopWords = new Set([
-        "about",
-        "after",
-        "again",
-        "answer",
-        "before",
-        "being",
-        "could",
-        "does",
-        "from",
-        "have",
-        "into",
-        "that",
-        "their",
-        "there",
-        "these",
-        "this",
-        "what",
-        "when",
-        "where",
-        "which",
-        "while",
-        "with",
-        "would"
-      ]);
-      const lexicalTerms = (query: string): string[] => {
-        const quoted = [...query.matchAll(/"([^"]+)"/g)]
-          .map((match) => match[1]?.trim())
-          .filter((term): term is string => Boolean(term && term.length >= 2));
-        const words = query
-          .toLowerCase()
-          .split(/[^a-z0-9_'-]+/i)
-          .map((term) => term.trim())
-          .filter((term) => term.length >= 3 && !lexicalStopWords.has(term));
-        const terms = [...new Set([...quoted, ...words])]
-          .filter(Boolean)
-          .slice(0, 16);
-        return terms.length > 0 ? terms : [query.trim()].filter(Boolean);
-      };
-      const hasCuratedMemoryIntent = (query: string): boolean =>
-        /\b(remember|recall|preference|prefer|usually|decision|decid(?:e|ed|ing)|agreed?|plan|birthday|relationship|allerg(?:y|ic)|diet|travel|flight|hotel|address|phone|email|timezone|favou?rite|correction|personal fact)\b/i.test(
-          query
-        );
-      const shouldRunCuratedMemoryStage =
-        requestedStage === "curated_memory_search" ||
-        (!requestedStage && hasCuratedMemoryIntent(input.query));
-      const runCuratedMemoryStage = async (): Promise<StageResult> => {
-        const started = Date.now();
-        const terms = lexicalTerms(input.query);
-        if (terms.length === 0 || !shouldRunCuratedMemoryStage) {
-          return {
-            name: "curated_memory_search",
-            rows: [],
-            durationMs: Date.now() - started,
-            reranked: false,
-            rerankedCount: 0,
-            parentNodeIds: []
-          };
-        }
-        const candidates =
-          await curatedMemoryRepository.searchCuratedMemoryRetrievalCandidates(
-            actor,
-            {
-              query: input.query,
-              searchDomain,
-              sessionId: input.sessionId,
-              projectId: input.projectId,
-              limit: curatedMemoryCandidateLimit,
-              sourceAfter: sourceAfter?.toISOString(),
-              sourceBefore: sourceBefore?.toISOString()
-            }
-          );
-        const rows: VectorRow[] = candidates.map((candidate) => ({
-          id: candidate.assertionId,
-          embedding_id: null,
-          source_type: "curated_memory",
-          retrieval_stage: "curated_memory_search",
-          source_id: candidate.assertionId,
-          owner_user_id: candidate.ownerUserId,
-          parent_node_ids: [],
-          visibility: candidate.visibility,
-          summary_text: candidate.summaryText,
-          rerank_text: candidate.rerankText,
-          has_out_of_window_sources: false,
-          filtered_source_items: null,
-          lcm_summary_model: null,
-          lcm_summary_pending: false,
-          created_at: new Date(candidate.updatedAt),
-          embedding_model: null,
-          embedding_dimensions: null,
-          source_chunk_index: 0,
-          source_chunk_count: 1,
-          score: candidate.score
-        }));
-        return {
-          name: "curated_memory_search",
-          rows,
-          durationMs: Date.now() - started,
-          reranked: false,
-          rerankedCount: 0,
-          parentNodeIds: []
-        };
-      };
-      const runLexicalStage = async (): Promise<StageResult> => {
-        const started = Date.now();
-        const terms = lexicalTerms(input.query);
-        if (terms.length === 0) {
-          return {
-            name: "lexical_search",
-            rows: [],
-            durationMs: Date.now() - started,
-            reranked: false,
-            rerankedCount: 0,
-            parentNodeIds: []
-          };
-        }
-        const patterns = terms.map((term) => `%${term.toLowerCase()}%`);
-        const exact = input.query.trim().toLowerCase();
-        const result = await pool.query<VectorRow>(
-          `
-          with lexical_sources as (
-            select
-              mn.id,
-              null::text as embedding_id,
-              'memory_node'::text as source_type,
-              mn.id as source_id,
-              mn.owner_user_id,
-              coalesce(
-                (
-                  select array_agg(parent.parent_memory_node_id::text order by parent.parent_memory_node_id::text)
-                  from memory_node_children parent
-                  join memory_nodes parent_node
-                    on parent_node.id = parent.parent_memory_node_id
-                    and parent_node.invalidated_at is null
-                    and parent_node.personal_deleted_at is null
-                  where parent.child_memory_node_id = mn.id
-                    and parent_node.visibility = 'personal'
-                    and parent_node.owner_user_id = $1
-                ),
-                array[]::text[]
-              ) as parent_node_ids,
-              mn.visibility,
-              case
-                when not lexical_boundaries.use_filtered_sources
-                then node_text.full_text
-                else coalesce(filtered_sources.filtered_source_text, '')
-              end as summary_text,
-              lexical_boundaries.use_filtered_sources as has_out_of_window_sources,
-              case
-                when lexical_boundaries.use_filtered_sources
-                then filtered_sources.filtered_source_items
-                else null::json
-              end as filtered_source_items,
-              coalesce(mn.summary_model, '') as lcm_summary_model,
-              mn.summary_model is null as lcm_summary_pending,
-              mn.created_at,
-              0.15::double precision as source_rank
-            from memory_nodes mn
-            cross join lateral (
-              select not (
-                $5::text = 'global'
-                and $8::timestamptz is null
-                and $9::timestamptz is null
-              ) as use_filtered_sources
-            ) lexical_boundaries
-            cross join lateral (
-              select case
-                when mn.body_text is null
-                  or btrim(mn.body_text) = ''
-                  or btrim(mn.body_text) = btrim(mn.summary_text)
-                then btrim(mn.summary_text)
-                else btrim(mn.summary_text || E'\n' || mn.body_text)
-              end as full_text
-            ) node_text
-            left join lateral (
-              select
-                string_agg(source_row.source_text, E'\n' order by source_row.source_created_at asc, source_row.source_id asc) as filtered_source_text,
-                json_agg(
-                  json_build_object(
-                    'createdAt', to_char(source_row.source_created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-                    'text', source_row.source_text,
-                    'projectName', source_row.project_name,
-                    'projectPath', source_row.project_path
-                  )
-                  order by source_row.source_created_at asc, source_row.source_id asc
-                ) as filtered_source_items
-              from (
-                select
-                  coalesce(source_ev.id, source_msg.id) as source_id,
-                  coalesce(source_ev.captured_at, source_msg.captured_at) as source_created_at,
-                  coalesce(source_ev.payload ->> 'content', source_msg.content, '') as source_text,
-                  coalesce(source_session.project_override_name, source_session.automatic_project_name, 'Unassigned') as project_name,
-                  coalesce(source_session.project_override_path, source_session.automatic_project_path) as project_path
-                from memory_node_sources source_mns
-                left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
-                left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null and source_msg.recall_eligible = true
-                left join sessions source_session on source_session.id = coalesce(source_ev.session_id, source_msg.session_id)
-                where source_mns.memory_node_id = mn.id
-                  and (
-                    $5::text = 'global'
-                    or (
-                      $5::text = 'session'
-                      and (source_ev.session_id = $6::uuid or source_msg.session_id = $6::uuid)
-                    )
-                    or (
-                      $5::text = 'project'
-                      and (
-                        coalesce(
-                          source_session.project_override_id,
-                          source_session.automatic_project_id,
-                          case when source_session.id is null then source_ev.payload ->> 'projectId' end,
-                          'unassigned'
-                        ) = $7
-                        or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
-                      )
-                    )
-                  )
-                  and coalesce(source_ev.payload ->> 'content', source_msg.content, '') <> ''
-                  and (
-                    ($8::timestamptz is null and $9::timestamptz is null)
-                    or coalesce(source_ev.captured_at, source_msg.captured_at) is not null
-                  )
-                  and ($8::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) >= $8::timestamptz)
-                  and ($9::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) < $9::timestamptz)
-              ) source_row
-            ) filtered_sources on true
-            where mn.invalidated_at is null and mn.personal_deleted_at is null
-              and mn.visibility = 'personal'
-              and not exists (
-                select 1
-                from memory_node_sources ready_mns
-                left join memory_events ready_ev on ready_ev.id = ready_mns.memory_event_id
-                left join messages ready_msg on ready_msg.id = ready_mns.message_id
-                where ready_mns.memory_node_id = mn.id
-                  and not sync_session_recall_ready(coalesce(ready_ev.session_id, ready_msg.session_id))
-              )
-              and mn.owner_user_id = $1
-              and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
-              and lower(
-                case
-                  when not lexical_boundaries.use_filtered_sources
-                  then node_text.full_text
-                  else coalesce(filtered_sources.filtered_source_text, '')
-                end
-              ) like any($3::text[])
-              and (
-                not lexical_boundaries.use_filtered_sources
-                or filtered_sources.filtered_source_text is not null
-              )
-
-            union all
-
-            select
-              me.id,
-              null::text as embedding_id,
-              'memory_event'::text as source_type,
-              me.id as source_id,
-              me.owner_user_id,
-              array[]::text[] as parent_node_ids,
-              me.visibility,
-              coalesce(me.payload ->> 'content', '') as summary_text,
-              false as has_out_of_window_sources,
-              null::json as filtered_source_items,
-              null as lcm_summary_model,
-              false as lcm_summary_pending,
-              me.captured_at as created_at,
-              case
-                when coalesce(me.payload ->> 'actor', '') = 'tool' then -0.25
-                when coalesce(me.payload ->> 'actor', '') in ('agent', 'assistant', 'subagent') then 0.2
-                else 0.05
-              end::double precision as source_rank
-            from memory_events me
-            left join sessions me_session on me_session.id = me.session_id
-            where me.invalidated_at is null
-            and pds_session_recall_ready(me.session_id)
-              and me.visibility = 'personal'
-              and sync_session_recall_ready(me.session_id)
-              and me.owner_user_id = $1
-              and me.personal_deleted_at is null
-              and ($2::visibility_scope is null or me.visibility = $2::visibility_scope)
-              and lower(coalesce(me.payload ->> 'content', '')) like any($3::text[])
-              and (
-                $5::text = 'global'
-                or (
-                  $5::text = 'session'
-                  and me.session_id = $6::uuid
-                )
-                or (
-                  $5::text = 'project'
-                  and (
-                    coalesce(
-                      me_session.project_override_id,
-                      me_session.automatic_project_id,
-                      case when me_session.id is null then me.payload ->> 'projectId' end,
-                      'unassigned'
-                    ) = $7
-                    or coalesce(me_session.project_override_path, me_session.automatic_project_path) = $7
-                  )
-                )
-              )
-              and ($8::timestamptz is null or me.captured_at >= $8::timestamptz)
-              and ($9::timestamptz is null or me.captured_at < $9::timestamptz)
-
-            union all
-
-            select
-              msg.id,
-              null::text as embedding_id,
-              'message'::text as source_type,
-              msg.id as source_id,
-              msg.owner_user_id,
-              array[]::text[] as parent_node_ids,
-              msg.visibility,
-              msg.content as summary_text,
-              false as has_out_of_window_sources,
-              null::json as filtered_source_items,
-              null as lcm_summary_model,
-              false as lcm_summary_pending,
-              msg.captured_at as created_at,
-              case
-                when msg.role = 'tool' then -0.25
-                else 0.05
-              end::double precision as source_rank
-            from messages msg
-            left join sessions msg_session on msg_session.id = msg.session_id
-            where msg.invalidated_at is null
-              and msg.recall_eligible = true
-              and msg.visibility = 'personal'
-              and sync_session_recall_ready(msg.session_id)
-              and msg.owner_user_id = $1
-              and ($2::visibility_scope is null or msg.visibility = $2::visibility_scope)
-              and lower(msg.content) like any($3::text[])
-              and (
-                $5::text = 'global'
-                or (
-                  $5::text = 'session'
-                  and msg.session_id = $6::uuid
-                )
-                or (
-                  $5::text = 'project'
-                  and (
-                    coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $7
-                    or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $7
-                  )
-                )
-              )
-              and ($8::timestamptz is null or msg.captured_at >= $8::timestamptz)
-              and ($9::timestamptz is null or msg.captured_at < $9::timestamptz)
-          )
-          , scored as (
-            select
-              lexical_sources.*,
-              (
-                select count(*)::double precision
-                from unnest($3::text[]) as term(pattern)
-                where lower(summary_text) like term.pattern
-              ) as matched_terms
-            from lexical_sources
-            where btrim(summary_text) <> ''
-          )
-          select
-            id,
-            embedding_id,
-            source_type::text,
-            source_id,
-            owner_user_id,
-            'lexical_search'::text as retrieval_stage,
-            parent_node_ids,
-            coalesce(has_out_of_window_sources, false) as has_out_of_window_sources,
-            filtered_source_items,
-            visibility,
-            summary_text,
-            summary_text as rerank_text,
-            nullif(lcm_summary_model, '') as lcm_summary_model,
-            lcm_summary_pending,
-            (
-              matched_terms
-              / greatest(array_length($3::text[], 1), 1)::double precision
-              + case
-                  when $4 <> '' and lower(summary_text) like '%' || $4 || '%'
-                  then 0.05
-                  else 0
-                end
-              + source_rank
-              + least(length(summary_text), 12000)::double precision / 120000
-            ) as score,
-            created_at,
-            $10::text as embedding_model,
-            $11::int as embedding_dimensions,
-            0 as source_chunk_index,
-            1 as source_chunk_count
-          from scored
-          where matched_terms > 0
-          order by score desc, matched_terms desc, created_at desc, source_id
-          limit $12
-        `,
-          [
-            actor.userId,
-            visibility,
-            patterns,
-            exact,
-            searchDomain,
-            input.sessionId ?? null,
-            input.projectId ?? null,
-            sourceAfter,
-            sourceBefore,
-            localEmbeddingModel(),
-            localEmbeddingDimensions(),
-            lexicalCandidateLimit
-          ]
-        );
-        return {
-          name: "lexical_search",
-          rows: result.rows,
-          durationMs: Date.now() - started,
-          reranked: false,
-          rerankedCount: 0,
-          parentNodeIds: []
-        };
-      };
-
       const hydrateSearchRows = async (
         rows: VectorRow[]
-      ): Promise<VectorRow[]> =>
-        Promise.all(
+      ): Promise<VectorRow[]> => {
+        hydrationCount += rows.length;
+        const hydratedRows = await Promise.all(
           rows.map(async (row) => {
+            let hydrated = row;
             if (
               row.summary_text === ENCRYPTED_EMBEDDING_SOURCE_TEXT ||
               row.summary_text.includes(ENCRYPTED_EMBEDDING_SOURCE_TEXT)
@@ -9976,12 +10049,14 @@ export const createMemorySourceRepository = (
                   sourceColumn: "source_text"
                 }
               );
+              decryptCount += 1;
+              decryptBytes += measuredByteLength(sourceText);
               if (typeof sourceText !== "string") {
                 throw new Error(
                   "Encrypted embedding source_text companion is invalid"
                 );
               }
-              return {
+              hydrated = {
                 ...row,
                 summary_text: sourceText,
                 rerank_text:
@@ -9992,41 +10067,86 @@ export const createMemorySourceRepository = (
               };
             }
             if (
-              row.source_type !== "memory_node" ||
-              (row.summary_text !== ENCRYPTED_MEMORY_NODE_TEXT &&
-                !row.summary_text.includes(ENCRYPTED_MEMORY_NODE_TEXT))
+              hydrated.source_type === "memory_node" &&
+              (hydrated.summary_text === ENCRYPTED_MEMORY_NODE_TEXT ||
+                hydrated.summary_text.includes(ENCRYPTED_MEMORY_NODE_TEXT))
             ) {
-              return row;
-            }
-            if (!options.envelopeEncryptionProvider) {
-              throw new Error(
-                "Envelope encryption provider is required to search encrypted Memory Nodes"
-              );
-            }
-            const summaryText = await decryptAuthorizedEncryptedFieldPayload(
-              pool,
-              options.envelopeEncryptionProvider,
-              {
-                ownerUserId: row.owner_user_id,
-                sourceTable: "memory_nodes",
-                sourceId: row.source_id,
-                sourceColumn: "summary_text"
+              if (!options.envelopeEncryptionProvider) {
+                throw new Error(
+                  "Envelope encryption provider is required to search encrypted Memory Nodes"
+                );
               }
-            );
-            if (typeof summaryText !== "string") {
-              throw new Error("Encrypted Memory Node summary_text is invalid");
+              const summaryText = await decryptAuthorizedEncryptedFieldPayload(
+                pool,
+                options.envelopeEncryptionProvider,
+                {
+                  ownerUserId: hydrated.owner_user_id,
+                  sourceTable: "memory_nodes",
+                  sourceId: hydrated.source_id,
+                  sourceColumn: "summary_text"
+                }
+              );
+              decryptCount += 1;
+              decryptBytes += measuredByteLength(summaryText);
+              if (typeof summaryText !== "string") {
+                throw new Error(
+                  "Encrypted Memory Node summary_text is invalid"
+                );
+              }
+              hydrated = {
+                ...hydrated,
+                summary_text: summaryText,
+                rerank_text:
+                  hydrated.rerank_text === ENCRYPTED_MEMORY_NODE_TEXT ||
+                  hydrated.rerank_text?.includes(ENCRYPTED_MEMORY_NODE_TEXT)
+                    ? summaryText
+                    : hydrated.rerank_text
+              };
             }
-            return {
-              ...row,
-              summary_text: summaryText,
-              rerank_text:
-                row.rerank_text === ENCRYPTED_MEMORY_NODE_TEXT ||
-                row.rerank_text?.includes(ENCRYPTED_MEMORY_NODE_TEXT)
-                  ? summaryText
-                  : row.rerank_text
+            if (hydrated.source_type !== "memory_node") {
+              hydrationBytes += measuredByteLength(hydrated.summary_text);
+              return hydrated;
+            }
+            let structuredSummary = hydrated.summary_structured_json;
+            if (isEncryptedMemoryNodeJsonMarker(structuredSummary)) {
+              if (!options.envelopeEncryptionProvider) {
+                throw new Error(
+                  "Envelope encryption provider is required to search encrypted Memory Nodes"
+                );
+              }
+              structuredSummary = await decryptAuthorizedEncryptedFieldPayload(
+                pool,
+                options.envelopeEncryptionProvider,
+                {
+                  ownerUserId: hydrated.owner_user_id,
+                  sourceTable: "memory_nodes",
+                  sourceId: hydrated.source_id,
+                  sourceColumn: "summary_structured_json"
+                }
+              );
+              decryptCount += 1;
+              decryptBytes += measuredByteLength(structuredSummary);
+            }
+            const parsed =
+              structuredLcmSummarySchema.safeParse(structuredSummary);
+            if (!parsed.success && hydrated.lcm_summary_model) {
+              return null;
+            }
+            const result = {
+              ...hydrated,
+              summary_structured_json: structuredSummary,
+              lexical_anchors: parsed.success
+                ? parsed.data.lexical_anchors
+                : null
             };
+            hydrationBytes +=
+              measuredByteLength(result.summary_text) +
+              measuredByteLength(result.summary_structured_json);
+            return result;
           })
         );
+        return hydratedRows.filter((row): row is VectorRow => row !== null);
+      };
 
       const rerankStageRows = async (
         stage: RetrievalStageName,
@@ -10106,7 +10226,7 @@ export const createMemorySourceRepository = (
       };
 
       try {
-        if (requestedStage !== "lexical_search") {
+        {
           const embedded = await embedQueryTexts([input.query]);
           if (embedded.vectors[0]) {
             const queryVector = embedded.vectors[0];
@@ -10119,18 +10239,20 @@ export const createMemorySourceRepository = (
               parentNodeIds: string[] = []
             ): Promise<StageResult> => {
               const started = Date.now();
+              databaseReads += 1;
               const vectorResult = await pool.query<VectorRow>(
                 `
               with candidates as (
                 select
-                  coalesce(mns.memory_node_id, me.memory_node_id, me.memory_event_id, me.message_id) as id,
+                  coalesce(cma.id, mns.memory_node_id, me.memory_node_id, me.memory_event_id, me.message_id) as id,
                   me.id::text as embedding_id,
                   case
                     when me.memory_node_id is not null then 'memory_node'
                     when me.memory_event_id is not null then 'memory_event'
-                    else 'message'
+                    when me.message_id is not null then 'message'
+                    else 'curated_memory'
                   end as source_type,
-                  coalesce(me.memory_node_id, me.memory_event_id, me.message_id) as source_id,
+                  coalesce(me.memory_node_id, me.memory_event_id, me.message_id, me.curated_memory_assertion_id) as source_id,
                   me.owner_user_id,
                   $11::text as retrieval_stage,
                   coalesce(
@@ -10254,6 +10376,8 @@ export const createMemorySourceRepository = (
                     else null
                   end as filtered_source_items,
                   me.visibility,
+                  mn.summary_structured_json,
+                  null::text[] as lexical_anchors,
                   case
                     when me.memory_node_id is not null
                     then coalesce(mn.summary_text, me.source_text, '')
@@ -10261,6 +10385,7 @@ export const createMemorySourceRepository = (
                   end as summary_text,
                   case
                     when mn.summary_model is not null then mn.summary_text
+                    when cma.id is not null then me.source_text
                     when linked_mn.summary_model is not null
                       and me.owner_user_id = $1
                     then linked_mn.summary_text
@@ -10272,11 +10397,22 @@ export const createMemorySourceRepository = (
                     or
                     (linked_mn.id is not null and linked_mn.summary_model is null)
                   ) as lcm_summary_pending,
+                  case
+                    when me.memory_node_id is not null then mn.summary_embedding_revision
+                    else null
+                  end as source_generation,
                   1 - (v.embedding <=> $3::vector) as score,
                   coalesce(
                     case
                       when me.memory_node_id is not null then (
-                        select max(coalesce(source_ev.captured_at, source_msg.captured_at))
+                        select max(
+                          coalesce(
+                            source_ev.source_event_time,
+                            source_msg.source_event_time,
+                            source_ev.captured_at,
+                            source_msg.captured_at
+                          )
+                        )
                         from memory_node_sources source_mns
                         left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
                         left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null and source_msg.recall_eligible = true
@@ -10284,10 +10420,12 @@ export const createMemorySourceRepository = (
                       )
                       else null
                     end,
-                    ev.captured_at,
-                    msg.captured_at,
+                    coalesce(ev.source_event_time, ev.captured_at),
+                    coalesce(msg.source_event_time, msg.captured_at),
+                    cma.updated_at,
                     me.created_at
-                  ) as created_at,
+                  ) as occurred_at,
+                  me.created_at as created_at,
                   me.embedding_model,
                   me.embedding_dimensions,
                   me.source_chunk_index,
@@ -10297,6 +10435,11 @@ export const createMemorySourceRepository = (
                 left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
                 left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null and ev.include_in_embedding = true
                 left join messages msg on msg.id = me.message_id and msg.invalidated_at is null and msg.recall_eligible = true
+                left join curated_memory_assertions cma
+                  on cma.id = me.curated_memory_assertion_id
+                 and cma.status = 'current'
+                 and cma.suppressed_at is null
+                 and (cma.expires_at is null or cma.expires_at > now())
                 left join sessions ev_session on ev_session.id = ev.session_id
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
@@ -10317,6 +10460,11 @@ export const createMemorySourceRepository = (
                       and me.personal_deleted_at is null
                     )
                     or (me.message_id is not null and msg.id is not null)
+                    or (
+                      me.curated_memory_assertion_id is not null
+                      and cma.id is not null
+                      and ${activeCuratedMemoryEvidencePredicate("cma")}
+                    )
                   )
                   and me.visibility = 'personal'
                   and (me.memory_event_id is null or sync_session_recall_ready(ev.session_id))
@@ -10348,6 +10496,18 @@ export const createMemorySourceRepository = (
                           left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null and filter_msg.recall_eligible = true
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (filter_ev.session_id = $9::uuid or filter_msg.session_id = $9::uuid)
+                        )
+                        or (
+                          cma.id is not null
+                          and exists (
+                            select 1
+                            from curated_memory_sources session_cms
+                            left join memory_events session_cme on session_cme.id = session_cms.memory_event_id
+                            left join memory_nodes session_cmn on session_cmn.id = session_cms.lcm_node_id
+                            left join conversation_items session_cci on session_cci.id = session_cms.conversation_item_id
+                            where session_cms.assertion_id = cma.id
+                              and coalesce(session_cme.session_id, session_cmn.session_id, session_cci.session_id) = $9::uuid
+                          )
                         )
                       )
                     )
@@ -10390,6 +10550,22 @@ export const createMemorySourceRepository = (
                               or coalesce(filter_session.project_override_path, filter_session.automatic_project_path) = $10
                             )
                         )
+                        or (
+                          cma.id is not null
+                          and exists (
+                            select 1
+                            from curated_memory_sources project_cms
+                            left join memory_events project_cme on project_cme.id = project_cms.memory_event_id
+                            left join memory_nodes project_cmn on project_cmn.id = project_cms.lcm_node_id
+                            left join conversation_items project_cci on project_cci.id = project_cms.conversation_item_id
+                            left join sessions project_cs on project_cs.id = coalesce(project_cme.session_id, project_cmn.session_id, project_cci.session_id)
+                            where project_cms.assertion_id = cma.id
+                              and (
+                                coalesce(project_cs.project_override_id, project_cs.automatic_project_id, 'unassigned') = $10
+                                or coalesce(project_cs.project_override_path, project_cs.automatic_project_path) = $10
+                              )
+                          )
+                        )
                       )
                     )
                   )
@@ -10416,6 +10592,11 @@ export const createMemorySourceRepository = (
                       me.message_id is not null
                       and ($12::timestamptz is null or msg.captured_at >= $12::timestamptz)
                       and ($13::timestamptz is null or msg.captured_at < $13::timestamptz)
+                    )
+                    or (
+                      cma.id is not null
+                      and ($12::timestamptz is null or cma.observed_at >= $12::timestamptz)
+                      and ($13::timestamptz is null or cma.observed_at < $13::timestamptz)
                     )
                   )
                   and (
@@ -10509,6 +10690,11 @@ export const createMemorySourceRepository = (
                       $11::text = 'raw_fallback_search'
                       and me.memory_node_id is null
                       and coalesce(ev.payload ->> 'actor', msg.role, '') <> 'tool'
+                    )
+                    or (
+                      $11::text = 'curated_memory_search'
+                      and me.curated_memory_assertion_id is not null
+                      and cma.id is not null
                     )
                   )
               )
@@ -10604,7 +10790,12 @@ export const createMemorySourceRepository = (
                 return [await runStage("leaf_search", leafCandidateLimit)];
               }
               if (requestedStage === "curated_memory_search") {
-                return [];
+                return [
+                  await runStage(
+                    "curated_memory_search",
+                    curatedMemoryCandidateLimit
+                  )
+                ];
               }
               if (requestedStage === "fresh_pending_search") {
                 return [
@@ -10627,14 +10818,19 @@ export const createMemorySourceRepository = (
             const runDefaultSemanticStages = async (): Promise<
               StageResult[]
             > => {
-              const [rollups, leaves, fresh, rawFallback] = await Promise.all([
-                runStage("rollup_search", rollupCandidateLimit),
-                runStage("leaf_search", leafCandidateLimit),
-                runStage("fresh_pending_search", freshCandidateLimit),
-                rawFallbackEnabled
-                  ? runStage("raw_fallback_search", rawCandidateLimit)
-                  : Promise.resolve(skippedRawFallback)
-              ]);
+              const [rollups, leaves, curated, fresh, rawFallback] =
+                await Promise.all([
+                  runStage("rollup_search", rollupCandidateLimit),
+                  runStage("leaf_search", leafCandidateLimit),
+                  runStage(
+                    "curated_memory_search",
+                    curatedMemoryCandidateLimit
+                  ),
+                  runStage("fresh_pending_search", freshCandidateLimit),
+                  rawFallbackEnabled
+                    ? runStage("raw_fallback_search", rawCandidateLimit)
+                    : Promise.resolve(skippedRawFallback)
+                ]);
               const selectedRollupIds =
                 requestedParentNodeIds.length > 0
                   ? visibleParentNodeIds
@@ -10642,7 +10838,14 @@ export const createMemorySourceRepository = (
                       .slice(0, rollupResultLimit)
                       .map((row) => row.source_id);
               const scopedLeaves = await runScopedLeaves(selectedRollupIds);
-              return [rollups, leaves, fresh, rawFallback, scopedLeaves];
+              return [
+                rollups,
+                leaves,
+                curated,
+                fresh,
+                rawFallback,
+                scopedLeaves
+              ];
             };
             const stages = requestedStage
               ? await runRequestedSemanticStage()
@@ -10667,6 +10870,14 @@ export const createMemorySourceRepository = (
                 vectorCandidateCount: vectorRows.length,
                 embeddingModel: embedded.model,
                 embeddingDimensions: embedded.dimensions,
+                semanticRetrievalComplete: true,
+                databaseReads,
+                hydrationCount,
+                hydrationBytes,
+                decryptCount,
+                decryptBytes,
+                embeddingCalls: 1,
+                embeddingTokens: embedded.measuredTokens,
                 rerankedCount: stages.reduce(
                   (sum, stage) => sum + stage.rerankedCount,
                   0
@@ -10723,77 +10934,36 @@ export const createMemorySourceRepository = (
           }
         }
       } catch (error) {
+        const semanticRetrievalError =
+          error instanceof Error ? error.message : String(error);
         console.warn(
           `Local embedding query failed; semantic retrieval unavailable: ${
-            error instanceof Error ? error.message : String(error)
+            semanticRetrievalError
           }`
         );
-      }
-      if (!requestedStage || requestedStage === "curated_memory_search") {
-        const curated = await runCuratedMemoryStage();
-        vectorRows.push(
-          ...curated.rows.filter(
-            (row) => Number(row.score) >= scoreThresholds.curated_memory_search
-          )
-        );
-        stageDiagnostics.push({
-          name: curated.name,
-          ran: shouldRunCuratedMemoryStage,
-          used: false,
-          candidateCount: curated.rows.length,
-          selectedCount: 0,
-          durationMs: curated.durationMs,
-          parallelGroup: "curated_memory_candidates",
-          temporalFilterApplied: Boolean(temporalFilter),
-          reranked: false,
-          parentNodeIds: [],
-          topScore: curated.rows[0]?.score,
-          scoreThreshold: scoreThresholds.curated_memory_search,
-          countAboveThreshold: curated.rows.filter(
-            (row) => Number(row.score) >= scoreThresholds.curated_memory_search
-          ).length,
-          maxAllowed: stageMaxAllowed.curated_memory_search,
-          rejectedCount: curated.rows.filter(
-            (row) => Number(row.score) < scoreThresholds.curated_memory_search
-          ).length,
-          candidateIds: curated.rows
-            .filter(
-              (row) =>
-                Number(row.score) >= scoreThresholds.curated_memory_search
-            )
-            .slice(0, stageMaxAllowed.curated_memory_search)
-            .map((row) => row.source_id)
+        embeddingMetadata = defaultRetrievalMetadata({
+          semanticRetrievalComplete: false,
+          semanticRetrievalError,
+          databaseReads,
+          hydrationCount,
+          hydrationBytes,
+          decryptCount,
+          decryptBytes,
+          embeddingCalls: 1,
+          embeddingTokens: null,
+          rerankingEnabled: shouldRerank,
+          temporalFilter
         });
-      }
-      if (requestedStage === "lexical_search") {
-        const lexical = await runLexicalStage();
-        vectorRows.push(
-          ...lexical.rows.filter(
-            (row) => Number(row.score) >= scoreThresholds.lexical_search
-          )
-        );
         stageDiagnostics.push({
-          name: lexical.name,
+          name: requestedStage ?? "semantic_retrieval",
           ran: true,
           used: false,
-          candidateCount: lexical.rows.length,
+          candidateCount: 0,
           selectedCount: 0,
-          durationMs: lexical.durationMs,
-          parallelGroup: "lexical_candidates",
-          temporalFilterApplied: Boolean(temporalFilter),
-          reranked: false,
-          parentNodeIds: [],
-          topScore: lexical.rows[0]?.score,
-          scoreThreshold: scoreThresholds.lexical_search,
-          countAboveThreshold: lexical.rows.length,
-          maxAllowed: stageMaxAllowed.lexical_search,
-          rejectedCount: 0,
-          candidateIds: lexical.rows
-            .slice(0, stageMaxAllowed.lexical_search)
-            .map((row) => row.source_id)
+          durationMs: 0,
+          error: semanticRetrievalError
         });
       }
-
       const merged = new Map<
         string,
         MemorySearchResult & {
@@ -10814,8 +10984,11 @@ export const createMemorySourceRepository = (
           parent_node_ids?: string[] | null;
           visibility: Visibility;
           summary_text: string;
+          lexical_anchors?: string[] | null;
           lcm_summary_model?: string | null;
           lcm_summary_pending?: boolean;
+          source_generation?: number | null;
+          occurred_at?: Date | null;
           source_chunk_index?: number | null;
           source_chunk_count?: number | null;
           score: number;
@@ -10824,11 +10997,18 @@ export const createMemorySourceRepository = (
         weight: number
       ) => {
         const summaryText = codexIdePromptUserText(row.summary_text).trim();
+        const exactAnchorMatches = (input.exactHints ?? []).filter((hint) =>
+          [summaryText, ...(row.lexical_anchors ?? [])].some((text) =>
+            text.includes(hint)
+          )
+        );
         const normalizedText = summaryText.toLowerCase();
         const key = normalizedText
           ? `${row.visibility}:${normalizedText}`
           : `${row.source_type}:${row.source_id}`;
-        const score = Number(row.score) * weight;
+        const score =
+          Number(row.score) * weight +
+          Math.min(exactAnchorMatches.length, 4) * 0.25;
         const priority = stagePriority[row.retrieval_stage];
         const existing = merged.get(key);
         if (
@@ -10844,8 +11024,13 @@ export const createMemorySourceRepository = (
             sourceChunkCount: row.source_chunk_count ?? undefined,
             retrievalStage: row.retrieval_stage,
             parentNodeIds: row.parent_node_ids ?? undefined,
+            sourceGeneration: row.source_generation ?? undefined,
+            occurredAt: row.occurred_at?.toISOString(),
             visibility: row.visibility,
             summaryText,
+            lexicalAnchors: row.lexical_anchors ?? undefined,
+            exactAnchorMatches:
+              exactAnchorMatches.length > 0 ? exactAnchorMatches : undefined,
             lcmNodeSummaryStatus: row.lcm_summary_pending
               ? "pending"
               : row.lcm_summary_model
@@ -10861,9 +11046,11 @@ export const createMemorySourceRepository = (
               sourceChunkCount: row.source_chunk_count ?? undefined,
               retrievalStage: row.retrieval_stage,
               parentNodeIds: row.parent_node_ids ?? undefined,
+              sourceGeneration: row.source_generation ?? undefined,
+              occurredAt: row.occurred_at?.toISOString(),
               visibility: row.visibility
             },
-            createdAt: row.created_at,
+            createdAt: row.occurred_at ?? row.created_at,
             stagePriority: priority
           });
         }
@@ -10939,8 +11126,7 @@ export const createMemorySourceRepository = (
         ...rowsByStage("scoped_leaf_search"),
         ...rowsByStage("leaf_search"),
         ...rowsByStage("curated_memory_search"),
-        ...rowsByStage("fresh_pending_search"),
-        ...rowsByStage("lexical_search")
+        ...rowsByStage("fresh_pending_search")
       ]) {
         if (!requestedStage || row.retrieval_stage === requestedStage) {
           addRow(row, stageWeight[row.retrieval_stage]);
@@ -10976,8 +11162,12 @@ export const createMemorySourceRepository = (
           sourceChunkCount: result.sourceChunkCount,
           retrievalStage: result.retrievalStage,
           parentNodeIds: result.parentNodeIds,
+          sourceGeneration: result.sourceGeneration,
+          occurredAt: result.occurredAt,
           visibility: result.visibility,
           summaryText: result.summaryText,
+          lexicalAnchors: result.lexicalAnchors,
+          exactAnchorMatches: result.exactAnchorMatches,
           lcmNodeSummaryStatus: result.lcmNodeSummaryStatus,
           lcmNodeSummaryModel: result.lcmNodeSummaryModel,
           score: result.score,
@@ -11024,6 +11214,7 @@ export const createMemorySourceRepository = (
           turn_id: string | null;
           payload: MemoryEventPayload;
           captured_at: Date;
+          source_event_time: Date | null;
         }>(
           `
           select
@@ -11034,7 +11225,8 @@ export const createMemorySourceRepository = (
             me.session_id,
             me.turn_id,
             me.payload,
-            me.captured_at
+            me.captured_at,
+            me.source_event_time
           from memory_events me
           left join conversation_projection_processing_outbox processing
             on processing.event_id = me.id
@@ -11190,6 +11382,10 @@ export const createMemorySourceRepository = (
             actor: event.actor ?? event.payload.actor,
             turnId: event.turn_id,
             createdAt: event.captured_at.toISOString(),
+            occurredAt: (
+              event.source_event_time ?? event.captured_at
+            ).toISOString(),
+            capturedAt: event.captured_at.toISOString(),
             text: memoryEventLcmContent(event.payload) ?? "",
             payload: lcmSourcePayloadForEvent(event),
             position
@@ -11647,9 +11843,10 @@ export const createMemorySourceRepository = (
         };
         created_at: Date;
         captured_at: Date;
+        source_event_time: Date | null;
       }>(
         `
-        select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at, me.captured_at
+        select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at, me.captured_at, me.source_event_time
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
         left join sessions source_session on source_session.id = me.session_id
@@ -11830,6 +12027,10 @@ export const createMemorySourceRepository = (
           actor: source.payload.actor,
           turnId: source.turn_id,
           createdAt: source.captured_at.toISOString(),
+          occurredAt: (
+            source.source_event_time ?? source.captured_at
+          ).toISOString(),
+          capturedAt: source.captured_at.toISOString(),
           text: codexIdePromptUserText(
             memoryEventLcmContent(source.payload) ?? ""
           ),

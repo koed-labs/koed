@@ -98,8 +98,9 @@ pnpm team-launch:validate --with-staged-remote
 ```
 
 The staged probe requires the seeded fixture, proves browser and device paths,
-proves Personal API Token rejection, and proves the generic local-edge Team
-answer fails closed when both local-edge variables are supplied.
+proves Personal API Token rejection, and proves scoped device credentials can
+use local-edge Team semantic search, answer, and candidate expansion when both
+local-edge variables are supplied.
 
 ## Actor-By-Actor Manual Flow
 

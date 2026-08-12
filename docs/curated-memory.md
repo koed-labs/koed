@@ -90,11 +90,13 @@ search pipeline as `curated_memory_search` and returns
 stage when answering questions about durable facts, preferences, decisions,
 plans, or corrections.
 
-Recall delegates Curated Memory search and evidence expansion to one typed
-retrieval adapter. That adapter owns Curated Memory authorization, lifecycle,
-source hydration, and scoring; the shared Recall pipeline only combines its
-candidates with other retrieval stages. Curated candidates do not pretend to
-be embedding rows and carry no fabricated embedding model or dimensions.
+Current assertions are canonical embedding sources. The Embedding Service
+composes the assertion, topic, and tags, writes revision-bound vectors, and
+invalidates those vectors whenever that input changes. Normal Recall generates
+Curated candidates only through this semantic index, under the same model and
+dimension checks as other Personal Memory sources. It never performs a bulk or
+global decrypted lexical scan. Exact hints are checked only against the bounded,
+authorized semantic result set and its evidence anchors.
 
 Session, Project, and time-bounded Recall all use the same active-source
 relation as global eligibility. Protected Memory Event workspace metadata is
@@ -108,10 +110,11 @@ proposal transitions, Recall adaptation, and deterministic source
 reconciliation remain separate. Callers use the single repository contract and
 cannot bypass the shared policy through a feature-specific query path.
 
-Default Recall runs this stage only when the query signals durable-memory
-intent. Diagnostic callers can request `curated_memory_search` explicitly.
-Curated matches use weighted relevance comparable with semantic leaf results;
-stage type is only a tie-breaker and does not override a stronger semantic hit.
+Default Recall may include this semantic stage for every query; a durable-memory
+intent signal can prioritize it. Diagnostic callers can request
+`curated_memory_search` explicitly. Curated matches use weighted relevance
+comparable with semantic leaf results; stage type is only a tie-breaker and does
+not override a stronger semantic hit.
 
 Direct Curated Memory search routes are diagnostic/API surfaces:
 
@@ -128,11 +131,11 @@ rows retain only operational identifiers, lifecycle state, and redacted
 markers; proposals, assertions, topics, source details, and Worker results are
 stored in encrypted companions.
 
-Reads authorize the owner before decrypting. Curated Memory search in these
-profiles decrypts an owner-scoped bounded candidate set in the trusted backend
-instead of matching plaintext columns in SQL. A protected deployment without a
-working envelope-encryption provider fails closed on Curated Memory writes and
-expansion.
+Reads authorize the owner before decrypting. The background Embedding Service
+decrypts one authorized assertion revision to produce its canonical vector, and
+Recall decrypts only bounded vector-selected candidates during hydration. A
+protected deployment without a working envelope-encryption provider fails
+closed on Curated Memory writes, embedding, hydration, and expansion.
 
 Personal Memory export includes Curated Memory topics, proposals, assertions,
 source links, and lifecycle relationships, including suppressed, superseded,
@@ -189,9 +192,33 @@ not present model-generated decimal scores as precise quality measurements.
 
 ## Boundaries
 
-This first slice is personal-memory only. Team Workspace recall does not expose
-Curated Memory assertions until Team visibility semantics for curated facts are
-explicitly designed and implemented.
+Curated Memory remains Personal by default. An Operator may offer
+`curated_assertions` as an explicit Shared Memory representation, but the owner
+must select it through the same preview, policy intersection, consent, Share
+Grant, and materialization lifecycle as every other representation. Curated
+assertions are never appended to transcript representations.
+
+The representation includes only current, unexpired assertions for which every
+active direct source role is wholly inside the exact granted Captured Session.
+Conversation Items and Memory Events must belong directly to that session. An
+LCM Summary is eligible only when its complete active descendant source set
+exists and belongs to the session. Missing, deleted, excluded, invalidated,
+suppressed, expired, or mixed-session evidence fails closed. Derived links do
+not broaden this direct-source decision.
+
+Personal Curated payloads are decrypted with the Personal/base provider. The
+redacted artifact and preview use the owner-private replica provider, and the
+Team representation uses the Team provider. Materialization rejects key
+substitution across these three boundaries. Curated acceptance and
+reconciliation rematerialize active continuous grants immediately. Assertion
+or source lifecycle changes run database invalidation triggers in the same
+transaction as the Personal mutation. Those triggers invalidate the affected
+Team representation and delete its semantic routing/vector rows before either
+side can commit; an invalidation error rolls the Personal mutation back.
+
+Team semantic search and expansion expose only grant-scoped pseudonymous
+lineage from the encrypted Team representation. Canonical Personal assertion
+IDs, source IDs, and plaintext routing metadata are not Team search fields.
 
 API Tokens remain personal-memory credentials. Curated Memory routes use the
 same personal API-token boundary as the existing MCP and capture endpoints.

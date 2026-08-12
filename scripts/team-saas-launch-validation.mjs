@@ -22,6 +22,8 @@ const pg = requireFromDbPackage("pg");
 const usage = `Usage: pnpm team-launch:validate [--with-automated-tests] [--with-staged-remote] [--with-multi-device] [options]
 
 Validates the seeded Team SaaS fixture and prints the launch validation gates.
+The base gate requires completed Team Shared Memory embeddings and stored vectors
+for Memory Event, LCM leaf, LCM rollup, and Curated Memory representations.
 With --with-automated-tests it also runs the focused repository test commands
 that back the non-fixture automated launch gates.
 With --with-staged-remote it also probes Team Workspace routes on a running

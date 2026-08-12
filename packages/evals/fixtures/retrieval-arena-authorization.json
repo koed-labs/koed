@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "koed-retrieval-authorization-v1",
+  "probes": [
+    {
+      "id": "cross-user-private-memory-hidden",
+      "boundary": "cross_user",
+      "authorizationEnv": "KOED_FIXTURE_PERSONAL_API_TOKEN_AUTHORIZATION",
+      "query": "Bob private deployment scratch notes",
+      "expectedHttpStatus": 200,
+      "mustNotContain": ["Bob has private deployment scratch notes"]
+    },
+    {
+      "id": "cross-team-workspace-denied",
+      "boundary": "cross_team",
+      "authorizationEnv": "KOED_FIXTURE_CROSS_TEAM_AUTHORIZATION",
+      "query": "Workspace Memory Timeline",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000001",
+      "expectedHttpStatus": 403
+    },
+    {
+      "id": "cross-workspace-disabled-access-denied",
+      "boundary": "cross_workspace",
+      "authorizationEnv": "KOED_FIXTURE_BOB_AUTHORIZATION",
+      "query": "Cloud deployment health-check note",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000002",
+      "expectedHttpStatus": 403
+    },
+    {
+      "id": "revoked-share-hidden",
+      "boundary": "revoked",
+      "authorizationEnv": "KOED_FIXTURE_CAROL_AUTHORIZATION",
+      "query": "experimental Electron architecture note",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000001",
+      "expectedHttpStatus": 200,
+      "mustNotContain": ["experimental Electron architecture note"]
+    },
+    {
+      "id": "private-memory-hidden",
+      "boundary": "private",
+      "authorizationEnv": "KOED_FIXTURE_CAROL_AUTHORIZATION",
+      "query": "private deployment scratch notes",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000001",
+      "expectedHttpStatus": 200,
+      "mustNotContain": ["Bob has private deployment scratch notes"]
+    },
+    {
+      "id": "removed-member-loses-access",
+      "boundary": "removed_member",
+      "authorizationEnv": "KOED_FIXTURE_BOB_AUTHORIZATION",
+      "query": "Cloud deployment health-check note",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000002",
+      "expectedHttpStatus": 403
+    },
+    {
+      "id": "retained-team-knowledge-visible",
+      "boundary": "retained",
+      "authorizationEnv": "KOED_FIXTURE_ALICE_AUTHORIZATION",
+      "query": "billing grace expiry",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000002",
+      "expectedHttpStatus": 200,
+      "mustContain": ["billing grace expiry may restrict writes"]
+    },
+    {
+      "id": "captured-shared-memory-visible",
+      "boundary": "captured",
+      "authorizationEnv": "KOED_FIXTURE_CAROL_AUTHORIZATION",
+      "query": "Workspace Memory Timeline",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000001",
+      "expectedHttpStatus": 200,
+      "mustContain": ["Workspace Memory Timeline with captured decisions"]
+    },
+    {
+      "id": "uncaptured-collaboration-hidden",
+      "boundary": "uncaptured",
+      "authorizationEnv": "KOED_FIXTURE_CAROL_AUTHORIZATION",
+      "query": "timeline must update live without polling",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000001",
+      "expectedHttpStatus": 200,
+      "mustNotContain": ["The timeline must update live without polling."]
+    },
+    {
+      "id": "api-token-team-recall-denied",
+      "boundary": "api_token_team_denial",
+      "authorizationEnv": "KOED_FIXTURE_API_TOKEN_AUTHORIZATION",
+      "query": "Workspace Memory Timeline",
+      "teamWorkspaceId": "30000000-0000-4000-8000-000000000001",
+      "expectedHttpStatus": 403
+    }
+  ]
+}

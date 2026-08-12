@@ -17,6 +17,8 @@
     "eval:lcm-summary:live": "tsc -b tsconfig.json && node dist/lcm-summary-generation/live-runner.js",
     "eval:retrieval-success": "tsc -b tsconfig.json && node dist/retrieval-success/index.js",
     "eval:retrieval-success:live": "tsc -b tsconfig.json && node dist/retrieval-success/live-runner.js",
+    "eval:retrieval-arena": "tsc -b tsconfig.json && node dist/retrieval-arena/index.js",
+    "eval:retrieval-scale": "tsc -b tsconfig.json && node dist/retrieval-arena/scale-cli.js",
     "eval:workers": "tsc -b tsconfig.json && node dist/worker-json/index.js",
     "test": "tsc -b tsconfig.json && vitest run --passWithNoTests",
     "typecheck": "tsc -b tsconfig.json"

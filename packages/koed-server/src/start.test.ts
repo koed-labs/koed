@@ -1503,6 +1503,13 @@ describe("start supervisor", () => {
     expect(spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).not.toBe(
       spawned[0]?.env?.DATA_ENCRYPTION_KEY
     );
+    expect(spawned[0]?.env?.TEAM_MEMORY_DATA_ENCRYPTION_KEY).toBeDefined();
+    expect(spawned[0]?.env?.TEAM_MEMORY_DATA_ENCRYPTION_KEY).not.toBe(
+      spawned[0]?.env?.DATA_ENCRYPTION_KEY
+    );
+    expect(spawned[0]?.env?.TEAM_MEMORY_DATA_ENCRYPTION_KEY).not.toBe(
+      spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY
+    );
     expect(spawned[2]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
     expect(spawned).toHaveLength(3);
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");

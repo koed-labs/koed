@@ -71,18 +71,26 @@ export interface CollaborationActionGrantControlContext {
     logicalMemoryId: string;
     teamId: string;
     workspaceId: string;
-    representation: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    representation:
+      | "memory_events"
+      | "lcm_leaves"
+      | "lcm_rollups"
+      | "curated_assertions";
     allowedRepresentations: Array<
-      "memory_events" | "lcm_leaves" | "lcm_rollups"
+      "memory_events" | "lcm_leaves" | "lcm_rollups" | "curated_assertions"
     >;
   }) => Promise<{ remoteReplicaId: string } | null>;
   resolveSharedMemoryConsentPreview?: (input: {
     logicalMemoryId: string;
     teamId: string;
     workspaceId: string;
-    selectedRepresentation: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    selectedRepresentation:
+      | "memory_events"
+      | "lcm_leaves"
+      | "lcm_rollups"
+      | "curated_assertions";
     allowedRepresentations: Array<
-      "memory_events" | "lcm_leaves" | "lcm_rollups"
+      "memory_events" | "lcm_leaves" | "lcm_rollups" | "curated_assertions"
     >;
     previewRevision: number;
     previewHash: string;

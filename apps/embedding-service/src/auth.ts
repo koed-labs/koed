@@ -31,9 +31,11 @@ export const embeddingTokenAuthStatus = (
 export class HttpError extends Error {
   constructor(
     readonly statusCode: number,
-    readonly detail: string
+    readonly detail: string,
+    readonly code?: string
   ) {
     super(detail);
+    this.name = "HttpError";
   }
 }
 

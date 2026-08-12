@@ -84,6 +84,41 @@ describe("llama-server adapter helpers", () => {
     ).toThrow("incomplete rerank scores");
   });
 
+  it("retains llama-server measured reranker prompt tokens", async () => {
+    const config = testConfig({ rerankerKey: "qwen3-reranker-0.6b" });
+    const client = new LlamaServerClient(
+      config,
+      testLogger(),
+      {
+        name: "reranker",
+        modelPath: "/models/reranker.gguf",
+        port: config.rerankerServerPort,
+        pooling: "rank",
+        embedding: true,
+        reranking: true,
+        nCtx: config.rerankerNCtx,
+        nThreads: config.rerankerNThreads,
+        nBatch: config.rerankerNBatch,
+        nUbatch: config.rerankerNUbatch,
+        parallel: config.rerankerParallel,
+        promptCacheEnabled: true
+      },
+      async () =>
+        new Response(
+          JSON.stringify({
+            results: [{ index: 0, relevance_score: 0.8 }],
+            usage: { prompt_tokens: 41, total_tokens: 41 }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+    );
+
+    await expect(client.rerank("query", ["document"])).resolves.toEqual({
+      scores: [0.8],
+      measuredTokens: 41
+    });
+  });
+
   it("waits for the llama-server child to exit during shutdown", async () => {
     const childState = Object.assign(new EventEmitter(), {
       exitCode: null as number | null,

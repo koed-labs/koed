@@ -450,6 +450,14 @@ const buildScopedRepositories = (
       }
     }),
     sharedMemory: createSharedMemoryRepository(savepointPool, {
+      resolvePersonalEncryptionProvider: () => {
+        if (!envelopeEncryptionProvider) {
+          throw new Error(
+            "Envelope encryption is required for Curated Memory execution"
+          );
+        }
+        return Promise.resolve(envelopeEncryptionProvider);
+      },
       resolveTeamEncryptionProvider: () => {
         if (!envelopeEncryptionProvider) {
           throw new Error(

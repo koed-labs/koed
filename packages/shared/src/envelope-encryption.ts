@@ -52,6 +52,18 @@ const GCM_NONCE_BYTES = 12;
 const GCM_TAG_BYTES = 16;
 export const API_DATA_ENCRYPTION_KEY_ENV = "API_DATA_ENCRYPTION_KEY";
 export const DATA_ENCRYPTION_KEY_ENV_ALIAS = "DATA_ENCRYPTION_KEY";
+export const TEAM_MEMORY_DATA_ENCRYPTION_KEY_ENV =
+  "TEAM_MEMORY_DATA_ENCRYPTION_KEY";
+export const TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER_ENV =
+  "TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER";
+export const TEAM_MEMORY_MANAGED_KMS_KEY_ID_ENV =
+  "TEAM_MEMORY_MANAGED_KMS_KEY_ID";
+export const TEAM_MEMORY_MANAGED_KMS_KEY_VERSION_ENV =
+  "TEAM_MEMORY_MANAGED_KMS_KEY_VERSION";
+export const TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL_ENV =
+  "TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL";
+export const TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN_ENV =
+  "TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN";
 export const OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY_ENV =
   "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY";
 export const OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER_ENV =
@@ -1511,6 +1523,15 @@ const ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily = {
   kmsAuthToken: OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN_ENV
 } as const satisfies EnvelopeEncryptionEnvironmentFamily;
 
+const teamMemoryEnvelopeEncryptionEnvironmentFamily = {
+  providerMode: TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER_ENV,
+  localKey: [TEAM_MEMORY_DATA_ENCRYPTION_KEY_ENV],
+  kmsKeyId: TEAM_MEMORY_MANAGED_KMS_KEY_ID_ENV,
+  kmsKeyVersion: TEAM_MEMORY_MANAGED_KMS_KEY_VERSION_ENV,
+  kmsEndpointUrl: TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL_ENV,
+  kmsAuthToken: TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN_ENV
+} as const satisfies EnvelopeEncryptionEnvironmentFamily;
+
 const firstEnvironmentValue = (
   environment: NodeJS.ProcessEnv,
   names: readonly string[]
@@ -1627,6 +1648,15 @@ export const createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment 
       ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily,
       "Owner-private replica envelope encryption provider"
     );
+
+export const createTeamMemoryEnvelopeEncryptionProviderFromEnvironment = (
+  options: EnvelopeEncryptionProviderEnvironmentOptions = {}
+): EnvelopeEncryptionProvider | undefined =>
+  createEnvelopeEncryptionProviderFromEnvironmentFamily(
+    options,
+    teamMemoryEnvelopeEncryptionEnvironmentFamily,
+    "Team Memory envelope encryption provider"
+  );
 
 export const validateEnvelopeEncryptionProviderEnvironment = (
   options: EnvelopeEncryptionEnvironmentValidationOptions = {}

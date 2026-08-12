@@ -260,6 +260,47 @@ vectors plus control/recovery lifecycle tests. Fixture matrix explicitly labels
 DB-required Authority/relay/materialization and Projection/Recall cases rather
 than claiming in-process coverage for those seams.
 
+### Joined Personal validation
+
+Against a clean, healthy bundled-local Personal stack, run the joined capture,
+Projection, embedding, LCM expansion, and Memory Answer detail-mode smoke:
+
+```bash
+MEMORY_API_URL=http://127.0.0.1:<api-port> \
+MEMORY_API_TOKEN='<personal-api-token>' \
+DATABASE_URL='postgres://...' \
+pnpm smoke:personal-joined
+```
+
+This executes the live LCM smoke first, including a real rollup expansion back
+to source Memory Events, then calls the MCP `memory_answer` tool with
+`answer_only`, `with_citations`, and `with_evidence`. Local Codex authentication,
+the bundled embedding model, and the native PostgreSQL client remain live
+prerequisites.
+
+For two-device data-plane validation, first pair two distinct, running
+bundled-local Personal installations and confirm both PDS workers are ready.
+Then run:
+
+```bash
+PDS_SMOKE_DEVICE_A_URL=http://127.0.0.1:<device-a-api-port> \
+PDS_SMOKE_DEVICE_B_URL=http://127.0.0.1:<device-b-api-port> \
+PDS_SMOKE_DEVICE_A_API_TOKEN='<device-a-personal-token>' \
+PDS_SMOKE_DEVICE_B_API_TOKEN='<device-b-personal-token>' \
+PDS_SMOKE_DEVICE_A_BROWSER_COOKIE='<device-a-session-cookie>' \
+PDS_SMOKE_DEVICE_B_DATABASE_URL='postgres://...' \
+PDS_SMOKE_GROUP_ID='<personal-device-group-id>' \
+pnpm smoke:pds-replication
+```
+
+The command enables future-closed-session publication, captures and projects a
+unique transcript-backed Personal source on Device A, closes it, and requires
+Device B to materialize and semantically retrieve the marker. It subscribes to
+Device B's durable `koed_pds_local_sync` PostgreSQL notification channel before
+close and performs a post-listen durable check, so it does not poll. The
+receiving database URL is used only for readiness notifications; retrieval is
+verified through Device B's authenticated Memory API.
+
 ## Project metadata discovery
 
 Headless and Desktop flows can discover local Project metadata before linking a

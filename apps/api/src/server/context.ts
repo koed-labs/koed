@@ -42,7 +42,10 @@ export interface ApiRouteContext {
   jobs: {
     enqueueEmbedding(
       sourceType: EmbeddingSourceType,
-      sourceId: string
+      sourceId: string,
+      workClass?: KoedWorkClass,
+      jobId?: string,
+      sourceRevision?: string
     ): Promise<MemoryJobStatus>;
   };
   graph: {

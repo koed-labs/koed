@@ -608,7 +608,11 @@ const readScopedGrant = async (
   context: SharedMemoryRouteContext,
   actor: { id: string },
   scope: { teamId: string; teamWorkspaceId: string; shareGrantId: string },
-  representation?: "memory_events" | "lcm_leaves" | "lcm_rollups",
+  representation?:
+    | "memory_events"
+    | "lcm_leaves"
+    | "lcm_rollups"
+    | "curated_assertions",
   page?: {
     direction: "older" | "newer";
     boundary?: number;

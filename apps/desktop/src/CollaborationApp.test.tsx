@@ -376,18 +376,32 @@ const sourceItem = (
           }
         ]
       }
-    : {
-        id: representation === "lcm_leaves" ? uuid(203) : uuid(204),
-        representation,
-        sequence: 1,
-        occurredAt: at,
-        summaryText:
-          representation === "lcm_leaves"
-            ? "Launch notes are ready for review."
-            : "Quarterly research has been consolidated.",
-        sourceCount: representation === "lcm_leaves" ? 14 : 38,
-        sourceRevision: revision
-      };
+    : representation === "curated_assertions"
+      ? {
+          id: uuid(205),
+          representation,
+          sequence: 1,
+          occurredAt: at,
+          assertionText:
+            "Production releases require an owner-approved rollback plan.",
+          topicTitle: "Release policy",
+          tags: ["deployment", "decision"],
+          sourceCount: 3,
+          sourceRevision: revision
+        }
+      : {
+          id: representation === "lcm_leaves" ? uuid(203) : uuid(204),
+          representation,
+          sequence: 1,
+          occurredAt: at,
+          summaryText:
+            representation === "lcm_leaves"
+              ? "Launch notes are ready for review."
+              : "Quarterly research has been consolidated.",
+          lexicalAnchors: ["launch-review-anchor"],
+          sourceCount: representation === "lcm_leaves" ? 14 : 38,
+          sourceRevision: revision
+        };
 
 const sharedSession = (
   id: string,
@@ -2499,6 +2513,59 @@ pnpm test
     );
     await act(async () => copy?.click());
     expect(writeClipboard).toHaveBeenCalledWith("pnpm typecheck");
+  });
+
+  it("renders Curated assertions as assertion text, topic, and tags", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "shared_session",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      sharedSessionId: ids.rollupSession
+    });
+    if (selected.view.kind !== "shared_session") {
+      throw new Error("Expected a Shared Memory fixture");
+    }
+    const curatedSession = {
+      ...selected.view.session,
+      representation: "curated_assertions" as const
+    };
+    const curatedSnapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      view: {
+        ...selected.view,
+        session: curatedSession,
+        source: {
+          ...selected.view.source,
+          representation: "curated_assertions",
+          items: [sourceItem("curated_assertions")]
+        }
+      }
+    });
+
+    await act(async () =>
+      root.render(
+        <CollaborationRoutes
+          client={createClient(curatedSnapshot)}
+          drafts={new DraftStore()}
+          markdownAdapters={{
+            openExternal: vi.fn(async () => undefined),
+            writeClipboard: vi.fn(async () => undefined)
+          }}
+          modal={null}
+          onModalChange={vi.fn()}
+          onRequestSelection={vi.fn()}
+          snapshot={curatedSnapshot}
+        />
+      )
+    );
+
+    const source = container.querySelector(".collab-source-event");
+    expect(source?.textContent).toContain("Release policy");
+    expect(source?.textContent).toContain(
+      "Production releases require an owner-approved rollback plan."
+    );
+    expect(source?.textContent).toContain("deployment · decision");
+    expect(source?.textContent).not.toContain("LCM Rollup");
   });
 
   it("uses the Personal conversation presentation for Shared Memory activity", async () => {

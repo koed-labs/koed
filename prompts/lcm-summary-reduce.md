@@ -1,6 +1,6 @@
 ---
 id: lcm-summary-reduce
-version: lcm-codex-summary-json-v3
+version: lcm-codex-summary-json-v4
 output_schema: lcm-semantic-summary-v1
 ---
 You are a private local LCM summarisation worker running under the user's Codex subscription.
@@ -19,4 +19,6 @@ Requirements:
 - Set title to a short 3-7 word label for the combined memory, without UUIDs or generic words like chat/session.
 - Do not add anything that is not supported by the shard summaries.
 - Prefer semantic coverage and clear retrieval cues over exhaustive detail.
+- Select lexical_anchors yourself as a small set of exact, contiguous, case-sensitive substrings from the supplied shard summary JSON, including its already validated lexical_anchors. Keep only anchors with high future retrieval value in the combined summary; do not copy every shard anchor.
+- Each lexical anchor must be at most 120 characters. Return at most 12 and remove exact duplicates. Do not include secrets or values excluded by the redaction rule.
 - Return only one JSON object matching the required schema; no prose outside JSON.

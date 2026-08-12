@@ -66,6 +66,13 @@ describe("packaged local service secrets", () => {
     expect(environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).not.toBe(
       environment.API_DATA_ENCRYPTION_KEY
     );
+    expect(environment.TEAM_MEMORY_DATA_ENCRYPTION_KEY).toBeTruthy();
+    expect(environment.TEAM_MEMORY_DATA_ENCRYPTION_KEY).not.toBe(
+      environment.API_DATA_ENCRYPTION_KEY
+    );
+    expect(environment.TEAM_MEMORY_DATA_ENCRYPTION_KEY).not.toBe(
+      environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY
+    );
     expect(environment.COLLABORATION_LOCAL_BROKER_SECRET).not.toBe(
       environment.COLLABORATION_REALTIME_CURSOR_SECRET
     );

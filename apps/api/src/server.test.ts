@@ -3900,6 +3900,7 @@ const createFakeRepository = () => {
         visibility: "personal",
         origin: input.origin ?? "mcp_memory_answer",
         retrievalScope: input.retrievalScope ?? "personal",
+        teamWorkspaceId: input.teamWorkspaceId ?? null,
         searchDomain: input.searchDomain,
         projectId: input.projectId ?? null,
         projectName: input.projectName ?? null,
@@ -8346,7 +8347,7 @@ describe("account and access flows", () => {
     expect(impossiblePendingScope.statusCode).toBe(400);
   });
 
-  it("keeps typed generic Team Memory unavailable after local-edge authorization", async () => {
+  it("proxies typed Team Memory after scoped local-edge authorization", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-team-memory-"));
     process.env.KOED_HOME = koedHome;
     const localClient = storeLocalEdgeClientCredential(koedHome, {
@@ -8546,14 +8547,14 @@ describe("account and access flows", () => {
       action: "deny_fail_closed",
       reason: "route_policy_disabled"
     });
-    expect(proxied.statusCode).toBe(400);
+    expect(proxied.statusCode).toBe(200);
     expect(proxiedWithApiToken.statusCode).toBe(401);
     expect(blockedGeneralProxy.statusCode).toBe(400);
     expect(blockedArbitraryPath.statusCode).toBe(400);
-    expect(upstreamCalls).toHaveLength(0);
+    expect(upstreamCalls).toHaveLength(1);
   });
 
-  it("rejects typed generic Team Memory with a scoped local-edge client credential", async () => {
+  it("accepts typed Team Memory with a scoped local-edge client credential", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-local-client-"));
     process.env.KOED_HOME = koedHome;
     const upstreamPath = writeUpstreamRegistryFixture({
@@ -8650,14 +8651,16 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(allowed.statusCode).toBe(400);
+    expect(allowed.statusCode).toBe(200);
     expect(invalidCredential.statusCode).toBe(401);
     expect(browserSessionOnly.statusCode).toBe(401);
     expect(
       malformedCredentialMatrix.map((response) => response.statusCode)
     ).toEqual(malformedCredentialMatrix.map(() => 401));
     expect(malformedAuthorized.statusCode).toBe(400);
-    expect(upstreamCalls).toEqual([]);
+    expect(upstreamCalls).toEqual([
+      "https://team.example.test/v1/memory/search"
+    ]);
   });
 
   it("does not expose local-edge runtime proxy operations from non-local deployment profiles", async () => {
@@ -12172,7 +12175,7 @@ describe("account and access flows", () => {
     ).toEqual(["managed-held-item"]);
   });
 
-  it("keeps Team Shared Memory evidence unavailable behind Team authentication", async () => {
+  it("serves Team Shared Memory evidence behind Team authentication", async () => {
     const repository = createFakeRepository();
     const recallInputs: Array<Record<string, unknown>> = [];
     const originalSearchMemoryNodes =
@@ -12181,7 +12184,32 @@ describe("account and access flows", () => {
       recallInputs.push(input as Record<string, unknown>);
       return originalSearchMemoryNodes(actor, input);
     };
-    const app = await buildServer({ repository });
+    repository.searchAuthorizedSharedMemorySemanticItems = async () => [];
+    repository.freezeSharedMemorySemanticRecallBoundary = async (
+      _actor,
+      input
+    ) => ({
+      teamId: randomUUID(),
+      teamVersion: 1,
+      teamWorkspaceId: input.teamWorkspaceId,
+      workspaceVersion: 1,
+      membershipVersion: 1,
+      workspaceAccessVersion: 1,
+      userRowVersion: "1",
+      shareGrantIds: []
+    });
+    const app = await buildServer({
+      repository,
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            model: "qwen3-0.6b",
+            dimensions: 1024,
+            vectors: [Array.from({ length: 1024 }, () => 0)]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+    });
     const registered = await app.inject({
       method: "POST",
       url: "/auth/register",
@@ -12214,7 +12242,8 @@ describe("account and access flows", () => {
       payload: {
         query: "Seraphina",
         retrieval_scope: "personal",
-        retrieval_stage: "lexical_search",
+        retrieval_stage: "rollup_search",
+        exact_hints: ["Seraphina"],
         parent_node_ids: [parentNodeId],
         strict_limit: "false",
         limit: 2
@@ -12284,10 +12313,11 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(search.statusCode).toBe(200);
-    expect(answer.statusCode).toBe(404);
-    expect(deviceAnswer.statusCode).toBe(404);
+    expect(answer.statusCode).toBe(200);
+    expect(deviceAnswer.statusCode).toBe(200);
     expect(recallInputs[0]).toMatchObject({
-      retrievalStage: "lexical_search",
+      retrievalStage: "rollup_search",
+      exactHints: ["Seraphina"],
       parentNodeIds: [parentNodeId],
       strictLimit: false,
       limit: 2
@@ -12304,16 +12334,10 @@ describe("account and access flows", () => {
     expect(
       jsonBody<{ error: string }>(rejectedWrongScopeDeviceAnswer).error
     ).toBe("Device credential is not allowed for this operation");
-    expect(jsonBody<{ error: string }>(answer).error).toBe(
-      "Team Shared Memory evidence is not available"
-    );
-    expect(jsonBody<{ error: string }>(deviceAnswer).error).toBe(
-      "Team Shared Memory evidence is not available"
-    );
     expect(recallInputs).toHaveLength(1);
   });
 
-  it("keeps Team Shared Memory expansion unavailable behind Team authentication", async () => {
+  it("serves Team Shared Memory expansion behind Team authentication", async () => {
     const repository = createFakeRepository();
     const expandInputs: Array<Record<string, unknown>> = [];
     repository.expandMemoryNode = async (nodeId, _actor, input) => {
@@ -12324,6 +12348,37 @@ describe("account and access flows", () => {
         sourceItems: [],
         sources: []
       } satisfies ExpandedMemoryNode;
+    };
+    repository.expandAuthorizedSharedMemorySemanticItem = async (
+      _actor,
+      input
+    ) => {
+      expandInputs.push(input as unknown as Record<string, unknown>);
+      return {
+        parent: {
+          candidateId: input.candidateId,
+          shareGrantId: randomUUID(),
+          representationId: randomUUID(),
+          representation: "lcm_rollups" as const,
+          pseudonymousSourceId: randomUUID(),
+          sourceItemIndex: 0,
+          sourceRevision: 1,
+          provenanceHash: "a".repeat(64),
+          representationPolicyRevision: 1,
+          contentPolicyVersion: 1,
+          classifierVersion: 1,
+          embeddingModel: "qwen3-0.6b",
+          embeddingDimensions: 1024,
+          embeddingVersion: "team-semantic-v1:test",
+          itemType: "lcm_rollup" as const,
+          occurredAt: null,
+          text: "Authorized Team evidence.",
+          lexicalAnchors: [],
+          score: 1,
+          freshness: "fresh" as const
+        },
+        items: []
+      };
     };
     const app = await buildServer({ repository });
     const registered = await app.inject({
@@ -12368,15 +12423,12 @@ describe("account and access flows", () => {
     expect(jsonBody<{ error: string }>(rejectedTokenExpand).error).toBe(
       "Session cookie or scoped device credential required"
     );
-    expect(deviceExpand.statusCode).toBe(404);
-    expect(sessionExpand.statusCode).toBe(404);
-    expect(jsonBody<{ error: string }>(deviceExpand).error).toBe(
-      "Team Shared Memory expansion is not available"
-    );
-    expect(jsonBody<{ error: string }>(sessionExpand).error).toBe(
-      "Team Shared Memory expansion is not available"
-    );
-    expect(expandInputs).toEqual([]);
+    expect(deviceExpand.statusCode).toBe(200);
+    expect(sessionExpand.statusCode).toBe(200);
+    expect(expandInputs).toEqual([
+      { teamWorkspaceId, candidateId: nodeId, searchDomain: "global" },
+      { teamWorkspaceId, candidateId: nodeId, searchDomain: "global" }
+    ]);
   });
 
   it("keeps Team Shared Memory graph APIs unavailable behind Team authentication", async () => {

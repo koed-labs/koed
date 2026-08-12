@@ -1,4 +1,8 @@
-import { loadEmbeddingServiceEnv, resolveEnv } from "./env-config.js";
+import {
+  loadEmbeddingServiceEnv,
+  resolveEnv,
+  verifyEmbeddingModelArtifact
+} from "./env-config.js";
 import { createEmbeddingLogger } from "./logging.js";
 import { EmbeddingRuntime } from "./runtime.js";
 import {
@@ -14,6 +18,7 @@ const runtime = new EmbeddingRuntime(config, logger);
 let shutdownPromise: Promise<void> | null = null;
 
 const start = async (): Promise<void> => {
+  await verifyEmbeddingModelArtifact(config);
   await runtime.loadEmbeddingModel();
   await runtime.loadRerankerModel();
 
@@ -51,8 +56,7 @@ start().catch(async (error: unknown) => {
     event: { name: "embedding.service.startup_failed" },
     error: {
       type:
-        error instanceof Error ? (error.constructor.name ?? "Error") : "Error",
-      message: error instanceof Error ? error.message : String(error)
+        error instanceof Error ? (error.constructor.name ?? "Error") : "Error"
     }
   });
   await runtime.shutdownRuntime();

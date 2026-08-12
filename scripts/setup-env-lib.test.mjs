@@ -17,6 +17,7 @@ const generatedValues = new Map([
     "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
     "generated-owner-private-data-key"
   ],
+  ["TEAM_MEMORY_DATA_ENCRYPTION_KEY", "generated-team-data-key"],
   ["API_TOKEN_PEPPER", "generated-token-pepper"],
   ["API_COLLABORATION_LOCAL_BROKER_SECRET", "generated-broker-secret"],
   ["API_COLLABORATION_REALTIME_CURSOR_SECRET", "generated-cursor-secret"],
@@ -28,6 +29,7 @@ test("retains compatibility-sensitive values from an existing env", () => {
   const example = [
     "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
     "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+    "TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
     "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
     "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
     "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
@@ -40,6 +42,7 @@ test("retains compatibility-sensitive values from an existing env", () => {
   const existing = [
     "API_DATA_ENCRYPTION_KEY=old-data-key",
     "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=old-owner-private-data-key",
+    "TEAM_MEMORY_DATA_ENCRYPTION_KEY=old-team-data-key",
     "API_TOKEN_PEPPER=old-token-pepper",
     "API_COLLABORATION_LOCAL_BROKER_SECRET=old-broker-secret",
     "API_COLLABORATION_REALTIME_CURSOR_SECRET=old-cursor-secret",
@@ -58,6 +61,10 @@ test("retains compatibility-sensitive values from an existing env", () => {
   assert.equal(
     rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
     "old-owner-private-data-key"
+  );
+  assert.equal(
+    rendered.get("TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    "old-team-data-key"
   );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "old-token-pepper");
   assert.equal(
@@ -88,6 +95,8 @@ test("generates missing generated secrets while preserving non-generated values"
       example: [
         "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
         "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
         "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
@@ -110,6 +119,18 @@ test("generates missing generated secrets while preserving non-generated values"
   assert.notEqual(
     rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
     rendered.get("API_DATA_ENCRYPTION_KEY")
+  );
+  assert.equal(
+    rendered.get("TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    "generated-team-data-key"
+  );
+  assert.notEqual(
+    rendered.get("TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    rendered.get("API_DATA_ENCRYPTION_KEY")
+  );
+  assert.notEqual(
+    rendered.get("TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY")
   );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "generated-token-pepper");
   assert.equal(
@@ -176,6 +197,7 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
       example: [
         "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
         "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
         "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
@@ -201,6 +223,10 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
   assert.equal(
     rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
     "generated-owner-private-data-key"
+  );
+  assert.equal(
+    rendered.get("TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    "generated-team-data-key"
   );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "generated-token-pepper");
   assert.equal(

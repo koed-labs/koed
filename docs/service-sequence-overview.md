@@ -280,9 +280,10 @@ tests, and future route review. It distinguishes:
   deployment, segment boundary, recipient key, and target device credential.
 - `conditional_team_session_or_device`: personal recall/graph routes that
   accept an API Token only for personal scope and require a browser session or
-  scoped enrolled device credential before a Team Workspace request can fail
-  closed. Generic Team evidence, graph, and expansion remain unavailable until
-  they can operate exclusively over the selected grant-scoped representation.
+  scoped enrolled device credential for Team Workspace scope. Team semantic
+  search, answer evidence, and candidate expansion operate exclusively over the
+  selected grant-scoped representation. Generic Team graph routes remain
+  unavailable.
 - `device_credential`: enrolled local-edge status and remote-operation
   credential checks. Device credentials identify a User, upstream backend, and
   local device; they do not carry Team authority.
@@ -300,10 +301,10 @@ must not carry Team authority, create Share Grants, manage Workspaces, unlock
 Shared Memory, or act as a hosted-service credential. Team authority is
 resolved at request time from Koed-owned Membership, Team Workspace Access,
 Share Grant, lifecycle, profile, and entitlement state. The explicit Shared
-Memory list, timeline, detail, and realtime routes apply that boundary to the
-selected redacted representation. Generic Team retrieval, evidence, graph, and
-expansion routes authenticate and then fail closed before repository access;
-they cannot treat a Share Grant as authority over canonical Personal Memory.
+Memory list, timeline, detail, realtime, semantic search, answer-evidence, and
+candidate-expansion routes apply that boundary to the selected redacted
+representation. They cannot treat a Share Grant as authority over canonical
+Personal Memory. Generic Team graph routes remain unavailable.
 
 The route contract also exports `x-koed-deployment-modes` for each implemented
 OpenAPI operation. This metadata describes where an endpoint is product-applicable
@@ -483,25 +484,25 @@ The typed local-edge search, answer, and node-expansion relays under
 `/v1/local-edge/team-memory/*` accept only the per-install Local-Edge Client
 Credential, bind it to the selected backend and `team_workspace_read`, validate
 the exact request schema, and translate it to a fixed remote Memory route. The
-remote currently authenticates and rejects those generic Team evidence surfaces
-as unavailable; the relay does not create authority. Local edge resolves the
-separate upstream device credential from secret storage and never forwards the
-local credential, arbitrary paths, methods, browser headers, or reusable
-credentials. Chat, Shared Memory, Team lifecycle, and realtime use their own
-typed collaboration controls; there is no general local-edge HTTP proxy.
+Team Backend applies the complete Workspace, Share Grant, representation, and
+lifecycle boundary before semantic search, answer evidence, or candidate
+expansion. The relay does not create authority. Local edge resolves the separate
+upstream device credential from secret storage and never forwards the local
+credential, arbitrary paths, methods, browser headers, or reusable credentials.
+Chat, Shared Memory, Team lifecycle, and realtime use their own typed
+collaboration controls; there is no general local-edge HTTP proxy.
 Cross-Identity Sync uses a typed `queued_sync_handoff` route decision, durable
 source outbox and target inbox processing, resumable encrypted upload sessions,
 bounded chunks, and idempotent target apply. Its state model records logical
 Memory identity, source and target replicas, sync relationships, cursors,
 package state, and inbox/outbox entries independently from Share Grants.
 
-For a future representation-aware MCP Team recall flow, the incoming
-`Koed-Device` value remains a Local-Edge Client Credential created during
-enrollment and scoped to the selected backend plus `team_workspace_read`. It is
-not the upstream device credential. The local edge validates the local
-credential before opening secure storage for the separate upstream credential.
-Personal API Tokens remain on Personal Memory routes and cannot be promoted
-into Team authority from the requested operation body.
+For MCP Team recall, the incoming `Koed-Device` value is a Local-Edge Client
+Credential created during enrollment and scoped to the selected backend plus
+`team_workspace_read`. It is not the upstream device credential. The local edge
+validates the local credential before opening secure storage for the separate
+upstream credential. Personal API Tokens remain on Personal Memory routes and
+cannot be promoted into Team authority from the requested operation body.
 
 ## Desktop Auth And Device Enrollment
 
@@ -645,16 +646,19 @@ remains a later integration on top of this durable seat lifecycle state.
    seal condition is reached. When a commercial envelope provider is configured,
    raw `conversation_items`, projected message/tool payloads, projected
    Memory Event payloads, Memory Node text/source fields, embedding source
-   text, and Memory Question query/answer/evidence/worker payloads receive
-   encrypted field companions with owner, visibility, source table, source
-   column, provider, and key metadata. In paid Koed-managed cloud, new raw
+   text receive encrypted field companions with owner, visibility, source
+   table, source column, provider, and key metadata when the deployment profile
+   requires them. Memory Question query/answer/evidence/worker payloads always
+   use encrypted field companions in every profile. In paid Koed-managed cloud, new raw
    conversation-item rows store redacted operational source fields; Projection
    hydrates the raw source companions inside the repository boundary before
    deriving semantic rows. New message, tool-event, Memory Event, Memory Node,
    embedding, and Memory Question rows also store redacted operational payloads,
    and repository read paths hydrate authorized graph, embedding, retrieval,
    LCM source content, and Memory Question payloads from encrypted companions
-   after access checks.
+   after access checks. Memory Question history applies metadata filters and
+   pagination before decrypting the bounded result page; it does not offer
+   server-side text filtering or scan decrypted history for matches.
 9. Projection persists an identifier-only processing outbox before raw rows are
    marked projected. API and Worker queue producers use deterministic job ids
    and acknowledge each outbox row only after its policy-eligible embedding and
@@ -907,17 +911,33 @@ sequenceDiagram
    ordered source items or child summaries conflict, prefers later items while
    preserving older conflicts only as superseded context. `@koed/core` owns the
    `lcm-semantic-summary-v1` schema and parser shared by the DB, MCP Server, and
-   evaluation suites. LCM summaries use a minimal JSON envelope containing a
-   title and one canonical `summary_text`.
+   evaluation suites. LCM summaries use a JSON envelope containing a title,
+   one canonical `summary_text`, and a bounded `lexical_anchors` list selected
+   by the LLM.
    That text contains every parent-relevant semantic fact: leaves describe each
    distinct topic briefly, while rollups compress complete child summary
    envelopes into broader themes. Detailed commands, logs, filenames,
    identifiers, provenance, and intermediate steps remain in child summaries
    and source Memory Events for drill-down unless a detail is needed to
-   understand, distinguish, or retrieve the topic. Stored child payloads that
-   do not match the current semantic-summary contract contribute only their
-   authoritative `summary_text`; unsupported structured JSON is not forwarded.
-   Unsupported worker output fails at the worker boundary.
+   understand, distinguish, or retrieve the topic. Completed child payloads
+   must match the current semantic-summary contract; this alpha contract is
+   replaced in place and fresh/reset data is assumed. Only a legitimate
+   pending child without completed structured output is wrapped as a
+   deterministic placeholder for parent summarisation.
+   For leaves, every proposed lexical anchor must be an exact, contiguous,
+   case-sensitive substring of the exact source payload supplied to the LLM.
+   For rollups and token-bounded reductions, the supplied child or shard JSON
+   includes its already validated anchors, while grounding checks use the
+   actual child `summary_text` and validated anchor values before JSON escaping.
+   Quotes, backslashes, and newlines therefore retain their original values
+   instead of being validated against serialized escape sequences.
+   Koed exact-deduplicates anchors and enforces count and length limits, but
+   measures anchor length in Unicode code points rather than UTF-16 code units.
+   It
+   does not extract or classify anchors with regexes or scripts. Rejections are
+   reported to the LLM for one repair attempt. A partial repair retains the
+   valid summary and valid grounded anchors and drops anything still invalid.
+   Other unsupported worker output fails at the worker boundary.
 6. The LCM worker runs Codex app-server mode locally under the user's Codex
    subscription and parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
@@ -925,17 +945,38 @@ sequenceDiagram
 8. The LCM worker submits the completed LCM Summary to
    `POST /v1/memory/lcm/summaries/{nodeId}`. The API requires the shared
    semantic-summary schema, matching schema-version metadata, and canonical
-   `summaryText` consistent with structured `summary_text`.
+   `summaryText` consistent with structured `summary_text`. After authenticating
+   the caller and hydrating the visible node sources, the API independently
+   enforces that every submitted lexical anchor is an exact, contiguous,
+   case-sensitive substring of a supplied source payload. Worker-side repair is
+   therefore not the trust boundary for anchor grounding.
 9. The API updates the Memory Node summary fields and enqueues Memory Node
    embedding. In paid Koed-managed cloud, the stored summary/body/structured
-   JSON fields remain redacted and the submitted LCM Summary is written to
-   encrypted companions.
+   JSON fields remain redacted and the submitted LCM Summary, including its
+   lexical anchors, is written to encrypted companions. If a completed child
+   summary or its lexical anchors change, the same transaction requeues every
+   completed ancestor rollup transitively and invalidates their embeddings so
+   no completed ancestor remains current against stale child input.
 10. The Worker embeds the updated Memory Node so retrieval can use the
-    completed summary.
+    completed summary. Validated anchors are appended in a separate
+    `Lexical anchors:` section of the embedding input. The embedding source hash
+    includes both this composition epoch and the Memory Node summary revision.
+    Embedding writes compare-and-set that revision while holding a database row
+    lock, so an in-flight vector for an older summary-plus-anchor composition
+    cannot become current after regeneration.
 
 LCM prompt versions are forward-only. A new prompt version applies to newly
 created placeholders and nodes that are naturally invalidated and rebuilt; it
 does not automatically regenerate already completed summaries.
+`lcm-semantic-summary-v1` is the release-V1 semantic payload shape for this
+alpha product; it is intentionally not renamed when the pre-release shape is
+replaced. Generation compatibility is recorded separately in
+`summary_model`, `summary_prompt_version`, and
+`summary_structured_schema_version`; embedding compatibility is recorded by
+the embedding model/version fields plus the composition epoch and summary
+revision in `source_hash`. Existing local data whose completed structured JSON
+does not match release V1 must be reset or explicitly regenerated. Koed does
+not reinterpret or migrate an incompatible completed payload at read time.
 
 ```mermaid
 sequenceDiagram
@@ -978,38 +1019,45 @@ cwd is used only to resolve or display a Workspace.
    initial Team retention policy. Share Grant revocation removes access and
    atomically creates the immutable grant-scoped retention decision, purge job,
    and artifact inventory; later purge remains a separate Worker operation.
-5. Shared Memory list, timeline, detail, and realtime reads use the exact active
-   grant-scoped representation plus independent lifecycle gates for Access
-   Suspension, Workspace archive state, membership state, and Workspace Access.
-   Generic recall, evidence, graph, expansion, and export do not inherit Share
-   Grant authority.
-6. Personal deletion removes memory from the owner's Personal Memory recall
+5. Shared Memory list, timeline, detail, realtime, semantic search, answer
+   evidence, and candidate expansion use the exact active grant-scoped
+   representation plus independent lifecycle gates for Access Suspension,
+   Workspace archive state, membership state, and Workspace Access. Generic
+   graph and export do not inherit Share Grant authority.
+6. Materialization inserts pending plaintext-free semantic item metadata. The
+   Worker reconciles it asynchronously: all grant, consent, policy,
+   representation, replica, sync, Team, and Workspace metadata joins complete
+   before it decrypts one precise already-redacted representation item for the
+   Embedding Service. Search applies the same joins before candidate decrypt;
+   exact hints are checked only over those semantic candidates. Replacement,
+   revocation, or policy invalidation deletes the derived vector rows.
+7. Personal deletion removes memory from the owner's Personal Memory recall
    surface through `personal_deleted_at` lifecycle markers. It is not the same
    as global invalidation and does not revoke an active Team / Workspace Share
    Grant in the first version.
-7. If local Project metadata is supplied during recall, Koed may use an exact
+8. If local Project metadata is supplied during recall, Koed may use an exact
    Project root or device-local Project id from an explicit Project-to-Workspace
    link. Worktrees keep separate local ids and share only a salted local Git
    common-directory signal. Current and historical remote aliases are
    non-authoritative matching evidence for future trusted personal-device
    association; they cannot select or authorize a Workspace.
-8. Archived search is an explicit mode, not the default active recall path. It
+9. Archived search is an explicit mode, not the default active recall path. It
    may include retained Workspaces only when the caller and retention policy
    allow it. Access-suspended Team data belongs to a separate admin, legal, or
    Operator mode, not ordinary archived search.
-9. A retained Team session Share Grant keeps references to the owning User and
-   Captured Session nullable rather than cascading. User account deletion is
-   represented by a User tombstone, and retained Team knowledge remains tied to
-   the Team and Workspace retention record for audit, restore, and future
-   authorized Team recall.
-10. Team-visible derived memory is built only from source items inside the
+10. A retained Team session Share Grant keeps references to the owning User and
+    Captured Session nullable rather than cascading. User account deletion is
+    represented by a User tombstone, and retained Team knowledge remains tied to
+    the Team and Workspace retention record for audit, restore, and future
+    authorized Team recall.
+11. Team-visible derived memory is built only from source items inside the
     authorized Team and Workspace boundary. Private personal summaries, graph
     edges, embeddings, or rollups cannot become Team-visible by label change
     when they include unrelated private source material.
-11. Creating a Captured Session Share Grant is idempotent for an active
+12. Creating a Captured Session Share Grant is idempotent for an active
     session / Workspace pair, so repeated client submissions return the
     existing active grant instead of creating duplicate Team visibility.
-12. Listing grants requires current Workspace recall access. Creating grants
+13. Listing grants requires current Workspace recall access. Creating grants
     requires current Workspace share access and ownership of the Captured
     Session. Revocation is allowed by a current Workspace sharer or by the
     original source owner, preserving a User-controlled privacy exit even if
@@ -1216,48 +1264,62 @@ grant-based visibility model.
 ## Retrieval
 
 1. The AI Client calls the MCP Server's `memory_answer` tool with a query,
-   Retrieval Scope, and Search Domain.
-2. The MCP adapter forwards the validated call to the Local AI Runtime, which
-   starts a fresh memory-answer worker in Codex app-server mode.
-   The worker is given only Koed dynamic RAG tools: `scan`, `search`, and
-   `expand`.
-3. The local memory-answer worker calls API search through the MCP client's
-   dynamic tools. Personal Project search uses Captured Sessions' effective
+   Retrieval Scope, Search Domain, and optional bounded retrieval hints.
+2. The MCP adapter forwards the validated call to the Local AI Runtime. The
+   runtime runs a concurrent scripted first pass through the same authorized
+   Recall API used by worker follow-up calls.
+   It gathers a compact scan summary and initial semantic evidence without an
+   additional LLM planning call. Team recall first receives a server-issued,
+   signed run boundary containing the exact admitted Share Grant set and
+   authority-row versions. The MCP Server forwards it on every later search and
+   expansion; the model cannot alter it.
+3. The Local AI Runtime starts a memory-answer worker in Codex app-server mode
+   with the original question, fixed effective boundary, caller hints, first-pass
+   diagnostics, and initial evidence. The worker is given only Koed dynamic RAG
+   tools: `scan`, `search`, and `expand`. Personal Project search uses Captured
+   Sessions' effective
    organizational assignment: a User override, then automatic detection, then
    `Unassigned`. Session search requires a captured-session id; global search
    still only searches Personal Memory visible through the selected Retrieval
    Scope.
-4. The API authenticates the API Token and calls the core recall path.
+4. Each first-pass or worker-directed API call authenticates the applicable
+   credential and calls the same core recall path.
 5. The repository validates the Search Domain, applies Personal Memory
    authorization during candidate selection, and runs retrieval stages over
-   Memory Nodes, fresh pending Memory Events, raw fallback evidence, and lexical
-   matches. Semantic stages use local embedding search and may be reranked when
+   Memory Nodes, Curated Memory, fresh pending Memory Events, and raw fallback
+   evidence.
+   Semantic stages use local embedding search and may be reranked when
    configured.
    Personal assignment changes only Personal Memory grouping and candidate
    filtering; immutable capture provenance remains available independently.
    Supplying a Team Workspace id changes the authentication requirement but does
-   not authorize canonical Personal Memory. Search, answer, graph, and expansion
-   reject that scope before repository access until a grant-scoped queryable
-   representation can guarantee the same selected fidelity, redaction, policy,
-   and provenance boundary as the Shared Memory timeline.
+   not authorize canonical Personal Memory. Search uses dedicated grant-scoped
+   semantic item vectors built asynchronously from already-redacted encrypted
+   Team representations. Candidate expansion repeats the complete boundary and
+   decrypts only the same precise representation item. Generic Team graph
+   traversal remains unavailable. The Team boundary admits at most 128 grants,
+   excludes grants created after run start, and fails closed immediately on
+   revocation or authority-row replacement, including a later regrant.
    In commercial encrypted-field mode, any decrypt needed for source text,
    Evidence Bundle expansion, graph/source expansion, LCM Summary source items,
    Memory Node summary text, embedding source text, Memory Question result
    persistence, or reranking inputs must happen only after this authorization
    boundary admits the row.
    Koed-managed cloud treats queryable vectors as sensitive in-boundary search
-   data and disables plaintext `lexical_search` unless
-   `MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED=true` is deliberately configured
-   under a documented leakage posture. `memory_embeddings` records the launch
+   data. Production exposes semantic candidate generation plus narrowed exact
+   checks only; plaintext `lexical_search` is not an API or repository stage.
+   `memory_embeddings` records the launch
    strategy as `trusted_backend_pgvector_v1` with the
    `owner_user_dynamic_grants` search boundary and
    `canonical_embedding_state='not_stored'`; the pgvector dimension tables are
    the operational queryable representation, not a plaintext canonical
    embedding archive. See
    [ADR 0010](adr/0010-managed-saas-queryable-vectors.md).
-6. The API returns hits, citations, and retrieval metadata. When a promising
-   Memory Node needs more detail, the local memory-answer worker can call
-   `expand` to fetch underlying source items.
+6. The API returns hits, citations, and retrieval metadata. Caller or worker
+   lexical phrases seed focused semantic queries and exact checks over the
+   bounded, authorized candidate summaries and validated anchors. When a
+   promising Memory Node needs more detail, the local memory-answer worker can
+   call `expand` to fetch underlying source items.
 7. The local memory-answer worker performs Answer Synthesis from the retrieved
    Evidence Bundle and returns structured answer JSON.
 8. The Local AI Runtime compacts the response according to `response_detail`.
@@ -1271,25 +1333,29 @@ grant-based visibility model.
 
 ### Recall Stage Ordering
 
-Default recall uses a coarse-to-fine stage order:
+Default Recall gathers applicable semantic stages concurrently within one
+budget. Repository results retain deterministic stage priority, while the
+Memory Answer candidate ledger deduplicates chunk-aware identities and applies
+reciprocal-rank fusion with `k=60` across independent query/stage result lists:
 
 1. **Rollup search** looks for broad LCM Rollup matches first.
 2. **Scoped leaf search** searches LCM Leaves beneath selected rollups for
    more detailed evidence.
 3. **Leaf search** also searches LCM Leaves independently, so detailed evidence
    can surface even when its parent rollup was not selected.
-4. **Fresh pending search** searches recent Memory Events that have not yet
+4. **Curated Memory search** searches active source-grounded durable assertions.
+5. **Fresh pending search** searches recent Memory Events that have not yet
    been compacted into LCM Leaves.
-5. **Raw fallback search** searches raw embedded evidence and is admitted only
-   when higher-priority stages have not filled the requested evidence limit,
-   unless the caller explicitly requests raw fallback.
+6. **Raw fallback search** searches raw embedded evidence within its bounded
+   semantic candidate path.
 
-Lexical search is available for exact phrases, identifiers, filenames, error
-text, named topics, or recovery after semantic stages fail. It is not the normal
-first path for Memory Answer recall.
+Production Recall has no lexical database search stage. Exact phrases,
+identifiers, filenames, error text, and named topics are used as focused
+semantic-query seeds and checked only against the small authorized candidate
+set and validated LCM lexical anchors.
 
-Stage scores are directional relevance signals. Final evidence selection favors
-stage priority first, then weighted score, recency, and stable source ordering.
+Stage scores and fused rank are prioritization signals, not proof. Final worker
+selection must remain grounded in the admitted evidence and its provenance.
 Pending LCM Summary work may be returned as degraded evidence; the AI Client
 should surface that status and rely cautiously on exact source text rather than
 treating the pending summary as complete.
@@ -1306,7 +1372,12 @@ sequenceDiagram
 
   Client->>MCP: memory_answer(query, Search Domain)
   MCP->>Runtime: Authenticated typed local request
-  Runtime->>Answer: Start local Codex app-server worker
+  Runtime->>API: Concurrent scripted first-pass searches
+  API->>Embed: Query embeddings
+  API->>DB: Search authorized semantic candidates
+  DB-->>API: Initial evidence and retrieval metadata
+  API-->>Runtime: Compact first-pass result
+  Runtime->>Answer: Start worker with hints and initial evidence
   Answer->>API: scan/search dynamic RAG calls
   API->>Embed: Query embedding when semantic retrieval runs
   API->>DB: Search Memory Nodes and fallback evidence

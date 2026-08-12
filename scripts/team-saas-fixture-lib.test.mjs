@@ -79,6 +79,11 @@ test("Team SaaS fixture definition is deterministic and realistic", () => {
     new Set(fixtureMemoryRows.map((memory) => memory.sourceHash)).size,
     fixtureMemoryRows.length
   );
+  assert.equal(
+    new Set(fixtureMemoryRows.map((memory) => memory.summaryEmbeddingRevision))
+      .size,
+    fixtureMemoryRows.length
+  );
   assert.equal(new Set(fixtureThreadRows.map((thread) => thread.id)).size, 6);
   for (const idField of [
     "logicalMemoryId",
@@ -138,8 +143,17 @@ test("Team SaaS fixture covers required access states", () => {
     [
       ...new Set(fixtureMemoryRows.map((memory) => memory.representation))
     ].sort(),
-    ["lcm_leaves", "lcm_rollups", "memory_events"]
+    ["curated_assertions", "lcm_leaves", "lcm_rollups", "memory_events"]
   );
+  const curated = fixtureMemoryRows.find(
+    (memory) => memory.key === "carol-cloud-curated-retrieval"
+  );
+  assert.ok(curated);
+  assert.equal(curated.workspace, "cloud");
+  assert.equal(curated.shareState, "active");
+  assert.match(curated.curatedAssertionId, /^[0-9a-f-]{36}$/);
+  assert.match(curated.curatedTopicId, /^[0-9a-f-]{36}$/);
+  assert.match(curated.leafNodeId, /^[0-9a-f-]{36}$/);
   assert.deepEqual(
     [...new Set(fixtureThreads.map((thread) => thread.kind))].sort(),
     [
@@ -176,7 +190,10 @@ test("Team SaaS fixture uses the active deployment encryption providers", async 
     {},
     {
       environment: {
-        API_DATA_ENCRYPTION_KEY: Buffer.alloc(32, 91).toString("base64"),
+        API_DATA_ENCRYPTION_KEY: Buffer.alloc(32, 90).toString("base64"),
+        TEAM_MEMORY_DATA_ENCRYPTION_KEY: Buffer.alloc(32, 91).toString(
+          "base64"
+        ),
         OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY: Buffer.alloc(
           32,
           92
@@ -187,17 +204,27 @@ test("Team SaaS fixture uses the active deployment encryption providers", async 
 
   assert.equal(runtime.teamProvider.mode, "local_test_key");
   assert.equal(runtime.ownerProvider.mode, "local_test_key");
-  assert.notEqual(runtime.teamProvider.keyId, runtime.ownerProvider.keyId);
+  assert.equal(runtime.personalProvider.mode, "local_test_key");
+  assert.equal(
+    new Set([
+      runtime.personalProvider.keyId,
+      runtime.ownerProvider.keyId,
+      runtime.teamProvider.keyId
+    ]).size,
+    3
+  );
   await assert.rejects(
     createFixtureRuntime(
       {},
       {
         environment: {
-          API_DATA_ENCRYPTION_KEY: Buffer.alloc(32, 93).toString("base64")
+          TEAM_MEMORY_DATA_ENCRYPTION_KEY: Buffer.alloc(32, 93).toString(
+            "base64"
+          )
         }
       }
     ),
-    /requires both Team\/general and owner-private/
+    /requires Personal, Team Memory, and owner-private/
   );
 });
 
@@ -243,6 +270,32 @@ test("Team SaaS fixture can seed and validate a live database", async (t) => {
     assert.equal(first.memories, fixtureMemoryRows.length);
     assert.equal(first.threads, fixtureThreads.length);
     const firstSnapshot = await normalizedFixtureSnapshot(client, runtime);
+    const initialNodeRevision = await client.query(
+      `select summary_embedding_revision
+         from memory_nodes
+        where id = $1`,
+      [fixtureMemoryRows[0].nodeId]
+    );
+    assert.equal(
+      initialNodeRevision.rows[0]?.summary_embedding_revision,
+      fixtureMemoryRows[0].summaryEmbeddingRevision
+    );
+    await client.query(
+      `update memory_nodes
+          set pinned_at = $2
+        where id = $1`,
+      [fixtureMemoryRows[0].nodeId, "2026-01-01T12:00:00.000Z"]
+    );
+    const revisionAfterMetadataUpdate = await client.query(
+      `select summary_embedding_revision
+         from memory_nodes
+        where id = $1`,
+      [fixtureMemoryRows[0].nodeId]
+    );
+    assert.equal(
+      revisionAfterMetadataUpdate.rows[0]?.summary_embedding_revision,
+      fixtureMemoryRows[0].summaryEmbeddingRevision
+    );
     const acknowledgedFixtureEvent = await client.query(
       `select id, cursor
        from collaboration_outbox
@@ -507,6 +560,16 @@ test("Team SaaS fixture can seed and validate a live database", async (t) => {
     const second = await validateFixture(client, runtime);
     const secondSnapshot = await normalizedFixtureSnapshot(client, runtime);
     assert.deepEqual(secondSnapshot, firstSnapshot);
+    const reseededNodeRevision = await client.query(
+      `select summary_embedding_revision
+         from memory_nodes
+        where id = $1`,
+      [hostileMemory.nodeId]
+    );
+    assert.equal(
+      reseededNodeRevision.rows[0]?.summary_embedding_revision,
+      hostileMemory.summaryEmbeddingRevision
+    );
     assert.deepEqual(second.threadIds, first.threadIds);
     const sentinelAfterReseed = await client.query(
       "select owner_user_id from memory_events where id = $1",

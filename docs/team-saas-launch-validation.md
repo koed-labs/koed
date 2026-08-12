@@ -26,7 +26,15 @@ validation report.
 fixture, runs migrations, and validates the fixture's access expectations.
 
 `pnpm team-launch:validate` validates the seeded fixture and prints the launch
-validation report. It does not re-run the focused repository test suites by
+validation report. Unlike `team-fixture:validate`, this is a semantic-readiness
+gate: every active Team-visible fixture representation must have
+`embedding_state=embedded`, complete model provenance, and a vector in the
+dimension-matched Team vector table. `pending` and `processing` fail the launch
+command. Run the normal Worker embedding reconciliation or
+start the Team-enabled Worker after seeding, wait for its Shared Memory
+embedding reconciler to finish, then rerun launch validation. The generic
+`pnpm embeddings:backfill` command does not replace this Team reconciliation.
+Launch validation does not re-run the focused repository test suites by
 default; the report marks those backing tests as `not_run`.
 
 `pnpm team-launch:validate --with-automated-tests` validates the fixture and
@@ -62,10 +70,11 @@ probes a running hosted/private backend over HTTP. It proves public and
 authenticated capability discovery are reachable without leaking secrets, and
 browser sessions and scoped device credentials can use the dedicated Shared
 Memory Workspace Share Grant list, representation timeline, and representation
-detail APIs. The same credentials must receive `404` from generic Team search,
-answer/Evidence Bundle, graph, graph detail, and expansion surfaces because
-those representations are unavailable in V1. No staged credential value may be
-echoed in JSON responses. The harness also reads the target's current
+detail APIs. After normal embedding reconciliation, the same credentials can
+use Team semantic search, answer evidence, and grant-scoped candidate
+expansion. The generic Team graph and graph detail remain unavailable. No
+staged credential value may be echoed in JSON responses. The harness also reads
+the target's current
 capabilities and OpenAPI contract, then attempts every active Team,
 collaboration, Shared Memory, retention, high-risk, and realtime operation with
 the supplied Personal API Token. Every attempt must fail at authentication with
@@ -80,9 +89,9 @@ exercises the production CSRF boundary instead of bypassing or accidentally
 failing before route authorization.
 Set
 `KOED_LAUNCH_LOCAL_EDGE_BASE_URL` and `KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID` when a
-local-edge instance should also prove `/v1/local-edge/team-memory/answer` fails
-closed with `403` or `404`; generic local-edge Team answer is not a V1 positive
-path.
+local-edge instance should also prove `/v1/local-edge/team-memory/search`,
+`answer`, and `expand` proxy successfully with the scoped local device
+credential while a Personal API Token is denied.
 
 The report is suitable for local or disposable staging validation databases. Do
 not seed the deterministic fixture into production. `API_TOKEN_PEPPER` is
@@ -92,7 +101,7 @@ sessions. If the fixture was seeded without `API_TOKEN_PEPPER`, run
 
 ## Automated Gates
 
-The fixture validation command directly covers:
+The base launch validation command directly covers:
 
 - Synthetic user sessions when `API_TOKEN_PEPPER` is configured.
 - Team and Workspace data shape.
@@ -101,6 +110,12 @@ The fixture validation command directly covers:
 - Revoked-share and Personal Memory exclusion from those representation APIs.
 - Removed Workspace member access loss with Team-retained knowledge.
 - Personal soft-deletion with a retained Shared Memory representation.
+- Decrypted fidelity for Memory Event, LCM leaf, LCM rollup, and Curated Memory
+  Team representations, with authorized reads and disabled, removed,
+  Workspace-disabled, revoked, and Personal Memory denial cases.
+- Completed semantic embeddings for every active Team-visible fixture
+  representation. A status-only `embedded` row is insufficient unless its
+  dimension-matched vector and model provenance also exist.
 
 The `--with-automated-tests` path additionally runs focused repository tests
 for:
@@ -108,13 +123,17 @@ for:
 - Authorization-before-decrypt guardrails for encrypted Memory companions on
   implemented Personal Memory and Shared Memory representation paths.
 - Remote route contracts: browser sessions and scoped device credentials use
-  dedicated Shared Memory Share Grant list/timeline/detail APIs. Generic Team
-  search, answer/Evidence Bundle, graph, source expansion, and evidence routes
-  remain unavailable and fail closed. API Tokens remain Personal Memory only.
+  dedicated Shared Memory Share Grant list/timeline/detail APIs plus semantic
+  search, answer evidence, and candidate expansion. Generic graph surfaces
+  remain unavailable. API Tokens remain Personal Memory only.
 - Local-edge fail-closed behavior for stale credentials, stale capabilities,
   disabled upstream route policy, and disabled/private/paused Capture Policy.
 - Representation boundaries: revoked Workspace Access, revoked Share Grants,
   and Personal Memory are excluded before Shared Memory decrypt or display.
+- Explicit Team Curated Memory representation boundaries: exact-session direct
+  roles, mixed-session and missing-source rejection, recursive LCM descendant
+  closure, three-key encryption separation, and immediate semantic purge after
+  assertion or source invalidation.
 - Encrypted fixture-boundary regressions for shared, private, revoked,
   removed-member, and suspended-entitlement cases. These assert authorization
   happens before decrypt and raw Memory is absent from encrypted storage

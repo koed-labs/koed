@@ -1,6 +1,8 @@
 import { cpus } from "node:os";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
 
 export interface SupportedEmbeddingModel {
   key: string;
@@ -23,6 +25,12 @@ export interface EmbeddingServiceEnv {
   modelFile: string;
   modelPath: string | null;
   modelName: string;
+  modelArtifact: string;
+  modelArtifactRevision: string;
+  modelArtifactSha256: string;
+  modelTokenizer: string;
+  modelTokenizerRevision: string;
+  modelAcceleration: string;
   expectedDimensions: number;
   batchLimit: number;
   llamaNCtx: number;
@@ -41,6 +49,8 @@ export interface EmbeddingServiceEnv {
   rerankerRepo: string | null;
   rerankerFile: string | null;
   rerankerModelPath: string | null;
+  rerankerArtifact: string | null;
+  rerankerArtifactSha256: string | null;
   rerankerServerPort: number;
   rerankerBatchLimit: number;
   rerankerContextPerSlot: number;
@@ -227,6 +237,47 @@ const rerankerKeyFromEnv = (
 export const rerankerEnabled = (config: EmbeddingServiceEnv): boolean =>
   config.rerankerRepo !== null || config.rerankerModelPath !== null;
 
+export const verifyEmbeddingModelArtifact = async (
+  config: Pick<
+    EmbeddingServiceEnv,
+    "modelPath" | "modelFile" | "modelArtifactSha256"
+  >
+): Promise<void> => {
+  const modelPath = config.modelPath ?? `/models/${config.modelFile}`;
+  const actualArtifactSha256 = await sha256File(modelPath);
+  if (actualArtifactSha256 !== config.modelArtifactSha256) {
+    throw new Error(
+      `embedding model artifact SHA-256 mismatch: configured ${config.modelArtifactSha256}, actual ${actualArtifactSha256}`
+    );
+  }
+};
+
+export const sha256File = async (path: string): Promise<string> => {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
+  return digest.digest("hex");
+};
+
+export const verifyRerankerModelArtifact = async (
+  config: Pick<
+    EmbeddingServiceEnv,
+    "rerankerModelPath" | "rerankerArtifactSha256"
+  >
+): Promise<string> => {
+  if (!config.rerankerModelPath || !config.rerankerArtifactSha256) {
+    throw new Error(
+      "enabled reranker requires a model path and expected artifact SHA-256"
+    );
+  }
+  const actualArtifactSha256 = await sha256File(config.rerankerModelPath);
+  if (actualArtifactSha256 !== config.rerankerArtifactSha256) {
+    throw new Error(
+      `reranker model artifact SHA-256 mismatch: configured ${config.rerankerArtifactSha256}, actual ${actualArtifactSha256}`
+    );
+  }
+  return actualArtifactSha256;
+};
+
 export const rerankerModel = (config: EmbeddingServiceEnv): string | null => {
   if (config.rerankerKey === null) {
     return null;
@@ -259,6 +310,18 @@ export const resolveEnv = (
         .join(", ")}`
     );
   }
+  const canonicalModel = resolveSupportedEmbeddingModelConfig(modelKey);
+  const configuredArtifactSha256 =
+    firstEnv(environment, [
+      "MODEL_ARTIFACT_SHA256",
+      "EMBEDDING_MODEL_ARTIFACT_SHA256",
+      "KOED_EMBEDDING_MODEL_SHA256"
+    ]) ?? canonicalModel.defaultArtifactSha256;
+  if (!/^[a-f0-9]{64}$/i.test(configuredArtifactSha256)) {
+    throw new Error(
+      "embedding model artifact SHA-256 must be 64 hex characters"
+    );
+  }
 
   const rerankerKey = rerankerKeyFromEnv(environment) ?? "";
   const rerankerModelPath = optionalPathEnv(environment, [
@@ -282,6 +345,22 @@ export const resolveEnv = (
     throw new Error(
       "RERANKER_MODEL_PATH requires a supported RERANKER_KEY for model identity"
     );
+  }
+  const configuredRerankerArtifactSha256 = firstEnv(environment, [
+    "RERANKER_ARTIFACT_SHA256",
+    "EMBEDDING_RERANKER_ARTIFACT_SHA256",
+    "KOED_RERANKER_MODEL_SHA256"
+  ]);
+  if (rerankerConfig && !configuredRerankerArtifactSha256) {
+    throw new Error(
+      "enabled reranker requires KOED_RERANKER_MODEL_SHA256 (or RERANKER_ARTIFACT_SHA256)"
+    );
+  }
+  if (
+    configuredRerankerArtifactSha256 &&
+    !/^[a-f0-9]{64}$/i.test(configuredRerankerArtifactSha256)
+  ) {
+    throw new Error("reranker artifact SHA-256 must be 64 hex characters");
   }
 
   const llamaNCtx = Math.min(
@@ -383,6 +462,21 @@ export const resolveEnv = (
       "KOED_EMBEDDING_MODEL_PATH"
     ]),
     modelName: modelConfig.key,
+    modelArtifact:
+      firstEnv(environment, [
+        "MODEL_ARTIFACT",
+        "EMBEDDING_MODEL_ARTIFACT",
+        "KOED_EMBEDDING_MODEL_URL"
+      ]) ?? canonicalModel.artifact,
+    modelArtifactRevision:
+      firstEnv(environment, [
+        "MODEL_ARTIFACT_REVISION",
+        "EMBEDDING_MODEL_ARTIFACT_REVISION"
+      ]) ?? canonicalModel.artifactRevision,
+    modelArtifactSha256: configuredArtifactSha256.toLowerCase(),
+    modelTokenizer: canonicalModel.tokenizer,
+    modelTokenizerRevision: canonicalModel.tokenizerRevision,
+    modelAcceleration: canonicalModel.acceleration,
     expectedDimensions: modelConfig.dimensions,
     batchLimit: intAlias(environment, ["EMBEDDING_BATCH_LIMIT"], 16),
     llamaNCtx,
@@ -433,6 +527,17 @@ export const resolveEnv = (
     rerankerRepo: rerankerConfig?.repo ?? null,
     rerankerFile: rerankerConfig?.file ?? null,
     rerankerModelPath,
+    rerankerArtifact: rerankerConfig
+      ? (firstEnv(environment, [
+          "RERANKER_ARTIFACT",
+          "EMBEDDING_RERANKER_ARTIFACT",
+          "KOED_RERANKER_MODEL_URL"
+        ]) ?? `${rerankerConfig.repo}:${rerankerConfig.file}`)
+      : null,
+    rerankerArtifactSha256:
+      rerankerConfig && configuredRerankerArtifactSha256
+        ? configuredRerankerArtifactSha256.toLowerCase()
+        : null,
     rerankerServerPort,
     rerankerBatchLimit: intAlias(
       environment,

@@ -105,21 +105,22 @@ staging, or production environments with a normal shared `API_TOKEN_PEPPER`.
 
 ## Memory Truth Sheet
 
-| Memory                          | Owner | Workspace                   | Representation | State                           | Expected Team behavior                                                                                      |
-| ------------------------------- | ----- | --------------------------- | -------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Workspace Memory Timeline UX    | Bob   | Electron Team App           | Memory Events  | Active share                    | Visible to authorized Electron Workspace members.                                                           |
-| Agent Collaboration Rooms       | David | Electron Team App           | LCM Leaves     | Active share                    | Visible to authorized Electron Workspace members.                                                           |
-| Revoked Electron Experiment     | David | Electron Team App           | Memory Events  | Revoked share                   | Hidden from Team reads; remains David's personal memory.                                                    |
-| Private DevOps Scratchpad       | Bob   | Electron Team App           | Memory Events  | Private                         | Hidden from Team reads.                                                                                     |
-| Flat User-Owned Memory Model    | Alice | Cloud Memory Platform       | LCM Rollups    | Active share                    | Visible to authorized Cloud Workspace members.                                                              |
-| Cloud API Superset Contract     | Carol | Cloud Memory Platform       | Memory Events  | Active share                    | Visible to authorized Cloud Workspace members.                                                              |
-| Retained Billing Grace Decision | Carol | Cloud Memory Platform       | LCM Leaves     | Personal deleted, Team retained | Visible to authorized Cloud Workspace members even though Carol's personal source is soft-deleted.          |
-| Removed Member Deployment Note  | Bob   | Cloud Memory Platform       | LCM Rollups    | Active share                    | Visible to authorized Cloud Workspace members, but not to Bob after his Cloud Workspace access is disabled. |
-| Private Pricing Scratchpad      | Alice | Cloud Memory Platform       | Memory Events  | Private                         | Hidden from Team reads.                                                                                     |
-| Provider Fallback Ingestion     | David | Managed Knowledge Ingestion | Memory Events  | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
-| Checksum Dedupe Inventory       | Carol | Managed Knowledge Ingestion | LCM Leaves     | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
-| Memory Inbox Product Boundary   | Alice | Managed Knowledge Ingestion | LCM Rollups    | Active share                    | Visible to authorized Ingestion Workspace members.                                                          |
-| Private Agent Prompt Scratchpad | David | Managed Knowledge Ingestion | Memory Events  | Private                         | Hidden from Team reads.                                                                                     |
+| Memory                          | Owner | Workspace                   | Representation     | State                           | Expected Team behavior                                                                                                                       |
+| ------------------------------- | ----- | --------------------------- | ------------------ | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace Memory Timeline UX    | Bob   | Electron Team App           | Memory Events      | Active share                    | Visible to authorized Electron Workspace members.                                                                                            |
+| Agent Collaboration Rooms       | David | Electron Team App           | LCM Leaves         | Active share                    | Visible to authorized Electron Workspace members.                                                                                            |
+| Revoked Electron Experiment     | David | Electron Team App           | Memory Events      | Revoked share                   | Hidden from Team reads; remains David's personal memory.                                                                                     |
+| Private DevOps Scratchpad       | Bob   | Electron Team App           | Memory Events      | Private                         | Hidden from Team reads.                                                                                                                      |
+| Flat User-Owned Memory Model    | Alice | Cloud Memory Platform       | LCM Rollups        | Active share                    | Visible to authorized Cloud Workspace members.                                                                                               |
+| Cloud API Superset Contract     | Carol | Cloud Memory Platform       | Memory Events      | Active share                    | Visible to authorized Cloud Workspace members.                                                                                               |
+| Team Recall Provenance Contract | Carol | Cloud Memory Platform       | Curated Assertions | Active share                    | Visible to authorized Cloud Workspace members with exact-session direct-source expansion through its Memory Event, LCM leaf, and LCM rollup. |
+| Retained Billing Grace Decision | Carol | Cloud Memory Platform       | LCM Leaves         | Personal deleted, Team retained | Visible to authorized Cloud Workspace members even though Carol's personal source is soft-deleted.                                           |
+| Removed Member Deployment Note  | Bob   | Cloud Memory Platform       | LCM Rollups        | Active share                    | Visible to authorized Cloud Workspace members, but not to Bob after his Cloud Workspace access is disabled.                                  |
+| Private Pricing Scratchpad      | Alice | Cloud Memory Platform       | Memory Events      | Private                         | Hidden from Team reads.                                                                                                                      |
+| Provider Fallback Ingestion     | David | Managed Knowledge Ingestion | Memory Events      | Active share                    | Visible to authorized Ingestion Workspace members.                                                                                           |
+| Checksum Dedupe Inventory       | Carol | Managed Knowledge Ingestion | LCM Leaves         | Active share                    | Visible to authorized Ingestion Workspace members.                                                                                           |
+| Memory Inbox Product Boundary   | Alice | Managed Knowledge Ingestion | LCM Rollups        | Active share                    | Visible to authorized Ingestion Workspace members.                                                                                           |
+| Private Agent Prompt Scratchpad | David | Managed Knowledge Ingestion | Memory Events      | Private                         | Hidden from Team reads.                                                                                                                      |
 
 ## Collaboration Truth Sheet
 
@@ -146,15 +147,22 @@ Team thread lists.
 
 Use these as the first API/data-level assertions before adding UI checks.
 
-| Actor | Workspace                   | Should see                                                                                                                 | Must not see                                                           |
-| ----- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Carol | Electron Team App           | Workspace Memory Timeline UX; Agent Collaboration Rooms                                                                    | Revoked Electron Experiment; Private DevOps Scratchpad                 |
-| Alice | Cloud Memory Platform       | Flat User-Owned Memory Model; Cloud API Superset Contract; Retained Billing Grace Decision; Removed Member Deployment Note | Private Pricing Scratchpad                                             |
-| Bob   | Cloud Memory Platform       | Nothing                                                                                                                    | All Cloud Workspace memories, because his Workspace access is disabled |
-| Bob   | Managed Knowledge Ingestion | Provider Fallback Ingestion; Checksum Dedupe Inventory; Memory Inbox Product Boundary                                      | Private Agent Prompt Scratchpad                                        |
+| Actor | Workspace                   | Should see                                                                                                                                                  | Must not see                                                           |
+| ----- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Carol | Electron Team App           | Workspace Memory Timeline UX; Agent Collaboration Rooms                                                                                                     | Revoked Electron Experiment; Private DevOps Scratchpad                 |
+| Alice | Cloud Memory Platform       | Flat User-Owned Memory Model; Cloud API Superset Contract; Team Recall Provenance Contract; Retained Billing Grace Decision; Removed Member Deployment Note | Private Pricing Scratchpad                                             |
+| Bob   | Cloud Memory Platform       | Nothing                                                                                                                                                     | All Cloud Workspace memories, because his Workspace access is disabled |
+| Bob   | Managed Knowledge Ingestion | Provider Fallback Ingestion; Checksum Dedupe Inventory; Memory Inbox Product Boundary                                                                       | Private Agent Prompt Scratchpad                                        |
 
 The active Shared Memory rows collectively exercise `memory_events`,
-`lcm_leaves`, and `lcm_rollups`. Validation lists authorized Workspace Share
+`lcm_leaves`, `lcm_rollups`, and `curated_assertions`. The positive Cloud
+Curated representation has four complete direct-source links in one Captured
+Session: its Conversation Item, Memory Event, LCM leaf, and LCM rollup. Its
+encrypted expansion material lets practical semantic search prove fidelity for
+all four representation layers without exposing canonical IDs. The launch
+suite's focused repository regression additionally exercises mixed-session
+denial, three distinct encryption providers, and immediate invalidation.
+Validation lists authorized Workspace Share
 Grants and decrypts each representation through the dedicated production
 repository. Timeline metadata and detail content come from the representation,
 not canonical owner-private `messages`, `memory_events`, or `memory_nodes`.
@@ -189,9 +197,11 @@ authorization loss, consent expiry, cursor binding, and integrity failures.
 3. Verify data/API behavior first: authorization, collaboration history, and
    Shared Memory grant/list/timeline/detail representation reads must match the
    truth sheet.
-4. Verify generic Team search, answer/Evidence Bundle, graph, evidence, and
-   expansion surfaces fail closed. They are unavailable in V1 and are not
-   alternate views over canonical owner-private rows.
+4. Run the normal Shared Memory embedding reconciliation, then verify Team
+   semantic search, answer evidence, and candidate expansion against the same
+   truth sheet. They operate only over grant-scoped representations and are not
+   alternate views over canonical owner-private rows. The generic Team graph
+   remains unavailable.
 5. Treat any mismatch as either a fixture bug or product bug. Do not silently
    alter the fixture assumptions.
 6. When the Electron app is ready, reuse this same fixture for UI-level checks.
@@ -215,8 +225,20 @@ authorization loss, consent expiry, cursor binding, and integrity failures.
   Shared Memory read model. A hostile canonical secret canary regression proves
   canonical payload, message, and summary changes cannot enter an already
   materialized Team representation.
-- The fixture does not precompute embeddings. Generic Team semantic search and
-  answer are unavailable in V1 regardless of embedding state.
+- The fixture does not precompute embeddings. Team semantic search and answer
+  evidence produce hits only after the normal Worker embedding reconciler has
+  processed pending grant-scoped representation items. This is an intentional
+  readiness precondition, not a lexical fallback. Seeding writes the same
+  plaintext-free pending item/chunk routing metadata as production
+  materialization; reset/snapshot validation rejects missing metadata or
+  canonical source identifiers in those rows.
+- Encrypted LCM Leaf and Rollup fixtures include nested source expansion
+  material. Authorized tests can therefore prove rollup-to-leaf and
+  leaf-to-event drill-down instead of stopping at summary retrieval.
+- The Curated fixture uses the production protected-storage shape: encrypted
+  Personal Curated topic, assertion, and source payloads; encrypted
+  owner-private artifact and preview; and an encrypted Team representation.
+  Its semantic routing row contains only grant-scoped pseudonymous lineage.
 - Bob's Cloud Workspace removal tests that user-owned contributions can remain
   useful to the Team while the removed member loses access.
 - Carol's retained billing memory tests that personal deletion does not destroy

@@ -84,6 +84,10 @@ const reloadableRuntimeSecret = () => {
       publicKey: authority.publicKey,
       head: authorityHead
     },
+    recovery: {
+      signingKeyId: randomBytes(16).toString("base64url"),
+      signingPublicKey: rawPair("ed25519").publicKey
+    },
     certificate,
     recipientCertificates: [certificate],
     groupSecrets: {

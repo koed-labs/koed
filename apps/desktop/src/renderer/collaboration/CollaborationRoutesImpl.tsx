@@ -247,7 +247,8 @@ const principalIdForThread = (
 const representationLabel = (value: SharedMemoryRepresentation): string => {
   if (value === "memory_events") return "Memory Events";
   if (value === "lcm_leaves") return "LCM Leaves";
-  return "LCM Rollups";
+  if (value === "lcm_rollups") return "LCM Rollups";
+  return "Curated Assertions";
 };
 
 const liveStateLabel = (value: SharedMemorySession["liveState"]): string =>
@@ -1591,6 +1592,23 @@ function SourceItemRow({
       </MemoryEventFrame>
     );
   }
+  if (item.representation === "curated_assertions") {
+    return (
+      <article className="collab-source-event memory-event" role="listitem">
+        <header className="memory-event-header">
+          <strong>{item.topicTitle ?? "Curated assertion"}</strong>
+          <time dateTime={item.occurredAt}>{formatTime(item.occurredAt)}</time>
+        </header>
+        <SharedSourceMarkdown
+          markdownAdapters={markdownAdapters}
+          source={item.assertionText}
+        />
+        {item.tags.length > 0 ? (
+          <p className="collab-form-context">{item.tags.join(" · ")}</p>
+        ) : null}
+      </article>
+    );
+  }
   return (
     <LcmSummaryFrame
       occurredAt={item.occurredAt}
@@ -1992,7 +2010,8 @@ export function SharedSessionView({
 const SHARED_MEMORY_REPRESENTATIONS = [
   "memory_events",
   "lcm_leaves",
-  "lcm_rollups"
+  "lcm_rollups",
+  "curated_assertions"
 ] as const satisfies readonly SharedMemoryRepresentation[];
 
 const SHARED_MEMORY_PREPARATION_REFRESH_MS = 1_000;

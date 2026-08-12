@@ -391,7 +391,8 @@ describe("Codex app-server runner", () => {
           },
           clientName: "koed-test",
           baseInstructions: "Return the answer.",
-          developerInstructions: ""
+          developerInstructions: "",
+          captureProcessMetrics: true
         },
         3000
       );
@@ -413,6 +414,15 @@ describe("Codex app-server runner", () => {
         ])
       );
       expect(result.rawEvents).toHaveLength(5);
+      expect(typeof result.processMetrics?.pid).toBe("number");
+      expect(typeof result.processMetrics?.peakRssBytes).toBe("number");
+      expect(typeof result.processMetrics?.sampleCount).toBe("number");
+      expect(result.processMetrics?.samplingIntervalMs).toBe(50);
+      expect([
+        "proc_status_tree",
+        "ps_rss",
+        "powershell_working_set"
+      ]).toContain(result.processMetrics?.measurement);
     } finally {
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }

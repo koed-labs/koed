@@ -10,7 +10,8 @@ const validSubmission = () => ({
   summaryStructuredJson: {
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
     title: "Device credentials",
-    summary_text: "Use scoped device credentials."
+    summary_text: "Use scoped device credentials.",
+    lexical_anchors: ["scoped device credentials"]
   },
   summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
 });

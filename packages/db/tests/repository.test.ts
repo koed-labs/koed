@@ -19,6 +19,7 @@ import type pg from "pg";
 import {
   createMemoryEngine,
   estimateTokens,
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   type MemoryEngineRepository,
   type SearchMemoryInput
 } from "@koed/core";
@@ -34,6 +35,7 @@ import {
   type ConversationItemInput,
   type MemorySourceRepository
 } from "../src/index.js";
+import { lcmSummaryEmbeddingText } from "../src/repository.js";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
@@ -84,8 +86,6 @@ const originalSemanticMemoryRebuildDebounceMs =
 const originalKoedDeploymentProfile = process.env.KOED_DEPLOYMENT_PROFILE;
 const originalKoedManagedCloudReleaseStage =
   process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE;
-const originalPlaintextLexicalSearchEnabled =
-  process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
 
 const testEmbeddingCompatibility = {
   modelArtifactHash: "a".repeat(64),
@@ -96,6 +96,41 @@ const testEmbeddingCompatibility = {
 } as const;
 
 const describeDb = runDbTests ? describe : describe.skip;
+
+it("composes validated LCM anchors in a separate embedding section", () => {
+  expect(
+    lcmSummaryEmbeddingText(
+      "Canonical semantic summary.",
+      {
+        schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        title: "Embedding anchors",
+        summary_text: "Canonical semantic summary.",
+        lexical_anchors: ["memory_answer", "packages/db/src/repository.ts"]
+      },
+      { pending: false }
+    )
+  ).toBe(
+    "Canonical semantic summary.\n\nLexical anchors:\n- memory_answer\n- packages/db/src/repository.ts"
+  );
+
+  expect(() =>
+    lcmSummaryEmbeddingText(
+      "Canonical semantic summary.",
+      {
+        schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        title: "Missing anchors",
+        summary_text: "Canonical semantic summary."
+      },
+      { pending: false }
+    )
+  ).toThrow("incompatible with the anchor-aware structured summary contract");
+
+  expect(
+    lcmSummaryEmbeddingText("Deterministic pending placeholder.", null, {
+      pending: true
+    })
+  ).toBe("Deterministic pending placeholder.");
+});
 
 type HasTeamWorkspaceId<T> = "teamWorkspaceId" extends keyof NonNullable<T>
   ? true
@@ -2464,12 +2499,6 @@ describeDb("memory repository visibility", () => {
       process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE =
         originalKoedManagedCloudReleaseStage;
     }
-    if (originalPlaintextLexicalSearchEnabled === undefined) {
-      delete process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
-    } else {
-      process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED =
-        originalPlaintextLexicalSearchEnabled;
-    }
     await pool?.end();
   });
 
@@ -3654,7 +3683,8 @@ describeDb("memory repository visibility", () => {
         schema_version: "lcm-semantic-summary-v1",
         title: "Encrypted managed cloud node",
         summary_text:
-          "Managed cloud finished summary sentinel 731f3c. The LCM worker summary is encrypted at rest."
+          "Managed cloud finished summary sentinel 731f3c. The LCM worker summary is encrypted at rest.",
+        lexical_anchors: ["sentinel 731f3c"]
       };
 
       await encryptedRepo.updateLcmNodeSummary({
@@ -3666,6 +3696,24 @@ describeDb("memory repository visibility", () => {
         summaryStructuredJson: structured,
         summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
       });
+      const sourceEvent = await encryptedRepo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          projectId: "managed-cloud-anchor-search",
+          actor: "user",
+          eventType: "captured",
+          rawEventType: "user_message",
+          content: "Managed cloud anchor source sentinel 731f3c",
+          visibility: "personal",
+          idempotencyKey: randomUUID()
+        }
+      );
+      await pool.query(
+        `insert into memory_node_sources
+           (memory_node_id, memory_event_id, source_order)
+         values ($1, $2, 0)`,
+        [node.id, sourceEvent.id]
+      );
 
       const stored = await pool.query<{
         summary_text: string;
@@ -3724,6 +3772,121 @@ describeDb("memory repository visibility", () => {
         "Managed cloud finished summary sentinel 731f3c"
       );
       expect(graphNode?.summaryStructuredJson).toEqual(structured);
+
+      const fixedTimestamp = new Date("2026-08-11T05:00:00.000Z");
+      await pool.query(`update memory_nodes set updated_at=$2 where id=$1`, [
+        node.id,
+        fixedTimestamp
+      ]);
+      const firstRevision = await pool.query<{
+        summary_embedding_revision: string;
+      }>(`select summary_embedding_revision from memory_nodes where id=$1`, [
+        node.id
+      ]);
+      const source = await encryptedRepo.getEmbeddableSource(
+        "memory_node",
+        node.id
+      );
+      expect(source).not.toBeNull();
+      expect(source?.text).toBe(
+        "Managed cloud finished summary sentinel 731f3c\n\nLexical anchors:\n- sentinel 731f3c"
+      );
+      await encryptedRepo.updateLcmNodeSummary({
+        nodeId: node.id,
+        summaryText: "Managed cloud revised summary sentinel 731f3c",
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-codex-summary-json-v4",
+        summaryTokenEstimate: 24,
+        summaryStructuredJson: {
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Revised encrypted managed cloud node",
+          summary_text: "Managed cloud revised summary sentinel 731f3c",
+          lexical_anchors: ["sentinel 731f3c", "encrypted revision two"]
+        },
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+      });
+      await pool.query(`update memory_nodes set updated_at=$2 where id=$1`, [
+        node.id,
+        fixedTimestamp
+      ]);
+      const secondRevision = await pool.query<{
+        summary_embedding_revision: string;
+        updated_at: Date;
+      }>(
+        `select summary_embedding_revision, updated_at
+         from memory_nodes where id=$1`,
+        [node.id]
+      );
+      const currentSource = await encryptedRepo.getEmbeddableSource(
+        "memory_node",
+        node.id
+      );
+      expect(secondRevision.rows[0]?.updated_at).toEqual(fixedTimestamp);
+      expect(secondRevision.rows[0]?.summary_embedding_revision).not.toBe(
+        firstRevision.rows[0]?.summary_embedding_revision
+      );
+      expect(currentSource?.sourceHash).not.toBe(source?.sourceHash);
+      expect(currentSource?.text).toBe(
+        "Managed cloud revised summary sentinel 731f3c\n\nLexical anchors:\n- sentinel 731f3c\n- encrypted revision two"
+      );
+      const vector = Array.from({ length: 1024 }, (_, index) =>
+        index === 0 ? 1 : 0
+      );
+      await expect(
+        encryptedRepo.upsertSourceEmbedding({
+          ...testEmbeddingCompatibility,
+          source: source!,
+          model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+          dimensions: 1024,
+          version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+          vector
+        })
+      ).rejects.toThrow(
+        "Memory Node embedding source changed after embedding work began"
+      );
+      await encryptedRepo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
+        source: currentSource!,
+        model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        dimensions: 1024,
+        version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        vector
+      });
+      const fetchMock = mockEmbeddingQuery();
+      try {
+        const otherUser = await encryptedRepo.createUser({
+          email: `managed-cloud-anchor-other-${randomUUID()}@example.com`
+        });
+        const unauthorized = await encryptedRepo.searchMemoryNodes(
+          { userId: otherUser.id },
+          {
+            query: "managed cloud finished summary",
+            scope: "personal",
+            searchDomain: "global",
+            retrievalStage: "leaf_search",
+            limit: 1
+          }
+        );
+        expect(unauthorized.results).toEqual([]);
+
+        const search = await encryptedRepo.searchMemoryNodes(
+          { userId: owner.id },
+          {
+            query: "managed cloud finished summary",
+            scope: "personal",
+            searchDomain: "global",
+            retrievalStage: "leaf_search",
+            limit: 1
+          }
+        );
+        expect(search.results[0]?.sourceType).toBe("memory_node");
+        expect(search.results[0]?.lexicalAnchors).toEqual([
+          "sentinel 731f3c",
+          "encrypted revision two"
+        ]);
+      } finally {
+        fetchMock.mockRestore();
+      }
     });
   });
 
@@ -7670,7 +7833,8 @@ describeDb("memory repository visibility", () => {
       summaryStructuredJson: {
         schema_version: "lcm-semantic-summary-v1",
         title: "Exact-session LCM sharing",
-        summary_text: "The source established exact-session LCM sharing."
+        summary_text: "The source established exact-session LCM sharing.",
+        lexical_anchors: ["exact-session LCM sharing"]
       },
       summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
     });
@@ -7728,7 +7892,8 @@ describeDb("memory repository visibility", () => {
       summaryStructuredJson: {
         schema_version: "lcm-semantic-summary-v1",
         title: "Exact-session rollup",
-        summary_text: "The exact-session leaf is available as a rollup."
+        summary_text: "The exact-session leaf is available as a rollup.",
+        lexical_anchors: ["exact-session leaf"]
       },
       summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
     });
@@ -8275,7 +8440,8 @@ describeDb("memory repository visibility", () => {
       summaryStructuredJson: {
         schema_version: "lcm-semantic-summary-v1",
         title: "Synchronized summary",
-        summary_text: "A concise synchronized semantic summary."
+        summary_text: "A concise synchronized semantic summary.",
+        lexical_anchors: ["synchronized semantic summary"]
       },
       summaryStructuredSchemaVersion: "lcm-semantic-summary-v1",
       sourceOriginEventIds: [originEventId],
@@ -8425,7 +8591,7 @@ describeDb("memory repository visibility", () => {
         applied.summaryNodeIds[0]!
       )
     ).resolves.toMatchObject({
-      text: "A concise synchronized semantic summary."
+      text: "A concise synchronized semantic summary.\n\nLexical anchors:\n- synchronized semantic summary"
     });
     await expect(
       encryptedRepo.expandMemoryNode(
@@ -8597,7 +8763,7 @@ describeDb("memory repository visibility", () => {
         expect.objectContaining({
           sourceType: "memory_node",
           sourceId: applied.summaryNodeIds[0],
-          text: "A concise synchronized semantic summary."
+          text: "A concise synchronized semantic summary.\n\nLexical anchors:\n- synchronized semantic summary"
         })
       ])
     );
@@ -8951,7 +9117,8 @@ describeDb("memory repository visibility", () => {
       summaryStructuredJson: {
         schema_version: "lcm-semantic-summary-v1",
         title: "Revised synchronized summary",
-        summary_text: "A revised synchronized semantic summary."
+        summary_text: "A revised synchronized semantic summary.",
+        lexical_anchors: ["revised synchronized semantic summary"]
       },
       updatedAt: "2026-07-12T00:02:00.000Z"
     };
@@ -9058,7 +9225,7 @@ describeDb("memory repository visibility", () => {
         replacementSummaryApplied.summaryNodeIds[0]!
       )
     ).resolves.toMatchObject({
-      text: "A revised synchronized semantic summary."
+      text: "A revised synchronized semantic summary.\n\nLexical anchors:\n- revised synchronized semantic summary"
     });
     await expect(
       pool.query(
@@ -10112,14 +10279,14 @@ describeDb("memory repository visibility", () => {
     });
     expect(graphThreads).toEqual([]);
 
-    const lexical = await repo.searchMemoryNodes(electronActor, {
+    const semantic = await repo.searchMemoryNodes(electronActor, {
       query: "BoundaryUnique",
       scope: "personal",
       ...legacyTeamScope,
-      retrievalStage: "lexical_search",
+      retrievalStage: "raw_fallback_search",
       limit: 20
     });
-    expect(lexical.results).toEqual([]);
+    expect(semantic.results).toEqual([]);
 
     await expect(
       repo.expandMemoryNode(privateCloud.node.id, electronActor, {
@@ -10286,20 +10453,20 @@ describeDb("memory repository visibility", () => {
         limit: 20
       }
     );
-    const lexical = await encryptedRepo.searchMemoryNodes(
+    const semantic = await encryptedRepo.searchMemoryNodes(
       { userId: member.id },
       {
         query: "EncryptedBoundaryUnique",
         scope: "personal",
         ...legacyTeamScope,
-        retrievalStage: "lexical_search",
+        retrievalStage: "raw_fallback_search",
         limit: 20
       }
     );
 
     expect(graphEvents).toEqual([]);
     expect(graphNodes).toEqual([]);
-    expect(lexical.results).toEqual([]);
+    expect(semantic.results).toEqual([]);
     expect(decrypt).not.toHaveBeenCalled();
 
     await expect(
@@ -13951,6 +14118,22 @@ describeDb("memory repository visibility", () => {
           summaryModel: "codex:test"
         }
       );
+      await repo.updateLcmNodeSummary({
+        nodeId: node.id,
+        summaryText:
+          "Clean LCM summary: Koed is being run in Docker for local testing.",
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-codex-summary-json-v4",
+        summaryTokenEstimate: 20,
+        summaryStructuredJson: {
+          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+          title: "Docker local testing",
+          summary_text:
+            "Clean LCM summary: Koed is being run in Docker for local testing.",
+          lexical_anchors: ["KOED_DOCKER_EXACT_ANCHOR"]
+        },
+        summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+      });
       await pool.query(
         "insert into memory_node_sources (memory_node_id, memory_event_id, source_order) values ($1, $2, 0)",
         [node.id, event.id]
@@ -13989,6 +14172,9 @@ describeDb("memory repository visibility", () => {
       expect(search.results[0]?.summaryText).not.toContain(
         "Exact ordered source outline"
       );
+      expect(search.results[0]?.lexicalAnchors).toEqual([
+        "KOED_DOCKER_EXACT_ANCHOR"
+      ]);
     } finally {
       if (originalEmbeddingServiceUrl === undefined) {
         delete process.env.EMBEDDING_SERVICE_URL;
@@ -14070,6 +14256,20 @@ describeDb("memory repository visibility", () => {
           summaryModel: "codex:test"
         }
       );
+      await repo.updateLcmNodeSummary({
+        nodeId: completedNode.id,
+        summaryText: "Completed summary about archived preferences.",
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-codex-summary-json-v4",
+        summaryTokenEstimate: 5,
+        summaryStructuredJson: {
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Archived preferences",
+          summary_text: "Completed summary about archived preferences.",
+          lexical_anchors: ["archived preferences"]
+        },
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+      });
       const freshEvent = await captureUserEvent(engine, alice.id, {
         projectId: "workspace-rerank",
         content:
@@ -14137,6 +14337,75 @@ describeDb("memory repository visibility", () => {
         process.env.EMBEDDING_SERVICE_TOKEN = originalEmbeddingServiceToken;
       }
     }
+  });
+
+  it("authorizes isolated Retrieval Arena index proof rows before decryption", async () => {
+    const owner = await repo.createUser({
+      email: `arena-proof-owner-${randomUUID()}@example.com`
+    });
+    const outsider = await repo.createUser({
+      email: `arena-proof-outsider-${randomUUID()}@example.com`
+    });
+    const summaryText = "Owner-scoped isolated Retrieval Arena proof text.";
+    const node = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText,
+        summaryModel: "codex:test"
+      }
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: node.id,
+      summaryText,
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 12,
+      summaryStructuredJson: {
+        schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        title: "Arena owner proof",
+        summary_text: summaryText,
+        lexical_anchors: []
+      },
+      summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+    });
+    const source = await repo.getEmbeddableSource("memory_node", node.id);
+    expect(source).not.toBeNull();
+    const dimensions = 1024;
+    const model = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: source!,
+      model,
+      dimensions,
+      version: model,
+      vector: Array.from({ length: dimensions }, (_, index) =>
+        index === 0 ? 1 : 0
+      ),
+      sourceText: summaryText
+    });
+
+    const owned = await repo.getRetrievalArenaIndexProof({
+      ownerUserId: owner.id,
+      sourceIds: [node.id],
+      model,
+      dimensions,
+      version: model
+    });
+    expect(owned.documents).toHaveLength(1);
+    expect(owned.documents[0]?.sourceId).toBe(node.id);
+
+    await expect(
+      repo.getRetrievalArenaIndexProof({
+        ownerUserId: outsider.id,
+        sourceIds: [node.id],
+        model,
+        dimensions,
+        version: model
+      })
+    ).rejects.toThrow(
+      "isolated Retrieval Arena runtime index does not contain exactly one active vector"
+    );
   });
 
   it("does not duplicate identical LCM summary and body text for node embeddings", async () => {
@@ -14577,73 +14846,6 @@ describeDb("memory repository visibility", () => {
     ).toBe(false);
   });
 
-  it("retrieves full lexical evidence from unembedded fresh memory only when lexical is requested", async () => {
-    const alice = await repo.createUser({
-      email: `alice-lexical-fresh-${randomUUID()}@example.com`
-    });
-    const engine = createMemoryEngine(repo);
-    const workspaceId = `workspace-lexical-fresh-${randomUUID()}`;
-    const filler = Array.from(
-      { length: 260 },
-      (_, index) => `The quiet lamp story filler passage ${index}.`
-    ).join(" ");
-    const story = [
-      filler,
-      "Only at the end did the keeper of the lamp reveal her name: Seraphina."
-    ].join(" ");
-    const event = await captureUserEvent(engine, alice.id, {
-      projectId: workspaceId,
-      content: story,
-      metadata: { kind: "long-story-tail-name" }
-    });
-
-    const embeddingFetch = mockEmbeddingQuery();
-    const scan = await engine.searchMemory({
-      requesterContext: { userId: alice.id },
-      query: "Who was the keeper of the lamp named Seraphina?",
-      scope: "personal",
-      searchDomain: "project",
-      projectId: workspaceId,
-      retrievalStage: "score_scan",
-      limit: 1
-    });
-    const lexicalStage = scan.metadata.stages?.find(
-      (stage) => stage.name === "lexical_search"
-    );
-    expect(scan.results).toHaveLength(0);
-    expect(lexicalStage).toBeUndefined();
-
-    embeddingFetch.mockClear();
-    const lexical = await engine.searchMemory({
-      requesterContext: { userId: alice.id },
-      query: "Seraphina",
-      scope: "personal",
-      searchDomain: "project",
-      projectId: workspaceId,
-      retrievalStage: "lexical_search",
-      strictLimit: true,
-      limit: 1
-    });
-    expect(lexical.results).toHaveLength(1);
-    expect(lexical.results[0]?.sourceType).toBe("memory_event");
-    expect(lexical.results[0]?.sourceId).toBe(event.id);
-    expect(lexical.results[0]?.summaryText).toContain("Seraphina");
-    expect(embeddingFetch).not.toHaveBeenCalled();
-
-    await expect(
-      engine.searchMemory({
-        requesterContext: { userId: alice.id },
-        query: "Seraphina",
-        scope: "personal",
-        searchDomain: "project",
-        projectId: workspaceId,
-        retrievalStage: "lexical_search",
-        strictLimit: true,
-        limit: 2
-      })
-    ).rejects.toThrow("above threshold");
-  });
-
   it("excludes personal-deleted memory events from Personal Memory recall", async () => {
     const alice = await repo.createUser({
       email: `alice-personal-deleted-recall-${randomUUID()}@example.com`
@@ -14666,134 +14868,11 @@ describeDb("memory repository visibility", () => {
       scope: "personal",
       searchDomain: "project",
       projectId: workspaceId,
-      retrievalStage: "lexical_search",
+      retrievalStage: "raw_fallback_search",
       limit: 5
     });
 
     expect(recall.results).toEqual([]);
-  });
-
-  it("ranks original lexical story evidence above later question and tool echoes", async () => {
-    const alice = await repo.createUser({
-      email: `alice-lexical-echo-${randomUUID()}@example.com`
-    });
-    const engine = createMemoryEngine(repo);
-    const workspaceId = `workspace-lexical-echo-${randomUUID()}`;
-    const query =
-      "What was the name of the keeper of the lamp in the story about the city by the sea?";
-    const story = [
-      "At dawn, the city woke without bells.",
-      "The keeper of the lamp watched the sea and kept the city visible.",
-      "The story ended by revealing the keeper's name.",
-      "Her name was Mara."
-    ].join(" ");
-    const storyEvent = await captureUserEvent(engine, alice.id, {
-      projectId: workspaceId,
-      actor: "agent",
-      content: story,
-      metadata: { kind: "story-source" }
-    });
-    await captureUserEvent(engine, alice.id, {
-      projectId: workspaceId,
-      content: `This question failed before: "${query}"`,
-      metadata: { kind: "question-echo" }
-    });
-    await captureUserEvent(engine, alice.id, {
-      projectId: workspaceId,
-      actor: "tool",
-      content: `Tool output from diagnostics repeated the prompt: ${query}`,
-      metadata: { kind: "tool-echo" }
-    });
-
-    const lexical = await engine.searchMemory({
-      requesterContext: { userId: alice.id },
-      query,
-      scope: "personal",
-      searchDomain: "project",
-      projectId: workspaceId,
-      retrievalStage: "lexical_search",
-      strictLimit: true,
-      limit: 3
-    });
-
-    expect(lexical.results[0]).toMatchObject({
-      sourceType: "memory_event",
-      sourceId: storyEvent.id,
-      retrievalStage: "lexical_search"
-    });
-    expect(lexical.results[0]?.summaryText).toContain("Her name was Mara.");
-  });
-
-  it("filters lexical node evidence to the requested project boundary", async () => {
-    const alice = await repo.createUser({
-      email: `alice-lexical-boundary-${randomUUID()}@example.com`
-    });
-    const engine = createMemoryEngine(repo);
-    const inScopeWorkspaceId = `workspace-lexical-in-${randomUUID()}`;
-    const outOfScopeWorkspaceId = `workspace-lexical-out-${randomUUID()}`;
-    const inScopeEvent = await captureUserEvent(engine, alice.id, {
-      projectId: inScopeWorkspaceId,
-      content: "Project alpha visible banana context.",
-      metadata: { kind: "in-scope-source" }
-    });
-    const outOfScopeEvent = await captureUserEvent(engine, alice.id, {
-      projectId: outOfScopeWorkspaceId,
-      content: "Project beta secret moonbase context.",
-      metadata: { kind: "out-of-scope-source" }
-    });
-    const mixedNode = await repo.createMemoryNode(
-      { userId: alice.id },
-      {
-        visibility: "personal",
-        summaryText:
-          "Mixed summary mentions visible banana and secret moonbase context.",
-        bodyText:
-          "Mixed body also mentions visible banana and secret moonbase context.",
-        captureMethod: "mcp",
-        sourceRuntime: "codex",
-        sourceHash: `lexical-boundary-${randomUUID()}`
-      }
-    );
-    await pool.query(
-      `
-        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
-        values ($1, $2, 0), ($1, $3, 1)
-      `,
-      [mixedNode.id, inScopeEvent.id, outOfScopeEvent.id]
-    );
-
-    const outOfScopeSearch = await engine.searchMemory({
-      requesterContext: { userId: alice.id },
-      query: "secret moonbase",
-      scope: "personal",
-      searchDomain: "project",
-      projectId: inScopeWorkspaceId,
-      retrievalStage: "lexical_search",
-      limit: 1
-    });
-    expect(
-      outOfScopeSearch.results.some(
-        (result) => result.sourceId === mixedNode.id
-      )
-    ).toBe(false);
-    expect(JSON.stringify(outOfScopeSearch.results)).not.toContain(
-      "secret moonbase"
-    );
-
-    const inScopeSearch = await engine.searchMemory({
-      requesterContext: { userId: alice.id },
-      query: "visible banana",
-      scope: "personal",
-      searchDomain: "project",
-      projectId: inScopeWorkspaceId,
-      retrievalStage: "lexical_search",
-      limit: 5
-    });
-    const nodeResult = inScopeSearch.results.find(
-      (result) => result.sourceId === mixedNode.id
-    );
-    expect(nodeResult?.summaryText).toContain("visible banana");
-    expect(nodeResult?.summaryText).not.toContain("secret moonbase");
   });
 
   it("can inspect fresh embedded memory events before LCM nodes exist", async () => {
@@ -15323,7 +15402,7 @@ describeDb("memory repository visibility", () => {
         scope: "personal",
         searchDomain: "project",
         projectId: workspaceId,
-        retrievalStage: "lexical_search"
+        retrievalStage: "raw_fallback_search"
       }
     );
     expect(JSON.stringify(lexical.results)).not.toContain(
@@ -15352,6 +15431,11 @@ describeDb("memory repository visibility", () => {
   });
 
   it("persists final personal memory questions as shells and hydrated detail", async () => {
+    const questionRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 62).toString("base64")
+      )
+    });
     const alice = await repo.createUser({
       email: `alice-question-${randomUUID()}@example.com`
     });
@@ -15367,13 +15451,23 @@ describeDb("memory repository visibility", () => {
         idempotencyKey: `question-session-${randomUUID()}`
       }
     );
+    const team = await repo.createTeam(
+      { userId: alice.id },
+      { name: `Memory Answer Team ${randomUUID()}` }
+    );
+    const teamWorkspace = await repo.createTeamWorkspace(
+      { userId: alice.id },
+      { teamId: team.id, name: `Memory Answer Workspace ${randomUUID()}` }
+    );
+    expect(teamWorkspace).not.toBeNull();
     const questionIdempotencyKey = `question-${randomUUID()}`;
-    const created = await repo.createFinalMemoryQuestion(
+    const created = await questionRepo.createFinalMemoryQuestion(
       { userId: alice.id },
       {
         idempotencyKey: questionIdempotencyKey,
         query: "What did we decide about memory questions?",
         origin: "mcp_memory_answer",
+        teamWorkspaceId: teamWorkspace!.id,
         searchDomain: "session",
         projectId,
         projectName: "Question Project",
@@ -15390,7 +15484,7 @@ describeDb("memory repository visibility", () => {
         response: { markdown: "Memory questions are persisted separately." }
       }
     );
-    const retried = await repo.createFinalMemoryQuestion(
+    const retried = await questionRepo.createFinalMemoryQuestion(
       { userId: alice.id },
       {
         idempotencyKey: questionIdempotencyKey,
@@ -15402,18 +15496,22 @@ describeDb("memory repository visibility", () => {
       }
     );
 
-    const shells = await repo.listMemoryQuestions(
+    const shells = await questionRepo.listMemoryQuestions(
       { userId: alice.id },
       { searchDomain: "session", sessionId: session.id }
     );
-    const detail = await repo.getMemoryQuestion(
+    const detail = await questionRepo.getMemoryQuestion(
       { userId: alice.id },
       created.id
     );
-    const hidden = await repo.getMemoryQuestion({ userId: bob.id }, created.id);
+    const hidden = await questionRepo.getMemoryQuestion(
+      { userId: bob.id },
+      created.id
+    );
 
     expect(created).toMatchObject({
       origin: "mcp_memory_answer",
+      teamWorkspaceId: teamWorkspace!.id,
       status: "answered",
       answerMarkdown: "Memory questions are persisted separately.",
       evidenceCount: 1
@@ -15449,6 +15547,7 @@ describeDb("memory repository visibility", () => {
       const bob = await repo.createUser({
         email: `bob-question-live-encrypted-${randomUUID()}@example.com`
       });
+      const hintSentinel = "GARNET_CALLER_HINT_ENCRYPTED_AT_REST";
       const created = await encryptedQuestionRepo.createFinalMemoryQuestion(
         { userId: alice.id },
         {
@@ -15477,7 +15576,8 @@ describeDb("memory repository visibility", () => {
           ],
           retrieval: {
             query: "obsidian retrieval plan",
-            stages: ["vector_search", "rerank"]
+            stages: ["vector_search", "rerank"],
+            trace: { retrievalHints: { exact: [hintSentinel] } }
           },
           localMemoryWorker: {
             provider: "codex",
@@ -15528,6 +15628,7 @@ describeDb("memory repository visibility", () => {
       });
       expect(rawQuestion.rows[0]?.raw_payload).not.toContain("obsidian");
       expect(rawQuestion.rows[0]?.raw_payload).not.toContain("Team launch doc");
+      expect(rawQuestion.rows[0]?.raw_payload).not.toContain(hintSentinel);
 
       const encryptedColumns = await pool.query<{ source_column: string }>(
         `
@@ -15572,7 +15673,8 @@ describeDb("memory repository visibility", () => {
           "The obsidian retrieval plan landed in the Team launch doc.",
         evidenceCount: 2,
         retrieval: {
-          query: "obsidian retrieval plan"
+          query: "obsidian retrieval plan",
+          trace: { retrievalHints: { exact: [hintSentinel] } }
         },
         localMemoryWorker: {
           summary: "obsidian local worker details"
@@ -15717,7 +15819,28 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("backfills Memory Question answers, evidence, citations, and retrieval as encrypted fields", async () => {
+  it("fails closed when Memory Question encryption is unavailable", async () => {
+    const alice = await repo.createUser({
+      email: `alice-question-no-provider-${randomUUID()}@example.com`
+    });
+
+    await expect(
+      repo.createFinalMemoryQuestion(
+        { userId: alice.id },
+        {
+          idempotencyKey: `unencrypted-question-${randomUUID()}`,
+          origin: "mcp_memory_answer",
+          query: "This must not be stored in plaintext",
+          searchDomain: "global",
+          status: "answered",
+          answerMarkdown: "No provider means no write.",
+          retrieval: { trace: { retrievalHints: { exact: ["SENTINEL"] } } }
+        }
+      )
+    ).rejects.toThrow("Envelope encryption provider is required");
+  });
+
+  it("keeps final Memory Question fields encrypted before backfill work runs", async () => {
     const encryptedRepo = createEncryptedPayloadRepository(pool);
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 11).toString("base64")
@@ -15731,7 +15854,7 @@ describeDb("memory repository visibility", () => {
     const bob = await repo.createUser({
       email: `bob-question-encrypted-${randomUUID()}@example.com`
     });
-    const question = await repo.createFinalMemoryQuestion(
+    const question = await encryptedQuestionRepo.createFinalMemoryQuestion(
       { userId: alice.id },
       {
         idempotencyKey: `backfill-question-${randomUUID()}`,
@@ -15795,8 +15918,8 @@ describeDb("memory repository visibility", () => {
           }
         )
       ).resolves.toMatchObject({
-        processedRows: 1,
-        encryptedRows: 1,
+        processedRows: 0,
+        encryptedRows: 0,
         failedRows: 0,
         done: true
       });
@@ -15816,7 +15939,7 @@ describeDb("memory repository visibility", () => {
       `,
       [alice.id, question.id]
     );
-    expect(rawEncryptedRows.rows[0]).toMatchObject({ count: 6 });
+    expect(rawEncryptedRows.rows[0]).toMatchObject({ count: 7 });
     expect(rawEncryptedRows.rows[0]?.ciphertext).not.toContain(
       "cobalt cache key"
     );
@@ -15862,61 +15985,6 @@ describeDb("memory repository visibility", () => {
       answerMarkdown: "The encrypted question retained source evidence.",
       evidenceCount: 1
     });
-  });
-
-  it("disables plaintext lexical search by default in managed SaaS profile", async () => {
-    const alice = await repo.createUser({
-      email: `alice-managed-lexical-${randomUUID()}@example.com`
-    });
-    try {
-      process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
-      delete process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
-
-      await expect(
-        repo.searchMemoryNodes(
-          { userId: alice.id },
-          {
-            query: "plaintext lexical should not run",
-            scope: "personal",
-            searchDomain: "global",
-            retrievalStage: "lexical_search"
-          }
-        )
-      ).rejects.toMatchObject({
-        statusCode: 400,
-        payload: {
-          error: "plaintext_lexical_search_disabled",
-          deploymentProfile: "koed_managed_cloud"
-        }
-      });
-
-      process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED = "true";
-      await expect(
-        repo.searchMemoryNodes(
-          { userId: alice.id },
-          {
-            query: "plaintext lexical allowed only by explicit opt-in",
-            scope: "personal",
-            searchDomain: "global",
-            retrievalStage: "lexical_search"
-          }
-        )
-      ).resolves.toMatchObject({
-        results: []
-      });
-    } finally {
-      if (originalKoedDeploymentProfile === undefined) {
-        delete process.env.KOED_DEPLOYMENT_PROFILE;
-      } else {
-        process.env.KOED_DEPLOYMENT_PROFILE = originalKoedDeploymentProfile;
-      }
-      if (originalPlaintextLexicalSearchEnabled === undefined) {
-        delete process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
-      } else {
-        process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED =
-          originalPlaintextLexicalSearchEnabled;
-      }
-    }
   });
 
   it("returns the original memory event for duplicate capture keys", async () => {
@@ -21231,6 +21299,11 @@ describeDb("memory repository visibility", () => {
 
   it("rejects token usage linked to sources outside caller scope", async () => {
     const workspaceId = randomUUID();
+    const questionRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 63).toString("base64")
+      )
+    });
     const alice = await repo.createUser({
       email: `alice-token-scope-${randomUUID()}@example.com`
     });
@@ -21298,7 +21371,7 @@ describeDb("memory repository visibility", () => {
       )
     ).rejects.toThrow("Conversation item not found or not visible");
 
-    const bobQuestion = await repo.createFinalMemoryQuestion(
+    const bobQuestion = await questionRepo.createFinalMemoryQuestion(
       { userId: bob.id },
       {
         idempotencyKey: `bob-question-${randomUUID()}`,
@@ -21618,10 +21691,15 @@ describeDb("memory repository visibility", () => {
   });
 
   it("stores validated token usage source references", async () => {
+    const questionRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 64).toString("base64")
+      )
+    });
     const alice = await repo.createUser({
       email: `alice-token-source-references-${randomUUID()}@example.com`
     });
-    const question = await repo.createFinalMemoryQuestion(
+    const question = await questionRepo.createFinalMemoryQuestion(
       { userId: alice.id },
       {
         idempotencyKey: `alice-question-${randomUUID()}`,
@@ -22776,7 +22854,7 @@ describeDb("memory repository visibility", () => {
           scope: "personal",
           searchDomain: "project",
           projectId: workspaceId,
-          retrievalStage: "lexical_search"
+          retrievalStage: "raw_fallback_search"
         }
       );
       const embeddable = await repo.listSourcesNeedingEmbeddings(20);
@@ -24471,14 +24549,6 @@ describeDb("memory repository visibility", () => {
     }
   }, 15_000);
 
-  it("reads projection backlog after terminal-only Memory Question migration", async () => {
-    await expect(repo.getConversationProjectionBacklog()).resolves.toEqual({
-      liveProjectionRows: 0,
-      historicalImportRows: 0,
-      historicalImportBytes: 0
-    });
-  });
-
   it("counts every physical transport chunk against historical row and byte caps", async () => {
     const alice = await repo.createUser({
       email: `alice-historical-chunk-caps-${randomUUID()}@example.com`
@@ -25891,6 +25961,37 @@ describeDb("memory repository visibility", () => {
         }
       }
     );
+    process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
+    process.env.EMBEDDING_MODEL = "qwen3-0.6b";
+    delete process.env.RERANKER_KEY;
+    const assignmentVector = Array.from({ length: 1024 }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: {
+        sourceType: "memory_event",
+        sourceId: event.id,
+        ownerUserId: owner.id,
+        visibility: "personal",
+        text: event.content,
+        sourceHash: `project-assignment-embedding-${event.id}`
+      },
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      vector: assignmentVector
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "qwen3-0.6b",
+          dimensions: 1024,
+          vectors: [assignmentVector]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
     await insertValidSharedMemoryGrant({
       ownerUserId: owner.id,
       sessionId: captured.id,
@@ -25942,7 +26043,7 @@ describeDb("memory repository visibility", () => {
       scope: "personal",
       searchDomain: "project",
       projectId: "project-b",
-      retrievalStage: "lexical_search",
+      retrievalStage: "raw_fallback_search",
       strictLimit: true,
       limit: 1
     });
@@ -25952,7 +26053,7 @@ describeDb("memory repository visibility", () => {
       scope: "personal",
       searchDomain: "project",
       projectId: "project-a",
-      retrievalStage: "lexical_search",
+      retrievalStage: "raw_fallback_search",
       strictLimit: false,
       limit: 1
     });
@@ -26495,7 +26596,8 @@ describeDb("memory repository visibility", () => {
     const structured = {
       schema_version: "lcm-semantic-summary-v1",
       title: "Structured summary",
-      summary_text: "Structured summary text. The worker returned strict JSON."
+      summary_text: "Structured summary text. The worker returned strict JSON.",
+      lexical_anchors: ["strict JSON"]
     };
 
     await repo.updateLcmNodeSummary({
@@ -26525,6 +26627,308 @@ describeDb("memory repository visibility", () => {
     expect(graphNode?.summaryStructuredSchemaVersion).toBe(
       "lcm-semantic-summary-v1"
     );
+
+    const embedding = await pool.query<{ id: string }>(
+      `
+        insert into memory_embeddings (
+          memory_node_id, owner_user_id, visibility, embedding_model,
+          embedding_dimensions, embedding_version, source_hash,
+          source_chunk_index, source_chunk_count, source_text
+        )
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, $4)
+        returning id
+      `,
+      [node.id, alice.id, randomUUID(), "Structured summary text"]
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: node.id,
+      summaryText: "Structured summary text",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 17,
+      summaryStructuredJson: {
+        ...structured,
+        lexical_anchors: ["worker returned strict JSON"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    const invalidated = await pool.query<{
+      invalidated_at: Date | null;
+      invalidation_reason: string | null;
+    }>(
+      `select invalidated_at, invalidation_reason from memory_embeddings where id = $1`,
+      [embedding.rows[0]!.id]
+    );
+    expect(invalidated.rows[0]?.invalidated_at).toBeInstanceOf(Date);
+    expect(invalidated.rows[0]?.invalidation_reason).toBe(
+      "lcm_summary_updated"
+    );
+  });
+
+  it("requeues an already-completed parent rollup when its child summary changes", async () => {
+    const alice = await repo.createUser({
+      email: `alice-parent-rollup-requeue-${randomUUID()}@example.com`
+    });
+    const child = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Pending child" }
+    );
+    const parent = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Pending parent" }
+    );
+    await pool.query(
+      `update memory_nodes
+          set kind='rollup', depth=1, source_items_json=$2::jsonb
+        where id=$1`,
+      [
+        parent.id,
+        JSON.stringify([
+          { kind: "lcm_child", nodeId: child.id, text: "Pending child" }
+        ])
+      ]
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: child.id,
+      summaryText: "Initial child summary with CHILD_ANCHOR_V1.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 6,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Initial child",
+        summary_text: "Initial child summary with CHILD_ANCHOR_V1.",
+        lexical_anchors: ["CHILD_ANCHOR_V1"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    await repo.updateLcmNodeSummary({
+      nodeId: parent.id,
+      summaryText: "Completed parent rollup.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 4,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Completed parent",
+        summary_text: "Completed parent rollup.",
+        lexical_anchors: ["CHILD_ANCHOR_V1"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    await pool.query(
+      `insert into memory_node_children (
+         parent_memory_node_id, child_memory_node_id, child_order
+       ) values ($1, $2, 0)`,
+      [parent.id, child.id]
+    );
+    const embedding = await pool.query<{ id: string }>(
+      `insert into memory_embeddings (
+         memory_node_id, owner_user_id, visibility, embedding_model,
+         embedding_dimensions, embedding_version, source_hash,
+         source_chunk_index, source_chunk_count, source_text
+       ) values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, $4)
+       returning id`,
+      [parent.id, alice.id, randomUUID(), "Completed parent rollup."]
+    );
+
+    await repo.updateLcmNodeSummary({
+      nodeId: child.id,
+      summaryText: "Revised child summary with CHILD_ANCHOR_V2.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 6,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Revised child",
+        summary_text: "Revised child summary with CHILD_ANCHOR_V2.",
+        lexical_anchors: ["CHILD_ANCHOR_V2"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+
+    const requeued = await pool.query<{
+      summary_model: string | null;
+      summary_structured_json: unknown;
+    }>(
+      `select summary_model, summary_structured_json from memory_nodes where id=$1`,
+      [parent.id]
+    );
+    const invalidatedEmbedding = await pool.query<{
+      invalidated_at: Date | null;
+      invalidation_reason: string | null;
+    }>(
+      `select invalidated_at, invalidation_reason from memory_embeddings where id=$1`,
+      [embedding.rows[0]!.id]
+    );
+    const pending = await repo.listLcmNodesNeedingSummaries(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+
+    expect(requeued.rows[0]).toEqual({
+      summary_model: null,
+      summary_structured_json: null
+    });
+    expect(invalidatedEmbedding.rows[0]?.invalidated_at).toBeInstanceOf(Date);
+    expect(invalidatedEmbedding.rows[0]?.invalidation_reason).toBe(
+      "lcm_child_summary_updated"
+    );
+    expect(pending.map((candidate) => candidate.id)).toContain(parent.id);
+  });
+
+  it("transitively requeues every completed ancestor and invalidates their embeddings", async () => {
+    const alice = await repo.createUser({
+      email: `alice-transitive-rollup-requeue-${randomUUID()}@example.com`
+    });
+    const child = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Pending child" }
+    );
+    const parent = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Pending parent" }
+    );
+    const ancestor = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Pending ancestor" }
+    );
+    await pool.query(
+      `update memory_nodes
+          set kind='rollup',
+              depth=case when id=$1 then 1 else 2 end,
+              source_items_json=case
+                when id=$1 then $3::jsonb
+                else $4::jsonb
+              end
+        where id in ($1, $2)`,
+      [
+        parent.id,
+        ancestor.id,
+        JSON.stringify([
+          { kind: "lcm_child", nodeId: child.id, text: "Pending child" }
+        ]),
+        JSON.stringify([
+          { kind: "lcm_child", nodeId: parent.id, text: "Pending parent" }
+        ])
+      ]
+    );
+    for (const [nodeId, summaryText, anchor] of [
+      [child.id, "Completed child TRANSITIVE_CHILD_V1.", "TRANSITIVE_CHILD_V1"],
+      [
+        parent.id,
+        "Completed parent TRANSITIVE_PARENT_V1.",
+        "TRANSITIVE_PARENT_V1"
+      ],
+      [
+        ancestor.id,
+        "Completed ancestor TRANSITIVE_ANCESTOR_V1.",
+        "TRANSITIVE_ANCESTOR_V1"
+      ]
+    ] as const) {
+      await repo.updateLcmNodeSummary({
+        nodeId,
+        summaryText,
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-codex-summary-json-v4",
+        summaryTokenEstimate: 5,
+        summaryStructuredJson: {
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Completed rollup chain",
+          summary_text: summaryText,
+          lexical_anchors: [anchor]
+        },
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+      });
+    }
+    await pool.query(
+      `insert into memory_node_children (
+         parent_memory_node_id, child_memory_node_id, child_order
+       ) values ($1, $2, 0), ($3, $1, 0)`,
+      [parent.id, child.id, ancestor.id]
+    );
+    const embeddings = await pool.query<{ id: string; memory_node_id: string }>(
+      `insert into memory_embeddings (
+         memory_node_id, owner_user_id, visibility, embedding_model,
+         embedding_dimensions, embedding_version, source_hash,
+         source_chunk_index, source_chunk_count, source_text
+       ) values
+         ($1, $3, 'personal', 'test-model', 384, 'test-version', $4, 0, 1, 'parent'),
+         ($2, $3, 'personal', 'test-model', 384, 'test-version', $5, 0, 1, 'ancestor')
+       returning id, memory_node_id`,
+      [parent.id, ancestor.id, alice.id, randomUUID(), randomUUID()]
+    );
+
+    await repo.updateLcmNodeSummary({
+      nodeId: child.id,
+      summaryText: "Revised child TRANSITIVE_CHILD_V2.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 5,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Revised child",
+        summary_text: "Revised child TRANSITIVE_CHILD_V2.",
+        lexical_anchors: ["TRANSITIVE_CHILD_V2"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+
+    const requeued = await pool.query<{
+      id: string;
+      summary_model: string | null;
+      summary_structured_json: unknown;
+    }>(
+      `select id, summary_model, summary_structured_json
+       from memory_nodes where id in ($1, $2) order by depth`,
+      [parent.id, ancestor.id]
+    );
+    const invalidated = await pool.query<{
+      memory_node_id: string;
+      invalidated_at: Date | null;
+      invalidation_reason: string | null;
+    }>(
+      `select memory_node_id, invalidated_at, invalidation_reason
+       from memory_embeddings where id = any($1::uuid[])
+       order by memory_node_id`,
+      [embeddings.rows.map((embedding) => embedding.id)]
+    );
+
+    expect(requeued.rows).toEqual([
+      {
+        id: parent.id,
+        summary_model: null,
+        summary_structured_json: null
+      },
+      {
+        id: ancestor.id,
+        summary_model: null,
+        summary_structured_json: null
+      }
+    ]);
+    expect(invalidated.rows).toHaveLength(2);
+    expect(
+      invalidated.rows.map(({ memory_node_id, invalidation_reason }) => ({
+        memory_node_id,
+        invalidation_reason
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          memory_node_id: ancestor.id,
+          invalidation_reason: "lcm_child_summary_updated"
+        },
+        {
+          memory_node_id: parent.id,
+          invalidation_reason: "lcm_child_summary_updated"
+        }
+      ])
+    );
+    expect(
+      invalidated.rows.every(
+        ({ invalidated_at }) => invalidated_at instanceof Date
+      )
+    ).toBe(true);
   });
 
   it("hydrates rollup children as compact complete summary payloads", async () => {
@@ -26549,33 +26953,18 @@ describeDb("memory repository visibility", () => {
         schema_version: "lcm-semantic-summary-v1",
         title: "Device credential policy",
         summary_text:
-          "Use scoped device credentials; determine the revocation TTL."
+          "Use scoped device credentials; determine the revocation TTL.",
+        lexical_anchors: ["revocation TTL"]
       },
       summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
     });
-    const legacyChild = await repo.createMemoryNode(
+    const pendingChild = await repo.createMemoryNode(
       { userId: alice.id },
       {
         visibility: "personal",
-        summaryText: "Legacy summary text."
+        summaryText: "Pending child placeholder."
       }
     );
-    await repo.updateLcmNodeSummary({
-      nodeId: legacyChild.id,
-      summaryText: "Legacy summary text.",
-      summaryModel: "codex:test",
-      summaryPromptVersion: "lcm-codex-summary-json-v2",
-      summaryTokenEstimate: 9,
-      summaryStructuredJson: {
-        schema_version: "lcm-structured-summary-v1",
-        title: "Legacy child",
-        summary_text: "Legacy summary text.",
-        decisions: ["Preserve this legacy decision."],
-        unresolved_questions: ["Keep this legacy question open."],
-        unrecognized_field: ["Do not forward arbitrary payload fields."]
-      },
-      summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
-    });
     const rollup = await repo.createMemoryNode(
       { userId: alice.id },
       {
@@ -26601,8 +26990,8 @@ describeDb("memory repository visibility", () => {
           },
           {
             kind: "lcm_child",
-            nodeId: legacyChild.id,
-            text: "stale legacy placeholder"
+            nodeId: pendingChild.id,
+            text: "stale pending placeholder"
           }
         ])
       ]
@@ -26616,7 +27005,7 @@ describeDb("memory repository visibility", () => {
         )
         values ($1, $2, 0), ($1, $3, 1)
       `,
-      [rollup.id, child.id, legacyChild.id]
+      [rollup.id, child.id, pendingChild.id]
     );
 
     const candidate = await repo.getLcmNodeForSummarization(rollup.id);
@@ -26628,14 +27017,629 @@ describeDb("memory repository visibility", () => {
       schema_version: "lcm-semantic-summary-v1",
       title: "Device credential policy",
       summary_text:
-        "Use scoped device credentials; determine the revocation TTL."
+        "Use scoped device credentials; determine the revocation TTL.",
+      lexical_anchors: ["revocation TTL"]
     });
     expect(
       JSON.parse(candidate?.sourceItems[1]?.text ?? "{}") as unknown
     ).toEqual({
       schema_version: "lcm-semantic-summary-v1",
       title: "Child memory summary",
-      summary_text: "Legacy summary text."
+      summary_text: "Pending child placeholder.",
+      lexical_anchors: []
+    });
+  });
+
+  it("preserves truthful Personal candidate ancestry, generation, and source time in citations", async () => {
+    const owner = await repo.createUser({
+      email: `personal-candidate-provenance-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `personal-candidate-provenance-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const capturedAt = "2026-08-10T10:00:00.000Z";
+    const occurredAt = "2026-08-09T09:30:00.000Z";
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        projectId: "personal-candidate-provenance",
+        sessionId: session.id,
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        content: "The provenance sentinel is kingfisher.",
+        visibility: "personal",
+        capturedAt,
+        sourceEventTime: occurredAt
+      }
+    );
+    const leaf = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending provenance summary",
+        sourceHash: `personal-candidate-leaf-${randomUUID()}`
+      }
+    );
+    const parent = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending provenance parent",
+        sourceHash: `personal-candidate-parent-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `insert into memory_node_sources (memory_node_id,memory_event_id,source_order)
+       values ($1,$2,0)`,
+      [leaf.id, event.id]
+    );
+    await pool.query(
+      `insert into memory_node_children
+         (parent_memory_node_id,child_memory_node_id,child_order)
+       values ($1,$2,0)`,
+      [parent.id, leaf.id]
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: leaf.id,
+      summaryText: "The provenance sentinel is kingfisher.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 7,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Provenance sentinel",
+        summary_text: "The provenance sentinel is kingfisher.",
+        lexical_anchors: ["kingfisher"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    const source = await repo.getEmbeddableSource("memory_node", leaf.id);
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: source!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      vector: Array.from({ length: 1024 }, (_, index) => (index === 0 ? 1 : 0))
+    });
+    const revision = await pool.query<{ revision: number }>(
+      `select summary_embedding_revision as revision from memory_nodes where id=$1`,
+      [leaf.id]
+    );
+    const fetchMock = mockEmbeddingQuery();
+    try {
+      const recall = await repo.searchMemoryNodes(
+        { userId: owner.id },
+        {
+          scope: "personal",
+          query: "kingfisher",
+          searchDomain: "global",
+          retrievalStage: "leaf_search",
+          limit: 5
+        }
+      );
+      const candidate = recall.results.find(
+        (result) => result.sourceId === leaf.id
+      );
+      expect(candidate).toMatchObject({
+        sourceType: "memory_node",
+        sourceId: leaf.id,
+        parentNodeIds: [parent.id],
+        sourceGeneration: revision.rows[0]!.revision,
+        occurredAt,
+        visibility: "personal",
+        citation: {
+          sourceType: "memory_node",
+          sourceId: leaf.id,
+          parentNodeIds: [parent.id],
+          sourceGeneration: revision.rows[0]!.revision,
+          occurredAt,
+          visibility: "personal"
+        }
+      });
+      const expanded = await repo.expandMemoryNode(leaf.id, {
+        userId: owner.id
+      });
+      expect(expanded.sourceItems).toEqual([
+        expect.objectContaining({
+          sourceId: event.id,
+          occurredAt,
+          capturedAt,
+          visibility: "personal"
+        })
+      ]);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("rediscovers completed incompatible LCM summaries and excludes them from embedding until regenerated", async () => {
+    const alice = await repo.createUser({
+      email: `alice-incompatible-lcm-regeneration-${randomUUID()}@example.com`
+    });
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Legacy completed summary." }
+    );
+    const pendingSource = await repo.getEmbeddableSource(
+      "memory_node",
+      node.id
+    );
+    expect(
+      (await repo.listSourcesNeedingEmbeddings(100)).map(
+        (source) => source.sourceId
+      )
+    ).toContain(node.id);
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: pendingSource!,
+      model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+      dimensions: 1024,
+      version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+      vector: Array.from({ length: 1024 }, (_, index) => (index === 0 ? 1 : 0))
+    });
+    await pool.query(
+      `update memory_nodes
+          set summary_model='codex:test',
+              summary_prompt_version='lcm-codex-summary-json-v3',
+              summary_token_estimate=4,
+              summary_structured_json=$2::jsonb,
+              summary_structured_schema_version='lcm-semantic-summary-v1'
+        where id=$1`,
+      [
+        node.id,
+        JSON.stringify({
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Legacy completed summary",
+          summary_text: "Legacy completed summary."
+        })
+      ]
+    );
+
+    const needingRegeneration = await repo.listLcmNodesNeedingSummaries(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    expect(needingRegeneration.map((candidate) => candidate.id)).toContain(
+      node.id
+    );
+    await expect(
+      repo.getEmbeddableSource("memory_node", node.id)
+    ).resolves.toBe(null);
+    const fetchMock = mockEmbeddingQuery();
+    try {
+      const search = await repo.searchMemoryNodes(
+        { userId: alice.id },
+        {
+          query: "legacy completed summary",
+          scope: "personal",
+          searchDomain: "global",
+          retrievalStage: "leaf_search",
+          limit: 5
+        }
+      );
+      expect(search.results.map((result) => result.sourceId)).not.toContain(
+        node.id
+      );
+      const rawFallbackSearch = await repo.searchMemoryNodes(
+        { userId: alice.id },
+        {
+          query: "legacy completed summary",
+          scope: "personal",
+          searchDomain: "global",
+          retrievalStage: "raw_fallback_search",
+          limit: 5
+        }
+      );
+      expect(
+        rawFallbackSearch.results.map((result) => result.sourceId)
+      ).not.toContain(node.id);
+    } finally {
+      fetchMock.mockRestore();
+    }
+    await pool.query(
+      `update memory_embeddings
+          set invalidated_at=now(), invalidation_reason='test_incompatible_summary'
+        where memory_node_id=$1 and invalidated_at is null`,
+      [node.id]
+    );
+    expect(
+      (await repo.listSourcesNeedingEmbeddings(100)).map(
+        (source) => source.sourceId
+      )
+    ).not.toContain(node.id);
+
+    await repo.updateLcmNodeSummary({
+      nodeId: node.id,
+      summaryText: "Regenerated anchor-aware summary.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 5,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Regenerated summary",
+        summary_text: "Regenerated anchor-aware summary.",
+        lexical_anchors: ["anchor-aware"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+
+    expect(
+      (await repo.listSourcesNeedingEmbeddings(100)).map(
+        (source) => source.sourceId
+      )
+    ).toContain(node.id);
+
+    await expect(
+      repo.getEmbeddableSource("memory_node", node.id)
+    ).resolves.toMatchObject({
+      text: "Regenerated anchor-aware summary.\n\nLexical anchors:\n- anchor-aware"
+    });
+  });
+
+  it("rejects a stale in-flight Personal LCM embedding after summary revision", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lcm-embedding-race-${randomUUID()}@example.com`
+    });
+    const fixedTimestamp = new Date("2026-08-11T04:00:00.000Z");
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending race summary.",
+        sourceHash: `lcm-race-provenance-${randomUUID()}`
+      }
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: node.id,
+      summaryText: "First completed race summary.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 5,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "First race summary",
+        summary_text: "First completed race summary.",
+        lexical_anchors: ["First completed"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    await pool.query(`update memory_nodes set updated_at=$2 where id=$1`, [
+      node.id,
+      fixedTimestamp
+    ]);
+    const firstRevision = await pool.query<{
+      source_hash: string | null;
+      summary_embedding_revision: string;
+      updated_at: Date;
+    }>(
+      `select source_hash, summary_embedding_revision, updated_at
+       from memory_nodes where id=$1`,
+      [node.id]
+    );
+    const staleSource = await repo.getEmbeddableSource("memory_node", node.id);
+    expect(staleSource).not.toBeNull();
+    expect(staleSource?.text).toBe(
+      "First completed race summary.\n\nLexical anchors:\n- First completed"
+    );
+
+    await repo.updateLcmNodeSummary({
+      nodeId: node.id,
+      summaryText: "Second completed race summary.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 5,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Second race summary",
+        summary_text: "Second completed race summary.",
+        lexical_anchors: ["Second completed"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    await pool.query(`update memory_nodes set updated_at=$2 where id=$1`, [
+      node.id,
+      fixedTimestamp
+    ]);
+    const secondRevision = await pool.query<{
+      source_hash: string | null;
+      summary_embedding_revision: string;
+      updated_at: Date;
+    }>(
+      `select source_hash, summary_embedding_revision, updated_at
+       from memory_nodes where id=$1`,
+      [node.id]
+    );
+    const currentSource = await repo.getEmbeddableSource(
+      "memory_node",
+      node.id
+    );
+    expect(firstRevision.rows[0]?.updated_at).toEqual(fixedTimestamp);
+    expect(secondRevision.rows[0]?.updated_at).toEqual(fixedTimestamp);
+    expect(secondRevision.rows[0]?.summary_embedding_revision).not.toBe(
+      firstRevision.rows[0]?.summary_embedding_revision
+    );
+    expect(secondRevision.rows[0]?.source_hash).toBe(
+      firstRevision.rows[0]?.source_hash
+    );
+    expect(currentSource?.text).toBe(
+      "Second completed race summary.\n\nLexical anchors:\n- Second completed"
+    );
+    expect(currentSource?.sourceHash).not.toBe(staleSource?.sourceHash);
+
+    await expect(
+      repo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
+        source: staleSource!,
+        model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        dimensions: 1024,
+        version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        vector: Array.from({ length: 1024 }, (_, index) =>
+          index === 0 ? 1 : 0
+        )
+      })
+    ).rejects.toThrow(
+      "Memory Node embedding source changed after embedding work began"
+    );
+
+    const staleRows = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+       from memory_embeddings
+       where memory_node_id=$1 and source_hash=$2 and invalidated_at is null`,
+      [node.id, staleSource!.sourceHash]
+    );
+    expect(staleRows.rows[0]?.count).toBe("0");
+    expect(
+      (await repo.listSourcesNeedingEmbeddings(100)).find(
+        (source) => source.sourceId === node.id
+      )?.sourceHash
+    ).toBe(currentSource?.sourceHash);
+  });
+
+  it("keeps the LCM embedding revision stable across pin and visibility metadata updates", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lcm-embedding-metadata-${randomUUID()}@example.com`
+    });
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Metadata updates must preserve this embedding source."
+      }
+    );
+    const source = await repo.getEmbeddableSource("memory_node", node.id);
+    expect(source).not.toBeNull();
+    const initialRevision = await pool.query<{
+      summary_embedding_revision: string;
+    }>(`select summary_embedding_revision from memory_nodes where id=$1`, [
+      node.id
+    ]);
+
+    await repo.updateMemoryPresentation({ userId: alice.id }, node.id, {
+      pinned: true
+    });
+    await repo.updateLcmGraphNode({ userId: alice.id }, node.id, {
+      visibility: "personal"
+    });
+
+    const currentRevision = await pool.query<{
+      summary_embedding_revision: string;
+    }>(`select summary_embedding_revision from memory_nodes where id=$1`, [
+      node.id
+    ]);
+    const currentSource = await repo.getEmbeddableSource(
+      "memory_node",
+      node.id
+    );
+    expect(currentRevision.rows[0]?.summary_embedding_revision).toBe(
+      initialRevision.rows[0]?.summary_embedding_revision
+    );
+    expect(currentSource?.sourceHash).toBe(source?.sourceHash);
+
+    await expect(
+      repo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
+        source: source!,
+        model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        dimensions: 1024,
+        version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        vector: Array.from({ length: 1024 }, (_, index) =>
+          index === 0 ? 1 : 0
+        )
+      })
+    ).resolves.toMatchObject({ inserted: true });
+  });
+
+  it("rejects completed pre-anchor v1 child summaries instead of silently normalizing them", async () => {
+    const alice = await repo.createUser({
+      email: `alice-pre-anchor-child-${randomUUID()}@example.com`
+    });
+    const child = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Legacy completed summary." }
+    );
+    await pool.query(
+      `update memory_nodes
+          set summary_model='codex:test',
+              summary_prompt_version='lcm-codex-summary-json-v3',
+              summary_token_estimate=4,
+              summary_structured_json=$2::jsonb,
+              summary_structured_schema_version='lcm-semantic-summary-v1'
+        where id=$1`,
+      [
+        child.id,
+        JSON.stringify({
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Legacy completed child",
+          summary_text: "Legacy completed summary."
+        })
+      ]
+    );
+    const rollup = await repo.createMemoryNode(
+      { userId: alice.id },
+      { visibility: "personal", summaryText: "Pending rollup placeholder" }
+    );
+    await pool.query(
+      `update memory_nodes
+          set kind='rollup', depth=1, source_items_json=$2::jsonb
+        where id=$1`,
+      [
+        rollup.id,
+        JSON.stringify([
+          { kind: "lcm_child", nodeId: child.id, text: "stale placeholder" }
+        ])
+      ]
+    );
+    await pool.query(
+      `insert into memory_node_children (
+         parent_memory_node_id, child_memory_node_id, child_order
+       ) values ($1, $2, 0)`,
+      [rollup.id, child.id]
+    );
+
+    await expect(repo.getLcmNodeForSummarization(rollup.id)).rejects.toThrow(
+      "Completed LCM summary does not match the current structured summary schema"
+    );
+
+    const blockedPending = await repo.listLcmNodesNeedingSummaries(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    expect(blockedPending.map((candidate) => candidate.id)).toContain(child.id);
+    expect(blockedPending.map((candidate) => candidate.id)).not.toContain(
+      rollup.id
+    );
+
+    await repo.updateLcmNodeSummary({
+      nodeId: child.id,
+      summaryText: "Regenerated child summary.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 4,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Regenerated child",
+        summary_text: "Regenerated child summary.",
+        lexical_anchors: ["Regenerated child"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+
+    const readyPending = await repo.listLcmNodesNeedingSummaries(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    expect(readyPending.map((candidate) => candidate.id)).not.toContain(
+      child.id
+    );
+    expect(readyPending.map((candidate) => candidate.id)).toContain(rollup.id);
+  });
+
+  it("keeps rollups blocked while an encrypted completed child is structurally incompatible", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 61).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const encryptedPayloads = createEncryptedPayloadRepository(pool);
+      const alice = await encryptedRepo.createUser({
+        email: `alice-encrypted-incompatible-child-${randomUUID()}@example.com`
+      });
+      const child = await encryptedRepo.createMemoryNode(
+        { userId: alice.id },
+        { visibility: "personal", summaryText: "Pending encrypted child." }
+      );
+      await encryptedRepo.updateLcmNodeSummary({
+        nodeId: child.id,
+        summaryText: "Initially compatible encrypted child.",
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-codex-summary-json-v4",
+        summaryTokenEstimate: 5,
+        summaryStructuredJson: {
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Encrypted child",
+          summary_text: "Initially compatible encrypted child.",
+          lexical_anchors: ["encrypted child"]
+        },
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+      });
+      await encryptedPayloads.upsertEncryptedField(
+        { userId: alice.id },
+        provider,
+        {
+          sourceTable: "memory_nodes",
+          sourceId: child.id,
+          sourceColumn: "summary_structured_json",
+          plaintext: {
+            schema_version: "lcm-semantic-summary-v1",
+            title: "Legacy encrypted child",
+            summary_text: "Initially compatible encrypted child."
+          },
+          visibility: "personal",
+          rowFamily: "memory_node",
+          scope: { tenantId: alice.id, objectClass: "memory_node" },
+          aad: { nodeId: child.id }
+        }
+      );
+
+      const rollup = await encryptedRepo.createMemoryNode(
+        { userId: alice.id },
+        { visibility: "personal", summaryText: "Pending encrypted rollup." }
+      );
+      await pool.query(
+        `update memory_nodes
+            set kind='rollup', depth=1, source_items_json=$2::jsonb
+          where id=$1`,
+        [
+          rollup.id,
+          JSON.stringify([
+            { kind: "lcm_child", nodeId: child.id, text: "stale placeholder" }
+          ])
+        ]
+      );
+      await pool.query(
+        `insert into memory_node_children (
+           parent_memory_node_id, child_memory_node_id, child_order
+         ) values ($1, $2, 0)`,
+        [rollup.id, child.id]
+      );
+
+      const blocked = await encryptedRepo.listLcmNodesNeedingSummaries(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      expect(blocked.map((candidate) => candidate.id)).toContain(child.id);
+      expect(blocked.map((candidate) => candidate.id)).not.toContain(rollup.id);
+
+      await encryptedRepo.updateLcmNodeSummary({
+        nodeId: child.id,
+        summaryText: "Regenerated compatible encrypted child.",
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-codex-summary-json-v4",
+        summaryTokenEstimate: 5,
+        summaryStructuredJson: {
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Regenerated encrypted child",
+          summary_text: "Regenerated compatible encrypted child.",
+          lexical_anchors: ["compatible encrypted child"]
+        },
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+      });
+
+      const ready = await encryptedRepo.listLcmNodesNeedingSummaries(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      expect(ready.map((candidate) => candidate.id)).not.toContain(child.id);
+      expect(ready.map((candidate) => candidate.id)).toContain(rollup.id);
     });
   });
 
@@ -27664,7 +28668,7 @@ describeDb("memory repository visibility", () => {
         scope: "personal",
         searchDomain: "project",
         projectId: workspaceId,
-        retrievalStage: "lexical_search",
+        retrievalStage: "raw_fallback_search",
         limit: 10
       });
 
@@ -28302,6 +29306,19 @@ describeDb("memory repository visibility", () => {
     expect(curatedSearch[0]?.assertionText).toContain(sentinel);
     expect(curatedSearch[0]?.sources[0]?.conversationItemId).toBe(item!.id);
 
+    const curatedSource = await repo.getEmbeddableSource(
+      "curated_memory",
+      processed.assertionId!
+    );
+    expect(curatedSource?.text).toContain(sentinel);
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: curatedSource!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      vector: Array.from({ length: 1024 }, (_, index) => (index === 0 ? 1 : 0))
+    });
     mockEmbeddingQuery();
     const recall = await repo.searchMemoryNodes(
       { userId: owner.id },
@@ -29245,6 +30262,21 @@ describeDb("memory repository visibility", () => {
           }
         )
       ).resolves.toMatchObject([{ id: processed.assertionId }]);
+      const encryptedCuratedSource = await encryptedRepo.getEmbeddableSource(
+        "curated_memory",
+        processed.assertionId!
+      );
+      expect(encryptedCuratedSource?.text).toContain(sentinel);
+      await encryptedRepo.upsertSourceEmbedding({
+        ...testEmbeddingCompatibility,
+        source: encryptedCuratedSource!,
+        model: "qwen3-0.6b",
+        dimensions: 1024,
+        version: "qwen3-0.6b",
+        vector: Array.from({ length: 1024 }, (_, index) =>
+          index === 0 ? 1 : 0
+        )
+      });
       mockEmbeddingQuery();
       const recall = await encryptedRepo.searchMemoryNodes(
         { userId: owner.id },
@@ -29291,7 +30323,7 @@ describeDb("memory repository visibility", () => {
     }
   });
 
-  it("ranks a strong semantic leaf above a weak Curated Memory substring match", async () => {
+  it("ranks a strong semantic leaf above a weaker canonical Curated Memory vector", async () => {
     process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
     process.env.EMBEDDING_MODEL = "qwen3-0.6b";
     delete process.env.RERANKER_KEY;
@@ -29340,16 +30372,14 @@ describeDb("memory repository visibility", () => {
     const vector = Array.from({ length: dimensions }, (_, index) =>
       index === 0 ? 1 : 0
     );
+    const nodeEmbeddingSource = await repo.getEmbeddableSource(
+      "memory_node",
+      node.id
+    );
+    expect(nodeEmbeddingSource).not.toBeNull();
     await repo.upsertSourceEmbedding({
       ...testEmbeddingCompatibility,
-      source: {
-        sourceType: "memory_node",
-        sourceId: node.id,
-        ownerUserId: owner.id,
-        visibility: "personal",
-        text: node.summaryText,
-        sourceHash: `curated-ranking-${node.id}`
-      },
+      source: nodeEmbeddingSource!,
       model: "qwen3-0.6b",
       dimensions,
       version: "qwen3-0.6b",
@@ -29385,7 +30415,7 @@ describeDb("memory repository visibility", () => {
         evidenceConversationItemIds: [source!.id]
       }
     );
-    await repo.processCuratedMemoryProposal(
+    const processed = await repo.processCuratedMemoryProposal(
       { userId: owner.id },
       {
         proposalId: proposal.id,
@@ -29402,6 +30432,21 @@ describeDb("memory repository visibility", () => {
         }
       }
     );
+    const curatedSource = await repo.getEmbeddableSource(
+      "curated_memory",
+      processed.assertionId!
+    );
+    expect(curatedSource).not.toBeNull();
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: curatedSource!,
+      model: "qwen3-0.6b",
+      dimensions,
+      version: "qwen3-0.6b",
+      vector: Array.from({ length: dimensions }, (_, index) =>
+        index === 1 ? 1 : 0
+      )
+    });
     vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       Promise.resolve(
         new Response(
@@ -29443,15 +30488,10 @@ describeDb("memory repository visibility", () => {
       }
     );
     expect(
-      nonDurableRecall.results.some(
-        (result) => result.sourceType === "curated_memory"
-      )
-    ).toBe(false);
-    expect(
       nonDurableRecall.metadata.stages?.find(
         (stage) => stage.name === "curated_memory_search"
       )?.ran
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("suppresses Curated Memory when its final conversation evidence becomes memory-excluded", async () => {
@@ -29880,6 +30920,7 @@ describeDb("memory repository visibility", () => {
         idempotencyKey: `pds-projection-session-${randomUUID()}`
       }
     );
+    const externalTurnId = `pds-projection-turn-${randomUUID()}`;
     await repo.createConversationItems(
       { userId: owner.id },
       {
@@ -29889,6 +30930,8 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
             sourceTransport: "pds_relay",
+            externalTurnId,
+            externalItemId: `pds-projection-agent-item-${randomUUID()}`,
             sourceRecordType: "agent_message",
             sourceEventType: "agent_message",
             sourceSequence: 0,
@@ -29908,6 +30951,8 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
             sourceTransport: "pds_relay",
+            externalTurnId,
+            externalItemId: `pds-projection-terminal-item-${randomUUID()}`,
             sourceRecordType: "pds_session_closed",
             sourceEventType: "pds_session_closed",
             sourceSequence: 1,
@@ -30276,7 +31321,8 @@ describeDb("memory repository visibility", () => {
       structuredSummary: {
         schema_version: "lcm-semantic-summary-v1",
         title: "Portable artifact import",
-        summary_text: "Portable artifacts were imported once."
+        summary_text: "Portable artifacts were imported once.",
+        lexical_anchors: ["Portable artifacts"]
       },
       correctedRevision: "0",
       sourceSpanStart: sourceTime,
@@ -30559,9 +31605,11 @@ describeDb("memory repository visibility", () => {
         userId: owner.id
       });
       expect(exported.curatedMemory.proposals).toHaveLength(501);
-      expect(exported.curatedMemory.proposals.at(-1)?.proposedClaim).toBe(
-        "Protected export proposal 501"
-      );
+      expect(
+        exported.curatedMemory.proposals.map(
+          (proposal) => proposal.proposedClaim
+        )
+      ).toContain("Protected export proposal 501");
     } finally {
       if (previousProfile === undefined) {
         delete process.env.KOED_DEPLOYMENT_PROFILE;

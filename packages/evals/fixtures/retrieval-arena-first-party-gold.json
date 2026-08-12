@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "koed-retrieval-arena-first-party-gold-v1",
+  "datasetVersion": "koed-first-party-v6",
+  "datasetHash": "2e2871daf5822ef9a0751768e51bbb03dc27541db2b7c4f02b4758d4a78e01e8",
+  "corpusIdentity": "efb6d51c1f9632fbd4b225ba0ca5f973f3fac6d5ba8ac1eb34c5b3fc81620e5a",
+  "splits": {
+    "development": {
+      "caseIds": [
+        "dev-exact-anchor",
+        "dev-semantic-paraphrase",
+        "dev-multi-evidence"
+      ],
+      "corpusItemIds": [
+        "d1",
+        "d2",
+        "d3",
+        "d4",
+        "d5",
+        "d6",
+        "d7",
+        "d8",
+        "d9",
+        "d10"
+      ],
+      "identity": "74aa130c43165258b3a5fd0eba2844cd6815a47ee0687f8e66bb0f7666049611"
+    },
+    "validation": {
+      "caseIds": [
+        "validation-temporal-conflict",
+        "validation-historical-state",
+        "validation-no-answer",
+        "validation-not-found",
+        "validation-boundary"
+      ],
+      "corpusItemIds": [
+        "v1",
+        "v2",
+        "v3",
+        "v10",
+        "v11",
+        "v12",
+        "v4",
+        "v5",
+        "v6",
+        "v13",
+        "v14",
+        "v15",
+        "v7",
+        "v8",
+        "v9"
+      ],
+      "identity": "cc6ea41c895ae699f8cb065c3911e7ab0b077bda51622507bf355928d0de2ea8"
+    },
+    "held_out": {
+      "caseIds": [
+        "heldout-lcm-routing",
+        "heldout-fresh-pending",
+        "heldout-budget-insufficient",
+        "heldout-team-curated-hierarchy"
+      ],
+      "corpusItemIds": [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "h7",
+        "h8",
+        "h9",
+        "h10",
+        "h11",
+        "h12",
+        "h13",
+        "h14",
+        "h15"
+      ],
+      "identity": "c9a55d139b290ef03454a23dba54302537a9c0abc3d10f6a67326afe434a92c7"
+    }
+  }
+}

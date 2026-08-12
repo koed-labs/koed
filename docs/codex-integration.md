@@ -230,7 +230,10 @@ defaults to project search, uses session search only for a known captured
 conversation, and uses global search only for broad cross-project or
 personal-history recall. It returns a compact answer by default so normal Codex
 sessions are not filled with large evidence bundles. Use its explicit
-evidence/detail option only when debugging retrieval.
+evidence/detail option only when debugging retrieval. Optional bounded
+retrieval hints can seed exact checks, semantic reformulations, entities, and
+temporal intent. The Local AI Runtime treats them as untrusted suggestions and
+cannot use them to broaden authorization or the selected Search Domain.
 
 `memory_intake_propose` is also exposed by default for Curated Memory intake. It
 only queues async review of durable source-linked facts; it does not directly

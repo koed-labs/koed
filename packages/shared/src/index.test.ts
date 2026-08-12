@@ -146,12 +146,18 @@ describe("resolveSupportedEmbeddingModelConfig", () => {
     expect(resolveSupportedEmbeddingModelConfig("qwen3-0.6b")).toEqual({
       key: "qwen3-0.6b",
       dimensions: 1024,
+      artifact:
+        "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+      artifactRevision: "main",
       defaultArtifactSha256:
         "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
       tokenizer: "qwen3-embedding-0.6b-gguf",
+      tokenizerRevision:
+        "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
       inputTransform: "qwen3-retrieval-document-v1",
       pooling: "last",
-      normalization: "l2"
+      normalization: "l2",
+      acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
     });
   });
 

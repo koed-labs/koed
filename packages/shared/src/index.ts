@@ -344,6 +344,7 @@ export {
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
+  createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
   createRecipientPrivateKeyEnvelopeEncryptionProvider,
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   createUnsupportedEnvelopeEncryptionProvider,
@@ -1150,12 +1151,45 @@ export const metadataWithStorageSanitization = (
 export interface SupportedEmbeddingModelConfig {
   key: string;
   dimensions: number;
+  artifact: string;
+  artifactRevision: string;
   defaultArtifactSha256: string;
+  tokenizer: string;
+  tokenizerRevision: string;
+  inputTransform: string;
+  pooling: string;
+  normalization: string;
+  acceleration: string;
+}
+
+/** Versioned trusted Team evidence-to-embedding composition contract. */
+export const TEAM_SEMANTIC_COMPOSITION_VERSION =
+  "team-semantic-v1:text-v1:mean-pool:l2-normalized" as const;
+
+export {
+  MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
+  MEMORY_RETRIEVAL_HINT_MAX_COUNT,
+  MEMORY_RETRIEVAL_HINT_MAX_LENGTH,
+  MEMORY_RETRIEVAL_SEMANTIC_HINT_MAX_COUNT,
+  memoryRetrievalExactHintsSchema,
+  memoryRetrievalHintSchema
+} from "./memory-retrieval-hints.js";
+
+export const teamSemanticEmbeddingGeneration = (input: {
+  model: string;
   tokenizer: string;
   inputTransform: string;
   pooling: string;
   normalization: string;
-}
+}): string =>
+  [
+    TEAM_SEMANTIC_COMPOSITION_VERSION,
+    `model=${input.model}`,
+    `tokenizer=${input.tokenizer}`,
+    `input=${input.inputTransform}`,
+    `service-pooling=${input.pooling}`,
+    `service-normalization=${input.normalization}`
+  ].join("|");
 
 export interface SupportedRerankerModelConfig {
   key: string;
@@ -1163,6 +1197,22 @@ export interface SupportedRerankerModelConfig {
 }
 
 export const DEFAULT_EMBEDDING_MODEL_KEY = "qwen3-0.6b";
+export const DEFAULT_EMBEDDING_QUERY_INSTRUCTION =
+  "Given a question about captured AI-client memory, retrieve relevant memory events, conversation items, and summaries that answer the question.";
+export const EMBEDDING_RETRIEVAL_QUERY_TRANSFORM = "qwen3-retrieval-query-v1";
+export const EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM =
+  "qwen3-retrieval-document-v1";
+
+export const formatEmbeddingRetrievalQuery = (
+  query: string,
+  options: { instruction?: string; enabled?: boolean } = {}
+): string =>
+  options.enabled === false
+    ? query
+    : `Instruct: ${options.instruction?.trim() || DEFAULT_EMBEDDING_QUERY_INSTRUCTION}\nQuery: ${query}`;
+
+export const formatEmbeddingRetrievalDocument = (document: string): string =>
+  document;
 export const DEFAULT_RERANKER_MODEL_KEY = "qwen3-reranker-0.6b";
 
 export const SUPPORTED_EMBEDDING_MODELS: Record<
@@ -1172,12 +1222,18 @@ export const SUPPORTED_EMBEDDING_MODELS: Record<
   "qwen3-0.6b": {
     key: "qwen3-0.6b",
     dimensions: 1024,
+    artifact:
+      "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    artifactRevision: "main",
     defaultArtifactSha256:
       "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
     tokenizer: "qwen3-embedding-0.6b-gguf",
+    tokenizerRevision:
+      "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
     inputTransform: "qwen3-retrieval-document-v1",
     pooling: "last",
-    normalization: "l2"
+    normalization: "l2",
+    acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
   }
 };
 

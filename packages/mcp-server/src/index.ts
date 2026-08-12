@@ -2,6 +2,7 @@ import {
   answerWithMemoryWorker,
   resolveMemoryAnswerWorkerConfig,
   type MemoryAnswerRetrievalClient,
+  type MemoryAnswerEvaluationController,
   type MemoryAnswerWorkerConfig,
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
@@ -26,6 +27,7 @@ export {
 } from "./codex-transcript-adapter.js";
 export type {
   CodexAppServerJsonTaskConfig,
+  CodexAppServerProcessMetrics,
   CodexAppServerRunResult
 } from "./codex-app-server-runner.js";
 export {
@@ -77,6 +79,7 @@ export type RetrievalScope = "personal";
 
 export { answerWithMemoryWorker, resolveMemoryAnswerWorkerConfig };
 export type {
+  MemoryAnswerEvaluationController,
   MemoryAnswerRetrievalClient,
   MemoryAnswerWorkerConfig,
   MemoryAnswerWorkerResponse
@@ -672,6 +675,7 @@ export class MemoryApiClient {
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
+      authorizationBoundary?: string;
     } = {}
   ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams();
@@ -695,6 +699,9 @@ export class MemoryApiClient {
     }
     if (input.sourceBefore) {
       params.set("source_before", input.sourceBefore);
+    }
+    if (input.authorizationBoundary) {
+      params.set("authorization_boundary", input.authorizationBoundary);
     }
     const query = params.toString();
     return this.request(

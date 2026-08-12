@@ -46,9 +46,12 @@ class FakeLlamaServer implements LlamaEmbeddingClient {
     };
   }
 
-  async rerank(query: string, documents: string[]): Promise<number[]> {
+  async rerank(query: string, documents: string[]) {
     this.rerankInputs.push({ query, documents });
-    return documents.map((document) => document.length);
+    return {
+      scores: documents.map((document) => document.length),
+      measuredTokens: 37
+    };
   }
 }
 
@@ -188,15 +191,29 @@ describe("EmbeddingRuntime", () => {
         rerankerKey: "test-reranker",
         rerankerRepo: "repo",
         rerankerFile: "reranker.gguf",
-        rerankerModelPath: "/models/reranker.gguf"
+        rerankerModelPath: "/models/reranker.gguf",
+        rerankerArtifact: "repo:reranker.gguf",
+        rerankerArtifactSha256: "a".repeat(64)
       }),
       testLogger()
     );
     runtime.rerankerServer = fakeServer;
+    (
+      runtime as unknown as { loadedRerankerArtifactSha256: string }
+    ).loadedRerankerArtifactSha256 = "a".repeat(64);
 
     const response = await runtime.rerankTexts("query", ["short", "longer"]);
 
-    expect(response).toEqual({ model: "test-reranker", scores: [5, 6] });
+    expect(response).toMatchObject({
+      model: "test-reranker",
+      artifact: "repo:reranker.gguf",
+      artifactRevision: `sha256:${"a".repeat(64)}`,
+      artifactHash: "a".repeat(64),
+      inputTokens: 37,
+      costUsd: 0,
+      scores: [5, 6]
+    });
+    expect(response.latencyMs).toBeGreaterThanOrEqual(0);
     expect(fakeServer.rerankInputs).toEqual([
       { query: "query", documents: ["short", "longer"] }
     ]);

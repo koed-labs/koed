@@ -181,11 +181,19 @@ export const expandMemoryNodeQuerySchema = z
     session_id: z.string().uuid().optional(),
     project_id: z.string().min(1).optional(),
     team_workspace_id: z.string().uuid().optional(),
+    authorization_boundary: z.string().min(1).max(32768).optional(),
     recent_days: z.coerce.number().int().positive().max(36500).optional(),
     source_after: z.coerce.date().optional(),
     source_before: z.coerce.date().optional()
   })
   .superRefine((input, context) => {
+    if (input.authorization_boundary && !input.team_workspace_id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["authorization_boundary"],
+        message: "authorization_boundary requires team_workspace_id"
+      });
+    }
     if (input.search_domain === "session" && !input.session_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

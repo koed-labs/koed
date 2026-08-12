@@ -68,7 +68,11 @@ export type CollaborationSharedMemoryControlCommand = Extract<
   { command: SharedMemoryControlCommandName }
 >;
 
-type Representation = "memory_events" | "lcm_leaves" | "lcm_rollups";
+type Representation =
+  | "memory_events"
+  | "lcm_leaves"
+  | "lcm_rollups"
+  | "curated_assertions";
 
 interface DesktopLocalCredentialAuthorization {
   version: 1;
@@ -92,12 +96,13 @@ const timestampSchema = z.string().datetime({ offset: true });
 const representationSchema = z.enum([
   "memory_events",
   "lcm_leaves",
-  "lcm_rollups"
+  "lcm_rollups",
+  "curated_assertions"
 ]);
 const representationsSchema = z
   .array(representationSchema)
   .min(1)
-  .max(3)
+  .max(4)
   .refine((values) => new Set(values).size === values.length);
 
 const dispatchContextSchema = z
@@ -136,7 +141,8 @@ const redactedSourceItemSchema = z
       "tool_call",
       "tool_result",
       "lcm_leaf",
-      "lcm_rollup"
+      "lcm_rollup",
+      "curated_assertion"
     ]),
     schemaVersion: z.literal(1),
     sourceId: uuidSchema,
@@ -1081,12 +1087,53 @@ const mapSourceItems = (
       });
       continue;
     }
+    if (representation === "curated_assertions") {
+      const tags = item.content.tags;
+      if (
+        item.itemType !== "curated_assertion" ||
+        typeof item.content.assertionText !== "string" ||
+        item.content.assertionText.length === 0 ||
+        (item.content.topicTitle !== null &&
+          typeof item.content.topicTitle !== "string") ||
+        !Array.isArray(tags) ||
+        !tags.every((tag): tag is string => typeof tag === "string") ||
+        !Number.isSafeInteger(item.content.sourceCount) ||
+        Number(item.content.sourceCount) < 1
+      ) {
+        return null;
+      }
+      mapped.push({
+        id: item.sourceId,
+        representation,
+        sequence,
+        occurredAt: item.occurredAt,
+        assertionText: item.content.assertionText,
+        topicTitle:
+          typeof item.content.topicTitle === "string"
+            ? item.content.topicTitle
+            : null,
+        tags,
+        sourceCount: Number(item.content.sourceCount),
+        sourceRevision: `ssr1.${sourceRevisionHash}`
+      });
+      continue;
+    }
     const expectedType =
       representation === "lcm_leaves" ? "lcm_leaf" : "lcm_rollup";
+    const lexicalAnchors: unknown = item.content.lexicalAnchors;
     if (
       item.itemType !== expectedType ||
       typeof item.content.summaryText !== "string" ||
       item.content.summaryText.length === 0 ||
+      !Array.isArray(lexicalAnchors) ||
+      lexicalAnchors.length > 12 ||
+      !lexicalAnchors.every(
+        (anchor): anchor is string =>
+          typeof anchor === "string" &&
+          anchor.length > 0 &&
+          anchor.length <= 120
+      ) ||
+      new Set(lexicalAnchors).size !== lexicalAnchors.length ||
       !Array.isArray(item.content.sourceIds) ||
       item.content.sourceIds.length === 0
     ) {
@@ -1098,6 +1145,7 @@ const mapSourceItems = (
       sequence,
       occurredAt: item.occurredAt,
       summaryText: item.content.summaryText,
+      lexicalAnchors,
       sourceCount: item.content.sourceIds.length,
       sourceRevision: `ssr1.${sourceRevisionHash}`
     });
@@ -1590,7 +1638,10 @@ const dispatchPreview = async (
     })
   );
   if (!target.success) throw new ControlFailure("permission_denied");
-  if (command.input.representation !== "memory_events") {
+  if (
+    command.input.representation === "lcm_leaves" ||
+    command.input.representation === "lcm_rollups"
+  ) {
     const preparationState = await options.prepareLocalLcmRepresentation?.({
       localOwnerUserId: authority.localOwnerUserId,
       localSessionId: target.data.localSessionId,

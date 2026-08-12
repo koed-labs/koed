@@ -263,7 +263,8 @@ export const verifyCuratedMemorySourcesWithClient = async (
 
 export const createCuratedMemoryPolicyMethods = ({
   pool,
-  envelopeEncryptionProvider
+  envelopeEncryptionProvider,
+  onCuratedMemoryChanged
 }: CuratedMemoryRepositoryContext): Pick<
   CuratedMemoryRepository,
   "suppressCuratedMemoryAssertion" | "reconcileCuratedMemoryLifecycle"
@@ -333,6 +334,9 @@ export const createCuratedMemoryPolicyMethods = ({
           )
         : null;
       await client.query("commit");
+      if (id) {
+        await onCuratedMemoryChanged?.(actor);
+      }
       return hydrated;
     } catch (error) {
       await client.query("rollback");
@@ -353,6 +357,9 @@ export const createCuratedMemoryPolicyMethods = ({
           envelopeEncryptionProvider
         );
       await client.query("commit");
+      if (suppressed.length > 0) {
+        await onCuratedMemoryChanged?.(actor);
+      }
       return { assertionsSuppressed: suppressed.length };
     } catch (error) {
       await client.query("rollback");

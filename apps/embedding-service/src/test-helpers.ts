@@ -11,6 +11,15 @@ export const testConfig = (
   modelFile: "Qwen3-Embedding-0.6B-Q8_0.gguf",
   modelPath: "/models/embedding.gguf",
   modelName: "test-model",
+  modelArtifact:
+    "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+  modelArtifactRevision: "main",
+  modelArtifactSha256:
+    "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+  modelTokenizer: "qwen3-embedding-0.6b-gguf",
+  modelTokenizerRevision:
+    "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+  modelAcceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0",
   expectedDimensions: 3,
   batchLimit: 16,
   llamaNCtx: 100,
@@ -29,6 +38,8 @@ export const testConfig = (
   rerankerRepo: null,
   rerankerFile: null,
   rerankerModelPath: null,
+  rerankerArtifact: null,
+  rerankerArtifactSha256: null,
   rerankerServerPort: 18081,
   rerankerBatchLimit: 100,
   rerankerContextPerSlot: 8192,

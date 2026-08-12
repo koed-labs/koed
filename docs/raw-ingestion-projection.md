@@ -488,11 +488,21 @@ tokenizer drift or a defensive projection edge case, it remains a single leaf
 source item and the LCM summary worker's larger prompt budget/token-bounded
 fallback handles it. LCM prompts include lightweight anchors such as source id,
 turn id, actor, and creation time, but not bulky metadata payloads.
+These deterministic outline labels are prompt provenance, not LCM lexical
+anchors. The LLM alone selects the lexical anchors stored with a completed LCM
+Summary; Koed only validates exact grounding and bounds before adding them as a
+separate section of that summary's embedding input.
 
 ## Fresh Reset
 
 This project is still a PoC/MVP. If the raw ingestion schema changes before
-release, a fresh local reset is acceptable:
+release, a fresh local reset is acceptable. This also applies to completed LCM
+Summaries created with an incompatible pre-release shape: the release contract
+remains `lcm-semantic-summary-v1`, and incompatible local summaries must be
+reset/replayed or explicitly regenerated rather than read through compatibility
+code. Prompt/model/schema generation metadata and embedding composition/revision
+metadata remain separate, so changing a prompt version alone does not imply an
+automatic historical regeneration.
 
 ```bash
 docker compose --env-file .env -f examples/docker-compose/docker-compose.yml down -v

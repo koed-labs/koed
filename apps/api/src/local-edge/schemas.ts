@@ -245,23 +245,9 @@ const localEdgeTeamMemoryRecallSchema = z
     }
   });
 
-export const localEdgeTeamMemorySearchSchema =
-  localEdgeTeamMemoryRecallSchema.superRefine((_value, context) => {
-    context.addIssue({
-      code: "custom",
-      message:
-        "Generic Team Memory search is unavailable; use dedicated Shared Memory controls"
-    });
-  });
+export const localEdgeTeamMemorySearchSchema = localEdgeTeamMemoryRecallSchema;
 
-export const localEdgeTeamMemoryAnswerSchema =
-  localEdgeTeamMemoryRecallSchema.superRefine((_value, context) => {
-    context.addIssue({
-      code: "custom",
-      message:
-        "Generic Team Memory answer is unavailable; use dedicated Shared Memory controls"
-    });
-  });
+export const localEdgeTeamMemoryAnswerSchema = localEdgeTeamMemoryRecallSchema;
 
 export const localEdgeTeamMemoryExpandSchema = localEdgeTeamMemoryBaseSchema
   .extend({
@@ -277,11 +263,6 @@ export const localEdgeTeamMemoryExpandSchema = localEdgeTeamMemoryBaseSchema
         message: "team_workspace_id is required for Team Memory expansion"
       });
     }
-    context.addIssue({
-      code: "custom",
-      message:
-        "Generic Team Memory expansion is unavailable; use dedicated Shared Memory controls"
-    });
   });
 
 export const createLocalEdgeCollaborationSubscriptionSchema =

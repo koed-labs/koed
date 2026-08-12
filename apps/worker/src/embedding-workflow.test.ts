@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EmbeddableSourceRecord, MemorySourceRepository } from "@koed/db";
-import { createEmbeddingWorkflow } from "./embedding-workflow.js";
+import {
+  aggregateEmbeddingChunks,
+  createEmbeddingWorkflow
+} from "./embedding-workflow.js";
 import type { WorkerEnvConfig } from "./env-config.js";
 
 const workerEnv: WorkerEnvConfig = {
@@ -48,6 +51,132 @@ const workerEnv: WorkerEnvConfig = {
   nodeEnv: "test",
   production: false
 };
+
+describe("Team semantic chunk aggregation", () => {
+  it("uses a deterministic L2-normalized arithmetic mean", () => {
+    const forward = aggregateEmbeddingChunks([
+      { vector: [1, 0, 0] },
+      { vector: [0, 1, 0] }
+    ]);
+    const repeated = aggregateEmbeddingChunks([
+      { vector: [1, 0, 0] },
+      { vector: [0, 1, 0] }
+    ]);
+    expect(forward).toEqual(repeated);
+    expect(forward[0]).toBeCloseTo(Math.SQRT1_2, 15);
+    expect(forward[1]).toBeCloseTo(Math.SQRT1_2, 15);
+    expect(forward[2]).toBe(0);
+  });
+});
+
+describe("Team semantic embedding reconciliation", () => {
+  it("accounts for a failed batch per item and preserves successful isolated work", async () => {
+    const repository = {
+      listPendingSharedMemorySemanticItems: vi
+        .fn()
+        .mockImplementation(
+          async (
+            input: NonNullable<
+              Parameters<
+                MemorySourceRepository["listPendingSharedMemorySemanticItems"]
+              >[0]
+            >
+          ) => {
+            const items = [
+              {
+                semanticItemId: "00000000-0000-4000-8000-000000000001",
+                representationId: "00000000-0000-4000-8000-000000000011",
+                shareGrantId: "00000000-0000-4000-8000-000000000021",
+                sourceItemIndex: 0,
+                text: "first",
+                contentHash: "a".repeat(64)
+              },
+              {
+                semanticItemId: "00000000-0000-4000-8000-000000000002",
+                representationId: "00000000-0000-4000-8000-000000000011",
+                shareGrantId: "00000000-0000-4000-8000-000000000021",
+                sourceItemIndex: 1,
+                text: "second",
+                contentHash: "b".repeat(64)
+              }
+            ];
+            await input.duringAuthorizedLease?.(items);
+            return items;
+          }
+        ),
+      storeSharedMemorySemanticEmbedding: vi.fn().mockResolvedValue(true),
+      markSharedMemorySemanticEmbeddingFailed: vi
+        .fn()
+        .mockResolvedValue(undefined)
+    } as unknown as MemorySourceRepository;
+    let call = 0;
+    const fetchFn = vi.fn().mockImplementation((_url, init: RequestInit) => {
+      call += 1;
+      if (call === 1 || call === 3)
+        return Promise.resolve(
+          jsonResponse(
+            {
+              detail:
+                "upstream-model-detail-sentinel second-team-memory-sentinel"
+            },
+            503
+          )
+        );
+      const text = (JSON.parse(String(init.body)) as { texts: string[] })
+        .texts[0]!;
+      return Promise.resolve(
+        jsonResponse({
+          model: "test-embedding-model",
+          dimensions: 3,
+          vectors: [[1, 0, 0]],
+          chunks: [
+            {
+              inputIndex: 0,
+              chunkIndex: 0,
+              chunkCount: 1,
+              text,
+              vector: [1, 0, 0]
+            }
+          ]
+        })
+      );
+    });
+    const result = await createEmbeddingWorkflow({
+      env: workerEnv,
+      fetchFn,
+      repository: () => repository
+    }).reconcileSharedMemorySemanticItems();
+
+    expect(result).toEqual({ processed: 2, embedded: 1, failed: 1 });
+    expect(repository.storeSharedMemorySemanticEmbedding).toHaveBeenCalledTimes(
+      1
+    );
+    expect(
+      repository.markSharedMemorySemanticEmbeddingFailed
+    ).toHaveBeenCalledWith({
+      semanticItemId: "00000000-0000-4000-8000-000000000002",
+      errorClass: "EmbeddingTransportError"
+    });
+    expect(
+      JSON.stringify(
+        vi.mocked(repository.markSharedMemorySemanticEmbeddingFailed).mock.calls
+      )
+    ).not.toContain("upstream-model-detail-sentinel");
+    expect(
+      JSON.stringify(
+        vi.mocked(repository.markSharedMemorySemanticEmbeddingFailed).mock.calls
+      )
+    ).not.toContain("second-team-memory-sentinel");
+    expect(
+      repository.listPendingSharedMemorySemanticItems
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "test-embedding-model",
+        version: expect.stringContaining("team-semantic-v1")
+      })
+    );
+  });
+});
 
 const source: EmbeddableSourceRecord = {
   sourceType: "memory_event",

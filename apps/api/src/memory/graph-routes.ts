@@ -2,6 +2,10 @@ import type { FastifyInstance } from "fastify";
 import { createEncryptedJsonPackage } from "@koed/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
+import {
+  canonicalEvidenceSourceIdentity,
+  teamEvidenceSourceContract
+} from "./evidence-source-contract.js";
 import { rejectUnavailableTeamSharedMemorySurface } from "./team-shared-memory-surface.js";
 import {
   clusterIdParamsSchema,
@@ -22,6 +26,10 @@ import {
   nodeIdParamsSchema,
   updateMemorySchema
 } from "./graph-schemas.js";
+import {
+  memoryAnswerAuthorizationBoundarySecret,
+  verifyMemoryAnswerAuthorizationBoundary
+} from "./memory-answer-authorization-boundary.js";
 
 const hostedExportProfiles = new Set([
   "private_vps",
@@ -500,10 +508,100 @@ export const registerGraphRoutes = (
             "team_workspace_read"
           )
         : await authenticateApiToken(request);
-      rejectUnavailableTeamSharedMemorySurface(
-        query.team_workspace_id,
-        "expansion"
-      );
+      if (query.team_workspace_id) {
+        const authorizationBoundary = query.authorization_boundary
+          ? verifyMemoryAnswerAuthorizationBoundary({
+              token: query.authorization_boundary,
+              secret: memoryAnswerAuthorizationBoundarySecret(
+                context.config.apiTokenPepper
+              ),
+              subjectUserId: user.id,
+              teamWorkspaceId: query.team_workspace_id
+            })
+          : undefined;
+        const expansion = await repo.expandAuthorizedSharedMemorySemanticItem(
+          { userId: user.id },
+          {
+            teamWorkspaceId: query.team_workspace_id,
+            candidateId: params.nodeId,
+            searchDomain: query.search_domain,
+            sessionId: query.session_id,
+            projectId: query.project_id,
+            recentDays: query.recent_days,
+            sourceAfter: query.source_after?.toISOString(),
+            sourceBefore: query.source_before?.toISOString(),
+            authorizationBoundary
+          }
+        );
+        return {
+          expanded: expansion
+            ? {
+                nodeId: expansion.parent.candidateId,
+                visibility: "team",
+                freshness: expansion.parent.freshness,
+                sourceTime: expansion.parent.occurredAt,
+                sourceRevision: expansion.parent.sourceRevision,
+                visibilityProvenance: {
+                  shareGrantId: expansion.parent.shareGrantId,
+                  representationId: expansion.parent.representationId,
+                  representation: expansion.parent.representation,
+                  provenanceHash: expansion.parent.provenanceHash
+                },
+                generation: {
+                  representationPolicyRevision:
+                    expansion.parent.representationPolicyRevision,
+                  contentPolicyVersion: expansion.parent.contentPolicyVersion,
+                  classifierVersion: expansion.parent.classifierVersion,
+                  embeddingModel: expansion.parent.embeddingModel,
+                  embeddingDimensions: expansion.parent.embeddingDimensions,
+                  embeddingVersion: expansion.parent.embeddingVersion
+                },
+                sourceItems: expansion.items.map((item, position) => {
+                  const sourceType =
+                    item.itemType === "lcm_leaf" ||
+                    item.itemType === "lcm_rollup"
+                      ? "memory_node"
+                      : "memory_event";
+                  return {
+                    kind:
+                      sourceType === "memory_node"
+                        ? "lcm_child"
+                        : "memory_event",
+                    sourceTable: "team_memory_representations",
+                    sourceId: item.pseudonymousSourceId,
+                    canonicalSourceIdentity: canonicalEvidenceSourceIdentity(
+                      sourceType,
+                      item.pseudonymousSourceId,
+                      item.sourceChunkIndex
+                    ),
+                    visibility: "team",
+                    createdAt: item.occurredAt,
+                    text: item.text,
+                    position,
+                    payload: {
+                      representation: expansion.parent.representation,
+                      sourceRevision: expansion.parent.sourceRevision,
+                      freshness: expansion.parent.freshness,
+                      provenanceHash: expansion.parent.provenanceHash,
+                      representationPolicyRevision:
+                        expansion.parent.representationPolicyRevision,
+                      contentPolicyVersion:
+                        expansion.parent.contentPolicyVersion,
+                      classifierVersion: expansion.parent.classifierVersion,
+                      embeddingVersion: expansion.parent.embeddingVersion,
+                      sourceContract: teamEvidenceSourceContract(
+                        sourceType === "memory_node"
+                          ? "lcm_leaves"
+                          : "memory_events"
+                      )
+                    }
+                  };
+                }),
+                sources: []
+              }
+            : null
+        };
+      }
       const expanded = await repo.expandMemoryNode(
         params.nodeId,
         {

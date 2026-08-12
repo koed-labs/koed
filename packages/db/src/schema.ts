@@ -6,6 +6,7 @@ import {
   check,
   doublePrecision,
   foreignKey,
+  halfvec,
   index,
   integer,
   jsonb,
@@ -227,7 +228,7 @@ export const inviteLifecycle = pgEnum("invite_lifecycle", [
 ]);
 export const sharedMemoryRepresentation = pgEnum(
   "shared_memory_representation",
-  ["memory_events", "lcm_leaves", "lcm_rollups"]
+  ["memory_events", "lcm_leaves", "lcm_rollups", "curated_assertions"]
 );
 export const sharedMemoryConsentMode = pgEnum("shared_memory_consent_mode", [
   "snapshot",
@@ -1714,6 +1715,9 @@ export const memoryNodes = pgTable(
     captureMethod: captureMethod("capture_method").notNull(),
     idempotencyKey: text("idempotency_key"),
     sourceHash: text("source_hash"),
+    summaryEmbeddingRevision: uuid("summary_embedding_revision")
+      .notNull()
+      .defaultRandom(),
     summaryModel: text("summary_model"),
     summaryPromptVersion: text("summary_prompt_version"),
     lcmAlgorithmVersion: text("lcm_algorithm_version"),
@@ -2130,6 +2134,10 @@ export const memoryEmbeddings = pgTable(
     messageId: uuid("message_id").references(() => messages.id, {
       onDelete: "cascade"
     }),
+    curatedMemoryAssertionId: uuid("curated_memory_assertion_id").references(
+      () => curatedMemoryAssertions.id,
+      { onDelete: "cascade" }
+    ),
     ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull(),
     embeddingModel: text("embedding_model").notNull(),
@@ -2203,6 +2211,18 @@ export const memoryEmbeddings = pgTable(
       .where(
         sql`${table.invalidatedAt} is null and ${table.messageId} is not null`
       ),
+    uniqueIndex("memory_embeddings_unique_active_curated_chunk")
+      .on(
+        table.curatedMemoryAssertionId,
+        table.embeddingModel,
+        table.embeddingDimensions,
+        table.embeddingVersion,
+        table.sourceHash,
+        table.sourceChunkIndex
+      )
+      .where(
+        sql`${table.invalidatedAt} is null and ${table.curatedMemoryAssertionId} is not null`
+      ),
     index("memory_embeddings_personal_visible_idx")
       .on(table.ownerUserId, table.embeddingDimensions, table.createdAt.desc())
       .where(
@@ -2214,7 +2234,7 @@ export const memoryEmbeddings = pgTable(
     ),
     check(
       "memory_embeddings_one_source_check",
-      sql`num_nonnulls(${table.memoryNodeId}, ${table.memoryEventId}, ${table.messageId}) = 1`
+      sql`num_nonnulls(${table.memoryNodeId}, ${table.memoryEventId}, ${table.messageId}, ${table.curatedMemoryAssertionId}) = 1`
     ),
     check(
       "memory_embeddings_source_chunk_index_check",
@@ -4867,12 +4887,13 @@ export const sourceOwnerRepresentationPolicies = pgTable(
     ),
     check(
       "source_owner_representation_policies_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
         and array_position(${table.allowedRepresentations}, null) is null
         and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
     ),
     check(
       "source_owner_representation_policies_hash_check",
@@ -4930,12 +4951,13 @@ export const teamRepresentationPolicies = pgTable(
     ),
     check(
       "team_representation_policies_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
         and array_position(${table.allowedRepresentations}, null) is null
         and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
     ),
     check(
       "team_representation_policies_hash_check",
@@ -5000,12 +5022,13 @@ export const workspaceRepresentationPolicies = pgTable(
     ),
     check(
       "workspace_representation_policies_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
         and array_position(${table.allowedRepresentations}, null) is null
         and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
     ),
     check(
       "workspace_representation_policies_hash_check",
@@ -5409,13 +5432,14 @@ export const sourceOwnerRepresentationConsents = pgTable(
     ),
     check(
       "source_owner_consents_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 3
+      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
         and array_position(${table.allowedRepresentations}, null) is null
-        and ${table.selectedRepresentation} = any(${table.allowedRepresentations})
+        and ${table.selectedRepresentation}::text = any(${table.allowedRepresentations}::text[])
         and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}) then 1 else 0 end)`
+          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
+          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
     ),
     check(
       "source_owner_consents_mode_check",
@@ -5815,6 +5839,7 @@ export const teamMemoryRepresentations = pgTable(
     }),
     availableAt: timestamp("available_at", { withTimezone: true }),
     staleAt: timestamp("stale_at", { withTimezone: true }),
+    curatedExpiresAt: timestamp("curated_expires_at", { withTimezone: true }),
     invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
     invalidationReasonCode: text("invalidation_reason_code"),
     tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
@@ -6045,6 +6070,173 @@ export const teamMemoryRepresentationChunks = pgTable(
         and length(${table.ciphertextHash}) = 64
         and length(${table.nonce}) > 0
         and length(${table.tag}) > 0`
+    )
+  ]
+);
+
+// Grant-scoped semantic routing metadata. This table deliberately contains no
+// source plaintext or canonical Personal source identity. The encrypted
+// representation remains the only human-readable source of truth.
+export const teamMemorySemanticItems = pgTable(
+  "team_memory_semantic_items",
+  {
+    id: id(),
+    representationId: uuid("representation_id").notNull(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    pseudonymousSourceId: uuid("pseudonymous_source_id").notNull(),
+    sourceItemIndex: integer("source_item_index").notNull(),
+    encryptedChunkIndex: integer("encrypted_chunk_index").notNull(),
+    encryptedChunkItemIndex: integer("encrypted_chunk_item_index").notNull(),
+    itemType: text("item_type").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    representationPolicyRevision: integer(
+      "representation_policy_revision"
+    ).notNull(),
+    contentPolicyVersion: integer("content_policy_version").notNull(),
+    classifierVersion: integer("classifier_version").notNull(),
+    contentHash: text("content_hash").notNull(),
+    embeddingState: text("embedding_state").notNull().default("pending"),
+    embeddingModel: text("embedding_model"),
+    embeddingDimensions: integer("embedding_dimensions"),
+    embeddingVersion: text("embedding_version"),
+    embeddingInputHash: text("embedding_input_hash"),
+    embeddedAt: timestamp("embedded_at", { withTimezone: true }),
+    lastErrorClass: text("last_error_class"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.representationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.teamId,
+        teamMemoryRepresentations.teamWorkspaceId,
+        teamMemoryRepresentations.logicalMemoryId
+      ],
+      name: "team_memory_semantic_items_representation_scope_fk"
+    }).onDelete("cascade"),
+    unique("team_memory_semantic_items_position_unique").on(
+      table.representationId,
+      table.sourceItemIndex
+    ),
+    index("team_memory_semantic_items_pending_idx").on(
+      table.embeddingState,
+      table.updatedAt,
+      table.id
+    ),
+    index("team_memory_semantic_items_workspace_idx").on(
+      table.teamWorkspaceId,
+      table.representationId,
+      table.sourceItemIndex
+    ),
+    check(
+      "team_memory_semantic_items_position_check",
+      sql`${table.sourceItemIndex} >= 0
+        and ${table.encryptedChunkIndex} >= 0
+        and ${table.encryptedChunkItemIndex} >= 0
+        and ${table.sourceRevision} >= 0`
+    ),
+    check(
+      "team_memory_semantic_items_policy_check",
+      sql`${table.representationPolicyRevision} > 0
+        and ${table.contentPolicyVersion} > 0
+        and ${table.classifierVersion} > 0`
+    ),
+    check(
+      "team_memory_semantic_items_hash_check",
+      sql`length(${table.contentHash}) = 64
+        and (${table.embeddingInputHash} is null or length(${table.embeddingInputHash}) = 64)`
+    ),
+    check(
+      "team_memory_semantic_items_embedding_check",
+      sql`${table.embeddingState} in ('pending','processing','embedded','failed')
+        and (${table.embeddingDimensions} is null or ${table.embeddingDimensions} in (384,1024,1536,3072))
+        and (
+          (${table.embeddingState} = 'embedded'
+            and ${table.embeddingModel} is not null
+            and ${table.embeddingDimensions} is not null
+            and ${table.embeddingVersion} is not null
+            and ${table.embeddingInputHash} is not null
+            and ${table.embeddedAt} is not null)
+          or (${table.embeddingState} <> 'embedded' and ${table.embeddedAt} is null)
+        )`
+    )
+  ]
+);
+
+export const teamMemorySemanticVectors384 = pgTable(
+  "team_memory_semantic_vectors_384",
+  {
+    semanticItemId: uuid("semantic_item_id")
+      .primaryKey()
+      .references(() => teamMemorySemanticItems.id, { onDelete: "cascade" }),
+    embedding: vector("embedding", { dimensions: 384 }).notNull()
+  },
+  (table) => [
+    index("team_memory_semantic_vectors_384_hnsw_idx").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops")
+    )
+  ]
+);
+
+export const teamMemorySemanticVectors1024 = pgTable(
+  "team_memory_semantic_vectors_1024",
+  {
+    semanticItemId: uuid("semantic_item_id")
+      .primaryKey()
+      .references(() => teamMemorySemanticItems.id, { onDelete: "cascade" }),
+    embedding: vector("embedding", { dimensions: 1024 }).notNull()
+  },
+  (table) => [
+    index("team_memory_semantic_vectors_1024_hnsw_idx").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops")
+    )
+  ]
+);
+
+export const teamMemorySemanticVectors1536 = pgTable(
+  "team_memory_semantic_vectors_1536",
+  {
+    semanticItemId: uuid("semantic_item_id")
+      .primaryKey()
+      .references(() => teamMemorySemanticItems.id, { onDelete: "cascade" }),
+    embedding: vector("embedding", { dimensions: 1536 }).notNull()
+  },
+  (table) => [
+    index("team_memory_semantic_vectors_1536_hnsw_idx").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops")
+    )
+  ]
+);
+
+export const teamMemorySemanticVectors3072 = pgTable(
+  "team_memory_semantic_vectors_3072",
+  {
+    semanticItemId: uuid("semantic_item_id")
+      .primaryKey()
+      .references(() => teamMemorySemanticItems.id, { onDelete: "cascade" }),
+    embedding: halfvec("embedding", { dimensions: 3072 }).notNull()
+  },
+  (table) => [
+    index("team_memory_semantic_vectors_3072_hnsw_idx").using(
+      "hnsw",
+      table.embedding.op("halfvec_cosine_ops")
     )
   ]
 );
@@ -8548,6 +8740,10 @@ export const memoryQuestions = pgTable(
     visibility: visibilityScope("visibility").notNull().default("personal"),
     origin: text("origin").notNull().default("mcp_memory_answer"),
     retrievalScope: text("retrieval_scope").notNull().default("personal"),
+    teamWorkspaceId: uuid("team_workspace_id").references(
+      () => teamWorkspaces.id,
+      { onDelete: "set null" }
+    ),
     searchDomain: memorySearchDomain("search_domain").notNull(),
     projectId: text("project_id"),
     projectName: text("project_name"),
@@ -8576,6 +8772,9 @@ export const memoryQuestions = pgTable(
     index("memory_questions_personal_created_idx")
       .on(table.ownerUserId, table.createdAt.desc(), table.id.desc())
       .where(sql`${table.visibility} = 'personal'`),
+    index("memory_questions_team_workspace_idx")
+      .on(table.ownerUserId, table.teamWorkspaceId, table.createdAt.desc())
+      .where(sql`${table.teamWorkspaceId} is not null`),
     index("memory_questions_personal_scope_idx")
       .on(
         table.ownerUserId,

@@ -33,6 +33,12 @@ class RouteRuntime extends EmbeddingRuntime {
   };
   rerankResult: RerankResponse = {
     model: "qwen3-reranker-0.6b",
+    artifact: "repo:reranker.gguf",
+    artifactRevision: `sha256:${"a".repeat(64)}`,
+    artifactHash: "a".repeat(64),
+    latencyMs: 12,
+    inputTokens: 29,
+    costUsd: 0,
     scores: [0.2, 0.9]
   };
 
@@ -42,6 +48,17 @@ class RouteRuntime extends EmbeddingRuntime {
 
   override isRerankerLoaded(): boolean {
     return this.healthRerankerLoaded;
+  }
+
+  override rerankerProvenance() {
+    return this.healthRerankerLoaded && this.config.rerankerKey
+      ? {
+          model: this.config.rerankerKey,
+          artifact: this.config.rerankerArtifact ?? "repo:reranker.gguf",
+          artifactRevision: `sha256:${this.config.rerankerArtifactSha256 ?? "a".repeat(64)}`,
+          artifactHash: this.config.rerankerArtifactSha256 ?? "a".repeat(64)
+        }
+      : null;
   }
 
   override healthQueueSnapshot() {
@@ -130,7 +147,9 @@ describe("Embedding Service routes", () => {
       rerankerKey: "qwen3-reranker-0.6b",
       rerankerRepo: "repo",
       rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf"
+      rerankerModelPath: "/models/reranker.gguf",
+      rerankerArtifact: "repo:reranker.gguf",
+      rerankerArtifactSha256: "a".repeat(64)
     });
     const runtime = new RouteRuntime(config, logger());
     runtime.healthRerankerLoaded = false;
@@ -164,7 +183,9 @@ describe("Embedding Service routes", () => {
       rerankerKey: "qwen3-reranker-0.6b",
       rerankerRepo: "repo",
       rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf"
+      rerankerModelPath: "/models/reranker.gguf",
+      rerankerArtifact: "repo:reranker.gguf",
+      rerankerArtifactSha256: "a".repeat(64)
     });
     const runtime = new RouteRuntime(config, logger());
     const service = createEmbeddingService(config, runtime, logger());
@@ -181,6 +202,22 @@ describe("Embedding Service routes", () => {
     expect(payload.status).toBe("ok");
     expect(payload.modelKey).toBe("qwen3-0.6b");
     expect(payload.normalized).toBe(true);
+    expect(payload).toMatchObject({
+      artifact:
+        "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+      artifactRevision: "main",
+      artifactHash:
+        "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      tokenizerRevision:
+        "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
+    });
+    expect(payload.reranker).toMatchObject({
+      artifact: "repo:reranker.gguf",
+      artifactRevision: `sha256:${"a".repeat(64)}`,
+      artifactHash: "a".repeat(64)
+    });
   });
 
   it("protects the content-free capacity identity with the internal token", async () => {
@@ -288,7 +325,9 @@ describe("Embedding Service routes", () => {
       rerankerKey: "qwen3-reranker-0.6b",
       rerankerRepo: "repo",
       rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf"
+      rerankerModelPath: "/models/reranker.gguf",
+      rerankerArtifact: "repo:reranker.gguf",
+      rerankerArtifactSha256: "a".repeat(64)
     });
     const runtime = new RouteRuntime(config, logger());
     const service = createEmbeddingService(config, runtime, logger());
@@ -304,6 +343,12 @@ describe("Embedding Service routes", () => {
     expect(response.status).toBe(200);
     expect(payload).toEqual({
       model: "qwen3-reranker-0.6b",
+      artifact: "repo:reranker.gguf",
+      artifactRevision: `sha256:${"a".repeat(64)}`,
+      artifactHash: "a".repeat(64),
+      latencyMs: 12,
+      inputTokens: 29,
+      costUsd: 0,
       scores: [0.2, 0.9]
     });
     expect(runtime.rerankCalls).toEqual([
@@ -320,6 +365,40 @@ describe("Embedding Service routes", () => {
       })
     );
     expect(failed.status).toBe(500);
-    expect((await json(failed)).detail).toContain("model reranking failed");
+    expect(await json(failed)).toEqual({
+      detail: "reranking request failed",
+      code: "reranking_runtime_error"
+    });
+  });
+
+  it("redacts runtime and model details from embedding responses and logs", async () => {
+    const responseSentinel = "upstream-model-response-sentinel";
+    const querySentinel = "team-query-log-sentinel";
+    const lines: string[] = [];
+    const config = testConfig();
+    const redactingLogger = createEmbeddingLogger("debug", (line) =>
+      lines.push(line)
+    );
+    const runtime = new RouteRuntime(config, redactingLogger);
+    runtime.embedText = async () => {
+      throw new Error(`${responseSentinel} ${querySentinel}`);
+    };
+    const service = createEmbeddingService(config, runtime, redactingLogger);
+
+    const failed = await service.handle(
+      new Request("http://127.0.0.1/embed", {
+        method: "POST",
+        body: JSON.stringify({ texts: [querySentinel] })
+      })
+    );
+
+    expect(failed.status).toBe(500);
+    expect(await json(failed)).toEqual({
+      detail: "embedding request failed",
+      code: "embedding_runtime_error"
+    });
+    const logged = lines.join("\n");
+    expect(logged).not.toContain(responseSentinel);
+    expect(logged).not.toContain(querySentinel);
   });
 });

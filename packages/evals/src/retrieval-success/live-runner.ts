@@ -783,7 +783,6 @@ const createWorkerRetrievalClient = (
           | "leaf_search"
           | "fresh_pending_search"
           | "raw_fallback_search"
-          | "lexical_search"
           | undefined,
         parentNodeIds: stringArrayInput(input, "parent_node_ids"),
         strictLimit: input.strict_limit === true
@@ -956,7 +955,7 @@ const runLiveRetrievalSuccessVariant = async (
               {
                 client: createWorkerRetrievalClient(repo, seeded.userId),
                 retrievalScope: "personal",
-                responseDetail: "with_evidence",
+                responseDetail: "internal",
                 config: resolveMemoryAnswerWorkerConfig(),
                 limit: 10,
                 recentDays: benchmarkCase.expected.temporal?.recentDays,

@@ -964,13 +964,14 @@ export const collaborationMessagePageSchema = z
 export const sharedMemoryRepresentationSchema = z.enum([
   "memory_events",
   "lcm_leaves",
-  "lcm_rollups"
+  "lcm_rollups",
+  "curated_assertions"
 ]);
 
 const distinctSharedMemoryRepresentationsSchema = z
   .array(sharedMemoryRepresentationSchema)
   .min(1)
-  .max(3)
+  .max(4)
   .superRefine((values, context) => {
     if (new Set(values).size !== values.length) {
       context.addIssue({
@@ -1039,6 +1040,26 @@ const sharedLcmItemSchema = z
     sequence: z.number().int().safe().positive(),
     occurredAt: collaborationTimestampSchema,
     summaryText: boundedRequiredUtf8(MAX_SHARED_SOURCE_BODY_BYTES),
+    lexicalAnchors: z
+      .array(z.string().min(1).max(120))
+      .max(12)
+      .refine((anchors) => new Set(anchors).size === anchors.length, {
+        message: "LCM lexical anchors must be exact-deduplicated"
+      }),
+    sourceCount: z.number().int().safe().positive(),
+    sourceRevision: collaborationRevisionSchema
+  })
+  .strict();
+
+const sharedCuratedAssertionItemSchema = z
+  .object({
+    id: z.uuid(),
+    representation: z.literal("curated_assertions"),
+    sequence: z.number().int().safe().positive(),
+    occurredAt: collaborationTimestampSchema,
+    assertionText: boundedRequiredUtf8(MAX_SHARED_SOURCE_BODY_BYTES),
+    topicTitle: boundedRequiredUtf8(MAX_SHARED_SOURCE_BODY_BYTES).nullable(),
+    tags: z.array(z.string().min(1).max(120)).max(32),
     sourceCount: z.number().int().safe().positive(),
     sourceRevision: collaborationRevisionSchema
   })
@@ -1046,7 +1067,11 @@ const sharedLcmItemSchema = z
 
 export const sharedMemorySourceItemSchema = z.discriminatedUnion(
   "representation",
-  [sharedMemoryEventItemSchema, sharedLcmItemSchema]
+  [
+    sharedMemoryEventItemSchema,
+    sharedLcmItemSchema,
+    sharedCuratedAssertionItemSchema
+  ]
 );
 
 export const sharedMemorySessionSchema = z

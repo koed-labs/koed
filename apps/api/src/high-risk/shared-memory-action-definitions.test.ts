@@ -147,7 +147,11 @@ const shareIntent = (
   }) as const satisfies HighRiskActionGrantIntent;
 
 const representationIntent = (
-  representation: "lcm_rollups" | "lcm_leaves" | "memory_events"
+  representation:
+    | "lcm_rollups"
+    | "lcm_leaves"
+    | "memory_events"
+    | "curated_assertions"
 ) =>
   ({
     action: "shared_memory.change_representation",
@@ -193,6 +197,35 @@ describe("Shared Memory action definitions", () => {
       policy: { disposition: "direct", review: null }
     });
     expect(repo.getSharedMemoryPreviewAdmission).toHaveBeenCalledOnce();
+  });
+
+  it("binds Curated assertions as an explicit Shared Memory preview", async () => {
+    const repo = repository();
+    const intent = {
+      action: "shared_memory.preview",
+      logicalMemoryId: ids.logicalMemory,
+      remoteReplicaId: ids.replica,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      representation: "curated_assertions",
+      allowedRepresentations: ["curated_assertions"]
+    } as const satisfies HighRiskActionGrantIntent;
+
+    const admitted = await admit(intent, repo);
+    if (admitted === null) {
+      throw new Error("Expected the Curated assertions preview to be admitted");
+    }
+    expect(admitted.operation).toEqual(
+      sharedMemoryPreviewActionGrantBinding({
+        referenceId: ids.request,
+        logicalMemoryId: ids.logicalMemory,
+        remoteReplicaId: ids.replica,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        representation: "curated_assertions",
+        allowedRepresentations: ["curated_assertions"]
+      })
+    );
   });
 
   it("keeps a preview direct when its policy proposal differs", async () => {

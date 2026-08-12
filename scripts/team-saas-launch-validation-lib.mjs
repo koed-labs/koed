@@ -44,6 +44,15 @@ export const launchValidationGates = [
       "Exact source access remains separately consented, encrypted, bounded, auditable, and revocable."
   },
   {
+    id: "team-semantic-representation-fidelity",
+    area: "Shared Memory",
+    mode: "automated",
+    description:
+      "Every active Team-visible Memory Event, LCM leaf, LCM rollup, and Curated Memory representation has a completed vector-backed embedding while unauthorized actors remain unable to read its representation.",
+    launchCriterion:
+      "Team semantic recall is ready across all four Shared Memory representation fidelities."
+  },
+  {
     id: "revoked-private-access",
     area: "Access control",
     mode: "automated",
@@ -74,9 +83,9 @@ export const launchValidationGates = [
     area: "Remote Team routing",
     mode: "automated",
     description:
-      "Dedicated Shared Memory grant/list/timeline/detail routes require browser sessions or scoped device credentials; generic Team search, answer, graph, evidence, and expansion remain unavailable and fail closed.",
+      "Shared Memory grant/list/timeline/detail plus semantic search, answer evidence, and candidate expansion require browser sessions or scoped device credentials; API Tokens are denied and the generic Team graph remains unavailable.",
     launchCriterion:
-      "Remote Shared Memory representations respect session, device, API-token, and unavailable-surface contracts."
+      "Remote Shared Memory semantic evidence respects session, device, API-token, and unavailable graph contracts."
   },
   {
     id: "local-edge-fail-closed",
@@ -227,7 +236,6 @@ const automatedLaunchTestEnvironmentKeys = [
   "MANAGED_KMS_ENDPOINT_URL",
   "MANAGED_KMS_KEY_ID",
   "MANAGED_KMS_KEY_VERSION",
-  "MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED",
   "NODE_ENV",
   "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
   "OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER",
@@ -305,6 +313,20 @@ export const automatedLaunchTestCommands = [
       "vitest",
       "run",
       "src/team-conversation-source/routes.test.ts"
+    ]
+  },
+  {
+    id: "agentic-retrieval-team-boundaries",
+    command: "pnpm",
+    args: [
+      "exec",
+      "vitest",
+      "run",
+      "apps/api/src/memory/memory-answer-authorization-boundary.test.ts",
+      "apps/api/src/memory/evidence-source-contract.test.ts",
+      "apps/worker/src/shared-memory-embedding-service.test.ts",
+      "packages/db/tests/shared-memory-semantic-composition.test.ts",
+      "--no-file-parallelism"
     ]
   },
   {
@@ -550,6 +572,110 @@ export const provisionAutomatedLaunchTestDatabase = async ({
 };
 
 const modeOrder = ["automated", "manual", "staging"];
+
+const launchRepresentationItemTypes = {
+  memory_events: "user_message",
+  lcm_leaves: "lcm_leaf",
+  lcm_rollups: "lcm_rollup",
+  curated_assertions: "curated_assertion"
+};
+
+const launchEmbeddingMemories = fixtureMemoryRows.filter(
+  (memory) => memory.expectedTeamVisible
+);
+
+export const assertLaunchEmbeddingReadiness = async (client) => {
+  const result = await client.query(
+    `select semantic.id as semantic_item_id,
+            semantic.representation_id,
+            semantic.item_type,
+            semantic.embedding_state,
+            semantic.embedding_model,
+            semantic.embedding_dimensions,
+            semantic.embedding_version,
+            semantic.embedding_input_hash,
+            semantic.embedded_at,
+            semantic.last_error_class,
+            case semantic.embedding_dimensions
+              when 384 then vector384.semantic_item_id is not null
+              when 1024 then vector1024.semantic_item_id is not null
+              when 1536 then vector1536.semantic_item_id is not null
+              when 3072 then vector3072.semantic_item_id is not null
+              else false
+            end as has_vector
+       from team_memory_semantic_items semantic
+       left join team_memory_semantic_vectors_384 vector384
+         on vector384.semantic_item_id=semantic.id
+       left join team_memory_semantic_vectors_1024 vector1024
+         on vector1024.semantic_item_id=semantic.id
+       left join team_memory_semantic_vectors_1536 vector1536
+         on vector1536.semantic_item_id=semantic.id
+       left join team_memory_semantic_vectors_3072 vector3072
+         on vector3072.semantic_item_id=semantic.id
+      where semantic.representation_id=any($1::uuid[])
+      order by semantic.representation_id,semantic.source_item_index`,
+    [launchEmbeddingMemories.map((memory) => memory.representationId)]
+  );
+
+  const rowsByRepresentationId = new Map();
+  for (const row of result.rows) {
+    const rows = rowsByRepresentationId.get(row.representation_id) ?? [];
+    rows.push(row);
+    rowsByRepresentationId.set(row.representation_id, rows);
+  }
+
+  const completedRepresentations = new Set();
+  for (const memory of launchEmbeddingMemories) {
+    const rows = rowsByRepresentationId.get(memory.representationId) ?? [];
+    if (rows.length !== 1) {
+      throw new Error(
+        `${memory.title}: launch validation requires exactly one semantic item, got ${rows.length}`
+      );
+    }
+    const semantic = rows[0];
+    if (
+      semantic.item_type !==
+      launchRepresentationItemTypes[memory.representation]
+    ) {
+      throw new Error(
+        `${memory.title}: semantic item type ${semantic.item_type ?? "missing"} does not match ${memory.representation}`
+      );
+    }
+    if (semantic.embedding_state !== "embedded") {
+      throw new Error(
+        `${memory.title}: launch validation requires a completed embedding, got ${semantic.embedding_state ?? "missing"}${semantic.last_error_class ? ` (${semantic.last_error_class})` : ""}`
+      );
+    }
+    if (
+      !semantic.has_vector ||
+      !semantic.embedding_model ||
+      !semantic.embedding_dimensions ||
+      !semantic.embedding_version ||
+      !/^[a-f0-9]{64}$/.test(semantic.embedding_input_hash ?? "") ||
+      !semantic.embedded_at
+    ) {
+      throw new Error(
+        `${memory.title}: completed embedding is missing its vector or model provenance`
+      );
+    }
+    completedRepresentations.add(memory.representation);
+  }
+
+  const expectedRepresentations = Object.keys(launchRepresentationItemTypes);
+  const missingRepresentations = expectedRepresentations.filter(
+    (representation) => !completedRepresentations.has(representation)
+  );
+  if (missingRepresentations.length) {
+    throw new Error(
+      `Launch embedding fidelity is missing Team representations: ${missingRepresentations.join(", ")}`
+    );
+  }
+
+  return {
+    embeddedItems: launchEmbeddingMemories.length,
+    representations: expectedRepresentations
+  };
+};
 
 export const assertLaunchValidationEnvironment = (env = process.env) => {
   if (!env.API_TOKEN_PEPPER?.trim()) {
@@ -894,12 +1020,11 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         await stagedProbe({
           fetcher,
           baseUrl,
-          name: `${actor}-generic-team-${surface}-unavailable`,
+          name: `${actor}-team-semantic-${surface}`,
           method: "POST",
           path,
           headers,
           body: answerBody,
-          expect: 404,
           redactionSentinels: credentialSentinels
         })
       );
@@ -980,7 +1105,6 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         name: "device-team-node-expand",
         path: `/v1/memory/nodes/${encodeURIComponent(options.teamNodeId)}/expand?team_workspace_id=${encodeURIComponent(options.teamWorkspaceId)}`,
         headers: { authorization: deviceAuthorization },
-        expect: 404,
         redactionSentinels: credentialSentinels
       })
     );
@@ -991,26 +1115,40 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
         name: "session-team-node-expand",
         path: `/v1/memory/nodes/${encodeURIComponent(options.teamNodeId)}/expand?team_workspace_id=${encodeURIComponent(options.teamWorkspaceId)}`,
         headers: sessionHeaders,
-        expect: 404,
         redactionSentinels: credentialSentinels
       })
     );
   }
 
   if (options.apiToken?.trim()) {
-    results.push(
-      await stagedProbe({
-        fetcher,
-        baseUrl,
-        name: "api-token-team-answer-rejected",
-        method: "POST",
-        path: "/v1/memory/answer",
-        headers: { authorization: `Bearer ${options.apiToken}` },
-        body: answerBody,
-        expect: [401, 403],
-        redactionSentinels: credentialSentinels
-      })
-    );
+    for (const surface of ["answer", "search"]) {
+      results.push(
+        await stagedProbe({
+          fetcher,
+          baseUrl,
+          name: `api-token-team-${surface}-rejected`,
+          method: "POST",
+          path: `/v1/memory/${surface}`,
+          headers: { authorization: `Bearer ${options.apiToken}` },
+          body: answerBody,
+          expect: [401, 403],
+          redactionSentinels: credentialSentinels
+        })
+      );
+    }
+    if (options.teamNodeId?.trim()) {
+      results.push(
+        await stagedProbe({
+          fetcher,
+          baseUrl,
+          name: "api-token-team-expansion-rejected",
+          path: `/v1/memory/nodes/${encodeURIComponent(options.teamNodeId)}/expand?team_workspace_id=${encodeURIComponent(options.teamWorkspaceId)}`,
+          headers: { authorization: `Bearer ${options.apiToken}` },
+          expect: [401, 403],
+          redactionSentinels: credentialSentinels
+        })
+      );
+    }
     results.push(
       await stagedProbe({
         fetcher,
@@ -1054,7 +1192,7 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
       await stagedProbe({
         fetcher,
         baseUrl: localEdgeBaseUrl,
-        name: "local-edge-generic-team-answer-unavailable",
+        name: "local-edge-team-semantic-answer",
         method: "POST",
         path: "/v1/local-edge/team-memory/answer",
         headers: { authorization: deviceAuthorization },
@@ -1062,17 +1200,16 @@ export const runStagedRemoteValidation = async (input, fetcher = fetch) => {
           upstream_backend_id: options.localEdgeBackendId,
           input: answerBody
         },
-        expect: [403, 404],
         redactionSentinels: credentialSentinels
       })
     );
   } else {
     results.push({
-      name: "local-edge-generic-team-answer-unavailable",
+      name: "local-edge-team-semantic-answer",
       status: "skipped",
       ok: true,
       reason:
-        "Set KOED_LAUNCH_LOCAL_EDGE_BASE_URL and KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID to prove generic local-edge Team answer fails closed."
+        "Set KOED_LAUNCH_LOCAL_EDGE_BASE_URL and KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID to prove scoped-device local-edge Team semantic answer routing."
     });
   }
 
@@ -1102,6 +1239,7 @@ export const summarizeLaunchValidation = (
     gates: launchValidationGates.length,
     byMode,
     automatedChecks: fixtureResult.checks,
+    embeddingProof: options.embeddingProof ?? null,
     automatedTestStatus: options.automatedTestStatus ?? "not_run",
     stagedRemote: options.stagedRemote ?? null,
     multiDevice: options.multiDevice ?? null,
@@ -1114,7 +1252,17 @@ export const summarizeLaunchValidation = (
 
 export const validateLaunchReadiness = async (client, options) => {
   const fixtureResult = await validateFixture(client, options?.fixtureRuntime);
-  return summarizeLaunchValidation(fixtureResult, options);
+  const embeddingProof = await assertLaunchEmbeddingReadiness(client);
+  return summarizeLaunchValidation(
+    {
+      ...fixtureResult,
+      checks: [
+        ...fixtureResult.checks,
+        `Completed Team embeddings preserve ${embeddingProof.representations.join(", ")} fidelity (${embeddingProof.embeddedItems} items)`
+      ]
+    },
+    { ...options, embeddingProof }
+  );
 };
 
 export const formatLaunchValidationReport = (summary) => {

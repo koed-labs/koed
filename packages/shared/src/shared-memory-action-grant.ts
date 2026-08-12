@@ -9,7 +9,8 @@ export const SHARED_MEMORY_AUTHORITY_ACTION =
 export type SharedMemoryRepresentation =
   | "memory_events"
   | "lcm_leaves"
-  | "lcm_rollups";
+  | "lcm_rollups"
+  | "curated_assertions";
 
 export interface SharedMemoryActionGrantBinding {
   operationFamily: "share_grant_management";

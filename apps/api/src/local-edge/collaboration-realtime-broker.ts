@@ -1001,10 +1001,9 @@ export const createCollaborationRealtimeBroker = (
     return authorizedCredential;
   };
 
-  const authorizePersonal = async (
-    request: FastifyRequest
-  ): Promise<PersonalBinding> => {
-    const credential = await authorizeLocalOwner(request);
+  const authorizePersonal = (
+    credential: DesktopLocalCredentialAuthorization
+  ): PersonalBinding => {
     const bindingHash = credentialHash([
       "personal",
       credential.ownerUserId,
@@ -1089,11 +1088,10 @@ export const createCollaborationRealtimeBroker = (
   };
 
   const authorizeTeam = async (
-    request: FastifyRequest,
+    credential: DesktopLocalCredentialAuthorization,
     upstreamBackendId: string,
     teamId: string
   ): Promise<LocalBinding> => {
-    const credential = await authorizeLocalOwner(request);
     const registry = readLocalEdgeUpstreamRegistry(
       options.upstreamBackendsPath
     );
@@ -1184,9 +1182,8 @@ export const createCollaborationRealtimeBroker = (
     };
 
   const authorizeRemotePersonal = async (
-    request: FastifyRequest
+    credential: DesktopLocalCredentialAuthorization
   ): Promise<LocalBinding> => {
-    const credential = await authorizeLocalOwner(request);
     const upstreamBackend = configuredRemotePersonalBackend();
     if (!upstreamBackend) {
       return fail("Upstream Personal collaboration is unavailable", 424);
@@ -2247,12 +2244,13 @@ export const createCollaborationRealtimeBroker = (
     options.app.post(
       "/v1/local-edge/collaboration/realtime/subscriptions",
       async (request) => {
+        const credential = await authorizeLocalOwner(request);
         const input = parseOrFail(
           createLocalEdgeCollaborationSubscriptionSchema,
           request.body
         );
         if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = await authorizePersonal(request);
+          const binding = authorizePersonal(credential);
           const hasPendingForBinding = [
             ...pendingPersonalSnapshots.values()
           ].some(
@@ -2347,9 +2345,9 @@ export const createCollaborationRealtimeBroker = (
         }
         const binding =
           input.scope === "personal"
-            ? await authorizeRemotePersonal(request)
+            ? await authorizeRemotePersonal(credential)
             : await authorizeTeam(
-                request,
+                credential,
                 input.upstream_backend_id,
                 input.team_id
               );
@@ -2477,6 +2475,7 @@ export const createCollaborationRealtimeBroker = (
     options.app.post(
       "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId/ack",
       async (request) => {
+        const credential = await authorizeLocalOwner(request);
         const params = parseOrFail(
           localEdgeCollaborationSubscriptionParamsSchema,
           request.params
@@ -2486,7 +2485,7 @@ export const createCollaborationRealtimeBroker = (
           request.body
         );
         if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = await authorizePersonal(request);
+          const binding = authorizePersonal(credential);
           const snapshot = pendingPersonalSnapshots.get(input.delivery_id);
           if (snapshot) {
             if (
@@ -2577,9 +2576,9 @@ export const createCollaborationRealtimeBroker = (
         }
         const binding =
           input.scope === "personal"
-            ? await authorizeRemotePersonal(request)
+            ? await authorizeRemotePersonal(credential)
             : await authorizeTeam(
-                request,
+                credential,
                 input.upstream_backend_id,
                 input.team_id
               );
@@ -2678,6 +2677,7 @@ export const createCollaborationRealtimeBroker = (
     options.app.get(
       "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId/stream",
       async (request, reply) => {
+        const credential = await authorizeLocalOwner(request);
         const params = parseOrFail(
           localEdgeCollaborationSubscriptionParamsSchema,
           request.params
@@ -2687,7 +2687,7 @@ export const createCollaborationRealtimeBroker = (
           request.query
         );
         if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = await authorizePersonal(request);
+          const binding = authorizePersonal(credential);
           const subscription = await recoverPersonalSubscription(
             params.subscriptionId,
             binding
@@ -2778,9 +2778,9 @@ export const createCollaborationRealtimeBroker = (
         }
         const binding =
           input.scope === "personal"
-            ? await authorizeRemotePersonal(request)
+            ? await authorizeRemotePersonal(credential)
             : await authorizeTeam(
-                request,
+                credential,
                 input.upstream_backend_id,
                 input.team_id
               );
@@ -2839,8 +2839,8 @@ export const createCollaborationRealtimeBroker = (
     options.app.delete(
       "/v1/local-edge/collaboration/realtime/backends/:backendId/subscriptions",
       async (request) => {
-        assertLocalTrust(request, options.corsOrigins);
-        const binding = await authorizePersonal(request);
+        const credential = await authorizeLocalOwner(request);
+        const binding = authorizePersonal(credential);
         const params = parseOrFail(
           localEdgeCollaborationBackendParamsSchema,
           request.params
@@ -2889,6 +2889,7 @@ export const createCollaborationRealtimeBroker = (
     options.app.delete(
       "/v1/local-edge/collaboration/realtime/subscriptions/:subscriptionId",
       async (request) => {
+        const credential = await authorizeLocalOwner(request);
         const params = parseOrFail(
           localEdgeCollaborationSubscriptionParamsSchema,
           request.params
@@ -2898,7 +2899,7 @@ export const createCollaborationRealtimeBroker = (
           request.body
         );
         if (input.scope === "personal" && !configuredRemotePersonalBackend()) {
-          const binding = await authorizePersonal(request);
+          const binding = authorizePersonal(credential);
           const subscription = await recoverPersonalSubscription(
             params.subscriptionId,
             binding
@@ -2940,9 +2941,9 @@ export const createCollaborationRealtimeBroker = (
         }
         const binding =
           input.scope === "personal"
-            ? await authorizeRemotePersonal(request)
+            ? await authorizeRemotePersonal(credential)
             : await authorizeTeam(
-                request,
+                credential,
                 input.upstream_backend_id,
                 input.team_id
               );

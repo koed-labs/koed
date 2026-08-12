@@ -29,7 +29,6 @@ export const registerQuestionRoutes = (
       const questions = await repo.listMemoryQuestions(
         { userId: user.id },
         {
-          query: query.query,
           searchDomain: query.search_domain,
           status: query.status,
           projectId: query.project_id,
@@ -58,6 +57,7 @@ export const registerQuestionRoutes = (
               query: input.query,
               origin: input.origin,
               retrievalScope: input.retrieval_scope,
+              teamWorkspaceId: input.team_workspace_id,
               searchDomain: input.search_domain,
               projectId: input.project_id,
               projectName: input.project_name,
@@ -79,6 +79,7 @@ export const registerQuestionRoutes = (
               query: input.query,
               origin: input.origin,
               retrievalScope: input.retrieval_scope,
+              teamWorkspaceId: input.team_workspace_id,
               searchDomain: input.search_domain,
               projectId: input.project_id,
               projectName: input.project_name,

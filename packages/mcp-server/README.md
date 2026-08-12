@@ -48,6 +48,11 @@ The normal public tool is:
 - `memory_answer`: launches a fresh isolated local Codex worker through the
   Local AI Runtime and returns a compact evidence-backed answer.
 
+`memory_answer` accepts optional bounded `retrieval_hints` for lexical terms,
+exact text, semantic intent, entities, and temporal intent. Hints seed the
+concurrent scripted first pass and later worker refinement, but remain untrusted
+suggestions: they cannot broaden the effective authorization or Search Domain.
+
 When the backend advertises Curated Memory intake, Koed also exposes:
 
 - `memory_intake_propose`: records a source-linked proposal for asynchronous

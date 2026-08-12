@@ -3220,12 +3220,26 @@ export const registerCollaborationCommandRoute = (
         throw httpError("Local edge route is unavailable", 404);
       }
       assertLocalTrust(request, options.corsOrigins);
+      const authorization = request.headers.authorization?.trim() ?? "";
+      const authenticatedCredential =
+        verifyDesktopCredential(
+          options.koedHome,
+          authorization,
+          "personal_collaboration_read"
+        ) ??
+        verifyDesktopCredential(
+          options.koedHome,
+          authorization,
+          "personal_collaboration_write"
+        );
+      if (!authenticatedCredential) {
+        throw httpError("Koed-Desktop local credential required", 401);
+      }
       const input = collaborationCommandRequestSchema.parse(request.body);
       const desktopFamily = desktopCollaborationOperationFamily(input.command);
       await (desktopFamily === "personal_collaboration_read"
         ? options.readPreHandler?.(request, reply)
         : options.writePreHandler?.(request, reply));
-      const authorization = request.headers.authorization?.trim() ?? "";
       const credential = verifyDesktopCredential(
         options.koedHome,
         authorization,

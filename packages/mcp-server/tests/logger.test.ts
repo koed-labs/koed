@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { Writable } from "node:stream";
 import {
+  createMcpLogger,
   resolveMcpLogDestinationConfig,
   resolveMcpLogLevel
 } from "../src/logger.js";
@@ -70,5 +72,31 @@ describe("MCP logger", () => {
         MEMORY_LOG_DESTINATION: "file"
       } as NodeJS.ProcessEnv)
     ).toEqual({ destination: "stderr" });
+  });
+
+  it("redacts retrieval hints and complete traces from logs", () => {
+    let output = "";
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        output += String(chunk);
+        callback();
+      }
+    });
+    const sentinel = "PLAINTEXT_RETRIEVAL_HINT_LOG_SENTINEL";
+    const testLogger = createMcpLogger("retrieval-redaction-test", {
+      destination,
+      environment: {
+        NODE_ENV: "test",
+        MEMORY_LOG_LEVEL: "info"
+      } as NodeJS.ProcessEnv
+    });
+    testLogger.info({
+      retrievalHints: { exact: [sentinel] },
+      retrieval: { trace: { retrievalHints: { exact: [sentinel] } } },
+      trace: { orderedErrors: [sentinel] }
+    });
+
+    expect(output).not.toContain(sentinel);
+    expect(output).toContain("[Redacted]");
   });
 });

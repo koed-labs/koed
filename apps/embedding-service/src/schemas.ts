@@ -20,6 +20,12 @@ export interface EmbedResponse {
 
 export interface RerankResponse {
   model: string;
+  artifact: string;
+  artifactRevision: string;
+  artifactHash: string;
+  latencyMs: number;
+  inputTokens: number | null;
+  costUsd: 0;
   scores: number[];
 }
 

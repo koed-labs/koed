@@ -13,6 +13,7 @@ import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
+  createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
   embeddingDispatchKey,
   inspectDeviceIdentityAtKoedHome,
   lcmCompactQueueName,
@@ -47,6 +48,7 @@ import {
 import { createReloadablePdsWorkerRuntimeFromEnvironment } from "./personal-device-sync-runtime.js";
 import { createConversationSourceReplicationService } from "./conversation-source-replication-service.js";
 import { createManagedConversationRuntimeCoordinator } from "./managed-conversation-runtime-coordinator.js";
+import { createSharedMemoryEmbeddingService } from "./shared-memory-embedding-service.js";
 
 loadWorkerEnv();
 
@@ -82,9 +84,12 @@ const envelopeEncryptionProvider =
   createEnvelopeEncryptionProviderFromEnvironment();
 const ownerPrivateReplicaEnvelopeEncryptionProvider =
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment();
+const teamEnvelopeEncryptionProvider =
+  createTeamMemoryEnvelopeEncryptionProviderFromEnvironment();
 const repository = pool
   ? createMemorySourceRepository(pool, {
       envelopeEncryptionProvider,
+      teamEnvelopeEncryptionProvider,
       ownerPrivateReplicaEnvelopeEncryptionProvider
     })
   : null;
@@ -117,6 +122,9 @@ const embeddingWorkflow = createEmbeddingWorkflow({
   env: workerEnv,
   repository: requireRepository
 });
+const sharedMemoryEmbeddingService = repository
+  ? createSharedMemoryEmbeddingService({ embeddingWorkflow, logger })
+  : null;
 
 const queueProducerOptions = {
   backend: workerEnv.queueBackend,
@@ -388,7 +396,11 @@ const activeBackgroundServices = startWorkerBackgroundServices({
     managedConversationService
   ],
   maintenance: [embeddingCapacityService, retentionPurgeService],
-  team: [crossIdentitySyncService, collaborationReplayPruneService]
+  team: [
+    crossIdentitySyncService,
+    collaborationReplayPruneService,
+    sharedMemoryEmbeddingService
+  ]
 });
 
 const pdsSecureRuntime =

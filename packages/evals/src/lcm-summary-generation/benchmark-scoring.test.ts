@@ -9,10 +9,14 @@ import { mustCase, passingOutput } from "./test-helpers.js";
 
 const scoreOutput = (caseId: string, output: unknown) => {
   const benchmarkCase = mustCase(caseId);
+  const normalizedOutput =
+    typeof output === "object" && output !== null && !Array.isArray(output)
+      ? { lexical_anchors: [], ...output }
+      : output;
   return scoreLcmSummaryRun(benchmarkCase, {
     caseId,
     runIndex: 0,
-    output
+    output: normalizedOutput
   });
 };
 

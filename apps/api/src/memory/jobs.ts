@@ -69,7 +69,8 @@ export const createMemoryJobScheduler = ({
     sourceType: EmbeddingSourceType,
     sourceId: string,
     workClass: KoedWorkClass = "normal_embedding_lcm",
-    jobId?: string
+    jobId?: string,
+    sourceRevision?: string
   ): Promise<MemoryJobStatus> => {
     if (!embeddingQueue) {
       log.warn(
@@ -102,7 +103,11 @@ export const createMemoryJobScheduler = ({
             removeOnFail: true,
             jobId:
               jobId ??
-              embeddingQueueJobId(embeddingDispatchKey, sourceType, sourceId)
+              embeddingQueueJobId(
+                embeddingDispatchKey,
+                sourceType,
+                sourceRevision ? `${sourceId}-${sourceRevision}` : sourceId
+              )
           }
         ),
         750,
@@ -215,12 +220,12 @@ export const createMemoryJobScheduler = ({
     visibility: Visibility
   ) => {
     const [embedding, compaction] = await Promise.all([
-      enqueueEmbedding("memory_event", eventId, "live_capture_projection"),
+      enqueueEmbedding("memory_event", eventId, "normal_embedding_lcm"),
       enqueueCompaction(
         repo,
         requesterContext,
         visibility,
-        "live_capture_projection"
+        "normal_embedding_lcm"
       )
     ]);
 

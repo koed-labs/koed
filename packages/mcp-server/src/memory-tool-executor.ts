@@ -189,7 +189,12 @@ export class MemoryToolExecutor {
   ): Promise<Record<string, unknown>> {
     const requestedResponseDetail: MemoryAnswerResponseDetail =
       input.include_evidence ? "with_evidence" : input.response_detail;
-    const { include_evidence, response_detail, ...answerInput } = input;
+    const {
+      include_evidence,
+      response_detail,
+      retrieval_hints,
+      ...answerInput
+    } = input;
     void include_evidence;
     void response_detail;
     const retrievalScope = defaultAnswerScope(await this.client.accessCheck());
@@ -292,6 +297,7 @@ export class MemoryToolExecutor {
       sourceBefore: input.source_before,
       limit: input.limit,
       responseDetail: "with_evidence",
+      retrievalHints: retrieval_hints,
       signal
     });
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");

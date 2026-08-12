@@ -14,13 +14,14 @@ const positiveVersionSchema = z.number().int().safe().positive();
 export const sharedMemoryRepresentationSchema = z.enum([
   "memory_events",
   "lcm_leaves",
-  "lcm_rollups"
+  "lcm_rollups",
+  "curated_assertions"
 ]);
 
 const distinctRepresentationsSchema = z
   .array(sharedMemoryRepresentationSchema)
   .min(1)
-  .max(3)
+  .max(4)
   .refine((values) => new Set(values).size === values.length, {
     message: "Representations must be distinct"
   });

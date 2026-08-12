@@ -14,7 +14,8 @@ import {
 
 export const createCuratedMemorySourceReconciliationMethods = ({
   pool,
-  envelopeEncryptionProvider
+  envelopeEncryptionProvider,
+  onCuratedMemoryChanged
 }: CuratedMemoryRepositoryContext): Pick<
   CuratedMemoryRepository,
   "reconcileCuratedMemorySources"
@@ -188,6 +189,7 @@ export const createCuratedMemorySourceReconciliationMethods = ({
         [assertionIds, actor.userId]
       );
       await client.query("commit");
+      await onCuratedMemoryChanged?.(actor);
       return {
         assertionsScanned: assertionIds.length,
         memoryEventLinksAdded: memoryEventLinks.rowCount ?? 0,

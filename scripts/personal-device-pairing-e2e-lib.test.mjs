@@ -41,6 +41,7 @@ test("reconciles and verifies the joining device through a distinct local API", 
   assert.equal(result.localUserId, "user-b");
   assert.equal(calls.length, 2);
   assert.equal(calls[0].init.headers.cookie, "cm_session=joining");
+  assert.equal(calls[0].init.headers.origin, "http://127.0.0.1:4300");
   assert.equal(
     calls[0].url,
     "http://127.0.0.1:4300/v1/personal-device-sync/local-group-reconciliation"

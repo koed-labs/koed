@@ -65,9 +65,6 @@ const parseJsonBody = async (request: Request): Promise<unknown> => {
   }
 };
 
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
 export const createEmbeddingService = (
   config: EmbeddingServiceEnv,
   runtime: EmbeddingRuntime,
@@ -122,13 +119,19 @@ export const createEmbeddingService = (
         } catch (error) {
           if (error instanceof HttpError) {
             return jsonResponse(
-              { detail: error.detail },
+              {
+                detail: error.detail,
+                ...(error.code ? { code: error.code } : {})
+              },
               error.statusCode,
               requestId
             );
           }
           return jsonResponse(
-            { detail: `embedding service failed: ${errorMessage(error)}` },
+            {
+              detail: "embedding service request failed",
+              code: "embedding_service_error"
+            },
             500,
             requestId
           );
@@ -258,6 +261,7 @@ const handleHealth = (
   );
   const rerankerReady = !rerankerEnabled(config) || runtime.isRerankerLoaded();
   const status = runtime.isModelLoaded() && rerankerReady ? "ok" : "loading";
+  const rerankerProvenance = runtime.rerankerProvenance();
   return jsonResponse(
     {
       status,
@@ -273,6 +277,12 @@ const handleHealth = (
       authValid: auth.authValid,
       modelRepo: config.modelRepo,
       modelFile: config.modelFile,
+      artifact: config.modelArtifact,
+      artifactRevision: config.modelArtifactRevision,
+      artifactHash: config.modelArtifactSha256,
+      tokenizer: config.modelTokenizer,
+      tokenizerRevision: config.modelTokenizerRevision,
+      acceleration: config.modelAcceleration,
       nCtx: config.llamaNCtx,
       queue: runtime.healthQueueSnapshot(),
       reranker: {
@@ -280,6 +290,9 @@ const handleHealth = (
         loaded: runtime.isRerankerLoaded(),
         modelKey: config.rerankerKey,
         model: rerankerModel(config),
+        artifact: rerankerProvenance?.artifact ?? null,
+        artifactRevision: rerankerProvenance?.artifactRevision ?? null,
+        artifactHash: rerankerProvenance?.artifactHash ?? null,
         batchLimit: config.rerankerBatchLimit
       }
     },
@@ -326,10 +339,15 @@ const handleEmbed = async (
       http: { status_code: statusCode, duration_ms: elapsedMs(started) },
       error: errorType(error)
     });
-    if (error instanceof HttpError) {
-      throw error;
-    }
-    throw new HttpError(500, `model embedding failed: ${errorMessage(error)}`);
+    throw new HttpError(
+      error instanceof HttpError && error.statusCode === 503 ? 503 : 500,
+      error instanceof HttpError && error.statusCode === 503
+        ? "embedding service is temporarily unavailable"
+        : "embedding request failed",
+      error instanceof HttpError && error.statusCode === 503
+        ? "embedding_unavailable"
+        : "embedding_runtime_error"
+    );
   }
 };
 
@@ -351,7 +369,10 @@ const handleRerank = async (
       reranker: {
         model: result.model,
         document_count: payload.documents.length,
-        score_count: result.scores.length
+        score_count: result.scores.length,
+        measured_tokens: result.inputTokens,
+        latency_ms: result.latencyMs,
+        cost_usd: result.costUsd
       }
     });
     return jsonResponse(result, 200, requestId);
@@ -362,10 +383,15 @@ const handleRerank = async (
       http: { status_code: statusCode, duration_ms: elapsedMs(started) },
       error: errorType(error)
     });
-    if (error instanceof HttpError) {
-      throw error;
-    }
-    throw new HttpError(500, `model reranking failed: ${errorMessage(error)}`);
+    throw new HttpError(
+      error instanceof HttpError && error.statusCode === 503 ? 503 : 500,
+      error instanceof HttpError && error.statusCode === 503
+        ? "reranking service is temporarily unavailable"
+        : "reranking request failed",
+      error instanceof HttpError && error.statusCode === 503
+        ? "reranking_unavailable"
+        : "reranking_runtime_error"
+    );
   }
 };
 
@@ -399,12 +425,13 @@ export const createNodeHttpServer = (service: EmbeddingService) =>
       response.headers.forEach((value, key) => outgoing.setHeader(key, value));
       const responseBody = Buffer.from(await response.arrayBuffer());
       outgoing.end(responseBody);
-    })().catch((error: unknown) => {
+    })().catch(() => {
       outgoing.statusCode = 500;
       outgoing.setHeader("content-type", "application/json");
       outgoing.end(
         JSON.stringify({
-          detail: `embedding service failed: ${errorMessage(error)}`
+          detail: "embedding service request failed",
+          code: "embedding_service_error"
         })
       );
     });

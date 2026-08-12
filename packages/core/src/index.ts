@@ -3,11 +3,21 @@ import { z } from "zod";
 
 export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  LCM_LEXICAL_ANCHOR_MAX_COUNT,
+  LCM_LEXICAL_ANCHOR_MAX_LENGTH,
+  LCM_LEXICAL_ANCHOR_CANDIDATE_MAX_COUNT,
+  LCM_LEXICAL_ANCHOR_CANDIDATE_MAX_LENGTH,
+  lcmLexicalAnchorGroundingPayloads,
   normalizeStoredLcmSummary,
   parseStructuredLcmSummary,
-  structuredLcmSummarySchema
+  parseStructuredLcmSummaryCandidate,
+  structuredLcmSummaryCandidateSchema,
+  structuredLcmSummarySchema,
+  validateLcmLexicalAnchors
 } from "./lcm-summary-contract.js";
 export type {
+  LcmLexicalAnchorSourceItem,
+  RejectedLcmLexicalAnchor,
   StoredLcmSummaryInput,
   StructuredLcmSummary
 } from "./lcm-summary-contract.js";
@@ -361,6 +371,16 @@ export interface RetrievalMetadata {
   textHitsCount: number;
   embeddingModel: string | null;
   embeddingDimensions: number | null;
+  /** False means zero hits cannot establish absence of relevant Memory. */
+  semanticRetrievalComplete?: boolean;
+  semanticRetrievalError?: string;
+  databaseReads?: number;
+  hydrationCount?: number;
+  hydrationBytes?: number;
+  decryptCount?: number;
+  decryptBytes?: number;
+  embeddingCalls?: number;
+  embeddingTokens?: number | null;
   vectorCandidateCount?: number;
   rerankedCount?: number;
   rerankerModel?: string | null;
@@ -462,6 +482,7 @@ export interface SearchMemoryInput {
   recentDays?: number;
   sourceAfter?: string;
   sourceBefore?: string;
+  exactHints?: string[];
   retrievalStage?:
     | "score_scan"
     | "rollup_search"
@@ -469,8 +490,7 @@ export interface SearchMemoryInput {
     | "leaf_search"
     | "curated_memory_search"
     | "fresh_pending_search"
-    | "raw_fallback_search"
-    | "lexical_search";
+    | "raw_fallback_search";
   parentNodeIds?: string[];
   strictLimit?: boolean;
 }
@@ -509,7 +529,36 @@ export interface MemoryEventRecord {
   createdAt: string;
 }
 
-export interface MemorySearchResult {
+/**
+ * Source facts retained while a retrieval result moves through candidate
+ * fusion, expansion, evidence selection, citations, and encrypted traces.
+ * Optional fields must be omitted when the source has no truthful value.
+ */
+export interface MemoryCandidateProvenance {
+  sourceRevision?: number;
+  sourceGeneration?: string | number;
+  occurredAt?: string;
+  capturedAt?: string;
+  representation?: string;
+  provenanceId?: string;
+  provenance?: Record<string, unknown>;
+  grantProvenance?: Record<string, unknown>;
+  visibilityProvenance?: Record<string, unknown>;
+  generationProvenance?: Record<string, unknown>;
+}
+
+export interface MemorySearchCitation extends MemoryCandidateProvenance {
+  nodeId: string;
+  sourceType?: "memory_node" | "memory_event" | "message" | "curated_memory";
+  sourceId?: string;
+  sourceChunkIndex?: number;
+  sourceChunkCount?: number;
+  retrievalStage?: string;
+  parentNodeIds?: string[];
+  visibility: Visibility;
+}
+
+export interface MemorySearchResult extends MemoryCandidateProvenance {
   nodeId: string;
   sourceType?: "memory_node" | "memory_event" | "message" | "curated_memory";
   sourceId?: string;
@@ -519,19 +568,12 @@ export interface MemorySearchResult {
   parentNodeIds?: string[];
   visibility: Visibility;
   summaryText: string;
+  lexicalAnchors?: string[];
+  exactAnchorMatches?: string[];
   lcmNodeSummaryStatus?: "pending" | "summarized";
   lcmNodeSummaryModel?: string | null;
   score: number;
-  citation: {
-    nodeId: string;
-    sourceType?: "memory_node" | "memory_event" | "message" | "curated_memory";
-    sourceId?: string;
-    sourceChunkIndex?: number;
-    sourceChunkCount?: number;
-    retrievalStage?: string;
-    parentNodeIds?: string[];
-    visibility: Visibility;
-  };
+  citation: MemorySearchCitation;
 }
 
 export interface AnswerEvidenceBundle {
@@ -574,8 +616,16 @@ export interface LcmSourceItem {
   actor?: MemoryActor;
   turnId?: string | null;
   createdAt?: string;
+  occurredAt?: string;
+  capturedAt?: string;
+  sourceRevision?: number;
+  sourceGeneration?: string | number;
   text?: string;
   payload?: unknown;
+  provenance?: Record<string, unknown>;
+  grantProvenance?: Record<string, unknown>;
+  visibilityProvenance?: Record<string, unknown>;
+  generationProvenance?: Record<string, unknown>;
   supportingContext?: SupportingContextItem[];
   position: number;
 }
@@ -621,6 +671,7 @@ export interface MemoryEngineRepository {
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
+      exactHints?: string[];
       retrievalStage?: SearchMemoryInput["retrievalStage"];
       parentNodeIds?: string[];
       strictLimit?: boolean;

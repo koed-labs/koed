@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { memoryRetrievalExactHintsSchema } from "@koed/shared";
 import { queryBooleanSchema } from "./common-schemas.js";
 import {
   retrievalScopeSchema,
@@ -13,6 +14,8 @@ export const searchMemorySchema = z
     session_id: z.string().uuid().optional(),
     project_id: z.string().min(1).optional(),
     team_workspace_id: z.string().uuid().optional(),
+    authorization_boundary: z.string().min(1).max(32768).optional(),
+    exact_hints: memoryRetrievalExactHintsSchema.optional(),
     limit: z.coerce.number().int().positive().max(50).default(10),
     recent_days: z.coerce.number().int().positive().max(36500).optional(),
     source_after: z.coerce.date().optional(),
@@ -25,14 +28,20 @@ export const searchMemorySchema = z
         "leaf_search",
         "curated_memory_search",
         "fresh_pending_search",
-        "raw_fallback_search",
-        "lexical_search"
+        "raw_fallback_search"
       ])
       .optional(),
     parent_node_ids: z.array(z.string().uuid()).max(20).optional(),
     strict_limit: queryBooleanSchema.optional()
   })
   .superRefine((input, context) => {
+    if (input.authorization_boundary && !input.team_workspace_id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["authorization_boundary"],
+        message: "authorization_boundary requires team_workspace_id"
+      });
+    }
     if (input.search_domain === "session" && !input.session_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

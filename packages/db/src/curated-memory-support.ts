@@ -22,6 +22,7 @@ import type {
 export interface CuratedMemoryRepositoryContext {
   pool: pg.Pool;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  onCuratedMemoryChanged?: (actor: ActorContext) => Promise<void>;
 }
 
 export type CuratedMemoryEncryptedSourceTable = Extract<
