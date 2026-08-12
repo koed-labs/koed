@@ -109,14 +109,12 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
     step({
       id: "services",
       title: "Database and services",
-      description:
-        "Start storage, processing, the local API, and the inspection surface.",
+      description: "Start storage, processing, and the local API.",
       components: [
         { label: "Database", status: status.database },
         { label: "Redis", status: status.redis },
         { label: "Worker queues", status: status.workerQueues },
-        { label: "API", status: status.api },
-        { label: "Explorer", status: status.explorer }
+        { label: "API", status: status.api }
       ],
       action: {
         command: "start",
@@ -180,6 +178,9 @@ export const compactHealthSummary = (
     return { label: "Koed is ready", state: "healthy" };
   }
   if (status.state === "starting") {
+    return { label: "Koed is starting", state: "starting" };
+  }
+  if (status.state !== "needs_attention") {
     return { label: "Koed is starting", state: "starting" };
   }
   const faults = setupStepsFromStatus(status).filter(

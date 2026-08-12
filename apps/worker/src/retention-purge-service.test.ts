@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClaimedPurgeJob, RetentionLifecycleRepository } from "@koed/db";
 import { createRetentionPurgeService } from "./retention-purge-service.js";
 
@@ -49,6 +49,10 @@ const fixture = (options?: { maxAttempts?: number }) => {
 };
 
 describe("retention purge service", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("does no work when no purge job is due", async () => {
     const test = fixture();
     vi.mocked(test.repository.claimNextPurgeJob).mockResolvedValue(null);
@@ -82,6 +86,77 @@ describe("retention purge service", () => {
     expect(test.repository.completePurgeJob).toHaveBeenCalledWith(
       claimed.job.id
     );
+  });
+
+  it("waits for the configured interval while the purge queue is empty", async () => {
+    vi.useFakeTimers();
+    const test = fixture();
+    vi.mocked(test.repository.claimNextPurgeJob).mockResolvedValue(null);
+
+    test.service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(2);
+    test.service.stop();
+  });
+
+  it("drains claimed purge jobs before applying the idle interval", async () => {
+    vi.useFakeTimers();
+    const test = fixture();
+    vi.mocked(test.repository.claimNextPurgeJob)
+      .mockResolvedValueOnce(claimed)
+      .mockResolvedValue(null);
+    vi.mocked(test.repository.processClaimedPurgeJob).mockResolvedValue(
+      claimed.job
+    );
+    vi.mocked(test.repository.completePurgeJob).mockResolvedValue({
+      completed: true,
+      job: claimed.job
+    });
+
+    test.service.start();
+    await vi.advanceTimersToNextTimerAsync();
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(3);
+    test.service.stop();
+  });
+
+  it("backs off after a purge claim failure", async () => {
+    vi.useFakeTimers();
+    const test = fixture();
+    vi.mocked(test.repository.claimNextPurgeJob)
+      .mockRejectedValueOnce(new Error("database unavailable"))
+      .mockResolvedValue(null);
+
+    test.service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(1);
+    expect(test.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: {
+          name: "retention.purge.loop_failed",
+          category: "retention"
+        }
+      }),
+      "retention purge loop failed"
+    );
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(test.repository.claimNextPurgeJob).toHaveBeenCalledTimes(2);
+    test.service.stop();
   });
 
   it("records a bounded retry without logging purge payload details", async () => {

@@ -31,7 +31,7 @@ isolated Chrome DevTools Protocol ports.
 
 Options:
   --base-url <url>                 Running API target for staged remote probes.
-  --browser-origin <url>           Browser/Explorer origin for session CSRF evidence.
+  --browser-origin <url>           Browser origin for session CSRF evidence.
   --session-cookie <cookie>        Browser Cookie header for Team routes.
   --device-credential <credential> Koed-Device credential value or full header.
   --api-token <token>              Optional API Token used to prove Team rejection.

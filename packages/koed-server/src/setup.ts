@@ -13,10 +13,10 @@ import { dirname, resolve } from "node:path";
 import {
   resolveActiveIntegrationApiToken,
   resolveLocalApiToken,
-  writeExplorerCredential
+  writeLocalAppCredential
 } from "./credentials.js";
 import { resolveKoedServerConfig } from "./config.js";
-import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import {
   localPostgresEnv,
   resolveLocalPostgresRuntimePaths
@@ -41,7 +41,6 @@ export interface KoedServerSetupCodexResult {
   state: "healthy" | "needs_attention";
   koedHome: string;
   apiUrl: string;
-  explorerUrl: string;
   checkedAt: string;
   command: string;
   stdout?: string;
@@ -86,7 +85,6 @@ const configureCodexIntegration = ({
   paths,
   environment,
   apiUrl,
-  apiToken,
   readFileSync,
   writeFileSync,
   mkdirSync,
@@ -95,7 +93,6 @@ const configureCodexIntegration = ({
   paths: ReturnType<typeof resolveKoedServerPaths>;
   environment: NodeJS.ProcessEnv;
   apiUrl: string;
-  apiToken: string;
   readFileSync: typeof nodeReadFileSync;
   writeFileSync: typeof nodeWriteFileSync;
   mkdirSync: typeof nodeMkdirSync;
@@ -113,7 +110,6 @@ const configureCodexIntegration = ({
   }
 
   const nodeCommand = environment.MEMORY_NODE_COMMAND ?? "node";
-  const appServerBinary = environment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
   const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
@@ -153,14 +149,11 @@ args = [${tomlString(runtime.mcpCli)}]
 enabled = true
 
 [mcp_servers.${mcpName}.env]
-MEMORY_API_URL = ${tomlString(apiUrl)}
-MEMORY_API_TOKEN = ${tomlString(apiToken)}
-MEMORY_CODEX_APP_SERVER_BINARY = ${tomlString(appServerBinary)}
+KOED_HOME = ${tomlString(paths.koedHome)}
 
 ${hookBlocks}
 ${markerEnd}
 `;
-
   const existing = existsSync(codexConfigPath)
     ? String(readFileSync(codexConfigPath, "utf8"))
     : "";
@@ -180,7 +173,6 @@ ${markerEnd}
       "Codex integration configured.",
       `Detected API URL: ${apiUrl}`,
       `Detected Node command: ${nodeCommand}`,
-      `Detected Codex app-server binary: ${appServerBinary}`,
       `Wrote Codex MCP config: ${codexConfigPath}`
     ].join("\n")
   };
@@ -221,9 +213,9 @@ export const repairCodexIntegration = ({
       apiUrl,
       checkedAt,
       command: "write Codex config",
-      error: "No Koed API Token is available for the Codex integration.",
+      error: "No Koed API Token is available for the Local AI Runtime.",
       action:
-        "Start Koed Desktop first so it can provision a local Explorer/API Token, then run Fix Codex integration again."
+        "Start Koed Desktop first so it can provision a local API Token, then run Fix Codex integration again."
     };
   }
 
@@ -232,7 +224,6 @@ export const repairCodexIntegration = ({
       paths,
       environment: { ...repoEnv, ...environment },
       apiUrl,
-      apiToken: apiToken.token,
       readFileSync,
       writeFileSync,
       mkdirSync,
@@ -353,7 +344,6 @@ interface SetupCodexBaseContext {
   repoEnv: Record<string, string>;
   dependencyMode: "bundled-local" | "external";
   apiUrl: string;
-  explorerUrl: string;
   checkedAt: string;
   scriptPath: string;
 }
@@ -392,7 +382,6 @@ const resolveSetupCodexBase = (
     repoEnv,
     dependencyMode: config.dependencyMode,
     apiUrl: resolveApiUrl(environment, repoEnv),
-    explorerUrl: resolveExplorerUrl(environment, repoEnv),
     checkedAt: (options.now ?? (() => new Date()))().toISOString(),
     scriptPath: resolve(paths.repoRoot, "scripts/clients-bootstrap.mjs")
   };
@@ -422,7 +411,6 @@ const prepareSetupCodex = (
         state: "needs_attention",
         koedHome: base.paths.koedHome,
         apiUrl: base.apiUrl,
-        explorerUrl: base.explorerUrl,
         checkedAt: base.checkedAt,
         command: "resolve bundled-local setup environment",
         error: database.error,
@@ -435,7 +423,6 @@ const prepareSetupCodex = (
     context: {
       ...base,
       childEnv: {
-        ...process.env,
         ...base.repoEnv,
         ...base.environment,
         ...database.environment,
@@ -455,7 +442,7 @@ const persistSetupApiToken = (
       resolveLocalApiToken(context.environment, repoEnv))
     : resolveLocalApiToken(context.environment, repoEnv);
   if (!apiToken) return;
-  writeExplorerCredential(context.paths, {
+  writeLocalAppCredential(context.paths, {
     apiToken: apiToken.token,
     provisionedAt: context.checkedAt,
     source: apiToken.source
@@ -476,7 +463,6 @@ const runSetupBootstrap = (
   const base = {
     koedHome: context.paths.koedHome,
     apiUrl: context.apiUrl,
-    explorerUrl: context.explorerUrl,
     checkedAt: context.checkedAt,
     command: `node ${context.scriptPath}`
   };

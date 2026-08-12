@@ -6926,10 +6926,30 @@ describeDb("memory repository visibility", () => {
     expect(claimedOutbox?.claimToken).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
+    await expect(
+      encryptedRepo.activateSourceSyncRelationship({
+        relationshipId: ids.relationshipId,
+        localUserId: owner.id
+      })
+    ).resolves.toMatchObject({ state: "created" });
+    await expect(
+      encryptedRepo.renewSyncQueueLease({
+        queue: "outbox",
+        id: outboxEntry.id,
+        claimToken: claimedOutbox!.claimToken!,
+        leaseMs: 30_000
+      })
+    ).resolves.toBe(true);
     await encryptedRepo.markSourceSyncProcessing({
       relationshipId: ids.relationshipId,
       packageId: randomUUID()
     });
+    await expect(
+      encryptedRepo.activateSourceSyncRelationship({
+        relationshipId: ids.relationshipId,
+        localUserId: owner.id
+      })
+    ).resolves.toMatchObject({ state: "processing" });
     await encryptedRepo.deferSyncQueueEntry({
       queue: "outbox",
       id: outboxEntry.id,
@@ -6953,7 +6973,7 @@ describeDb("memory repository visibility", () => {
       leaseMs: 30_000
     });
     await pool.query(
-      "update sync_outbox_entries set lease_expires_at=now()-interval '1 second' where id=$1",
+      "update sync_outbox_entries set lease_expires_at=null where id=$1",
       [outboxEntry.id]
     );
     const replacementClaim = await encryptedRepo.claimSyncQueueEntry({
@@ -12607,7 +12627,7 @@ describeDb("memory repository visibility", () => {
       targetId: team.id,
       metadata: {
         event: "first_recall_completed",
-        surface: "explorer",
+        surface: "api",
         deploymentProfile: "koed_managed_cloud",
         teamId: team.id,
         attributes: { route: "memory_answer" }
@@ -12643,7 +12663,7 @@ describeDb("memory repository visibility", () => {
         {
           event: "first_recall_completed",
           count: 1,
-          surfaces: { explorer: 1 },
+          surfaces: { api: 1 },
           deploymentProfiles: { koed_managed_cloud: 1 }
         }
       ]
@@ -14923,201 +14943,37 @@ describeDb("memory repository visibility", () => {
     ).toBe(true);
   });
 
-  it("persists personal memory questions as shells and hydrated detail", async () => {
+  it("persists final personal memory questions as shells and hydrated detail", async () => {
     const alice = await repo.createUser({
       email: `alice-question-${randomUUID()}@example.com`
     });
     const bob = await repo.createUser({
       email: `bob-question-${randomUUID()}@example.com`
     });
-    const workspaceId = randomUUID();
+    const projectId = randomUUID();
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        projectId: workspaceId,
+        projectId,
         externalSessionId: `question-session-${randomUUID()}`,
         idempotencyKey: `question-session-${randomUUID()}`
       }
     );
-    const created = await repo.createMemoryQuestion(
+    const questionIdempotencyKey = `question-${randomUUID()}`;
+    const created = await repo.createFinalMemoryQuestion(
       { userId: alice.id },
       {
+        idempotencyKey: questionIdempotencyKey,
         query: "What did we decide about memory questions?",
+        origin: "mcp_memory_answer",
         searchDomain: "session",
-        projectId: workspaceId,
+        projectId,
         projectName: "Question Project",
         projectPath: "/tmp/question-project",
         sessionId: session.id,
         threadId: "thread-1",
         threadName: "Question Thread",
-        localMemoryWorkerConfig: {
-          provider: "codex",
-          model: "gpt-5.4",
-          reasoningEffort: "medium",
-          timeoutMs: 150000,
-          maxAttempts: 4
-        }
-      }
-    );
-
-    expect(created.status).toBe("pending");
-    expect(created.origin).toBe("explorer");
-    expect(created.answerMarkdown).toBeNull();
-    expect(created.processingLeaseUntil).toBeNull();
-
-    const mismatchedOriginClaim = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      {
-        questionId: created.id,
-        origin: "mcp_memory_answer",
-        limit: 1,
-        leaseSeconds: 120
-      }
-    );
-    const claimed = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      {
-        questionId: created.id,
-        origin: "explorer",
-        limit: 1,
-        leaseSeconds: 120
-      }
-    );
-    const claimedAgain = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      { questionId: created.id, limit: 1, leaseSeconds: 120 }
-    );
-    expect(mismatchedOriginClaim).toEqual([]);
-    expect(claimed).toHaveLength(1);
-    expect(claimed[0]).toMatchObject({
-      id: created.id,
-      status: "pending",
-      attemptCount: 1,
-      localMemoryWorkerConfig: {
-        provider: "codex",
-        model: "gpt-5.4",
-        reasoningEffort: "medium",
-        timeoutMs: 150000,
-        maxAttempts: 4
-      }
-    });
-    expect(claimed[0]?.processingStartedAt).toBeTruthy();
-    expect(claimed[0]?.processingLeaseUntil).toBeTruthy();
-    expect(claimedAgain).toEqual([]);
-    await pool.query(
-      `
-        update memory_questions
-        set processing_lease_until = now() - interval '1 second'
-        where id = $1
-      `,
-      [created.id]
-    );
-    const reclaimed = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      { questionId: created.id, limit: 1, leaseSeconds: 120 }
-    );
-    const staleCompletion = await repo.updateMemoryQuestion(
-      { userId: alice.id },
-      created.id,
-      {
         status: "answered",
-        attemptCount: claimed[0]!.attemptCount,
-        answerMarkdown: "This stale worker should not win."
-      }
-    );
-    expect(reclaimed[0]?.attemptCount).toBe(2);
-    expect(staleCompletion).toBeNull();
-
-    const retryCreated = await repo.createMemoryQuestion(
-      { userId: alice.id },
-      {
-        origin: "mcp_memory_answer",
-        query: "Can a failed local answer retry later?",
-        searchDomain: "global"
-      }
-    );
-    const retryClaimed = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      { questionId: retryCreated.id, limit: 1, leaseSeconds: 120 }
-    );
-    const retryReleased = await repo.updateMemoryQuestion(
-      { userId: alice.id },
-      retryCreated.id,
-      {
-        status: "pending",
-        attemptCount: retryClaimed[0]!.attemptCount,
-        lastErrorMessage: "Codex unavailable",
-        response: { markdown: "raw fallback must not become the answer" },
-        retrieval: { mode: "test" },
-        localMemoryWorker: {
-          usedFallback: true,
-          skippedReason: "codex_failed"
-        }
-      }
-    );
-    const retryReclaimed = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      { questionId: retryCreated.id, limit: 1, leaseSeconds: 120 }
-    );
-
-    expect(retryReleased).toMatchObject({
-      id: retryCreated.id,
-      origin: "mcp_memory_answer",
-      status: "pending",
-      answerMarkdown: null,
-      errorMessage: null,
-      processingStartedAt: null,
-      processingLeaseUntil: null,
-      lastErrorMessage: "Codex unavailable"
-    });
-    expect(retryReleased?.answeredAt).toBeNull();
-    expect(retryReclaimed).toHaveLength(1);
-    expect(retryReclaimed[0]?.attemptCount).toBe(
-      retryClaimed[0]!.attemptCount + 1
-    );
-    expect(retryReclaimed[0]?.lastErrorMessage).toBeNull();
-
-    const finalCreated = await repo.createFinalMemoryQuestion(
-      { userId: alice.id },
-      {
-        origin: "mcp_memory_answer",
-        query: "What did the MCP memory answer return?",
-        searchDomain: "global",
-        status: "answered",
-        answerMarkdown: "MCP memory answer completed.",
-        response: { markdown: "MCP memory answer completed." },
-        evidence: [{ id: "mcp-source-1" }],
-        retrieval: { mode: "app_server_dynamic_tools" },
-        localMemoryWorker: { usedFallback: false }
-      }
-    );
-    const finalClaimed = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      {
-        questionId: finalCreated.id,
-        origin: "mcp_memory_answer",
-        limit: 1,
-        leaseSeconds: 120
-      }
-    );
-
-    expect(finalCreated).toMatchObject({
-      origin: "mcp_memory_answer",
-      status: "answered",
-      answerMarkdown: "MCP memory answer completed.",
-      processingStartedAt: null,
-      processingLeaseUntil: null,
-      evidenceCount: 1
-    });
-    expect(finalCreated.answeredAt).toBeTruthy();
-    expect(finalClaimed).toEqual([]);
-
-    const updated = await repo.updateMemoryQuestion(
-      { userId: alice.id },
-      created.id,
-      {
-        status: "answered",
-        attemptCount: reclaimed[0]!.attemptCount,
         answerMarkdown: "Memory questions are persisted separately.",
         evidence: [{ id: "source-1" }],
         citations: [{ id: "citation-1" }],
@@ -15126,6 +14982,18 @@ describeDb("memory repository visibility", () => {
         response: { markdown: "Memory questions are persisted separately." }
       }
     );
+    const retried = await repo.createFinalMemoryQuestion(
+      { userId: alice.id },
+      {
+        idempotencyKey: questionIdempotencyKey,
+        query: "This retry must not create another question.",
+        origin: "mcp_memory_answer",
+        searchDomain: "global",
+        status: "error",
+        errorMessage: "This retry must not replace the first outcome."
+      }
+    );
+
     const shells = await repo.listMemoryQuestions(
       { userId: alice.id },
       { searchDomain: "session", sessionId: session.id }
@@ -15135,62 +15003,18 @@ describeDb("memory repository visibility", () => {
       created.id
     );
     const hidden = await repo.getMemoryQuestion({ userId: bob.id }, created.id);
-    expect(updated).toMatchObject({
-      id: created.id,
+
+    expect(created).toMatchObject({
+      origin: "mcp_memory_answer",
       status: "answered",
-      localMemoryWorkerConfig: {
-        provider: "codex",
-        model: "gpt-5.4",
-        reasoningEffort: "medium",
-        timeoutMs: 150000,
-        maxAttempts: 4
-      }
-    });
-    expect(detail).toMatchObject({
-      id: created.id,
-      origin: "explorer",
       answerMarkdown: "Memory questions are persisted separately.",
-      localMemoryWorkerConfig: {
-        provider: "codex",
-        model: "gpt-5.4",
-        reasoningEffort: "medium",
-        timeoutMs: 150000,
-        maxAttempts: 4
-      },
       evidenceCount: 1
     });
-    const slowCreated = await repo.createMemoryQuestion(
-      { userId: alice.id },
-      {
-        query: "Can a slow local answer still complete?",
-        searchDomain: "global"
-      }
+    expect(created.answeredAt).toBeTruthy();
+    expect(retried.id).toBe(created.id);
+    expect(retried.answerMarkdown).toBe(
+      "Memory questions are persisted separately."
     );
-    const slowClaimed = await repo.claimPendingMemoryQuestions(
-      { userId: alice.id },
-      { questionId: slowCreated.id, limit: 1, leaseSeconds: 120 }
-    );
-    await pool.query(
-      `
-        update memory_questions
-        set processing_lease_until = now() - interval '1 second'
-        where id = $1
-      `,
-      [slowCreated.id]
-    );
-    const slowCompletion = await repo.updateMemoryQuestion(
-      { userId: alice.id },
-      slowCreated.id,
-      {
-        status: "answered",
-        attemptCount: slowClaimed[0]!.attemptCount,
-        answerMarkdown: "Slow answers complete if no newer attempt exists."
-      }
-    );
-
-    expect(updated?.status).toBe("answered");
-    expect(updated?.processingLeaseUntil).toBeNull();
-    expect(updated?.lastErrorMessage).toBeNull();
     expect(shells).toHaveLength(1);
     expect(shells[0]).toMatchObject({
       id: created.id,
@@ -15200,13 +15024,9 @@ describeDb("memory repository visibility", () => {
     });
     expect(detail?.evidence).toEqual([{ id: "source-1" }]);
     expect(hidden).toBeNull();
-    expect(slowCompletion?.status).toBe("answered");
-    expect(slowCompletion?.answerMarkdown).toBe(
-      "Slow answers complete if no newer attempt exists."
-    );
   });
 
-  it("encrypts paid managed-cloud Memory Question payloads on live writes", async () => {
+  it("encrypts managed-cloud final Memory Question payloads", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 34).toString("base64")
@@ -15221,47 +15041,14 @@ describeDb("memory repository visibility", () => {
       const bob = await repo.createUser({
         email: `bob-question-live-encrypted-${randomUUID()}@example.com`
       });
-      const created = await encryptedQuestionRepo.createMemoryQuestion(
+      const created = await encryptedQuestionRepo.createFinalMemoryQuestion(
         { userId: alice.id },
         {
+          idempotencyKey: `encrypted-question-${randomUUID()}`,
           origin: "mcp_memory_answer",
           query: "Where did the obsidian retrieval plan land?",
           searchDomain: "global",
-          localMemoryWorkerConfig: {
-            provider: "codex",
-            model: "gpt-5.4-mini",
-            prompt: "obsidian worker config must stay encrypted"
-          }
-        }
-      );
-
-      expect(created).toMatchObject({
-        query: "Where did the obsidian retrieval plan land?",
-        localMemoryWorkerConfig: {
-          provider: "codex",
-          model: "gpt-5.4-mini",
-          prompt: "obsidian worker config must stay encrypted"
-        }
-      });
-
-      const claimed = await encryptedQuestionRepo.claimPendingMemoryQuestions(
-        { userId: alice.id },
-        { questionId: created.id, limit: 1, leaseSeconds: 120 }
-      );
-      expect(claimed[0]).toMatchObject({
-        id: created.id,
-        query: "Where did the obsidian retrieval plan land?",
-        localMemoryWorkerConfig: {
-          prompt: "obsidian worker config must stay encrypted"
-        }
-      });
-
-      const answered = await encryptedQuestionRepo.updateMemoryQuestion(
-        { userId: alice.id },
-        created.id,
-        {
           status: "answered",
-          attemptCount: claimed[0]!.attemptCount,
           answerMarkdown:
             "The obsidian retrieval plan landed in the Team launch doc.",
           evidence: [
@@ -15296,30 +15083,18 @@ describeDb("memory repository visibility", () => {
         }
       );
 
-      expect(answered).toMatchObject({
-        id: created.id,
+      expect(created).toMatchObject({
         status: "answered",
         query: "Where did the obsidian retrieval plan land?",
         answerMarkdown:
           "The obsidian retrieval plan landed in the Team launch doc.",
-        evidenceCount: 2,
-        evidence: [
-          {
-            sourceId: "obsidian-evidence-1",
-            text: "First obsidian evidence snippet"
-          },
-          {
-            sourceId: "obsidian-evidence-2",
-            text: "Second obsidian evidence snippet"
-          }
-        ]
+        evidenceCount: 2
       });
 
       const rawQuestion = await pool.query<{
         query: string;
         answer_markdown: string | null;
         evidence: unknown[] | null;
-        local_memory_worker_config: Record<string, unknown> | null;
         raw_payload: string;
       }>(
         `
@@ -15327,7 +15102,6 @@ describeDb("memory repository visibility", () => {
             query,
             answer_markdown,
             evidence,
-            local_memory_worker_config,
             row_to_json(memory_questions)::text as raw_payload
           from memory_questions
           where id = $1
@@ -15336,18 +15110,14 @@ describeDb("memory repository visibility", () => {
       );
       expect(rawQuestion.rows[0]).toMatchObject({
         query: "[koed encrypted memory question]",
-        answer_markdown: "[koed encrypted memory question]"
+        answer_markdown: "[koed encrypted memory question]",
+        evidence: [
+          {
+            contentEncrypted: true,
+            encryptedSourceTable: "memory_questions"
+          }
+        ]
       });
-      expect(rawQuestion.rows[0]?.local_memory_worker_config).toMatchObject({
-        contentEncrypted: true,
-        encryptedSourceTable: "memory_questions"
-      });
-      expect(rawQuestion.rows[0]?.evidence).toEqual([
-        {
-          contentEncrypted: true,
-          encryptedSourceTable: "memory_questions"
-        }
-      ]);
       expect(rawQuestion.rows[0]?.raw_payload).not.toContain("obsidian");
       expect(rawQuestion.rows[0]?.raw_payload).not.toContain("Team launch doc");
 
@@ -15368,7 +15138,6 @@ describeDb("memory repository visibility", () => {
         "citations",
         "evidence",
         "local_memory_worker",
-        "local_memory_worker_config",
         "query",
         "response",
         "retrieval"
@@ -15429,23 +15198,29 @@ describeDb("memory repository visibility", () => {
       const alice = await repo.createUser({
         email: `alice-question-deep-search-${randomUUID()}@example.com`
       });
-      const target = await encryptedQuestionRepo.createMemoryQuestion(
+      const target = await encryptedQuestionRepo.createFinalMemoryQuestion(
         { userId: alice.id },
         {
+          idempotencyKey: `deep-search-${randomUUID()}`,
           origin: "mcp_memory_answer",
           query: "Where is the deep encrypted launch retrieval marker?",
-          searchDomain: "global"
+          searchDomain: "global",
+          status: "answered",
+          answerMarkdown: "The marker is in archived project memory."
         }
       );
 
       await Promise.all(
         Array.from({ length: 5 }, (_, index) =>
-          encryptedQuestionRepo.createMemoryQuestion(
+          encryptedQuestionRepo.createFinalMemoryQuestion(
             { userId: alice.id },
             {
+              idempotencyKey: `deep-search-filler-${index}-${randomUUID()}`,
               origin: "mcp_memory_answer",
               query: `Encrypted filler memory question ${index}`,
-              searchDomain: "global"
+              searchDomain: "global",
+              status: "answered",
+              answerMarkdown: `Encrypted filler answer ${index}`
             }
           )
         )
@@ -15468,7 +15243,7 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("encrypts paid managed-cloud Memory Question retry and error payloads", async () => {
+  it("encrypts managed-cloud Memory Question error payloads", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 35).toString("base64")
@@ -15479,41 +15254,10 @@ describeDb("memory repository visibility", () => {
       const alice = await repo.createUser({
         email: `alice-question-error-encrypted-${randomUUID()}@example.com`
       });
-      const pending = await encryptedQuestionRepo.createMemoryQuestion(
-        { userId: alice.id },
-        {
-          query: "Can garnet memory worker failures be retried?",
-          searchDomain: "global"
-        }
-      );
-      const claimed = await encryptedQuestionRepo.claimPendingMemoryQuestions(
-        { userId: alice.id },
-        { questionId: pending.id, limit: 1, leaseSeconds: 120 }
-      );
-      const released = await encryptedQuestionRepo.updateMemoryQuestion(
-        { userId: alice.id },
-        pending.id,
-        {
-          status: "pending",
-          attemptCount: claimed[0]!.attemptCount,
-          lastErrorMessage: "garnet worker timed out",
-          retrieval: { query: "garnet retry retrieval" },
-          response: { markdown: "garnet retry raw response" },
-          localMemoryWorker: { error: "garnet worker timed out" }
-        }
-      );
-
-      expect(released).toMatchObject({
-        status: "pending",
-        lastErrorMessage: "garnet worker timed out",
-        retrieval: { query: "garnet retry retrieval" },
-        response: { markdown: "garnet retry raw response" },
-        localMemoryWorker: { error: "garnet worker timed out" }
-      });
-
       const finalError = await encryptedQuestionRepo.createFinalMemoryQuestion(
         { userId: alice.id },
         {
+          idempotencyKey: `error-question-${randomUUID()}`,
           origin: "mcp_memory_answer",
           query: "Why did the garnet memory answer fail?",
           searchDomain: "global",
@@ -15529,51 +15273,34 @@ describeDb("memory repository visibility", () => {
         status: "error",
         query: "Why did the garnet memory answer fail?",
         errorMessage: "garnet memory answer failed permanently",
-        lastErrorMessage: "garnet memory answer failed permanently",
         response: { error: "garnet permanent failure" },
         retrieval: { query: "garnet error retrieval" }
       });
 
-      const rawQuestions = await pool.query<{ raw_payload: string }>(
+      const rawQuestion = await pool.query<{ raw_payload: string }>(
         `
-          select string_agg(row_to_json(memory_questions)::text, E'\n') as raw_payload
+          select row_to_json(memory_questions)::text as raw_payload
           from memory_questions
-          where owner_user_id = $1
+          where id = $1
         `,
-        [alice.id]
+        [finalError.id]
       );
-      expect(rawQuestions.rows[0]?.raw_payload).not.toContain("garnet");
+      expect(rawQuestion.rows[0]?.raw_payload).not.toContain("garnet");
 
-      const encryptedColumns = await pool.query<{
-        source_id: string;
-        source_column: string;
-      }>(
+      const encryptedColumns = await pool.query<{ source_column: string }>(
         `
-          select source_id::text, source_column
+          select source_column
           from encrypted_field_payloads
           where owner_user_id = $1
             and source_table = 'memory_questions'
+            and source_id = $2
             and invalidated_at is null
-          order by source_id::text, source_column
+          order by source_column
         `,
-        [alice.id]
+        [alice.id, finalError.id]
       );
-      const retryColumns = encryptedColumns.rows
-        .filter((row) => row.source_id === pending.id)
-        .map((row) => row.source_column);
-      const errorColumns = encryptedColumns.rows
-        .filter((row) => row.source_id === finalError.id)
-        .map((row) => row.source_column);
-      expect(retryColumns).toEqual([
-        "last_error_message",
-        "local_memory_worker",
-        "query",
-        "response",
-        "retrieval"
-      ]);
-      expect(errorColumns).toEqual([
+      expect(encryptedColumns.rows.map((row) => row.source_column)).toEqual([
         "error_message",
-        "last_error_message",
         "local_memory_worker",
         "query",
         "response",
@@ -15599,6 +15326,7 @@ describeDb("memory repository visibility", () => {
     const question = await repo.createFinalMemoryQuestion(
       { userId: alice.id },
       {
+        idempotencyKey: `backfill-question-${randomUUID()}`,
         origin: "mcp_memory_answer",
         query: "What evidence did encrypted questions retain?",
         searchDomain: "global",
@@ -15882,6 +15610,51 @@ describeDb("memory repository visibility", () => {
     expect(thread).toMatchObject({
       sessionId: session.id,
       sourceAiClient: "codex-cli"
+    });
+  });
+
+  it("normalizes native Codex guardian lineage in Captured Session graph rows", async () => {
+    const alice = await repo.createUser({
+      email: `alice-native-guardian-${randomUUID()}@example.com`
+    });
+    const parentExternalSessionId = `parent-${randomUUID()}`;
+    const guardianExternalSessionId = `guardian-${randomUUID()}`;
+    await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: parentExternalSessionId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        metadata: { threadName: "Canonical parent Conversation" }
+      }
+    );
+    await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: guardianExternalSessionId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        metadata: {
+          threadName:
+            "The following is the Codex agent history added since your last approval assessment",
+          thread_source: "subagent",
+          parent_thread_id: parentExternalSessionId,
+          source: { subagent: { other: "guardian" } }
+        }
+      }
+    );
+
+    const projects = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const guardian = projects
+      .flatMap((project) => project.threads)
+      .find((thread) => thread.id === guardianExternalSessionId);
+
+    expect(guardian).toMatchObject({
+      threadKind: "subagent",
+      parentThreadId: parentExternalSessionId
     });
   });
 
@@ -16830,7 +16603,20 @@ describeDb("memory repository visibility", () => {
               projectName: "Live Prompt Dedupe Project",
               transcriptByteOffset: 6,
               transcriptItemDiscriminator: "primary:codex_transcript_user",
-              transcriptType: "user_message"
+              transcriptType: "user_message",
+              approvalReviewTranscriptDisplay: {
+                kind: "approval_review",
+                version: 1,
+                truncated: false,
+                segments: [
+                  {
+                    kind: "message",
+                    sequence: 1,
+                    actor: "user",
+                    content: "Where should duplicate prompts render?"
+                  }
+                ]
+              }
             }
           }
         ]
@@ -16895,6 +16681,12 @@ describeDb("memory repository visibility", () => {
       "Where should duplicate prompts render?"
     ]);
     expect(events[0]?.sourceSequence).toBe(12);
+    expect(events[0]?.metadata).toMatchObject({
+      approvalReviewTranscriptDisplay: {
+        kind: "approval_review",
+        segments: [{ kind: "message", sequence: 1, actor: "user" }]
+      }
+    });
     expect(rawRows.rows).toHaveLength(1);
     const transcriptRawRow = rawRows.rows.find(
       (row) => row.source_record_type === "event_msg"
@@ -21098,11 +20890,14 @@ describeDb("memory repository visibility", () => {
       )
     ).rejects.toThrow("Conversation item not found or not visible");
 
-    const bobQuestion = await repo.createMemoryQuestion(
+    const bobQuestion = await repo.createFinalMemoryQuestion(
       { userId: bob.id },
       {
+        idempotencyKey: `bob-question-${randomUUID()}`,
         query: "What did we decide?",
-        searchDomain: "global"
+        searchDomain: "global",
+        status: "answered",
+        answerMarkdown: "Bob's private answer"
       }
     );
     const bobNode = await repo.createMemoryNode(
@@ -21418,11 +21213,14 @@ describeDb("memory repository visibility", () => {
     const alice = await repo.createUser({
       email: `alice-token-source-references-${randomUUID()}@example.com`
     });
-    const question = await repo.createMemoryQuestion(
+    const question = await repo.createFinalMemoryQuestion(
       { userId: alice.id },
       {
+        idempotencyKey: `alice-question-${randomUUID()}`,
         query: "What did we decide?",
-        searchDomain: "global"
+        searchDomain: "global",
+        status: "answered",
+        answerMarkdown: "Alice's answer"
       }
     );
     const node = await repo.createMemoryNode(
@@ -24264,6 +24062,14 @@ describeDb("memory repository visibility", () => {
       }
     }
   }, 15_000);
+
+  it("reads projection backlog after terminal-only Memory Question migration", async () => {
+    await expect(repo.getConversationProjectionBacklog()).resolves.toEqual({
+      liveProjectionRows: 0,
+      historicalImportRows: 0,
+      historicalImportBytes: 0
+    });
+  });
 
   it("counts every physical transport chunk against historical row and byte caps", async () => {
     const alice = await repo.createUser({

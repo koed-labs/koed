@@ -28,78 +28,10 @@ textarea {
   font: inherit;
 }
 
-.desktop-global-notice {
-  align-items: center;
-  background: color-mix(in oklch, var(--warning) 14%, var(--background));
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  font-size: 0.8125rem;
-  gap: 12px;
-  justify-content: space-between;
-  min-height: 36px;
-  padding: 6px 12px;
-}
-
-.desktop-global-notice button {
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  display: grid;
-  height: 28px;
-  place-items: center;
-  width: 28px;
-}
-
-.desktop-global-notice svg {
-  height: 16px;
-  width: 16px;
-}
-
 .desktop-event-inspector {
   display: grid;
   gap: 16px;
   margin: 0;
-}
-
-.desktop-action-grants {
-  background: var(--background);
-  border-bottom: 1px solid var(--border);
-  display: grid;
-}
-
-.desktop-action-grants article {
-  align-items: center;
-  display: grid;
-  font-size: 0.8125rem;
-  gap: 10px;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  min-height: 44px;
-  padding: 6px 12px;
-}
-
-.desktop-action-grants article + article {
-  border-top: 1px solid var(--border);
-}
-
-.desktop-action-grants article > span:nth-child(2) {
-  display: grid;
-  min-width: 0;
-}
-
-.desktop-action-grants small {
-  color: var(--muted-foreground);
-}
-
-.desktop-action-grant-icon,
-.desktop-action-grant-icon svg {
-  height: 18px;
-  width: 18px;
-}
-
-.desktop-action-grants [data-state="executing"] svg,
-.desktop-action-grants [data-state="approved"] svg {
-  animation: desktop-spin 800ms linear infinite;
 }
 
 .desktop-command-dialog {

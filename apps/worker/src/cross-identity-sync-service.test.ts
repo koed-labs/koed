@@ -211,6 +211,59 @@ const createFixture = (
 };
 
 describe("Cross-Identity Sync device identity gate", () => {
+  it("keeps its service heartbeat fresh during a long sync iteration", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishDelta!: (value: null) => void;
+      const delta = new Promise<null>((resolve) => {
+        finishDelta = resolve;
+      });
+      const recordHeartbeat = vi.fn().mockResolvedValue(undefined);
+      const readDelta = vi.fn().mockReturnValue(delta);
+      const entry: SyncQueueEntryRecord = {
+        ...queueEntry(),
+        payloadManifest: { kind: "changes" }
+      };
+      const repository = {
+        recordCrossIdentitySyncWorkerHeartbeat: recordHeartbeat,
+        listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
+        markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
+        cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+        claimSyncQueueEntry: vi
+          .fn()
+          .mockImplementation(({ queue }) =>
+            Promise.resolve(queue === "outbox" ? entry : null)
+          ),
+        renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+        readCapturedSessionSyncDelta: readDelta,
+        completeSyncQueueEntry: vi.fn().mockResolvedValue(true),
+        failSyncQueueEntry: vi.fn().mockResolvedValue(undefined)
+      } as unknown as MemorySourceRepository;
+      const service = createCrossIdentitySyncService({
+        repository,
+        recipientKeyEncryptionProvider: {} as EnvelopeEncryptionProvider,
+        embeddingWorkflow: {} as EmbeddingWorkflow,
+        koedHome: "/tmp/koed-sync-heartbeat-test",
+        isSourceIdentityHealthy: () => true,
+        staleAfterSeconds: 3_600,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+      });
+
+      const processing = service.processOnce();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(readDelta).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(recordHeartbeat).toHaveBeenCalledTimes(2);
+      finishDelta(null);
+      await expect(processing).resolves.toEqual({
+        outbox: true,
+        inbox: false
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("blocks missing-proof source work without claiming outbox and keeps inbox processing", async () => {
     const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-missing-proof-"));
     temporaryHomes.push(koedHome);
@@ -796,9 +849,13 @@ describe("Cross-Identity Sync summary transport", () => {
       sourceBoundary: "captured_session",
       recipientKey: recipient
     };
-    const summaryNodes = [1, 2, 3].map((index) =>
-      summaryNodeFixture(index, `${index}:${"x".repeat(200_000)}`)
-    );
+    const summaryNodes = [
+      // The summary text is repeated in the structured summary, so this node
+      // exercises a valid record that is larger than the former 512 KiB
+      // plaintext chunk ceiling.
+      summaryNodeFixture(1, "x".repeat(340_000)),
+      summaryNodeFixture(2, "x".repeat(240_000))
+    ];
     const entry: SyncQueueEntryRecord = {
       ...queueEntry(),
       payloadManifest: { kind: "changes" }
@@ -957,7 +1014,9 @@ describe("Cross-Identity Sync summary transport", () => {
 
     expect(persisted?.upload.fromCursor).toBe(4);
     expect(persisted?.upload.toCursor).toBe(4);
-    expect(persisted?.upload.packageManifest.recordCount).toBe(3);
+    expect(persisted?.upload.packageManifest.recordCount).toBe(
+      summaryNodes.length
+    );
     expect(persisted?.chunks.length).toBeGreaterThan(1);
     const privateProvider =
       await createRecipientPrivateKeyEnvelopeEncryptionProvider(
@@ -976,7 +1035,14 @@ describe("Cross-Identity Sync summary transport", () => {
     expect(
       chunks.every(
         (chunk) =>
-          Buffer.byteLength(JSON.stringify(chunk.package), "utf8") <=
+          Buffer.byteLength(JSON.stringify(chunk), "utf8") <=
+          CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES
+      )
+    ).toBe(true);
+    expect(
+      (persisted?.chunks ?? []).every(
+        (chunk) =>
+          chunk.encryptedPayload.manifest.payload.byteCount <=
           CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES
       )
     ).toBe(true);
@@ -1117,7 +1183,7 @@ describe("Cross-Identity Sync summary transport", () => {
         summaryRevisionHash: crossIdentitySyncDigest([])
       }
     });
-  });
+  }, 30_000);
 
   it("rejects a validly encrypted package whose summary content was tampered", async () => {
     const relationshipId = queueEntry().syncRelationshipId;

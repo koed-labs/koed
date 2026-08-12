@@ -77,8 +77,11 @@ Supported mode fields:
   Team backend capability foundation. It accepts only `true` or `false`,
   defaults to `false`, requires `KOED_TEAM_COLLABORATION_ENABLED=true`, and is
   ignored by every non-developer deployment profile. Do not enable it for a
-  production deployment. It does not relax the verified WorkOS/AuthKit identity
-  requirement for Team Self-Hosted or Koed-managed cloud.
+  production deployment. When enabled, the isolated developer backend reports
+  Cross-Identity Sync available only while application-layer encryption and
+  the Cross-Identity Sync Worker are ready. It does not relax the verified
+  WorkOS/AuthKit identity requirement for Team Self-Hosted or Koed-managed
+  cloud.
 
 Authentication providers are part of the deployment capability contract.
 Private VPS and Team Self-Hosted profiles expose local session authentication;
@@ -93,7 +96,7 @@ email-bound, backend-bound, one-time invite token. A deployment without that
 verified identity path remains fail-closed for those Team-authority operations.
 
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
-- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it; external runtime mode disables it and requires explicit `true`. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
+- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it. External runtime mode cannot enable it because that mode does not own a Local AI Runtime; attempting to do so fails configuration. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
 - `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
 - `KOED_EXTERNAL_REDIS_URL` or `REDIS_URL`: Operator-managed Redis/BullMQ URL when the queue backend is `bullmq`.
 - `KOED_EXTERNAL_EMBEDDING_SERVICE_URL` or `EMBEDDING_SERVICE_URL`: Operator-managed Embedding Service URL in external mode.
@@ -102,9 +105,9 @@ Example external `KOED_HOME/config/server.json`:
 
 ```json
 {
-  "runtimeMode": "developer",
+  "runtimeMode": "external",
   "dependencyMode": "external",
-  "codexTranscriptWatcherEnabled": true,
+  "codexTranscriptWatcherEnabled": false,
   "external": {
     "databaseUrl": "postgres://koed:password@127.0.0.1:15432/koed",
     "redisUrl": "redis://127.0.0.1:16379",
@@ -382,7 +385,7 @@ upstream device credentials. See `docs/team-workspace-project-mapping.md`.
 
 Koed-owned local state lives under `KOED_HOME`:
 
-- `config/` for `server.json`, `local-ports.json`, `explorer-token.json`,
+- `config/` for `server.json`, `local-ports.json`, `local-app-credential.json`,
   non-secret `device-identity.json`, local Project metadata in `projects.json`,
   and Project-to-Team Workspace mappings in `project-team-workspaces.json`
 - `run/` for `koed-server.json`, `last-verification.json`, identity bootstrap
@@ -472,21 +475,18 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   `MANAGED_KMS_*`.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
 - `API_CORS_ORIGINS`: comma-separated exact browser origins, including scheme,
-  host, and port, such as the Explorer. Cookie-authenticated Shared Memory,
+  host, and port. Cookie-authenticated Shared Memory,
   retention, high-risk activation, Team, Workspace, and invite writes require
   an explicitly allowed `Origin` or `Referer`. When both headers are present,
   both must be valid, allowed, and identify the same origin. When Fetch Metadata
   is present, these high-risk writes require `Sec-Fetch-Site: same-origin`;
   malformed, `same-site`, `cross-site`, and `none` evidence is rejected. Scoped
   device credentials and API Tokens do not require browser-origin evidence.
-- `EXPLORER_WEB_HOST`: host used by the Explorer preview process supervised by
-  `koed-server`. Defaults to `127.0.0.1` for local runs; server/container
-  wrappers may set `0.0.0.0` and publish the port through the wrapper boundary.
 - `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size. Default `4194304`.
 - `API_AUTH_RATE_LIMIT_WINDOW_MS`: auth rate-limit window.
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
 - `API_MEMORY_RATE_LIMIT_WINDOW_MS`: fallback API-token memory rate-limit window. The default window is 60 seconds.
-- `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local Explorer and MCP Server bursts in a Koed deployment without changing the stricter auth rate limit.
+- `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local Desktop and MCP Server bursts in a Koed deployment without changing the stricter auth rate limit.
 - `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_SOURCE_JOURNAL_RATE_LIMIT_WINDOW_MS`: window for authenticated local conversation-source journal transfer. This workload has an independent bucket so first-run source replication cannot consume interactive Memory read/write capacity. The default is 60 seconds.
 - `API_SOURCE_JOURNAL_RATE_LIMIT_MAX`: local conversation-source journal requests allowed per journal window. The default is 10,000; the journal routes remain API-token authenticated and unavailable outside developer and Local Personal deployment profiles.
@@ -544,7 +544,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID`: optional registered upstream backend id consumed by staged launch validation for proxy probes.
 - `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted backends that use WorkOS/AuthKit for browser-session identity; it is required for verified Team invite acceptance on Koed-managed cloud. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
 - `WORKOS_CLIENT_ID`: WorkOS/AuthKit client id used to build `/auth/workos/login` authorization redirects.
-- `WORKOS_API_KEY`: WorkOS server API key used only by `koed-server`/API when exchanging an AuthKit callback code. It must not be exposed to Explorer, MCP Server, Capture Hook, upstream registries, logs, or diagnostics.
+- `WORKOS_API_KEY`: WorkOS server API key used only by `koed-server`/API when exchanging an AuthKit callback code. It must not be exposed to browser clients, MCP Server, Capture Hook, upstream registries, logs, or diagnostics.
 - `WORKOS_REDIRECT_URI`: absolute callback URL registered with WorkOS, normally ending in `/auth/workos/callback`.
 - `WORKOS_PROVIDER_ENVIRONMENT`: stable namespace for WorkOS identity mappings, such as `production`, `staging`, or `default`. Provider user ids are unique only inside this namespace.
 
@@ -583,10 +583,18 @@ The file must not contain request bodies, prompts, raw Memory, cookies, API
 Tokens, provider secrets, IP addresses unless explicitly approved by deployment
 policy, or full URLs containing customer content.
 
-- `EXPLORER_NODE_ENV`: runtime environment for the Explorer service.
-- `EXPLORER_API_BASE_URL`: browser-visible API base URL used when building the Explorer.
-- `EXPLORER_PUBLIC_URL`: absolute browser-visible Explorer base URL used for device-enrollment and sensitive-action approval links. Set this to the public Explorer origin or reverse-proxy path for remote deployments.
-- `EXPLORER_WEB_HOST_PORT`: host port used by the local Explorer preview process supervised by `koed-server`.
+- `BROWSER_PUBLIC_URL`: optional public browser-reachable base URL for the
+  existing API process, used when device-enrollment links cannot be built from
+  the registered backend URL. Set it to the externally reachable API URL, for
+  example `https://koed.example.com` or `https://example.com/koed`. A path
+  prefix is preserved in generated approval links and asset requests. It is not
+  the URL of a separate browser service. Step-up and device-enrollment pages,
+  authentication, and approval JSON all remain on this same origin. Its HTTP
+  origin is automatically trusted for same-origin browser writes.
+  With TLS termination, also configure secure cookies and make the WorkOS
+  callback use this public API origin.
+  Registered backend URLs may still contain a reverse-proxy base path. The
+  generated activation URL and browser approval requests preserve that path.
 - `REDIS_HOST_PORT`: host port mapped to the Redis dependency container when using the Docker Compose starter. Default `16379`.
 - `REDIS_URL`: explicit Redis/BullMQ URL consumed by `koed-server`, API, and Worker in external dependency mode when `WORK_QUEUE_BACKEND=bullmq`. For the Docker Compose starter, use `redis://localhost:${REDIS_HOST_PORT}`.
 - `WORK_QUEUE_BACKEND`: `bullmq` by default for Redis/BullMQ queues. Set `local` to use the Postgres-backed `local_work_queue` table for API/Worker jobs; this does not require Redis for job queues, though Redis may still be used for rate-limit or cache stores if configured.
@@ -623,7 +631,7 @@ policy, or full URLs containing customer content.
   it is intended for a local port conflict, not as an authentication control.
 - `koed-server runtime status --provider homebrew --json`: macOS, Linux, and WSL diagnostic command for Homebrew-backed native runtime assets. It does not install packages or mutate Homebrew state.
 - `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`: explicit macOS, Linux, and WSL install command that may run Homebrew for missing `postgresql@17`, `pgvector`, and `llama.cpp`, links selected binaries under `KOED_HOME/runtime`, and writes metadata under `KOED_HOME/cache`.
-- `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app. `koed-server` also writes the app-provisioned Explorer credential under `KOED_HOME/config/explorer-token.json` so status can report whether the desktop happy path has a credential without exposing the API Token.
+- `koed-server` writes Desktop's app-provisioned local credential under `KOED_HOME/config/local-app-credential.json` without exposing the API Token in status output.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
 - `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`: maximum memory owner scopes checked on each worker catch-up pass. Default `10`.
@@ -632,7 +640,6 @@ policy, or full URLs containing customer content.
 - `MEMORY_HISTORICAL_IMPORT_BATCH_RUNTIME_MS`: maximum historical Projection runtime before yielding at next Projection boundary. Default `15000`; valid range `100`–`60000`.
 - `MEMORY_HISTORICAL_IMPORT_CONCURRENCY`: historical Projection worker slots. Must remain `1`; values outside `1`–`1` fail configuration validation.
 - `MEMORY_HISTORICAL_IMPORT_LIVE_BACKLOG_MAX`: live raw-Projection rows permitted before historical admission pauses. Default `0`; valid range `0`–`10000`.
-- `MEMORY_HISTORICAL_IMPORT_INTERACTIVE_BACKLOG_MAX`: pending interactive Memory Questions permitted before historical admission pauses. Default `0`; valid range `0`–`10000`.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: optional worker-visible API readiness override for historical admission. When omitted, Koed derives `/ready` from `MEMORY_API_URL`; if neither URL is configured, historical batches fail closed.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
@@ -680,12 +687,12 @@ policy, or full URLs containing customer content.
 
 ## Transcript Watcher Values
 
-`koed-server` passes these local values to its supervised
-`@koed/mcp-server watch-codex-transcripts` process:
+`koed-server` passes these local values to the Transcript Watcher hosted by its
+supervised Local AI Runtime:
 
 - `CODEX_HOME`: Codex state root. Transcript Watcher defaults to its `sessions` directory, or `~/.codex/sessions` when unset.
 - `MEMORY_CODEX_TRANSCRIPT_ROOTS`: optional platform path-delimited list of explicit transcript roots. When non-empty, replaces the `CODEX_HOME/sessions` default; it never broadens scanning to arbitrary home directories.
-- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: watcher supervisor switch. Default `true` for developer/local-personal runtime modes and `false` for external mode unless explicitly set to `true`.
+- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: watcher supervisor switch. Default `true` for developer/local-personal runtime modes. External runtime mode cannot enable the watcher; capture must run through a local-personal `koed-server`.
 - `MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS`: coalescing delay for filesystem notifications and Capture Hook wake signals. Default `200`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN`: maximum filesystem entries inspected per scan. Default `4000`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN`: maximum transcript files processed per scan. Default `200`.
@@ -716,17 +723,13 @@ These values are copied into the AI Client configuration and are not consumed au
   which prompts are loaded. LCM summaries, Memory Answer, and generated session
   titles persist the frontmatter version of the prompt that produced them.
 
-- `MEMORY_API_URL`: API URL used by the MCP Server and Transcript Watcher. The Supported Capture Hook never receives API credentials.
-- `MEMORY_API_TOKEN`: Personal API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.
+- `MEMORY_API_URL`: API URL used internally by the `koed-server`-supervised Local AI Runtime. The MCP adapter and Supported Capture Hook do not receive it through MCP configuration.
+- `MEMORY_API_TOKEN`: Personal API Token provisioned for the Local AI Runtime. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`; it is not written into MCP configuration.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for canonical conversation-item ingestion batches. Default `180000`. Oversized logical items use at most 64 transport chunks of 256 KiB each and fail before upload above the 16 MiB logical-item ceiling.
-- `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP Server API calls. Default `60_000`.
+- `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for Local AI Runtime API calls. Default `60_000`.
 - `MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS`: when `true`, exposes diagnostic MCP tools such as `memory_access_check`. Default `false`; use the MCP `doctor` CLI command for normal setup checks.
 - `MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS`: when `true`, exposes low-level diagnostic MCP retrieval tools such as `memory_search` and `memory_expand`. Default `false`; normal recall should use `memory_answer`.
 - `MEMORY_CODEX_APP_SERVER_BINARY`: Codex app-server binary used by local Synthesis flows. Default `codex`.
-- `MEMORY_ANSWER_BRIDGE_ENABLED`: when `true`, MCP startup runs the local browser Memory Answer bridge. Default `true`.
-- `MEMORY_ANSWER_BRIDGE_HOST`: local answer bridge bind host. Default `0.0.0.0`.
-- `MEMORY_ANSWER_BRIDGE_PORT`: local answer bridge port used by the Explorer. Default `3210`.
-- `MEMORY_ANSWER_BRIDGE_CORS_ORIGINS`: comma-separated browser origins allowed to call the local answer bridge.
 - `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Default and only supported value: `codex`.
 - `MEMORY_ANSWER_MODEL`: Codex model for MCP Memory Answer synthesis. Default `gpt-5.6-luna`.
 - `MEMORY_ANSWER_REASONING_EFFORT`: Codex reasoning effort for MCP Memory Answer synthesis. Default `low`.
@@ -734,14 +737,6 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
 - `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum Koed RAG evidence expansion tool calls per MCP Memory Answer worker turn.
-- `MEMORY_MANUAL_ANSWER_PROVIDER`: AI Client provider for Explorer manual Memory Questions. Default and only supported value: `codex`.
-- `MEMORY_MANUAL_ANSWER_MODEL`: default Codex model for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_MODEL`.
-- `MEMORY_MANUAL_ANSWER_REASONING_EFFORT`: default reasoning effort for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_REASONING_EFFORT`.
-- `MEMORY_MANUAL_ANSWER_TIMEOUT_MS`: default timeout for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_TIMEOUT_MS`.
-- `MEMORY_MANUAL_ANSWER_MAX_ATTEMPTS`: default retry attempts for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_MAX_ATTEMPTS`.
-- Manual Memory Question model and reasoning options are read from Codex app-server `model/list`; `.env` only provides the initial default selection.
-- `MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS`: bridge-level retry cap for older pending question rows without per-question max attempts.
-- `MEMORY_QUESTION_ANSWER_LOCAL_LEASE_SECONDS`: short renewable lease used when the local bridge claims a pending manual Memory Question.
 - `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary synthesis. Default and only supported value: `codex`.
 - `MEMORY_LCM_SUMMARY_MODEL`: Codex model for LCM Summary synthesis. Default `gpt-5.6-luna`.
 - `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: Codex reasoning effort for LCM Summary synthesis. Default `low`.
@@ -750,31 +745,49 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_LCM_SUMMARY_RETRY_DELAY_MS`: delay between local LCM Summary retry attempts.
 - `MEMORY_LCM_SUMMARY_CONCURRENCY`: maximum concurrent local LCM Summary workers.
 - `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for local Codex LCM Summary calls. Default `48000`.
-- `MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS`: delay before the MCP-local memory processing service first checks for pending work.
+- `MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS`: delay before the Local AI Runtime first checks for pending work.
 - `MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS`: delay used when the local service is nudged after capture.
 - `MEMORY_LCM_BACKGROUND_INTERVAL_MS`: periodic background check interval for pending summaries.
 - `MEMORY_LCM_BACKGROUND_BATCH_LIMIT`: maximum pending LCM summaries processed in one background batch.
 - `MEMORY_SESSION_TITLE_BACKGROUND_BATCH_LIMIT`: maximum pending captured-session titles processed in one local memory processing batch.
 - `MEMORY_SESSION_TITLE_MIN_USER_EVENTS`: minimum user events before a captured session is eligible for local generated title processing. Default `3`.
 
-`koed-server` supervises `@koed/mcp-server watch-codex-transcripts` after its startup readiness check and local API Token resolution, and stops it before the API. If the API is still recovering, bounded watcher rescans keep retrying. Configure Codex to run the Supported Capture Hook for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and `SubagentStop`. The Hook supplies a low-latency content-free wake hint; Stop events also record a timestamped boundary under hashed source-routing identities so the matching transcript frontier can release a page-ending fallback assistant record. Missing signals may delay that fallback but cannot create a permanent gap; repeated signals do not duplicate capture. The watcher discovers parent and child transcripts independently and preserves their provider identities and linkage from journaled JSONL.
+`koed-server` supervises one Local AI Runtime after its startup readiness check
+and local API Token resolution, and stops it before the API. The runtime owns
+the Transcript Watcher, LCM Summary Service, Curated Memory review, and fresh
+Memory Answer workers. If the API is still recovering, bounded watcher rescans
+keep retrying. Configure Codex to run the Supported Capture Hook for
+`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and
+`SubagentStop`. The Hook supplies a low-latency content-free wake hint; Stop
+events also record a timestamped boundary under hashed source-routing identities
+so the matching transcript frontier can release a page-ending fallback
+assistant record. Missing signals may delay that fallback but cannot create a
+permanent gap; repeated signals do not duplicate capture. The watcher discovers
+parent and child transcripts independently and preserves their provider
+identities and linkage from journaled JSONL.
 
 Koed relies on the connected AI Client for Synthesis; backend LLM provider configuration and server-side synthesis are unsupported in this build.
-The MCP-local memory processing service is enabled by default in this build. It generates captured-session titles and LCM summaries through local Codex app-server mode. Failures are reported as diagnostics and pending summaries remain searchable as degraded evidence.
-MCP Memory Answer and LCM Summary model, reasoning, timeout, and attempt settings can be edited in the Explorer Settings panel. The API stores those user settings and the local MCP/bridge reads them at execution time. `.env` values are bootstrap defaults only; precedence is API user setting, then `.env`, then code default.
+The Local AI Runtime is enabled by default in this build. It generates
+captured-session titles and LCM summaries through local Codex app-server mode.
+Failures are reported as diagnostics and pending summaries remain searchable as
+degraded evidence. The API stores per-user Memory Answer and LCM Summary
+settings; the Local AI Runtime reads them at execution time. `.env` values are
+bootstrap defaults only; precedence is API user setting, then `.env`, then code
+default.
 
 LCM summary prompt-version changes are forward-only. Existing completed
 summaries are not automatically regenerated; new prompts apply to new or
 naturally invalidated LCM nodes.
 
-Manual Memory Question settings selected in the Explorer composer are stored on the question row so retry and background catch-up use the same model, reasoning effort, timeout, and attempts. If Codex app-server cannot be started, local Synthesis fails visibly instead of falling back to a backend LLM path.
+If Codex app-server cannot be started, local Synthesis fails visibly instead of
+falling back to a backend LLM path.
 
 Capture Policy state `ask` currently blocks automatic capture. It is reserved
 for a future AI-client approval flow and is not an implemented backend prompt.
 
 Projection selection is configured through the DB-backed
 `projection_policy_rules` table, not `.env`. These rows define which Codex
-transcript item types are projected into the Explorer UI, semantic Memory
+transcript item types are projected into Desktop, semantic Memory
 Events, embeddings, and LCM sources. The seeded defaults keep UI projection and
 embedding selection matched for every transcript type in the current build, but
 the fields are independent so future policy rows can support display-only or

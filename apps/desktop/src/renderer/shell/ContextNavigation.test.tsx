@@ -52,7 +52,8 @@ describe("context navigation", () => {
     );
     expect(container.textContent).toContain("Private to you");
     expect(container.textContent).toContain("Ask Memory");
-    expect(container.textContent).toContain("Unavailable");
+    expect(container.textContent).not.toContain("Unavailable");
+    expect(container.textContent).toContain("Channels");
     expect(container.textContent).toContain("Archived");
     expect(
       container.querySelector('[aria-current="page"]')?.textContent
@@ -61,6 +62,8 @@ describe("context navigation", () => {
 
   it("renders Team, Workspace, channel, DM, People, and Shared Memory hierarchy", async () => {
     const onSelectChannel = vi.fn();
+    const onCreateChannel = vi.fn();
+    const onCreateWorkspace = vi.fn();
     await act(async () =>
       root.render(
         <TeamContextNavigation
@@ -72,6 +75,8 @@ describe("context navigation", () => {
               unreadCount: 1
             }
           ]}
+          onCreateChannel={onCreateChannel}
+          onCreateWorkspace={onCreateWorkspace}
           onOpenPeople={vi.fn()}
           onOpenSharedMemory={vi.fn()}
           onSelectChannel={onSelectChannel}
@@ -82,10 +87,19 @@ describe("context navigation", () => {
           teamName="Koed Labs"
           workspaces={[
             {
+              canCreateChannel: true,
               channels: [{ id: "channel", label: "product", selected: true }],
               id: "workspace",
               label: "Engineering",
               selected: true,
+              sharedMemorySelected: false
+            },
+            {
+              canCreateChannel: false,
+              channels: [],
+              id: "read-only-workspace",
+              label: "Read only",
+              selected: false,
               sharedMemorySelected: false
             }
           ]}
@@ -107,5 +121,48 @@ describe("context navigation", () => {
       ).click();
     });
     expect(onSelectChannel).toHaveBeenCalledWith("workspace", "channel");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Create Workspace"]')
+        ?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Create channel in Engineering"]'
+        )
+        ?.click();
+    });
+    expect(onCreateWorkspace).toHaveBeenCalledOnce();
+    expect(onCreateChannel).toHaveBeenCalledWith("workspace");
+    expect(
+      container.querySelector('[aria-label="Create channel in Read only"]')
+    ).toBeNull();
+  });
+
+  it("shows why a Team member cannot create a Workspace", async () => {
+    await act(async () =>
+      root.render(
+        <TeamContextNavigation
+          directMessages={[]}
+          onOpenPeople={vi.fn()}
+          onOpenSharedMemory={vi.fn()}
+          onSelectChannel={vi.fn()}
+          onSelectDirectMessage={vi.fn()}
+          onStartDirectMessage={vi.fn()}
+          peopleSelected={false}
+          role="member"
+          teamName="Koed Labs"
+          workspaces={[]}
+        />
+      )
+    );
+    const createWorkspace = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Create Workspace"]'
+    );
+    expect(
+      container.querySelector(".desktop-sidebar-header small")?.textContent
+    ).toBe("Member");
+    expect(createWorkspace?.disabled).toBe(true);
+    expect(createWorkspace?.title).toContain("owners and administrators");
   });
 });

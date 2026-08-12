@@ -258,6 +258,7 @@ describe("InboxView", () => {
           error="Authorization state could not be loaded."
           onOpenPreferences={vi.fn()}
           onOpenSelection={vi.fn()}
+          onRefresh={vi.fn()}
           snapshot={null}
         />
       )
@@ -266,5 +267,8 @@ describe("InboxView", () => {
     expect(container.textContent).toContain(
       "Authorization state could not be loaded."
     );
+    expect(container.textContent).toContain("Retry");
+    expect(container.textContent).not.toContain("Try again");
+    expect(container.querySelector("button svg")).toBeNull();
   });
 });

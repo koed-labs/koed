@@ -4,7 +4,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCodexBootstrap } from "./codex-bootstrap.mjs";
-import { runExplorerBootstrap } from "./explorer-bootstrap.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -15,8 +14,7 @@ Runs the guided Koed client bootstrap path after koed-server has started:
   2. Ensure dependency containers are running
   3. Create or reuse the API token
   4. Configure Codex
-  5. Write Explorer token config
-  6. Verify capture and doctor health
+  5. Verify capture and doctor health
 `;
 
 const hasHelpArg = (argv) =>
@@ -113,14 +111,9 @@ export const runClientsBootstrap = async ({
   runCommandFn = runCommand,
   waitForApiReadyFn = waitForApiReady,
   runCodexBootstrapFn = runCodexBootstrap,
-  runExplorerBootstrapFn = runExplorerBootstrap,
   onComplete = (result) => {
     console.log("Koed client bootstrap complete.");
     console.log(`API token owner: ${result.codex.tokenResult.owner.email}`);
-    console.log(`Root env token: ${result.explorer.paths.rootEnvPath}`);
-    console.log(
-      `Explorer local token: ${result.explorer.paths.explorerEnvPath}`
-    );
     console.log(
       `Capture verification: ${result.codex.args.skipVerify ? "skipped" : "passed"}`
     );
@@ -182,13 +175,7 @@ export const runClientsBootstrap = async ({
     skipSetup: true
   });
 
-  const explorer = await runExplorerBootstrapFn({
-    token: codex.tokenResult.token,
-    rootDir: bootstrapRootDir,
-    environment: effectiveEnvironment
-  });
-
-  const result = { codex, explorer };
+  const result = { codex };
   await onComplete(result);
   return result;
 };

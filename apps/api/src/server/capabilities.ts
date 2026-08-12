@@ -400,7 +400,7 @@ const buildCapabilities = (input: {
   ),
   "auth.enrollment": descriptor(
     "available",
-    "Explorer-first setup path metadata for local auth, browser session auth, and future device enrollment.",
+    "Desktop setup path metadata for local auth, browser session auth, and future device enrollment.",
     { endpoints: ["/v1/capabilities", "/v1/capabilities/authenticated"] }
   ),
   "clients.codex": descriptor(
@@ -877,7 +877,7 @@ const buildEnrollmentContract = (
     mcpAndCaptureHookTarget: "local_koed_server",
     notes: teamCollaborationEnabled
       ? [
-          "Desktop should authenticate the User through Explorer/browser session auth before Team or cloud setup.",
+          "Desktop should authenticate the User through browser session auth before Team or cloud setup.",
           "Device enrollment creates revocable local-edge credentials; API Tokens remain personal AI-client compatibility credentials only."
         ]
       : [

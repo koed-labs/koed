@@ -46,7 +46,7 @@ V1 activation events are:
 - `paid_conversion_started`
 - `paid_conversion_completed`
 
-Allowed surfaces are `desktop`, `explorer`, `koed_server`, `mcp_server`,
+Allowed surfaces are `desktop`, `koed_server`, `mcp_server`,
 `capture_hook`, and `api`.
 
 ## Privacy Boundary

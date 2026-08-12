@@ -66,6 +66,7 @@ export interface CodexTranscriptAdapterInput {
   sourceFingerprint?: string;
   threadKind: "conversation" | "subagent";
   parentThreadId?: string;
+  approvalReview?: boolean;
 }
 
 const hash = (value: unknown): string =>
@@ -126,6 +127,7 @@ const observationMetadata = (input: {
     : {}),
   threadKind: input.adapter.threadKind,
   parentThreadId: input.adapter.parentThreadId,
+  ...(input.adapter.approvalReview ? { approvalReview: true } : {}),
   ...(input.adapter.sourceTransport === "historical_import"
     ? { observedViaHistoricalImport: true }
     : { observedViaTranscript: true }),

@@ -192,7 +192,7 @@ const pendingActionGrantStatus = () => ({
   review: approvalReview(),
   state: "pending" as const,
   activationUrl:
-    "https://team.example.test/koed/v1/high-risk/browser-activations/00000000-0000-4000-8000-000000000018",
+    "https://team.example.test/koed/high-risk/browser-activations/00000000-0000-4000-8000-000000000018",
   expiresAt: timestamp
 });
 

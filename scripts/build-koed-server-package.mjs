@@ -137,7 +137,7 @@ const writeReadme = (packageRoot) => {
       "Standalone koed-server package",
       "",
       "This artifact contains the Koed JS/service app runtime only.",
-      "It excludes native runtime assets, model files, and Python embedding runtime files.",
+      "It excludes the retired Explorer service, native runtime assets, model files, and Python embedding runtime files.",
       "",
       "Contents:",
       "- bin/koed-server",
@@ -145,7 +145,6 @@ const writeReadme = (packageRoot) => {
       "- koed-runtime/worker",
       "- koed-runtime/embedding-service",
       "- koed-runtime/mcp-server",
-      "- koed-runtime/explorer-dist",
       "",
       "Native runtime assets and models are installed separately under KOED_HOME.",
       ""
@@ -404,13 +403,6 @@ const main = () => {
     deploy("@koed/worker", runtimeRoot, "worker");
     deploy("@koed/embedding-service", runtimeRoot, "embedding-service");
     deploy("@koed/mcp-server", runtimeRoot, "mcp-server");
-    cpSync(
-      resolve(repoRoot, "apps", "explorer", "dist"),
-      resolve(runtimeRoot, "explorer-dist"),
-      {
-        recursive: true
-      }
-    );
 
     prunePythonEmbeddingRuntimeFiles(runtimeRoot);
     dereferencePackageSymlinks(packageRoot);

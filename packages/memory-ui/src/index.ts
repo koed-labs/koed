@@ -47,6 +47,12 @@ export {
   type SecureMarkdownAction,
   type SecureMarkdownProps
 } from "./SecureMarkdown.js";
+export { SourceDiff, type SourceDiffProps } from "./SourceDiff.js";
+export {
+  parseSourcePatch,
+  type SourcePatchDetails,
+  type SourcePatchFileSummary
+} from "./source-diff.js";
 export {
   EvidenceBundle,
   LcmSummaryFrame,

@@ -159,7 +159,11 @@ describe("SecureMarkdown rendering", () => {
 
     await act(async () => button?.click());
     expect(onActionError).toHaveBeenCalledWith(copyError, "copy");
-    expect(button?.textContent).toBe("Copy");
+    expect(button?.textContent).toBe("Copy failed");
+    expect(button?.getAttribute("data-state")).toBe("failed");
+    expect(button?.getAttribute("aria-label")).toBe(
+      "Copy code failed. Try again"
+    );
   });
 
   it("reports external-open failures without throwing from the click", async () => {

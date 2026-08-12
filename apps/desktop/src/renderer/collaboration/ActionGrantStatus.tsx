@@ -2,8 +2,9 @@ import type {
   CollaborationActionGrantProjection,
   CollaborationRendererClient
 } from "../../collaboration/renderer-client.js";
-import { Button } from "@koed/ui";
+import { useToast, type ToastTone } from "@koed/ui";
 import { AlertTriangle, Check, Clock, LoaderCircle, X } from "lucide-react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 const stateCopy: Record<CollaborationActionGrantProjection["state"], string> = {
   awaiting_approval: "Waiting for browser approval",
@@ -17,6 +18,62 @@ const stateCopy: Record<CollaborationActionGrantProjection["state"], string> = {
   failed: "Could not complete"
 };
 
+const stateTone: Record<
+  CollaborationActionGrantProjection["state"],
+  ToastTone
+> = {
+  awaiting_approval: "warning",
+  awaiting_review: "warning",
+  approved: "neutral",
+  executing: "neutral",
+  completed: "success",
+  denied: "destructive",
+  expired: "warning",
+  canceled: "neutral",
+  failed: "destructive"
+};
+
+const stateIcon = (
+  state: CollaborationActionGrantProjection["state"]
+): ReactNode => {
+  if (state === "completed") return <Check />;
+  if (state === "awaiting_approval" || state === "awaiting_review") {
+    return <Clock />;
+  }
+  if (state === "approved" || state === "executing") {
+    return <LoaderCircle className="animate-spin" />;
+  }
+  if (state === "canceled") return <X />;
+  return <AlertTriangle />;
+};
+
+export function CollaborationAnnouncementToast({
+  announcement,
+  clearAnnouncement
+}: {
+  announcement: string;
+  clearAnnouncement: (expected?: string) => void;
+}) {
+  const { dismiss, toast } = useToast();
+  const activeToastId = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    if (activeToastId.current !== undefined) {
+      dismiss(activeToastId.current, false);
+      activeToastId.current = undefined;
+    }
+    if (!announcement) return;
+    activeToastId.current = toast({
+      icon: <AlertTriangle />,
+      onDismiss: () => clearAnnouncement(announcement),
+      title: announcement,
+      tone: "warning"
+    });
+  }, [announcement, clearAnnouncement, dismiss, toast]);
+
+  return null;
+}
+
 export function ActionGrantStatus({
   actionGrants,
   client
@@ -24,43 +81,39 @@ export function ActionGrantStatus({
   actionGrants: readonly CollaborationActionGrantProjection[];
   client: CollaborationRendererClient;
 }) {
-  const visible = actionGrants.slice(-3).reverse();
-  if (!visible.length) return null;
-  return (
-    <section aria-label="Approval activity" className="desktop-action-grants">
-      {visible.map((grant) => (
-        <article data-state={grant.state} key={grant.id}>
-          <span className="desktop-action-grant-icon">
-            {grant.state === "completed" ? (
-              <Check aria-hidden="true" />
-            ) : grant.state === "awaiting_approval" ||
-              grant.state === "awaiting_review" ? (
-              <Clock aria-hidden="true" />
-            ) : grant.state === "approved" || grant.state === "executing" ? (
-              <LoaderCircle aria-hidden="true" />
-            ) : grant.state === "canceled" ? (
-              <X aria-hidden="true" />
-            ) : (
-              <AlertTriangle aria-hidden="true" />
-            )}
-          </span>
-          <span>
-            <strong>{grant.operation}</strong>
-            <small>{stateCopy[grant.state]}</small>
-          </span>
-          {(grant.state === "awaiting_approval" ||
-            grant.state === "awaiting_review") &&
-          client.cancelActionGrant ? (
-            <Button
-              onClick={() => void client.cancelActionGrant?.(grant.id)}
-              size="sm"
-              variant="outline"
-            >
-              Cancel
-            </Button>
-          ) : null}
-        </article>
-      ))}
-    </section>
+  const { dismiss, toast } = useToast();
+  const displayedStates = useRef(
+    new Map<string, CollaborationActionGrantProjection["state"]>()
   );
+  const toastIds = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    for (const grant of actionGrants) {
+      if (displayedStates.current.get(grant.id) === grant.state) continue;
+
+      const previousToastId = toastIds.current.get(grant.id);
+      if (previousToastId !== undefined) dismiss(previousToastId);
+
+      const canCancel =
+        (grant.state === "awaiting_approval" ||
+          grant.state === "awaiting_review") &&
+        client.cancelActionGrant;
+      const toastId = toast({
+        action: canCancel
+          ? {
+              label: "Cancel",
+              onClick: () => void client.cancelActionGrant?.(grant.id)
+            }
+          : undefined,
+        description: stateCopy[grant.state],
+        icon: stateIcon(grant.state),
+        title: grant.operation,
+        tone: stateTone[grant.state]
+      });
+      displayedStates.current.set(grant.id, grant.state);
+      toastIds.current.set(grant.id, toastId);
+    }
+  }, [actionGrants, client, dismiss, toast]);
+
+  return null;
 }

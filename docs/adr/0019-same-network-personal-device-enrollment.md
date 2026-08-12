@@ -137,7 +137,7 @@ no longer be canceled as though no membership change occurred.
 Desktop atomically replaces the protected runtime after bootstrap, enrollment,
 or epoch refresh, then sends a loopback-only authenticated wake. The worker
 adopts the new runtime at the next reconciliation-cycle boundary. Enrollment
-must not restart API, Worker, Explorer, capture, or Recall services.
+must not restart API, Worker, capture, or Recall services.
 
 ## Consequences
 

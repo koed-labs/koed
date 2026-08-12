@@ -27,7 +27,7 @@ const paths = (root: string): KoedServerPaths => ({
   lastVerificationPath: resolve(root, "run/last-verification.json"),
   serverConfigPath: resolve(root, "config/server.json"),
   localPortsPath: resolve(root, "config/local-ports.json"),
-  explorerTokenPath: resolve(root, "config/explorer-token.json"),
+  localAppCredentialPath: resolve(root, "config/local-app-credential.json"),
   upstreamBackendsPath: resolve(root, "config/upstream-backends.json"),
   projectMetadataPath: resolve(root, "config/projects.json"),
   projectTeamWorkspaceLinksPath: resolve(
@@ -103,6 +103,17 @@ describe("koed-server config", () => {
     expect(
       resolveKoedServerConfig(paths(root), { KOED_RUNTIME_MODE: "external" })
     ).toMatchObject({ codexTranscriptWatcherEnabled: false });
+  });
+
+  it("rejects Transcript Watcher ownership in external runtime mode", () => {
+    const root = tempDir();
+
+    expect(() =>
+      resolveKoedServerConfig(paths(root), {
+        KOED_RUNTIME_MODE: "external",
+        MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "true"
+      })
+    ).toThrow("Codex Transcript Watcher cannot run in external runtime mode");
   });
 
   it("loads server config and lets environment override it", () => {

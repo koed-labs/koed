@@ -44,14 +44,6 @@ export interface MemoryAnswerWorkerConfig {
   env: NodeJS.ProcessEnv;
 }
 
-export interface ManualMemoryAnswerWorkerOverrides {
-  provider?: string;
-  model?: string;
-  reasoningEffort?: string;
-  timeoutMs?: number;
-  maxAttempts?: number;
-}
-
 export interface MemoryAnswerWorkerStatus {
   provider: string;
   promptVersion: string;
@@ -325,47 +317,6 @@ export const resolveMemoryAnswerWorkerConfig = (
     ]),
     cwd: process.cwd(),
     env
-  };
-};
-
-export const resolveManualMemoryAnswerWorkerConfig = (
-  env: NodeJS.ProcessEnv = process.env,
-  overrides: ManualMemoryAnswerWorkerOverrides = {}
-): MemoryAnswerWorkerConfig => {
-  const base = resolveMemoryAnswerWorkerConfig(env);
-  const provider =
-    overrides.provider ??
-    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_PROVIDER")?.toLowerCase() ??
-    base.provider;
-  const model =
-    overrides.model ??
-    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_MODEL") ??
-    base.model;
-  const reasoningEffort =
-    overrides.reasoningEffort ??
-    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_REASONING_EFFORT") ??
-    base.reasoningEffort;
-  return {
-    ...base,
-    provider,
-    model,
-    reasoningEffort,
-    timeoutMs: parsePositiveInteger(
-      overrides.timeoutMs ??
-        resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_TIMEOUT_MS"),
-      base.timeoutMs,
-      { min: 1000, max: 600000 }
-    ),
-    maxAttempts: parsePositiveInteger(
-      overrides.maxAttempts ??
-        resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_MAX_ATTEMPTS"),
-      base.maxAttempts,
-      { min: 1, max: 25 }
-    ),
-    appServerBinary: resolveCodexAppServerBinary(env, [
-      "MEMORY_MANUAL_ANSWER_CODEX_BINARY",
-      "MEMORY_ANSWER_CODEX_BINARY"
-    ])
   };
 };
 
@@ -1370,6 +1321,7 @@ const runDynamicToolMemoryAnswer = async (
     sourceBefore?: string;
     limit: number;
     promptTemplate: LoadedPrompt;
+    signal?: AbortSignal;
   }
 ): Promise<{
   markdown: string;
@@ -1420,6 +1372,9 @@ const runDynamicToolMemoryAnswer = async (
   const appServerExecutions: MemoryAnswerAppServerExecution[] = [];
 
   const runner = async (timeoutMs: number): Promise<MemoryAnswerAttemptRun> => {
+    if (options.signal?.aborted) {
+      throw new Error("Memory answer request was cancelled");
+    }
     const state = createState();
     const session = new CodexAppServerThreadSession({
       appServerBinary: options.config.appServerBinary,
@@ -1433,12 +1388,15 @@ const runDynamicToolMemoryAnswer = async (
       dynamicTools: dynamicToolSpecs(),
       dynamicToolHandler: createMemoryAnswerDynamicToolHandler(state, options)
     });
+    const abort = () => session.close();
+    options.signal?.addEventListener("abort", abort, { once: true });
     try {
       return {
         result: await session.runTurn(prompt, timeoutMs),
         state
       };
     } finally {
+      options.signal?.removeEventListener("abort", abort);
       session.close();
     }
   };
@@ -1549,6 +1507,7 @@ export const answerWithMemoryWorker = async (
     sourceBefore?: string;
     limit?: number;
     responseDetail?: MemoryAnswerResponseDetail;
+    signal?: AbortSignal;
   } = {}
 ): Promise<MemoryAnswerWorkerResponse> => {
   const config = options.config ?? resolveMemoryAnswerWorkerConfig();
@@ -1613,7 +1572,8 @@ export const answerWithMemoryWorker = async (
       sourceAfter: options.sourceAfter,
       sourceBefore: options.sourceBefore,
       limit: options.limit ?? 10,
-      promptTemplate
+      promptTemplate,
+      signal: options.signal
     });
     return compactMemoryAnswerPayload(
       {

@@ -189,12 +189,15 @@ export const createRetentionPurgeService = (options: {
     }
   };
 
-  const schedule = (): void => {
+  const schedule = (delayMs = 0): void => {
     if (stopped || timer) return;
     timer = setTimeout(() => {
       timer = null;
+      let nextDelayMs = intervalMs;
       processing = processOnce()
-        .then(() => undefined)
+        .then((result) => {
+          if (result.claimed) nextDelayMs = 0;
+        })
         .catch((error: unknown) => {
           options.logger.error(
             {
@@ -209,9 +212,9 @@ export const createRetentionPurgeService = (options: {
         })
         .finally(() => {
           processing = null;
-          schedule();
+          schedule(nextDelayMs);
         });
-    }, 0);
+    }, delayMs);
     timer.unref?.();
   };
 

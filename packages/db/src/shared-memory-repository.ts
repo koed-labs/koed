@@ -399,6 +399,8 @@ export interface SharedMemoryShareReviewRecord extends SharedMemoryReviewDestina
     | "sourceRevision"
   >;
   effectivePolicyIntersection: SharedMemoryRepresentation[];
+  sourceOwnerPolicyWillActivate: boolean;
+  sourceOwnerPolicyWillReplace: boolean;
 }
 
 export interface SharedMemoryRepresentationChangeReviewRecord extends SharedMemoryShareReviewRecord {
@@ -883,11 +885,18 @@ const redactStructuredValue = (
 const requiredString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
-const validateTextContent = (content: unknown): Record<string, unknown> => {
+const validateTextContent = (
+  content: unknown,
+  allowApprovalReview = false
+): Record<string, unknown> => {
   if (
     !isPlainObject(content) ||
-    !exactObjectKeys(content, ["text"]) ||
-    !requiredString(content.text)
+    !exactObjectKeys(
+      content,
+      allowApprovalReview ? ["text", "approvalReview"] : ["text"]
+    ) ||
+    !requiredString(content.text) ||
+    (content.approvalReview !== undefined && content.approvalReview !== true)
   ) {
     throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
   }
@@ -895,7 +904,10 @@ const validateTextContent = (content: unknown): Record<string, unknown> => {
     text: redactStructuredValue(content.text, {
       depth: 0,
       keys: { count: 0 }
-    })
+    }),
+    ...(allowApprovalReview && content.approvalReview === true
+      ? { approvalReview: true }
+      : {})
   };
 };
 
@@ -1054,7 +1066,7 @@ export const redactEligibleSharedMemorySourceItem = (input: {
   const itemType = item.itemType as SharedMemorySourceItemType;
   const content =
     itemType === "user_message" || itemType === "assistant_message"
-      ? validateTextContent(item.content)
+      ? validateTextContent(item.content, itemType === "assistant_message")
       : itemType === "tool_call" || itemType === "tool_result"
         ? validateToolContent(item.content)
         : validateLcmContent(item.content);
@@ -2165,6 +2177,45 @@ export const createSharedMemoryRepository = (
     previewBody: SharedSourcePreviewV1;
   };
 
+  const proposedSourceOwnerPolicy = (input: {
+    existing: Row | null | undefined;
+    logicalMemoryId: string;
+    ownerPrincipalId: string;
+    allowedRepresentations: SharedMemoryRepresentation[];
+    policyId?: string;
+    version?: number;
+  }): SharedMemoryPolicyRecord => {
+    const policyId =
+      input.policyId ??
+      (input.existing ? stringValue(input.existing.policy_id) : randomUUID());
+    const version =
+      input.version ??
+      (input.existing ? numberValue(input.existing.version) + 1 : 1);
+    const allowedRepresentations = normalizedRepresentations(
+      input.allowedRepresentations
+    );
+    return {
+      id: policyId,
+      policyId,
+      scope: "source_owner",
+      logicalMemoryId: input.logicalMemoryId,
+      sourceOwnerPrincipalId: input.ownerPrincipalId,
+      teamId: null,
+      teamWorkspaceId: null,
+      version,
+      allowedRepresentations,
+      policyHash: sharedMemoryPolicyHash({
+        scope: "source_owner",
+        scopeId: `${input.logicalMemoryId}:${input.ownerPrincipalId}`,
+        policyId,
+        version,
+        allowedRepresentations
+      }),
+      effectiveAt: new Date().toISOString(),
+      supersededAt: null
+    };
+  };
+
   type LoadedMappedEvent = {
     eventId: string;
     sourceCursor: number;
@@ -2410,7 +2461,13 @@ export const createSharedMemoryRepository = (
       itemType,
       sourceId: input.contributor.originItemId,
       occurredAt: input.contributor.sourceEventTime,
-      content: { text: textContent }
+      content: {
+        text: textContent,
+        ...(itemType === "assistant_message" &&
+        input.contributor.metadata.approvalReview === true
+          ? { approvalReview: true }
+          : {})
+      }
     });
   };
 
@@ -4302,83 +4359,37 @@ export const createSharedMemoryRepository = (
         "Continuous materialization requires the existing source-owner policy"
       );
     }
-    if (policyChanged) {
-      const previousVersion = existingOwnerPolicy
-        ? numberValue(existingOwnerPolicy.version)
-        : 0;
-      const policyId = existingOwnerPolicy
-        ? stringValue(existingOwnerPolicy.policy_id)
-        : randomUUID();
-      const version = previousVersion + 1;
-      const hash = sharedMemoryPolicyHash({
-        scope: "source_owner",
-        scopeId: `${input.logicalMemoryId}:${owner.ownerPrincipalId}`,
-        policyId,
-        version,
-        allowedRepresentations
-      });
-      if (existingOwnerPolicy) {
-        await client.query(
-          "update source_owner_representation_policies set superseded_at=now() where id=$1",
-          [existingOwnerPolicy.id]
-        );
-      }
-      const inserted = await client.query<Row>(
-        `insert into source_owner_representation_policies (
-           policy_id,logical_memory_id,source_owner_principal_id,version,
-           allowed_representations,policy_hash,created_by_user_id,effective_at
-         ) values ($1,$2,$3,$4,$5::shared_memory_representation[],$6,$7,now())
-         returning *`,
-        [
-          policyId,
-          input.logicalMemoryId,
-          owner.ownerPrincipalId,
-          version,
-          allowedRepresentations,
-          hash,
-          actor.userId
-        ]
-      );
-      await appendPolicyAudit(client, {
-        actorUserId: actor.userId,
-        ownerUserId: actor.userId,
-        action: existingOwnerPolicy
-          ? "shared_memory.source_owner_policy.updated"
-          : "shared_memory.source_owner_policy.created",
-        targetTable: "source_owner_representation_policies",
-        targetId: stringValue(inserted.rows[0]?.id),
-        mutationId: input.authority!.referenceId,
-        scope: "source_owner",
-        logicalMemoryId: input.logicalMemoryId,
-        policyId,
-        version,
-        previousVersion,
-        allowedRepresentations
-      });
-      if (existingOwnerPolicy) {
-        await client.query(
-          `update source_owner_representation_consents
-            set state='paused', paused_at=now(), updated_at=now(),
-                state_reason_code='source_owner_policy_changed'
-          where logical_memory_id=$1 and source_owner_principal_id=$2 and state='active'`,
-          [input.logicalMemoryId, owner.ownerPrincipalId]
-        );
-        await invalidateAffectedGrants(client, {
-          mutationId: input.authority!.referenceId,
-          actorUserId: actor.userId,
-          whereSql: "g.logical_memory_id=$1 and g.owner_principal_id=$2",
-          parameters: [input.logicalMemoryId, owner.ownerPrincipalId],
-          reasonCode: "source_owner_policy_changed"
-        });
-      }
-    }
-    const policies = await requireCurrentPolicies(client, {
-      logicalMemoryId: input.logicalMemoryId,
-      ownerPrincipalId: owner.ownerPrincipalId,
-      teamId: input.teamId,
-      teamWorkspaceId: input.teamWorkspaceId
+    const teamPolicyRow = await activePolicy(client, {
+      table: "team_representation_policies",
+      whereSql: "team_id=$1",
+      parameters: [input.teamId]
     });
-    if (!policies.intersection.includes(input.representation)) {
+    const workspacePolicyRow = await activePolicy(client, {
+      table: "workspace_representation_policies",
+      whereSql: "team_id=$1 and team_workspace_id=$2",
+      parameters: [input.teamId, input.teamWorkspaceId]
+    });
+    if (!teamPolicyRow || !workspacePolicyRow) {
+      throw new SharedMemoryConflictError(
+        "Team and Workspace representation policies are required"
+      );
+    }
+    const ownerPolicy = policyChanged
+      ? proposedSourceOwnerPolicy({
+          existing: existingOwnerPolicy,
+          logicalMemoryId: input.logicalMemoryId,
+          ownerPrincipalId: owner.ownerPrincipalId,
+          allowedRepresentations
+        })
+      : mapPolicy(existingOwnerPolicy!, "source_owner");
+    const teamPolicy = mapPolicy(teamPolicyRow, "team");
+    const workspacePolicy = mapPolicy(workspacePolicyRow, "workspace");
+    const effectivePolicyIntersection = intersection(
+      ownerPolicy.allowedRepresentations,
+      teamPolicy.allowedRepresentations,
+      workspacePolicy.allowedRepresentations
+    );
+    if (!effectivePolicyIntersection.includes(input.representation)) {
       throw new SharedMemoryConflictError(
         "Representation is outside the exact policy intersection"
       );
@@ -4388,15 +4399,12 @@ export const createSharedMemoryRepository = (
     );
     if (
       !approvedRepresentations.includes(input.representation) ||
-      !isSubset(approvedRepresentations, policies.intersection)
+      !isSubset(approvedRepresentations, effectivePolicyIntersection)
     ) {
       throw new SharedMemoryConflictError(
         "Preview allowlist is outside the exact policy intersection"
       );
     }
-    const ownerPolicy = mapPolicy(policies.owner, "source_owner");
-    const teamPolicy = mapPolicy(policies.team, "team");
-    const workspacePolicy = mapPolicy(policies.workspace, "workspace");
     const rowResult = await client.query<Row>(
       `select lm.id as logical_memory_id,lm.owner_user_id,lm.owner_principal_id,
               lm.local_session_id,lm.latest_source_revision,
@@ -4634,6 +4642,110 @@ export const createSharedMemoryRepository = (
     };
   };
 
+  const loadPreviewCandidatePolicies = async (
+    client: pg.PoolClient,
+    input: {
+      artifact: SharedMemorySourceArtifactRecord;
+      logicalMemoryId: string;
+      ownerPrincipalId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      representation: SharedMemoryRepresentation;
+      allowedRepresentations: SharedMemoryRepresentation[];
+    }
+  ): Promise<{
+    owner: SharedMemoryPolicyRecord;
+    ownerNeedsActivation: boolean;
+    currentOwner: Row | null;
+    team: SharedMemoryPolicyRecord;
+    workspace: SharedMemoryPolicyRecord;
+    intersection: SharedMemoryRepresentation[];
+  }> => {
+    const currentOwner = await activePolicy(client, {
+      table: "source_owner_representation_policies",
+      whereSql: "logical_memory_id=$1 and source_owner_principal_id=$2",
+      parameters: [input.logicalMemoryId, input.ownerPrincipalId]
+    });
+    const teamRow = await activePolicy(client, {
+      table: "team_representation_policies",
+      whereSql: "team_id=$1",
+      parameters: [input.teamId]
+    });
+    const workspaceRow = await activePolicy(client, {
+      table: "workspace_representation_policies",
+      whereSql: "team_id=$1 and team_workspace_id=$2",
+      parameters: [input.teamId, input.teamWorkspaceId]
+    });
+    if (!teamRow || !workspaceRow) {
+      throw new SharedMemoryConflictError(
+        "Team and Workspace representation policies are required"
+      );
+    }
+    const currentOwnerId = currentOwner
+      ? stringValue(currentOwner.policy_id)
+      : null;
+    const currentOwnerVersion = currentOwner
+      ? numberValue(currentOwner.version)
+      : 0;
+    const ownerIsCurrent =
+      currentOwnerId === input.artifact.sourceOwnerPolicyId &&
+      currentOwnerVersion === input.artifact.sourceOwnerPolicyVersion;
+    const ownerIsNext = currentOwner
+      ? currentOwnerId === input.artifact.sourceOwnerPolicyId &&
+        currentOwnerVersion + 1 === input.artifact.sourceOwnerPolicyVersion
+      : input.artifact.sourceOwnerPolicyVersion === 1;
+    if (!ownerIsCurrent && !ownerIsNext) {
+      throw new SharedMemoryConflictError(
+        "Preview source-owner policy proposal is stale"
+      );
+    }
+    const owner = ownerIsCurrent
+      ? mapPolicy(currentOwner!, "source_owner")
+      : proposedSourceOwnerPolicy({
+          existing: currentOwner,
+          logicalMemoryId: input.logicalMemoryId,
+          ownerPrincipalId: input.ownerPrincipalId,
+          allowedRepresentations: input.allowedRepresentations,
+          policyId: input.artifact.sourceOwnerPolicyId,
+          version: input.artifact.sourceOwnerPolicyVersion
+        });
+    const team = mapPolicy(teamRow, "team");
+    const workspace = mapPolicy(workspaceRow, "workspace");
+    const effectivePolicyIntersection = intersection(
+      owner.allowedRepresentations,
+      team.allowedRepresentations,
+      workspace.allowedRepresentations
+    );
+    if (
+      input.artifact.teamPolicyId !== team.policyId ||
+      input.artifact.teamPolicyVersion !== team.version ||
+      input.artifact.workspacePolicyId !== workspace.policyId ||
+      input.artifact.workspacePolicyVersion !== workspace.version ||
+      input.artifact.representationPolicyHash !==
+        representationPolicyHashForPreview({
+          representation: input.representation,
+          revision: input.artifact.representationPolicyRevision,
+          owner,
+          team,
+          workspace
+        }) ||
+      !effectivePolicyIntersection.includes(input.representation) ||
+      !isSubset(input.allowedRepresentations, effectivePolicyIntersection)
+    ) {
+      throw new SharedMemoryConflictError(
+        "Preview is outside the proposed exact three-policy intersection"
+      );
+    }
+    return {
+      owner,
+      ownerNeedsActivation: !ownerIsCurrent,
+      currentOwner,
+      team,
+      workspace,
+      intersection: effectivePolicyIntersection
+    };
+  };
+
   const loadPreviewReviewContext = async (
     client: pg.PoolClient,
     actor: ActorContext,
@@ -4714,24 +4826,16 @@ export const createSharedMemoryRepository = (
         "Owner-private remote replica binding is invalid"
       );
     }
-    const policies = await requireCurrentPolicies(client, {
+    const policies = await loadPreviewCandidatePolicies(client, {
+      artifact,
       logicalMemoryId: input.logicalMemoryId,
       ownerPrincipalId: owner.ownerPrincipalId,
       teamId: input.teamId,
-      teamWorkspaceId: input.teamWorkspaceId
+      teamWorkspaceId: input.teamWorkspaceId,
+      representation: input.representation,
+      allowedRepresentations: allowed
     });
     if (
-      !policies.intersection.includes(input.representation) ||
-      !isSubset(allowed, stringArray(policies.owner.allowed_representations)) ||
-      stringValue(policies.owner.policy_id) !== artifact.sourceOwnerPolicyId ||
-      numberValue(policies.owner.version) !==
-        artifact.sourceOwnerPolicyVersion ||
-      stringValue(policies.team.policy_id) !== artifact.teamPolicyId ||
-      numberValue(policies.team.version) !== artifact.teamPolicyVersion ||
-      stringValue(policies.workspace.policy_id) !==
-        artifact.workspacePolicyId ||
-      numberValue(policies.workspace.version) !==
-        artifact.workspacePolicyVersion ||
       preview.binding.representationPolicyRevision !==
         artifact.representationPolicyRevision ||
       preview.binding.representationPolicyHash !==
@@ -4742,7 +4846,7 @@ export const createSharedMemoryRepository = (
       preview.binding.classifierHash !== artifact.classifierHash
     ) {
       throw new SharedMemoryConflictError(
-        "Preview is outside the current exact three-policy intersection"
+        "Preview binding is no longer current"
       );
     }
     const display = await loadReviewDisplay(client, {
@@ -4767,8 +4871,112 @@ export const createSharedMemoryRepository = (
         representation: preview.representation,
         sourceRevision: preview.sourceRevision
       },
-      effectivePolicyIntersection: policies.intersection
+      effectivePolicyIntersection: policies.intersection,
+      sourceOwnerPolicyWillActivate: policies.ownerNeedsActivation,
+      sourceOwnerPolicyWillReplace:
+        policies.ownerNeedsActivation && policies.currentOwner !== null
     };
+  };
+
+  const activatePreviewSourceOwnerPolicy = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    input: SharedMemoryCreateConsentInput,
+    preservingGrantId?: string
+  ): Promise<void> => {
+    const allowed = normalizedRepresentations(input.allowedRepresentations);
+    const loaded = await loadPersistedPreviewByReference(client, {
+      preview: input.preview,
+      requiredMessage: "Consent preview reference is not active"
+    });
+    const { preview, artifact } = loaded;
+    const owner = await requireSourceOwner(
+      client,
+      actor,
+      preview.logicalMemoryId
+    );
+    await requireShareAuthority(client, actor, {
+      teamId: preview.teamId,
+      teamWorkspaceId: preview.teamWorkspaceId,
+      authority: input.authority,
+      consume: false,
+      delegatedDeviceActionGrant
+    });
+    await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
+      `shared-memory-owner-policy:${preview.logicalMemoryId}:${owner.ownerPrincipalId}`
+    ]);
+    const policies = await loadPreviewCandidatePolicies(client, {
+      artifact,
+      logicalMemoryId: preview.logicalMemoryId,
+      ownerPrincipalId: owner.ownerPrincipalId,
+      teamId: preview.teamId,
+      teamWorkspaceId: preview.teamWorkspaceId,
+      representation: preview.representation,
+      allowedRepresentations: allowed
+    });
+    if (!policies.ownerNeedsActivation) return;
+
+    const previousVersion = policies.currentOwner
+      ? numberValue(policies.currentOwner.version)
+      : 0;
+    if (policies.currentOwner) {
+      await client.query(
+        "update source_owner_representation_policies set superseded_at=now() where id=$1",
+        [policies.currentOwner.id]
+      );
+    }
+    const inserted = await client.query<Row>(
+      `insert into source_owner_representation_policies (
+         policy_id,logical_memory_id,source_owner_principal_id,version,
+         allowed_representations,policy_hash,created_by_user_id,effective_at
+       ) values ($1,$2,$3,$4,$5::shared_memory_representation[],$6,$7,now())
+       returning *`,
+      [
+        policies.owner.policyId,
+        preview.logicalMemoryId,
+        owner.ownerPrincipalId,
+        policies.owner.version,
+        policies.owner.allowedRepresentations,
+        policies.owner.policyHash,
+        actor.userId
+      ]
+    );
+    await appendPolicyAudit(client, {
+      actorUserId: actor.userId,
+      ownerUserId: actor.userId,
+      action: policies.currentOwner
+        ? "shared_memory.source_owner_policy.updated"
+        : "shared_memory.source_owner_policy.created",
+      targetTable: "source_owner_representation_policies",
+      targetId: stringValue(inserted.rows[0]?.id),
+      mutationId: input.authority.referenceId,
+      scope: "source_owner",
+      logicalMemoryId: preview.logicalMemoryId,
+      policyId: policies.owner.policyId,
+      version: policies.owner.version,
+      previousVersion,
+      allowedRepresentations: policies.owner.allowedRepresentations
+    });
+    if (!policies.currentOwner) return;
+
+    await client.query(
+      `update source_owner_representation_consents
+          set state='paused', paused_at=now(), updated_at=now(),
+              state_reason_code='source_owner_policy_changed'
+        where logical_memory_id=$1 and source_owner_principal_id=$2 and state='active'`,
+      [preview.logicalMemoryId, owner.ownerPrincipalId]
+    );
+    await invalidateAffectedGrants(client, {
+      mutationId: input.authority.referenceId,
+      actorUserId: actor.userId,
+      whereSql: preservingGrantId
+        ? "g.logical_memory_id=$1 and g.owner_principal_id=$2 and g.id<>$3"
+        : "g.logical_memory_id=$1 and g.owner_principal_id=$2",
+      parameters: preservingGrantId
+        ? [preview.logicalMemoryId, owner.ownerPrincipalId, preservingGrantId]
+        : [preview.logicalMemoryId, owner.ownerPrincipalId],
+      reasonCode: "source_owner_policy_changed"
+    });
   };
 
   const repository: SharedMemoryClientScopedRepository = {
@@ -5359,6 +5567,7 @@ export const createSharedMemoryRepository = (
     async createShareBundle(actor, input) {
       try {
         return await withTransaction(pool, async (client) => {
+          await activatePreviewSourceOwnerPolicy(client, actor, input.consent);
           const consent = await repository.createSourceOwnerConsent(
             actor,
             input.consent,
@@ -5386,6 +5595,12 @@ export const createSharedMemoryRepository = (
     async changeRepresentationBundle(actor, input) {
       try {
         return await withTransaction(pool, async (client) => {
+          await activatePreviewSourceOwnerPolicy(
+            client,
+            actor,
+            input.consent,
+            input.representation.shareGrantId
+          );
           const consent = await repository.createSourceOwnerConsent(
             actor,
             input.consent,

@@ -83,7 +83,6 @@ const sections: readonly {
   label: string;
 }[] = [
   { id: "general", label: "General" },
-  { id: "capture", label: "Capture" },
   { id: "team-connection", label: "Team Connection" },
   { id: "about", label: "About" },
   { id: "advanced", label: "Advanced Diagnostics" }
@@ -568,9 +567,16 @@ export function PreferencesView({
   theme,
   version
 }: PreferencesViewProps) {
-  const [section, setSection] = useState(initialSection);
+  const visibleInitialSection =
+    initialSection === "capture" ? "general" : initialSection;
+  const [section, setSection] = useState<PreferencesSection>(
+    visibleInitialSection
+  );
 
-  useEffect(() => setSection(initialSection), [initialSection]);
+  useEffect(
+    () => setSection(initialSection === "capture" ? "general" : initialSection),
+    [initialSection]
+  );
 
   const selectSection = (next: PreferencesSection) => {
     setSection(next);

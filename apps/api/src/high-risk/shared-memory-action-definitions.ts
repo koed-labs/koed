@@ -1,6 +1,5 @@
 import type {
   MemorySourceRepository,
-  SharedMemoryPreviewAdmissionRecord,
   SharedMemoryRepresentation,
   SharedMemoryRepresentationChangeReviewRecord,
   SharedMemoryRevokeReviewRecord,
@@ -71,6 +70,19 @@ const representationRank: Record<SharedMemoryRepresentation, number> = {
   lcm_rollups: 0,
   lcm_leaves: 1,
   memory_events: 2
+};
+
+const representationLabel = (
+  representation: SharedMemoryRepresentation
+): string => {
+  switch (representation) {
+    case "memory_events":
+      return "Memory Events";
+    case "lcm_leaves":
+      return "LCM Leaves";
+    case "lcm_rollups":
+      return "LCM Rollups";
+  }
 };
 
 const sourceName = (review: {
@@ -164,47 +176,42 @@ const shareReview = (
       : "native_review",
     {
       title: "Share Personal Memory with this Workspace?",
-      description:
-        "One decision records the exact source-owner consent and creates the corresponding Share Grant.",
-      consequence:
-        "Authorized Workspace members can recall the selected representation under the exact mode and expiry.",
+      description: review.sourceOwnerPolicyWillActivate
+        ? "One decision activates the reviewed source policy, records exact consent, and creates the corresponding Share Grant."
+        : "One decision records the exact source-owner consent and creates the corresponding Share Grant.",
+      consequence: review.sourceOwnerPolicyWillReplace
+        ? "The new source policy pauses existing consent and invalidates other Share Grants before this Workspace receives the selected representation."
+        : "Authorized Workspace members can recall the selected representation under the exact mode and expiry.",
       confirmLabel: "Share Memory",
       details: [
         { label: "Personal Memory", value: sourceName(review) },
         { label: "Logical Memory", value: review.source.logicalMemoryId },
         { label: "Team", value: review.team.name },
         { label: "Workspace", value: review.workspace.name },
-        { label: "Representation", value: intent.selectedRepresentation },
+        {
+          label: "Representation",
+          value: representationLabel(intent.selectedRepresentation)
+        },
         { label: "Mode", value: intent.mode },
-        { label: "Expiry", value: intent.expiresAt ?? "No expiry" }
+        { label: "Expiry", value: intent.expiresAt ?? "No expiry" },
+        ...(review.sourceOwnerPolicyWillActivate
+          ? [
+              {
+                label: "Source policy",
+                value: review.sourceOwnerPolicyWillReplace
+                  ? "Replace during this share"
+                  : "Activate during this share"
+              }
+            ]
+          : [])
       ]
     }
   );
 
-const previewPolicy = (
-  review: SharedMemoryPreviewAdmissionRecord
-): ActionApprovalPolicy =>
-  review.sourceOwnerPolicyWillChange
-    ? reviewed("step_up", {
-        title: "Change the source policy and preview this Memory?",
-        description:
-          "This preview request also creates or replaces the source-owner representation policy.",
-        consequence:
-          "Replacing an existing policy pauses active consents and invalidates affected Share Grants before the preview is created.",
-        confirmLabel: "Change policy and preview",
-        details: [
-          { label: "Personal Memory", value: sourceName(review) },
-          { label: "Logical Memory", value: review.source.logicalMemoryId },
-          { label: "Team", value: review.team.name },
-          { label: "Workspace", value: review.workspace.name },
-          { label: "Representation", value: review.representation },
-          {
-            label: "Allowed representations",
-            value: review.requestedAllowedRepresentations.join(", ")
-          }
-        ]
-      })
-    : { disposition: "direct", review: null };
+const previewPolicy = (): ActionApprovalPolicy => ({
+  disposition: "direct",
+  review: null
+});
 
 const revokeReview = (
   review: SharedMemoryRevokeReviewRecord,
@@ -224,7 +231,9 @@ const revokeReview = (
       { label: "Workspace", value: review.workspace.name },
       {
         label: "Representation",
-        value: review.grant.activeRepresentation ?? "Unavailable"
+        value: review.grant.activeRepresentation
+          ? representationLabel(review.grant.activeRepresentation)
+          : "Unavailable"
       },
       { label: "Share Grant", value: intent.shareGrantId }
     ]
@@ -247,12 +256,16 @@ const representationChangeReview = (
     title: review.willReactivate
       ? "Reactivate Shared Memory with this representation?"
       : "Change the Shared Memory representation?",
-    description: "Compare the current and proposed level of Memory detail.",
-    consequence: review.willReactivate
-      ? "This reactivates the Share Grant and makes the selected Memory representation available again."
-      : increases
-        ? "This makes more detailed Memory available to the Workspace."
-        : "This reduces the detail available and purges unauthorized higher-fidelity cached content.",
+    description: review.sourceOwnerPolicyWillActivate
+      ? "Compare the current and proposed detail. This decision also activates the reviewed source policy."
+      : "Compare the current and proposed level of Memory detail.",
+    consequence: review.sourceOwnerPolicyWillReplace
+      ? "The new source policy pauses existing consent and invalidates other affected Share Grants while this Share Grant changes representation."
+      : review.willReactivate
+        ? "This reactivates the Share Grant and makes the selected Memory representation available again."
+        : increases
+          ? "This makes more detailed Memory available to the Workspace."
+          : "This reduces the detail available and purges unauthorized higher-fidelity cached content.",
     confirmLabel: review.willReactivate
       ? "Reactivate Share Grant"
       : "Change representation",
@@ -261,8 +274,14 @@ const representationChangeReview = (
       { label: "Logical Memory", value: review.source.logicalMemoryId },
       { label: "Team", value: review.team.name },
       { label: "Workspace", value: review.workspace.name },
-      { label: "Current representation", value: current },
-      { label: "New representation", value: intent.representation },
+      {
+        label: "Current representation",
+        value: representationLabel(current)
+      },
+      {
+        label: "New representation",
+        value: representationLabel(intent.representation)
+      },
       { label: "Mode", value: intent.mode },
       { label: "Expiry", value: intent.expiresAt ?? "No expiry" }
     ]
@@ -273,7 +292,7 @@ const previewDefinition = {
   operationFamily: "share_grant_management" as const,
   async admit(input: SharedMemoryAdmissionInput) {
     if (input.intent.action !== "shared_memory.preview") return null;
-    const review = requireReview(
+    requireReview(
       await input.repository.getSharedMemoryPreviewAdmission(
         { userId: input.userId },
         {
@@ -292,7 +311,7 @@ const previewDefinition = {
         input.intent,
         input.clientRequestId
       ),
-      policy: previewPolicy(review)
+      policy: previewPolicy()
     };
   }
 };

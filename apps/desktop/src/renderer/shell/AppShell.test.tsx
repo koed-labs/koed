@@ -86,6 +86,15 @@ describe("AppShell", () => {
     expect(container.textContent).toContain("Personal · Private to you");
   });
 
+  it("marks the selected Team as the active rail scope", async () => {
+    await renderShell({ activeScope: { teamId: "team-a" } });
+    const team = container.querySelector<HTMLButtonElement>(
+      '.desktop-team-rail [aria-label="Alpha Team"]'
+    );
+    expect(team?.dataset.active).toBe("true");
+    expect(team?.getAttribute("aria-current")).toBe("page");
+  });
+
   it("routes keyboard commands to the owning shell", async () => {
     const props = await renderShell({
       canGoBack: true,

@@ -135,6 +135,26 @@ export const approveDeviceEnrollmentChallengeSchema = z.object({
   decision: z.enum(["approve", "deny"])
 });
 
+export const publicDeviceEnrollmentChallengeSchema = z
+  .object({
+    id: z.uuid(),
+    status: z.enum(["pending", "approved", "denied", "expired"]),
+    upstreamBackendId: z.string(),
+    deviceInstanceId: z.string().nullable(),
+    deviceLabel: z.string().nullable(),
+    requestedOperationFamilies: z.array(operationFamilySchema),
+    metadata: z.record(z.string(), z.unknown()),
+    createdAt: z.string().datetime({ offset: true }),
+    expiresAt: z.string().datetime({ offset: true }),
+    approvedAt: z.string().datetime({ offset: true }).nullable(),
+    deniedAt: z.string().datetime({ offset: true }).nullable()
+  })
+  .strict();
+
+export type PublicDeviceEnrollmentChallenge = z.infer<
+  typeof publicDeviceEnrollmentChallengeSchema
+>;
+
 export const redeemDeviceEnrollmentChallengeSchema = z
   .object({
     challenge_hash: z.string().min(32),

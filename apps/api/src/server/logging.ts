@@ -56,6 +56,21 @@ const parsePath = (
   }
 };
 
+const sensitiveIdentifierRoutes = [
+  "/high-risk/browser-activations/:selector",
+  "/device-enrollment/:challengeId",
+  "/v1/high-risk/browser-activations/:selector",
+  "/v1/high-risk/browser-activations/:selector/decision",
+  "/v1/local-edge/device-enrollments/challenges/:challengeId",
+  "/v1/local-edge/device-enrollments/challenges/:challengeId/approval"
+] as const;
+
+export const redactSensitiveRoutePath = (
+  path: string | undefined,
+  route: string | undefined
+): string | undefined =>
+  route && sensitiveIdentifierRoutes.includes(route as never) ? route : path;
+
 const getString = (
   value: Record<string, unknown>,
   key: string
@@ -133,6 +148,7 @@ export const serializeApiRequest = (request: unknown) => {
   const trace = parseTraceparent(firstHeaderValue(headers?.traceparent));
 
   const parsedPath = parsePath(url);
+  const safePath = redactSensitiveRoutePath(parsedPath.path, route);
   const pdsRelay =
     route?.startsWith("/v1/personal-device-sync/relay/") ||
     parsedPath.path?.startsWith("/v1/personal-device-sync/relay/");
@@ -144,7 +160,12 @@ export const serializeApiRequest = (request: unknown) => {
           path: route ?? "/v1/personal-device-sync/relay",
           category: "pds_relay"
         }
-      : parsedPath),
+      : {
+          ...(safePath ? { path: safePath } : {}),
+          ...(parsedPath.query_keys
+            ? { query_keys: parsedPath.query_keys }
+            : {})
+        }),
     ...(route ? { route } : {}),
     ...(trace ? { trace } : {})
   };

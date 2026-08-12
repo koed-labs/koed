@@ -1,22 +1,37 @@
 import {
   MemoryEventFrame,
   SecureMarkdown,
+  SourceDiff,
   VirtualizedTimeline,
   threadSelectionKey,
-  type MarkdownPlatformAdapters
+  type MarkdownPlatformAdapters,
+  type MemoryPresentationScope
 } from "@koed/memory-ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
+import { BookText, LoaderCircle } from "lucide-react";
 
 import {
   conversationEventPatch,
   conversationEventText,
+  conversationEventToolDisplay,
+  approvalReviewSourceEventId,
+  expandConversationDisplayEvents,
   groupConversationEvents,
   mergeConversationEvents,
+  summarizeToolActivity,
   type ConversationCursor,
   type DesktopConversationEvent,
   type DesktopConversationTimelineItem
 } from "./desktop-conversation.js";
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
+import "./renderer/views/personal/personal-memory.css";
 
 const initialEventLimit = 50;
 const olderEventLimit = 500;
@@ -55,14 +70,17 @@ export type NativeConversationSurfaceProps =
     });
 
 function eventActorLabel(event: DesktopConversationEvent): string {
+  if (event.approvalDecisionDisplay) return "Auto approval";
   if (event.actor === "user") return "You";
   if (event.actor === "assistant") return "AI Client";
   if (event.actor === "tool") {
-    const toolName = event.metadata.toolName;
-    return typeof toolName === "string" ? toolName : "Tool";
+    return conversationEventToolDisplay(event).toolName ?? "Tool";
   }
   return event.actor || event.eventType || "Memory Event";
 }
+
+const approvalLevelLabel = (value: "low" | "medium" | "high"): string =>
+  value.charAt(0).toLocaleUpperCase() + value.slice(1);
 
 function eventTime(value: string): string {
   const date = new Date(value);
@@ -105,11 +123,13 @@ function InvalidationLabel({ event }: { event: DesktopConversationEvent }) {
 function ConversationEventRow({
   event,
   markdownAdapters,
-  onInspectEvent
+  onInspectEvent,
+  scope
 }: {
   event: DesktopConversationEvent;
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (event: DesktopConversationEvent) => void;
+  scope: MemoryPresentationScope;
 }) {
   const text = conversationEventText(event);
   if (!text && event.actor !== "tool") return null;
@@ -117,12 +137,65 @@ function ConversationEventRow({
   const tone =
     event.actor === "user" ? "user" : event.actor === "tool" ? "tool" : "agent";
   const patch = conversationEventPatch(event);
+  const toolDisplay =
+    event.actor === "tool" ? conversationEventToolDisplay(event) : null;
+  const approvalDecision = event.approvalDecisionDisplay;
   const metadata = (
     <>
       <time dateTime={event.timestamp}>{eventTime(event.timestamp)}</time>
       <InvalidationLabel event={event} />
     </>
   );
+
+  if (approvalDecision) {
+    const allowed = approvalDecision.outcome === "allow";
+    return (
+      <div
+        className="native-event-wrap"
+        data-invalidated={event.invalidatedAt ? "true" : undefined}
+      >
+        <MemoryEventFrame
+          actions={
+            <EventActions event={event} onInspectEvent={onInspectEvent} />
+          }
+          className={`native-conversation-event native-approval-decision ${allowed ? "allow" : "deny"}`}
+          contentType="approval_decision"
+          header={
+            <>
+              <span
+                className={`native-event-avatar approval ${allowed ? "allow" : "deny"}`}
+                aria-label={allowed ? "Allowed" : "Denied"}
+                role="img"
+              >
+                {allowed ? "✓" : "!"}
+              </span>
+              <span className="native-event-heading">
+                <span className="native-approval-title">
+                  <strong>Auto approval</strong>
+                  <span
+                    className="native-approval-signal"
+                    data-level={approvalDecision.riskLevel}
+                  >
+                    Risk · {approvalLevelLabel(approvalDecision.riskLevel)}
+                  </span>
+                  <span className="native-approval-signal authority">
+                    Authorization ·{" "}
+                    {approvalLevelLabel(approvalDecision.userAuthorization)}
+                  </span>
+                </span>
+              </span>
+            </>
+          }
+          metadata={metadata}
+          scope={scope}
+        >
+          <div className="native-approval-body">
+            <p>{approvalDecision.rationale}</p>
+          </div>
+        </MemoryEventFrame>
+      </div>
+    );
+  }
 
   if (event.actor === "tool") {
     return (
@@ -136,11 +209,19 @@ function ConversationEventRow({
               T
             </span>
             <span className="native-event-heading">
-              <strong>{actor}</strong>
-              <small>{eventTime(event.timestamp)}</small>
+              <strong>{toolDisplay?.label ?? actor}</strong>
+              <small>
+                {[
+                  toolDisplay?.toolName,
+                  eventTime(event.timestamp),
+                  toolDisplay?.status
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </small>
             </span>
             <span className="native-tool-preview">
-              {patch?.summary ?? text.split("\n")[0] ?? "Tool activity"}
+              {patch?.summary ?? toolDisplay?.preview ?? "Tool activity"}
             </span>
             <InvalidationLabel event={event} />
           </summary>
@@ -150,15 +231,17 @@ function ConversationEventRow({
             }
             className="native-tool-event-frame"
             contentType={patch ? "diff" : "tool"}
-            header={actor}
+            header={toolDisplay?.label ?? actor}
             metadata={metadata}
-            scope="personal"
+            scope={scope}
           >
+            {toolDisplay?.callId ? (
+              <span className="native-tool-call-id" title={toolDisplay.callId}>
+                Call {toolDisplay.callId}
+              </span>
+            ) : null}
             {patch ? (
-              <details className="native-diff-disclosure">
-                <summary>{patch.summary}</summary>
-                <pre>{patch.sourceText}</pre>
-              </details>
+              <SourceDiff details={patch} sourceText={patch.sourceText} />
             ) : (
               <pre>
                 {text || "Tool activity captured without displayable content."}
@@ -187,7 +270,7 @@ function ConversationEventRow({
           </>
         }
         metadata={metadata}
-        scope="personal"
+        scope={scope}
       >
         {markdownAdapters ? (
           <SecureMarkdown
@@ -206,18 +289,15 @@ function ConversationEventRow({
 function ToolActivityGroup({
   events,
   markdownAdapters,
-  onInspectEvent
+  onInspectEvent,
+  scope
 }: {
   events: DesktopConversationEvent[];
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (event: DesktopConversationEvent) => void;
+  scope: MemoryPresentationScope;
 }) {
-  const toolNames = [
-    ...new Set(events.map(eventActorLabel).filter((name) => name !== "Tool"))
-  ];
-  const summary = toolNames.length
-    ? toolNames.slice(0, 3).join(", ")
-    : "Commands and tool calls";
+  const summary = summarizeToolActivity(events) || "Commands and tool calls";
   const invalidatedCount = events.filter((event) => event.invalidatedAt).length;
   return (
     <div className="native-event-wrap">
@@ -248,11 +328,139 @@ function ToolActivityGroup({
               key={event.id}
               markdownAdapters={markdownAdapters}
               onInspectEvent={onInspectEvent}
+              scope={scope}
             />
           ))}
         </div>
       </details>
     </div>
+  );
+}
+
+export function ConversationRows({
+  events,
+  markdownAdapters,
+  scope = "personal"
+}: {
+  events: readonly DesktopConversationEvent[];
+  markdownAdapters?: MarkdownPlatformAdapters;
+  scope?: MemoryPresentationScope;
+}) {
+  const timelineItems = groupConversationEvents(
+    expandConversationDisplayEvents(events).filter(
+      (event) =>
+        event.actor === "tool" || conversationEventText(event).length > 0
+    )
+  );
+  return (
+    <>
+      {timelineItems.map((item) => (
+        <Fragment key={item.id}>
+          {item.kind === "tool-group" ? (
+            <ToolActivityGroup
+              events={item.events}
+              markdownAdapters={markdownAdapters}
+              scope={scope}
+            />
+          ) : (
+            <ConversationEventRow
+              event={item.event}
+              markdownAdapters={markdownAdapters}
+              scope={scope}
+            />
+          )}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
+export function ConversationTimeline({
+  ariaLabel,
+  className = "native-timeline-scroll",
+  events,
+  hasNewerEvents = false,
+  hasOlderEvents,
+  markdownAdapters,
+  onInspectEvent,
+  onLoadNewer,
+  onLoadOlder,
+  scope = "personal",
+  threadKey
+}: {
+  ariaLabel?: string;
+  className?: string;
+  events: readonly DesktopConversationEvent[];
+  hasNewerEvents?: boolean;
+  hasOlderEvents: boolean;
+  markdownAdapters?: MarkdownPlatformAdapters;
+  onInspectEvent?: (event: DesktopConversationEvent) => void;
+  onLoadNewer?: () => Promise<void> | void;
+  onLoadOlder: () => Promise<void> | void;
+  scope?: MemoryPresentationScope;
+  threadKey: string;
+}) {
+  const visibleEvents = useMemo(
+    () =>
+      expandConversationDisplayEvents(events).filter(
+        (event) =>
+          event.actor === "tool" || conversationEventText(event).length > 0
+      ),
+    [events]
+  );
+  const sourceEventsById = useMemo(
+    () => new Map(events.map((event) => [event.id, event])),
+    [events]
+  );
+  const inspectEvent = useCallback(
+    (event: DesktopConversationEvent) => {
+      if (!onInspectEvent) return;
+      const sourceId = approvalReviewSourceEventId(event.id);
+      onInspectEvent(
+        (sourceId ? sourceEventsById.get(sourceId) : undefined) ?? event
+      );
+    },
+    [onInspectEvent, sourceEventsById]
+  );
+  const timelineItems = useMemo(
+    () => groupConversationEvents(visibleEvents),
+    [visibleEvents]
+  );
+  const renderEvent = useCallback(
+    (item: DesktopConversationTimelineItem) => (
+      <Fragment key={item.id}>
+        {item.kind === "tool-group" ? (
+          <ToolActivityGroup
+            events={item.events}
+            markdownAdapters={markdownAdapters}
+            onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+            scope={scope}
+          />
+        ) : (
+          <ConversationEventRow
+            event={item.event}
+            markdownAdapters={markdownAdapters}
+            onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+            scope={scope}
+          />
+        )}
+      </Fragment>
+    ),
+    [inspectEvent, markdownAdapters, onInspectEvent, scope]
+  );
+
+  return (
+    <VirtualizedTimeline
+      ariaLabel={ariaLabel}
+      className={className}
+      events={timelineItems}
+      hasNewerEvents={hasNewerEvents}
+      hasOlderEvents={hasOlderEvents}
+      onLoadNewer={onLoadNewer}
+      onLoadOlder={onLoadOlder}
+      renderEvent={renderEvent}
+      threadKey={threadKey}
+    />
   );
 }
 
@@ -270,11 +478,25 @@ function ConversationPresentation({
 }) {
   const visibleEvents = useMemo(
     () =>
-      model.events.filter(
+      expandConversationDisplayEvents(model.events).filter(
         (event) =>
           event.actor === "tool" || conversationEventText(event).length > 0
       ),
     [model.events]
+  );
+  const sourceEventsById = useMemo(
+    () => new Map(model.events.map((event) => [event.id, event])),
+    [model.events]
+  );
+  const inspectEvent = useCallback(
+    (event: DesktopConversationEvent) => {
+      if (!onInspectEvent) return;
+      const sourceId = approvalReviewSourceEventId(event.id);
+      onInspectEvent(
+        (sourceId ? sourceEventsById.get(sourceId) : undefined) ?? event
+      );
+    },
+    [onInspectEvent, sourceEventsById]
   );
   const timelineItems = useMemo(
     () => groupConversationEvents(visibleEvents),
@@ -286,16 +508,18 @@ function ConversationPresentation({
         <ToolActivityGroup
           events={item.events}
           markdownAdapters={markdownAdapters}
-          onInspectEvent={onInspectEvent}
+          onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+          scope="personal"
         />
       ) : (
         <ConversationEventRow
           event={item.event}
           markdownAdapters={markdownAdapters}
-          onInspectEvent={onInspectEvent}
+          onInspectEvent={onInspectEvent ? inspectEvent : undefined}
+          scope="personal"
         />
       ),
-    [markdownAdapters, onInspectEvent]
+    [inspectEvent, markdownAdapters, onInspectEvent]
   );
 
   if (
@@ -303,18 +527,30 @@ function ConversationPresentation({
     visibleEvents.length === 0
   ) {
     return (
-      <div className="native-conversation-state" role="status">
-        Loading Conversation…
+      <div
+        aria-label="Loading Conversation"
+        className="native-conversation-state"
+        role="status"
+      >
+        <LoaderCircle
+          aria-hidden="true"
+          className="native-conversation-loading-icon"
+        />
       </div>
     );
   }
   if (model.error && visibleEvents.length === 0) {
     return (
       <div className="native-conversation-state error" role="alert">
+        <BookText aria-hidden="true" className="native-conversation-icon" />
         <strong>Conversation could not be loaded</strong>
         <p>{model.error}</p>
-        <button type="button" onClick={() => void onRetry()}>
-          Retry loading
+        <button
+          className="personal-retry-button"
+          type="button"
+          onClick={() => void onRetry()}
+        >
+          Retry
         </button>
       </div>
     );

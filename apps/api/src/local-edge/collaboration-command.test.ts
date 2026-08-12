@@ -573,7 +573,7 @@ const sourceSyncResponse = (
   if (path === "/v1/cross-identity-sync/intake/context") {
     return Response.json({
       target_deployment_id: ids.remoteProtocolDeployment,
-      target_deployment_profile: "team_self_hosted",
+      target_deployment_profile: "developer",
       target_user_id: ids.remotePrincipal,
       recipient_key: syncRecipientKey
     });
@@ -584,7 +584,7 @@ const sourceSyncResponse = (
     return Response.json({
       relationship: { id: created.relationshipId, state: "ready" },
       target_deployment_id: ids.remoteProtocolDeployment,
-      target_deployment_profile: "team_self_hosted",
+      target_deployment_profile: "developer",
       target_user_id: ids.remotePrincipal,
       target_replica_id: created.remoteReplicaId,
       recipient_key: syncRecipientKey
@@ -1770,7 +1770,7 @@ describe("local-edge collaboration command route", () => {
     await harness.app.close();
   });
 
-  it("recovers a failed source relationship through the repository retry lifecycle", async () => {
+  it("recovers a failed source relationship whether the target stays active or also fails", async () => {
     const source = createSourceRepository();
     let targetFailed = false;
     const harness = createHarness({
@@ -1816,6 +1816,17 @@ describe("local-edge collaboration command route", () => {
       data: { entry: { syncState: "ready" } }
     });
     source.failRelationship();
+
+    const locallyRecovered = await injectCommand(
+      harness.app,
+      prepareSourceCommand()
+    );
+
+    expect(parseResult(locallyRecovered.body)).toMatchObject({
+      ok: true,
+      data: { entry: { syncState: "ready" } }
+    });
+    source.failRelationship();
     targetFailed = true;
 
     const recovered = await injectCommand(harness.app, prepareSourceCommand());
@@ -1825,8 +1836,14 @@ describe("local-edge collaboration command route", () => {
       data: { entry: { syncState: "ready" } }
     });
     expect(source.relationship()?.id).toBe(relationshipId);
-    expect(source.retryActors).toEqual([ids.actor]);
-    expect(source.activationActors).toEqual([ids.actor, ids.actor, ids.actor]);
+    expect(source.retryActors).toEqual([ids.actor, ids.actor]);
+    expect(source.activationActors).toEqual([
+      ids.actor,
+      ids.actor,
+      ids.actor,
+      ids.actor,
+      ids.actor
+    ]);
     expect(harness.calls.map((call) => new URL(call.url).pathname)).toContain(
       `/koed/v1/cross-identity-sync/relationships/${relationshipId}/retry`
     );

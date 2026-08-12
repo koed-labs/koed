@@ -22,7 +22,7 @@ export interface KoedServerPaths {
   lastVerificationPath: string;
   serverConfigPath: string;
   localPortsPath: string;
-  explorerTokenPath: string;
+  localAppCredentialPath: string;
   upstreamBackendsPath: string;
   projectMetadataPath: string;
   projectTeamWorkspaceLinksPath: string;
@@ -96,7 +96,11 @@ export const resolveKoedServerPaths = (
     lastVerificationPath: resolve(koedHome, "run", "last-verification.json"),
     serverConfigPath: resolve(koedHome, "config", "server.json"),
     localPortsPath: resolve(koedHome, "config", "local-ports.json"),
-    explorerTokenPath: resolve(koedHome, "config", "explorer-token.json"),
+    localAppCredentialPath: resolve(
+      koedHome,
+      "config",
+      "local-app-credential.json"
+    ),
     upstreamBackendsPath: resolve(koedHome, "config", "upstream-backends.json"),
     projectMetadataPath: resolve(koedHome, "config", "projects.json"),
     projectTeamWorkspaceLinksPath: resolve(

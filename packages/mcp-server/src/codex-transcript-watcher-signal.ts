@@ -91,11 +91,11 @@ const writePrivateSignal = (target: string, content: string): void => {
 
 export const signalCodexTranscriptWatcher = (
   env: NodeJS.ProcessEnv = process.env,
-  signal: CodexTranscriptWatcherSignal = {}
+  signal: CodexTranscriptWatcherSignal = {},
+  writeSignal: (target: string, content: string) => void = writePrivateSignal
 ): void => {
+  const observedAt = Date.now();
   try {
-    const observedAt = Date.now();
-    writePrivateSignal(watcherWakePath(env), `${observedAt}\n`);
     const sourceOffset =
       signal.turnBoundary === true && signal.transcriptPath
         ? completeSourceOffset(signal.transcriptPath)
@@ -107,9 +107,20 @@ export const signalCodexTranscriptWatcher = (
         sourceOffset
       })}\n`;
       for (const target of turnBoundaryPaths(env, signal)) {
-        writePrivateSignal(target, content);
+        try {
+          writeSignal(target, content);
+        } catch {
+          // One routing identity may still succeed, and the wake must still run.
+        }
       }
     }
+  } catch {
+    // Boundary delivery is best effort; transcript evidence still catches up.
+  }
+  try {
+    // Publish the wake last so another process cannot observe it before a Stop
+    // boundary is durable and defer the final assistant fallback indefinitely.
+    writeSignal(watcherWakePath(env), `${observedAt}\n`);
   } catch {
     // Wake delivery is best effort; the next signal or startup performs catch-up.
   }

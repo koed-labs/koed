@@ -3,16 +3,19 @@
 This overview describes the high-level service flow for Koed ingestion,
 LCM summarisation, and retrieval. It follows the current self-hosted boundary:
 the backend stores, projects, embeds, and retrieves memory, while the connected
-AI Client performs Answer Synthesis and creates LCM Summaries through local
-MCP-side workers.
+AI Client performs Answer Synthesis and creates LCM Summaries through the Local
+AI Runtime.
 
 ## Services In Scope
 
 - **AI Client**: Codex is the supported AI Client in this build.
 - **Transcript Watcher**: the local background service that owns correctness for externally managed Codex transcript growth.
 - **Capture Hook**: the TypeScript hook that provides content-free, low-latency wake signals.
-- **MCP Server**: the local process that exposes `memory_answer`, runs local
-  memory-answer work, and runs the LCM Summary Service.
+- **MCP Server**: a thin local MCP `2026-07-28` adapter that exposes Koed tools
+  and forwards typed requests to the Local AI Runtime.
+- **Local AI Runtime**: the single `koed-server`-supervised process per
+  `KOED_HOME` that owns Memory Answer workers, LCM Summary work, Curated Memory
+  review, and transcript watching.
 - **API**: the Fastify backend that authenticates API Tokens, persists raw
   records, runs Projection, and serves recall endpoints.
 - **Worker**: background process that consumes priority-ordered BullMQ or
@@ -40,7 +43,7 @@ MCP-side workers.
    Desktop starts its managed local personal `koed-server` with
    `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
    Operator overrides those values. Desktop bundled-local startup allocates free
-   local API, Explorer, Postgres, Embedding Service, and private llama-server
+   local API, Postgres, Embedding Service, and private llama-server
    child ports and persists them under `KOED_HOME/config/local-ports.json` for
    stable later launches. This keeps independent Koed homes from attaching to
    each other's model processes. The same
@@ -87,15 +90,14 @@ MCP-side workers.
    native path with an isolated temporary `KOED_HOME`, optional Homebrew-backed
    runtime install for that temporary home, temporary host ports, native resource
    preflight, API Token creation, Capture Hook-like personal ingestion,
-   Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer
-   reachability, and stop-based cleanup before Operators rely on it for local
+   Projection, queue/embedding work, Memory Answer evidence retrieval, API
+   readiness, and stop-based cleanup before Operators rely on it for local
    development or packaging checks.
-6. The API, Worker, and Explorer run as local app processes supervised by
+6. The API and Worker run as local app processes supervised by
    `koed-server` and connect to those configured dependency URLs. On a
    Desktop-managed fresh start, the supervisor starts the API first, waits for
-   API and migration readiness, provisions the app-owned local API Token and
-   Explorer credential inside `KOED_HOME`, and only then starts Worker and
-   Explorer with that credential. This ordering prevents authenticated
+   API and migration readiness, provisions the app-owned local API Token inside
+   `KOED_HOME`, and only then starts Worker with that credential. This ordering prevents authenticated
    background work from ever starting with an example or stale token. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
@@ -106,13 +108,13 @@ MCP-side workers.
    reembedding. Cross-Identity Sync, retention purge, collaboration replay
    pruning, and other Team collaboration jobs are not started.
    After the API is healthy and a local API Token exists, the supervisor starts
-   `@koed/mcp-server` command `watch-codex-transcripts` when enabled.
+   one Local AI Runtime. The runtime hosts the Transcript Watcher when enabled.
 7. `koed-server start --daemon --json` starts a detached `koed-server start`
    supervisor and returns machine-readable startup intent for Desktop and
    scripts. `koed-server stop --json` stops supervised processes in
-   dependency-safe order: Transcript Watcher, Explorer, Worker, API, native
+   dependency-safe order: Local AI Runtime, Worker, API, native
    Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
-   watcher before the API lets its active scan finish or terminate without
+   Local AI Runtime before the API lets active local work finish or terminate without
    losing the API dependency. Stop treats stale process IDs as an idempotent
    no-op and does not stop Docker Compose or Operator-managed dependencies.
    `koed-server restart --json` runs the same stop lifecycle, starts a detached
@@ -123,7 +125,8 @@ MCP-side workers.
    output, Supported Capture Hook config, Codex config, LCM Summary Service
    availability, and last verification metadata. Status compares the active
    local API URL/token against the Koed-managed Codex MCP block and separately
-   verifies the credential-free Capture Hook command path. Stale ports,
+   verifies the credential-free Capture Hook command path. MCP configuration
+   contains `KOED_HOME` rather than API credentials. Stale ports,
    credentials, or runtime paths show as explicit integration mismatches.
    Readiness gates include Postgres reachability and version,
    current migrations, pgvector, local or BullMQ queue backend availability,
@@ -132,9 +135,9 @@ MCP-side workers.
    only, never readiness gates.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
-   Explorer credential, verification, and doctor setup can be invoked through
+   local credential, verification, and doctor setup can be invoked through
    the control plane. Setup applies persisted auto-allocated local ports before
-   resolving the API/Explorer URLs, so Desktop-managed ports and direct CLI
+   resolving the API URL, so Desktop-managed ports and direct CLI
    setup write the same target URL/token. `koed-server repair codex --json` is
    the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
    block for the active local API URL/token and the credential-free Hook
@@ -152,19 +155,16 @@ MCP-side workers.
     repo-local scripts directly. Its Project and Captured Session navigation is
     native to the Desktop renderer. Selecting a Captured Session requests
     paginated Memory Events from the API and renders the raw Conversation
-    in-process; Desktop does not embed Explorer or put API Token credentials in
-    navigation URLs. Desktop and Explorer share only stable selection and
-    virtualized timeline primitives, while each retains its own client state
-    and navigation shell. Desktop readiness still reports API, Worker/queues,
-    Explorer, and provisioned app-credential health so a local service failure
-    is actionable, but the Conversation surface does not depend on an Explorer
-    iframe. Desktop manages only its local personal `koed-server`; remote, Team
+    in-process; Desktop does not put API Token credentials in navigation URLs.
+    Desktop readiness reports API, Worker/queues, and provisioned app-credential
+    health so a local service failure is actionable. Desktop manages only its
+    local personal `koed-server`; remote, Team
     Self-Hosted, and cloud targets are connect-only.
 
 ## Server Deployment Boundary
 
 Server, private VPS, Team Self-Hosted, and Koed-managed cloud deployments are
-described as `koed-server` plus dependencies. API, Worker, Explorer, queue
+described as `koed-server` plus dependencies. API, Worker, queue
 processors, and diagnostics are implementation surfaces inside that server
 boundary. Postgres/pgvector, the selected queue backend, the Embedding Service,
 reverse proxy/TLS, and backup/restore jobs are dependencies of the deployment.
@@ -492,11 +492,11 @@ credential before opening secure storage for the separate upstream credential.
 Personal API Tokens remain on Personal Memory routes and cannot be promoted
 into Team authority from the requested operation body.
 
-## Explorer-First Auth And Device Enrollment
+## Desktop Auth And Device Enrollment
 
-Koed Desktop and Explorer are the primary setup and inspection surface for
-local, private VPS, Team Self-Hosted, and Koed-managed cloud targets. The
-accepted design is recorded in
+Koed Desktop is the setup and inspection surface for local, private VPS, Team
+Self-Hosted, and Koed-managed cloud targets. The retired Explorer-first design
+is recorded as historical context in
 [ADR 0008](adr/0008-explorer-first-auth-and-device-enrollment.md).
 
 Local personal setup may keep app-provisioned API Tokens for AI-client
@@ -509,12 +509,13 @@ enrolled local edge and upstream, but all Team Membership, Workspace Access,
 Share Grant, lifecycle, and entitlement decisions remain request-time Koed
 authorization checks.
 
-Browser-mediated device enrollment uses local-edge routes, not API Tokens. A
-browser-authenticated User creates a short-lived enrollment challenge with
-`POST /v1/local-edge/device-enrollments/challenges`, opens Explorer against the
-challenge id, and reviews the safe approval context through
-`GET /v1/local-edge/device-enrollments/challenges/{challengeId}`. Explorer can
-approve or deny the challenge through
+Browser-mediated device enrollment uses local-edge routes, not API Tokens. The
+local edge creates a short-lived enrollment challenge with
+`POST /v1/local-edge/device-enrollments/challenges` and opens
+`GET /device-enrollment/{challengeId}` on the Team Backend API origin. The API-
+hosted page reviews the bounded context through
+`GET /v1/local-edge/device-enrollments/challenges/{challengeId}` and can approve
+or deny the challenge through
 `POST /v1/local-edge/device-enrollments/challenges/{challengeId}/approval`;
 approval binds a device credential to the User, upstream backend, device
 instance, operation families, and server-side verifier material, while denial
@@ -534,6 +535,14 @@ device credential stops future device-credential authentication without
 rotating local personal API Tokens. A local edge keeps its secure credential and
 route state unchanged when remote revocation cannot be confirmed, so the User
 can retry without leaving an untracked remote credential.
+
+Step-up Action Grants follow the same deployment boundary. Desktop resolves
+the backend-provided `/high-risk/browser-activations/{selector}` path against
+the registered backend and opens it in the system browser. The API-hosted page
+uses the authenticated `/v1/high-risk/browser-activations/{selector}` JSON
+endpoint for review and the corresponding `/decision` endpoint for one explicit
+approve or deny choice. Only a freshly authenticated matching User can decide;
+API Tokens and device credentials cannot inspect or decide the activation.
 
 Device credential metadata records created, updated, last-used, last-validated,
 expiry, and revocation state. Audit events record credential creation and
@@ -874,7 +883,7 @@ sequenceDiagram
 
 1. Projection and compaction create LCM Placeholder Memory Nodes from
    token-bounded Memory Event spans or lower-level Memory Nodes.
-2. The MCP Server starts the local LCM Summary Service on a timer and can also
+2. The Local AI Runtime starts the LCM Summary Service on a timer and can also
    nudge it after capture.
 3. The LCM Summary Service asks the API for pending session titles and pending
    LCM summaries.
@@ -920,19 +929,19 @@ does not automatically regenerate already completed summaries.
 ```mermaid
 sequenceDiagram
   participant DB as Database
-  participant MCP as MCP Server
+  participant Runtime as Local AI Runtime
   participant API as API
   participant Codex as Codex App Server
   participant Worker as Worker
   participant Embed as Embedding Service
 
   DB-->>API: Pending LCM Placeholder nodes
-  MCP->>API: GET pending LCM summaries
-  API-->>MCP: Nodes and source items
-  MCP->>Codex: Local LCM summary prompt
-  Codex-->>MCP: Structured LCM Summary
-  MCP->>API: Persist raw-only telemetry and token usage
-  MCP->>API: POST completed LCM Summary
+  Runtime->>API: GET pending LCM summaries
+  API-->>Runtime: Nodes and source items
+  Runtime->>Codex: Local LCM summary prompt
+  Codex-->>Runtime: Structured LCM Summary
+  Runtime->>API: Persist raw-only telemetry and token usage
+  Runtime->>API: POST completed LCM Summary
   API->>DB: Update Memory Node summary
   API->>Worker: Enqueue Memory Node embedding
   Worker->>Embed: Embed completed summary
@@ -1187,7 +1196,8 @@ grant-based visibility model.
 
 1. The AI Client calls the MCP Server's `memory_answer` tool with a query,
    Retrieval Scope, and Search Domain.
-2. The MCP Server starts a local memory-answer worker in Codex app-server mode.
+2. The MCP adapter forwards the validated call to the Local AI Runtime, which
+   starts a fresh memory-answer worker in Codex app-server mode.
    The worker is given only Koed dynamic RAG tools: `scan`, `search`, and
    `expand`.
 3. The local memory-answer worker calls API search through the MCP client's
@@ -1229,8 +1239,8 @@ grant-based visibility model.
    `expand` to fetch underlying source items.
 7. The local memory-answer worker performs Answer Synthesis from the retrieved
    Evidence Bundle and returns structured answer JSON.
-8. The MCP Server compacts the response according to `response_detail`.
-9. The MCP Server persists the Memory Question result and records token usage
+8. The Local AI Runtime compacts the response according to `response_detail`.
+9. The Local AI Runtime persists the Memory Question result and records token usage
    for the local app-server answer work. In paid Koed-managed cloud, stored
    Memory Question query, answer, evidence, citation, retrieval, local
    memory-worker, response, and error payloads are redacted in operational
@@ -1267,13 +1277,15 @@ treating the pending summary as complete.
 sequenceDiagram
   participant Client as AI Client
   participant MCP as MCP Server
+  participant Runtime as Local AI Runtime
   participant Answer as Local Memory Answer Worker
   participant API as API
   participant DB as Database
   participant Embed as Embedding Service
 
   Client->>MCP: memory_answer(query, Search Domain)
-  MCP->>Answer: Start local Codex app-server worker
+  MCP->>Runtime: Authenticated typed local request
+  Runtime->>Answer: Start local Codex app-server worker
   Answer->>API: scan/search dynamic RAG calls
   API->>Embed: Query embedding when semantic retrieval runs
   API->>DB: Search Memory Nodes and fallback evidence
@@ -1281,9 +1293,10 @@ sequenceDiagram
   API-->>Answer: Evidence Bundle candidates
   Answer->>API: expand relevant Memory Nodes
   API-->>Answer: Underlying source items
-  Answer-->>MCP: Structured Memory Answer
-  MCP->>API: Persist Memory Question and token usage
-  MCP-->>Client: Compact Memory Answer
+  Answer-->>Runtime: Structured Memory Answer
+  Runtime->>API: Persist Memory Question and token usage
+  Runtime-->>MCP: Compact Memory Answer
+  MCP-->>Client: MCP tool result
 ```
 
 ## Implementation Anchors
@@ -1296,7 +1309,8 @@ sequenceDiagram
 - LCM summary worker: `packages/mcp-server/src/lcm-summary-worker.ts`
 - LCM API routes: `apps/api/src/memory/lcm-routes.ts`
 - Koed Server control plane: `packages/koed-server/src/cli.ts`
-- MCP `memory_answer`: `packages/mcp-server/src/cli.ts`
+- MCP server factory: `packages/mcp-server/src/mcp-server-factory.ts`
+- Local AI Runtime: `packages/mcp-server/src/local-runtime-server.ts`
 - Memory answer worker: `packages/mcp-server/src/answer-worker.ts`
 - Recall API routes: `apps/api/src/memory/recall-routes.ts`
 - Core recall contract: `packages/core/src/index.ts`

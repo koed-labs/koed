@@ -1,7 +1,7 @@
 # Koed Memory UI
 
-`@koed/memory-ui` contains runtime-neutral React presentation foundations
-shared by Koed Desktop and Koed Explorer:
+`@koed/memory-ui` contains runtime-neutral React presentation foundations used
+by Koed Desktop:
 
 - stable Project/thread and Captured Session selection IDs;
 - `VirtualizedTimeline` for existing Captured Session event lists;

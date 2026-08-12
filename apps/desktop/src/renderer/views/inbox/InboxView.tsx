@@ -141,9 +141,7 @@ export function InboxView({
             "Koed could not load the current authorized collaboration state."}
         </p>
         {onRefresh ? (
-          <Button onClick={() => void onRefresh()} variant="outline">
-            <RefreshCw aria-hidden="true" /> Try again
-          </Button>
+          <Button onClick={() => void onRefresh()}>Retry</Button>
         ) : null}
       </main>
     );

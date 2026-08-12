@@ -1401,7 +1401,7 @@ export const createCrossIdentitySyncRepository = (
             where id=$1
               and local_user_id=$2
               and side='source'
-              and state in ('paused','created','ready','stale')
+              and state not in ('failed','revoked','purge_pending')
               and revoked_at is null
             returning *`,
           [input.relationshipId, input.localUserId]
@@ -1411,7 +1411,7 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         await client.query(
-          "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest) values ($1,'changes',$2,'{}') on conflict (sync_relationship_id,idempotency_key) do update set state=case when sync_outbox_entries.state in ('failed','cancelled') then 'pending'::sync_queue_entry_state else sync_outbox_entries.state end,attempt_count=case when sync_outbox_entries.state in ('failed','cancelled') then 0 else sync_outbox_entries.attempt_count end,available_at=case when sync_outbox_entries.state in ('failed','cancelled') then now() else sync_outbox_entries.available_at end,processed_at=case when sync_outbox_entries.state in ('failed','cancelled') then null else sync_outbox_entries.processed_at end,claim_token=null,lease_expires_at=null,last_error_message=case when sync_outbox_entries.state in ('failed','cancelled') then null else sync_outbox_entries.last_error_message end,updated_at=now()",
+          "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest) values ($1,'changes',$2,'{}') on conflict (sync_relationship_id,idempotency_key) do update set state=case when sync_outbox_entries.state in ('failed','cancelled') then 'pending'::sync_queue_entry_state else sync_outbox_entries.state end,attempt_count=case when sync_outbox_entries.state in ('failed','cancelled') then 0 else sync_outbox_entries.attempt_count end,available_at=case when sync_outbox_entries.state in ('failed','cancelled') then now() else sync_outbox_entries.available_at end,processed_at=case when sync_outbox_entries.state in ('failed','cancelled') then null else sync_outbox_entries.processed_at end,claim_token=case when sync_outbox_entries.state='processing' then sync_outbox_entries.claim_token else null end,lease_expires_at=case when sync_outbox_entries.state='processing' then sync_outbox_entries.lease_expires_at else null end,last_error_message=case when sync_outbox_entries.state in ('failed','cancelled') then null else sync_outbox_entries.last_error_message end,updated_at=now()",
           [
             input.relationshipId,
             crossIdentitySyncDigest({
@@ -2868,7 +2868,8 @@ export const createCrossIdentitySyncRepository = (
                 and relationship.target_processing_cursor>=upload.to_cursor
                 and (
                   entry.state='pending'
-                  or (entry.state='processing' and entry.lease_expires_at<=now())
+                  or (entry.state='processing' and
+                      (entry.lease_expires_at is null or entry.lease_expires_at<=now()))
                 )`
           );
         }
@@ -2879,7 +2880,7 @@ export const createCrossIdentitySyncRepository = (
            join cross_identity_sync_relationships relationship
              on relationship.id=entry.sync_relationship_id
            where entry.state='processing'
-             and entry.lease_expires_at<=now()
+             and (entry.lease_expires_at is null or entry.lease_expires_at<=now())
              and entry.attempt_count>=entry.max_attempts
              and relationship.state<>'paused'
            order by entry.lease_expires_at,entry.created_at
@@ -3031,7 +3032,8 @@ export const createCrossIdentitySyncRepository = (
                from ${table} entry
                join cross_identity_sync_relationships relationship
                  on relationship.id=entry.sync_relationship_id
-              where (entry.state='pending' or (entry.state='processing' and entry.lease_expires_at<=now()))
+              where (entry.state='pending' or (entry.state='processing' and
+                     (entry.lease_expires_at is null or entry.lease_expires_at<=now())))
                 and entry.available_at<=now()
                 and entry.attempt_count<entry.max_attempts
                 and (

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -593,38 +593,71 @@ const main = async () => {
     )
   );
 
-  const configDirectory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "koed-lcm-smoke-")
-  );
-  const configPath = path.join(configDirectory, "config.json");
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({ apiUrl, apiToken: token }, null, 2)
-  );
-
   runCommand("corepack", ["pnpm", "--filter", "@koed/mcp-server", "build"]);
-  const summaryOutput = runCommand("node", [
-    "packages/mcp-server/dist/cli.js",
-    "--config",
-    configPath,
-    "process-local-memory",
-    "--limit",
-    "10",
-    "--model",
-    summaryModel,
-    "--reasoning-effort",
-    summaryReasoningEffort
-  ]);
-  const summaryRun = JSON.parse(summaryOutput);
-  assert(
-    summaryRun.lcmSummaries?.submittedCount >= 3,
-    "Local MCP processing did not submit all expected LCM summaries",
-    summaryRun
+  const runtimeHome = fs.mkdtempSync(
+    path.join(os.tmpdir(), "koed-lcm-runtime-")
   );
-  console.log("Local MCP memory processing result:");
-  console.log(JSON.stringify(summaryRun, null, 2));
-
-  const state = await waitForLocalSummaries();
+  const runtimeLogs = [];
+  const runtime = spawn(
+    process.execPath,
+    ["packages/mcp-server/dist/local-runtime-cli.js"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        KOED_HOME: runtimeHome,
+        MEMORY_API_URL: apiUrl,
+        MEMORY_API_TOKEN: token,
+        MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
+        MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS: "1",
+        MEMORY_LCM_BACKGROUND_INTERVAL_MS: String(timeoutMs),
+        MEMORY_LCM_BACKGROUND_BATCH_LIMIT: "10",
+        MEMORY_LCM_SUMMARY_MODEL: summaryModel,
+        MEMORY_LCM_SUMMARY_REASONING_EFFORT: summaryReasoningEffort
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  for (const stream of [runtime.stdout, runtime.stderr]) {
+    stream?.on("data", (chunk) => {
+      runtimeLogs.push(String(chunk));
+    });
+  }
+  let state;
+  try {
+    const registrationPath = path.join(
+      runtimeHome,
+      "run",
+      "local-ai-runtime.json"
+    );
+    const startedAt = Date.now();
+    while (
+      !fs.existsSync(registrationPath) &&
+      Date.now() - startedAt < 10_000
+    ) {
+      assert(
+        runtime.exitCode === null,
+        "Local AI Runtime exited before becoming ready",
+        runtimeLogs.join("")
+      );
+      await sleep(50);
+    }
+    assert(
+      fs.existsSync(registrationPath),
+      "Local AI Runtime did not publish its registration",
+      runtimeLogs.join("")
+    );
+    console.log("Supervised Local AI Runtime is processing pending summaries.");
+    state = await waitForLocalSummaries();
+  } finally {
+    runtime.kill("SIGTERM");
+    await Promise.race([
+      new Promise((resolve) => runtime.once("exit", resolve)),
+      sleep(5000)
+    ]);
+    if (runtime.exitCode === null) runtime.kill("SIGKILL");
+    fs.rmSync(runtimeHome, { recursive: true, force: true });
+  }
   console.log("DB summary state after local Codex summarisation:");
   console.log(JSON.stringify(state, null, 2));
 

@@ -73,6 +73,11 @@ or expiry. The fixture device credentials use the same production
 when the pepper is configured. Use both credential types only with an isolated
 local fixture database.
 
+Seeding does not create password-login credentials. It preserves an existing
+valid Argon2 password hash on a fixture User so a locally configured browser
+login continues to work across reseeds; otherwise password login fails with
+invalid credentials.
+
 Do not publish or copy fixed fixture cookie values into documentation, issue
 comments, shared chat, or committed config. The command profile guard rejects
 shared deployment profiles; do not bypass it or seed the fixture into shared,

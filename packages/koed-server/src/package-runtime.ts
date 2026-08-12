@@ -28,12 +28,13 @@ export const requiredPackageRuntimeFiles = [
   "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
-  "explorer-dist/index.html",
   "api/node_modules/@koed/db/dist/index.js",
   "api/node_modules/@koed/db/drizzle/meta/_journal.json"
 ];
 
 const excludedPackagePatterns = [
+  /^koed-runtime\/explorer-dist(?:\/|$)/,
+  /^koed-server\/dist\/explorer-static-(?:proxy|server)(?:\.|$)/,
   /^koed-runtime\/postgres(?:\/|$)/,
   /^koed-runtime\/llama\.cpp(?:\/|$)/,
   /^koed-runtime\/runtime-asset-manifest\.json$/,

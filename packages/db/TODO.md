@@ -2,10 +2,9 @@
 
 ## Drizzle Hybrid Adoption
 
-- Memory Question repository methods were reviewed on 2026-06-08 and extracted
-  to `memory-question-repository.ts`. Keep them raw SQL for now:
-  `claimPendingMemoryQuestions` and `updateMemoryQuestion` are
-  lease/concurrency-sensitive.
+- Memory Question persistence remains raw SQL because its encrypted-field
+  hydration and search path span the canonical row and encrypted sidecar
+  records.
 - Repository decomposition has moved captured sessions, conversation items,
   local embedding diagnostic status, Memory Questions, Memory Node browser/CRUD,
   and workflow token usage into dedicated fragments. The remaining

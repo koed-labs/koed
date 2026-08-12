@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-31
+- Last updated: 2026-08-10
 
 ## Context
 
@@ -42,6 +43,15 @@ the local edge. Step-up requests expose only a short-lived browser activation
 URL and require a fresh browser session. Bundled stages cannot be requested as
 standalone interactive approvals by supported Desktop callers.
 
+The Team Backend API process serves the exceptional Step-up and device-
+enrollment pages on the same public origin as the authoritative JSON and
+authentication endpoints. These pages are a narrow browser bundle packaged
+with `@koed/api`; they are not a separate application, service, or authority.
+The API serves only backend-derived display-safe details, applies restrictive
+browser security headers, and accepts decisions only through the existing
+session-authenticated endpoints. An independently deployed Explorer or browser
+client is not part of this architecture.
+
 Every path retains exact action, body, target, Team or Workspace, device,
 backend, request-hash, commitment, idempotency, expiry, single-use, audit, and
 replay bindings. API Tokens never authorize these actions. Upstream device
@@ -53,39 +63,47 @@ closed.
 
 ## Accepted Action Matrix
 
-| Action                                | Tier                                                                                              |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `team.create`                         | Direct                                                                                            |
-| `team.invite.accept`                  | Native review                                                                                     |
-| `team.workspace.create`               | Direct                                                                                            |
-| `team.invite.create`                  | Native review                                                                                     |
-| `team.invite.revoke`                  | Native review                                                                                     |
-| `team.member.role_update`             | Step-up for promotion to admin or owner; Native review for a privilege decrease                   |
-| `team.member.disable`                 | Step-up                                                                                           |
-| `team.leave`                          | Native review, with authoritative last-owner protection                                           |
-| `team.workspace.archive`              | Native review                                                                                     |
-| `team.workspace.restore`              | Direct                                                                                            |
-| `team.workspace.access_update`        | Step-up when access expands or becomes disabled; Native review when write decreases to read       |
-| `shared_memory.preview`               | Direct when the source-owner policy is unchanged; Step-up when it creates or replaces that policy |
-| `shared_memory.consent`               | Bundled stage of the exact share or representation-change decision                                |
-| `shared_memory.share`                 | Native review; Step-up when the selected representation is raw `memory_events`                    |
-| `shared_memory.revoke`                | Native review                                                                                     |
-| `shared_memory.change_representation` | Step-up when fidelity increases; Native review when it decreases                                  |
-| `managed_conversation.handoff`        | Native review; Step-up for an untrusted or newly enrolled target                                  |
-| `managed_conversation.fork`           | Native review; Step-up for an untrusted or newly enrolled target                                  |
-| `conversation_source.discover`        | Direct only within an enrolled sync relationship; otherwise fail closed                           |
-| `conversation_source.download`        | Bundled into an exact reviewed transfer/restore/sync; standalone downloads use Step-up            |
-| `team.entitlement.update`             | Step-up                                                                                           |
-| `team.billing_seats.update`           | Step-up                                                                                           |
-| `team.retention.delete_request`       | Step-up                                                                                           |
-| `team.legal_hold.place`               | Step-up                                                                                           |
-| `team.legal_hold.release_request`     | Step-up                                                                                           |
-| `team.legal_hold.release_confirm`     | Separate Step-up decision                                                                         |
+| Action                                | Tier                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `team.create`                         | Direct                                                                                      |
+| `team.invite.accept`                  | Native review                                                                               |
+| `team.workspace.create`               | Direct                                                                                      |
+| `team.invite.create`                  | Native review                                                                               |
+| `team.invite.revoke`                  | Native review                                                                               |
+| `team.member.role_update`             | Step-up for promotion to admin or owner; Native review for a privilege decrease             |
+| `team.member.disable`                 | Step-up                                                                                     |
+| `team.leave`                          | Native review, with authoritative last-owner protection                                     |
+| `team.workspace.archive`              | Native review                                                                               |
+| `team.workspace.restore`              | Direct                                                                                      |
+| `team.workspace.access_update`        | Step-up when access expands or becomes disabled; Native review when write decreases to read |
+| `shared_memory.preview`               | Direct; it persists a read-only policy proposal with the preview but activates no policy    |
+| `shared_memory.consent`               | Bundled stage of the exact share or representation-change decision                          |
+| `shared_memory.share`                 | Native review for derived representations; Step-up for raw `memory_events`                  |
+| `shared_memory.revoke`                | Native review                                                                               |
+| `shared_memory.change_representation` | Step-up when fidelity increases; Native review when it decreases                            |
+| `managed_conversation.handoff`        | Native review; Step-up for an untrusted or newly enrolled target                            |
+| `managed_conversation.fork`           | Native review; Step-up for an untrusted or newly enrolled target                            |
+| `conversation_source.discover`        | Direct only within an enrolled sync relationship; otherwise fail closed                     |
+| `conversation_source.download`        | Bundled into an exact reviewed transfer/restore/sync; standalone downloads use Step-up      |
+| `team.entitlement.update`             | Step-up                                                                                     |
+| `team.billing_seats.update`           | Step-up                                                                                     |
+| `team.retention.delete_request`       | Step-up                                                                                     |
+| `team.legal_hold.place`               | Step-up                                                                                     |
+| `team.legal_hold.release_request`     | Step-up                                                                                     |
+| `team.legal_hold.release_confirm`     | Separate Step-up decision                                                                   |
 
 The representation fidelity order is `lcm_rollups`, `lcm_leaves`, then
 `memory_events`. Unknown actions, missing current state needed for a conditional
 tier, and attempts to invoke Bundled stages outside their accepted workflow
 fail closed.
+
+A Shared Memory preview may bind an exact proposed source-owner policy version
+into its immutable artifact, but preview creation does not activate that policy,
+pause consent, or invalidate a Share Grant. The final reviewed share or
+representation-change bundle revalidates and activates the exact proposal in
+the same database transaction as consent and grant mutation. A stale proposal
+fails closed. This keeps source review Direct while retaining atomic policy
+effects at the User's one meaningful sharing decision.
 
 For managed Conversation transfer, a target becomes established 24 hours after
 its oldest active credential was enrolled. The credential must be active for
@@ -124,6 +142,13 @@ local component must own the challenge and result. That future change may move
 selected actions to stronger confirmation without changing exact Action Grant
 execution semantics.
 
-Browser authentication remains the Step-up mechanism for this decision. It is
-not reusable administrative authority, and browser-window closure is never the
-signal that lets Desktop execute.
+Browser authentication remains the Step-up mechanism for this decision. The
+API-hosted page uses a validated relative authentication return path, so the
+session cookie and decision stay same-origin. It is not reusable administrative
+authority, and browser-window closure is never the signal that lets Desktop
+execute.
+
+The activation read requires the same fresh browser authentication as the
+decision write. A stale session therefore shows authentication before any
+actionable approval controls, rather than accepting a click and requesting
+sign-in afterward.

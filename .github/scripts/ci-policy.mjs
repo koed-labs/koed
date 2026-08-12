@@ -7,7 +7,6 @@ const PACKAGING_ROOTS = [
   "apps/api/",
   "apps/desktop/",
   "apps/embedding-service/",
-  "apps/explorer/",
   "apps/worker/",
   "packages/core/",
   "packages/db/",

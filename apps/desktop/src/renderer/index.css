@@ -2,5 +2,7 @@
 @import "@koed/ui/tailwind.css";
 @import "@koed/ui/tokens.css";
 @import "@koed/ui/base.css";
+@import "@koed/memory-ui/secure-markdown.css";
+@import "@koed/memory-ui/source-diff.css";
 @source "../../../../packages/ui/src";
 @source "../";

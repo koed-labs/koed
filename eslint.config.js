@@ -49,14 +49,6 @@ export default tseslint.config(
     }
   },
   {
-    files: ["apps/explorer/src/**/*.{ts,tsx}"],
-    languageOptions: {
-      globals: {
-        ...globals.browser
-      }
-    }
-  },
-  {
     files: [
       "apps/api/src/**/*.ts",
       "apps/worker/src/**/*.ts",

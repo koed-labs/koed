@@ -25,4 +25,4 @@ rollback mechanism after `0013`; restore the backup taken before the upgrade.
 CI executes `pnpm db:migrate:acceptance`, including backup/restore and
 interrupted-transaction recovery, against disposable databases.
 
-After upgrade, verify API readiness, Postgres, Redis/BullMQ, embedding service, worker queues, and Explorer access.
+After upgrade, verify API readiness, Postgres, Redis/BullMQ, the Embedding Service, and Worker queues.

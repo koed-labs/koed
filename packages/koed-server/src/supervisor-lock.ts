@@ -169,3 +169,13 @@ export const acquireKoedServerSupervisorLock = (
     ...(owner ? { ownerPid: owner.pid } : {})
   };
 };
+
+export const releaseKoedServerSupervisorLock = (
+  lock: KoedServerSupervisorLock,
+  pid = process.pid
+): boolean => {
+  const owner = readSupervisorLock(lock.lockPath);
+  if (!lock.acquired || owner?.pid !== pid) return false;
+  rmSync(lock.lockPath, { force: true });
+  return true;
+};

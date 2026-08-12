@@ -26,7 +26,7 @@ Python runtime assets have been removed from the packaged native runtime and the
 Embedding Service development path. This decision assumes the supported local
 Embedding Service runtime is the TypeScript service plus `llama-server`.
 
-This ADR does not decide Explorer-first auth, device enrollment, local-edge
+This ADR does not decide browser auth, device enrollment, local-edge
 upstream credential semantics, commercial encryption/key management, or managed
 SaaS queryable vector strategy. Those are separate Team SaaS foundation
 decisions; the standalone package design consumes them only as package/runtime
@@ -44,7 +44,7 @@ on demand.
   AI-client integration setup.
 - The standalone `koed-server` package contains JS/service runtime files:
   API, Worker, TypeScript Embedding Service, MCP Server, Supported Capture Hook,
-  Explorer static assets, DB package artifacts, migrations, and runtime package
+  DB package artifacts, migrations, and runtime package
   dependencies.
 - Native runtime artifacts remain a separate artifact line for
   Postgres/pgvector and `llama-server`.

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { splitCodexIdePrompt } from "@koed/core";
+import { approvalReviewTranscriptDisplayFromText } from "@koed/shared/personal-desktop";
 import {
   adaptCodexTranscriptV1,
   type CodexTranscriptObservation
@@ -786,6 +787,10 @@ const extractPrimaryTranscriptItem = (
   if (!content.trim()) {
     return null;
   }
+  const approvalReviewTranscriptDisplay =
+    item.type === "user_message"
+      ? approvalReviewTranscriptDisplayFromText(content)
+      : undefined;
 
   return {
     actor,
@@ -797,6 +802,9 @@ const extractPrimaryTranscriptItem = (
       transcriptType: item.type,
       transcriptParentType: raw.type,
       transcriptId: item.id,
+      ...(approvalReviewTranscriptDisplay
+        ? { approvalReviewTranscriptDisplay }
+        : {}),
       ...(asString(item.phase) ? { phase: asString(item.phase) } : {})
     }
   };
@@ -1583,6 +1591,15 @@ export const buildCodexTranscriptConversationItems = (
       };
     }
   );
+  const approvalReview =
+    input.threadKind === "subagent" &&
+    observations.some((observation) =>
+      observation.parsedItems.some(
+        (parsedItem) =>
+          parsedItem.item?.metadata.approvalReviewTranscriptDisplay !==
+          undefined
+      )
+    );
   const adaptedItems = adaptCodexTranscriptV1({
     observations,
     sessionId: input.sessionId,
@@ -1590,7 +1607,8 @@ export const buildCodexTranscriptConversationItems = (
     sourceTransport: input.sourceTransport,
     sourceFingerprint: input.sourceFingerprint,
     threadKind: input.threadKind,
-    parentThreadId: input.parentThreadId
+    parentThreadId: input.parentThreadId,
+    approvalReview
   });
   if (!preferProviderResponseItems) return adaptedItems;
 
@@ -1800,6 +1818,7 @@ export const buildCodexTranscriptConversationItems = (
             : {}),
           threadKind: input.threadKind,
           parentThreadId: input.parentThreadId,
+          ...(approvalReview ? { approvalReview: true } : {}),
           ...(input.sourceTransport === "historical_import"
             ? { observedViaHistoricalImport: true }
             : { observedViaTranscript: true }),

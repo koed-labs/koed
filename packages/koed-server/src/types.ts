@@ -44,7 +44,6 @@ export interface KoedServerStatus {
     failed: number;
     notChecked: number;
   };
-  explorer: KoedServerComponentStatus & { url: string };
   lastVerification: KoedServerComponentStatus & { checkedAt: string | null };
 }
 
@@ -73,7 +72,6 @@ export interface KoedServerRuntimeState {
   codexTranscriptWatcherEnabled?: boolean;
   repoRoot: string;
   apiUrl: string;
-  explorerUrl: string;
   services: string[];
   processes?: Record<string, number>;
 }

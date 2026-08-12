@@ -36,6 +36,48 @@ const inspectWorkspace = async (window) =>
     };
   })()`);
 
+const inspectPersonalFormatting = async (window) =>
+  window.webContents.executeJavaScript(`(() => {
+    const markdown = [...document.querySelectorAll('.native-event-content.memory-markdown')]
+      .find((candidate) => candidate.querySelector('h1'));
+    const code = markdown?.querySelector('.memory-markdown-code-block pre');
+    const toolGroup = [...document.querySelectorAll('.native-tool-group')]
+      .find((candidate) => candidate.textContent.includes('Format inspector'));
+    return {
+      headingCount: markdown?.querySelectorAll('h1, h2, h3, h4, h5, h6').length ?? 0,
+      nestedListCount: markdown?.querySelectorAll('li ol, li ul').length ?? 0,
+      taskCount: markdown?.querySelectorAll('input[type="checkbox"]').length ?? 0,
+      strikeCount: markdown?.querySelectorAll('del').length ?? 0,
+      quoteCount: markdown?.querySelectorAll('blockquote').length ?? 0,
+      tableCount: markdown?.querySelectorAll('table').length ?? 0,
+      codeCount: markdown?.querySelectorAll('.memory-markdown-code-block').length ?? 0,
+      codeScrollable: Boolean(code && code.scrollWidth > code.clientWidth),
+      copyButtonCount: markdown?.querySelectorAll('.memory-markdown-copy-code').length ?? 0,
+      safeLinkCount: markdown?.querySelectorAll('[aria-label="Open external link: safe link"]').length ?? 0,
+      unsafeLinkCount: markdown?.querySelectorAll('[aria-label="Open external link: unsafe link"]').length ?? 0,
+      remoteImageElementCount: markdown?.querySelectorAll('img').length ?? 0,
+      remoteImageAltCount: markdown?.querySelectorAll('.memory-markdown-image-alt').length ?? 0,
+      oversizedFallback: document.body.textContent.includes('This message is too large to display safely.'),
+      toolGroupSummary: toolGroup?.querySelector('summary')?.textContent ?? '',
+      sourceFileCount: document.querySelectorAll('.memory-source-diff-file').length,
+      rawPatchFallback: document.body.textContent.includes('This source change could not be parsed. Showing the original text.'),
+      approvalWrapperCount: document.querySelectorAll('.native-approval-review-transcript').length,
+      approvalParityMessageCount: [...document.querySelectorAll('.native-conversation-event')]
+        .filter((candidate) => /Review request|validate the Captured Session/u.test(candidate.textContent)).length,
+      approvalParityToolGroupCount: [...document.querySelectorAll('.native-tool-group')]
+        .filter((candidate) => candidate.textContent.includes('pnpm --filter @koed/desktop test') && !candidate.textContent.includes('Format inspector')).length,
+      approvalRawSourceVisible: document.body.textContent.includes('Original captured approval request'),
+      autoApprovalCount: document.querySelectorAll('.native-approval-decision.allow').length,
+      autoApprovalStatus: document.querySelector('.native-event-avatar.approval')?.getAttribute('aria-label') ?? '',
+      autoApprovalBadgeCount: document.querySelectorAll('.native-approval-outcome').length,
+      autoApprovalSignalsInHeading: document.querySelectorAll('.native-approval-title .native-approval-signal').length,
+      autoApprovalSubtitleVisible: document.body.textContent.includes('Codex guardian decision'),
+      autoApprovalRationaleVisible: document.body.textContent.includes('This browser validation action is bounded and local.'),
+      autoApprovalRawJsonVisible: document.body.textContent.includes('"risk_level":"medium"'),
+      overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+    };
+  })()`);
+
 const setEmulatedViewport = async (window, width, height) => {
   if (!window.webContents.debugger.isAttached()) {
     window.webContents.debugger.attach("1.3");
@@ -104,6 +146,28 @@ const waitFor = async (window, source, label) => {
   );
 };
 
+const seekTimelineText = async (window, text, label) => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const found = await window.webContents.executeJavaScript(
+      `document.body?.textContent?.includes(${JSON.stringify(text)}) ?? false`
+    );
+    if (found) return;
+    const moved = await window.webContents.executeJavaScript(`(() => {
+      const timeline = document.querySelector('.native-timeline-scroll');
+      if (!timeline || timeline.scrollTop <= 0) return false;
+      timeline.scrollTop = Math.max(
+        0,
+        timeline.scrollTop - Math.max(320, timeline.clientHeight * 0.8)
+      );
+      timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      return true;
+    })()`);
+    if (!moved) break;
+    await delay(50);
+  }
+  throw new Error(`Timed out seeking ${label}`);
+};
+
 const inspectChat = async (window) =>
   window.webContents.executeJavaScript(`(() => {
     const shell = document.querySelector('.desktop-app-shell');
@@ -132,7 +196,7 @@ const inspectChat = async (window) =>
       tabsDisplay: tabs && getComputedStyle(tabs).display,
       composerVisible: Boolean(composer),
       shellOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-      sourceCount: document.querySelectorAll('.collab-source-list [role="listitem"]').length,
+      sourceCount: document.querySelectorAll('.shared-conversation-timeline .native-conversation-event').length,
       messageCount: document.querySelectorAll('.collab-message-list [role="listitem"]').length,
       selectedTeamCount: document.querySelectorAll('.desktop-team-rail .desktop-rail-button[aria-current="page"]').length,
       teamTabStops: [...document.querySelectorAll('.desktop-team-rail .desktop-rail-button')]
@@ -148,6 +212,16 @@ const inspectChat = async (window) =>
       firstWorkspaceClipped: firstWorkspaceName && firstWorkspaceName.scrollWidth > firstWorkspaceName.clientWidth,
       firstChannelClipped: firstChannelName && firstChannelName.scrollWidth > firstChannelName.clientWidth,
       maximumChannelClipped: maximumChannelName && maximumChannelName.scrollWidth > maximumChannelName.clientWidth,
+      richHeadingCount: document.querySelectorAll('.collab-message .memory-markdown h1, .collab-message .memory-markdown h2').length,
+      richTableCount: document.querySelectorAll('.collab-message .memory-markdown table').length,
+      richQuoteCount: document.querySelectorAll('.collab-message .memory-markdown blockquote').length,
+      richCodeCount: document.querySelectorAll('.collab-message .memory-markdown-code-block').length,
+      richCodeScrollable: [...document.querySelectorAll('.collab-message .memory-markdown-code-block pre')]
+        .some((element) => element.scrollWidth > element.clientWidth),
+      sharedSourceHeadingCount: document.querySelectorAll('.shared-conversation-timeline .memory-markdown h1, .shared-conversation-timeline .memory-markdown h2').length,
+      sharedSourceTableCount: document.querySelectorAll('.shared-conversation-timeline .memory-markdown table').length,
+      sharedSourceCodeCount: document.querySelectorAll('.shared-conversation-timeline .memory-markdown-code-block').length,
+      sharedSourceBodyWidth: document.querySelector('.shared-conversation-timeline .native-conversation-event > div')?.getBoundingClientRect().width ?? 0,
       teamRailScrollTop: teamRail?.scrollTop ?? 0,
       addTeamFullyVisible: Boolean(
         addTeamRect && railRect &&
@@ -184,6 +258,15 @@ const run = async () => {
   try {
     await window.loadFile(pagePath);
     await waitForReady(window);
+    window.webContents.debugger.attach("1.3");
+    await window.webContents.debugger.sendCommand(
+      "Emulation.setEmulatedMedia",
+      {
+        features: [{ name: "prefers-color-scheme", value: "light" }]
+      }
+    );
+    await window.loadFile(pagePath);
+    await waitForReady(window);
     await waitFor(
       window,
       `Boolean(document.querySelector('.personal-memory-workspace'))`,
@@ -202,7 +285,7 @@ const run = async () => {
     assert.equal(wide.previewOverflow, false);
     assert.equal(wide.titleTextOverflow, "clip");
     assert.equal(wide.previewTextOverflow, "clip");
-    assert.equal(wide.sourceAiClient, true);
+    assert.equal(wide.sourceAiClient, false);
     assert.equal(wide.rawMetadataExposed, false);
     assert.ok(
       contrastRatio(wide.foreground, wide.background) >= 4.5,
@@ -220,6 +303,150 @@ const run = async () => {
       `document.querySelectorAll('.native-event-wrap').length > 0`,
       "long Captured Session timeline"
     );
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.native-event-content.memory-markdown h1'))`,
+      "Personal Memory rich Markdown"
+    );
+    const personalFormatting = await inspectPersonalFormatting(window);
+    assert.ok(
+      personalFormatting.headingCount > 0,
+      JSON.stringify(personalFormatting)
+    );
+    assert.ok(
+      personalFormatting.nestedListCount > 0,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.taskCount,
+      2,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.strikeCount,
+      1,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.quoteCount,
+      1,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.tableCount,
+      1,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.codeCount,
+      1,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.codeScrollable,
+      true,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.copyButtonCount,
+      1,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.safeLinkCount,
+      1,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.unsafeLinkCount,
+      0,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.remoteImageElementCount,
+      0,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.remoteImageAltCount,
+      1,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.oversizedFallback,
+      true,
+      JSON.stringify(personalFormatting)
+    );
+    assert.match(personalFormatting.toolGroupSummary, /1 command/u);
+    assert.match(personalFormatting.toolGroupSummary, /2 file changes/u);
+    assert.match(personalFormatting.toolGroupSummary, /1 file read/u);
+    assert.match(personalFormatting.toolGroupSummary, /1 search/u);
+    assert.match(personalFormatting.toolGroupSummary, /1 other tool/u);
+    assert.equal(
+      personalFormatting.sourceFileCount,
+      3,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.rawPatchFallback,
+      true,
+      JSON.stringify(personalFormatting)
+    );
+    assert.equal(
+      personalFormatting.overflow,
+      false,
+      JSON.stringify(personalFormatting)
+    );
+
+    await seekTimelineText(
+      window,
+      "Review request",
+      "approval-review parity rows"
+    );
+    const approvalFormatting = await inspectPersonalFormatting(window);
+    assert.equal(approvalFormatting.approvalWrapperCount, 0);
+    assert.equal(approvalFormatting.approvalParityMessageCount, 2);
+    assert.equal(approvalFormatting.approvalParityToolGroupCount, 1);
+    assert.equal(approvalFormatting.approvalRawSourceVisible, false);
+
+    await seekTimelineText(window, "Auto approval", "Auto Approval decision");
+    const autoApprovalFormatting = await inspectPersonalFormatting(window);
+    assert.equal(autoApprovalFormatting.autoApprovalCount, 1);
+    assert.equal(autoApprovalFormatting.autoApprovalStatus, "Allowed");
+    assert.equal(autoApprovalFormatting.autoApprovalBadgeCount, 0);
+    assert.equal(autoApprovalFormatting.autoApprovalSignalsInHeading, 2);
+    assert.equal(autoApprovalFormatting.autoApprovalSubtitleVisible, false);
+    assert.equal(autoApprovalFormatting.autoApprovalRationaleVisible, true);
+    assert.equal(autoApprovalFormatting.autoApprovalRawJsonVisible, false);
+
+    await window.webContents.executeJavaScript(`(() => {
+      const timeline = document.querySelector('.native-timeline-scroll');
+      if (timeline) {
+        timeline.scrollTop = timeline.scrollHeight;
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      }
+    })()`);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.native-event-content.memory-markdown h1'))`,
+      "restored rich Markdown scroll anchor"
+    );
+
+    const copyFocused = await window.webContents.executeJavaScript(`(() => {
+      const copy = document.querySelector('.native-event-content .memory-markdown-copy-code');
+      copy?.focus();
+      return document.activeElement === copy;
+    })()`);
+    assert.equal(copyFocused, true);
+    await window.webContents.executeJavaScript(
+      `document.activeElement?.click()`
+    );
+    await waitFor(
+      window,
+      `document.querySelector('.native-event-content .memory-markdown-copy-code')?.dataset.state === 'failed'`,
+      "user-visible clipboard failure"
+    );
+
     const longSession = await window.webContents.executeJavaScript(`(() => {
       const timeline = document.querySelector('.native-timeline-scroll');
       const before = document.querySelectorAll('.native-event-wrap').length;
@@ -232,7 +459,7 @@ const run = async () => {
         before,
         after: document.querySelectorAll('.native-event-wrap').length,
         frameMs: performance.now() - startedAt,
-        hasTenThousandLabel: document.body.textContent.includes('10000 Memory Events'),
+        hasTenThousandLabel: Boolean(document.querySelector('[aria-label*="10000 Memory Events"]')),
         scrollable: Boolean(timeline && timeline.scrollHeight > timeline.clientHeight),
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
       })));
@@ -248,7 +475,153 @@ const run = async () => {
     );
     assert.equal(longSession.scrollable, true, JSON.stringify(longSession));
     assert.equal(longSession.overflow, false, JSON.stringify(longSession));
+    await window.webContents.executeJavaScript(`(() => {
+      const timeline = document.querySelector('.native-timeline-scroll');
+      if (timeline) {
+        timeline.scrollTop = timeline.scrollHeight;
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      }
+    })()`);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.native-event-content.memory-markdown h1'))`,
+      "restored rich Markdown scroll anchor"
+    );
 
+    const groupFocused = await window.webContents.executeJavaScript(`(() => {
+      const summary = [...document.querySelectorAll('.native-tool-group')]
+        .find((candidate) => candidate.textContent.includes('Format inspector'))
+        ?.querySelector('summary');
+      summary?.focus();
+      return document.activeElement === summary;
+    })()`);
+    assert.equal(groupFocused, true);
+    await window.webContents.executeJavaScript(
+      `document.activeElement?.click()`
+    );
+    await waitFor(
+      window,
+      `[...document.querySelectorAll('.native-tool-group')].some((candidate) => candidate.textContent.includes('Format inspector') && candidate.open === true)`,
+      "keyboard-expanded tool group"
+    );
+    const patchRowFocused = await window.webContents.executeJavaScript(`(() => {
+      const summary = document.querySelector('.native-tool-event:has(.memory-source-diff) > summary');
+      summary?.focus();
+      return document.activeElement === summary;
+    })()`);
+    assert.equal(patchRowFocused, true);
+    await window.webContents.executeJavaScript(
+      `document.activeElement?.click()`
+    );
+    await waitFor(
+      window,
+      `document.querySelector('.native-tool-event:has(.memory-source-diff)')?.open === true`,
+      "keyboard-expanded source-change row"
+    );
+    const diffFocused = await window.webContents.executeJavaScript(`(() => {
+      const toggle = document.querySelector('.memory-source-diff-toggle');
+      toggle?.focus();
+      return document.activeElement === toggle;
+    })()`);
+    assert.equal(diffFocused, true);
+    await window.webContents.executeJavaScript(
+      `document.activeElement?.click()`
+    );
+    await waitFor(
+      window,
+      `document.querySelector('.memory-source-diff-toggle')?.getAttribute('aria-expanded') === 'true'`,
+      "keyboard-expanded source file"
+    );
+    await captureValidationScreenshot(window, "personal-formatting-1440x900");
+
+    window.webContents.setZoomFactor(2);
+    await delay(100);
+    const zoomedPersonalFormatting = await inspectPersonalFormatting(window);
+    assert.equal(
+      zoomedPersonalFormatting.overflow,
+      false,
+      JSON.stringify(zoomedPersonalFormatting)
+    );
+    assert.equal(
+      zoomedPersonalFormatting.codeScrollable,
+      true,
+      JSON.stringify(zoomedPersonalFormatting)
+    );
+    window.webContents.setZoomFactor(1);
+
+    if (!window.webContents.debugger.isAttached()) {
+      window.webContents.debugger.attach("1.3");
+    }
+    await window.webContents.debugger.sendCommand(
+      "Emulation.setEmulatedMedia",
+      {
+        features: [
+          { name: "prefers-color-scheme", value: "light" },
+          { name: "prefers-reduced-motion", value: "reduce" }
+        ]
+      }
+    );
+    const reducedPersonalMotion = await window.webContents
+      .executeJavaScript(`(() => {
+      const copy = document.querySelector('.memory-markdown-copy-code');
+      const toggle = document.querySelector('.memory-source-diff-toggle span');
+      return {
+        active: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        copyDuration: Number.parseFloat(getComputedStyle(copy).transitionDuration) || 0,
+        toggleDuration: Number.parseFloat(getComputedStyle(toggle).transitionDuration) || 0
+      };
+    })()`);
+    assert.equal(
+      reducedPersonalMotion.active,
+      true,
+      JSON.stringify(reducedPersonalMotion)
+    );
+    assert.ok(
+      reducedPersonalMotion.copyDuration <= 0.001,
+      JSON.stringify(reducedPersonalMotion)
+    );
+    assert.ok(
+      reducedPersonalMotion.toggleDuration <= 0.001,
+      JSON.stringify(reducedPersonalMotion)
+    );
+    await window.webContents.debugger.sendCommand(
+      "Emulation.setEmulatedMedia",
+      {
+        features: [
+          { name: "prefers-color-scheme", value: "light" },
+          { name: "forced-colors", value: "active" }
+        ]
+      }
+    );
+    const forcedPersonalColors = await window.webContents
+      .executeJavaScript(`(() => {
+      const code = document.querySelector('.memory-markdown-code-block pre');
+      const diff = document.querySelector('.memory-source-diff-file');
+      return {
+        active: matchMedia('(forced-colors: active)').matches,
+        codeBorderStyle: code && getComputedStyle(code).borderStyle,
+        diffBorderStyle: diff && getComputedStyle(diff).borderStyle
+      };
+    })()`);
+    assert.equal(
+      forcedPersonalColors.active,
+      true,
+      JSON.stringify(forcedPersonalColors)
+    );
+    assert.equal(
+      forcedPersonalColors.codeBorderStyle,
+      "solid",
+      JSON.stringify(forcedPersonalColors)
+    );
+    assert.equal(
+      forcedPersonalColors.diffBorderStyle,
+      "solid",
+      JSON.stringify(forcedPersonalColors)
+    );
+    await window.webContents.debugger.sendCommand(
+      "Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-color-scheme", value: "light" }] }
+    );
     await setEmulatedViewport(window, 620, 900);
     const narrow = await inspectWorkspace(window);
     assert.equal(narrow.viewportWidth, 620);
@@ -256,13 +629,13 @@ const run = async () => {
     assert.equal(narrow.masterDisplay, "none");
 
     await window.webContents.executeJavaScript(
-      `document.querySelector('.personal-session-detail nav button')?.click()`
+      `document.querySelector('.desktop-breadcrumb button')?.click()`
     );
-    await delay(50);
-    const focus = await window.webContents.executeJavaScript(
-      `document.activeElement?.getAttribute('data-personal-route-focus')`
+    await waitFor(
+      window,
+      `document.querySelector('.personal-memory-workspace')?.classList.contains('route-projects')`,
+      "top-bar breadcrumb navigation"
     );
-    assert.equal(focus, "projects");
 
     await setEmulatedViewport(window, 1440, 900);
     await window.loadFile(pagePath, { query: { view: "chat" } });
@@ -296,6 +669,15 @@ const run = async () => {
     assert.equal(chat.firstWorkspaceClipped, true);
     assert.equal(chat.maximumChannelClipped, true);
     assert.equal(chat.addTeamFullyVisible, true);
+    assert.ok(chat.richHeadingCount > 0, JSON.stringify(chat));
+    assert.ok(chat.richTableCount > 0, JSON.stringify(chat));
+    assert.ok(chat.richQuoteCount > 0, JSON.stringify(chat));
+    assert.ok(chat.richCodeCount > 0, JSON.stringify(chat));
+    assert.equal(chat.richCodeScrollable, true, JSON.stringify(chat));
+    assert.ok(chat.sharedSourceHeadingCount > 0, JSON.stringify(chat));
+    assert.ok(chat.sharedSourceTableCount > 0, JSON.stringify(chat));
+    assert.ok(chat.sharedSourceCodeCount > 0, JSON.stringify(chat));
+    assert.ok(chat.sharedSourceBodyWidth > 200, JSON.stringify(chat));
     assert.ok(contrastRatio(chat.foreground, chat.background) >= 4.5);
 
     const paletteTrigger = await window.webContents.executeJavaScript(`(() => {
@@ -383,6 +765,14 @@ const run = async () => {
     assert.ok(railAfterEnd.scrollTop > 0);
     assert.equal(railAfterEnd.addTeamVisible, true);
 
+    const initialActivityCommands = await window.webContents.executeJavaScript(
+      `window.__koedBrowserCommands ?? []`
+    );
+    assert.ok(
+      initialActivityCommands.includes("collaboration.report_team_activity"),
+      JSON.stringify({ initialActivityCommands })
+    );
+
     const teamSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -406,7 +796,16 @@ const run = async () => {
         requestAnimationFrame(() => resolve(performance.now() - startedAt))
       );
     })()`);
-    await delay(50);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.collab-team-admin'))`,
+      "Team People view"
+    );
+    await waitFor(
+      window,
+      `window.__koedBrowserCommands?.slice(${teamSelectionCommandIndex}).includes('collaboration.mark_delivered')`,
+      "Team People delivery marker"
+    );
     const afterTeamSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -421,18 +820,17 @@ const run = async () => {
     const teamSelectionCommands = await window.webContents.executeJavaScript(
       `window.__koedBrowserCommands?.slice(${teamSelectionCommandIndex}) ?? []`
     );
-    // Team activation selects People, loads its authorized invitation page,
-    // records delivery, and reports current-user Team activity.
+    // Initial focus has already reported Team activity. Navigation within the
+    // write-throttle window selects People and records delivery without
+    // generating another activity write.
     assert.deepEqual(teamSelectionCommands, [
       "collaboration.select",
       "collaboration.list_invitations",
-      "collaboration.mark_delivered",
-      "collaboration.report_team_activity"
+      "collaboration.mark_delivered"
     ]);
     assert.deepEqual(teamSelectionUserCommands, [
       "collaboration.select",
-      "collaboration.list_invitations",
-      "collaboration.mark_delivered"
+      "collaboration.list_invitations"
     ]);
     assert.equal(
       afterTeamSelectionCommandCount - teamSelectionCommandCount,
@@ -468,7 +866,11 @@ const run = async () => {
     await window.webContents.executeJavaScript(
       `document.querySelectorAll('.desktop-workspace-section .desktop-sidebar-nav-item')[1]?.click()`
     );
-    await delay(50);
+    await waitFor(
+      window,
+      `window.__koedBrowserCommands?.slice(${workspaceSelectionCommandIndex}).includes('collaboration.mark_delivered')`,
+      "Workspace delivery marker"
+    );
     const afterWorkspaceSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -483,13 +885,9 @@ const run = async () => {
       );
     assert.deepEqual(workspaceSelectionCommands, [
       "collaboration.select",
-      "collaboration.mark_delivered",
-      "collaboration.report_team_activity"
-    ]);
-    assert.deepEqual(workspaceSelectionUserCommands, [
-      "collaboration.select",
       "collaboration.mark_delivered"
     ]);
+    assert.deepEqual(workspaceSelectionUserCommands, ["collaboration.select"]);
     assert.equal(
       afterWorkspaceSelectionCommandCount - workspaceSelectionCommandCount,
       workspaceSelectionUserCommands.length,
@@ -544,6 +942,7 @@ const run = async () => {
     const zoomed = await inspectChat(window);
     assert.equal(zoomed.shellOverflow, false, JSON.stringify(zoomed));
     assert.equal(zoomed.splitLayout, "narrow", JSON.stringify(zoomed));
+    assert.ok(zoomed.richCodeCount > 0, JSON.stringify(zoomed));
     await captureValidationScreenshot(window, "1320x800-200-percent");
     window.webContents.setZoomFactor(1);
 
@@ -591,7 +990,10 @@ const run = async () => {
     await window.webContents.debugger.sendCommand(
       "Emulation.setEmulatedMedia",
       {
-        features: [{ name: "prefers-reduced-motion", value: "reduce" }]
+        features: [
+          { name: "prefers-color-scheme", value: "light" },
+          { name: "prefers-reduced-motion", value: "reduce" }
+        ]
       }
     );
     const reducedMotionDuration = await window.webContents.executeJavaScript(
@@ -608,16 +1010,23 @@ const run = async () => {
     await window.webContents.debugger.sendCommand(
       "Emulation.setEmulatedMedia",
       {
-        features: [{ name: "forced-colors", value: "active" }]
+        features: [
+          { name: "prefers-color-scheme", value: "light" },
+          { name: "forced-colors", value: "active" }
+        ]
       }
     );
     const forcedColors = await window.webContents.executeJavaScript(`(() => {
       const selected = document.querySelector('.desktop-rail-button[data-active]');
       const style = selected && getComputedStyle(selected);
+      const code = document.querySelector('.memory-markdown-code-block pre');
+      const diff = document.querySelector('.memory-source-diff-file');
       return {
         active: matchMedia('(forced-colors: active)').matches,
         outlineStyle: style?.outlineStyle ?? null,
-        outlineWidth: style?.outlineWidth ?? null
+        outlineWidth: style?.outlineWidth ?? null,
+        codeBorderStyle: code && getComputedStyle(code).borderStyle,
+        diffBorderStyle: diff && getComputedStyle(diff).borderStyle
       };
     })()`);
     assert.equal(forcedColors.active, true, JSON.stringify(forcedColors));
@@ -631,9 +1040,14 @@ const run = async () => {
       "2px",
       JSON.stringify(forcedColors)
     );
+    assert.equal(
+      forcedColors.codeBorderStyle,
+      "solid",
+      JSON.stringify(forcedColors)
+    );
     await window.webContents.debugger.sendCommand(
       "Emulation.setEmulatedMedia",
-      { features: [] }
+      { features: [{ name: "prefers-color-scheme", value: "light" }] }
     );
     await window.webContents.executeJavaScript(
       `document.querySelector('#collab-shared-discussion-tab').click()`

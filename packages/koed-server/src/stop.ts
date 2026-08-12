@@ -50,10 +50,9 @@ export interface KoedServerStopOptions {
 
 const APP_PROCESS_ORDER = [
   {
-    processName: "codexTranscriptWatcher",
-    serviceName: "codex-transcript-watcher"
+    processName: "localAiRuntime",
+    serviceName: "local-ai-runtime"
   },
-  { processName: "explorer", serviceName: "explorer" },
   { processName: "worker", serviceName: "worker" },
   { processName: "api", serviceName: "api" }
 ] as const;

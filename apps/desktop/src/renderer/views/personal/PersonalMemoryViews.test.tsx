@@ -53,6 +53,7 @@ vi.mock("../../../NativeConversationSurface.js", () => ({
 }));
 
 const sessionId = "00000000-0000-4000-8000-000000000001";
+const threadLatestAt = "2026-07-23T00:00:00.000Z";
 
 const thread = (
   index: number,
@@ -61,7 +62,7 @@ const thread = (
   eventCount: 1_000,
   id: `thread-${index}`,
   invalidatedCount: index === 1 ? 2 : 0,
-  latestAt: new Date().toISOString(),
+  latestAt: threadLatestAt,
   name: `Captured Session ${index}`,
   projectAssignmentSource: "detected",
   projectId: "project-1",
@@ -204,6 +205,7 @@ describe("PersonalMemoryWorkspace", () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-24T00:00:00Z"));
     (
       globalThis as typeof globalThis & {
         IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -242,9 +244,19 @@ describe("PersonalMemoryWorkspace", () => {
     await vi.waitFor(() =>
       expect(container.textContent).toContain(source.name)
     );
-    expect(
-      container.querySelector("#personal-active-projects")?.textContent
-    ).toContain("Active 1");
+    const activeProjects = container.querySelector(
+      '[aria-label="Active Projects"]'
+    );
+    expect(activeProjects).not.toBeNull();
+    expect(activeProjects?.textContent).not.toContain("Active");
+    const overview = container.querySelector(
+      '[data-project-id="project-1"] .personal-project-overview'
+    );
+    expect(overview?.getAttribute("aria-label")).toBe(
+      "1 Captured Session · 1000 Memory Events"
+    );
+    expect(overview?.querySelector(".lucide-brain")).not.toBeNull();
+    expect(overview?.querySelector(".lucide-book-text")).not.toBeNull();
 
     await act(async () => {
       container
@@ -259,6 +271,118 @@ describe("PersonalMemoryWorkspace", () => {
     ).toContain("route-project");
     expect(document.activeElement).toBe(heading);
     expect(container.textContent).toContain("2 invalidated");
+    expect(
+      container.querySelector(".personal-session-row .lucide-brain")
+    ).not.toBeNull();
+    expect(container.querySelector(".personal-sessions > header")).toBeNull();
+  });
+
+  it("provides initial Project loading states for wide and narrow layouts", async () => {
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(
+          () => new Promise<PersonalDesktopProject[]>(() => undefined)
+        )
+      })
+    );
+
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      );
+    });
+
+    expect(
+      container
+        .querySelector('.personal-memory-detail-pane [role="status"]')
+        ?.getAttribute("aria-label")
+    ).toBe("Loading Projects");
+    expect(
+      container.querySelector(
+        ".personal-memory-detail-pane .personal-loading-icon"
+      )
+    ).not.toBeNull();
+    expect(
+      container
+        .querySelector('.personal-projects-narrow-state[role="status"]')
+        ?.getAttribute("aria-label")
+    ).toBe("Loading Projects");
+    expect(
+      container.querySelector(
+        ".personal-projects-narrow-state .personal-loading-icon"
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".personal-projects-narrow-state")?.textContent
+    ).toBe("");
+  });
+
+  it("uses a Captured Session icon for the empty Project selection state", async () => {
+    const store = new PersonalMemoryStore(api());
+
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Select a Project")
+    );
+    expect(
+      container.querySelector(".personal-memory-empty-detail .lucide-book-text")
+    ).not.toBeNull();
+  });
+
+  it("provides actionable Project loading failures for wide and narrow layouts", async () => {
+    const listProjects = vi.fn(async () => {
+      throw new Error("internal transport detail");
+    });
+    const store = new PersonalMemoryStore(api({ listProjects }));
+
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Projects unavailable")
+    );
+    expect(
+      container.querySelector(".personal-projects-narrow-state")?.textContent
+    ).toContain("Projects unavailable");
+    expect(
+      container.querySelector(".personal-memory-detail-pane")?.textContent
+    ).toContain("Projects unavailable");
+    expect(container.textContent).not.toContain("Select a Project");
+    expect(container.textContent).not.toContain("internal transport detail");
+    expect(
+      container.querySelector(
+        ".personal-memory-detail-pane .lucide-circle-alert"
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        ".personal-projects-narrow-state .lucide-circle-alert"
+      )
+    ).not.toBeNull();
+    const retry = container.querySelector<HTMLButtonElement>(
+      ".personal-projects-narrow-state .personal-retry-button"
+    );
+    expect(retry?.classList).toContain("personal-retry-button");
+    await act(async () => retry?.click());
+    expect(listProjects).toHaveBeenCalledTimes(2);
   });
 
   it("uses one warm cache authority for long-session load and paging", async () => {
@@ -294,6 +418,20 @@ describe("PersonalMemoryWorkspace", () => {
     await vi.waitFor(() =>
       expect(container.textContent).toContain("50 rendered events")
     );
+    expect(
+      container.querySelector(".personal-session-detail > header small")
+        ?.textContent
+    ).toBe(`${source.name} · Private to you`);
+    expect(
+      container
+        .querySelector(".personal-session-detail .personal-memory-event-count")
+        ?.getAttribute("aria-label")
+    ).toBe("1000 Memory Events");
+    expect(
+      container.querySelector(
+        ".personal-session-detail .personal-memory-event-count .lucide-brain"
+      )
+    ).not.toBeNull();
     const selectedLoads = () =>
       loadEventPage.mock.calls.filter(
         ([input]) => input.threadId === selected.id
@@ -360,9 +498,20 @@ describe("PersonalMemoryWorkspace", () => {
         </Harness>
       );
     });
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Project assignment")
-    );
+    await vi.waitFor(() => expect(container.textContent).toContain("Manage"));
+    expect(container.textContent).toContain("Move to Project:");
+    expect(container.textContent).not.toContain("Automatic");
+    expect(container.textContent).not.toContain("Move to another Project");
+    expect(
+      container.querySelector(
+        ".personal-session-assignment > summary > svg[aria-hidden='true']"
+      )
+    ).not.toBeNull();
+    expect(
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Move")
+        ?.classList.contains("personal-move-button")
+    ).toBe(true);
 
     const form = container.querySelector("form");
     await act(async () => {
@@ -435,9 +584,7 @@ describe("PersonalMemoryWorkspace", () => {
         />
       );
     });
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Share to Workspace…")
-    );
+    await vi.waitFor(() => expect(container.textContent).toContain("Share"));
     await act(async () => {
       container
         .querySelector<HTMLButtonElement>(".personal-share-button")
@@ -455,6 +602,17 @@ describe("PersonalMemoryWorkspace", () => {
       ],
       source: {
         entryId: sessionId,
+        localEntry: {
+          id: sessionId,
+          logicalMemoryId: null,
+          title: "Captured Session 1",
+          projectName: "Very long Project name",
+          updatedAt: "2026-07-23T00:00:00.000Z",
+          preview: "Useful session preview 1",
+          eventCount: 1_000,
+          hasSynchronizedRevision: false,
+          syncState: "not_started"
+        },
         logicalMemoryId: null,
         sessionId,
         syncState: "not_started"
@@ -463,7 +621,7 @@ describe("PersonalMemoryWorkspace", () => {
     });
   });
 
-  it("starts a managed Codex Conversation and keeps the multiline composer below the timeline", async () => {
+  it("starts a managed Codex Conversation and keeps the chat-style composer below the timeline", async () => {
     let finishSend:
       | ((
           value: Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>
@@ -498,12 +656,10 @@ describe("PersonalMemoryWorkspace", () => {
         </Harness>
       );
     });
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("New Conversation")
-    );
+    await vi.waitFor(() => expect(container.textContent).toContain("New"));
     await act(async () => {
       [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find((button) => button.textContent === "New Conversation")
+        .find((button) => button.textContent === "New")
         ?.click();
     });
     await vi.waitFor(() =>
@@ -522,8 +678,12 @@ describe("PersonalMemoryWorkspace", () => {
     expect(shell?.lastElementChild?.classList).toContain(
       "personal-managed-composer"
     );
+    expect(
+      shell?.querySelector(".personal-managed-composer-field")
+    ).not.toBeNull();
 
     const textarea = container.querySelector("textarea")!;
+    expect(textarea.getAttribute("rows")).toBe("1");
     await act(async () => {
       changeTextarea(textarea, "First line\nSecond line");
     });
@@ -537,7 +697,7 @@ describe("PersonalMemoryWorkspace", () => {
     });
     expect(send).toHaveBeenCalledOnce();
     expect(sendButton.disabled).toBe(true);
-    expect(container.textContent).toContain("Sending prompt to Codex");
+    expect(container.textContent).not.toContain("Sending prompt to Codex");
 
     await act(async () =>
       finishSend?.({
@@ -604,9 +764,8 @@ describe("PersonalMemoryWorkspace", () => {
         .querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')
         ?.click();
     });
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Acceptance is indeterminate.")
-    );
+    await vi.waitFor(() => expect(textarea.disabled).toBe(true));
+    expect(container.textContent).not.toContain("Acceptance is indeterminate.");
     expect(textarea.value).toBe("Do not duplicate this");
     expect(textarea.disabled).toBe(true);
     expect(

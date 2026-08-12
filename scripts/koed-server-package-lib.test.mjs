@@ -43,11 +43,13 @@ const createPackageRoot = () => {
   const runtime = resolve(root, "koed-runtime");
   for (const file of [
     "api/dist/index.js",
+    "api/dist/browser-approval/index.html",
+    "api/dist/browser-approval/assets/index-abc12345.js",
+    "api/dist/browser-approval/assets/index-abc12345.css",
     "worker/dist/index.js",
     "embedding-service/dist/index.js",
     "mcp-server/dist/cli.js",
     "mcp-server/dist/capture-hook.js",
-    "explorer-dist/index.html",
     "api/node_modules/@koed/db/dist/index.js"
   ]) {
     writeFile(resolve(runtime, file));
@@ -174,8 +176,24 @@ test("reports missing required runtime files", () => {
   );
 });
 
-test("rejects native runtime assets, model files, and Python embedding leftovers", () => {
+test("requires packaged API browser approval assets", () => {
   const root = createPackageRoot();
+  rmSync(
+    resolve(root, "koed-runtime", "api", "dist", "browser-approval", "assets"),
+    { recursive: true }
+  );
+  writeManifest(root);
+
+  const result = validatePackageRoot(root);
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /browser-approval\/assets/);
+});
+
+test("rejects retired Explorer, native runtime, model, and Python leftovers", () => {
+  const root = createPackageRoot();
+  writeFile(resolve(root, "koed-runtime", "explorer-dist", "index.html"));
+  writeFile(resolve(root, "koed-server", "dist", "explorer-static-server.js"));
   writeFile(resolve(root, "koed-runtime", "postgres", "bin", "initdb"));
   writeFile(resolve(root, "koed-runtime", "llama.cpp", "llama-server"));
   writeFile(resolve(root, "koed-runtime", "models", "model.gguf"));
@@ -188,6 +206,11 @@ test("rejects native runtime assets, model files, and Python embedding leftovers
   const result = validatePackageRoot(root);
 
   assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /koed-runtime\/explorer-dist/);
+  assert.match(
+    result.errors.join("\n"),
+    /koed-server\/dist\/explorer-static-server\.js/
+  );
   assert.match(
     result.errors.join("\n"),
     /Excluded file is present: koed-runtime\/postgres/

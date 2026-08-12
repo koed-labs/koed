@@ -64,24 +64,218 @@ const personalProject: PersonalDesktopProject = {
   threads: [personalThread]
 };
 
-const personalEvents: PersonalDesktopConversationEvent[] = Array.from(
-  { length: 500 },
-  (_, index) => ({
-    actor: index % 2 === 0 ? "user" : "assistant",
-    content: `Browser validation Memory Event ${index + 1}`,
-    contentPreview: `Browser validation Memory Event ${index + 1}`,
-    eventType: index === 4 ? "tool_call" : "message",
-    id: uuid(700 + index),
-    invalidatedAt: index === 5 ? timestamp : null,
-    metadata:
-      index === 4
-        ? { toolName: "exec_command", input: { cmd: "pnpm test" } }
-        : {},
-    sourceEventTime: timestamp,
-    sourceSequence: index + 1,
-    timestamp
+const richMarkdownFixture = `# Formatting parity
+
+Paragraph with **strong text**, ~~retired text~~, \`inline code\`, a [safe link](https://koed.example/docs), an [unsafe link](javascript:alert(1)), and ![remote image](https://koed.example/image.png).
+
+- First item
+  1. Nested ordered item
+  2. Second nested item
+- [x] Completed task
+- [ ] Pending task
+
+> A captured decision remains distinct from Team discussion.
+
+| Surface | State |
+| --- | --- |
+| Personal Memory | Ready |
+| Team Chat | Ready |
+
+\`\`\`ts
+const longLine = "${"formatting-parity-".repeat(240)}";
+console.log(longLine);
+\`\`\``;
+
+const personalEvent = (
+  index: number,
+  overrides: Partial<PersonalDesktopConversationEvent> = {}
+): PersonalDesktopConversationEvent => ({
+  actor: index % 2 === 0 ? "user" : "assistant",
+  content: `Browser validation Memory Event ${index + 1}`,
+  contentPreview: `Browser validation Memory Event ${index + 1}`,
+  eventType: "message",
+  id: uuid(700 + index),
+  invalidatedAt: null,
+  metadata: {},
+  sourceEventTime: timestamp,
+  sourceSequence: index + 1,
+  timestamp,
+  ...overrides
+});
+
+const patchFixture = `*** Begin Patch
+*** Update File: src/app.ts
+@@
+-const state = "legacy";
++const state = "desktop";
+*** Add File: src/formatting.ts
+@@
++export const formattingParity = true;
+*** Delete File: src/explorer-only.ts
+@@
+-export const explorerOnly = true;
+*** End Patch`;
+
+const parityEvents: PersonalDesktopConversationEvent[] = [
+  personalEvent(489, {
+    actor: "agent",
+    content:
+      '{"risk_level":"medium","user_authorization":"high","outcome":"allow","rationale":"This browser validation action is bounded and local."}',
+    contentPreview: "Codex Auto Approval decision",
+    approvalDecisionDisplay: {
+      kind: "auto_approval",
+      version: 1,
+      riskLevel: "medium",
+      userAuthorization: "high",
+      outcome: "allow",
+      rationale: "This browser validation action is bounded and local."
+    }
+  }),
+  personalEvent(490, {
+    actor: "user",
+    content:
+      "The following is the Codex agent history whose request action you are assessing. TRANSCRIPT START ... TRANSCRIPT END",
+    contentPreview: "Approval review transcript formatting fixture",
+    transcriptDisplay: {
+      kind: "approval_review",
+      version: 1,
+      truncated: false,
+      segments: [
+        {
+          kind: "message",
+          sequence: 1,
+          actor: "user",
+          content: "## Review request\n\n- Preserve message formatting"
+        },
+        {
+          kind: "message",
+          sequence: 2,
+          actor: "agent",
+          content: "I will validate the Captured Session."
+        },
+        {
+          kind: "tool_call",
+          sequence: 3,
+          toolName: "exec",
+          content: "pnpm --filter @koed/desktop test"
+        },
+        {
+          kind: "tool_result",
+          sequence: 4,
+          toolName: "exec",
+          content: "Tests passed"
+        }
+      ]
+    }
+  }),
+  personalEvent(491, {
+    actor: "user",
+    content: richMarkdownFixture,
+    contentPreview: "Formatting parity fixture"
+  }),
+  personalEvent(492, {
+    actor: "assistant",
+    content: "oversized ".repeat(30_000),
+    contentPreview: "Oversized Markdown safety fixture"
+  }),
+  personalEvent(493, {
+    actor: "tool",
+    content: "pnpm --filter @koed/desktop test",
+    contentPreview: "Desktop tests passed",
+    eventType: "tool_call",
+    metadata: { toolName: "exec_command" },
+    toolDisplay: {
+      kind: "command",
+      label: "Ran command",
+      preview: "pnpm --filter @koed/desktop test",
+      toolName: "exec_command",
+      status: "completed",
+      callId: "call-command-browser-validation"
+    }
+  }),
+  personalEvent(494, {
+    actor: "tool",
+    content: "Read packages/memory-ui/src/SecureMarkdown.tsx",
+    eventType: "tool_call",
+    metadata: { toolName: "read_file" },
+    toolDisplay: {
+      kind: "file_read",
+      label: "Read file",
+      preview: "packages/memory-ui/src/SecureMarkdown.tsx",
+      toolName: "read_file"
+    }
+  }),
+  personalEvent(495, {
+    actor: "tool",
+    content: "Found SecureMarkdown in 8 files",
+    eventType: "tool_call",
+    metadata: { toolName: "rg" },
+    toolDisplay: {
+      kind: "search",
+      label: "Searched files",
+      preview: "SecureMarkdown",
+      toolName: "rg"
+    }
+  }),
+  personalEvent(496, {
+    actor: "tool",
+    content: "The formatter inspected the rendered output.",
+    eventType: "tool_call",
+    metadata: { toolName: "format_inspector" },
+    toolDisplay: {
+      kind: "tool",
+      label: "Format inspector",
+      preview: "Rendered output inspected",
+      toolName: "format_inspector"
+    }
+  }),
+  personalEvent(497, {
+    actor: "tool",
+    content: patchFixture,
+    contentPreview: "Three source files changed",
+    eventType: "tool_call",
+    metadata: { toolName: "apply_patch" },
+    toolDisplay: {
+      kind: "file_change",
+      label: "Changed files",
+      preview: "3 files changed",
+      toolName: "apply_patch",
+      status: "completed",
+      callId: "call-patch-browser-validation",
+      patchSource: patchFixture
+    }
+  }),
+  personalEvent(498, {
+    actor: "tool",
+    content: "*** Begin Patch\n*** End Patch",
+    contentPreview: "Malformed source patch",
+    eventType: "tool_call",
+    invalidatedAt: timestamp,
+    metadata: { toolName: "apply_patch" },
+    toolDisplay: {
+      kind: "file_change",
+      label: "Changed files",
+      preview: "Malformed source patch",
+      toolName: "apply_patch",
+      patchSource: "*** Begin Patch\n*** End Patch"
+    }
+  }),
+  personalEvent(499, {
+    actor: "assistant",
+    content: "Formatting parity validation complete.",
+    contentPreview: "Formatting parity validation complete."
+  }),
+  personalEvent(500, {
+    actor: "user",
+    content: "Keep this final row visible for scroll-anchor validation.",
+    contentPreview: "Final scroll-anchor row"
   })
-);
+];
+
+const personalEvents: PersonalDesktopConversationEvent[] = [
+  ...Array.from({ length: 489 }, (_, index) => personalEvent(index)),
+  ...parityEvents
+];
 
 const personalMemoryApi: PersonalDesktopApi = {
   assignSessionProject: async () => ({ projectId: personalProject.id }),
@@ -319,7 +513,7 @@ const collaborationFixture = (): CollaborationSnapshot => {
                 id: uuid(24),
                 sourceKind: "agent_message",
                 occurredAt: timestamp,
-                body: "The target renderer now consumes the strict shared collaboration contract.",
+                body: richMarkdownFixture,
                 actorName: maxDisplayName("Codex"),
                 toolName: null,
                 toolCallId: null
@@ -339,7 +533,7 @@ const collaborationFixture = (): CollaborationSnapshot => {
             sequence: 1,
             sender: participant(teammate),
             senderKind: "user",
-            body: "The access-boundary checks are ready for review.",
+            body: richMarkdownFixture,
             createdAt: timestamp,
             updatedAt: timestamp,
             editedAt: null,
@@ -421,7 +615,11 @@ const ChatValidationApp = () => {
         };
         browserWindow.__koedBrowserCommands ??= [];
         browserWindow.__koedBrowserCommands.push(command.command);
-        if (command.command !== "collaboration.report_team_activity") {
+        if (
+          command.command !== "collaboration.report_team_activity" &&
+          command.command !== "collaboration.mark_delivered" &&
+          command.command !== "collaboration.mark_read"
+        ) {
           browserWindow.__koedBrowserUserCommands ??= [];
           browserWindow.__koedBrowserUserCommands.push(command.command);
           browserWindow.__koedBrowserCommandCount =
