@@ -1702,6 +1702,44 @@ export const validateEnvelopeEncryptionProviderEnvironment = (
     throw new UnsupportedEnvelopeEncryptionProviderError(providerMode);
   }
 
+  const managedCloudKmsRequired =
+    deploymentProfile === "koed_managed_cloud" &&
+    ["paid", "production"].includes(releaseStage);
+  const teamMemoryConfigured = [
+    teamMemoryEnvelopeEncryptionEnvironmentFamily.providerMode,
+    ...teamMemoryEnvelopeEncryptionEnvironmentFamily.localKey,
+    teamMemoryEnvelopeEncryptionEnvironmentFamily.kmsKeyId,
+    teamMemoryEnvelopeEncryptionEnvironmentFamily.kmsKeyVersion,
+    teamMemoryEnvelopeEncryptionEnvironmentFamily.kmsEndpointUrl,
+    teamMemoryEnvelopeEncryptionEnvironmentFamily.kmsAuthToken
+  ].some((name) => optionalEnvValue(environment[name]));
+  if (managedCloudKmsRequired || teamMemoryConfigured) {
+    const teamMemoryProviderMode =
+      providerModeFromString(
+        environment[TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER_ENV],
+        TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER_ENV
+      ) ??
+      (firstEnvironmentValue(
+        environment,
+        teamMemoryEnvelopeEncryptionEnvironmentFamily.localKey
+      )
+        ? "local_test_key"
+        : undefined);
+    if (
+      managedCloudKmsRequired &&
+      teamMemoryProviderMode !== undefined &&
+      !kmsBackedProviderModes.has(teamMemoryProviderMode)
+    ) {
+      throw new EnvelopeEncryptionError(
+        `A KMS-backed ${TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER_ENV} is required for paid Koed-managed cloud`
+      );
+    }
+    createTeamMemoryEnvelopeEncryptionProviderFromEnvironment({
+      environment,
+      required: true
+    });
+  }
+
   const ownerPrivateReplicaConfigured = [
     ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.providerMode,
     ...ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.localKey,
@@ -1710,9 +1748,7 @@ export const validateEnvelopeEncryptionProviderEnvironment = (
     ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.kmsEndpointUrl,
     ownerPrivateReplicaEnvelopeEncryptionEnvironmentFamily.kmsAuthToken
   ].some((name) => optionalEnvValue(environment[name]));
-  const ownerPrivateReplicaRequired =
-    deploymentProfile === "koed_managed_cloud" &&
-    ["paid", "production"].includes(releaseStage);
+  const ownerPrivateReplicaRequired = managedCloudKmsRequired;
   if (!ownerPrivateReplicaConfigured) {
     if (ownerPrivateReplicaRequired) {
       createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({

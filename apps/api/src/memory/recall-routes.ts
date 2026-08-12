@@ -201,13 +201,12 @@ export const registerRecallRoutes = (
             authorizationBoundary
           }
         );
-        const hits = candidates.map((candidate) =>
-          teamHit(
-            candidate,
-            input.retrieval_stage !== "score_scan",
-            input.parent_node_ids
-          )
-        );
+        const hits =
+          input.retrieval_stage === "score_scan"
+            ? []
+            : candidates.map((candidate) =>
+                teamHit(candidate, true, input.parent_node_ids)
+              );
         const stages = (
           [
             ["rollup_search", "lcm_rollups"],
@@ -223,15 +222,23 @@ export const registerRecallRoutes = (
           return {
             name,
             ran,
-            used: ran && selected.length > 0,
+            used:
+              input.retrieval_stage !== "score_scan" &&
+              ran &&
+              selected.length > 0,
             candidateCount: ran ? selected.length : 0,
-            selectedCount: ran ? selected.length : 0,
+            selectedCount:
+              input.retrieval_stage !== "score_scan" && ran
+                ? selected.length
+                : 0,
             durationMs: Math.max(0, performance.now() - retrievalStartedAt),
             parallelGroup: "team_shared_semantic_first_pass",
             temporalFilterApplied: Boolean(
               input.source_after || input.source_before || input.recent_days
             ),
-            topScore: selected[0]?.score
+            topScore: selected[0]?.score,
+            countAboveThreshold: ran ? selected.length : 0,
+            maxAllowed: ran ? input.limit : 0
           };
         });
         return {
@@ -241,20 +248,20 @@ export const registerRecallRoutes = (
             .length,
           retrieval: {
             retrievalMode: "semantic_vector",
-            vectorHitsCount: hits.length,
+            vectorHitsCount: candidates.length,
             textHitsCount: 0,
             embeddingModel: embedding.model,
             embeddingDimensions: embedding.dimensions,
-            vectorCandidateCount: hits.length,
+            vectorCandidateCount: candidates.length,
             stages
           },
           retrievalMode: "semantic_vector",
-          vectorHitsCount: hits.length,
+          vectorHitsCount: candidates.length,
           textHitsCount: 0,
           embeddingModel: embedding.model,
           embeddingDimensions: embedding.dimensions,
           semanticRetrievalComplete: true,
-          vectorCandidateCount: hits.length,
+          vectorCandidateCount: candidates.length,
           rerankedCount: 0,
           rerankerModel: null,
           rerankingEnabled: false,
@@ -393,11 +400,19 @@ export const registerRecallRoutes = (
           return {
             name,
             ran,
-            used: ran && selected.length > 0,
+            used:
+              input.retrieval_stage !== "score_scan" &&
+              ran &&
+              selected.length > 0,
             candidateCount: ran ? selected.length : 0,
-            selectedCount: ran ? selected.length : 0,
+            selectedCount:
+              input.retrieval_stage !== "score_scan" && ran
+                ? selected.length
+                : 0,
             durationMs: Math.max(0, performance.now() - retrievalStartedAt),
-            parallelGroup: "team_shared_semantic_first_pass"
+            parallelGroup: "team_shared_semantic_first_pass",
+            countAboveThreshold: ran ? selected.length : 0,
+            maxAllowed: ran ? input.limit : 0
           };
         });
         const retrieval = {

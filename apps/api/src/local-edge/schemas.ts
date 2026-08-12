@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { expandMemoryNodeQuerySchema } from "../memory/graph-schemas.js";
+import { finalMemoryQuestionSchema } from "../memory/questions-schemas.js";
 import { searchMemorySchema } from "../memory/recall-schemas.js";
 
 const operationFamilySchema = z
@@ -248,6 +249,19 @@ const localEdgeTeamMemoryRecallSchema = z
 export const localEdgeTeamMemorySearchSchema = localEdgeTeamMemoryRecallSchema;
 
 export const localEdgeTeamMemoryAnswerSchema = localEdgeTeamMemoryRecallSchema;
+
+export const localEdgeTeamMemoryQuestionSchema = localEdgeTeamMemoryBaseSchema
+  .extend({ input: finalMemoryQuestionSchema })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.input.team_workspace_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["input", "team_workspace_id"],
+        message: "team_workspace_id is required for Team Memory questions"
+      });
+    }
+  });
 
 export const localEdgeTeamMemoryExpandSchema = localEdgeTeamMemoryBaseSchema
   .extend({

@@ -708,6 +708,36 @@ describe("MemoryApiClient", () => {
     expect(requestUrl).toBe("/v1/local-edge/team-memory/search");
   });
 
+  it("forwards the frozen Team authorization boundary during expansion", async () => {
+    let requestBody: Record<string, unknown> = {};
+    const apiUrl = await createApi((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += String(chunk);
+      });
+      request.on("end", () => {
+        requestBody = JSON.parse(body) as Record<string, unknown>;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ items: [] }));
+      });
+    });
+    const client = new MemoryApiClient({ apiUrl, apiToken: "personal-token" });
+
+    await client.teamMemoryExpand(
+      "team-vps",
+      randomUUID(),
+      {
+        team_workspace_id: randomUUID(),
+        authorization_boundary: "frozen-boundary"
+      },
+      "Koed-Device local-key:local-secret"
+    );
+
+    expect(requestBody.input).toMatchObject({
+      authorization_boundary: "frozen-boundary"
+    });
+  });
+
   it("loads the public backend capability contract", async () => {
     const apiUrl = await createApi((request, response) => {
       expect(request.method).toBe("GET");
@@ -1416,8 +1446,8 @@ describe("LCM summary background service", () => {
           );
           return;
         }
-        if (request.url === "/v1/memory/questions/final") {
-          persistedQuestions.push(parsed);
+        if (request.url === "/v1/local-edge/team-memory/questions/final") {
+          persistedQuestions.push(parsed.input as Record<string, unknown>);
           response.end(JSON.stringify({ question: { id: randomUUID() } }));
           return;
         }
@@ -1475,6 +1505,10 @@ describe("LCM summary background service", () => {
       ).toBe(true);
       expect(JSON.stringify(teamRequests)).toContain(hintSentinel);
       expect(persistedQuestions).toHaveLength(1);
+      expect(persistedQuestions[0]).toMatchObject({
+        team_workspace_id: teamWorkspaceId,
+        query: "What did the Team decide?"
+      });
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

@@ -92,6 +92,7 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
+      authorizationBoundary?: string;
     } = {}
   ): Promise<Record<string, unknown>> {
     return await this.client.teamMemoryExpand(
@@ -104,7 +105,8 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
         team_workspace_id: input.teamWorkspaceId,
         recent_days: input.recentDays,
         source_after: input.sourceAfter,
-        source_before: input.sourceBefore
+        source_before: input.sourceBefore,
+        authorization_boundary: input.authorizationBoundary
       },
       this.authorization
     );
@@ -303,48 +305,49 @@ export class MemoryToolExecutor {
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");
     let recordedQuestion: McpMemoryQuestion | null = null;
     try {
+      const finalQuestionInput = answer.localMemoryWorker.usedFallback
+        ? {
+            idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+            query: answerInput.query,
+            origin: "mcp_memory_answer",
+            retrieval_scope: retrievalScope,
+            search_domain: input.search_domain,
+            project_id: projectId,
+            team_workspace_id: teamWorkspaceId,
+            session_id: input.session_id,
+            status: "error",
+            error_message: errorMessageFromAnswer(answer),
+            attempt_count: 1,
+            response: persistedAnswerResponse(answer),
+            retrieval: retrievalFromAnswer(answer),
+            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+          }
+        : {
+            idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+            query: answerInput.query,
+            origin: "mcp_memory_answer",
+            retrieval_scope: retrievalScope,
+            search_domain: input.search_domain,
+            project_id: projectId,
+            team_workspace_id: teamWorkspaceId,
+            session_id: input.session_id,
+            status: "answered",
+            answer_markdown: answerMarkdownFromAnswer(answer),
+            attempt_count: 1,
+            response: persistedAnswerResponse(answer),
+            evidence: evidenceFromAnswer(answer),
+            citations: citationsFromAnswer(answer),
+            retrieval: retrievalFromAnswer(answer),
+            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+          };
       recordedQuestion = questionFromResponse(
-        await this.client.createFinalQuestion(
-          answer.localMemoryWorker.usedFallback
-            ? {
-                idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
-                query: answerInput.query,
-                origin: "mcp_memory_answer",
-                retrieval_scope: retrievalScope,
-                search_domain: input.search_domain,
-                project_id: projectId,
-                team_workspace_id: teamWorkspaceId,
-                session_id: input.session_id,
-                status: "error",
-                error_message: errorMessageFromAnswer(answer),
-                attempt_count: 1,
-                response: persistedAnswerResponse(answer),
-                retrieval: retrievalFromAnswer(answer),
-                local_memory_worker: stripAppServerEvents(
-                  answer.localMemoryWorker
-                )
-              }
-            : {
-                idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
-                query: answerInput.query,
-                origin: "mcp_memory_answer",
-                retrieval_scope: retrievalScope,
-                search_domain: input.search_domain,
-                project_id: projectId,
-                team_workspace_id: teamWorkspaceId,
-                session_id: input.session_id,
-                status: "answered",
-                answer_markdown: answerMarkdownFromAnswer(answer),
-                attempt_count: 1,
-                response: persistedAnswerResponse(answer),
-                evidence: evidenceFromAnswer(answer),
-                citations: citationsFromAnswer(answer),
-                retrieval: retrievalFromAnswer(answer),
-                local_memory_worker: stripAppServerEvents(
-                  answer.localMemoryWorker
-                )
-              }
-        )
+        teamWorkspaceId && upstreamBackendId
+          ? await this.client.createFinalTeamQuestion(
+              upstreamBackendId,
+              finalQuestionInput,
+              localEdgeClientCredential!.authorization
+            )
+          : await this.client.createFinalQuestion(finalQuestionInput)
       );
     } catch (error) {
       logger.warn(

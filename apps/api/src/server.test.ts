@@ -8599,6 +8599,22 @@ describe("account and access flows", () => {
         input: { query: "team", team_workspace_id: randomUUID() }
       }
     });
+    const allowedQuestion = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/team-memory/questions/final",
+      headers: { authorization },
+      payload: {
+        upstream_backend_id: "team-vps",
+        input: {
+          idempotency_key: `team-question-${randomUUID()}`,
+          query: "What did the Team decide?",
+          origin: "mcp_memory_answer",
+          team_workspace_id: randomUUID(),
+          status: "answered",
+          answer_markdown: "Use the Team evidence."
+        }
+      }
+    });
     const invalidCredential = await app.inject({
       method: "POST",
       url: "/v1/local-edge/team-memory/search",
@@ -8652,6 +8668,7 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(allowed.statusCode).toBe(200);
+    expect(allowedQuestion.statusCode).toBe(200);
     expect(invalidCredential.statusCode).toBe(401);
     expect(browserSessionOnly.statusCode).toBe(401);
     expect(
@@ -8659,7 +8676,8 @@ describe("account and access flows", () => {
     ).toEqual(malformedCredentialMatrix.map(() => 401));
     expect(malformedAuthorized.statusCode).toBe(400);
     expect(upstreamCalls).toEqual([
-      "https://team.example.test/v1/memory/search"
+      "https://team.example.test/v1/memory/search",
+      "https://team.example.test/v1/memory/questions/final"
     ]);
   });
 
@@ -12184,7 +12202,31 @@ describe("account and access flows", () => {
       recallInputs.push(input as Record<string, unknown>);
       return originalSearchMemoryNodes(actor, input);
     };
-    repository.searchAuthorizedSharedMemorySemanticItems = async () => [];
+    const teamCandidateId = randomUUID();
+    repository.searchAuthorizedSharedMemorySemanticItems = async () => [
+      {
+        candidateId: teamCandidateId,
+        shareGrantId: randomUUID(),
+        representationId: randomUUID(),
+        representation: "lcm_rollups",
+        pseudonymousSourceId: "team-source",
+        sourceItemIndex: 0,
+        sourceRevision: 1,
+        provenanceHash: "a".repeat(64),
+        representationPolicyRevision: 1,
+        contentPolicyVersion: 1,
+        classifierVersion: 1,
+        embeddingModel: "qwen3-0.6b",
+        embeddingDimensions: 1024,
+        embeddingVersion: "1",
+        itemType: "lcm_rollup",
+        occurredAt: null,
+        text: "Team evidence must not be returned during score scan.",
+        lexicalAnchors: [],
+        score: 0.9,
+        freshness: "fresh"
+      }
+    ];
     repository.freezeSharedMemorySemanticRecallBoundary = async (
       _actor,
       input
@@ -12297,6 +12339,45 @@ describe("account and access flows", () => {
         limit: 1
       }
     });
+    const deviceScoreScan = await app.inject({
+      method: "POST",
+      url: "/v1/memory/search",
+      headers: { authorization: device.authorization },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        retrieval_stage: "score_scan",
+        team_workspace_id: teamWorkspaceId,
+        strict_limit: true,
+        limit: 1
+      }
+    });
+    const deviceTeamQuestion = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/final",
+      headers: { authorization: device.authorization },
+      payload: {
+        idempotency_key: `team-question-${randomUUID()}`,
+        query: "What did the Team decide?",
+        origin: "mcp_memory_answer",
+        team_workspace_id: teamWorkspaceId,
+        status: "answered",
+        answer_markdown: "Use the authorized Team evidence."
+      }
+    });
+    const rejectedApiTokenTeamQuestion = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/final",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        idempotency_key: `team-question-${randomUUID()}`,
+        query: "What did the Team decide?",
+        origin: "mcp_memory_answer",
+        team_workspace_id: teamWorkspaceId,
+        status: "answered",
+        answer_markdown: "This must not be accepted."
+      }
+    });
     const answer = await app.inject({
       method: "POST",
       url: "/v1/memory/answer",
@@ -12315,6 +12396,29 @@ describe("account and access flows", () => {
     expect(search.statusCode).toBe(200);
     expect(answer.statusCode).toBe(200);
     expect(deviceAnswer.statusCode).toBe(200);
+    expect(deviceScoreScan.statusCode).toBe(200);
+    expect(deviceTeamQuestion.statusCode).toBe(200);
+    expect(rejectedApiTokenTeamQuestion.statusCode).toBe(403);
+    const scoreScan = jsonBody<{
+      hits: unknown[];
+      rawHitsCount: number;
+      retrieval: {
+        vectorCandidateCount: number;
+        stages: Array<Record<string, unknown>>;
+      };
+    }>(deviceScoreScan);
+    expect(scoreScan.hits).toEqual([]);
+    expect(scoreScan.rawHitsCount).toBe(0);
+    expect(scoreScan.retrieval.vectorCandidateCount).toBe(1);
+    expect(scoreScan.retrieval.stages).toContainEqual(
+      expect.objectContaining({
+        name: "rollup_search",
+        used: false,
+        selectedCount: 0,
+        countAboveThreshold: 1,
+        maxAllowed: 1
+      })
+    );
     expect(recallInputs[0]).toMatchObject({
       retrievalStage: "rollup_search",
       exactHints: ["Seraphina"],
@@ -14876,6 +14980,18 @@ describe("account and access flows", () => {
       }
     });
     const questionId = jsonBody<MemoryQuestionResponse>(created).question.id;
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/final",
+      headers,
+      payload: {
+        idempotency_key: `final-question-${randomUUID()}`,
+        query: "What did we decide about an unrelated topic?",
+        origin: "mcp_memory_answer",
+        status: "answered",
+        answer_markdown: "An unrelated answer."
+      }
+    });
     const listed = await app.inject({
       method: "GET",
       url: "/v1/memory/questions?search_domain=project&project_id=project-1",
@@ -14884,6 +15000,11 @@ describe("account and access flows", () => {
     const detail = await app.inject({
       method: "GET",
       url: `/v1/memory/questions/${questionId}`,
+      headers
+    });
+    const searched = await app.inject({
+      method: "GET",
+      url: "/v1/memory/questions?query=rate%20limits",
       headers
     });
     await app.close();
@@ -14899,6 +15020,9 @@ describe("account and access flows", () => {
       jsonBody<MemoryQuestionResponse>(created).question.retrievalScope
     ).toBe("personal");
     expect(jsonBody<MemoryQuestionsResponse>(listed).questions).toHaveLength(1);
+    expect(jsonBody<MemoryQuestionsResponse>(searched).questions).toHaveLength(
+      1
+    );
     expect(jsonBody<MemoryQuestionResponse>(detail).question).toMatchObject({
       id: questionId,
       origin: "mcp_memory_answer",

@@ -203,8 +203,7 @@ describe("Embedding Service routes", () => {
     expect(payload.modelKey).toBe("qwen3-0.6b");
     expect(payload.normalized).toBe(true);
     expect(payload).toMatchObject({
-      artifact:
-        "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+      artifact: `sha256:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439`,
       artifactRevision: "main",
       artifactHash:
         "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
@@ -214,7 +213,7 @@ describe("Embedding Service routes", () => {
       acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
     });
     expect(payload.reranker).toMatchObject({
-      artifact: "repo:reranker.gguf",
+      artifact: `sha256:${"a".repeat(64)}`,
       artifactRevision: `sha256:${"a".repeat(64)}`,
       artifactHash: "a".repeat(64)
     });
@@ -254,6 +253,21 @@ describe("Embedding Service routes", () => {
     expect(payload.settingsFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(payload)).not.toContain("/models/embedding.gguf");
     expect(JSON.stringify(payload)).not.toContain("secret");
+  });
+
+  it("exposes configured artifact provenance only to an authenticated health request", async () => {
+    const config = testConfig({ embeddingServiceToken: "secret" });
+    const runtime = new RouteRuntime(config, logger());
+    const service = createEmbeddingService(config, runtime, logger());
+
+    const response = await service.handle(
+      new Request("http://127.0.0.1/health", {
+        headers: { "x-koed-embedding-token": "secret" }
+      })
+    );
+    const payload = await json(response);
+
+    expect(payload.artifact).toBe(config.modelArtifact);
   });
 
   it("requires embed auth and returns chunk metadata", async () => {

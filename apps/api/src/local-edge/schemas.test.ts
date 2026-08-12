@@ -5,6 +5,7 @@ import {
   localEdgeOperationFamilySchema,
   localEdgeTeamMemoryAnswerSchema,
   localEdgeTeamMemoryExpandSchema,
+  localEdgeTeamMemoryQuestionSchema,
   localEdgeTeamMemorySearchSchema,
   redeemDeviceEnrollmentChallengeSchema
 } from "./schemas.js";
@@ -99,6 +100,30 @@ describe("local edge Team semantic recall schemas", () => {
         upstream_backend_id: "team-vps",
         node_id: "00000000-0000-4000-8000-000000000003",
         input: {}
+      }).success
+    ).toBe(false);
+  });
+
+  it("requires a Workspace-bound final Team Memory Question", () => {
+    const input = {
+      upstream_backend_id: "team-vps",
+      input: {
+        idempotency_key: "question-1",
+        query: "What did the Team decide?",
+        origin: "mcp_memory_answer",
+        retrieval_scope: "personal",
+        team_workspace_id: teamWorkspaceId,
+        status: "answered",
+        answer_markdown: "Use the shared decision."
+      }
+    };
+    expect(localEdgeTeamMemoryQuestionSchema.safeParse(input).success).toBe(
+      true
+    );
+    expect(
+      localEdgeTeamMemoryQuestionSchema.safeParse({
+        ...input,
+        input: { ...input.input, team_workspace_id: undefined }
       }).success
     ).toBe(false);
   });

@@ -262,6 +262,7 @@ const handleHealth = (
   const rerankerReady = !rerankerEnabled(config) || runtime.isRerankerLoaded();
   const status = runtime.isModelLoaded() && rerankerReady ? "ok" : "loading";
   const rerankerProvenance = runtime.rerankerProvenance();
+  const exposeConfiguredArtifacts = auth.authRequired && auth.authValid;
   return jsonResponse(
     {
       status,
@@ -277,7 +278,9 @@ const handleHealth = (
       authValid: auth.authValid,
       modelRepo: config.modelRepo,
       modelFile: config.modelFile,
-      artifact: config.modelArtifact,
+      artifact: exposeConfiguredArtifacts
+        ? config.modelArtifact
+        : `sha256:${config.modelArtifactSha256}`,
       artifactRevision: config.modelArtifactRevision,
       artifactHash: config.modelArtifactSha256,
       tokenizer: config.modelTokenizer,
@@ -290,7 +293,11 @@ const handleHealth = (
         loaded: runtime.isRerankerLoaded(),
         modelKey: config.rerankerKey,
         model: rerankerModel(config),
-        artifact: rerankerProvenance?.artifact ?? null,
+        artifact: rerankerProvenance
+          ? exposeConfiguredArtifacts
+            ? rerankerProvenance.artifact
+            : `sha256:${rerankerProvenance.artifactHash}`
+          : null,
         artifactRevision: rerankerProvenance?.artifactRevision ?? null,
         artifactHash: rerankerProvenance?.artifactHash ?? null,
         batchLimit: config.rerankerBatchLimit

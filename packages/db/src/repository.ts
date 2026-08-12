@@ -3921,6 +3921,9 @@ export const createMemorySourceRepository = (
     ...createHighRiskActionRepository(db, {
       pool,
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      teamEnvelopeEncryptionProvider:
+        options.teamEnvelopeEncryptionProvider ??
+        options.envelopeEncryptionProvider,
       ownerPrivateReplicaEnvelopeEncryptionProvider:
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),

@@ -804,6 +804,22 @@ export class MemoryApiClient {
     );
   }
 
+  async createFinalTeamQuestion(
+    upstreamBackendId: string,
+    input: Record<string, unknown>,
+    authorization: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/team-memory/questions/final",
+      {
+        upstream_backend_id: upstreamBackendId,
+        input
+      },
+      { authorization }
+    );
+  }
+
   protected async request<T>(
     method: "GET" | "POST" | "PATCH" | "PUT",
     path: string,

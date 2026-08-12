@@ -158,7 +158,8 @@ describe("route identity contract", () => {
     for (const path of [
       "/v1/local-edge/team-memory/search",
       "/v1/local-edge/team-memory/answer",
-      "/v1/local-edge/team-memory/expand"
+      "/v1/local-edge/team-memory/expand",
+      "/v1/local-edge/team-memory/questions/final"
     ]) {
       expect(openApiPaths[path]).toBeUndefined();
       expect(routeIdentityFor("POST", path)).toMatchObject({

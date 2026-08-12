@@ -12,7 +12,11 @@ export const registerQuestionRoutes = (
 ) => {
   const {
     requireRepository,
-    auth: { authenticate },
+    auth: {
+      authenticate,
+      authenticateApiToken,
+      authenticateSessionOrDeviceCredential
+    },
     rateLimit: {
       memoryRead: memoryReadRateLimit,
       memoryWrite: memoryWriteRateLimit
@@ -29,6 +33,7 @@ export const registerQuestionRoutes = (
       const questions = await repo.listMemoryQuestions(
         { userId: user.id },
         {
+          query: query.query,
           searchDomain: query.search_domain,
           status: query.status,
           projectId: query.project_id,
@@ -46,8 +51,17 @@ export const registerQuestionRoutes = (
     { preHandler: memoryWriteRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
       const input = finalMemoryQuestionSchema.parse(request.body);
+      const user = input.team_workspace_id
+        ? await authenticateSessionOrDeviceCredential(
+            request,
+            "team_workspace_read",
+            {
+              apiTokenError:
+                "Session cookie or scoped device credential required for Team Workspace question history"
+            }
+          )
+        : await authenticateApiToken(request);
       const question = await repo.createFinalMemoryQuestion(
         { userId: user.id },
         input.status === "answered"

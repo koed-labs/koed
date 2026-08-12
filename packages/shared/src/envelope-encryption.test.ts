@@ -1005,6 +1005,12 @@ describe("createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment", (
           MANAGED_KMS_KEY_VERSION: "1",
           MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example/v1/",
           MANAGED_KMS_AUTH_TOKEN: "general-token",
+          TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+          TEAM_MEMORY_MANAGED_KMS_KEY_ID: "managed-kms:team",
+          TEAM_MEMORY_MANAGED_KMS_KEY_VERSION: "1",
+          TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL:
+            "https://team-kms.koed.example/v1/",
+          TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN: "team-token",
           OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY: generatedRootKey()
         }
       })
@@ -1021,10 +1027,33 @@ describe("createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment", (
           MANAGED_KMS_KEY_ID: "managed-kms:general",
           MANAGED_KMS_KEY_VERSION: "1",
           MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example/v1/",
-          MANAGED_KMS_AUTH_TOKEN: "general-token"
+          MANAGED_KMS_AUTH_TOKEN: "general-token",
+          TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+          TEAM_MEMORY_MANAGED_KMS_KEY_ID: "managed-kms:team",
+          TEAM_MEMORY_MANAGED_KMS_KEY_VERSION: "1",
+          TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL:
+            "https://team-kms.koed.example/v1/",
+          TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN: "team-token"
         }
       })
     ).toThrow("Owner-private replica envelope encryption provider is required");
+  });
+
+  it("requires a KMS-backed Team Memory provider for paid managed cloud", () => {
+    expect(() =>
+      validateEnvelopeEncryptionProviderEnvironment({
+        environment: {
+          KOED_DEPLOYMENT_PROFILE: "koed_managed_cloud",
+          KOED_MANAGED_CLOUD_RELEASE_STAGE: "paid",
+          API_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+          MANAGED_KMS_KEY_ID: "managed-kms:general",
+          MANAGED_KMS_KEY_VERSION: "1",
+          MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example/v1/",
+          MANAGED_KMS_AUTH_TOKEN: "general-token",
+          TEAM_MEMORY_DATA_ENCRYPTION_KEY: generatedRootKey()
+        }
+      })
+    ).toThrow("KMS-backed TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER");
   });
 });
 
