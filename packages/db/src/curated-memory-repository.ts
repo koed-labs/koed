@@ -109,7 +109,10 @@ export interface CuratedMemoryRepository {
 
 export interface CuratedMemoryRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
-  onCuratedMemoryChanged?: (actor: ActorContext) => Promise<void>;
+  onCuratedMemoryChanged?: (
+    actor: ActorContext,
+    client: pg.PoolClient
+  ) => Promise<void>;
 }
 
 export const createCuratedMemoryRepository = (

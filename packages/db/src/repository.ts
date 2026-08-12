@@ -54,6 +54,7 @@ import { createPersonalDeviceArtifactRepository } from "./personal-device-artifa
 import { createPersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
+import { createSavepointPool } from "./savepoint-pool.js";
 import { createSharedMemoryRepository } from "./shared-memory-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
 import { createTeamConversationSourceRepository } from "./team-conversation-source-repository.js";
@@ -3837,8 +3838,26 @@ export const createMemorySourceRepository = (
   });
   const curatedMemoryRepository = createCuratedMemoryRepository(pool, {
     envelopeEncryptionProvider: options.envelopeEncryptionProvider,
-    onCuratedMemoryChanged: async (actor) => {
-      await sharedMemoryRepository.reconcileCuratedGrantRepresentations(actor);
+    onCuratedMemoryChanged: async (actor, client) => {
+      const transactionalSharedMemoryRepository = createSharedMemoryRepository(
+        createSavepointPool(client, "curated_memory"),
+        {
+          resolveTeamEncryptionProvider: () =>
+            Promise.resolve(
+              options.teamEnvelopeEncryptionProvider ??
+                requireEnvelopeEncryptionProvider()
+            ),
+          resolvePersonalEncryptionProvider: () =>
+            Promise.resolve(requireEnvelopeEncryptionProvider()),
+          resolveOwnerPrivateReplicaEncryptionProvider: () =>
+            Promise.resolve(
+              requireOwnerPrivateReplicaEnvelopeEncryptionProvider()
+            )
+        }
+      );
+      await transactionalSharedMemoryRepository.reconcileCuratedGrantRepresentations(
+        actor
+      );
     }
   });
   const hasMemoryEventEncryptionProvider =

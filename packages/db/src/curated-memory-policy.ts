@@ -272,7 +272,6 @@ export const createCuratedMemoryPolicyMethods = ({
   async suppressCuratedMemoryAssertion(actor, assertionId, input) {
     const client = await pool.connect();
     let hydrated: Awaited<ReturnType<typeof getAssertionByIdWithClient>> = null;
-    let changed = false;
     try {
       await client.query("begin");
       const existing = await getAssertionByIdWithClient(
@@ -334,7 +333,9 @@ export const createCuratedMemoryPolicyMethods = ({
               id
             )
           : null;
-        changed = Boolean(id);
+        if (id) {
+          await onCuratedMemoryChanged?.(actor, client);
+        }
         await client.query("commit");
       }
     } catch (error) {
@@ -342,9 +343,6 @@ export const createCuratedMemoryPolicyMethods = ({
       throw error;
     } finally {
       client.release();
-    }
-    if (changed) {
-      await onCuratedMemoryChanged?.(actor);
     }
     return hydrated;
   },
@@ -360,6 +358,9 @@ export const createCuratedMemoryPolicyMethods = ({
           actor,
           envelopeEncryptionProvider
         );
+      if (suppressed.length > 0) {
+        await onCuratedMemoryChanged?.(actor, client);
+      }
       await client.query("commit");
       assertionsSuppressed = suppressed.length;
     } catch (error) {
@@ -367,9 +368,6 @@ export const createCuratedMemoryPolicyMethods = ({
       throw error;
     } finally {
       client.release();
-    }
-    if (assertionsSuppressed > 0) {
-      await onCuratedMemoryChanged?.(actor);
     }
     return { assertionsSuppressed };
   }

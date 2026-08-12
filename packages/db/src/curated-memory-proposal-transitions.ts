@@ -776,10 +776,10 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         envelopeEncryptionProvider,
         updated.rows[0]!
       );
-      await client.query("commit");
       if (assertionId) {
-        await onCuratedMemoryChanged?.(actor);
+        await onCuratedMemoryChanged?.(actor, client);
       }
+      await client.query("commit");
       return mapProposal(hydratedUpdated);
     } catch (error) {
       await client.query("rollback");

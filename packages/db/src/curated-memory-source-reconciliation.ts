@@ -188,8 +188,8 @@ export const createCuratedMemorySourceReconciliationMethods = ({
         `,
         [assertionIds, actor.userId]
       );
+      await onCuratedMemoryChanged?.(actor, client);
       await client.query("commit");
-      await onCuratedMemoryChanged?.(actor);
       return {
         assertionsScanned: assertionIds.length,
         memoryEventLinksAdded: memoryEventLinks.rowCount ?? 0,
