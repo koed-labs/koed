@@ -6,6 +6,7 @@ import {
 import type { SafeRunDirectory } from "./output-path.js";
 
 const MAX_JOURNAL_BYTES = 256 * 1024 * 1024;
+const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 
 export const RUN_PHASES = [
   "preflight",
@@ -48,9 +49,16 @@ export type RunJournalEntry =
       attemptId: string;
       executionGeneration: number;
       resultPath: string;
+      /** Digest and embedded identity for every committed result artifact. */
+      resultSha256: string;
+      resultIdentity: {
+        attemptId: string;
+        executionGeneration: number;
+      };
       reward: number | null;
       failureCategory: string | null;
     });
+type AttemptJournalEntry = Exclude<RunJournalEntry, { type: "phase" }>;
 
 type JournalEntryInput<T> = T extends unknown
   ? Omit<T, keyof JournalBase>
@@ -92,7 +100,7 @@ const assertEntry = (value: unknown, index: number): RunJournalEntry => {
     if (
       typeof entry.attemptId !== "string" ||
       !Number.isSafeInteger(entry.executionGeneration) ||
-      (entry.executionGeneration as number) < 0
+      (entry.executionGeneration as number) < 1
     ) {
       throw new Error(`Malformed attempt journal entry at line ${index + 1}`);
     }
@@ -111,16 +119,125 @@ const assertEntry = (value: unknown, index: number): RunJournalEntry => {
       (entry.reward !== null &&
         (typeof entry.reward !== "number" || !Number.isFinite(entry.reward))) ||
       (entry.failureCategory !== null &&
-        typeof entry.failureCategory !== "string")
+        typeof entry.failureCategory !== "string") ||
+      typeof entry.resultSha256 !== "string" ||
+      !SHA256.test(entry.resultSha256) ||
+      !entry.resultIdentity ||
+      typeof entry.resultIdentity !== "object" ||
+      Array.isArray(entry.resultIdentity)
     ) {
       throw new Error(
         `Malformed attempt-result journal entry at line ${index + 1}`
       );
     } else {
       validateArtifactRelativePath(entry.resultPath);
+      const identity = entry.resultIdentity as Record<string, unknown>;
+      if (
+        Object.keys(identity).length !== 2 ||
+        identity.attemptId !== entry.attemptId ||
+        identity.executionGeneration !== entry.executionGeneration
+      ) {
+        throw new Error(
+          `Result artifact identity mismatch at line ${index + 1}`
+        );
+      }
     }
   }
   return entry as unknown as RunJournalEntry;
+};
+
+const validateAttemptHistory = (entries: readonly RunJournalEntry[]): void => {
+  const byAttempt = new Map<string, AttemptJournalEntry[]>();
+  for (const entry of entries) {
+    if (entry.type === "phase") continue;
+    const values = byAttempt.get(entry.attemptId) ?? [];
+    values.push(entry);
+    byAttempt.set(entry.attemptId, values);
+  }
+
+  for (const [attemptId, values] of byAttempt) {
+    const generations = [
+      ...new Set(values.map((entry) => entry.executionGeneration))
+    ].sort((left, right) => left - right);
+    for (const [index, generation] of generations.entries()) {
+      if (generation !== index + 1) {
+        throw new Error(
+          `Attempt ${attemptId} has non-contiguous execution generations`
+        );
+      }
+    }
+
+    let terminalGeneration: number | undefined;
+    let priorGenerationReachedAgent = false;
+    for (const generation of generations) {
+      const generationEntries = values.filter(
+        (entry) => entry.executionGeneration === generation
+      );
+      const admitted = generationEntries.filter(
+        (entry) => entry.type === "attempt_state" && entry.state === "admitted"
+      );
+      const started = generationEntries.filter(
+        (entry) =>
+          entry.type === "attempt_state" && entry.state === "agent_started"
+      );
+      const results = generationEntries.filter(
+        (entry) => entry.type === "attempt_result"
+      );
+      if (admitted.length > 1 || started.length > 1 || results.length > 1) {
+        throw new Error(
+          `Attempt ${attemptId} generation ${generation} has duplicate state`
+        );
+      }
+      if (generation > 1 && admitted.length !== 1) {
+        throw new Error(
+          `Attempt ${attemptId} generation ${generation} lacks admission`
+        );
+      }
+      if (generation > 1 && priorGenerationReachedAgent) {
+        throw new Error(
+          `Attempt ${attemptId} continued after an irreversible prior generation`
+        );
+      }
+      const admittedSequence = admitted[0]?.sequence;
+      const startedSequence = started[0]?.sequence;
+      const resultSequence = results[0]?.sequence;
+      if (
+        admittedSequence !== undefined &&
+        startedSequence !== undefined &&
+        admittedSequence >= startedSequence
+      ) {
+        throw new Error(
+          `Attempt ${attemptId} generation ${generation} started before admission`
+        );
+      }
+      if (
+        startedSequence !== undefined &&
+        resultSequence !== undefined &&
+        startedSequence >= resultSequence
+      ) {
+        throw new Error(
+          `Attempt ${attemptId} generation ${generation} completed before agent start`
+        );
+      }
+      if (
+        admittedSequence !== undefined &&
+        resultSequence !== undefined &&
+        admittedSequence >= resultSequence
+      ) {
+        throw new Error(
+          `Attempt ${attemptId} generation ${generation} completed before admission`
+        );
+      }
+      if (results.length === 1) terminalGeneration = generation;
+      if (terminalGeneration !== undefined && generation > terminalGeneration) {
+        throw new Error(
+          `Attempt ${attemptId} continued after a terminal result`
+        );
+      }
+      priorGenerationReachedAgent =
+        started.length === 1 || results.length === 1;
+    }
+  }
 };
 
 export const readRunJournal = async (
@@ -137,7 +254,7 @@ export const readRunJournal = async (
   if (text.length > 0 && !text.endsWith("\n")) {
     throw new Error("Journal has an incomplete final record");
   }
-  return text
+  const entries = text
     .split("\n")
     .filter(Boolean)
     .map((line, index) => {
@@ -155,6 +272,8 @@ export const readRunJournal = async (
       }
       return entry;
     });
+  validateAttemptHistory(entries);
+  return entries;
 };
 
 export class RunJournal {
@@ -175,6 +294,8 @@ export class RunJournal {
         throw new Error("Cannot append to an incompatible run journal");
       }
     }
+    validateAttemptHistory(priorEntries);
+    this.priorAttemptEntries.push(...priorEntries);
     this.nextSequence = priorEntries.length;
   }
 
@@ -189,13 +310,17 @@ export class RunJournal {
         recordedAt: this.now().toISOString()
       } as RunJournalEntry;
       assertEntry(complete, this.nextSequence);
+      validateAttemptHistory([...this.priorAttemptEntries, complete]);
       await this.directory.appendJsonLine("journal.jsonl", complete);
+      this.priorAttemptEntries.push(complete);
       this.nextSequence += 1;
     });
     this.appendTail = operation;
     await operation;
     return complete as RunJournalEntry;
   }
+
+  private readonly priorAttemptEntries: RunJournalEntry[] = [];
 }
 
 export interface ResumeAttemptDecision {
@@ -209,10 +334,26 @@ export const planAttemptResume = (
   entries: readonly RunJournalEntry[]
 ): ResumeAttemptDecision[] => {
   const expected = new Set(expectedAttemptIds);
+  if (expected.size !== expectedAttemptIds.length) {
+    throw new Error("Expected attempt identities must be unique");
+  }
+  const expectedKinds = new Set(
+    expectedAttemptIds
+      .map((attemptId) => /^(source|replay):/u.exec(attemptId)?.[1])
+      .filter((kind): kind is string => kind !== undefined)
+  );
   const byAttempt = new Map<string, RunJournalEntry[]>();
   for (const entry of entries) {
     if (entry.type === "phase") continue;
     if (!expected.has(entry.attemptId)) {
+      const entryKind = /^(source|replay):/u.exec(entry.attemptId)?.[1];
+      if (
+        expectedKinds.size === 1 &&
+        entryKind !== undefined &&
+        !expectedKinds.has(entryKind)
+      ) {
+        continue;
+      }
       throw new Error(`Journal contains unexpected attempt ${entry.attemptId}`);
     }
     const values = byAttempt.get(entry.attemptId) ?? [];
@@ -228,11 +369,12 @@ export const planAttemptResume = (
           : Math.max(maximum, entry.executionGeneration),
       0
     );
-    if (values.some((entry) => entry.type === "attempt_result")) {
+    const terminal = values.find((entry) => entry.type === "attempt_result");
+    if (terminal) {
       return {
         attemptId,
         action: "skip_completed",
-        nextExecutionGeneration: generation
+        nextExecutionGeneration: terminal.executionGeneration
       };
     }
     if (

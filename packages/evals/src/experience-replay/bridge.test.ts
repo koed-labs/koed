@@ -9,6 +9,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalAiRuntimeClient } from "@koed/mcp-server/runtime-contracts";
 import { startBenchmarkBridge, type BenchmarkBridgeHandle } from "./bridge.js";
+import { collectBridgeTelemetry } from "./bridge-telemetry.js";
 
 const open: BenchmarkBridgeHandle[] = [];
 let trialWorkspaceRoot: string;
@@ -29,7 +30,15 @@ afterEach(async () => {
 
 const start = async () => {
   const callTool = vi.fn<LocalAiRuntimeClient["callTool"]>(
-    async (_name, _input, caller) => ({ caller })
+    async (_name, _input, caller) => ({
+      caller,
+      retrieval: { evidenceCount: 2, stages: [{ name: "dense" }] },
+      localMemoryWorker: {
+        searchCount: 1,
+        expandCount: 0,
+        appServerExecutions: [{ processMetrics: { peakRssBytes: 12_288 } }]
+      }
+    })
   );
   const runtimeClient = {
     capabilities: async () => ({
@@ -166,9 +175,29 @@ describe("experience replay MCP bridge", () => {
   });
 
   it("rejects expired credentials and oversized declared bodies", async () => {
-    const { bridge } = await start();
+    let now = 1_000;
+    const runtimeClient = {
+      capabilities: async () => ({
+        protocolVersion: 1 as const,
+        curatedMemoryIntakeAvailable: false
+      }),
+      callTool: vi.fn()
+    } as unknown as LocalAiRuntimeClient;
+    const bridge = await startBenchmarkBridge({
+      runtimeClient,
+      projectCwd,
+      trialWorkspaceRoot,
+      identity: {
+        runId: "run-a",
+        trialId: "trial-expiry",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        condition: "relevant"
+      },
+      now: () => now
+    });
+    open.push(bridge);
     bridge.activate(1);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    now += 1;
     await expect(
       fetch(bridge.url, {
         method: "POST",
@@ -233,6 +262,18 @@ describe("experience replay MCP bridge", () => {
         });
       }
       expect(callTool).toHaveBeenCalledTimes(2);
+      expect(bridge.telemetry()).toEqual({
+        mcpCalls: 2,
+        mcpFailures: 0,
+        memoryAnswerCalls: 2,
+        memoryAnswerFailures: 0,
+        searches: 2,
+        expansions: 0,
+        stages: 2,
+        evidenceCount: 4,
+        workerPeakRssBytes: 12_288
+      });
+      expect(collectBridgeTelemetry(bridge.url)).toEqual(bridge.telemetry());
     } finally {
       await client.close();
     }

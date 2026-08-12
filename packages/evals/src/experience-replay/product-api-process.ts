@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { assertLoopbackUrl } from "./isolation.js";
 
@@ -28,6 +29,7 @@ export interface ProductApiCloseAttestation {
 
 export interface ProductApiHandle {
   url: string;
+  pid?: number;
   request(input: ProductApiRequest): Promise<ProductApiJson>;
   close(): Promise<ProductApiCloseAttestation>;
 }
@@ -171,9 +173,20 @@ export const startProductApiProcess = async (
   if (options.signal?.aborted)
     throw new Error("Product API startup was cancelled");
 
-  const childFile = fileURLToPath(
-    options.childModuleUrl ?? new URL("./product-api-child.js", import.meta.url)
+  const adjacentChild = new URL("./product-api-child.js", import.meta.url);
+  const compiledChild = new URL(
+    "../../dist/experience-replay/product-api-child.js",
+    import.meta.url
   );
+  const childFile = fileURLToPath(
+    options.childModuleUrl ??
+      (existsSync(fileURLToPath(adjacentChild)) ? adjacentChild : compiledChild)
+  );
+  if (!existsSync(childFile)) {
+    throw new Error(
+      "Koed API child is not built; build @koed/evals before starting the product runtime"
+    );
+  }
   const spawnChild = options.spawnChild ?? spawn;
   const child = spawnChild(process.execPath, [childFile], {
     env: allowlistedProductApiEnvironment(options.environment),
@@ -350,7 +363,7 @@ export const startProductApiProcess = async (
       }
     }
     options.signal?.addEventListener("abort", lifecycleAbort, { once: true });
-    return { url, request, close: () => terminate(true) };
+    return { url, pid, request, close: () => terminate(true) };
   } catch (error) {
     await terminate(false);
     throw error;

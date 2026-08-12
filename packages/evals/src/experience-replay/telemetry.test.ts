@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { redactPublicationReport } from "./core/report.js";
 import {
+  assertCompleteReplayTelemetry,
   mergeReplayTelemetry,
   type AttemptTelemetryIdentity,
   type ReplayTelemetryMergeInput,
@@ -99,6 +100,31 @@ const completeInput = (): ReplayTelemetryMergeInput => ({
 });
 
 describe("experience replay telemetry merge", () => {
+  it("requires every observer and distinguishes zero activity from missing telemetry", () => {
+    const complete = completeInput();
+    expect(() => assertCompleteReplayTelemetry(complete)).not.toThrow();
+    expect(() =>
+      assertCompleteReplayTelemetry({ ...complete, koedRecall: undefined })
+    ).toThrow("Koed Recall telemetry must be available");
+    expect(() =>
+      assertCompleteReplayTelemetry({
+        ...complete,
+        embeddings: { ...complete.embeddings!, status: "failed" }
+      })
+    ).toThrow("embedding telemetry must be available");
+    expect(() =>
+      assertCompleteReplayTelemetry({
+        ...complete,
+        harbor: available({
+          reward: 1,
+          passed: true,
+          setupMs: 1,
+          agentMs: 2,
+          verifierMs: 3
+        })
+      })
+    ).toThrow("missing required field failureCategory");
+  });
   it("merges only bounded source contracts into a complete ReplayOutcome", () => {
     const merged = mergeReplayTelemetry(completeInput());
     expect(merged.outcome).toMatchObject({

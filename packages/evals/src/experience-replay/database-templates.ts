@@ -2,6 +2,15 @@ import pg from "pg";
 import { assertLoopbackUrl } from "./isolation.js";
 
 const DATABASE_NAME = /^koed_eval_[a-z0-9_]{1,52}$/;
+const OWNERSHIP_SCHEMA = "koed-experience-replay-database-owner-v1";
+
+type OwnedDatabaseKind = "ephemeral" | "template";
+
+interface DatabaseOwnershipMarker {
+  schema: typeof OWNERSHIP_SCHEMA;
+  ownerId: string;
+  kind: OwnedDatabaseKind;
+}
 
 export const assertEvalDatabaseName = (name: string): void => {
   if (!DATABASE_NAME.test(name)) {
@@ -14,6 +23,9 @@ const quoted = (name: string): string => {
   return `"${name}"`;
 };
 
+const quotedLiteral = (value: string): string =>
+  `'${value.replaceAll("'", "''")}'`;
+
 export interface DatabaseTemplateAttestation {
   name: string;
   state: "empty" | "placebo" | "relevant";
@@ -22,24 +34,38 @@ export interface DatabaseTemplateAttestation {
   frozenAt: string;
 }
 
+export interface FrozenDatabaseAttestation {
+  name: string;
+  allowConnections: false;
+  isTemplate: true;
+}
+
 export class ExperienceReplayDatabaseTemplates {
   private readonly admin: pg.Pool;
-  private readonly runOwned = new Set<string>();
+  private readonly ephemeral = new Set<string>();
+  private readonly templates = new Set<string>();
   private closed = false;
 
   constructor({
     adminDatabaseUrl,
     user,
-    password
+    password,
+    ownerId = "legacy-process-owner"
   }: {
     adminDatabaseUrl: string;
     user: string;
     password: string;
+    /** Stable, credential-free run identity used to re-adopt databases. */
+    ownerId?: string;
   }) {
     assertLoopbackUrl(adminDatabaseUrl, "Benchmark PostgreSQL admin");
     if (!user || !password) {
       throw new Error("Benchmark PostgreSQL credentials are required");
     }
+    if (!/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(ownerId)) {
+      throw new Error("Benchmark database owner ID is invalid");
+    }
+    this.ownerId = ownerId;
     const parsed = new URL(adminDatabaseUrl);
     this.admin = new pg.Pool({
       host: parsed.hostname,
@@ -54,8 +80,23 @@ export class ExperienceReplayDatabaseTemplates {
     });
   }
 
+  private readonly ownerId: string;
+
   private assertOpen(): void {
     if (this.closed) throw new Error("Database template manager is closed");
+  }
+
+  async createRunDatabase(name: string): Promise<void> {
+    this.assertOpen();
+    assertEvalDatabaseName(name);
+    await this.admin.query(`CREATE DATABASE ${quoted(name)}`);
+    this.ephemeral.add(name);
+    try {
+      await this.markOwned(name, "ephemeral");
+    } catch (error) {
+      await this.dropRunOwned(name).catch(() => undefined);
+      throw error;
+    }
   }
 
   async createTemplate({
@@ -77,7 +118,13 @@ export class ExperienceReplayDatabaseTemplates {
     );
     // Ownership begins only after our CREATE succeeds. In particular, the
     // caller-owned source database must never enter the cleanup set.
-    this.runOwned.add(templateName);
+    this.templates.add(templateName);
+    try {
+      await this.markOwned(templateName, "template");
+    } catch (error) {
+      await this.dropRunOwned(templateName).catch(() => undefined);
+      throw error;
+    }
     await this.terminateConnections(templateName);
     await this.admin.query(
       `ALTER DATABASE ${quoted(templateName)} WITH ALLOW_CONNECTIONS false IS_TEMPLATE true`
@@ -94,7 +141,7 @@ export class ExperienceReplayDatabaseTemplates {
     this.assertOpen();
     assertEvalDatabaseName(templateName);
     assertEvalDatabaseName(cloneName);
-    if (!this.runOwned.has(templateName)) {
+    if (!this.templates.has(templateName)) {
       throw new Error(`Unknown benchmark template ${templateName}`);
     }
     if (templateName === cloneName) {
@@ -103,13 +150,61 @@ export class ExperienceReplayDatabaseTemplates {
     await this.admin.query(
       `CREATE DATABASE ${quoted(cloneName)} WITH TEMPLATE ${quoted(templateName)}`
     );
-    this.runOwned.add(cloneName);
+    this.ephemeral.add(cloneName);
+    try {
+      await this.markOwned(cloneName, "ephemeral");
+    } catch (error) {
+      await this.dropRunOwned(cloneName).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Re-adopts only a still-frozen template carrying this run's durable marker. */
+  async adoptFrozenTemplate(name: string): Promise<FrozenDatabaseAttestation> {
+    this.assertOpen();
+    assertEvalDatabaseName(name);
+    const marker = await this.readOwnership(name);
+    if (
+      !marker ||
+      marker.schema !== OWNERSHIP_SCHEMA ||
+      marker.ownerId !== this.ownerId ||
+      marker.kind !== "template"
+    ) {
+      throw new Error(`Benchmark template ${name} is not owned by this run`);
+    }
+    this.templates.add(name);
+    try {
+      return await this.attestFrozen(name);
+    } catch (error) {
+      this.templates.delete(name);
+      throw error;
+    }
+  }
+
+  async attestFrozen(name: string): Promise<FrozenDatabaseAttestation> {
+    this.assertOpen();
+    assertEvalDatabaseName(name);
+    if (!this.templates.has(name)) {
+      throw new Error(`Unknown benchmark template ${name}`);
+    }
+    const result = await this.admin.query<{
+      datallowconn: boolean;
+      datistemplate: boolean;
+    }>(
+      "SELECT datallowconn, datistemplate FROM pg_database WHERE datname = $1",
+      [name]
+    );
+    const row = result.rows[0];
+    if (!row || row.datallowconn || !row.datistemplate) {
+      throw new Error(`Benchmark template ${name} is not immutably frozen`);
+    }
+    return { name, allowConnections: false, isTemplate: true };
   }
 
   async drop(name: string): Promise<void> {
     this.assertOpen();
     assertEvalDatabaseName(name);
-    if (!this.runOwned.has(name)) {
+    if (!this.ephemeral.has(name) && !this.templates.has(name)) {
       throw new Error(`Benchmark database is not owned by this run: ${name}`);
     }
     await this.dropRunOwned(name);
@@ -123,7 +218,43 @@ export class ExperienceReplayDatabaseTemplates {
       .catch(() => undefined);
     await this.terminateConnections(name);
     await this.admin.query(`DROP DATABASE IF EXISTS ${quoted(name)}`);
-    this.runOwned.delete(name);
+    this.ephemeral.delete(name);
+    this.templates.delete(name);
+  }
+
+  private async markOwned(
+    name: string,
+    kind: OwnedDatabaseKind
+  ): Promise<void> {
+    const marker: DatabaseOwnershipMarker = {
+      schema: OWNERSHIP_SCHEMA,
+      ownerId: this.ownerId,
+      kind
+    };
+    await this.admin.query(
+      `COMMENT ON DATABASE ${quoted(name)} IS ${quotedLiteral(JSON.stringify(marker))}`
+    );
+  }
+
+  private async readOwnership(
+    name: string
+  ): Promise<DatabaseOwnershipMarker | null> {
+    const result = await this.admin.query<{ marker: string | null }>(
+      "SELECT shobj_description(oid, 'pg_database') AS marker FROM pg_database WHERE datname = $1",
+      [name]
+    );
+    const raw = result.rows[0]?.marker;
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as Partial<DatabaseOwnershipMarker>;
+      return value.schema === OWNERSHIP_SCHEMA &&
+        typeof value.ownerId === "string" &&
+        (value.kind === "ephemeral" || value.kind === "template")
+        ? (value as DatabaseOwnershipMarker)
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   private async terminateConnections(name: string): Promise<void> {
@@ -134,12 +265,39 @@ export class ExperienceReplayDatabaseTemplates {
     );
   }
 
-  async close(): Promise<void> {
+  async close({
+    preserveTemplates = false
+  }: { preserveTemplates?: boolean } = {}): Promise<void> {
     if (this.closed) return;
     const failures: Error[] = [];
-    for (const name of [...this.runOwned].reverse()) {
+    const cleanupNames = [
+      ...this.ephemeral,
+      ...(preserveTemplates ? [] : [...this.templates])
+    ];
+    for (const name of [...cleanupNames].reverse()) {
       try {
         await this.dropRunOwned(name);
+      } catch (error) {
+        failures.push(
+          error instanceof Error ? error : new Error(String(error))
+        );
+      }
+    }
+    if (cleanupNames.length > 0) {
+      try {
+        const remaining = await this.admin.query<{ datname: string }>(
+          "SELECT datname FROM pg_database WHERE datname = ANY($1::text[]) ORDER BY datname",
+          [cleanupNames]
+        );
+        if (remaining.rows.length > 0) {
+          failures.push(
+            new Error(
+              `Run-owned benchmark databases remain: ${remaining.rows
+                .map((row) => row.datname)
+                .join(", ")}`
+            )
+          );
+        }
       } catch (error) {
         failures.push(
           error instanceof Error ? error : new Error(String(error))

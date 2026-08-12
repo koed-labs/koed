@@ -386,7 +386,7 @@ export const awaitExperienceReplayProductState = async (
   const deadline = now() + timeoutMs;
   let attempts = 0;
   let last: Observation;
-  do {
+  for (;;) {
     attempts += 1;
     last = await observe(options.repository, options.expectation);
     if (last.failures.length === 0) {
@@ -404,7 +404,7 @@ export const awaitExperienceReplayProductState = async (
     }
     if (now() >= deadline) break;
     await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
-  } while (true);
+  }
   throw new Error(
     `Experience Replay product state was not ready after ${attempts} attempts: ${last.failures.join("; ")}`
   );

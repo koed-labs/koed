@@ -13,11 +13,16 @@ import {
   type RunCapacityEstimate
 } from "./output-path.js";
 import {
+  freezeTaskImages,
+  inspectImmutableOciImage,
   verifyFrozenTaskImage,
-  type TaskImageAttestation
+  type TaskImageAttestation,
+  type TaskImageBuilder
 } from "./image-attestation.js";
 import {
+  attestCodexToolchain,
   executeBoundedCommand,
+  type BoundedCommandExecutor,
   type CodexToolchainAttestation
 } from "./toolchain.js";
 
@@ -215,6 +220,8 @@ export interface PreflightResult {
   capacity: RunCapacityEstimate;
   recordedModelPathReady: boolean;
   recordedRunAttestation: RecordedRunAttestation | null;
+  /** Immutable references execution must bind for every selected task. */
+  frozenTaskImages: Readonly<Record<string, string>>;
 }
 
 export interface RecordedRunAttestation {
@@ -231,6 +238,166 @@ export interface RecordedRunPreflightAdapters {
   attestHostCodex: () => Promise<CodexToolchainAttestation>;
   attestContainerCodex: () => Promise<CodexToolchainAttestation>;
 }
+
+export interface RecordedCodexAuthContext {
+  /** Exact executable visible inside this authentication context. */
+  binary: string;
+  /** Real credential environment for this context (for example CODEX_HOME). */
+  environment: Readonly<NodeJS.ProcessEnv>;
+  cwd: string;
+}
+
+export interface RecordedRunPreflightFactoryOptions {
+  config: ResolvedExperienceReplayConfig;
+  /**
+   * Provision one selected task image and return evidence measured from that
+   * build. The factory freezes and independently reinspects its OCI identity.
+   */
+  provisionTaskImage: TaskImageBuilder;
+  hostCodex: RecordedCodexAuthContext;
+  containerCodex: RecordedCodexAuthContext;
+  dockerExecutable?: string;
+  executor?: BoundedCommandExecutor;
+  operations?: {
+    attestCodex?: typeof attestCodexToolchain;
+    inspectImage?: typeof inspectImmutableOciImage;
+  };
+}
+
+const exactRepositoryStatus = async (
+  repositoryRoot: string,
+  executor: BoundedCommandExecutor
+): Promise<string> =>
+  (
+    await executor({
+      file: "git",
+      args: ["status", "--porcelain", "--untracked-files=normal"],
+      cwd: repositoryRoot,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1024 * 1024
+    })
+  ).stdout;
+
+const assertRecordedCodexContext = (
+  label: "host" | "container",
+  context: RecordedCodexAuthContext
+): void => {
+  if (!context.binary || context.binary.trim() !== context.binary) {
+    throw new Error(`${label} Codex binary must be an exact non-empty path`);
+  }
+  if (!path.isAbsolute(context.cwd)) {
+    throw new Error(`${label} Codex attestation cwd must be absolute`);
+  }
+  if (!context.environment || typeof context.environment !== "object") {
+    throw new Error(`${label} Codex auth environment is required`);
+  }
+};
+
+/**
+ * Bind the real recorded-run preflight operations. Callers only provide the
+ * task-image provisioner and the two credential contexts; git, Docker
+ * reinspection, executable hashing/versioning and model/list are all measured.
+ */
+export const createRecordedRunPreflightAdapters = (
+  options: RecordedRunPreflightFactoryOptions
+): RecordedRunPreflightAdapters => {
+  assertRecordedCodexContext("host", options.hostCodex);
+  assertRecordedCodexContext("container", options.containerCodex);
+  if (options.hostCodex.environment === options.containerCodex.environment) {
+    throw new Error(
+      "Host and container Codex attestations require separate auth-context environments"
+    );
+  }
+  const executor = options.executor ?? executeBoundedCommand;
+  const attestCodex = options.operations?.attestCodex ?? attestCodexToolchain;
+  const inspectImage =
+    options.operations?.inspectImage ?? inspectImmutableOciImage;
+  const expectedRepositoryRoot = path.resolve(
+    EXPERIENCE_REPLAY_REPOSITORY_ROOT
+  );
+  const status = async (repositoryRoot = expectedRepositoryRoot) => {
+    const canonicalRoot = await realpath(repositoryRoot);
+    const canonicalExpected = await realpath(expectedRepositoryRoot);
+    if (canonicalRoot !== canonicalExpected) {
+      throw new Error("Recorded preflight repository root changed");
+    }
+    return exactRepositoryStatus(canonicalRoot, executor);
+  };
+  const assertClean = async (): Promise<void> => {
+    if ((await status()).trim()) {
+      throw new Error("Koed worktree changed during recorded preflight");
+    }
+  };
+  const contextAttestation = async (
+    context: RecordedCodexAuthContext,
+    expectedSha256: string,
+    requiredModelIds: readonly string[]
+  ): Promise<CodexToolchainAttestation> => {
+    await assertClean();
+    const attestation = await attestCodex({
+      binary: context.binary,
+      expectedSha256,
+      expectedVersion: options.config.codex_cli.version,
+      requiredModelIds: [...new Set(requiredModelIds)],
+      environment: { ...context.environment },
+      cwd: context.cwd,
+      executor
+    });
+    await assertClean();
+    return attestation;
+  };
+  const adapters: RecordedRunPreflightAdapters = {
+    repositoryStatus: status,
+    attestTaskImages: async (tasks) => {
+      await assertClean();
+      const frozen = await freezeTaskImages(
+        tasks.map((task) => ({
+          taskName: task.name,
+          taskDigest: task.task_digest
+        })),
+        options.provisionTaskImage
+      );
+      for (const image of frozen) {
+        const inspected = await inspectImage({
+          immutableReference: image.immutableReference,
+          ...(options.dockerExecutable
+            ? { dockerExecutable: options.dockerExecutable }
+            : {}),
+          executor
+        });
+        verifyFrozenTaskImage(image, {
+          immutableReference: inspected.immutableReference,
+          imageId: inspected.imageId,
+          contentDigest: inspected.contentDigest,
+          resolvedBaseImageDigests: image.resolvedBaseImageDigests,
+          dockerfileSha256: image.dockerfileSha256,
+          dockerVersion: image.dockerVersion,
+          buildkitVersion: image.buildkitVersion,
+          provenanceSha256: image.provenanceSha256
+        });
+      }
+      await assertClean();
+      return frozen;
+    },
+    attestHostCodex: () =>
+      contextAttestation(
+        options.hostCodex,
+        options.config.codex_cli.host_sha256,
+        [
+          options.config.memory_answer.model.id,
+          options.config.lcm_summary.model.id,
+          options.config.session_title.model.id
+        ]
+      ),
+    attestContainerCodex: () =>
+      contextAttestation(
+        options.containerCodex,
+        options.config.codex_cli.container_sha256,
+        [options.config.coding_agent.id]
+      )
+  };
+  return Object.freeze(adapters);
+};
 
 const assertRecordedAttestation = (
   config: ResolvedExperienceReplayConfig,
@@ -296,12 +463,14 @@ export const preflightExperienceReplay = async ({
   config,
   confirmPaidRun = false,
   requireRunnable = true,
-  recordedRunAdapters
+  recordedRunAdapters,
+  productPathReady = false
 }: {
   config: ResolvedExperienceReplayConfig;
   confirmPaidRun?: boolean;
   requireRunnable?: boolean;
   recordedRunAdapters?: RecordedRunPreflightAdapters;
+  productPathReady?: boolean;
 }): Promise<PreflightResult> => {
   const repositoryRoot = await realpath(EXPERIENCE_REPLAY_REPOSITORY_ROOT);
   const pins = await attestPinnedInputs(config.profile);
@@ -365,8 +534,11 @@ export const preflightExperienceReplay = async ({
             "recorded-run image and host/container Codex attestation adapters are required"
           ]
         : []),
-      "canonical Koed ingestion, semantic readiness, and database template lifecycle are not wired",
-      "real isolated Harbor replay execution is not wired"
+      ...(!productPathReady
+        ? [
+            "canonical Koed ingestion, semantic readiness, database templates, and isolated Harbor replay execution require a concrete runtime adapter"
+          ]
+        : [])
     ];
     if (missing.length && requireRunnable)
       throw new ProductPathPrerequisiteError(missing);
@@ -391,7 +563,15 @@ export const preflightExperienceReplay = async ({
       repositoryRoot,
       capacity,
       recordedModelPathReady: missing.length === 0,
-      recordedRunAttestation
+      recordedRunAttestation,
+      frozenTaskImages: Object.freeze(
+        Object.fromEntries(
+          (recordedRunAttestation?.taskImages ?? []).map((image) => [
+            image.taskName,
+            image.immutableReference
+          ])
+        )
+      )
     };
   }
   return {
@@ -400,6 +580,7 @@ export const preflightExperienceReplay = async ({
     repositoryRoot,
     capacity,
     recordedModelPathReady: true,
-    recordedRunAttestation: null
+    recordedRunAttestation: null,
+    frozenTaskImages: Object.freeze({})
   };
 };

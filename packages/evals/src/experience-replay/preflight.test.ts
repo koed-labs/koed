@@ -2,9 +2,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { resolveExperienceReplayConfig } from "./core/index.js";
-import { freezeTaskImages } from "./image-attestation.js";
+import {
+  freezeTaskImages,
+  type TaskImageBuildInput
+} from "./image-attestation.js";
 import {
   attestPinnedInputs,
+  createRecordedRunPreflightAdapters,
   preflightExperienceReplay,
   ProductPathPrerequisiteError
 } from "./preflight.js";
@@ -90,7 +94,7 @@ describe("experience replay strict preflight", () => {
     expect(pins.uvLockHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("admits deterministic smoke but explicitly gates the unwired paid product path", async () => {
+  it("admits deterministic smoke but requires recorded-run adapters", async () => {
     await expect(
       preflightExperienceReplay({ config: config("smoke") })
     ).resolves.toMatchObject({
@@ -107,7 +111,7 @@ describe("experience replay strict preflight", () => {
         config: config("quick"),
         confirmPaidRun: true
       })
-    ).rejects.toThrow("Koed worktree must be clean for a recorded run");
+    ).rejects.toThrow("recorded-run image and host/container Codex");
   });
 
   it("requires explicit paid confirmation before invoking recorded-run adapters", async () => {
@@ -211,5 +215,155 @@ describe("experience replay strict preflight", () => {
       }
     });
     expect(result.recordedRunAttestation?.taskImages).toHaveLength(12);
+    expect(Object.keys(result.frozenTaskImages)).toHaveLength(12);
+    expect(Object.isFrozen(result.frozenTaskImages)).toBe(true);
+  });
+
+  it("binds clean-worktree, OCI reinspection, and distinct auth-context attestations", async () => {
+    const exactConfig = config("quick");
+    const digest = (character: string) => `sha256:${character.repeat(64)}`;
+    const executor = vi.fn(async (command) => {
+      expect(command).toMatchObject({
+        file: "git",
+        args: ["status", "--porcelain", "--untracked-files=normal"]
+      });
+      return { stdout: "", stderr: "" };
+    });
+    const provisionTaskImage = vi.fn(async (task: TaskImageBuildInput) => ({
+      immutableReference: `registry.example/${task.taskName.replaceAll("/", "-")}@${digest("d")}`,
+      imageId: digest("e"),
+      contentDigest: digest("d"),
+      resolvedBaseImageDigests: [digest("f")],
+      dockerfileSha256: digest("1"),
+      dockerVersion: "Docker 29",
+      buildkitVersion: "BuildKit 0.24",
+      provenanceSha256: digest("2")
+    }));
+    const inspectImage = vi.fn(
+      async ({ immutableReference }: { immutableReference: string }) => ({
+        immutableReference,
+        imageId: digest("e"),
+        contentDigest: digest("d")
+      })
+    );
+    const attestCodex = vi.fn(
+      async (input: {
+        binary: string;
+        expectedSha256: string;
+        expectedVersion: string;
+        requiredModelIds: readonly string[];
+      }) => ({
+        executable: {
+          path: input.binary,
+          sha256: input.expectedSha256,
+          sizeBytes: 1,
+          version: input.expectedVersion,
+          versionOutput: input.expectedVersion
+        },
+        models: input.requiredModelIds.map((id) => ({
+          id,
+          model: id,
+          label: id,
+          description: id,
+          hidden: false,
+          isDefault: true,
+          supportedReasoningEfforts: []
+        }))
+      })
+    );
+    const hostEnvironment = { CODEX_HOME: "/auth/host" };
+    const containerEnvironment = {
+      CODEX_HOME: "/auth/container",
+      OPENAI_API_KEY: "test-only-secret"
+    };
+    const adapters = createRecordedRunPreflightAdapters({
+      config: exactConfig,
+      provisionTaskImage,
+      hostCodex: {
+        binary: "/bin/host-codex",
+        environment: hostEnvironment,
+        cwd: "/workspace"
+      },
+      containerCodex: {
+        binary: "/bin/container-codex",
+        environment: containerEnvironment,
+        cwd: "/app"
+      },
+      executor,
+      operations: { attestCodex: attestCodex as never, inspectImage }
+    });
+    const pins = await attestPinnedInputs("quick");
+    const images = await adapters.attestTaskImages(pins.selectedTasks);
+    await adapters.attestHostCodex();
+    await adapters.attestContainerCodex();
+    expect(images).toHaveLength(12);
+    expect(provisionTaskImage).toHaveBeenCalledTimes(12);
+    expect(inspectImage).toHaveBeenCalledTimes(12);
+    expect(attestCodex).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        binary: "/bin/host-codex",
+        environment: hostEnvironment,
+        requiredModelIds: ["gpt-5.6-luna"]
+      })
+    );
+    expect(attestCodex).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        binary: "/bin/container-codex",
+        environment: containerEnvironment,
+        requiredModelIds: ["gpt-5.6-luna"]
+      })
+    );
+  });
+
+  it("fails closed on shared auth contexts and repository drift during attestation", async () => {
+    const exactConfig = config("quick");
+    const sharedEnvironment = { CODEX_HOME: "/auth/shared" };
+    const common = {
+      config: exactConfig,
+      provisionTaskImage: vi.fn(),
+      hostCodex: {
+        binary: "/bin/codex",
+        environment: sharedEnvironment,
+        cwd: "/workspace"
+      },
+      containerCodex: {
+        binary: "/bin/codex",
+        environment: sharedEnvironment,
+        cwd: "/app"
+      }
+    };
+    expect(() => createRecordedRunPreflightAdapters(common)).toThrow(
+      "separate auth-context"
+    );
+
+    const executor = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: " M package.json\n", stderr: "" });
+    const adapters = createRecordedRunPreflightAdapters({
+      ...common,
+      containerCodex: {
+        ...common.containerCodex,
+        environment: { ...sharedEnvironment }
+      },
+      executor,
+      operations: {
+        attestCodex: vi.fn(async () => ({
+          executable: {
+            path: "/bin/codex",
+            sha256: exactConfig.codex_cli.host_sha256,
+            sizeBytes: 1,
+            version: exactConfig.codex_cli.version,
+            versionOutput: exactConfig.codex_cli.version
+          },
+          models: []
+        })) as never
+      }
+    });
+    await expect(adapters.attestHostCodex()).rejects.toThrow(
+      "worktree changed"
+    );
   });
 });

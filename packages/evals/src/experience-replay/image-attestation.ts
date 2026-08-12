@@ -26,10 +26,10 @@ export interface TaskImageAttestation {
   attestationHash: string;
 }
 
-export interface TaskImageBuildResult extends Omit<
+export type TaskImageBuildResult = Omit<
   TaskImageAttestation,
   "taskName" | "taskDigest" | "attestationHash"
-> {}
+>;
 
 export type TaskImageBuilder = (
   task: TaskImageBuildInput
@@ -128,10 +128,12 @@ const validateBuildResult = (
       `Resolved base-image digests are missing for ${task.taskName}`
     );
   }
-  const bases = [...built.resolvedBaseImageDigests];
-  bases.forEach((digest) =>
-    assertDigest(digest, `Base-image digest for ${task.taskName}`)
-  );
+  const bases = built.resolvedBaseImageDigests.map((digest: unknown) => {
+    if (typeof digest !== "string")
+      throw new Error(`Invalid base-image digest for ${task.taskName}`);
+    assertDigest(digest, `Base-image digest for ${task.taskName}`);
+    return digest;
+  });
   if (new Set(bases).size !== bases.length)
     throw new Error(`Duplicate base-image digest for ${task.taskName}`);
   assertNonemptyLine(built.dockerVersion, "Docker version");

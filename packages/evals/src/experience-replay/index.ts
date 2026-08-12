@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { parseExperienceReplayCommand } from "./command.js";
 import {
   reportExistingRun,
+  readExperienceReplayResumeIdentity,
   resumeExperienceReplay,
   runExperienceReplay,
   sanitizeRunReport
@@ -10,13 +11,19 @@ import {
   loadExperienceReplayConfig,
   preflightExperienceReplay
 } from "./preflight.js";
+import { createRecordedPreflightRuntime } from "./recorded-preflight-runtime.js";
+import { createCliExperienceReplayDependencies } from "./runtime-options.js";
 
 export * from "./artifacts.js";
 export * from "./command.js";
 export * from "./coordinator.js";
 export * from "./cost-admission.js";
 export * from "./journal.js";
+export * from "./local-product-adapter.js";
 export * from "./preflight.js";
+export * from "./recorded-preflight-runtime.js";
+export * from "./replay-scheduler.js";
+export * from "./runtime-options.js";
 
 export const runExperienceReplayCli = async (
   argv: readonly string[]
@@ -25,10 +32,20 @@ export const runExperienceReplayCli = async (
   switch (command.name) {
     case "preflight": {
       const config = await loadExperienceReplayConfig(command.configPath);
+      const recorded =
+        config.profile === "smoke"
+          ? null
+          : createRecordedPreflightRuntime(config, process.env);
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun,
-        requireRunnable: true
+        requireRunnable: true,
+        ...(recorded
+          ? {
+              recordedRunAdapters: recorded.adapters,
+              productPathReady: recorded.productPathReady
+            }
+          : {})
       });
       return {
         profile: result.config.profile,
@@ -42,15 +59,61 @@ export const runExperienceReplayCli = async (
     }
     case "run": {
       const config = await loadExperienceReplayConfig(command.configPath);
+      const recorded =
+        config.profile === "smoke"
+          ? null
+          : createRecordedPreflightRuntime(config, process.env);
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun,
-        requireRunnable: true
+        requireRunnable: true,
+        ...(recorded
+          ? {
+              recordedRunAdapters: recorded.adapters,
+              productPathReady: recorded.productPathReady
+            }
+          : {})
       });
-      return runExperienceReplay(config, { preflight: result });
+      const dependencies = createCliExperienceReplayDependencies(
+        config,
+        process.env,
+        undefined,
+        result.frozenTaskImages
+      );
+      return runExperienceReplay(config, { preflight: result, dependencies });
     }
-    case "resume":
-      return { reportPath: await resumeExperienceReplay(command.runDirectory) };
+    case "resume": {
+      const identity = await readExperienceReplayResumeIdentity(
+        command.runDirectory
+      );
+      const recorded =
+        identity.config.profile === "smoke"
+          ? null
+          : createRecordedPreflightRuntime(identity.config, process.env);
+      const result = await preflightExperienceReplay({
+        config: identity.config,
+        confirmPaidRun: identity.config.profile !== "smoke",
+        requireRunnable: true,
+        ...(recorded
+          ? {
+              recordedRunAdapters: recorded.adapters,
+              productPathReady: recorded.productPathReady
+            }
+          : {})
+      });
+      const dependencies = createCliExperienceReplayDependencies(
+        identity.config,
+        process.env,
+        identity.runId,
+        result.frozenTaskImages
+      );
+      return {
+        reportPath: await resumeExperienceReplay(identity.runRoot, {
+          preflight: result,
+          dependencies
+        })
+      };
+    }
     case "report":
       return { reportPath: await reportExistingRun(command.runDirectory) };
     case "sanitize":

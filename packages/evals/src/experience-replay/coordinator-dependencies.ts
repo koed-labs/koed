@@ -1,0 +1,557 @@
+import { createHash } from "node:crypto";
+import { mkdir, rm, rmdir } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { AtifSanitizationResult } from "./atif/index.js";
+import type {
+  ExperienceReplayCoordinatorDependencies,
+  PreparedTemplate,
+  ReplayExecutionHandle,
+  ReplayProductPathAttestation
+} from "./coordinator.js";
+import type { ResolvedExperienceReplayConfig } from "./core/index.js";
+import {
+  HarborExecutionAdapter,
+  type HarborExecutionAdapterOptions
+} from "./harbor-execution-adapter.js";
+import type { SubprocessExecutor } from "./harbor-client.js";
+import {
+  createLocalExperienceReplayProductAdapter,
+  type LocalExperienceReplayProductAdapter,
+  type LocalProductAdapterOptions,
+  type LocalProductReplayProvision,
+  type LocalProductTemplateHandle,
+  type RecordedEmbeddingServiceOptions
+} from "./local-product-adapter.js";
+import {
+  startExperienceReplayProductRuntime,
+  type ExperienceReplayProductRuntimeHandle,
+  type ProductRuntimeDependencies
+} from "./product-runtime.js";
+import type { CleanupAttestation } from "./resource-scope.js";
+import type { ProductApiCloseAttestation } from "./product-api-process.js";
+import {
+  createRecordedReplayTelemetryCollector,
+  registerRecordedAttemptObservation
+} from "./recorded-runtime-telemetry.js";
+
+const sha256 = (value: string): string =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+type HarborPort = Pick<HarborExecutionAdapter, "runSource" | "runReplay">;
+type ProductPort = Pick<
+  LocalExperienceReplayProductAdapter,
+  "prepareTemplate" | "cloneForReplay"
+> & {
+  adoptTemplate?: LocalExperienceReplayProductAdapter["adoptTemplate"];
+  close(options?: { preserveTemplates?: boolean }): Promise<void>;
+};
+
+export interface ReplayCleanupAttestation {
+  cloneId: string;
+  runtime: CleanupAttestation | null;
+  product: { api: ProductApiCloseAttestation } | null;
+  complete: boolean;
+}
+
+export interface ConcreteExperienceReplayCoordinatorDependencies extends ExperienceReplayCoordinatorDependencies {
+  /** Re-attests a persisted, credential-free frozen template after restart. */
+  adoptTemplate(template: PreparedTemplate): Promise<PreparedTemplate>;
+  /** Incomplete runs preserve templates; completed runs omit this flag. */
+  teardown(options?: { preserveTemplates?: boolean }): Promise<void>;
+  /** Completed per-replay cleanup proofs, copied so callers cannot mutate them. */
+  cleanupAttestations(): readonly ReplayCleanupAttestation[];
+}
+
+export interface ExperienceReplayCoordinatorDependencyFactoryOptions {
+  mode: "smoke" | "recorded";
+  runId: string;
+  corpusManifest: string;
+  postgres: LocalProductAdapterOptions["postgres"];
+  countEmbeddingTokens(text: string): number;
+  smokeExecutor?: SubprocessExecutor;
+  providerApiKey?: string;
+  frozenTaskImages?: Readonly<Record<string, string>>;
+  collectReplayTelemetry?: HarborExecutionAdapterOptions["collectReplayTelemetry"];
+  recordedEmbedding?: RecordedEmbeddingServiceOptions;
+  productApiEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  productRuntimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  productRuntimeDependencies?: Partial<ProductRuntimeDependencies>;
+  lcmSummaryConfig?: LocalProductAdapterOptions["lcmSummaryConfig"];
+  runScheduledLcmJobs?: LocalProductAdapterOptions["runScheduledLcmJobs"];
+  preparationCostUsd?: (
+    template: LocalProductTemplateHandle,
+    config: ResolvedExperienceReplayConfig
+  ) => number;
+  readinessTimeoutMs?: number;
+  readinessIntervalMs?: number;
+  bridgeCredentialLifetimeMs?: number;
+  harbor?: HarborPort;
+  product?: ProductPort;
+  startProductRuntime?: typeof startExperienceReplayProductRuntime;
+  materializeProjectWorkspace?: (input: {
+    projectCwd: string;
+  }) => Promise<{ trialWorkspaceRoot: string; close(): Promise<void> }>;
+}
+
+const sourceQuartile = (taskDigest: string): 0 | 1 | 2 | 3 => {
+  const digest = createHash("sha256").update(taskDigest).digest();
+  return (digest[0]! % 4) as 0 | 1 | 2 | 3;
+};
+
+const normalizedProbe = (
+  taskName: string,
+  source: AtifSanitizationResult | null
+): string => {
+  const preferred = source?.normalizedItems
+    .filter(
+      (item) =>
+        (item.type === "user_message" || item.type === "agent_message") &&
+        item.content?.trim()
+    )
+    .at(-1)?.content;
+  const fallback = source?.normalizedItems.find((item) =>
+    item.content?.trim()
+  )?.content;
+  const compact = (preferred ?? fallback ?? `Terminal task ${taskName}`)
+    .replace(/\s+/gu, " ")
+    .trim();
+  return compact.slice(0, 512);
+};
+
+const tokenFromAuthorization = (authorization: string): string => {
+  const match = /^Bearer ([^\s]+)$/u.exec(authorization);
+  if (!match)
+    throw new Error("Replay provision returned invalid authorization");
+  return match[1]!;
+};
+
+const origin = (value: string): string => {
+  const parsed = new URL(value);
+  parsed.pathname = "";
+  parsed.search = "";
+  parsed.hash = "";
+  parsed.username = "";
+  parsed.password = "";
+  return parsed.origin;
+};
+
+const defaultWorkspace = async ({
+  projectCwd
+}: {
+  projectCwd: string;
+}): Promise<{ trialWorkspaceRoot: string; close(): Promise<void> }> => {
+  const trialWorkspaceRoot = path.dirname(path.dirname(projectCwd));
+  const relative = path.relative(trialWorkspaceRoot, projectCwd);
+  if (
+    !path.isAbsolute(projectCwd) ||
+    !path.isAbsolute(trialWorkspaceRoot) ||
+    trialWorkspaceRoot === path.parse(trialWorkspaceRoot).root ||
+    !trialWorkspaceRoot.startsWith(
+      `${path.join(os.tmpdir(), "koed-eval")}${path.sep}`
+    ) ||
+    relative.split(path.sep).length !== 2 ||
+    relative.startsWith("..")
+  ) {
+    throw new Error("Template Project cwd cannot be safely materialized");
+  }
+  await mkdir(path.dirname(projectCwd), { recursive: true, mode: 0o700 });
+  // Exclusive creation proves this factory owns the directory it later removes.
+  await mkdir(projectCwd, { mode: 0o700 });
+  const removeIfEmpty = async (directory: string): Promise<void> => {
+    try {
+      await rmdir(directory);
+    } catch (error) {
+      if (
+        !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(
+          (error as NodeJS.ErrnoException).code ?? ""
+        )
+      )
+        throw error;
+    }
+  };
+  return {
+    trialWorkspaceRoot,
+    async close() {
+      await rm(projectCwd, { recursive: true, force: true });
+      await removeIfEmpty(path.dirname(projectCwd));
+      await removeIfEmpty(trialWorkspaceRoot);
+      await removeIfEmpty(path.join(os.tmpdir(), "koed-eval"));
+    }
+  };
+};
+
+const assertFactoryOptions = (
+  options: ExperienceReplayCoordinatorDependencyFactoryOptions
+): void => {
+  if (!options.runId.trim())
+    throw new Error("Experience Replay run ID is required");
+  if (options.mode === "smoke" && !options.harbor && !options.smokeExecutor) {
+    throw new Error("Smoke mode requires the deterministic Harbor executor");
+  }
+  if (options.mode === "recorded") {
+    const missing = [
+      !options.providerApiKey?.trim() && "provider API credentials",
+      !options.recordedEmbedding && "recorded Embedding Service credentials",
+      !options.preparationCostUsd && "preparation cost collector",
+      !options.runScheduledLcmJobs && "Local AI Runtime preparation collector",
+      !options.productRuntimeDependencies?.startAppServer &&
+        !options.productRuntimeEnvironment?.MEMORY_CODEX_APP_SERVER_BINARY &&
+        "Local AI Runtime provider"
+    ].filter(Boolean);
+    if (missing.length) {
+      throw new Error(
+        `Recorded mode prerequisites are absent: ${missing.join(", ")}`
+      );
+    }
+  }
+};
+
+/**
+ * Wires the coordinator to the canonical local product and Harbor paths.
+ * Every child receives an explicit environment object; this factory never
+ * reads from or writes to process.env.
+ */
+export const createExperienceReplayCoordinatorDependencies = (
+  options: ExperienceReplayCoordinatorDependencyFactoryOptions
+): ConcreteExperienceReplayCoordinatorDependencies => {
+  assertFactoryOptions(options);
+  const harbor: HarborPort =
+    options.harbor ??
+    new HarborExecutionAdapter({
+      mode: options.mode,
+      corpusManifest: options.corpusManifest,
+      ...(options.smokeExecutor ? { executor: options.smokeExecutor } : {}),
+      ...(options.providerApiKey
+        ? { providerApiKey: options.providerApiKey }
+        : {}),
+      ...(options.mode === "recorded"
+        ? {
+            collectReplayTelemetry:
+              options.collectReplayTelemetry ??
+              createRecordedReplayTelemetryCollector(),
+            frozenTaskImages: options.frozenTaskImages
+          }
+        : {})
+    });
+  const product: ProductPort =
+    options.product ??
+    createLocalExperienceReplayProductAdapter({
+      runId: options.runId,
+      mode: options.mode,
+      postgres: options.postgres,
+      ...(options.recordedEmbedding
+        ? { recordedEmbedding: options.recordedEmbedding }
+        : {}),
+      ...(options.productApiEnvironment
+        ? { productApiEnvironment: { ...options.productApiEnvironment } }
+        : {}),
+      ...(options.lcmSummaryConfig
+        ? { lcmSummaryConfig: options.lcmSummaryConfig }
+        : {}),
+      ...(options.runScheduledLcmJobs
+        ? { runScheduledLcmJobs: options.runScheduledLcmJobs }
+        : {}),
+      ...(options.readinessTimeoutMs
+        ? { readinessTimeoutMs: options.readinessTimeoutMs }
+        : {}),
+      ...(options.readinessIntervalMs
+        ? { readinessIntervalMs: options.readinessIntervalMs }
+        : {})
+    });
+  const startRuntime =
+    options.startProductRuntime ?? startExperienceReplayProductRuntime;
+  const materialize = options.materializeProjectWorkspace ?? defaultWorkspace;
+  const openReplays = new Set<() => Promise<void>>();
+  const cleanupProofs: ReplayCleanupAttestation[] = [];
+  const workspaces = new Map<
+    string,
+    Promise<{
+      trialWorkspaceRoot: string;
+      refs: number;
+      closeUnderlying(): Promise<void>;
+    }>
+  >();
+  let closed = false;
+
+  const acquireWorkspace = async (
+    projectCwd: string
+  ): Promise<{ trialWorkspaceRoot: string; close(): Promise<void> }> => {
+    let pending = workspaces.get(projectCwd);
+    if (!pending) {
+      pending = materialize({ projectCwd }).then((workspace) => ({
+        trialWorkspaceRoot: workspace.trialWorkspaceRoot,
+        refs: 0,
+        closeUnderlying: workspace.close
+      }));
+      workspaces.set(projectCwd, pending);
+      pending.catch(() => workspaces.delete(projectCwd));
+    }
+    const shared = await pending;
+    shared.refs += 1;
+    let released = false;
+    return {
+      trialWorkspaceRoot: shared.trialWorkspaceRoot,
+      async close() {
+        if (released) return;
+        released = true;
+        shared.refs -= 1;
+        if (shared.refs === 0) {
+          workspaces.delete(projectCwd);
+          await shared.closeUnderlying();
+        }
+      }
+    };
+  };
+
+  const closeReplay = (
+    provision: LocalProductReplayProvision,
+    runtime: ExperienceReplayProductRuntimeHandle,
+    workspace: { close(): Promise<void> }
+  ): (() => Promise<void>) => {
+    let promise: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      promise ??= (async () => {
+        let runtimeProof: CleanupAttestation | null = null;
+        let productProof: { api: ProductApiCloseAttestation } | null = null;
+        const failures: unknown[] = [];
+        try {
+          runtimeProof = await runtime.close();
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          productProof = await provision.close();
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await workspace.close();
+        } catch (error) {
+          failures.push(error);
+        }
+        cleanupProofs.push({
+          cloneId: provision.cloneId,
+          runtime: runtimeProof,
+          product: productProof,
+          complete: failures.length === 0
+        });
+        openReplays.delete(close);
+        if (failures.length) {
+          throw new AggregateError(
+            failures,
+            `Replay cleanup failed: ${provision.cloneId}`
+          );
+        }
+      })();
+      return promise;
+    };
+    return close;
+  };
+
+  return {
+    runId: options.runId,
+    countEmbeddingTokens: options.countEmbeddingTokens,
+
+    runSource: (input) =>
+      harbor.runSource({
+        ...input,
+        sanitizedTokenQuartile: sourceQuartile(input.task.taskDigest)
+      }),
+
+    async prepareTemplate(input): Promise<PreparedTemplate> {
+      if (closed) throw new Error("Experience Replay dependencies are closed");
+      const sourceTaskDigest = input.sourceTask?.taskDigest ?? null;
+      const prepared = await product.prepareTemplate({
+        condition: input.condition,
+        taskDigest: input.task.taskDigest,
+        sourceTaskDigest,
+        ...(sourceTaskDigest
+          ? { sourceAttemptId: `source:${sourceTaskDigest}` }
+          : {}),
+        sanitizedSource: input.sanitizedSource,
+        recallQuery: normalizedProbe(input.task.name, input.sanitizedSource),
+        signal: input.signal
+      });
+      const preparationCostUsd =
+        options.mode === "smoke"
+          ? 0
+          : options.preparationCostUsd!(prepared, input.config);
+      if (!Number.isFinite(preparationCostUsd) || preparationCostUsd < 0) {
+        throw new Error("Preparation cost collector returned an invalid cost");
+      }
+      return { ...prepared, preparationCostUsd };
+    },
+
+    async adoptTemplate(template): Promise<PreparedTemplate> {
+      if (closed) throw new Error("Experience Replay dependencies are closed");
+      if (!product.adoptTemplate) {
+        throw new Error("Product adapter cannot re-attest persisted templates");
+      }
+      const adopted = await product.adoptTemplate(template);
+      return { ...adopted, preparationCostUsd: template.preparationCostUsd };
+    },
+
+    async createReplay(input): Promise<ReplayExecutionHandle> {
+      if (closed) throw new Error("Experience Replay dependencies are closed");
+      if (input.condition === "cold") {
+        if (input.template)
+          throw new Error("Cold replay cannot receive a template");
+        return {
+          cloneId: null,
+          productPathAttestation: null,
+          activateCredential: () => undefined,
+          revokeCredential: () => undefined,
+          run: async ({ lifecycle, signal }) =>
+            (
+              await harbor.runReplay({
+                task: input.task,
+                condition: input.condition,
+                repeat: input.repeat,
+                executionGeneration: input.executionGeneration,
+                runRoot: input.runRoot,
+                lifecycle,
+                config: input.config,
+                signal
+              })
+            ).telemetry,
+          close: () => Promise.resolve()
+        };
+      }
+      if (!input.template) throw new Error("Koed replay requires a template");
+      const template = input.template as LocalProductTemplateHandle;
+      if (input.signal?.aborted)
+        throw new Error("Replay was cancelled before clone provisioning");
+      const provision = await product.cloneForReplay(template);
+      let workspace:
+        | { trialWorkspaceRoot: string; close(): Promise<void> }
+        | undefined;
+      let runtime: ExperienceReplayProductRuntimeHandle | undefined;
+      try {
+        workspace = await acquireWorkspace(template.attestation.project.cwd);
+        runtime = await startRuntime({
+          scopeId: `experience-replay:${options.runId}:${provision.cloneId}`,
+          databaseUrl: provision.databaseUrl,
+          apiToken: tokenFromAuthorization(provision.authorization),
+          projectCwd: template.attestation.project.cwd,
+          trialWorkspaceRoot: workspace.trialWorkspaceRoot,
+          identity: {
+            runId: options.runId,
+            trialId: `${input.task.taskDigest}:${input.condition}:${input.repeat}:${input.executionGeneration}`,
+            taskDigest: input.task.taskDigest,
+            condition: input.condition
+          },
+          environment: { ...options.productRuntimeEnvironment },
+          dependencies: {
+            ...options.productRuntimeDependencies,
+            // The cloned adapter API owns the matching token pepper. Reusing
+            // that live API avoids ever exporting the pepper as coordinator data.
+            startApi: () => Promise.resolve(provision.api)
+          },
+          ...(options.bridgeCredentialLifetimeMs
+            ? { bridgeCredentialLifetimeMs: options.bridgeCredentialLifetimeMs }
+            : {})
+        });
+      } catch (error) {
+        await Promise.allSettled([
+          runtime?.close(),
+          workspace?.close(),
+          provision.close()
+        ]);
+        throw error;
+      }
+      const close = closeReplay(provision, runtime, workspace);
+      openReplays.add(close);
+      const attestation: ReplayProductPathAttestation = {
+        schema: "koed-experience-replay-product-path-v1",
+        cloneId: provision.cloneId,
+        templateId: template.templateId,
+        templateAttestationHash: provision.templateAttestationHash,
+        databaseName: provision.cloneId,
+        apiOrigin: origin(runtime.api.url),
+        redisEndpointHash: sha256(runtime.redis.url),
+        mcpBridgeOrigin: origin(runtime.bridge.url),
+        localAiRuntimeOrigin: origin(runtime.runtime.url)
+      };
+      return {
+        cloneId: provision.cloneId,
+        productPathAttestation: attestation,
+        activateCredential: () => runtime.activateBridgeCredential(),
+        revokeCredential: () => runtime.bridge.revoke(),
+        run: async ({ lifecycle, signal }) => {
+          const unregister =
+            options.mode === "recorded"
+              ? registerRecordedAttemptObservation({
+                  identity: {
+                    taskDigest: input.task.taskDigest,
+                    condition: input.condition,
+                    repeat: input.repeat
+                  },
+                  databaseUrl: provision.databaseUrl,
+                  ownerUserId: provision.actor.userId,
+                  apiPid: provision.api.pid,
+                  runtimePid: process.pid,
+                  bridge: () => runtime.bridge.telemetry(),
+                  embeddings: () => {
+                    if (!provision.telemetry)
+                      throw new Error(
+                        "Replay provision embedding observer is absent"
+                      );
+                    return provision.telemetry().embeddings;
+                  }
+                })
+              : () => undefined;
+          try {
+            return (
+              await harbor.runReplay({
+                task: input.task,
+                condition: input.condition,
+                repeat: input.repeat,
+                executionGeneration: input.executionGeneration,
+                runRoot: input.runRoot,
+                lifecycle,
+                config: input.config,
+                bridgeUrl: runtime.bridge.url,
+                bridgeToken: runtime.bridge.token,
+                signal
+              })
+            ).telemetry;
+          } finally {
+            unregister();
+          }
+        },
+        close
+      };
+    },
+
+    async teardown({
+      preserveTemplates = false
+    }: { preserveTemplates?: boolean } = {}): Promise<void> {
+      if (closed) return;
+      closed = true;
+      const settled = await Promise.allSettled(
+        [...openReplays].map((close) => close())
+      );
+      const failures = settled
+        .filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected"
+        )
+        .map((result) => result.reason as unknown);
+      try {
+        await product.close({ preserveTemplates });
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length) {
+        throw new AggregateError(
+          failures,
+          "Experience Replay dependency teardown failed"
+        );
+      }
+    },
+
+    cleanupAttestations: () =>
+      cleanupProofs.map((proof) => structuredClone(proof))
+  };
+};

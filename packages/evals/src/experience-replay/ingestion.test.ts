@@ -98,7 +98,24 @@ describe("normalized experience import", () => {
     >(async () => ({
       items: [{ id: "item-a" }, { id: "item-b" }]
     }));
-    const projectConversationItems = vi.fn(async () => ({ ok: true }));
+    const projectConversationItems = vi.fn(async () => ({
+      projection: {
+        rawItemsScanned: 2,
+        rawItemsProjected: 2,
+        memoryEventsCreated: 1,
+        memoryEventIds: ["event-a"],
+        memoryEventScopes: [
+          {
+            eventId: "event-a",
+            visibility: "personal",
+            includeInEmbedding: true,
+            includeInLcm: true,
+            workClass: "live_capture_projection"
+          }
+        ]
+      },
+      processing: { compactions: [{ queued: false, inline: true }] }
+    }));
     await expect(
       importNormalizedAttempt({
         client: {
@@ -124,7 +141,23 @@ describe("normalized experience import", () => {
       })
     ).resolves.toEqual({
       sessionId: "session-a",
-      conversationItemIds: ["item-a", "item-b"]
+      conversationItemIds: ["item-a", "item-b"],
+      projection: {
+        rawItemsScanned: 2,
+        rawItemsProjected: 2,
+        memoryEventsCreated: 1,
+        memoryEventIds: ["event-a"],
+        dispositions: [
+          {
+            eventId: "event-a",
+            visibility: "personal",
+            includeInEmbedding: true,
+            includeInLcm: true,
+            workClass: "live_capture_projection"
+          }
+        ],
+        scheduledLcmEventIds: ["event-a"]
+      }
     });
     expect(createTrustedNormalizedImport).toHaveBeenCalledOnce();
     const trustedImportInput = createTrustedNormalizedImport.mock.calls[0]![0];
@@ -147,6 +180,26 @@ describe("normalized experience import", () => {
       conversationItemIds: ["item-a", "item-b"],
       limit: 2
     });
+  });
+
+  it("fails closed when Projection omits its database-backed dispositions", async () => {
+    await expect(
+      importNormalizedAttempt({
+        client: {
+          createSession: vi.fn(async () => ({ session: { id: "session-a" } })),
+          createTrustedNormalizedImport: vi.fn(async () => ({
+            items: [{ id: "item-a" }]
+          })),
+          projectConversationItems: vi.fn(async () => ({ ok: true }))
+        },
+        projectId: "/benchmark/task-a",
+        projectCwd: "/benchmark/task-a",
+        taskDigest: "sha256:task",
+        sourceAttemptId: "source-1",
+        sanitizationManifest: manifest,
+        items: [item]
+      })
+    ).rejects.toThrow("structured disposition");
   });
 
   it("fails closed before the trusted route on forged identity, gaps, or manifest claims", async () => {

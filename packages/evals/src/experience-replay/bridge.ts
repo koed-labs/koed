@@ -15,6 +15,11 @@ import {
   LOCAL_AI_RUNTIME_MAX_BODY_BYTES,
   LocalAiRuntimeClient
 } from "@koed/mcp-server/runtime-contracts";
+import {
+  BridgeTelemetryCollector,
+  registerBridgeTelemetry,
+  type BridgeCallTelemetry
+} from "./bridge-telemetry.js";
 
 const equal = (left: string, right: string): boolean => {
   const leftBytes = Buffer.from(left);
@@ -148,6 +153,7 @@ export interface BenchmarkBridgeHandle {
     expiresAt?: number;
     revokedAt?: number;
   };
+  telemetry(): BridgeCallTelemetry;
   close(): Promise<void>;
 }
 
@@ -161,7 +167,8 @@ export const startBenchmarkBridge = async ({
   allowedRemoteAddresses = ["127.0.0.1", "::1"],
   maxActiveRequests = LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS,
   requestTimeoutMs = 120_000,
-  isolatedInterfaceAddress
+  isolatedInterfaceAddress,
+  now = Date.now
 }: {
   runtimeClient: LocalAiRuntimeClient;
   projectCwd: string;
@@ -173,6 +180,7 @@ export const startBenchmarkBridge = async ({
   maxActiveRequests?: number;
   requestTimeoutMs?: number;
   isolatedInterfaceAddress?: string;
+  now?: () => number;
 }): Promise<BenchmarkBridgeHandle> => {
   if (!path.isAbsolute(projectCwd) || !path.isAbsolute(trialWorkspaceRoot)) {
     throw new Error(
@@ -244,6 +252,7 @@ export const startBenchmarkBridge = async ({
     throw new Error("Benchmark bridge requires complete trial identity");
   }
   const credential = new TrialCredential(Object.freeze({ ...identity }));
+  const telemetry = new BridgeTelemetryCollector();
   const handler = createMcpHandler(
     (requestContext) =>
       createKoedMcpServer(requestContext, {
@@ -281,7 +290,10 @@ export const startBenchmarkBridge = async ({
         response.end(JSON.stringify({ error: "Invalid Origin header" }));
         return;
       }
-      const authInfo = credential.authorize(request.headers.authorization);
+      const authInfo = credential.authorize(
+        request.headers.authorization,
+        now()
+      );
       if (!authInfo) {
         response.writeHead(401, {
           "content-type": "application/json",
@@ -327,10 +339,16 @@ export const startBenchmarkBridge = async ({
           body: body ? Buffer.from(body).toString("utf8") : undefined,
           signal: abort.signal
         });
-        await writeResponse(
-          await handler.fetch(webRequest, { authInfo }),
-          response
-        );
+        const descriptor = telemetry.describe(body);
+        let bridgeResponse: Response | undefined;
+        try {
+          bridgeResponse = await handler.fetch(webRequest, { authInfo });
+        } catch (error) {
+          await telemetry.complete(descriptor, undefined, true);
+          throw error;
+        }
+        await telemetry.complete(descriptor, bridgeResponse);
+        await writeResponse(bridgeResponse, response);
       } catch (error) {
         if (!response.headersSent) {
           const status = (error as { status?: number }).status ?? 500;
@@ -362,18 +380,24 @@ export const startBenchmarkBridge = async ({
     throw new Error("Benchmark bridge did not expose a TCP address");
   }
   expectedOrigin = `http://${host}:${address.port}`;
+  const unregisterTelemetry = registerBridgeTelemetry(
+    expectedOrigin,
+    telemetry
+  );
   let closed = false;
   return {
     url: expectedOrigin,
     token: credential.token,
     credentialId: credential.id,
-    activate: (lifetimeMs) => credential.activate(lifetimeMs),
-    revoke: () => credential.revoke(),
+    activate: (lifetimeMs) => credential.activate(lifetimeMs, now()),
+    revoke: () => credential.revoke(now()),
     attestation: () => credential.attestation,
+    telemetry: () => telemetry.snapshot(),
     async close() {
       if (closed) return;
       closed = true;
-      credential.revoke();
+      unregisterTelemetry();
+      credential.revoke(now());
       for (const request of activeRequests) request.abort();
       await handler.close();
       await new Promise<void>((resolve, reject) =>

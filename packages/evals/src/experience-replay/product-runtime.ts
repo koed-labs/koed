@@ -130,8 +130,8 @@ const defaultStartApi: ProductRuntimeDependencies["startApi"] = (input) =>
 
 const defaultDependencies: ProductRuntimeDependencies = {
   startRedis: () => startTrialRedis(),
-  startEmbeddingService: async () => undefined,
-  startAppServer: async () => undefined,
+  startEmbeddingService: () => Promise.resolve(undefined),
+  startAppServer: () => Promise.resolve(undefined),
   startApi: defaultStartApi,
   startRuntime: (options) => startLocalAiRuntime(options),
   createRuntimeClient: (environment) => new LocalAiRuntimeClient(environment),
@@ -260,7 +260,8 @@ export const startExperienceReplayProductRuntime = async (
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
-        "Experience Replay product runtime startup and cleanup failed"
+        "Experience Replay product runtime startup and cleanup failed",
+        { cause: cleanupError }
       );
     }
     throw error;

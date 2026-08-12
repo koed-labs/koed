@@ -26,6 +26,13 @@ describe("experience replay command parsing", () => {
       name: "resume",
       runDirectory: "/tmp/run"
     });
+    expect(
+      parseExperienceReplayCommand(["--", "run", "--config", "run.json"])
+    ).toEqual({
+      name: "run",
+      configPath: "run.json",
+      confirmPaidRun: false
+    });
     expect(() =>
       parseExperienceReplayCommand(["report", "--config", "x"])
     ).toThrow("accepts only");
@@ -69,6 +76,11 @@ describe("append-only resume journal", () => {
       attemptId: "complete",
       executionGeneration: 1,
       resultPath: "attempts/complete/result.json",
+      resultSha256: `sha256:${"a".repeat(64)}`,
+      resultIdentity: {
+        attemptId: "complete",
+        executionGeneration: 1
+      },
       reward: 1,
       failureCategory: null
     });

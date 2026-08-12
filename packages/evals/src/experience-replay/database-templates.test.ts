@@ -119,6 +119,111 @@ describe("experience replay database template guards", () => {
     expect(statements).not.toContain(`DROP DATABASE IF EXISTS "${source}"`);
   });
 
+  it("owns a database only after its explicit create succeeds", async () => {
+    const database = "koed_eval_create_failure";
+    vi.spyOn(pg.Pool.prototype, "query").mockRejectedValueOnce(
+      new Error("forced create failure")
+    );
+    const end = vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark"
+    });
+    await expect(manager.createRunDatabase(database)).rejects.toThrow(
+      "forced create failure"
+    );
+    await expect(manager.drop(database)).rejects.toThrow("not owned");
+    await manager.close();
+    expect(end).toHaveBeenCalledOnce();
+  });
+
+  it("re-adopts only a run-marked frozen template after process restart", async () => {
+    const template = "koed_eval_restart_template";
+    const marker = JSON.stringify({
+      schema: "koed-experience-replay-database-owner-v1",
+      ownerId: "run-owner",
+      kind: "template"
+    });
+    const statements: string[] = [];
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      statements.push(statement);
+      if (statement.startsWith("SELECT shobj_description")) {
+        return { rows: [{ marker }], rowCount: 1 } as never;
+      }
+      if (statement.startsWith("SELECT datallowconn")) {
+        return {
+          rows: [{ datallowconn: false, datistemplate: true }],
+          rowCount: 1
+        } as never;
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const wrongRun = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark",
+      ownerId: "different-owner"
+    });
+    await expect(wrongRun.adoptFrozenTemplate(template)).rejects.toThrow(
+      "not owned by this run"
+    );
+    await wrongRun.close();
+
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark",
+      ownerId: "run-owner"
+    });
+
+    await expect(manager.adoptFrozenTemplate(template)).resolves.toEqual({
+      name: template,
+      allowConnections: false,
+      isTemplate: true
+    });
+    await manager.close();
+
+    expect(statements).toContain(`DROP DATABASE IF EXISTS "${template}"`);
+  });
+
+  it("separates ephemeral cleanup from preserved frozen templates", async () => {
+    const stage = "koed_eval_preserve_stage";
+    const template = "koed_eval_preserve_template";
+    const statements: string[] = [];
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      statements.push(statement);
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark",
+      ownerId: "run-owner"
+    });
+
+    await manager.createRunDatabase(stage);
+    await manager.createTemplate({
+      templateName: template,
+      sourceDatabaseName: stage
+    });
+    await manager.close({ preserveTemplates: true });
+
+    expect(statements).toContain(`DROP DATABASE IF EXISTS "${stage}"`);
+    expect(statements).not.toContain(`DROP DATABASE IF EXISTS "${template}"`);
+    expect(
+      statements.find((statement) =>
+        statement.startsWith(`COMMENT ON DATABASE "${template}"`)
+      )
+    ).toContain('"kind":"template"');
+  });
+
   const databaseUrl = process.env.DATABASE_URL;
   (databaseUrl ? it : it.skip)(
     "freezes and clones an isolated populated PostgreSQL template",

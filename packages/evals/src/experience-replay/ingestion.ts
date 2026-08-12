@@ -39,6 +39,23 @@ export interface NormalizedImportClient {
   projectConversationItems(input: Record<string, unknown>): Promise<unknown>;
 }
 
+export interface NormalizedProjectionDisposition {
+  eventId: string;
+  visibility: "personal";
+  includeInEmbedding: boolean;
+  includeInLcm: boolean;
+  workClass: string;
+}
+
+export interface NormalizedProjectionAttestation {
+  rawItemsScanned: number;
+  rawItemsProjected: number;
+  memoryEventsCreated: number;
+  memoryEventIds: string[];
+  dispositions: NormalizedProjectionDisposition[];
+  scheduledLcmEventIds: string[];
+}
+
 export interface ImportNormalizedAttemptInput {
   client: NormalizedImportClient;
   projectId: string;
@@ -156,7 +173,11 @@ export const normalizedImportPayload = ({
 
 export const importNormalizedAttempt = async (
   input: ImportNormalizedAttemptInput
-): Promise<{ sessionId: string; conversationItemIds: string[] }> => {
+): Promise<{
+  sessionId: string;
+  conversationItemIds: string[];
+  projection: NormalizedProjectionAttestation;
+}> => {
   if (input.items.length === 0)
     throw new Error("Normalized attempt has no items");
   if (
@@ -245,11 +266,93 @@ export const importNormalizedAttempt = async (
     throw new Error("Canonical ingestion did not return every normalized item");
   }
   conversationItemIds.push(...ids);
+  const projection: NormalizedProjectionAttestation = {
+    rawItemsScanned: 0,
+    rawItemsProjected: 0,
+    memoryEventsCreated: 0,
+    memoryEventIds: [],
+    dispositions: [],
+    scheduledLcmEventIds: []
+  };
   for (let offset = 0; offset < conversationItemIds.length; offset += 1000) {
-    await input.client.projectConversationItems({
+    const response = await input.client.projectConversationItems({
       conversationItemIds: conversationItemIds.slice(offset, offset + 1000),
       limit: Math.min(1000, conversationItemIds.length - offset)
     });
+    const value = response as {
+      projection?: {
+        rawItemsScanned?: unknown;
+        rawItemsProjected?: unknown;
+        memoryEventsCreated?: unknown;
+        memoryEventIds?: unknown;
+        memoryEventScopes?: unknown;
+      };
+      processing?: { compactions?: unknown };
+    };
+    const projected = value?.projection;
+    const numbers = [
+      projected?.rawItemsScanned,
+      projected?.rawItemsProjected,
+      projected?.memoryEventsCreated
+    ];
+    if (
+      !projected ||
+      !numbers.every(
+        (number) => Number.isSafeInteger(number) && Number(number) >= 0
+      ) ||
+      !Array.isArray(projected.memoryEventIds) ||
+      !projected.memoryEventIds.every((id) => typeof id === "string") ||
+      !Array.isArray(projected.memoryEventScopes)
+    ) {
+      throw new Error("Projection did not return a structured disposition");
+    }
+    const dispositions = projected.memoryEventScopes.map((scope) => {
+      const candidate = scope as Record<string, unknown>;
+      if (
+        typeof candidate.eventId !== "string" ||
+        candidate.visibility !== "personal" ||
+        typeof candidate.includeInEmbedding !== "boolean" ||
+        typeof candidate.includeInLcm !== "boolean" ||
+        typeof candidate.workClass !== "string"
+      ) {
+        throw new Error("Projection returned an invalid Memory Event scope");
+      }
+      return candidate as unknown as NormalizedProjectionDisposition;
+    });
+    const eventIds = projected.memoryEventIds as string[];
+    if (
+      eventIds.length !== dispositions.length ||
+      eventIds.some((id) => !dispositions.some((scope) => scope.eventId === id))
+    ) {
+      throw new Error("Projection Memory Event disposition set is not exact");
+    }
+    const lcmEventIds = dispositions
+      .filter((scope) => scope.includeInLcm)
+      .map((scope) => scope.eventId);
+    if (lcmEventIds.length > 0) {
+      const compactions = value.processing?.compactions;
+      if (
+        !Array.isArray(compactions) ||
+        compactions.length < 1 ||
+        !compactions.every((job) => {
+          const candidate = job as Record<string, unknown>;
+          return candidate.queued === true || candidate.inline === true;
+        })
+      ) {
+        throw new Error("Projection did not schedule every eligible LCM job");
+      }
+      projection.scheduledLcmEventIds.push(...lcmEventIds);
+    }
+    projection.rawItemsScanned += Number(projected.rawItemsScanned);
+    projection.rawItemsProjected += Number(projected.rawItemsProjected);
+    projection.memoryEventsCreated += Number(projected.memoryEventsCreated);
+    projection.memoryEventIds.push(...eventIds);
+    projection.dispositions.push(...dispositions);
   }
-  return { sessionId: created.session.id, conversationItemIds };
+  if (projection.rawItemsScanned !== conversationItemIds.length) {
+    throw new Error(
+      "Projection did not scan every canonical Conversation Item"
+    );
+  }
+  return { sessionId: created.session.id, conversationItemIds, projection };
 };

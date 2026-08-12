@@ -15,8 +15,10 @@ import type { TrialRedisHandle } from "./isolation.js";
 import {
   startExperienceReplayProductRuntime,
   type ExperienceReplayProductRuntimeHandle,
+  type ProductApiHandle,
   type ProductRuntimeDependencies
 } from "./product-runtime.js";
+import type { ProductApiJson } from "./product-api-process.js";
 
 const open: ExperienceReplayProductRuntimeHandle[] = [];
 
@@ -40,16 +42,7 @@ const fakeRedis = (): TrialRedisHandle => ({
   close: vi.fn(async () => undefined)
 });
 
-const startApi = async (): Promise<{
-  url: string;
-  request(input: {
-    method: string;
-    path: string;
-    headers?: Record<string, string>;
-    body?: unknown;
-  }): Promise<any>;
-  close(): Promise<any>;
-}> => {
+const startApi = async (): Promise<ProductApiHandle> => {
   const app = Fastify({ logger: false });
   app.get("/ready", async () => ({ ok: true }));
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -58,13 +51,22 @@ const startApi = async (): Promise<{
   return {
     url: `http://127.0.0.1:${address.port}`,
     async request(input) {
-      const response = (await app.inject({
+      const payload = input.body;
+      const response = await app.inject({
         method: input.method,
         url: input.path,
-        headers: input.headers,
-        payload: input.body
-      } as any)) as unknown as { body: string };
-      return JSON.parse(response.body || "{}") as any;
+        headers: {
+          ...input.headers,
+          ...(payload === null || payload === undefined
+            ? {}
+            : { "content-type": "application/json" })
+        },
+        ...(payload === null || payload === undefined
+          ? {}
+          : { payload: JSON.stringify(payload) })
+      });
+      const parsed: unknown = JSON.parse(response.body || "{}");
+      return parsed as ProductApiJson;
     },
     async close() {
       await app.close();

@@ -6,6 +6,7 @@ const tomlString = (value: string): string => JSON.stringify(value);
 
 export interface TrialCodexConfiguration {
   serialized: string;
+  inline: Readonly<Record<string, unknown>>;
   agentEnvironment: Readonly<
     Record<typeof BENCHMARK_MCP_TOKEN_ENV, string>
   > | null;
@@ -75,8 +76,36 @@ export const createTrialCodexConfiguration = ({
       'default_tools_approval_mode = "approve"'
     );
   }
+  const inline: Record<string, unknown> = {
+    model,
+    model_reasoning_effort: reasoningEffort,
+    model_reasoning_summary: "concise",
+    approval_policy: "never",
+    include_permissions_instructions: false,
+    include_apps_instructions: false,
+    include_collaboration_mode_instructions: false,
+    include_environment_context: false,
+    project_doc_max_bytes: 0,
+    web_search: "disabled",
+    agents: { enabled: false },
+    skills: { include_instructions: false },
+    ...(koedEnabled
+      ? {
+          mcp_servers: {
+            koed: {
+              url: bridgeUrl!,
+              bearer_token_env_var: BENCHMARK_MCP_TOKEN_ENV,
+              enabled_tools: ["memory_answer"],
+              required: true,
+              default_tools_approval_mode: "approve"
+            }
+          }
+        }
+      : {})
+  };
   return {
     serialized: `${lines.join("\n")}\n`,
+    inline: Object.freeze(inline),
     agentEnvironment: koedEnabled
       ? Object.freeze({ [BENCHMARK_MCP_TOKEN_ENV]: bridgeToken! })
       : null

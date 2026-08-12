@@ -12,7 +12,8 @@ export class CommandLineError extends Error {
 export const parseExperienceReplayCommand = (
   argv: readonly string[]
 ): ExperienceReplayCommand => {
-  const [name, ...arguments_] = argv;
+  const normalized = argv[0] === "--" ? argv.slice(1) : argv;
+  const [name, ...arguments_] = normalized;
   if (
     !name ||
     !["preflight", "run", "resume", "report", "sanitize"].includes(name)

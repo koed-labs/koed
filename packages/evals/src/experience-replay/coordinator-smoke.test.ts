@@ -3,27 +3,102 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { resolveExperienceReplayConfig } from "./core/index.js";
+import { immutableHash, resolveExperienceReplayConfig } from "./core/index.js";
 import type { HarborFreezeManifest } from "./atif/index.js";
 import {
   reportExistingRun,
+  resumeExperienceReplay,
   runExperienceReplay,
   sanitizeRunReport,
   type ExperienceReplayCoordinatorDependencies,
-  type ProductPathAttestation
+  type ReplayProductPathAttestation
 } from "./coordinator.js";
+import type { LocalProductTemplateAttestation } from "./local-product-adapter.js";
 import { preflightExperienceReplay } from "./preflight.js";
 
-const productAttestation: ProductPathAttestation = {
-  canonicalNormalizedImport: true,
-  projection: true,
-  semanticReadiness: true,
-  databaseTemplate: true,
-  postgres: true,
-  redis: true,
-  mcpBridge: true,
-  localAiRuntime: true
-};
+const productAttestation = {
+  schema: "koed-experience-replay-local-product-template-v1",
+  condition: "empty",
+  taskDigest: `sha256:${"a".repeat(64)}`,
+  sourceTaskDigest: null,
+  projectId: "eval://project",
+  project: {
+    id: "eval://project",
+    cwd: "/tmp/task",
+    anchorSessionId: "anchor",
+    ownerUserId: "user",
+    visibility: "personal"
+  },
+  database: {
+    databaseName: "koed_eval_template",
+    currentDatabase: "koed_eval_template",
+    migrationsCurrent: true,
+    latestMigrationTimestamp: 1,
+    postgresVersionNum: 170_000,
+    pgvectorVersion: "0.8.1",
+    rows: {
+      users: 1,
+      apiTokens: 1,
+      capturedSessions: 1,
+      conversationItems: 0,
+      memoryEvents: 0,
+      memoryNodes: 0,
+      embeddingChunks: 0
+    },
+    stateHash: "a".repeat(64)
+  },
+  identity: {
+    user: { id: "user", emailHash: "b".repeat(64) },
+    apiToken: { id: "token", ownerUserId: "user", tokenPrefix: "cmt_test" },
+    authenticatedApiProbe: {
+      route: "/v1/sessions",
+      authenticated: true,
+      ownerUserId: "user"
+    }
+  },
+  embedding: {
+    transport: "loopback-http",
+    provider: "deterministic-smoke",
+    serviceOrigin: "http://127.0.0.1:1",
+    model: "qwen3-0.6b",
+    dimensions: 1024,
+    modelArtifactHash: "sha256:test",
+    health: {
+      status: "ok",
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      modelArtifactHash: "sha256:test",
+      authRequired: true,
+      authValid: true
+    },
+    preparationCalls: 0,
+    preparationTexts: 0
+  },
+  normalizedImport: null,
+  readiness: { ready: true },
+  scheduledLcmJobs: null,
+  frozenDatabase: {
+    name: "koed_eval_template",
+    allowConnections: false,
+    isTemplate: true
+  },
+  frozenAt: "2026-08-12T00:00:00.000Z"
+} as unknown as LocalProductTemplateAttestation;
+
+const replayAttestation = (
+  cloneId: string,
+  templateId: string
+): ReplayProductPathAttestation => ({
+  schema: "koed-experience-replay-product-path-v1",
+  cloneId,
+  templateId,
+  templateAttestationHash: immutableHash(productAttestation),
+  databaseName: cloneId,
+  apiOrigin: "http://127.0.0.1:1001",
+  redisEndpointHash: "d".repeat(64),
+  mcpBridgeOrigin: "http://127.0.0.1:1002",
+  localAiRuntimeOrigin: "http://127.0.0.1:1003"
+});
 
 const trajectory = (taskName: string): string =>
   JSON.stringify({
@@ -176,12 +251,13 @@ const fakeDependencies = (
     await lifecycle.onAgentEnded?.({ ...callbackEvent, event: "agent_ended" });
     await lifecycle.onTrialEnded?.({ ...callbackEvent, event: "trial_ended" });
     const frozen = trajectory(task.name);
-    const passed = task.name === "synthetic-alpha";
+    const passed = task.name === "terminal-bench/synthetic-alpha";
     return {
       frozenTrajectory: frozen,
       freezeManifest: freezeManifest(task.name, frozen),
       reward: passed ? 1 : 0,
       passed,
+      costUsd: 0,
       sanitizedTokenQuartile: passed ? 0 : 1,
       result: { verifier: "deterministic-fake" }
     };
@@ -195,7 +271,8 @@ const fakeDependencies = (
     return {
       templateId: `template:${task.taskDigest}:${condition}`,
       sourceStateHash: `state:${sourceTask?.taskDigest ?? "empty"}`,
-      attestation: productAttestation
+      attestation: productAttestation,
+      preparationCostUsd: 0
     };
   },
   async createReplay({ task, condition, repeat, template, sourceTaskDigest }) {
@@ -205,12 +282,16 @@ const fakeDependencies = (
       expect(sourceTaskDigest).toBeNull();
     } else expect(template).not.toBeNull();
     let active = false;
+    const cloneId =
+      condition === "cold"
+        ? null
+        : `clone:${task.taskDigest}:${condition}:${repeat}`;
     return {
-      cloneId:
+      cloneId,
+      productPathAttestation:
         condition === "cold"
           ? null
-          : `clone:${task.taskDigest}:${condition}:${repeat}`,
-      productPathAttestation: condition === "cold" ? null : productAttestation,
+          : replayAttestation(cloneId!, template!.templateId),
       activateCredential() {
         active = true;
         events.push(`activate:${task.name}:${condition}`);
@@ -251,6 +332,107 @@ const fakeDependencies = (
               agentMs: 2,
               verifierMs: 1
             }
+          },
+          codex: {
+            identity: { taskDigest: task.taskDigest, condition, repeat },
+            status: "available",
+            metrics: {
+              tokens: {
+                uncachedInput: 0,
+                cachedInput: 0,
+                output: 0,
+                reasoning: 0
+              },
+              costs: {
+                providerBilledUsd: 0,
+                apiEquivalentUsd: 0,
+                subscriptionUsd: 0
+              },
+              turns: 1,
+              toolCalls: 0,
+              toolFailures: 0,
+              mcpCalls: 0,
+              mcpFailures: 0,
+              memoryAnswerCalls: 0,
+              memoryAnswerFailures: 0
+            }
+          },
+          koedRecall: {
+            identity: { taskDigest: task.taskDigest, condition, repeat },
+            status: "available",
+            metrics: {
+              searches: 0,
+              expansions: 0,
+              stages: 0,
+              evidenceCount: 0,
+              projectionMs: 0,
+              lcmMs: 0,
+              queueMs: 0
+            }
+          },
+          modelWorkflows: {
+            identity: { taskDigest: task.taskDigest, condition, repeat },
+            status: "available",
+            metrics: {
+              memoryAnswer: {
+                calls: 0,
+                failures: 0,
+                durationMs: 0,
+                tokens: {
+                  uncachedInput: 0,
+                  cachedInput: 0,
+                  output: 0,
+                  reasoning: 0
+                },
+                costs: {
+                  providerBilledUsd: 0,
+                  apiEquivalentUsd: 0,
+                  subscriptionUsd: 0
+                }
+              },
+              lcmSummary: {
+                calls: 0,
+                failures: 0,
+                durationMs: 0,
+                tokens: {
+                  uncachedInput: 0,
+                  cachedInput: 0,
+                  output: 0,
+                  reasoning: 0
+                },
+                costs: {
+                  providerBilledUsd: 0,
+                  apiEquivalentUsd: 0,
+                  subscriptionUsd: 0
+                }
+              },
+              sessionTitle: {
+                calls: 0,
+                failures: 0,
+                durationMs: 0,
+                tokens: {
+                  uncachedInput: 0,
+                  cachedInput: 0,
+                  output: 0,
+                  reasoning: 0
+                },
+                costs: {
+                  providerBilledUsd: 0,
+                  apiEquivalentUsd: 0,
+                  subscriptionUsd: 0
+                }
+              }
+            }
+          },
+          embeddings: {
+            identity: { taskDigest: task.taskDigest, condition, repeat },
+            status: "available",
+            metrics: { calls: 0, tokens: 0, durationMs: 0 }
+          },
+          processRss: {
+            identity: { taskDigest: task.taskDigest, condition, repeat },
+            status: "available",
+            metrics: { apiBytes: 0, runtimeBytes: 0, workerBytes: 0 }
           }
         };
       },
@@ -261,6 +443,16 @@ const fakeDependencies = (
   },
   async teardown() {
     events.push("teardown");
+  },
+  cleanupAttestations() {
+    return [
+      {
+        cloneId: "clone:proof",
+        runtime: { cleanupCount: 1, complete: true },
+        product: { api: { closed: true } },
+        complete: true
+      }
+    ];
   },
   ...overrides
 });
@@ -290,10 +482,33 @@ describe("unified experience replay coordinator", () => {
     };
     expect(manifest.execution_boundary).toEqual(
       expect.objectContaining({
-        product_path_exercised: true,
         terminal_bench_estimate: false
       })
     );
+    const preflightAttestation = JSON.parse(
+      await readFile(path.join(output, "attestations/preflight.json"), "utf8")
+    ) as { capacity: unknown; pins: unknown };
+    expect(preflightAttestation).toMatchObject({
+      capacity: admitted.capacity,
+      pins: admitted.pins
+    });
+    const replayAttestations = JSON.parse(
+      await readFile(
+        path.join(output, "attestations/product-path.json"),
+        "utf8"
+      )
+    ) as unknown[];
+    expect(replayAttestations).toHaveLength(6);
+    const cleanupAttestations = await readFile(
+      path.join(output, "attestations/cleanup.json"),
+      "utf8"
+    );
+    expect(cleanupAttestations).toContain('"cloneId": "clone:proof"');
+    expect(cleanupAttestations).not.toContain("Bearer ");
+    const preparationTelemetry = JSON.parse(
+      await readFile(path.join(output, "preparation-telemetry.json"), "utf8")
+    ) as { jobs: unknown[] };
+    expect(preparationTelemetry.jobs).toHaveLength(6);
     const journal = await readFile(path.join(output, "journal.jsonl"), "utf8");
     const completedPhases = journal
       .trim()
@@ -306,13 +521,13 @@ describe("unified experience replay coordinator", () => {
       .map((entry) => entry.phase);
     expect(completedPhases).toEqual([
       "preflight",
+      "replay_schedule",
       "source_attempts",
       "atif_sanitization",
       "placebo_assignment",
       "canonical_koed_ingestion",
       "semantic_readiness",
       "template_creation",
-      "replay_schedule",
       "replay_execution",
       "metric_merge",
       "report_generation",
@@ -353,22 +568,30 @@ describe("unified experience replay coordinator", () => {
     const events: string[] = [];
     const dependencies = fakeDependencies(events);
     const original = dependencies.prepareTemplate;
-    dependencies.prepareTemplate = vi.fn(async (input) => {
-      const prepared = await original(input);
-      return input.condition === "relevant"
-        ? {
-            ...prepared,
-            attestation: { ...prepared.attestation, projection: false as never }
-          }
-        : prepared;
-    });
+    const prepareTemplate: ExperienceReplayCoordinatorDependencies["prepareTemplate"] =
+      async (input) => {
+        const prepared = await original(input);
+        return input.condition === "relevant"
+          ? {
+              ...prepared,
+              attestation: {
+                ...prepared.attestation,
+                readiness: {
+                  ...prepared.attestation.readiness,
+                  ready: false as never
+                }
+              }
+            }
+          : prepared;
+      };
+    dependencies.prepareTemplate = vi.fn(prepareTemplate);
     await expect(
       runExperienceReplay(config, { preflight: admitted, dependencies })
-    ).rejects.toThrow("lacks a complete product-path attestation");
+    ).rejects.toThrow("lacks a complete template attestation");
     expect(events.at(-1)).toBe("teardown");
     await expect(
       readFile(path.join(config.output_dir, "manifest.json"), "utf8")
-    ).rejects.toThrow();
+    ).resolves.toContain('"run_id"');
   });
 
   it("rejects database clone reuse and revokes through the Harbor lifecycle", async () => {
@@ -382,7 +605,14 @@ describe("unified experience replay coordinator", () => {
       const handle = await original(input);
       return input.condition === "cold"
         ? handle
-        : { ...handle, cloneId: "clone:reused" };
+        : {
+            ...handle,
+            cloneId: "clone:reused",
+            productPathAttestation: replayAttestation(
+              "clone:reused",
+              input.template!.templateId
+            )
+          };
     };
     await expect(
       runExperienceReplay(config, { preflight: admitted, dependencies })
@@ -391,11 +621,292 @@ describe("unified experience replay coordinator", () => {
     expect(events.some((event) => event.startsWith("revoke:"))).toBe(true);
   });
 
+  it("preserves acknowledged post-agent failures as missing outcomes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const events: string[] = [];
+    const dependencies = fakeDependencies(events);
+    const original = dependencies.createReplay;
+    dependencies.createReplay = async (input) => {
+      const handle = await original(input);
+      return {
+        ...handle,
+        async run({ lifecycle }) {
+          await lifecycle.onAgentStarted?.({
+            schema_version: "koed-harbor-lifecycle-v1",
+            attempt_kind: "replay",
+            event: "agent_started",
+            trial_id: `failed-${input.task.name}-${input.condition}`,
+            task_name: input.task.name,
+            timestamp: new Date(0).toISOString()
+          });
+          throw Object.assign(new Error("synthetic post-agent timeout"), {
+            category: "timeout"
+          });
+        }
+      };
+    };
+    const result = await runExperienceReplay(config, {
+      preflight: admitted,
+      dependencies
+    });
+    expect(result.replayAttemptCount).toBe(8);
+    const report = await readFile(result.reportPath, "utf8");
+    expect(report).toContain("Failures and missing outcomes: 8");
+    expect(report).toContain("failure agent_timeout");
+  });
+
+  it("reports infrastructure failures before agent admission", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const events: string[] = [];
+    const dependencies = fakeDependencies(events, {
+      createReplay: vi.fn(async () => {
+        throw new Error("synthetic runtime provisioning failure");
+      })
+    });
+    const result = await runExperienceReplay(config, {
+      preflight: admitted,
+      dependencies
+    });
+    expect(result).toMatchObject({
+      replayAttemptCount: 8,
+      productPathExercised: false
+    });
+    const report = await readFile(result.reportPath, "utf8");
+    expect(report).toContain("Failures and missing outcomes: 8");
+    expect(report).toContain("failure setup_failed");
+  });
+
+  it("reports replay cleanup failures", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const events: string[] = [];
+    const dependencies = fakeDependencies(events);
+    const original = dependencies.createReplay;
+    dependencies.createReplay = async (input) => {
+      const handle = await original(input);
+      return {
+        ...handle,
+        async close() {
+          await handle.close();
+          throw new Error("synthetic replay cleanup failure");
+        }
+      };
+    };
+    const result = await runExperienceReplay(config, {
+      preflight: admitted,
+      dependencies
+    });
+    const report = JSON.parse(
+      await readFile(
+        path.join(result.runDirectory, "report/summary.json"),
+        "utf8"
+      )
+    ) as { attempts: Array<{ failureCategory: string }> };
+    expect(report.attempts).toHaveLength(8);
+    expect(report.attempts[0]).toMatchObject({
+      failureCategory: "teardown_failed"
+    });
+  });
+
   it("requires an explicit integration adapter instead of using the removed fake path", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
     const config = smokeConfig(path.join(root, "run"));
     await expect(runExperienceReplay(config)).rejects.toThrow(
       "an ExperienceReplayCoordinatorDependencies adapter is required"
     );
+  });
+
+  it("resumes a completed run without duplicating source or replay attempts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const initialEvents: string[] = [];
+    await runExperienceReplay(config, {
+      preflight: admitted,
+      dependencies: fakeDependencies(initialEvents)
+    });
+    const before = (
+      await readFile(path.join(config.output_dir, "journal.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string })
+      .filter((entry) => entry.type === "attempt_result").length;
+    const resumedEvents: string[] = [];
+    await expect(
+      resumeExperienceReplay(config.output_dir, {
+        preflight: admitted,
+        dependencies: fakeDependencies(resumedEvents)
+      })
+    ).resolves.toContain("summary.md");
+    expect(
+      resumedEvents.filter((event) =>
+        /^(?:source|template|replay):/u.test(event)
+      )
+    ).toEqual([]);
+    const after = (
+      await readFile(path.join(config.output_dir, "journal.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string })
+      .filter((entry) => entry.type === "attempt_result").length;
+    expect(after).toBe(before);
+  });
+
+  it("reruns a pre-agent source interruption under the stable ID and a new generation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const interrupted = fakeDependencies([], {
+      runSource: vi.fn(async () => {
+        throw new Error("interrupted before source agent start");
+      })
+    });
+    await expect(
+      runExperienceReplay(config, {
+        preflight: admitted,
+        dependencies: interrupted
+      })
+    ).rejects.toThrow("interrupted before source agent start");
+
+    await expect(
+      resumeExperienceReplay(config.output_dir, {
+        preflight: admitted,
+        dependencies: fakeDependencies([])
+      })
+    ).resolves.toContain("summary.md");
+    const journal = (
+      await readFile(path.join(config.output_dir, "journal.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            type: string;
+            attemptId?: string;
+            executionGeneration?: number;
+          }
+      );
+    for (const digest of ["a", "b"]) {
+      const id = `source:sha256:${digest.repeat(64)}`;
+      expect(
+        journal
+          .filter(
+            (entry) => entry.type === "attempt_result" && entry.attemptId === id
+          )
+          .map((entry) => entry.executionGeneration)
+      ).toEqual([2]);
+    }
+  });
+
+  it("preserves a source interruption after agent start and refuses dependent preparation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const runSource: ExperienceReplayCoordinatorDependencies["runSource"] =
+      async (input) => {
+        await input.lifecycle.onAgentStarted?.({
+          schema_version: "koed-harbor-lifecycle-v1",
+          attempt_kind: "source",
+          event: "agent_started",
+          trial_id: input.attemptId,
+          task_name: input.task.name,
+          timestamp: new Date(0).toISOString()
+        });
+        throw new Error("interrupted after source agent start");
+      };
+    const interrupted = fakeDependencies([], {
+      runSource: vi.fn(runSource)
+    });
+    await expect(
+      runExperienceReplay(config, {
+        preflight: admitted,
+        dependencies: interrupted
+      })
+    ).rejects.toThrow("interrupted after source agent start");
+    const resumedEvents: string[] = [];
+    await expect(
+      resumeExperienceReplay(config.output_dir, {
+        preflight: admitted,
+        dependencies: fakeDependencies(resumedEvents)
+      })
+    ).rejects.toThrow("dependent preparation is forbidden");
+    expect(resumedEvents.some((event) => event.startsWith("source:"))).toBe(
+      false
+    );
+    const results = (
+      await readFile(path.join(config.output_dir, "journal.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map(
+        (line) => JSON.parse(line) as { type: string; failureCategory?: string }
+      )
+      .filter((entry) => entry.type === "attempt_result");
+    expect(
+      results.filter((entry) => entry.failureCategory === "missing_outcome")
+    ).toHaveLength(1);
+  });
+
+  it("reruns a replay interrupted before agent start with a new execution generation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const dependencies = fakeDependencies([]);
+    const createReplay = dependencies.createReplay;
+    let interruptedId: string | undefined;
+    dependencies.createReplay = async (input) => {
+      const replay = await createReplay(input);
+      if (!interruptedId && input.condition !== "cold") {
+        interruptedId = `replay:${input.task.taskDigest}:${input.condition}:${input.repeat}`;
+        return {
+          ...replay,
+          productPathAttestation: null
+        };
+      }
+      return replay;
+    };
+    await expect(
+      runExperienceReplay(config, { preflight: admitted, dependencies })
+    ).rejects.toThrow("lacks a complete runtime attestation");
+    expect(interruptedId).toBeDefined();
+
+    const adoptTemplate: NonNullable<
+      ExperienceReplayCoordinatorDependencies["adoptTemplate"]
+    > = async (template) => template;
+    const resumed = fakeDependencies([], {
+      adoptTemplate: vi.fn(adoptTemplate)
+    });
+    await expect(
+      resumeExperienceReplay(config.output_dir, {
+        preflight: admitted,
+        dependencies: resumed
+      })
+    ).resolves.toContain("summary.md");
+    const results = (
+      await readFile(path.join(config.output_dir, "journal.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            type: string;
+            attemptId?: string;
+            executionGeneration?: number;
+          }
+      )
+      .filter(
+        (entry) =>
+          entry.type === "attempt_result" && entry.attemptId === interruptedId
+      );
+    expect(results.map((entry) => entry.executionGeneration)).toEqual([2]);
   });
 });

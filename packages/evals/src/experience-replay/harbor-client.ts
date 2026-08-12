@@ -57,6 +57,7 @@ interface HarborRunRequestBase {
   schema_version: "koed-harbor-run-v1";
   attempt_kind: HarborAttemptKind;
   task_name: string;
+  task_image: string;
   job_config: Record<string, JsonValue>;
   corpus_manifest: string;
   run_root: string;
@@ -241,7 +242,15 @@ const assertNoSerializedSecrets = (
     return;
   }
   for (const [key, item] of Object.entries(value)) {
-    if (secretKey.test(key) && item !== `\${${key}}`) {
+    const safeCredentialReference =
+      key === "bearer_token_env_var" &&
+      typeof item === "string" &&
+      /^[A-Z][A-Z0-9_]{0,127}$/u.test(item);
+    if (
+      secretKey.test(key) &&
+      item !== `\${${key}}` &&
+      !safeCredentialReference
+    ) {
       throw new HarborClientError(
         "invalid-request",
         `Secret-bearing field is not allowed in ${location}`
@@ -295,6 +304,7 @@ const validateRequest = async (
     "schema_version",
     "attempt_kind",
     "task_name",
+    "task_image",
     "job_config",
     "corpus_manifest",
     "run_root",
@@ -332,6 +342,7 @@ const validateRequest = async (
   }
   for (const [value, label] of [
     [input.task_name, "task_name"],
+    [input.task_image, "task_image"],
     [input.corpus_manifest, "corpus_manifest"]
   ] as const) {
     if (typeof value !== "string" || !value) {
@@ -368,6 +379,7 @@ const validateRequest = async (
   const common = {
     schema_version: REQUEST_SCHEMA,
     task_name: input.task_name,
+    task_image: input.task_image,
     job_config: input.job_config,
     corpus_manifest: input.corpus_manifest,
     run_root: runRoot,

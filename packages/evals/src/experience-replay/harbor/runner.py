@@ -12,14 +12,17 @@ import json
 import math
 import os
 import re
+import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
 from dirhash import dirhash
@@ -27,6 +30,7 @@ from harbor.job import Job
 from harbor.models.job.config import DatasetConfig, JobConfig
 from harbor.publisher.packager import Packager
 from harbor.trial.hooks import TrialHookEvent
+from harbor.trial.trial import Trial
 
 HARBOR_VERSION = "0.21.0"
 HARBOR_COMMIT = "64afbbcb62165950301e1a6407c729aa26d844ff"
@@ -37,6 +41,7 @@ TB_GIT_URL = "https://github.com/harbor-framework/terminal-bench.git"
 CORPUS_TASK_COUNT = 74
 MANIFEST_SCHEMA = "koed-terminal-bench-corpus-v1"
 RUN_REQUEST_SCHEMA = "koed-harbor-run-v1"
+TASK_IMAGE_SCHEMA = "koed-harbor-task-image-v1"
 FREEZE_MANIFEST_SCHEMA = "koed-harbor-freeze-v1"
 MAX_TRAJECTORY_BYTES = 256 * 1024 * 1024
 MAX_LIFECYCLE_LINE_BYTES = 16 * 1024
@@ -71,6 +76,7 @@ SAFE_AGENT_CONFIG_FIELDS = frozenset(
         "max_timeout_sec",
         "extra_allowed_hosts",
         "env",
+        "kwargs",
     }
 )
 SAFE_ENVIRONMENT_CONFIG_FIELDS = frozenset(
@@ -105,6 +111,23 @@ SAFE_RETRY_CONFIG_FIELDS = frozenset(
 CODEX_AGENT_NAME = "codex"
 CODEX_AGENT_ENV_FIELDS = frozenset({"OPENAI_API_KEY", "KOED_BENCHMARK_MCP_TOKEN"})
 CODEX_EXTRA_ALLOWED_HOSTS = frozenset({"api.openai.com", "host.docker.internal"})
+SAFE_CODEX_CONFIG_FIELDS = frozenset(
+    {
+        "model",
+        "model_reasoning_effort",
+        "model_reasoning_summary",
+        "approval_policy",
+        "include_permissions_instructions",
+        "include_apps_instructions",
+        "include_collaboration_mode_instructions",
+        "include_environment_context",
+        "project_doc_max_bytes",
+        "web_search",
+        "agents",
+        "skills",
+        "mcp_servers",
+    }
+)
 
 QUICK_TASKS = (
     "terminal-bench/cad-model",
@@ -197,6 +220,221 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _run_docker(
+    docker: str, arguments: list[str], *, timeout: int = 120
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            [docker, *arguments],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ContractError("DOCKER_COMMAND_FAILED") from error
+    if result.returncode != 0:
+        raise ContractError("DOCKER_COMMAND_FAILED")
+    return result
+
+
+def _docker_inspect(docker: str, reference: str) -> dict[str, Any]:
+    output = _run_docker(
+        docker, ["image", "inspect", reference, "--format", "{{json .}}"]
+    ).stdout.strip()
+    try:
+        parsed = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise ContractError("INVALID_DOCKER_INSPECTION") from error
+    if not isinstance(parsed, dict):
+        raise ContractError("INVALID_DOCKER_INSPECTION")
+    image_id = parsed.get("Id")
+    repo_digests = parsed.get("RepoDigests")
+    if (
+        not isinstance(image_id, str)
+        or not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id)
+        or not isinstance(repo_digests, list)
+        or any(not isinstance(value, str) for value in repo_digests)
+    ):
+        raise ContractError("INVALID_DOCKER_INSPECTION")
+    return parsed
+
+
+def _registry_repository(registry: str, task_name: str) -> str:
+    if (
+        not isinstance(registry, str)
+        or len(registry) > 240
+        or registry != registry.strip().rstrip("/")
+        or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?"
+            r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*",
+            registry,
+        )
+    ):
+        raise ContractError("INVALID_OCI_REGISTRY")
+    if not re.fullmatch(r"terminal-bench/[a-z0-9][a-z0-9-]*", task_name):
+        raise ContractError("INVALID_TASK_NAME")
+    return f"{registry}/tb3-{task_name.removeprefix('terminal-bench/')}"
+
+
+def _dockerfile_logical_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    pending = ""
+    for physical in text.splitlines():
+        stripped = physical.strip()
+        if not stripped or (not pending and stripped.startswith("#")):
+            continue
+        pending = f"{pending}{stripped}"
+        if pending.endswith("\\"):
+            pending = f"{pending[:-1]} "
+            continue
+        lines.append(pending)
+        pending = ""
+    if pending:
+        raise ContractError("INVALID_DOCKERFILE")
+    return lines
+
+
+def _resolve_from_value(value: str, arguments: dict[str, str]) -> str:
+    variable = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+    resolved = value
+    for _ in range(16):
+        match = variable.search(resolved)
+        if match is None:
+            return resolved
+        name = match.group(1) or match.group(2)
+        if name not in arguments:
+            raise ContractError("UNRESOLVED_DOCKERFILE_FROM_ARGUMENT")
+        resolved = f"{resolved[:match.start()]}{arguments[name]}{resolved[match.end():]}"
+    raise ContractError("CYCLIC_DOCKERFILE_FROM_ARGUMENT")
+
+
+def _dockerfile_base_references(dockerfile: Path) -> tuple[str, list[str]]:
+    try:
+        metadata = dockerfile.lstat()
+        text = dockerfile.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ContractError("MISSING_DOCKERFILE") from error
+    if not stat.S_ISREG(metadata.st_mode) or dockerfile.is_symlink():
+        raise ContractError("UNSAFE_DOCKERFILE")
+    arguments: dict[str, str] = {}
+    stages: set[str] = set()
+    bases: list[str] = []
+    seen_from = False
+    for line in _dockerfile_logical_lines(text):
+        instruction, _, remainder = line.partition(" ")
+        instruction = instruction.upper()
+        remainder = remainder.strip()
+        if instruction == "ARG":
+            if seen_from:
+                continue
+            name, separator, value = remainder.partition("=")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ContractError("UNRESOLVED_DOCKERFILE_FROM_ARGUMENT")
+            if separator:
+                arguments[name] = _resolve_from_value(value, arguments)
+            continue
+        if instruction != "FROM":
+            continue
+        seen_from = True
+        tokens = remainder.split()
+        while tokens and tokens[0].startswith("--"):
+            tokens.pop(0)
+        if len(tokens) not in (1, 3) or (len(tokens) == 3 and tokens[1].upper() != "AS"):
+            raise ContractError("INVALID_DOCKERFILE_FROM")
+        reference = _resolve_from_value(tokens[0], arguments)
+        if not reference or any(character.isspace() for character in reference):
+            raise ContractError("INVALID_DOCKERFILE_FROM")
+        if reference.lower() != "scratch" and reference.lower() not in stages:
+            bases.append(reference)
+        if len(tokens) == 3:
+            alias = tokens[2].lower()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", alias):
+                raise ContractError("INVALID_DOCKERFILE_FROM")
+            stages.add(alias)
+    if not any(line.split(maxsplit=1)[0].upper() == "FROM" for line in _dockerfile_logical_lines(text)):
+        raise ContractError("DOCKERFILE_HAS_NO_FROM")
+    return _sha256_file(dockerfile), bases
+
+
+def _resolved_base_digests(docker: str, references: list[str]) -> list[str]:
+    resolved: list[str] = []
+    for reference in references:
+        _run_docker(docker, ["pull", reference], timeout=600)
+        inspected = _docker_inspect(docker, reference)
+        digests = {
+            value.rsplit("@", 1)[1]
+            for value in inspected["RepoDigests"]
+            if "@" in value and re.fullmatch(r"sha256:[a-f0-9]{64}", value.rsplit("@", 1)[1])
+        }
+        if len(digests) != 1:
+            raise ContractError("BASE_IMAGE_IMMUTABLE_IDENTITY_UNAVAILABLE")
+        digest = next(iter(digests))
+        if "@sha256:" in reference and reference.rsplit("@", 1)[1] != digest:
+            raise ContractError("BASE_IMAGE_DIGEST_MISMATCH")
+        if digest not in resolved:
+            resolved.append(digest)
+    return resolved
+
+
+def _runtime_versions(docker: str) -> tuple[str, str]:
+    version = _run_docker(docker, ["version", "--format", "{{json .}}"])
+    try:
+        parsed = json.loads(version.stdout)
+        client = parsed["Client"]["Version"]
+        server = parsed["Server"]["Version"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ContractError("INVALID_DOCKER_VERSION") from error
+    if not all(isinstance(value, str) and value and "\n" not in value for value in (client, server)):
+        raise ContractError("INVALID_DOCKER_VERSION")
+    buildkit_output = _run_docker(
+        docker,
+        ["buildx", "inspect", "--bootstrap", "--format", "{{json .Nodes}}"],
+    ).stdout.strip()
+    try:
+        nodes = json.loads(buildkit_output)
+    except json.JSONDecodeError as error:
+        raise ContractError("INVALID_BUILDKIT_VERSION") from error
+    if not isinstance(nodes, list) or not nodes:
+        raise ContractError("INVALID_BUILDKIT_VERSION")
+    buildkit_versions = {
+        node.get("Buildkit")
+        for node in nodes
+        if isinstance(node, dict)
+        and isinstance(node.get("Buildkit"), str)
+        and node.get("Buildkit")
+    }
+    if len(buildkit_versions) != 1:
+        raise ContractError("INVALID_BUILDKIT_VERSION")
+    buildkit = next(iter(buildkit_versions))
+    if "\n" in buildkit or "\r" in buildkit:
+        raise ContractError("INVALID_BUILDKIT_VERSION")
+    return f"Docker client {client} server {server}", f"BuildKit {buildkit}"
+
+
+def _available_provenance_sha256(docker: str, immutable_reference: str) -> str | None:
+    try:
+        result = _run_docker(
+            docker,
+            [
+                "buildx",
+                "imagetools",
+                "inspect",
+                immutable_reference,
+                "--format",
+                "{{json .Provenance}}",
+            ],
+        )
+        value = json.loads(result.stdout)
+    except (ContractError, json.JSONDecodeError):
+        return None
+    if value in (None, {}, []):
+        return None
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _atomic_json(path: Path, value: Any, *, no_overwrite: bool = False) -> None:
@@ -654,6 +892,58 @@ class LifecycleRecorder:
     states: dict[str, str] = field(default_factory=dict)
     records: list[dict[str, Any]] = field(default_factory=list)
     manifest: dict[str, Any] | None = None
+    clock_ns: Callable[[], int] = time.perf_counter_ns
+    run_started_ns: int | None = None
+    agent_started_ns: int | None = None
+    verification_started_ns: int | None = None
+    setup_ms: float | None = None
+    agent_ms: float | None = None
+    verifier_ms: float | None = None
+    trial_dir: Path | None = None
+
+    def begin_run(self) -> None:
+        if self.run_started_ns is not None:
+            raise ContractError("run timing was started twice")
+        self.run_started_ns = self.clock_ns()
+
+    @staticmethod
+    def _elapsed_ms(start_ns: int, end_ns: int) -> float:
+        if end_ns < start_ns:
+            raise ContractError("monotonic lifecycle clock moved backwards")
+        return (end_ns - start_ns) / 1_000_000
+
+    def phase_timings(self) -> dict[str, float]:
+        if self.setup_ms is None or self.agent_ms is None or self.verifier_ms is None:
+            raise ContractError("successful trial has incomplete phase timings")
+        return {
+            "setup_ms": self.setup_ms,
+            "agent_ms": self.agent_ms,
+            "verifier_ms": self.verifier_ms,
+        }
+
+    def interactions(self) -> dict[str, int]:
+        if self.trial_dir is None:
+            raise ContractError("successful trial has no observed trial directory")
+        try:
+            payload = json.loads(
+                (self.trial_dir / "agent" / "trajectory.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as error:
+            raise ContractError("successful trial trajectory is absent or corrupt") from error
+        steps = payload.get("steps") if isinstance(payload, dict) else None
+        if not isinstance(steps, list):
+            raise ContractError("successful trial trajectory has no ATIF steps")
+        turns = 0
+        tool_calls = 0
+        for step in steps:
+            if not isinstance(step, dict):
+                raise ContractError("successful trial trajectory contains an invalid step")
+            turns += int(step.get("source") == "agent")
+            calls = step.get("tool_calls", [])
+            if calls is not None and not isinstance(calls, list):
+                raise ContractError("successful trial trajectory contains invalid tool calls")
+            tool_calls += len(calls or [])
+        return {"turns": turns, "tool_calls": tool_calls}
 
     def _record(self, event: TrialHookEvent, name: str) -> None:
         self.records.append(
@@ -668,6 +958,11 @@ class LifecycleRecorder:
         key = str(event.trial_id)
         if key in self.states:
             raise ContractError("agent-started event was duplicated or out of order")
+        if self.run_started_ns is None:
+            raise ContractError("agent-started event occurred before run timing began")
+        self.agent_started_ns = self.clock_ns()
+        self.trial_dir = _trial_dir(event)
+        self.setup_ms = self._elapsed_ms(self.run_started_ns, self.agent_started_ns)
         await asyncio.to_thread(_notify_lifecycle, event, "agent_started", self.attempt_kind)
         self.states[key] = "agent-started"
         self._record(event, "agent_started")
@@ -676,6 +971,10 @@ class LifecycleRecorder:
         key = str(event.trial_id)
         if self.states.get(key) != "agent-started":
             raise ContractError("agent-ended event occurred before agent-started")
+        if self.agent_started_ns is None:
+            raise ContractError("agent timing was not started")
+        agent_ended_ns = self.clock_ns()
+        self.agent_ms = self._elapsed_ms(self.agent_started_ns, agent_ended_ns)
         await asyncio.to_thread(_notify_lifecycle, event, "agent_ended", self.attempt_kind)
         self.states[key] = "agent-ended"
         self._record(event, "agent_ended")
@@ -684,6 +983,7 @@ class LifecycleRecorder:
         key = str(event.trial_id)
         if self.states.get(key) != "agent-ended":
             raise ContractError("verification-started event occurred before agent-ended")
+        self.verification_started_ns = self.clock_ns()
         if self.attempt_kind == "replay":
             self.states[key] = "verification-started"
             self._record(event, "verification_started")
@@ -721,6 +1021,14 @@ class LifecycleRecorder:
         _atomic_json(self.manifest_path, self.manifest, no_overwrite=True)
 
     async def on_trial_ended(self, event: TrialHookEvent) -> None:
+        key = str(event.trial_id)
+        if self.states.get(key) != "verification-started":
+            raise ContractError("trial-ended event occurred before verification-started")
+        if self.verification_started_ns is None:
+            raise ContractError("verifier timing was not started")
+        self.verifier_ms = self._elapsed_ms(
+            self.verification_started_ns, self.clock_ns()
+        )
         await asyncio.to_thread(_notify_lifecycle, event, "trial_ended", self.attempt_kind)
 
     async def on_trial_cancelled(self, event: TrialHookEvent) -> None:
@@ -772,6 +1080,7 @@ def _strict_request(path: Path) -> dict[str, Any]:
         "schema_version",
         "attempt_kind",
         "task_name",
+        "task_image",
         "job_config",
         "corpus_manifest",
         "run_root",
@@ -792,6 +1101,11 @@ def _strict_request(path: Path) -> dict[str, Any]:
         raise ContractError("INVALID_JOB_CONFIG")
     if request.get("attempt_kind") not in {"source", "replay"}:
         raise ContractError("INVALID_ATTEMPT_KIND")
+    if not isinstance(request["task_image"], str) or not re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9./:_-]*[a-z0-9])?@sha256:[a-f0-9]{64}",
+        request["task_image"],
+    ):
+        raise ContractError("INVALID_TASK_IMAGE")
     freeze_fields = {"freeze_manifest_path", "freeze_trajectory_to"} & set(request)
     if request["attempt_kind"] == "source" and freeze_fields != {
         "freeze_manifest_path",
@@ -872,6 +1186,59 @@ def _validate_extra_allowed_hosts(value: Any) -> None:
         raise ContractError("DISALLOWED_EXTRA_ALLOWED_HOST")
 
 
+def _validate_codex_kwargs(value: Any) -> None:
+    kwargs = _strict_nested_config(value, frozenset({"config"}), "DISALLOWED_CODEX_KWARG")
+    config = _strict_nested_config(
+        kwargs.get("config"), SAFE_CODEX_CONFIG_FIELDS, "DISALLOWED_CODEX_CONFIG_FIELD"
+    )
+    required = SAFE_CODEX_CONFIG_FIELDS - {"mcp_servers"}
+    if not required.issubset(config):
+        raise ContractError("INCOMPLETE_CODEX_CONFIG")
+    if config.get("approval_policy") != "never" or config.get("web_search") != "disabled":
+        raise ContractError("UNSAFE_CODEX_CONFIG")
+    for key in (
+        "include_permissions_instructions",
+        "include_apps_instructions",
+        "include_collaboration_mode_instructions",
+        "include_environment_context",
+    ):
+        if config.get(key) is not False:
+            raise ContractError("UNSAFE_CODEX_CONFIG")
+    if config.get("project_doc_max_bytes") != 0:
+        raise ContractError("UNSAFE_CODEX_CONFIG")
+    if config.get("agents") != {"enabled": False} or config.get("skills") != {
+        "include_instructions": False
+    }:
+        raise ContractError("UNSAFE_CODEX_CONFIG")
+    servers = config.get("mcp_servers")
+    if servers is None:
+        return
+    if not isinstance(servers, dict) or set(servers) != {"koed"}:
+        raise ContractError("DISALLOWED_CODEX_MCP_CONFIG")
+    koed = _strict_nested_config(
+        servers["koed"],
+        frozenset(
+            {
+                "url",
+                "bearer_token_env_var",
+                "enabled_tools",
+                "required",
+                "default_tools_approval_mode",
+            }
+        ),
+        "DISALLOWED_CODEX_MCP_CONFIG",
+    )
+    if (
+        not isinstance(koed.get("url"), str)
+        or not re.fullmatch(r"http://(?:127\.0\.0\.1|host\.docker\.internal):[1-9][0-9]{0,4}", koed["url"])
+        or koed.get("bearer_token_env_var") != "KOED_BENCHMARK_MCP_TOKEN"
+        or koed.get("enabled_tools") != ["memory_answer"]
+        or koed.get("required") is not True
+        or koed.get("default_tools_approval_mode") != "approve"
+    ):
+        raise ContractError("UNSAFE_CODEX_MCP_CONFIG")
+
+
 def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
     if set(job_fields) - SAFE_JOB_CONFIG_FIELDS:
         raise ContractError("DISALLOWED_JOB_CONFIG_FIELD")
@@ -921,6 +1288,10 @@ def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
                 if agent.get("name") != CODEX_AGENT_NAME:
                     raise ContractError("DISALLOWED_EXTRA_ALLOWED_HOST")
                 _validate_extra_allowed_hosts(agent["extra_allowed_hosts"])
+            if "kwargs" in agent:
+                if agent.get("name") != CODEX_AGENT_NAME:
+                    raise ContractError("DISALLOWED_AGENT_KWARGS")
+                _validate_codex_kwargs(agent["kwargs"])
 
 
 def _verify_resolved_tasks(job: Job, manifest: dict[str, Any], task_name: str) -> None:
@@ -951,6 +1322,139 @@ def _verify_resolved_tasks(job: Job, manifest: dict[str, Any], task_name: str) -
     failed = {key: values for key, values in mismatches.items() if values[0] != values[1]}
     if failed:
         raise ContractError(f"resolved Harbor task differs from corpus manifest: {failed}")
+
+
+async def provision_task_image(
+    manifest_path: Path,
+    task_name: str,
+    task_digest: str,
+    registry: str,
+    docker: str = "docker",
+) -> dict[str, Any]:
+    verify_runtime(Path(__file__).resolve().parent)
+    bundled_manifest = (
+        Path(__file__).resolve().parent.parent / "fixtures" / "tb3-v3.0.0.json"
+    ).resolve()
+    try:
+        supplied_manifest = manifest_path.resolve(strict=True)
+    except OSError as error:
+        raise ContractError("INVALID_CORPUS_MANIFEST_PATH") from error
+    if supplied_manifest != bundled_manifest:
+        raise ContractError("INVALID_CORPUS_MANIFEST_PATH")
+    manifest = load_and_verify_manifest(supplied_manifest)
+    manifest_by_name = {task["name"]: task for task in manifest["tasks"]}
+    record = manifest_by_name.get(task_name)
+    if record is None:
+        raise ContractError("TASK_NOT_IN_PINNED_CORPUS")
+    if (
+        not re.fullmatch(r"sha256:[a-f0-9]{64}", task_digest)
+        or task_digest != record["task_digest"]
+    ):
+        raise ContractError("TASK_DIGEST_MISMATCH")
+    repository = _registry_repository(registry, task_name)
+    tag = f"{repository}:{task_digest.removeprefix('sha256:')}"
+    task_selector = Path(record["source_path"]).name
+
+    with tempfile.TemporaryDirectory(prefix="koed-harbor-image-") as temporary:
+        root = Path(temporary).resolve()
+        config = JobConfig.model_validate(
+            {
+                "job_name": f"preflight-{task_selector}",
+                "jobs_dir": root / "jobs",
+                "quiet": True,
+                "n_attempts": 1,
+                "n_concurrent_trials": 1,
+                "retry": {"max_retries": 0},
+                "environment": {"force_build": True, "delete": True},
+                "verifier": {"disable": False},
+                "agents": [{"name": "nop"}],
+                "datasets": [
+                    DatasetConfig(
+                        repo=TB_REPO,
+                        path=Path("tasks"),
+                        task_names=[task_selector],
+                    )
+                ],
+                "tasks": [],
+                "source_jobs": [],
+            }
+        )
+        job = await Job.create(config)
+        if len(job) != 1:
+            raise ContractError("HARBOR_IMAGE_JOB_NOT_SINGLE_TASK")
+        _verify_resolved_tasks(job, manifest, task_name)
+        trial_configs = job._trial_configs
+        if len(trial_configs) != 1:
+            raise ContractError("HARBOR_IMAGE_JOB_NOT_SINGLE_TASK")
+        trial = await Trial.create(trial_configs[0])
+        environment = trial.agent_environment
+        dockerfile = trial.task.paths.environment_dir / "Dockerfile"
+        dockerfile_sha256, base_references = _dockerfile_base_references(dockerfile)
+        base_digests_before_build = _resolved_base_digests(
+            docker, base_references
+        )
+        started = False
+        try:
+            await environment.start(force_build=True)
+            started = True
+            use_prebuilt = getattr(environment, "_use_prebuilt", None)
+            if use_prebuilt is True:
+                built_reference = trial.task.config.environment.docker_image
+            elif use_prebuilt is False:
+                built_reference = getattr(environment, "_main_image_name", None)
+            else:
+                raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE")
+            if not isinstance(built_reference, str) or not built_reference:
+                raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE")
+        finally:
+            if started:
+                await environment.stop(delete=True)
+
+        if _sha256_file(dockerfile) != dockerfile_sha256:
+            raise ContractError("DOCKERFILE_CHANGED_DURING_BUILD")
+        built = _docker_inspect(docker, built_reference)
+        image_id = built["Id"]
+        _run_docker(docker, ["tag", built_reference, tag])
+        _run_docker(docker, ["push", tag], timeout=1800)
+        pushed = _docker_inspect(docker, tag)
+        if pushed["Id"] != image_id:
+            raise ContractError("OCI_IMAGE_CHANGED_DURING_PUSH")
+        immutable_candidates = {
+            value
+            for value in pushed["RepoDigests"]
+            if value.startswith(f"{repository}@")
+            and re.fullmatch(r"sha256:[a-f0-9]{64}", value.rsplit("@", 1)[1])
+        }
+        if len(immutable_candidates) != 1:
+            raise ContractError("OCI_IMMUTABLE_IDENTITY_UNAVAILABLE")
+        immutable_reference = next(iter(immutable_candidates))
+        content_digest = immutable_reference.rsplit("@", 1)[1]
+        immutable = _docker_inspect(docker, immutable_reference)
+        if (
+            immutable["Id"] != image_id
+            or immutable_reference not in immutable["RepoDigests"]
+        ):
+            raise ContractError("OCI_IMMUTABLE_IDENTITY_MISMATCH")
+        base_digests = _resolved_base_digests(docker, base_references)
+        if base_digests != base_digests_before_build:
+            raise ContractError("BASE_IMAGE_CHANGED_DURING_BUILD")
+        docker_version, buildkit_version = _runtime_versions(docker)
+        provenance_sha256 = _available_provenance_sha256(
+            docker, immutable_reference
+        )
+        return {
+            "schema_version": TASK_IMAGE_SCHEMA,
+            "task_name": task_name,
+            "task_digest": task_digest,
+            "immutable_reference": immutable_reference,
+            "image_id": image_id,
+            "content_digest": content_digest,
+            "resolved_base_image_digests": base_digests,
+            "dockerfile_sha256": dockerfile_sha256,
+            "docker_version": docker_version,
+            "buildkit_version": buildkit_version,
+            "provenance_sha256": provenance_sha256,
+        }
 
 
 def _trial_lock_validator(record: dict[str, Any]):
@@ -1035,6 +1539,16 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     if len(job) != 1:
         raise ContractError(f"Harbor job contains {len(job)} trials; expected exactly one")
     _verify_resolved_tasks(job, manifest, task_name)
+    docker = shutil.which("docker")
+    if not docker:
+        raise ContractError("DOCKER_NOT_FOUND")
+    task_image = request["task_image"]
+    inspected = _docker_inspect(docker, task_image)
+    if task_image not in inspected["RepoDigests"]:
+        raise ContractError("TASK_IMAGE_DIGEST_NOT_PRESENT")
+    job._task_configs[0].environment.docker_image = task_image
+    if job._task_configs[0].environment.docker_image != task_image:
+        raise ContractError("TASK_IMAGE_PIN_NOT_APPLIED")
 
     recorder = LifecycleRecorder(
         attempt_kind=request["attempt_kind"],
@@ -1048,6 +1562,7 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     job.on_verification_started(recorder.on_verification_started)
     job.on_trial_ended(recorder.on_trial_ended)
     job.on_trial_cancelled(recorder.on_trial_cancelled)
+    recorder.begin_run()
     result = await job.run()
     trial_results = []
     reward_contract = manifest_by_name[task_name]["reward_contract"]
@@ -1079,6 +1594,14 @@ async def run_request(request_path: Path) -> dict[str, Any]:
             "n_total_trials": result.n_total_trials,
             "n_completed_trials": result.stats.n_completed_trials,
             "n_errored_trials": result.stats.n_errored_trials,
+            "phase_timings": recorder.phase_timings(),
+            "interactions": recorder.interactions(),
+            "usage": {
+                "input_tokens": result.stats.n_input_tokens,
+                "cached_input_tokens": result.stats.n_cache_tokens,
+                "output_tokens": result.stats.n_output_tokens,
+                "cost_usd": result.stats.cost_usd,
+            },
             "trials": trial_results,
         },
     }
@@ -1102,6 +1625,14 @@ def _parser() -> argparse.ArgumentParser:
     manifest.add_argument("--output-dir", type=Path, required=True)
     verify = subparsers.add_parser("verify-manifest", help="validate a committed corpus manifest")
     verify.add_argument("--manifest", type=Path, required=True)
+    image = subparsers.add_parser(
+        "provision-task-image",
+        help="materialize one pinned task and publish an immutable OCI image",
+    )
+    image.add_argument("--manifest", type=Path, required=True)
+    image.add_argument("--task-name", required=True)
+    image.add_argument("--task-digest", required=True)
+    image.add_argument("--registry", required=True)
     return parser
 
 
@@ -1112,6 +1643,24 @@ def main() -> int:
             print(json.dumps(asyncio.run(run_request(args.request)), sort_keys=True))
         elif args.command == "build-manifests":
             write_manifests(args.source, args.output_dir)
+        elif args.command == "provision-task-image":
+            docker = shutil.which("docker")
+            if docker is None:
+                raise ContractError("DOCKER_EXECUTABLE_UNAVAILABLE")
+            print(
+                json.dumps(
+                    asyncio.run(
+                        provision_task_image(
+                            args.manifest,
+                            args.task_name,
+                            args.task_digest,
+                            args.registry,
+                            docker,
+                        )
+                    ),
+                    sort_keys=True,
+                )
+            )
         else:
             load_and_verify_manifest(args.manifest)
             verify_runtime(Path(__file__).resolve().parent)

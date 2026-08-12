@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -44,14 +44,22 @@ import {
   writeTextArtifactAtomic
 } from "./artifacts.js";
 import { createCoordinatorHarborLifecycle } from "./harbor-lifecycle.js";
+import { CostAdmissionController } from "./cost-admission.js";
+import type { LocalProductTemplateAttestation } from "./local-product-adapter.js";
 import {
+  scheduleReplayJobs,
+  type ReplaySchedulerJob
+} from "./replay-scheduler.js";
+import {
+  assertCompleteReplayTelemetry,
   mergeReplayTelemetry,
   type ReplayTelemetryMergeInput
 } from "./telemetry.js";
+import { acquireRunLease } from "./run-lease.js";
 
 const SMOKE_TASKS: readonly CoordinatorTask[] = [
   {
-    name: "synthetic-alpha",
+    name: "terminal-bench/synthetic-alpha",
     taskDigest: `sha256:${"a".repeat(64)}`,
     category: "synthetic",
     expertTimeSeconds: 1,
@@ -59,7 +67,7 @@ const SMOKE_TASKS: readonly CoordinatorTask[] = [
     reward: { minimum: 0, maximum: 1, successValue: 1 }
   },
   {
-    name: "synthetic-beta",
+    name: "terminal-bench/synthetic-beta",
     taskDigest: `sha256:${"b".repeat(64)}`,
     category: "synthetic",
     expertTimeSeconds: 2,
@@ -82,41 +90,47 @@ export interface SourceAttemptExecution {
   freezeManifest: HarborFreezeManifest;
   reward: number | null;
   passed: boolean;
+  costUsd: number;
   /** Source metadata only. Replay observations must never influence matching. */
   sanitizedTokenQuartile: 0 | 1 | 2 | 3;
   result: Record<string, unknown>;
 }
 
-export interface ProductPathAttestation {
-  canonicalNormalizedImport: true;
-  projection: true;
-  semanticReadiness: true;
-  databaseTemplate: true;
-  postgres: true;
-  redis: true;
-  mcpBridge: true;
-  localAiRuntime: true;
+export interface ReplayProductPathAttestation {
+  schema: "koed-experience-replay-product-path-v1";
+  cloneId: string;
+  templateId: string;
+  templateAttestationHash: string;
+  databaseName: string;
+  apiOrigin: string;
+  redisEndpointHash: string;
+  mcpBridgeOrigin: string;
+  localAiRuntimeOrigin: string;
 }
 
 export interface PreparedTemplate {
   templateId: string;
   sourceStateHash: string;
-  attestation: ProductPathAttestation;
+  attestation: LocalProductTemplateAttestation;
+  preparationCostUsd: number;
 }
 
 export interface ReplayExecutionHandle {
   /** Unique database clone identity for this execution generation. */
   cloneId: string | null;
-  productPathAttestation: ProductPathAttestation | null;
+  productPathAttestation: ReplayProductPathAttestation | null;
   activateCredential(): void | Promise<void>;
   revokeCredential(): void | Promise<void>;
   run(input: {
     lifecycle: ReturnType<typeof createCoordinatorHarborLifecycle>;
+    signal?: AbortSignal;
   }): Promise<ReplayTelemetryMergeInput>;
   close(): Promise<void>;
 }
 
 export interface ExperienceReplayCoordinatorDependencies {
+  /** Random persisted identity for one physical run, separate from semantics. */
+  readonly runId?: string;
   countEmbeddingTokens(text: string): number;
   runSource(input: {
     task: CoordinatorTask;
@@ -128,6 +142,7 @@ export interface ExperienceReplayCoordinatorDependencies {
     freezeManifestPath: string;
     lifecycle: ReturnType<typeof createCoordinatorHarborLifecycle>;
     config: ResolvedExperienceReplayConfig;
+    signal?: AbortSignal;
   }): Promise<SourceAttemptExecution>;
   prepareTemplate(input: {
     task: CoordinatorTask;
@@ -136,6 +151,7 @@ export interface ExperienceReplayCoordinatorDependencies {
     sanitizedSource: AtifSanitizationResult | null;
     runRoot: string;
     config: ResolvedExperienceReplayConfig;
+    signal?: AbortSignal;
   }): Promise<PreparedTemplate>;
   createReplay(input: {
     task: CoordinatorTask;
@@ -146,8 +162,12 @@ export interface ExperienceReplayCoordinatorDependencies {
     sourceTaskDigest: string | null;
     runRoot: string;
     config: ResolvedExperienceReplayConfig;
+    signal?: AbortSignal;
   }): Promise<ReplayExecutionHandle>;
-  teardown(): Promise<void>;
+  adoptTemplate?(template: PreparedTemplate): Promise<PreparedTemplate>;
+  teardown(options?: { preserveTemplates?: boolean }): Promise<void>;
+  /** Redacted cleanup proofs exposed by concrete product adapters. */
+  cleanupAttestations?(): readonly unknown[];
 }
 
 export interface ExperienceReplayRunResult {
@@ -178,10 +198,10 @@ const missingDependencies = (): never => {
 
 const defaultDependencies: ExperienceReplayCoordinatorDependencies = {
   countEmbeddingTokens: () => missingDependencies(),
-  runSource: async () => missingDependencies(),
-  prepareTemplate: async () => missingDependencies(),
-  createReplay: async () => missingDependencies(),
-  teardown: async () => undefined
+  runSource: () => Promise.resolve().then(() => missingDependencies()),
+  prepareTemplate: () => Promise.resolve().then(() => missingDependencies()),
+  createReplay: () => Promise.resolve().then(() => missingDependencies()),
+  teardown: () => Promise.resolve()
 };
 
 const attemptId = (
@@ -226,6 +246,51 @@ const publishOrVerifyArtifact = async (
   }
 };
 
+const publishOrVerifyJson = async (
+  runRoot: string,
+  relativePath: string,
+  value: unknown
+): Promise<void> =>
+  publishOrVerifyArtifact(
+    runRoot,
+    relativePath,
+    `${JSON.stringify(value, null, 2)}\n`
+  );
+
+const publishAttemptResult = async (
+  directory: SafeRunDirectory,
+  journal: RunJournal,
+  input: {
+    attemptId: string;
+    executionGeneration: number;
+    resultPath: string;
+    artifact: Record<string, unknown>;
+    reward: number | null;
+    failureCategory: string | null;
+  }
+): Promise<void> => {
+  const artifact = {
+    ...input.artifact,
+    attemptId: input.attemptId,
+    executionGeneration: input.executionGeneration
+  };
+  const contents = `${JSON.stringify(artifact, null, 2)}\n`;
+  await publishOrVerifyArtifact(directory.root, input.resultPath, contents);
+  await journal.append({
+    type: "attempt_result",
+    attemptId: input.attemptId,
+    executionGeneration: input.executionGeneration,
+    resultPath: input.resultPath,
+    resultSha256: coordinatorArtifactHash(contents),
+    resultIdentity: {
+      attemptId: input.attemptId,
+      executionGeneration: input.executionGeneration
+    },
+    reward: input.reward,
+    failureCategory: input.failureCategory
+  });
+};
+
 const taskContracts = (
   tasks: readonly CoordinatorTask[]
 ): TaskRewardContract[] =>
@@ -240,7 +305,11 @@ const reportFromOutcomes = async (
   config: ResolvedExperienceReplayConfig,
   tasks: readonly CoordinatorTask[],
   outcomes: readonly ReplayOutcome[],
-  preparationCostUsd = 0
+  preparationCostUsd = 0,
+  runId = immutableHash({
+    config: config.semantic_config_hash,
+    tasks: tasks.map(({ taskDigest }) => taskDigest)
+  }).slice(0, 16)
 ): Promise<void> => {
   const contracts = taskContracts(tasks);
   const comparisons = REQUIRED_COMPARISONS.map((comparison) =>
@@ -252,10 +321,7 @@ const reportFromOutcomes = async (
     )
   );
   const report = createMachineReport({
-    runId: immutableHash({
-      config: config.semantic_config_hash,
-      tasks: tasks.map(({ taskDigest }) => taskDigest)
-    }).slice(0, 16),
+    runId,
     profile: config.profile,
     model: config.coding_agent.id,
     taskCount: tasks.length,
@@ -265,7 +331,16 @@ const reportFromOutcomes = async (
     comparisons,
     attempts: outcomes,
     exclusions: [],
-    detailFiles: ["manifest.json", "schedule.json", "journal.jsonl"]
+    detailFiles: [
+      "manifest.json",
+      "schedule.json",
+      "journal.jsonl",
+      "preparation-telemetry.json",
+      "cost-admission.json",
+      "attestations/preflight.json",
+      "attestations/product-path.json",
+      "attestations/cleanup.json"
+    ]
   });
   await publishOrVerifyArtifact(
     runRoot,
@@ -295,33 +370,74 @@ const selectedTasks = (preflight: PreflightResult): CoordinatorTask[] => {
   }));
 };
 
-const assertProductAttestation: (
-  value: ProductPathAttestation | null,
+const SHA256 = /^(?:sha256:)?[a-f0-9]{64}$/u;
+
+const assertTemplateAttestation: (
+  value: LocalProductTemplateAttestation | null,
   label: string
-) => asserts value is ProductPathAttestation = (value, label) => {
+) => asserts value is LocalProductTemplateAttestation = (value, label) => {
   if (
     !value ||
-    value.canonicalNormalizedImport !== true ||
-    value.projection !== true ||
-    value.semanticReadiness !== true ||
-    value.databaseTemplate !== true ||
-    value.postgres !== true ||
-    value.redis !== true ||
-    value.mcpBridge !== true ||
-    value.localAiRuntime !== true
+    value.schema !== "koed-experience-replay-local-product-template-v1" ||
+    value.database.migrationsCurrent !== true ||
+    value.readiness.ready !== true ||
+    value.frozenDatabase.allowConnections !== false ||
+    value.frozenDatabase.isTemplate !== true ||
+    value.identity.apiToken.ownerUserId !== value.identity.user.id ||
+    value.project.ownerUserId !== value.identity.user.id ||
+    !SHA256.test(value.database.stateHash)
   ) {
-    throw new Error(`${label} lacks a complete product-path attestation`);
+    throw new Error(`${label} lacks a complete template attestation`);
+  }
+};
+
+const assertReplayAttestation = (
+  value: ReplayProductPathAttestation | null,
+  cloneId: string,
+  template: PreparedTemplate,
+  label: string
+): void => {
+  if (
+    !value ||
+    value.schema !== "koed-experience-replay-product-path-v1" ||
+    value.cloneId !== cloneId ||
+    value.databaseName !== cloneId ||
+    value.templateId !== template.templateId ||
+    value.templateAttestationHash !== immutableHash(template.attestation) ||
+    !SHA256.test(value.redisEndpointHash)
+  ) {
+    throw new Error(`${label} lacks a complete runtime attestation`);
+  }
+  for (const [origin, name] of [
+    [value.apiOrigin, "API"],
+    [value.mcpBridgeOrigin, "MCP bridge"],
+    [value.localAiRuntimeOrigin, "Local AI Runtime"]
+  ] as const) {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1") {
+      throw new Error(`${label} ${name} is not isolated to loopback`);
+    }
   }
 };
 
 const resultPathFor = (
   task: CoordinatorTask,
   condition: ReplayCondition,
-  repeat: number
-) => `attempts/${safeTaskName(task.name)}/${condition}/${repeat}/result.json`;
+  repeat: number,
+  generation: number
+) =>
+  `attempts/${safeTaskName(task.name)}/${condition}/${repeat}/generation-${generation}/result.json`;
 
-const sourceResultPathFor = (task: CoordinatorTask) =>
-  `source/${safeTaskName(task.name)}/result.json`;
+const failureResultPathFor = (
+  task: CoordinatorTask,
+  condition: ReplayCondition,
+  repeat: number,
+  generation: number
+) =>
+  `attempts/${safeTaskName(task.name)}/${condition}/${repeat}/generation-${generation}/failure-result.json`;
+
+const sourceResultPathFor = (task: CoordinatorTask, generation: number) =>
+  `source/${safeTaskName(task.name)}/generation-${generation}/result.json`;
 
 const validateReplayIdentity = (
   telemetry: ReplayTelemetryMergeInput,
@@ -341,11 +457,98 @@ const validateReplayIdentity = (
   }
 };
 
+const failedReplayOutcome = (
+  task: CoordinatorTask,
+  condition: ReplayCondition,
+  repeat: number,
+  input: {
+    category:
+      | "admission_rejected"
+      | "setup_failed"
+      | "setup_timeout"
+      | "agent_failed"
+      | "agent_timeout"
+      | "teardown_failed"
+      | "missing_outcome";
+    phase: "admission" | "setup" | "agent" | "teardown";
+    costUsd: number;
+    kind?: "agent" | "infrastructure";
+  }
+): ReplayOutcome => ({
+  taskDigest: task.taskDigest,
+  condition,
+  repeat,
+  reward: null,
+  passed: null,
+  costUsd: input.costUsd,
+  failureCategory: input.category,
+  failureKind: input.kind ?? "infrastructure",
+  failurePhase: input.phase
+});
+
+const schedulerTelemetry = <T>(
+  results: readonly import("./replay-scheduler.js").ReplaySchedulerJobResult<T>[]
+) =>
+  results.map((result) => ({
+    id: result.id,
+    status: result.status,
+    admitted: result.admitted,
+    observedCostUsd: result.observedCostUsd,
+    ...(result.status === "not_started" ? { reason: result.reason } : {})
+  }));
+
+const readAttestedResult = async <T>(
+  runRoot: string,
+  entry: Extract<RunJournalEntry, { type: "attempt_result" }>
+): Promise<T> => {
+  const contents = await readTextFileNoFollow(
+    path.join(runRoot, entry.resultPath),
+    64 * 1024 * 1024
+  );
+  if (coordinatorArtifactHash(contents) !== entry.resultSha256)
+    throw new Error(`Attempt ${entry.attemptId} result digest changed`);
+  const value = JSON.parse(contents) as T & {
+    attemptId?: unknown;
+    executionGeneration?: unknown;
+  };
+  if (
+    value.attemptId !== entry.attemptId ||
+    value.executionGeneration !== entry.executionGeneration
+  )
+    throw new Error(`Attempt ${entry.attemptId} result identity changed`);
+  return value;
+};
+
+const completedEntry = (
+  entries: readonly RunJournalEntry[],
+  id: string
+): Extract<RunJournalEntry, { type: "attempt_result" }> | undefined =>
+  entries.find(
+    (entry): entry is Extract<RunJournalEntry, { type: "attempt_result" }> =>
+      entry.type === "attempt_result" && entry.attemptId === id
+  );
+
+const artifactExists = async (
+  runRoot: string,
+  relativePath: string
+): Promise<boolean> => {
+  try {
+    await readTextFileNoFollow(path.join(runRoot, relativePath), 1);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // A size-limit error still proves a regular, non-symlink artifact exists.
+    if ((error as Error).message.includes("exceeds")) return true;
+    throw error;
+  }
+};
+
 export const runExperienceReplay = async (
   config: ResolvedExperienceReplayConfig,
   options: {
     preflight?: PreflightResult;
     dependencies?: ExperienceReplayCoordinatorDependencies;
+    resumeRunDirectory?: string;
   } = {}
 ): Promise<ExperienceReplayRunResult> => {
   const dependencies = options.dependencies ?? defaultDependencies;
@@ -358,24 +561,84 @@ export const runExperienceReplay = async (
   if (tasks.length !== config.task_count)
     throw new Error(`Profile ${config.profile} selected the wrong task count`);
 
+  const outputPath = options.resumeRunDirectory ?? config.output_dir;
+  if (
+    options.resumeRunDirectory &&
+    path.resolve(options.resumeRunDirectory) !== path.resolve(config.output_dir)
+  )
+    throw new Error("Resolved configuration output directory differs from run");
   const created = await SafeRunDirectory.create({
-    outputPath: config.output_dir,
+    outputPath,
     repositoryRoot: admitted.repositoryRoot,
     requiredBytes: admitted.capacity.requiredBytes,
     reserveBytes: admitted.capacity.reserveBytes
   });
   const directory = created.directory;
-  const journal = new RunJournal(directory, config.semantic_config_hash);
+  const priorEntries = options.resumeRunDirectory
+    ? await readRunJournal(
+        path.join(directory.root, "journal.jsonl"),
+        config.semantic_config_hash
+      )
+    : [];
+  const journal = new RunJournal(
+    directory,
+    config.semantic_config_hash,
+    priorEntries
+  );
   const sources = new Map<string, SourceRecord>();
   const templates = new Map<string, PreparedTemplate>();
   const templateRecords: PersistedTemplate[] = [];
   const outcomes: ReplayOutcome[] = [];
   const cloneIds = new Set<string>();
+  const productPathAttestations: Array<{
+    attemptId: string;
+    attestation: ReplayProductPathAttestation;
+  }> = [];
+  const costAdmission =
+    config.profile === "smoke"
+      ? undefined
+      : new CostAdmissionController(
+          config.paid_cost_stop_usd!,
+          config.admission.provider_spending_limit_usd!,
+          config.concurrency
+        );
+  let preparationCostUsd: number;
   let productPathExercised = false;
   let primaryFailure: unknown;
-  const manifest = {
+  let cleanupFailure: unknown;
+  const priorManifest = options.resumeRunDirectory
+    ? await readJsonArtifact<
+        {
+          run_id: string;
+          configuration_hash: string;
+          profile: string;
+          task_digests: string[];
+        } & Record<string, unknown>
+      >(directory.root, "manifest.json")
+    : undefined;
+  if (options.resumeRunDirectory && config.profile !== "smoke") {
+    const priorPreflight = await readJsonArtifact<{
+      recordedRunAttestation: PreflightResult["recordedRunAttestation"];
+    }>(directory.root, "attestations/preflight.json");
+    if (
+      !priorPreflight.recordedRunAttestation ||
+      !admitted.recordedRunAttestation ||
+      immutableHash(priorPreflight.recordedRunAttestation) !==
+        immutableHash(admitted.recordedRunAttestation)
+    ) {
+      throw new Error(
+        "Recorded runtime attestation differs from the persisted run"
+      );
+    }
+  }
+  const runId = priorManifest?.run_id ?? dependencies.runId ?? randomUUID();
+  if (dependencies.runId && dependencies.runId !== runId) {
+    throw new Error("Runtime adapter run identity differs from persisted run");
+  }
+  const proposedManifest = {
     manifest_version: 1,
     benchmark_kind: "koed_experience_replay",
+    run_id: runId,
     standard_leaderboard_comparable: false,
     profile: config.profile,
     configuration_hash: config.semantic_config_hash,
@@ -387,61 +650,173 @@ export const runExperienceReplay = async (
       subset_hash: admitted.pins.subsetHash,
       uv_lock_hash: admitted.pins.uvLockHash
     },
-    capacity: admitted.capacity
+    capacity: admitted.capacity,
+    execution_boundary: {
+      deterministic_no_paid_or_network_calls: config.profile === "smoke",
+      product_path_attestation_required: true,
+      terminal_bench_estimate: config.profile !== "smoke"
+    }
   };
+  if (
+    priorManifest &&
+    (priorManifest.configuration_hash !== config.semantic_config_hash ||
+      priorManifest.profile !== config.profile ||
+      immutableHash(priorManifest.task_digests) !==
+        immutableHash(tasks.map((task) => task.taskDigest)))
+  ) {
+    throw new Error("Persisted run manifest differs from resolved execution");
+  }
+  const manifest = priorManifest ?? proposedManifest;
+  const lease = await acquireRunLease(directory.root);
 
   try {
     await phase(journal, "preflight", "started");
-    await directory.writeJson("config.resolved.json", config);
+    await publishOrVerifyJson(directory.root, "config.resolved.json", config);
+    await publishOrVerifyJson(directory.root, "manifest.json", manifest);
+    if (!options.resumeRunDirectory)
+      await publishOrVerifyJson(directory.root, "attestations/preflight.json", {
+        schema: "koed-experience-replay-preflight-v1",
+        repositoryRoot: admitted.repositoryRoot,
+        pins: admitted.pins,
+        capacity: admitted.capacity,
+        recordedModelPathReady: admitted.recordedModelPathReady,
+        recordedRunAttestation: admitted.recordedRunAttestation
+      });
     await phase(journal, "preflight", "completed");
 
+    const schedule = createReplaySchedule(
+      tasks.map((task) => task.taskDigest),
+      config.replay_attempts_per_condition,
+      config.seed
+    );
+    verifyReplaySchedule(schedule);
+    await phase(journal, "replay_schedule", "started");
+    await publishOrVerifyJson(directory.root, "schedule.json", schedule);
+    await phase(journal, "replay_schedule", "completed");
+
     await phase(journal, "source_attempts", "started");
+    const sourceJobs: ReplaySchedulerJob<SourceRecord>[] = [];
+    const sourceDecisions = new Map(
+      planAttemptResume(
+        tasks.map((task) => `source:${task.taskDigest}`),
+        priorEntries
+      ).map((decision) => [decision.attemptId, decision])
+    );
     for (const task of tasks) {
       const id = `source:${task.taskDigest}`;
-      const taskRoot = `source/${safeTaskName(task.name)}`;
-      await journal.append({
-        type: "attempt_state",
-        attemptId: id,
-        executionGeneration: 1,
-        state: "admitted"
+      const decision = sourceDecisions.get(id)!;
+      if (decision.action === "skip_completed") {
+        const entry = completedEntry(priorEntries, id)!;
+        const source = await readAttestedResult<SourceAttemptExecution>(
+          directory.root,
+          entry
+        );
+        if (source.reward === null)
+          throw new Error(
+            `Source ${task.name} crossed the irreversible agent boundary without a result; dependent preparation is forbidden`
+          );
+        sources.set(task.taskDigest, { ...source, task });
+        continue;
+      }
+      if (decision.action === "preserve_missing") {
+        const generation = decision.nextExecutionGeneration;
+        const resultPath = sourceResultPathFor(task, generation);
+        await publishAttemptResult(directory, journal, {
+          attemptId: id,
+          executionGeneration: generation,
+          resultPath,
+          artifact: {
+            reward: null,
+            passed: false,
+            costUsd:
+              config.profile === "smoke"
+                ? 0
+                : config.maximum_top_level_attempt_cost_usd,
+            failureCategory: "missing_outcome"
+          },
+          reward: null,
+          failureCategory: "missing_outcome"
+        });
+        throw new Error(
+          `Source ${task.name} crossed the irreversible agent boundary without a result; dependent preparation is forbidden`
+        );
+      }
+      const generation = decision.nextExecutionGeneration;
+      const taskRoot = `source/${safeTaskName(task.name)}/generation-${generation}`;
+      sourceJobs.push({
+        id,
+        maximumCostUsd: Math.max(
+          Number.EPSILON,
+          config.maximum_top_level_attempt_cost_usd
+        ),
+        async run({ signal }) {
+          await journal.append({
+            type: "attempt_state",
+            attemptId: id,
+            executionGeneration: generation,
+            state: "admitted"
+          });
+          const lifecycle = createCoordinatorHarborLifecycle({
+            attemptId: id,
+            executionGeneration: generation,
+            journal,
+            activateCredential: () => undefined,
+            revokeCredential: () => undefined
+          });
+          if (signal.aborted)
+            throw new Error("Source attempt was cancelled before Harbor start");
+          const source = await dependencies.runSource({
+            task,
+            attemptId: id,
+            executionGeneration: generation,
+            runRoot: directory.root,
+            freezeTrajectoryPath: `${taskRoot}/frozen-trajectory.json`,
+            freezeManifestPath: `${taskRoot}/freeze-manifest.json`,
+            lifecycle,
+            config,
+            signal
+          });
+          const resultPath = sourceResultPathFor(task, generation);
+          await publishAttemptResult(directory, journal, {
+            attemptId: id,
+            executionGeneration: generation,
+            resultPath,
+            artifact: { ...source },
+            reward: source.reward,
+            failureCategory: source.reward === null ? "missing_outcome" : null
+          });
+          return {
+            value: { ...source, task },
+            observedCostUsd: source.costUsd
+          };
+        }
       });
-      const lifecycle = createCoordinatorHarborLifecycle({
-        attemptId: id,
-        executionGeneration: 1,
-        journal,
-        activateCredential: () => undefined,
-        revokeCredential: () => undefined
-      });
-      const source = await dependencies.runSource({
-        task,
-        attemptId: id,
-        executionGeneration: 1,
-        runRoot: directory.root,
-        freezeTrajectoryPath: `${taskRoot}/frozen-trajectory.json`,
-        freezeManifestPath: `${taskRoot}/freeze-manifest.json`,
-        lifecycle,
-        config
-      });
-      const resultPath = sourceResultPathFor(task);
-      await directory.writeJson(resultPath, {
-        attemptId: id,
-        executionGeneration: 1,
-        reward: source.reward,
-        passed: source.passed,
-        result: source.result
-      });
-      await journal.append({
-        type: "attempt_result",
-        attemptId: id,
-        executionGeneration: 1,
-        resultPath,
-        reward: source.reward,
-        failureCategory: source.reward === null ? "missing_outcome" : null
-      });
-      sources.set(task.taskDigest, {
-        ...source,
-        task
-      });
+    }
+    const sourceSchedule = await scheduleReplayJobs({
+      jobs: sourceJobs,
+      concurrency: config.concurrency,
+      ...(config.profile === "smoke"
+        ? { mode: "smoke" as const }
+        : {
+            mode: "paid" as const,
+            paidCostStopUsd: config.paid_cost_stop_usd!,
+            providerSpendingLimitUsd:
+              config.admission.provider_spending_limit_usd!,
+            costAdmission
+          })
+    });
+    for (const result of sourceSchedule.results) {
+      if (result.status === "completed")
+        sources.set(result.value.task.taskDigest, result.value);
+      else if (result.status === "failed" || result.status === "cancelled")
+        throw result.error;
+      else throw new Error("Paid stop prevented the complete source cohort");
+    }
+    for (const source of sources.values()) {
+      if (source.reward === null)
+        throw new Error(
+          `Source ${source.task.name} has no valid result; dependent preparation is forbidden`
+        );
     }
     await phase(journal, "source_attempts", "completed");
 
@@ -457,7 +832,8 @@ export const runExperienceReplay = async (
       });
       source.sanitization = sanitization;
       const taskRoot = `source/${safeTaskName(task.name)}`;
-      await directory.writeJson(
+      await publishOrVerifyJson(
+        directory.root,
         `${taskRoot}/sanitization.json`,
         sanitization.manifest
       );
@@ -485,10 +861,34 @@ export const runExperienceReplay = async (
       config.seed
     );
     verifyPlaceboAssignment(assignment);
-    await directory.writeJson("placebo-assignment.json", assignment);
+    await publishOrVerifyJson(
+      directory.root,
+      "placebo-assignment.json",
+      assignment
+    );
     await phase(journal, "placebo_assignment", "completed");
 
     await phase(journal, "canonical_koed_ingestion", "started");
+    await phase(journal, "semantic_readiness", "started");
+    await phase(journal, "template_creation", "started");
+    const replayDecisions = new Map(
+      planAttemptResume(expectedReplayAttempts(schedule), priorEntries).map(
+        (decision) => [decision.attemptId, decision]
+      )
+    );
+    const neededTemplateKeys = new Set<string>();
+    for (const scheduleEntry of schedule.entries) {
+      for (const condition of scheduleEntry.conditions) {
+        if (
+          condition !== "cold" &&
+          replayDecisions.get(
+            attemptId(scheduleEntry.taskDigest, condition, scheduleEntry.repeat)
+          )?.action === "rerun_before_agent"
+        )
+          neededTemplateKeys.add(`${scheduleEntry.taskDigest}:${condition}`);
+      }
+    }
+    const templateJobs: ReplaySchedulerJob<PersistedTemplate>[] = [];
     for (const task of tasks) {
       for (const condition of ["empty", "placebo", "relevant"] as const) {
         const sourceDigest =
@@ -502,200 +902,587 @@ export const runExperienceReplay = async (
         if (condition !== "empty" && !sourceDigest)
           throw new Error(`Missing ${condition} source for ${task.name}`);
         const source = sourceDigest ? sources.get(sourceDigest) : undefined;
-        const prepared = await dependencies.prepareTemplate({
-          task,
-          condition,
-          sourceTask: source?.task ?? null,
-          sanitizedSource: source?.sanitization ?? null,
-          runRoot: directory.root,
-          config
-        });
-        assertProductAttestation(
-          prepared.attestation,
-          `${task.name} ${condition} template`
-        );
-        const key = `${task.taskDigest}:${condition}`;
-        if (templates.has(key)) throw new Error(`Duplicate template ${key}`);
-        templates.set(key, prepared);
-        templateRecords.push({
-          taskDigest: task.taskDigest,
-          condition,
-          sourceTaskDigest: sourceDigest,
-          template: prepared
+        const templatePath = `templates/${task.taskDigest.slice(-64)}/${condition}.json`;
+        try {
+          const persisted = await readJsonArtifact<PersistedTemplate>(
+            directory.root,
+            templatePath
+          );
+          if (
+            persisted.taskDigest !== task.taskDigest ||
+            persisted.condition !== condition ||
+            persisted.sourceTaskDigest !== sourceDigest
+          )
+            throw new Error(
+              `Persisted template identity changed: ${templatePath}`
+            );
+          assertTemplateAttestation(
+            persisted.template.attestation,
+            `${task.name} ${condition} persisted template`
+          );
+          let adopted = persisted.template;
+          if (neededTemplateKeys.has(`${task.taskDigest}:${condition}`)) {
+            if (!dependencies.adoptTemplate)
+              throw new Error(
+                "Runtime adapter cannot re-attest persisted templates"
+              );
+            adopted = await dependencies.adoptTemplate(persisted.template);
+            assertTemplateAttestation(
+              adopted.attestation,
+              `${task.name} ${condition} adopted template`
+            );
+            if (immutableHash(adopted) !== immutableHash(persisted.template))
+              throw new Error(
+                `Adopted template identity changed: ${templatePath}`
+              );
+          }
+          const record = { ...persisted, template: adopted };
+          templates.set(`${task.taskDigest}:${condition}`, adopted);
+          templateRecords.push(record);
+          continue;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        templateJobs.push({
+          id: `template:${task.taskDigest}:${condition}`,
+          maximumCostUsd: Math.max(
+            Number.EPSILON,
+            config.maximum_top_level_attempt_cost_usd
+          ),
+          async run({ signal }) {
+            if (signal.aborted)
+              throw new Error("Template preparation was cancelled");
+            const prepared = await dependencies.prepareTemplate({
+              task,
+              condition,
+              sourceTask: source?.task ?? null,
+              sanitizedSource: source?.sanitization ?? null,
+              runRoot: directory.root,
+              config,
+              signal
+            });
+            assertTemplateAttestation(
+              prepared.attestation,
+              `${task.name} ${condition} template`
+            );
+            if (
+              !Number.isFinite(prepared.preparationCostUsd) ||
+              prepared.preparationCostUsd < 0
+            ) {
+              throw new Error("Template preparation cost is invalid");
+            }
+            const record = {
+              taskDigest: task.taskDigest,
+              condition,
+              sourceTaskDigest: sourceDigest,
+              template: prepared
+            };
+            await publishOrVerifyJson(directory.root, templatePath, record);
+            return {
+              value: record,
+              observedCostUsd: prepared.preparationCostUsd
+            };
+          }
         });
       }
     }
+    const templateSchedule = await scheduleReplayJobs({
+      jobs: templateJobs,
+      concurrency: config.concurrency,
+      ...(config.profile === "smoke"
+        ? { mode: "smoke" as const }
+        : {
+            mode: "paid" as const,
+            paidCostStopUsd: config.paid_cost_stop_usd!,
+            providerSpendingLimitUsd:
+              config.admission.provider_spending_limit_usd!,
+            costAdmission
+          })
+    });
+    if (
+      !options.resumeRunDirectory ||
+      !(await artifactExists(directory.root, "preparation-telemetry.json"))
+    )
+      await publishOrVerifyJson(directory.root, "preparation-telemetry.json", {
+        schema: "koed-experience-replay-preparation-telemetry-v1",
+        scheduler: templateSchedule.snapshot,
+        jobs: schedulerTelemetry(templateSchedule.results)
+      });
+    preparationCostUsd =
+      templateRecords.reduce(
+        (sum, record) => sum + record.template.preparationCostUsd,
+        0
+      ) +
+      templateSchedule.results.reduce(
+        (sum, result) => sum + result.observedCostUsd,
+        0
+      );
+    for (const result of templateSchedule.results) {
+      if (result.status === "failed" || result.status === "cancelled")
+        throw result.error;
+      if (result.status !== "completed")
+        throw new Error("Paid stop prevented the complete template cohort");
+      const record = result.value;
+      const key = `${record.taskDigest}:${record.condition}`;
+      if (templates.has(key)) throw new Error(`Duplicate template ${key}`);
+      templates.set(key, record.template);
+      templateRecords.push(record);
+    }
     await phase(journal, "canonical_koed_ingestion", "completed");
-    await phase(journal, "semantic_readiness", "started");
     await phase(journal, "semantic_readiness", "completed");
-    await phase(journal, "template_creation", "started");
-    await directory.writeJson("templates.json", templateRecords);
-    await phase(journal, "template_creation", "completed");
-
-    await phase(journal, "replay_schedule", "started");
-    const schedule = createReplaySchedule(
-      tasks.map((task) => task.taskDigest),
-      config.replay_attempts_per_condition,
-      config.seed
+    templateRecords.sort((left, right) =>
+      `${left.taskDigest}:${left.condition}`.localeCompare(
+        `${right.taskDigest}:${right.condition}`
+      )
     );
-    verifyReplaySchedule(schedule);
-    await directory.writeJson("schedule.json", schedule);
-    await phase(journal, "replay_schedule", "completed");
+    await publishOrVerifyJson(
+      directory.root,
+      "templates.json",
+      templateRecords
+    );
+    await phase(journal, "template_creation", "completed");
 
     await phase(journal, "replay_execution", "started");
     const taskByDigest = new Map(tasks.map((task) => [task.taskDigest, task]));
+    const replayJobs: ReplaySchedulerJob<ReplayOutcome>[] = [];
+    const replayJobMetadata: Array<{
+      task: CoordinatorTask;
+      condition: ReplayCondition;
+      repeat: number;
+    }> = [];
+    const completedReplayTelemetry = new Map<
+      string,
+      { value: ReplayOutcome; observedCostUsd: number }
+    >();
     for (const entry of schedule.entries) {
-      const task = taskByDigest.get(entry.taskDigest);
-      if (!task) throw new Error(`Scheduled unknown task ${entry.taskDigest}`);
       for (const condition of entry.conditions) {
+        const task = taskByDigest.get(entry.taskDigest);
+        if (!task)
+          throw new Error(`Scheduled unknown task ${entry.taskDigest}`);
         const id = attemptId(task.taskDigest, condition, entry.repeat);
-        const template =
-          condition === "cold"
-            ? null
-            : (templates.get(`${task.taskDigest}:${condition}`) ?? null);
-        if (condition !== "cold" && !template)
-          throw new Error(`Missing ${condition} template for ${task.name}`);
-        const sourceTaskDigest =
-          condition === "relevant"
-            ? task.taskDigest
-            : condition === "placebo"
-              ? (assignment.assignments.find(
-                  (item) => item.targetDigest === task.taskDigest
-                )?.sourceDigest ?? null)
-              : null;
-        await journal.append({
-          type: "attempt_state",
-          attemptId: id,
-          executionGeneration: 1,
-          state: "admitted"
-        });
-        const replay = await dependencies.createReplay({
-          task,
-          condition,
-          repeat: entry.repeat,
-          executionGeneration: 1,
-          template,
-          sourceTaskDigest,
-          runRoot: directory.root,
-          config
-        });
-        if (condition === "cold") {
-          if (replay.cloneId !== null || replay.productPathAttestation !== null)
-            throw new Error("Cold replay must have no Koed product resources");
-        } else {
-          if (!replay.cloneId)
-            throw new Error("Koed replay lacks a fresh database clone");
-          if (cloneIds.has(replay.cloneId))
-            throw new Error(
-              `Replay database clone was reused: ${replay.cloneId}`
-            );
-          cloneIds.add(replay.cloneId);
-          assertProductAttestation(
-            replay.productPathAttestation,
-            `${task.name} ${condition} replay`
+        const decision = replayDecisions.get(id)!;
+        if (decision.action === "skip_completed") {
+          const prior = completedEntry(priorEntries, id)!;
+          outcomes.push(
+            replayOutcomeFromArtifact(
+              await readAttestedResult<ReplayOutcome>(directory.root, prior)
+            )
           );
-          productPathExercised = true;
+          continue;
         }
-        const lifecycleState = { activated: false, revoked: false };
-        const lifecycle = createCoordinatorHarborLifecycle({
-          attemptId: id,
-          executionGeneration: 1,
-          journal,
-          activateCredential: async () => {
-            await replay.activateCredential();
-            lifecycleState.activated = true;
-          },
-          revokeCredential: async () => {
-            await replay.revokeCredential();
-            lifecycleState.revoked = true;
+        if (decision.action === "preserve_missing") {
+          const missing = failedReplayOutcome(task, condition, entry.repeat, {
+            category: "missing_outcome",
+            phase: "agent",
+            costUsd:
+              config.profile === "smoke"
+                ? 0
+                : config.maximum_top_level_attempt_cost_usd
+          });
+          const generation = decision.nextExecutionGeneration;
+          await publishAttemptResult(directory, journal, {
+            attemptId: id,
+            executionGeneration: generation,
+            resultPath: failureResultPathFor(
+              task,
+              condition,
+              entry.repeat,
+              generation
+            ),
+            artifact: {
+              ...missing,
+              sourceTaskDigest: null,
+              cloneId: null
+            },
+            reward: null,
+            failureCategory: "missing_outcome"
+          });
+          outcomes.push(missing);
+          continue;
+        }
+        const generation = decision.nextExecutionGeneration;
+        replayJobMetadata.push({ task, condition, repeat: entry.repeat });
+        replayJobs.push({
+          id,
+          maximumCostUsd: Math.max(
+            Number.EPSILON,
+            config.maximum_top_level_attempt_cost_usd
+          ),
+          async run({ signal }) {
+            const template =
+              condition === "cold"
+                ? null
+                : (templates.get(`${task.taskDigest}:${condition}`) ?? null);
+            if (condition !== "cold" && !template)
+              throw new Error(`Missing ${condition} template for ${task.name}`);
+            const sourceTaskDigest =
+              condition === "relevant"
+                ? task.taskDigest
+                : condition === "placebo"
+                  ? (assignment.assignments.find(
+                      (item) => item.targetDigest === task.taskDigest
+                    )?.sourceDigest ?? null)
+                  : null;
+            await journal.append({
+              type: "attempt_state",
+              attemptId: id,
+              executionGeneration: generation,
+              state: "admitted"
+            });
+            const replay = await dependencies.createReplay({
+              task,
+              condition,
+              repeat: entry.repeat,
+              executionGeneration: generation,
+              template,
+              sourceTaskDigest,
+              runRoot: directory.root,
+              config,
+              signal
+            });
+            if (condition === "cold") {
+              if (
+                replay.cloneId !== null ||
+                replay.productPathAttestation !== null
+              )
+                throw new Error(
+                  "Cold replay must have no Koed product resources"
+                );
+            } else {
+              if (!replay.cloneId)
+                throw new Error("Koed replay lacks a fresh database clone");
+              if (cloneIds.has(replay.cloneId))
+                throw new Error(
+                  `Replay database clone was reused: ${replay.cloneId}`
+                );
+              cloneIds.add(replay.cloneId);
+              assertReplayAttestation(
+                replay.productPathAttestation,
+                replay.cloneId,
+                template!,
+                `${task.name} ${condition} replay`
+              );
+              productPathAttestations.push({
+                attemptId: id,
+                attestation: structuredClone(replay.productPathAttestation!)
+              });
+              productPathExercised = true;
+            }
+            const lifecycleState = { activated: false, revoked: false };
+            const lifecycle = createCoordinatorHarborLifecycle({
+              attemptId: id,
+              executionGeneration: generation,
+              journal,
+              activateCredential: async () => {
+                await replay.activateCredential();
+                lifecycleState.activated = true;
+              },
+              revokeCredential: async () => {
+                await replay.revokeCredential();
+                lifecycleState.revoked = true;
+              }
+            });
+            let completedExecution:
+              | { value: ReplayOutcome; observedCostUsd: number }
+              | undefined;
+            let replayFailure: unknown;
+            let replayFailed = false;
+            try {
+              if (signal.aborted)
+                throw new Error("Replay was cancelled before Harbor start");
+              try {
+                const telemetry = await replay.run({ lifecycle, signal });
+                if (!lifecycleState.activated)
+                  throw new Error(
+                    "Harbor replay returned without an acknowledged agent start"
+                  );
+                if (!lifecycleState.revoked)
+                  throw new Error(
+                    "Harbor replay returned without lifecycle credential revocation"
+                  );
+                validateReplayIdentity(
+                  telemetry,
+                  task,
+                  condition,
+                  entry.repeat
+                );
+                assertCompleteReplayTelemetry(telemetry);
+                const merged = mergeReplayTelemetry(telemetry);
+                const observedCostUsd = merged.outcome.costUsd;
+                if (observedCostUsd === null || observedCostUsd === undefined)
+                  throw new Error("Replay cost telemetry is incomplete");
+                completedExecution = {
+                  value: merged.outcome,
+                  observedCostUsd
+                };
+                completedReplayTelemetry.set(id, completedExecution);
+              } catch (error) {
+                if (!lifecycleState.activated) throw error;
+                const category =
+                  (error as { category?: string }).category === "timeout"
+                    ? "agent_timeout"
+                    : (error as { category?: string }).category ===
+                        "process-exit"
+                      ? "agent_failed"
+                      : "missing_outcome";
+                const conservativeCostUsd =
+                  config.profile === "smoke"
+                    ? 0
+                    : config.maximum_top_level_attempt_cost_usd;
+                const missing: ReplayOutcome = {
+                  taskDigest: task.taskDigest,
+                  condition,
+                  repeat: entry.repeat,
+                  reward: null,
+                  passed: null,
+                  costUsd: conservativeCostUsd,
+                  failureCategory: category,
+                  failureKind:
+                    category === "agent_timeout" || category === "agent_failed"
+                      ? "agent"
+                      : "infrastructure",
+                  failurePhase: "agent"
+                };
+                completedExecution = {
+                  value: missing,
+                  observedCostUsd: conservativeCostUsd
+                };
+                completedReplayTelemetry.set(id, completedExecution);
+              }
+            } catch (error) {
+              replayFailure = error;
+              replayFailed = true;
+            }
+            const cleanup = await Promise.allSettled([
+              Promise.resolve().then(() => replay.revokeCredential()),
+              Promise.resolve().then(() => replay.close())
+            ]);
+            const failures = cleanup
+              .filter(
+                (result): result is PromiseRejectedResult =>
+                  result.status === "rejected"
+              )
+              .map((result) => result.reason as unknown);
+            if (failures.length) {
+              throw Object.assign(
+                new AggregateError(failures, "Replay cleanup failed"),
+                {
+                  category: "teardown",
+                  completedExecution
+                }
+              );
+            }
+            if (replayFailed) throw replayFailure;
+            if (!completedExecution)
+              throw new Error("Replay completed without an outcome");
+            const resultPath = resultPathFor(
+              task,
+              condition,
+              entry.repeat,
+              generation
+            );
+            await publishAttemptResult(directory, journal, {
+              attemptId: id,
+              executionGeneration: generation,
+              resultPath,
+              artifact: {
+                ...completedExecution.value,
+                sourceTaskDigest,
+                cloneId: replay.cloneId
+              },
+              reward: completedExecution.value.reward,
+              failureCategory: completedExecution.value.failureCategory ?? null
+            });
+            return completedExecution;
           }
         });
-        try {
-          const telemetry = await replay.run({ lifecycle });
-          if (!lifecycleState.activated)
-            throw new Error(
-              "Harbor replay returned without an acknowledged agent start"
-            );
-          if (!lifecycleState.revoked)
-            throw new Error(
-              "Harbor replay returned without lifecycle credential revocation"
-            );
-          validateReplayIdentity(telemetry, task, condition, entry.repeat);
-          const merged = mergeReplayTelemetry(telemetry);
-          const resultPath = resultPathFor(task, condition, entry.repeat);
-          await directory.writeJson(resultPath, {
-            ...merged.outcome,
-            attemptId: id,
-            executionGeneration: 1,
-            sourceTaskDigest,
-            cloneId: replay.cloneId
-          });
-          await journal.append({
-            type: "attempt_result",
-            attemptId: id,
-            executionGeneration: 1,
-            resultPath,
-            reward: merged.outcome.reward,
-            failureCategory: merged.outcome.failureCategory ?? null
-          });
-          outcomes.push(merged.outcome);
-        } finally {
-          await replay.revokeCredential();
-          await replay.close();
-        }
       }
     }
+    const scheduled = await scheduleReplayJobs({
+      jobs: replayJobs,
+      concurrency: config.concurrency,
+      ...(config.profile === "smoke"
+        ? { mode: "smoke" as const }
+        : {
+            mode: "paid" as const,
+            paidCostStopUsd: config.paid_cost_stop_usd!,
+            providerSpendingLimitUsd:
+              config.admission.provider_spending_limit_usd!,
+            costAdmission
+          })
+    });
+    for (const result of scheduled.results) {
+      if (result.status === "completed") {
+        outcomes.push(result.value);
+        continue;
+      }
+      const metadata = replayJobMetadata[result.index]!;
+      if (result.status !== "not_started") {
+        const message =
+          result.error instanceof Error
+            ? result.error.message
+            : String(result.error);
+        if (
+          /attestation|clone was reused|Cold replay must|telemetry identity|immutable schedule/u.test(
+            message
+          )
+        ) {
+          throw result.error;
+        }
+      }
+      const failedExecution =
+        result.status === "not_started"
+          ? undefined
+          : (completedReplayTelemetry.get(result.id) ??
+            (
+              result.error as {
+                completedExecution?: {
+                  value: ReplayOutcome;
+                  observedCostUsd: number;
+                };
+              }
+            ).completedExecution);
+      const errorCategory =
+        result.status === "not_started"
+          ? undefined
+          : (result.error as { category?: string }).category;
+      const timeout =
+        result.status !== "not_started" && errorCategory === "timeout";
+      const failure = {
+        ...failedExecution?.value,
+        ...failedReplayOutcome(
+          metadata.task,
+          metadata.condition,
+          metadata.repeat,
+          result.status === "not_started"
+            ? {
+                category: "admission_rejected",
+                phase: "admission",
+                costUsd: 0
+              }
+            : errorCategory === "teardown"
+              ? {
+                  category: "teardown_failed",
+                  phase: "teardown",
+                  costUsd:
+                    failedExecution?.observedCostUsd ?? result.observedCostUsd
+                }
+              : {
+                  category: timeout ? "setup_timeout" : "setup_failed",
+                  phase: "setup",
+                  costUsd: result.observedCostUsd
+                }
+        )
+      } satisfies ReplayOutcome;
+      const resultPath = failureResultPathFor(
+        metadata.task,
+        metadata.condition,
+        metadata.repeat,
+        replayDecisions.get(result.id)!.nextExecutionGeneration
+      );
+      const generation = replayDecisions.get(
+        result.id
+      )!.nextExecutionGeneration;
+      await publishAttemptResult(directory, journal, {
+        attemptId: result.id,
+        executionGeneration: generation,
+        resultPath,
+        artifact: {
+          ...failure,
+          sourceTaskDigest: null,
+          cloneId: null
+        },
+        reward: null,
+        failureCategory: failure.failureCategory!
+      });
+      outcomes.push(failure);
+    }
+    if (
+      !options.resumeRunDirectory ||
+      !(await artifactExists(directory.root, "cost-admission.json"))
+    )
+      await publishOrVerifyJson(directory.root, "cost-admission.json", {
+        ...scheduled.snapshot,
+        jobs: schedulerTelemetry(scheduled.results)
+      });
+    if (
+      !options.resumeRunDirectory ||
+      !(await artifactExists(directory.root, "attestations/product-path.json"))
+    )
+      await publishOrVerifyJson(
+        directory.root,
+        "attestations/product-path.json",
+        productPathAttestations.sort((left, right) =>
+          left.attemptId.localeCompare(right.attemptId)
+        )
+      );
     await phase(journal, "replay_execution", "completed");
     await phase(journal, "metric_merge", "started");
     await phase(journal, "metric_merge", "completed");
-    await directory.writeJson("manifest.json", {
-      ...manifest,
-      execution_boundary: {
-        deterministic_no_paid_or_network_calls: config.profile === "smoke",
-        product_path_exercised: productPathExercised,
-        product_path_attestation_required: true,
-        terminal_bench_estimate: config.profile !== "smoke"
-      }
-    });
     await phase(journal, "report_generation", "started");
-    await reportFromOutcomes(directory.root, config, tasks, outcomes);
+    await reportFromOutcomes(
+      directory.root,
+      config,
+      tasks,
+      outcomes,
+      preparationCostUsd,
+      runId
+    );
     await phase(journal, "report_generation", "completed");
   } catch (error) {
     primaryFailure = error;
-    throw error;
   } finally {
     await phase(journal, "teardown", "started").catch(() => undefined);
     try {
-      await dependencies.teardown();
+      await dependencies.teardown({
+        preserveTemplates: primaryFailure !== undefined
+      });
       await phase(journal, "teardown", "completed");
     } catch (cleanupError) {
+      cleanupFailure = cleanupError;
       await phase(
         journal,
         "teardown",
         "blocked",
         "Resource teardown failed"
       ).catch(() => undefined);
-      if (!primaryFailure) throw cleanupError;
+    }
+    await directory
+      .writeJson("attestations/cleanup.json", {
+        schema: "koed-experience-replay-cleanup-v1",
+        complete: cleanupFailure === undefined,
+        replays: dependencies.cleanupAttestations?.() ?? []
+      })
+      .catch(() => undefined);
+    try {
+      await lease.release();
+    } catch (releaseError) {
+      cleanupFailure = cleanupFailure
+        ? new AggregateError(
+            [cleanupFailure, releaseError],
+            "Resource teardown and run-lease release failed"
+          )
+        : releaseError;
     }
   }
 
-  if (!productPathExercised)
-    throw new Error("No replay exercised the attested Koed product path");
+  if (primaryFailure !== undefined && cleanupFailure !== undefined) {
+    throw new AggregateError(
+      [primaryFailure, cleanupFailure],
+      "Experience Replay execution and cleanup failed",
+      { cause: primaryFailure }
+    );
+  }
+  if (primaryFailure !== undefined) throw primaryFailure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+
   return {
     runDirectory: directory.root,
     reportPath: path.join(directory.root, "report/summary.md"),
     replayAttemptCount: outcomes.length,
-    productPathExercised: true
+    productPathExercised
   };
 };
-
-/** Compatibility name; unlike the old implementation this runs the unified path. */
-export const runSmokeExperienceReplay = (
-  config: ResolvedExperienceReplayConfig,
-  preflight?: PreflightResult,
-  dependencies?: ExperienceReplayCoordinatorDependencies
-): Promise<ExperienceReplayRunResult> =>
-  runExperienceReplay(config, { preflight, dependencies });
 
 const expectedReplayAttempts = (schedule: ReplaySchedule): string[] =>
   schedule.entries.flatMap((entry) =>
@@ -743,7 +1530,7 @@ const outcomesFromRun = async (
       outcomes.push(
         result
           ? replayOutcomeFromArtifact(
-              await readJsonArtifact<ReplayOutcome>(runRoot, result.resultPath)
+              await readAttestedResult<ReplayOutcome>(runRoot, result)
             )
           : {
               taskDigest: scheduleEntry.taskDigest,
@@ -811,24 +1598,39 @@ export const reportExistingRun = async (
     path.join(runRoot, "journal.jsonl"),
     config.semantic_config_hash
   );
+  const templates = await readJsonArtifact<PersistedTemplate[]>(
+    runRoot,
+    "templates.json"
+  );
+  const preparationCostUsd = templates.reduce((sum, record) => {
+    const cost = record.template.preparationCostUsd;
+    if (!Number.isFinite(cost) || cost < 0)
+      throw new Error("Persisted template preparation cost is invalid");
+    return sum + cost;
+  }, 0);
+  const manifest = await readJsonArtifact<{ run_id: string }>(
+    runRoot,
+    "manifest.json"
+  );
   await reportFromOutcomes(
     runRoot,
     config,
     await tasksFromManifest(runRoot, config),
-    await outcomesFromRun(runRoot, schedule, entries)
+    await outcomesFromRun(runRoot, schedule, entries),
+    preparationCostUsd,
+    manifest.run_id
   );
   return path.join(runRoot, "report/summary.md");
 };
 
-export const reportExistingSmokeRun = reportExistingRun;
-
-/**
- * Resume is deliberately read-only until a resource adapter can re-attest the
- * persisted templates. It still enforces the no-rerun-after-agent-start rule.
- */
 export const resumeExperienceReplay = async (
-  runDirectory: string
+  runDirectory: string,
+  options: {
+    dependencies?: ExperienceReplayCoordinatorDependencies;
+    preflight?: PreflightResult;
+  } = {}
 ): Promise<string> => {
+  if (!options.dependencies) missingDependencies();
   const runRoot = await validateExistingRunDirectory(
     runDirectory,
     EXPERIENCE_REPLAY_REPOSITORY_ROOT
@@ -838,31 +1640,38 @@ export const resumeExperienceReplay = async (
     "config.resolved.json"
   );
   verifyResolvedConfig(config);
-  const schedule = await readJsonArtifact<ReplaySchedule>(
-    runRoot,
-    "schedule.json"
-  );
-  verifyReplaySchedule(schedule);
-  const entries = await readRunJournal(
-    path.join(runRoot, "journal.jsonl"),
-    config.semantic_config_hash
-  );
-  const decisions = planAttemptResume(
-    expectedReplayAttempts(schedule),
-    entries
-  );
-  const rerunnable = decisions.filter(
-    (decision) => decision.action === "rerun_before_agent"
-  );
-  if (rerunnable.length) {
-    throw new ProductPathPrerequisiteError([
-      `resume requires a template re-attestation adapter for ${rerunnable.length} pre-agent attempt(s)`
-    ]);
-  }
-  return reportExistingRun(runRoot);
+  const result = await runExperienceReplay(config, {
+    dependencies: options.dependencies,
+    ...(options.preflight ? { preflight: options.preflight } : {}),
+    resumeRunDirectory: runRoot
+  });
+  return result.reportPath;
 };
 
-export const resumeSmokeRun = resumeExperienceReplay;
+export const readExperienceReplayResumeIdentity = async (
+  runDirectory: string
+): Promise<{
+  runRoot: string;
+  config: ResolvedExperienceReplayConfig;
+  runId: string;
+}> => {
+  const runRoot = await validateExistingRunDirectory(
+    runDirectory,
+    EXPERIENCE_REPLAY_REPOSITORY_ROOT
+  );
+  const config = await readJsonArtifact<ResolvedExperienceReplayConfig>(
+    runRoot,
+    "config.resolved.json"
+  );
+  verifyResolvedConfig(config);
+  const manifest = await readJsonArtifact<{ run_id: string }>(
+    runRoot,
+    "manifest.json"
+  );
+  if (typeof manifest.run_id !== "string" || !manifest.run_id.trim())
+    throw new Error("Persisted run identity is invalid");
+  return { runRoot, config, runId: manifest.run_id };
+};
 
 export const sanitizeRunReport = async (
   runDirectory: string

@@ -196,7 +196,9 @@ export const startHarborLifecycleServer = async (
     }
   };
 
-  const server = createServer((socket) => {
+  // Harbor half-closes after writing one event. Keep the response side open
+  // until asynchronous credential/journal callbacks have been acknowledged.
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
     sockets.add(socket);
     socket.setTimeout(eventTimeoutMs, () => socket.destroy());
     let bytes = 0;
@@ -307,14 +309,17 @@ export const createCoordinatorHarborLifecycle = (
   };
   return {
     async onAgentStarted() {
-      await options.activateCredential();
+      // Commit the irreversible boundary before allowing the external agent to
+      // authenticate. A crash may conservatively preserve a missing outcome,
+      // but it can never rerun work that may already have started.
+      await options.journal.append({
+        type: "attempt_state",
+        attemptId: options.attemptId,
+        executionGeneration: options.executionGeneration,
+        state: "agent_started"
+      });
       try {
-        await options.journal.append({
-          type: "attempt_state",
-          attemptId: options.attemptId,
-          executionGeneration: options.executionGeneration,
-          state: "agent_started"
-        });
+        await options.activateCredential();
       } catch (error) {
         await revoke();
         throw error;

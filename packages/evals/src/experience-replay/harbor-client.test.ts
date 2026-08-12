@@ -79,6 +79,7 @@ const fixture = async (): Promise<{
       schema_version: "koed-harbor-run-v1",
       attempt_kind: "source",
       task_name: "terminal-bench/cad-model",
+      task_image: `registry.example/cad-model@sha256:${"c".repeat(64)}`,
       job_config: { job_name: "source-cad-model", retry: { max_retries: 0 } },
       corpus_manifest: path.join(root, "tb3.json"),
       run_root: runRoot,
@@ -170,6 +171,39 @@ describe("HarborClient", () => {
     await expect(
       new HarborClient({ executor }).run(request)
     ).resolves.toMatchObject({ schema_version: "koed-harbor-result-v1" });
+  });
+
+  it("allows a credential environment-variable name but rejects a credential value", async () => {
+    const { request } = await fixture();
+    const executor = vi.fn<SubprocessExecutor>(successfulExecution);
+    request.job_config = {
+      agents: [
+        {
+          name: "codex",
+          kwargs: {
+            config: {
+              mcp_servers: {
+                koed: {
+                  bearer_token_env_var: "KOED_BENCHMARK_MCP_TOKEN"
+                }
+              }
+            }
+          }
+        }
+      ]
+    };
+    await expect(
+      new HarborClient({ executor }).run(request)
+    ).resolves.toMatchObject({ schema_version: "koed-harbor-result-v1" });
+    (
+      request.job_config.agents as Array<{
+        kwargs: { config: { mcp_servers: { koed: Record<string, string> } } };
+      }>
+    )[0]!.kwargs.config.mcp_servers.koed.bearer_token_env_var =
+      "sk-secret-value-123456";
+    await expect(
+      new HarborClient({ executor }).run(request)
+    ).rejects.toMatchObject({ category: "invalid-request" });
   });
 
   it.each([

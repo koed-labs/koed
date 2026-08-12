@@ -57,7 +57,8 @@ describe("Harbor lifecycle acknowledgement", () => {
     const server = await startHarborLifecycleServer({
       attemptKind: "source",
       callbacks: {
-        onAgentStarted: ({ event }) => {
+        onAgentStarted: async ({ event }) => {
+          await new Promise((resolve) => setTimeout(resolve, 10));
           events.push(event);
         },
         onAgentEnded: ({ event }) => {
@@ -106,9 +107,13 @@ describe("Harbor lifecycle acknowledgement", () => {
   });
 
   it("activates and journals at agent start, then revokes exactly once", async () => {
+    const order: string[] = [];
     const activate = vi.fn();
     const revoke = vi.fn();
-    const append = vi.fn(async () => undefined);
+    activate.mockImplementation(() => order.push("activate"));
+    const append = vi.fn(async () => {
+      order.push("journal");
+    });
     const callbacks = createCoordinatorHarborLifecycle({
       attemptId: "attempt-one",
       executionGeneration: 2,
@@ -131,6 +136,7 @@ describe("Harbor lifecycle acknowledgement", () => {
       executionGeneration: 2,
       state: "agent_started"
     });
+    expect(order).toEqual(["journal", "activate"]);
     expect(await send(server, "agent_ended", { attempt_kind: "replay" })).toBe(
       true
     );

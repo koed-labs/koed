@@ -1,87 +1,181 @@
 import { describe, expect, it, vi } from "vitest";
+import type {
+  CapturedSessionRecord,
+  ConversationItemRecord,
+  EmbeddableSourceRecord,
+  LcmGraphEvent,
+  LcmGraphNode,
+  LcmGraphNodeDetail,
+  MemorySourceRepository
+} from "@koed/db";
+import type { MemorySearchResult, RetrievalMetadata } from "@koed/core";
 import {
   awaitExperienceReplayProductState,
-  createProductionNormalizedImportClient
+  createProductionNormalizedImportClient,
+  type ProductStateReadinessOptions
 } from "./product-state.js";
 
+type ProductStateRepository = ProductStateReadinessOptions["repository"];
+
 const actor = { userId: "user-a" };
-const session = {
+const session: CapturedSessionRecord = {
   id: "session-a",
+  logicalSessionId: "logical-session-a",
   ownerUserId: "user-a",
   visibility: "personal",
-  project: { id: "/project-a", name: "project-a", path: "/project-a" }
+  externalSessionId: null,
+  forkedFromExternalThreadId: null,
+  sourceRuntime: "codex",
+  captureMethod: "api",
+  model: null,
+  cwd: "/project-a",
+  sourceKind: "codex",
+  sourceAdapterVersion: "koed-normalized-import-v1",
+  sourceFingerprint: null,
+  capturedProject: {},
+  importObservedAt: null,
+  metadata: {},
+  capturedProjectProvenance: {},
+  automaticProject: null,
+  projectOverride: null,
+  project: { id: "/project-a", name: "project-a", path: "/project-a" },
+  projectAssignmentSource: "detected",
+  projectAssignmentUpdatedAt: null,
+  createdAt: "2026-08-12T00:00:00.000Z"
 };
-const item = {
+const item: ConversationItemRecord = {
   id: "item-a",
+  canonicalItemKey: "item-key-a",
   sessionId: "session-a",
+  turnId: null,
   canonicalStableItemId: "stable-a",
   sourceKind: "codex",
   sourceAdapterVersion: "koed-normalized-import-v1",
   sourceTransport: "normalized_import",
+  externalSessionId: null,
+  externalThreadId: null,
+  externalTurnId: null,
+  externalItemId: null,
   sourceRecordType: "normalized_import_item",
   sourceEventType: "user_message",
-  sourceSequence: 0
+  sourceSequence: 0,
+  idempotencyKey: "item-idempotency-a",
+  observedAt: "2026-08-12T00:00:00.000Z",
+  importObservedAt: "2026-08-12T00:00:00.000Z",
+  sourceFingerprint: null,
+  capturedProject: {},
+  createdAt: "2026-08-12T00:00:00.000Z"
 };
-const event = {
+const event: LcmGraphEvent = {
   id: "event-a",
-  ownerUserId: "user-a",
+  actor: "user",
+  eventType: "user_message",
+  sourceRuntime: "codex",
+  captureMethod: "api",
+  model: null,
   sessionId: "session-a",
   projectId: "/project-a",
+  projectName: "project-a",
+  projectPath: "/project-a",
+  threadId: null,
+  threadName: null,
+  timestamp: "2026-08-12T00:00:00.000Z",
+  sourceEventTime: null,
+  sourceSequence: 0,
+  capturedAt: "2026-08-12T00:00:00.000Z",
+  createdAt: "2026-08-12T00:00:00.000Z",
   visibility: "personal",
+  invalidatedAt: null,
+  invalidationReason: null,
+  contentPreview: "semantic source",
   metadata: {
     includeInEmbedding: true,
     includeInLcm: true,
     projectionPolicyKey: "normalized-user-message",
     projectionPolicyRevision: 1
-  }
+  },
+  linkedNodeIds: ["node-a"]
 };
-const node = {
+const node: LcmGraphNode = {
   id: "node-a",
+  kind: "leaf",
+  depth: 0,
+  summaryText: "semantic source",
   sessionId: "session-a",
   summaryStatus: "summarized",
-  summaryModel: "lcm-model"
+  summaryModel: "lcm-model",
+  visibility: "personal",
+  ownerUserId: "user-a",
+  projectId: "/project-a",
+  projectName: "project-a",
+  projectPath: "/project-a",
+  threadId: null,
+  threadName: null,
+  createdAt: "2026-08-12T00:00:00.000Z",
+  updatedAt: "2026-08-12T00:00:00.000Z",
+  invalidatedAt: null,
+  invalidationReason: null,
+  sourceEventCount: 1,
+  sourceTokenEstimate: 2,
+  summaryTokenEstimate: 2,
+  summaryPromptVersion: "v1",
+  summaryStructuredJson: null,
+  summaryStructuredSchemaVersion: null,
+  lcmAlgorithmVersion: "v1",
+  embeddingCount: 1
 };
 
-const repository = (overrides: Record<string, unknown> = {}) =>
-  ({
-    getCapturedSession: vi.fn(async () => session),
-    findConversationItemByStableIdentity: vi.fn(async () => item),
-    getLcmGraphEvent: vi.fn(async () => event),
-    getEmbeddableSource: vi.fn(async () => ({
-      sourceType: "memory_event",
-      sourceId: "event-a",
-      ownerUserId: "user-a",
-      visibility: "personal",
-      text: "semantic source",
-      sourceHash: "hash"
-    })),
-    getCurrentSourceEmbeddingChunkCount: vi.fn(async () => 2),
-    listLcmGraphNodes: vi.fn(async () => [node]),
-    getLcmGraphNode: vi.fn(async () => ({
-      ...node,
-      sources: [{ id: "event-a" }]
-    })),
-    searchMemoryNodes: vi.fn(async () => ({
-      results: [
-        {
-          nodeId: "node-a",
-          visibility: "personal",
-          summaryText: "semantic source",
-          score: 0.9,
-          citation: { nodeId: "node-a", visibility: "personal" }
-        }
-      ],
-      metadata: {
-        retrievalMode: "semantic_vector",
-        vectorHitsCount: 1,
-        textHitsCount: 0,
-        embeddingModel: "embed-model",
-        embeddingDimensions: 384,
-        semanticRetrievalComplete: true
-      }
-    })),
-    ...overrides
-  }) as any;
+const nodeDetail: LcmGraphNodeDetail = {
+  ...node,
+  sourceItems: [],
+  sources: [event],
+  childNodes: [],
+  parentNodes: []
+};
+
+const embeddableSource: EmbeddableSourceRecord = {
+  sourceType: "memory_event",
+  sourceId: "event-a",
+  ownerUserId: "user-a",
+  visibility: "personal",
+  text: "semantic source",
+  sourceHash: "hash"
+};
+
+const searchResult: MemorySearchResult = {
+  nodeId: "node-a",
+  visibility: "personal",
+  summaryText: "semantic source",
+  score: 0.9,
+  citation: { nodeId: "node-a", visibility: "personal" }
+};
+
+const semanticMetadata: RetrievalMetadata = {
+  retrievalMode: "semantic_vector",
+  vectorHitsCount: 1,
+  textHitsCount: 0,
+  embeddingModel: "embed-model",
+  embeddingDimensions: 384,
+  semanticRetrievalComplete: true
+};
+
+const repository = (
+  overrides: Partial<ProductStateRepository> = {}
+): ProductStateRepository => ({
+  createTrustedNormalizedImport: vi.fn(async () => [item]),
+  getCapturedSession: vi.fn(async () => session),
+  findConversationItemByStableIdentity: vi.fn(async () => item),
+  getLcmGraphEvent: vi.fn(async () => event),
+  getEmbeddableSource: vi.fn(async () => embeddableSource),
+  getCurrentSourceEmbeddingChunkCount: vi.fn(async () => 2),
+  listLcmGraphNodes: vi.fn(async () => [node]),
+  getLcmGraphNode: vi.fn(async () => nodeDetail),
+  searchMemoryNodes: vi.fn(async () => ({
+    results: [searchResult],
+    metadata: semanticMetadata
+  })),
+  ...overrides
+});
 
 const expectation = {
   condition: "relevant" as const,
@@ -110,10 +204,15 @@ describe("Experience Replay product state", () => {
       .fn()
       .mockResolvedValueOnce({ session: { id: "session-a" } })
       .mockResolvedValueOnce({ projection: { memoryEventIds: ["event-a"] } });
-    const createTrustedNormalizedImport = vi.fn(async () => [{ id: "item-a" }]);
+    const normalizedImportRepository: Pick<
+      MemorySourceRepository,
+      "createTrustedNormalizedImport"
+    > = {
+      createTrustedNormalizedImport: vi.fn(async () => [item])
+    };
     const client = createProductionNormalizedImportClient({
       api: { request },
-      repository: { createTrustedNormalizedImport } as any,
+      repository: normalizedImportRepository,
       actor,
       authorization: "Bearer token-a"
     });
@@ -126,7 +225,9 @@ describe("Experience Replay product state", () => {
       client.createTrustedNormalizedImport({ attestation: {}, items: [] })
     ).resolves.toEqual({ items: [{ id: "item-a" }] });
     await client.projectConversationItems({ conversationItemIds: ["item-a"] });
-    expect(createTrustedNormalizedImport).toHaveBeenCalledWith(actor, {
+    expect(
+      normalizedImportRepository.createTrustedNormalizedImport
+    ).toHaveBeenCalledWith(actor, {
       attestation: {},
       items: []
     });
@@ -150,9 +251,9 @@ describe("Experience Replay product state", () => {
       conversationItemIds: ["item-a"],
       projectedEventIds: ["event-a"],
       embeddedChunkCounts: { "event-a": 2 },
-      summarizedLcmNodeIds: ["node-a"],
-      recall: { resolvedSourceIds: expect.arrayContaining(["event-a"]) }
+      summarizedLcmNodeIds: ["node-a"]
     });
+    expect(result.recall.resolvedSourceIds).toContain("event-a");
   });
 
   it("polls boundedly until embedding and semantic source Recall are ready", async () => {
@@ -163,25 +264,10 @@ describe("Experience Replay product state", () => {
         attempt === 0 ? null : 1
       ),
       searchMemoryNodes: vi.fn(async () => ({
-        results:
-          attempt === 0
-            ? []
-            : [
-                {
-                  nodeId: "node-a",
-                  visibility: "personal",
-                  summaryText: "semantic source",
-                  score: 0.9,
-                  citation: { nodeId: "node-a", visibility: "personal" }
-                }
-              ],
+        results: attempt === 0 ? [] : [searchResult],
         metadata: {
-          retrievalMode: "semantic_vector",
-          vectorHitsCount: attempt,
-          textHitsCount: 0,
-          embeddingModel: "embed-model",
-          embeddingDimensions: 384,
-          semanticRetrievalComplete: true
+          ...semanticMetadata,
+          vectorHitsCount: attempt
         }
       }))
     });
@@ -200,16 +286,17 @@ describe("Experience Replay product state", () => {
   });
 
   it("fails closed on lexical fallback and reports the bounded attestation failure", async () => {
+    const lexicalMetadata: RetrievalMetadata = {
+      retrievalMode: "embedding_unavailable",
+      vectorHitsCount: 0,
+      textHitsCount: 1,
+      embeddingModel: null,
+      embeddingDimensions: null
+    };
     const repo = repository({
       searchMemoryNodes: vi.fn(async () => ({
         results: [],
-        metadata: {
-          retrievalMode: "embedding_unavailable",
-          vectorHitsCount: 0,
-          textHitsCount: 1,
-          embeddingModel: null,
-          embeddingDimensions: null
-        }
+        metadata: lexicalMetadata
       }))
     });
     await expect(
@@ -226,12 +313,8 @@ describe("Experience Replay product state", () => {
       searchMemoryNodes: vi.fn(async () => ({
         results: [],
         metadata: {
-          retrievalMode: "semantic_vector",
-          vectorHitsCount: 0,
-          textHitsCount: 0,
-          embeddingModel: "embed-model",
-          embeddingDimensions: 384,
-          semanticRetrievalComplete: true
+          ...semanticMetadata,
+          vectorHitsCount: 0
         }
       }))
     });

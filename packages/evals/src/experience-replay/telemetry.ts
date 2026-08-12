@@ -52,6 +52,136 @@ export interface ReplayTelemetryMergeResult {
   preparation: PreparationTelemetry;
 }
 
+const telemetrySources = [
+  ["harbor", "Harbor"],
+  ["codex", "Codex"],
+  ["koedRecall", "Koed Recall"],
+  ["modelWorkflows", "model workflow"],
+  ["embeddings", "embedding"],
+  ["processRss", "process RSS"]
+] as const;
+
+/**
+ * A scored attempt is only comparable when every mandatory observer reported.
+ * Arms with no Koed activity still report available zero-valued metrics; a
+ * missing observer is infrastructure failure, not a numeric zero.
+ */
+export const assertCompleteReplayTelemetry = (
+  input: ReplayTelemetryMergeInput
+): void => {
+  for (const [key, label] of telemetrySources) {
+    const value = input[key];
+    if (!value || value.status !== "available") {
+      throw new Error(
+        `${label} telemetry must be available before an attempt can be scored`
+      );
+    }
+  }
+  // Validate all bounded values before checking presence. An explicit null is
+  // a truthful unavailable measurement; an omitted field is an incomplete
+  // observer payload and must never be scored as if it were complete.
+  mergeReplayTelemetry(input);
+  const requireFields = (
+    value: unknown,
+    fields: readonly string[],
+    label: string
+  ): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error(`${label} must be an object`);
+    const item = value as Record<string, unknown>;
+    const missing = fields.find(
+      (field) => !Object.prototype.hasOwnProperty.call(item, field)
+    );
+    if (missing)
+      throw new Error(`${label} is missing required field ${missing}`);
+    return item;
+  };
+  requireFields(
+    input.harbor!.metrics,
+    [
+      "reward",
+      "passed",
+      "setupMs",
+      "agentMs",
+      "verifierMs",
+      "failureCategory",
+      "failureKind",
+      "failurePhase"
+    ],
+    "Harbor metrics"
+  );
+  const codex = requireFields(
+    input.codex!.metrics,
+    [
+      "tokens",
+      "costs",
+      "turns",
+      "toolCalls",
+      "toolFailures",
+      "mcpCalls",
+      "mcpFailures",
+      "memoryAnswerCalls",
+      "memoryAnswerFailures"
+    ],
+    "Codex metrics"
+  );
+  requireFields(
+    codex.tokens,
+    ["uncachedInput", "cachedInput", "output", "reasoning"],
+    "Codex token metrics"
+  );
+  requireFields(
+    codex.costs,
+    ["providerBilledUsd", "apiEquivalentUsd", "subscriptionUsd"],
+    "Codex cost metrics"
+  );
+  requireFields(
+    input.koedRecall!.metrics,
+    [
+      "searches",
+      "expansions",
+      "stages",
+      "evidenceCount",
+      "projectionMs",
+      "lcmMs",
+      "queueMs"
+    ],
+    "Koed Recall metrics"
+  );
+  const workflows = requireFields(
+    input.modelWorkflows!.metrics,
+    ["memoryAnswer", "lcmSummary", "sessionTitle"],
+    "model workflow metrics"
+  );
+  for (const name of ["memoryAnswer", "lcmSummary", "sessionTitle"] as const) {
+    const worker = requireFields(
+      workflows[name],
+      ["calls", "failures", "durationMs", "tokens", "costs"],
+      `model workflow metrics.${name}`
+    );
+    requireFields(
+      worker.tokens,
+      ["uncachedInput", "cachedInput", "output", "reasoning"],
+      `model workflow metrics.${name}.tokens`
+    );
+    requireFields(
+      worker.costs,
+      ["providerBilledUsd", "apiEquivalentUsd", "subscriptionUsd"],
+      `model workflow metrics.${name}.costs`
+    );
+  }
+  requireFields(
+    input.embeddings!.metrics,
+    ["calls", "tokens", "durationMs"],
+    "embedding metrics"
+  );
+  requireFields(
+    input.processRss!.metrics,
+    ["apiBytes", "runtimeBytes", "workerBytes"],
+    "process RSS metrics"
+  );
+};
+
 const conditions = new Set<ReplayCondition>([
   "cold",
   "empty",

@@ -16,17 +16,22 @@ import runner
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
-def lifecycle_event(trial_dir: Path) -> SimpleNamespace:
+def lifecycle_event(
+    trial_dir: Path, *, agent_exit: str = "normal"
+) -> SimpleNamespace:
     return SimpleNamespace(
         trial_id="trial-one",
         task_name="terminal-bench/cad-model",
         timestamp=datetime(2026, 8, 12, tzinfo=UTC),
-        result=SimpleNamespace(trial_uri=trial_dir.as_uri()),
+        result=SimpleNamespace(
+            trial_uri=trial_dir.as_uri(), agent_exit=agent_exit
+        ),
     )
 
 
+@pytest.mark.parametrize("agent_exit", ["normal", "timeout", "nonzero"])
 def test_source_lifecycle_freezes_before_verification(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_exit: str
 ) -> None:
     trial = tmp_path / "trial"
     trajectory = trial / "agent" / "trajectory.json"
@@ -58,8 +63,9 @@ def test_source_lifecycle_freezes_before_verification(
         freeze_destination=tmp_path / "frozen.json",
         freeze_relative_path="source/frozen.json",
     )
-    event = lifecycle_event(trial)
+    event = lifecycle_event(trial, agent_exit=agent_exit)
     async def exercise() -> None:
+        recorder.begin_run()
         await recorder.on_agent_started(event)
         await recorder.on_agent_ended(event)
         await recorder.on_verification_started(event)
@@ -81,15 +87,23 @@ def test_source_lifecycle_freezes_before_verification(
 def test_replay_lifecycle_never_freezes_trajectory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    (tmp_path / "agent").mkdir()
+    (tmp_path / "agent" / "trajectory.json").write_text(
+        json.dumps({"schema_version": "ATIF-v1.7", "steps": []})
+    )
     notifications: list[str] = []
     monkeypatch.setattr(
         runner,
         "_notify_lifecycle",
         lambda _event, name, _kind: notifications.append(name),
     )
-    recorder = runner.LifecycleRecorder(attempt_kind="replay")
+    ticks = iter([0, 10_000_000, 40_000_000, 50_000_000, 80_000_000])
+    recorder = runner.LifecycleRecorder(
+        attempt_kind="replay", clock_ns=lambda: next(ticks)
+    )
     event = lifecycle_event(tmp_path)
     async def exercise() -> None:
+        recorder.begin_run()
         await recorder.on_agent_started(event)
         await recorder.on_agent_ended(event)
         await recorder.on_verification_started(event)
@@ -98,6 +112,12 @@ def test_replay_lifecycle_never_freezes_trajectory(
     asyncio.run(exercise())
 
     assert notifications == ["agent_started", "agent_ended", "trial_ended"]
+    assert recorder.phase_timings() == {
+        "setup_ms": 10.0,
+        "agent_ms": 30.0,
+        "verifier_ms": 30.0,
+    }
+    assert recorder.interactions() == {"turns": 0, "tool_calls": 0}
     assert recorder.manifest is None
     assert not list(tmp_path.glob("**/frozen*"))
 
@@ -119,6 +139,7 @@ def test_cancelled_agent_attempt_acknowledges_without_freezing(
     )
     event = lifecycle_event(tmp_path)
     async def exercise() -> None:
+        recorder.begin_run()
         await recorder.on_agent_started(event)
         await recorder.on_trial_cancelled(event)
 
@@ -196,6 +217,23 @@ def test_run_request_rejects_unknown_top_level_key(tmp_path: Path) -> None:
     path.write_text(json.dumps(request))
 
     with pytest.raises(runner.ContractError, match="UNKNOWN_RUN_REQUEST_KEY"):
+        runner._strict_request(path)
+
+
+def test_run_request_requires_an_immutable_task_image(tmp_path: Path) -> None:
+    request = {
+        "schema_version": runner.RUN_REQUEST_SCHEMA,
+        "attempt_kind": "replay",
+        "task_name": "terminal-bench/cad-model",
+        "task_image": "registry.example/cad-model:mutable",
+        "job_config": {},
+        "corpus_manifest": "manifest.json",
+        "run_root": str(tmp_path),
+    }
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request))
+
+    with pytest.raises(runner.ContractError, match="INVALID_TASK_IMAGE"):
         runner._strict_request(path)
 
 
@@ -384,6 +422,281 @@ def test_codex_rejects_unmodeled_credential_values(env: dict[str, str]) -> None:
     with pytest.raises(runner.ContractError, match="CREDENTIAL|MCP_TOKEN"):
         runner._validate_job_config_allowlist(
             {"job_name": "safe", "agents": [{"name": "codex", "env": env}]}
+        )
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        "https://registry.example/koed",
+        "registry.example/Koed",
+        "registry.example/koed/",
+        "registry.example/../../tmp",
+        "registry.example/koed;touch-pwned",
+    ],
+)
+def test_task_image_registry_rejects_non_oci_and_command_surfaces(
+    registry: str,
+) -> None:
+    with pytest.raises(runner.ContractError, match="INVALID_OCI_REGISTRY"):
+        runner._registry_repository(registry, "terminal-bench/cad-model")
+
+
+def test_dockerfile_base_resolution_binds_arguments_and_ignores_internal_stages(
+    tmp_path: Path,
+) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        """
+ARG ROOT=ubuntu:24.04
+FROM ${ROOT} AS build
+RUN true
+FROM build AS copied
+FROM alpine:3.21
+""".strip()
+        + "\n"
+    )
+
+    dockerfile_sha256, references = runner._dockerfile_base_references(dockerfile)
+
+    assert dockerfile_sha256 == runner._sha256_file(dockerfile)
+    assert references == ["ubuntu:24.04", "alpine:3.21"]
+
+
+def test_resolved_base_digests_require_one_exact_repo_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "_run_docker",
+        lambda _docker, args, **_kwargs: commands.append(args),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_docker_inspect",
+        lambda _docker, reference: {
+            "Id": f"sha256:{'a' * 64}",
+            "RepoDigests": [
+                f"registry.example/{reference.split(':')[0]}@sha256:{'b' * 64}"
+            ],
+        },
+    )
+
+    assert runner._resolved_base_digests("/usr/bin/docker", ["base:one"]) == [
+        f"sha256:{'b' * 64}"
+    ]
+    assert commands == [["pull", "base:one"]]
+
+
+def test_runtime_versions_measure_docker_client_server_and_buildkit_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = iter(
+        [
+            SimpleNamespace(
+                stdout=json.dumps(
+                    {"Client": {"Version": "29.0.1"}, "Server": {"Version": "29.0.0"}}
+                )
+            ),
+            SimpleNamespace(stdout=json.dumps([{"Buildkit": "v0.24.0"}])),
+        ]
+    )
+    monkeypatch.setattr(
+        runner, "_run_docker", lambda _docker, _args, **_kwargs: next(outputs)
+    )
+
+    assert runner._runtime_versions("/usr/bin/docker") == (
+        "Docker client 29.0.1 server 29.0.0",
+        "BuildKit v0.24.0",
+    )
+
+
+def test_provision_task_image_uses_harbor_materialization_and_emits_only_immutable_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = runner.load_and_verify_manifest(FIXTURES / "tb3-v3.0.0.json")
+    record = next(
+        task for task in manifest["tasks"] if task["name"] == "terminal-bench/cad-model"
+    )
+    environment_dir = tmp_path / "environment"
+    environment_dir.mkdir()
+    dockerfile = environment_dir / "Dockerfile"
+    dockerfile.write_text("FROM ubuntu:24.04\n")
+    lifecycle: list[object] = []
+
+    class FakeEnvironment:
+        _use_prebuilt = False
+        _main_image_name = "hb__materialized"
+
+        async def start(self, force_build: bool) -> None:
+            lifecycle.append(("start", force_build))
+
+        async def stop(self, delete: bool) -> None:
+            lifecycle.append(("stop", delete))
+
+    fake_trial = SimpleNamespace(
+        agent_environment=FakeEnvironment(),
+        task=SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=environment_dir),
+            config=SimpleNamespace(environment=SimpleNamespace(docker_image=None)),
+        ),
+    )
+
+    class FakeJob:
+        _trial_configs = [object()]
+
+        def __len__(self) -> int:
+            return 1
+
+    async def create_job(_config: object) -> FakeJob:
+        return FakeJob()
+
+    async def create_trial(_config: object) -> SimpleNamespace:
+        return fake_trial
+
+    monkeypatch.setattr(runner.Job, "create", create_job)
+    monkeypatch.setattr(runner.Trial, "create", create_trial)
+    monkeypatch.setattr(runner, "_verify_resolved_tasks", lambda *_args: None)
+    image_id = f"sha256:{'c' * 64}"
+    content_digest = f"sha256:{'d' * 64}"
+    immutable_reference = f"registry.example/koed/tb3-cad-model@{content_digest}"
+
+    def inspect(_docker: str, reference: str) -> dict[str, object]:
+        return {
+            "Id": image_id,
+            "RepoDigests": (
+                [immutable_reference]
+                if reference != "hb__materialized"
+                else []
+            ),
+        }
+
+    docker_commands: list[list[str]] = []
+    monkeypatch.setattr(runner, "_docker_inspect", inspect)
+    monkeypatch.setattr(
+        runner,
+        "_run_docker",
+        lambda _docker, args, **_kwargs: docker_commands.append(args),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolved_base_digests",
+        lambda _docker, references: [f"sha256:{'e' * 64}"]
+        if references == ["ubuntu:24.04"]
+        else pytest.fail("unexpected bases"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runtime_versions",
+        lambda _docker: ("Docker client 29 server 29", "BuildKit 0.24"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_available_provenance_sha256",
+        lambda _docker, reference: f"sha256:{'f' * 64}"
+        if reference == immutable_reference
+        else pytest.fail("unexpected image"),
+    )
+
+    result = asyncio.run(
+        runner.provision_task_image(
+            FIXTURES / "tb3-v3.0.0.json",
+            record["name"],
+            record["task_digest"],
+            "registry.example/koed",
+            "/usr/bin/docker",
+        )
+    )
+
+    assert lifecycle == [("start", True), ("stop", True)]
+    assert docker_commands == [
+        [
+            "tag",
+            "hb__materialized",
+            f"registry.example/koed/tb3-cad-model:{record['task_digest'].removeprefix('sha256:')}",
+        ],
+        [
+            "push",
+            f"registry.example/koed/tb3-cad-model:{record['task_digest'].removeprefix('sha256:')}",
+        ],
+    ]
+    assert result == {
+        "schema_version": runner.TASK_IMAGE_SCHEMA,
+        "task_name": record["name"],
+        "task_digest": record["task_digest"],
+        "immutable_reference": immutable_reference,
+        "image_id": image_id,
+        "content_digest": content_digest,
+        "resolved_base_image_digests": [f"sha256:{'e' * 64}"],
+        "dockerfile_sha256": runner._sha256_file(dockerfile),
+        "docker_version": "Docker client 29 server 29",
+        "buildkit_version": "BuildKit 0.24",
+        "provenance_sha256": f"sha256:{'f' * 64}",
+    }
+
+
+def test_provision_task_image_fails_when_push_has_no_immutable_repo_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = runner.load_and_verify_manifest(FIXTURES / "tb3-v3.0.0.json")
+    record = next(
+        task for task in manifest["tasks"] if task["name"] == "terminal-bench/cad-model"
+    )
+    environment_dir = tmp_path / "environment"
+    environment_dir.mkdir()
+    (environment_dir / "Dockerfile").write_text("FROM scratch\n")
+
+    class FakeEnvironment:
+        _use_prebuilt = False
+        _main_image_name = "hb__materialized"
+
+        async def start(self, force_build: bool) -> None:
+            pass
+
+        async def stop(self, delete: bool) -> None:
+            pass
+
+    class FakeJob:
+        _trial_configs = [object()]
+
+        def __len__(self) -> int:
+            return 1
+
+    fake_job = FakeJob()
+    fake_trial = SimpleNamespace(
+        agent_environment=FakeEnvironment(),
+        task=SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=environment_dir),
+            config=SimpleNamespace(environment=SimpleNamespace(docker_image=None)),
+        ),
+    )
+
+    async def create_job(_config: object) -> object:
+        return fake_job
+
+    async def create_trial(_config: object) -> object:
+        return fake_trial
+
+    monkeypatch.setattr(runner.Job, "create", create_job)
+    monkeypatch.setattr(runner.Trial, "create", create_trial)
+    monkeypatch.setattr(runner, "_verify_resolved_tasks", lambda *_args: None)
+    monkeypatch.setattr(runner, "_run_docker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_docker_inspect",
+        lambda *_args: {"Id": f"sha256:{'a' * 64}", "RepoDigests": []},
+    )
+
+    with pytest.raises(runner.ContractError, match="OCI_IMMUTABLE_IDENTITY_UNAVAILABLE"):
+        asyncio.run(
+            runner.provision_task_image(
+                FIXTURES / "tb3-v3.0.0.json",
+                record["name"],
+                record["task_digest"],
+                "registry.example/koed",
+                "/usr/bin/docker",
+            )
         )
 
 
