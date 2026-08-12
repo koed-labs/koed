@@ -134,7 +134,7 @@ The fallback never opens historical auto-admission. Per-Captured-Session ETA
 adds its own pending estimated tokens to higher-priority live/normal semantic
 work and newer historical work ahead of that source. No source content is read
 to calculate this position. Source ETAs aggregate only active profiles for the
-current model key, dimensions, and processing epoch.
+current model key, dimensions, and capacity contract revision.
 
 Historical source status keeps projection-tokenizer estimates and
 adapter-measured completion tokens as separate quantities. It persists the
