@@ -3838,7 +3838,13 @@ const createFakeRepository = () => {
       );
     },
     async createTrustedNormalizedImport(actor, input) {
-      return this.createConversationItems(actor, { items: input.items });
+      const createConversationItems = this.createConversationItems;
+      if (!createConversationItems) {
+        throw new Error(
+          "Fake repository Conversation Item ingestion is absent"
+        );
+      }
+      return createConversationItems(actor, { items: input.items });
     },
     async releaseConversationProjectionHold() {
       return { conversationItemIds: [] };

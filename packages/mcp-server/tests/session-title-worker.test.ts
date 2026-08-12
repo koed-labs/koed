@@ -167,7 +167,9 @@ Please review the IDE parser parity fix.`;
         threadId: "thread-title-test",
         turnId: "turn-title-test"
       }),
-      telemetryObserver: (value) => telemetry.push(value)
+      telemetryObserver: (value) => {
+        telemetry.push(value);
+      }
     });
 
     expect(result).toMatchObject({
