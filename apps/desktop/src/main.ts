@@ -58,6 +58,7 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
+import { shouldQuitAfterAllWindowsClosed } from "./window/lifecycle.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
 import { createPersonalDevicePairingInbox } from "./personal-device-pairing-inbox.js";
 import {
@@ -408,7 +409,7 @@ if (ownsDesktopInstance) {
 }
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+  if (shouldQuitAfterAllWindowsClosed(process.platform)) {
     app.quit();
   }
 });
