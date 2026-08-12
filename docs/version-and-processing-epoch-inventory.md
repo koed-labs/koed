@@ -1,6 +1,6 @@
 # Version and Processing Epoch Inventory
 
-Status: baseline inventory for [ADR 0026](adr/0026-pre-launch-schema-reset-and-processing-epochs.md). Inventory reconciled against `main` at `53937439` plus [ADR 0027](adr/0027-embedding-capacity-telemetry.md). The current Drizzle journal spans migrations `0000`-`0027` and ends at `0027_friendly_king_cobra`. The `koed/pds/v1` wire contract and fixed fixture remain frozen. PDS governance, its fixed V1 operational Authority/Relay-host topology, versioned collaboration audiences and receipts, Team Presence, source-download operation bindings, tiered approval controls, retired Explorer state, and the single supervised Local AI Runtime are implemented baseline facts.
+Status: baseline inventory for [ADR 0026](adr/0026-pre-launch-schema-reset-and-processing-epochs.md). Inventory reconciled against `main` at `49b787e3` plus [ADR 0027](adr/0027-embedding-capacity-telemetry.md). The current Drizzle journal spans migrations `0000`-`0027` and ends at `0027_friendly_king_cobra`. The `koed/pds/v1` wire contract and fixed fixture remain frozen. PDS governance, its fixed V1 operational Authority/Relay-host topology, versioned collaboration audiences and receipts, Team Presence, source-download operation bindings, tiered approval controls, retired Explorer state, and the single supervised Local AI Runtime are implemented baseline facts.
 
 ## Reading this inventory
 
