@@ -22,12 +22,14 @@ const iso = "2026-08-10T00:00:00.000Z";
 
 const buildFixture = async (options?: {
   authorized?: boolean;
+  credentialKind?: "session" | "device_credential";
   freshSession?: boolean;
   completeArtifact?: boolean;
   streaming?: boolean;
   successfulFork?: boolean;
   forkRecords?: string[];
   listenerConnectGate?: Promise<void>;
+  authorizationRecheckMs?: number;
 }) => {
   const ids = {
     owner: randomUUID(),
@@ -160,6 +162,11 @@ const buildFixture = async (options?: {
     artifact.currentSourceLength = forkBytes.byteLength;
   }
   let authorized = options?.authorized !== false;
+  let consentActive = true;
+  let credentialAuthorized = true;
+  const sessionId = randomUUID();
+  const deviceCredentialId = randomUUID();
+  const credentialExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
   const segments = [segment];
   const auditActions: string[] = [];
   let accessReads = 0;
@@ -167,14 +174,14 @@ const buildFixture = async (options?: {
   const repository = {
     async getTeamConversationSourceAccess() {
       accessReads += 1;
-      return authorized ? { grant, artifact } : null;
+      return authorized && consentActive ? { grant, artifact } : null;
     },
     async getTeamConversationSourceManifest(
       _actor: unknown,
       input: { afterSegmentIndex: number; limit: number }
     ) {
       manifestReads += 1;
-      return authorized
+      return authorized && consentActive
         ? {
             grant,
             artifact,
@@ -187,7 +194,7 @@ const buildFixture = async (options?: {
         : null;
     },
     async getTeamConversationSourceSegment() {
-      return authorized ? { grant, artifact, segment } : null;
+      return authorized && consentActive ? { grant, artifact, segment } : null;
     },
     async recordAuditEvent(input: { action: string }) {
       auditActions.push(input.action);
@@ -230,6 +237,11 @@ const buildFixture = async (options?: {
     });
   });
   const sessionUser = async (request: FastifyRequest) => {
+    if (!credentialAuthorized) {
+      throw Object.assign(new Error("Credential is no longer valid"), {
+        statusCode: 401
+      });
+    }
     if (request.headers.authorization) {
       throw Object.assign(new Error("Session cookie required"), {
         statusCode: 401
@@ -253,16 +265,40 @@ const buildFixture = async (options?: {
             { statusCode: 403 }
           );
         }
+        if (options?.credentialKind === "device_credential") {
+          if (!/^Koed-Device /i.test(request.headers.authorization ?? "")) {
+            throw Object.assign(new Error("Device credential required"), {
+              statusCode: 401
+            });
+          }
+          if (!credentialAuthorized) {
+            throw Object.assign(new Error("Invalid device credential"), {
+              statusCode: 401
+            });
+          }
+          return viewer;
+        }
         return sessionUser(request);
       },
+      resolveDeviceCredentialContext: async () =>
+        credentialAuthorized && options?.credentialKind === "device_credential"
+          ? {
+              user: viewer,
+              credential: {
+                id: deviceCredentialId,
+                operationFamilies: ["team_workspace_read"],
+                expiresAt: credentialExpiresAt.toISOString()
+              }
+            }
+          : null,
       authenticateSessionContext: async (request: FastifyRequest) => ({
-        sessionId: randomUUID(),
+        sessionId,
         createdAt: new Date(
           options?.freshSession === false
             ? Date.now() - 60 * 60 * 1000
             : Date.now()
         ),
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        expiresAt: credentialExpiresAt,
         user: await sessionUser(request)
       })
     },
@@ -278,7 +314,8 @@ const buildFixture = async (options?: {
             return listenClient;
           }
         }
-      : null
+      : null,
+    authorizationRecheckMs: options?.authorizationRecheckMs
   });
   await app.ready();
   return {
@@ -321,6 +358,12 @@ const buildFixture = async (options?: {
     },
     revoke() {
       authorized = false;
+    },
+    expireConsent() {
+      consentActive = false;
+    },
+    revokeCredential() {
+      credentialAuthorized = false;
     },
     notify(input?: { logicalSourceId?: string; sourceGenerationId?: string }) {
       notificationListener?.({
@@ -401,6 +444,97 @@ describe("Team Conversation source routes", () => {
       "team_conversation_source.stream_opened",
       "team_conversation_source.stream_authorization_lost"
     ]);
+
+    controller.abort();
+    await fixture.service.close();
+    await fixture.app.close();
+    fixture.cleanup();
+  });
+
+  it.each(["session", "device_credential"] as const)(
+    "closes an idle source stream when its %s is revoked",
+    async (credentialKind) => {
+      const fixture = await buildFixture({
+        streaming: true,
+        credentialKind,
+        authorizationRecheckMs: 10
+      });
+      const baseUrl = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+      const controller = new AbortController();
+      const response = await fetch(
+        `${baseUrl}/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/stream`,
+        {
+          signal: controller.signal,
+          headers:
+            credentialKind === "device_credential"
+              ? { authorization: "Koed-Device fixture:secret" }
+              : undefined
+        }
+      );
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let received = "";
+      while (!received.includes('"segmentIndex":0')) {
+        const read = await reader.read();
+        if (read.done) break;
+        received += decoder.decode(read.value, { stream: true });
+      }
+
+      fixture.revokeCredential();
+      const deadline = Date.now() + 2_000;
+      while (!received.includes('"reason":"access_revoked"')) {
+        if (Date.now() > deadline) {
+          throw new Error("Timed out waiting for credential revocation");
+        }
+        const read = await reader.read();
+        if (read.done) break;
+        received += decoder.decode(read.value, { stream: true });
+      }
+      expect(received).toContain('"reason":"access_revoked"');
+      expect(fixture.auditActions).toEqual([
+        "team_conversation_source.stream_opened",
+        "team_conversation_source.stream_authorization_lost"
+      ]);
+
+      controller.abort();
+      await fixture.service.close();
+      await fixture.app.close();
+      fixture.cleanup();
+    }
+  );
+
+  it("closes an idle source stream after owner consent expires", async () => {
+    const fixture = await buildFixture({
+      streaming: true,
+      authorizationRecheckMs: 10
+    });
+    const baseUrl = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    const response = await fetch(
+      `${baseUrl}/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/stream`,
+      { signal: controller.signal }
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    while (!received.includes('"segmentIndex":0')) {
+      const read = await reader.read();
+      if (read.done) break;
+      received += decoder.decode(read.value, { stream: true });
+    }
+
+    fixture.expireConsent();
+    const deadline = Date.now() + 2_000;
+    while (!received.includes('"reason":"access_revoked"')) {
+      if (Date.now() > deadline) {
+        throw new Error("Timed out waiting for consent expiry");
+      }
+      const read = await reader.read();
+      if (read.done) break;
+      received += decoder.decode(read.value, { stream: true });
+    }
+    expect(received).toContain('"reason":"access_revoked"');
 
     controller.abort();
     await fixture.service.close();

@@ -163,6 +163,25 @@ Team reader. Bob's explicit `can_share_owned_memory` permission supports the
 protected Personal-to-Team preview, consent, and share flow without treating
 ordinary Workspace write access as sharing authority.
 
+## Conversation Source Access Truth Sheet
+
+Conversation Source Access is an independent capability. Most active Shared
+Memory grants deliberately have no source grant. The fixture adds only these
+three deterministic, origin-signed, encrypted exact-source cases:
+
+| Source                      | Shared Memory                | Mode                  | Expected behavior                                                                                                                                           |
+| --------------------------- | ---------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Timeline continuous source  | Workspace Memory Timeline UX | `continuous`          | Authorized Electron Workspace readers decrypt both current segments and may follow later generations.                                                       |
+| Agent rooms snapshot source | Agent Collaboration Rooms    | `snapshot`            | Authorized readers decrypt only segment 0; the later stored segment remains outside the grant. Segment 0 ends at a completed turn and supports fork export. |
+| Revoked experiment source   | Revoked Electron Experiment  | `continuous`, revoked | No Team reader can list or decrypt the source.                                                                                                              |
+
+Fixture validation decrypts the exact JSONL bytes, checks the snapshot and
+continuous bounds through the production repository, proves the revoked grant
+is denied, and verifies deterministic grant/revocation audit events. The
+automated launch gate also runs the source routes for browser-session and
+device-credential authorization, Personal API Token denial, fork export, SSE
+authorization loss, consent expiry, cursor binding, and integrity failures.
+
 ## Agent Testing Playbook
 
 1. Run `pnpm team-fixture:seed`.
