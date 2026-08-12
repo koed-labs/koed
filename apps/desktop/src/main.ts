@@ -4,11 +4,13 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  Menu,
   nativeImage,
   nativeTheme,
   net,
   protocol,
-  shell
+  shell,
+  Tray
 } from "electron";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -58,6 +60,11 @@ import { createMainWindowOptions } from "./window/window-manager.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
 import { createPersonalDevicePairingInbox } from "./personal-device-pairing-inbox.js";
+import {
+  createDesktopMenuBar,
+  menuBarIconFilename,
+  type DesktopMenuBar
+} from "./tray/menu-bar.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
@@ -73,6 +80,10 @@ const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   packagedResourcesPath: process.resourcesPath
 });
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
+const menuBarIconFile = menuBarIconFilename(process.platform);
+const menuBarIconPath = menuBarIconFile
+  ? resolve(appDir, "../assets", menuBarIconFile)
+  : null;
 const devServerUrl = resolveDevServerUrl({
   appIsPackaged: app.isPackaged,
   devServerUrl: process.env.VITE_DEV_SERVER_URL
@@ -88,6 +99,7 @@ let themePreference: DesktopThemePreference = "system";
 let pdsSecretBridge: PdsSecretBridge | null = null;
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
+let desktopMenuBar: DesktopMenuBar | null = null;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 
 const acceptPairingDeepLink = (value: string): void => {
@@ -278,6 +290,16 @@ const createWindow = async () => {
     .catch(() => undefined);
 };
 
+const showDesktopWindow = async (): Promise<void> => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    await createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+};
+
 const bootstrap = async () => {
   await app.whenReady();
   const themePreferenceFile = desktopThemePreferencePath(
@@ -341,8 +363,38 @@ const bootstrap = async () => {
   });
   await startDesktopWindowAndRuntime({
     createWindow,
-    resumeRuntime: () => server.resume()
+    resumeRuntime: async () => {
+      const result = await server.resume();
+      void desktopMenuBar?.refresh();
+      return result;
+    }
   });
+  if (menuBarIconPath && existsSync(menuBarIconPath)) {
+    const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
+    if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
+    const tray = new Tray(menuBarIcon);
+    desktopMenuBar = createDesktopMenuBar<Menu>({
+      tray: {
+        destroy: () => tray.destroy(),
+        onClick: (listener) => {
+          tray.on("click", listener);
+        },
+        ...(process.platform === "darwin"
+          ? {
+              onRightClick: (listener: () => void) => {
+                tray.on("right-click", listener);
+              },
+              popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
+            }
+          : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
+        setToolTip: (tooltip) => tray.setToolTip(tooltip)
+      },
+      buildMenu: (template) => Menu.buildFromTemplate(template),
+      getStatus: () => server.handlers.status(),
+      openDesktop: showDesktopWindow,
+      quit: () => app.quit()
+    });
+  }
 };
 
 if (ownsDesktopInstance) {
@@ -362,7 +414,7 @@ app.on("window-all-closed", () => {
 });
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
-    void createWindow();
+    void showDesktopWindow();
   }
 });
 let koedServerStoppedForQuit = false;
@@ -375,6 +427,8 @@ app.on("before-quit", (event) => {
     await koedServer?.stop();
     await pdsSecretBridge?.close();
     pdsSecretBridge = null;
+    desktopMenuBar?.dispose();
+    desktopMenuBar = null;
     koedServerStoppedForQuit = true;
     app.quit();
   })();
