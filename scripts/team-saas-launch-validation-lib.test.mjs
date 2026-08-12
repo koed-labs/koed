@@ -444,6 +444,16 @@ test("launch validation gates cover Team SaaS critical path areas", () => {
       (command) => command.id === "api-auth-runtime-boundaries"
     )
   );
+  assert.ok(
+    automatedLaunchTestCommands.some(
+      (command) => command.id === "team-conversation-source-boundaries"
+    )
+  );
+  assert.ok(
+    automatedLaunchTestCommands.some(
+      (command) => command.id === "agentic-retrieval-team-boundaries"
+    )
+  );
 });
 
 test("launch validation report separates automated and manual gates", () => {
@@ -453,7 +463,7 @@ test("launch validation report separates automated and manual gates", () => {
   });
   const report = formatLaunchValidationReport(summary);
 
-  assert.equal(summary.byMode.automated, 14);
+  assert.equal(summary.byMode.automated, 15);
   assert.equal(summary.byMode.manual, 3);
   assert.equal(summary.byMode.staging, 4);
   assert.equal(summary.automatedTestStatus, "not_run");

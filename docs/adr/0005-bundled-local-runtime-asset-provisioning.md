@@ -3,7 +3,7 @@
 Status: Accepted and implemented by the local control-plane work.
 
 Refined by
-[ADR 0025](./0025-agent-directed-memory-answer-retrieval.md): the backend still
+[ADR 0028](./0028-agent-directed-memory-answer-retrieval.md): the backend still
 performs no LLM synthesis, but normal `memory_answer` calls now return a compact
 standalone Memory Answer synthesized by the local MCP-side worker. Evidence
 Bundles remain explicit detail output and internal synthesis input.

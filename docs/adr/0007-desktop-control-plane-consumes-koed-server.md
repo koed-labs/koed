@@ -9,7 +9,7 @@ Related decisions:
 - [0025 MCP v2 Local AI Runtime Ownership](./0025-mcp-v2-local-ai-runtime-ownership.md)
 
 Refined by
-[ADR 0025](./0025-agent-directed-memory-answer-retrieval.md): the backend still
+[ADR 0028](./0028-agent-directed-memory-answer-retrieval.md): the backend still
 performs no LLM synthesis, but normal `memory_answer` calls now return a compact
 standalone Memory Answer synthesized by the local MCP-side worker. Evidence
 Bundles remain explicit detail output and internal synthesis input.
