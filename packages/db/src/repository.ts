@@ -126,6 +126,7 @@ import type {
   Visibility,
   ConversationProjectionBacklog
 } from "./types.js";
+import { NORMALIZED_IMPORT_SOURCE_ADAPTER } from "./types.js";
 
 export interface MemorySourceRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
@@ -1259,6 +1260,13 @@ const classifyConversationItemProjection = (
       .find((rule): rule is ConversationProjectionPolicyRule => Boolean(rule));
   const matchedRule =
     findRule(row.source_adapter_version) ??
+    (row.source_kind === NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceKind &&
+    row.source_adapter_version ===
+      NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceAdapterVersion
+      ? findRule(
+          NORMALIZED_IMPORT_SOURCE_ADAPTER.projectionPolicyEquivalentAdapterVersion
+        )
+      : undefined) ??
     (row.source_kind === "codex" &&
     row.source_adapter_version !== "codex-transcript-v1"
       ? findRule("codex-transcript-v1")

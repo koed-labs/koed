@@ -46,6 +46,20 @@ export interface SessionTitleResult {
   error?: string;
 }
 
+export interface SessionTitleTelemetry {
+  sessionId: string;
+  model: string;
+  promptVersion: string;
+  durationMs: number;
+  tokenUsage?: CodexThreadTokenUsage;
+  threadId?: string;
+  turnId?: string;
+}
+
+export type SessionTitleTelemetryObserver = (
+  telemetry: SessionTitleTelemetry
+) => void | Promise<void>;
+
 type SessionTitlePromptResult = {
   title: string;
   model: string;
@@ -189,11 +203,22 @@ const generateSessionTitle = async (
   client: MemoryApiClient,
   session: SessionTitleCandidate,
   config: LcmSummaryWorkerConfig,
-  runner: SessionTitleRunner
+  runner: SessionTitleRunner,
+  telemetryObserver?: SessionTitleTelemetryObserver
 ): Promise<SessionTitleResult> => {
   try {
     const prompt = buildVersionedSessionTitlePrompt(session, config.env);
+    const startedAt = performance.now();
     const result = await runPromptWithRetries(prompt.text, config, runner);
+    await telemetryObserver?.({
+      sessionId: session.id,
+      model: result.model,
+      promptVersion: prompt.version,
+      durationMs: performance.now() - startedAt,
+      ...(result.tokenUsage ? { tokenUsage: result.tokenUsage } : {}),
+      ...(result.threadId ? { threadId: result.threadId } : {}),
+      ...(result.turnId ? { turnId: result.turnId } : {})
+    });
     await client.submitSessionTitle(session.id, {
       title: result.title,
       titleModel: result.model,
@@ -245,6 +270,7 @@ export const generatePendingSessionTitles = async (
     minUserEvents?: number;
     config?: LcmSummaryWorkerConfig;
     runner?: SessionTitleRunner;
+    telemetryObserver?: SessionTitleTelemetryObserver;
   } = {}
 ) => {
   const config = options.config ?? resolveLcmSummaryWorkerConfig();
@@ -287,7 +313,14 @@ export const generatePendingSessionTitles = async (
     const results = await runWithConcurrency(
       sessions,
       config.concurrency,
-      (session) => generateSessionTitle(client, session, config, runner)
+      (session) =>
+        generateSessionTitle(
+          client,
+          session,
+          config,
+          runner,
+          options.telemetryObserver
+        )
     );
 
     return {

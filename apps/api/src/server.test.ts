@@ -3837,6 +3837,9 @@ const createFakeRepository = () => {
             ]
       );
     },
+    async createTrustedNormalizedImport(actor, input) {
+      return this.createConversationItems(actor, { items: input.items });
+    },
     async releaseConversationProjectionHold() {
       return { conversationItemIds: [] };
     },
@@ -11595,6 +11598,73 @@ describe("account and access flows", () => {
     expect(forwardedItems[1]?.rawText).toBe(
       "The item after the tool call still ingests."
     );
+  });
+
+  it("rejects caller-asserted normalized imports on the API-token route", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    const forwardedItems: ConversationItemInput[] = [];
+    repository.createConversationItems = async (actor, input) => {
+      forwardedItems.push(...input.items);
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "normalized-import@example.com"
+    );
+    const externalThreadId = `normalized-thread-${randomUUID()}`;
+    const externalTurnId = "source-attempt-1";
+    const stableItemId = "atif-step-4-message";
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization,
+      { externalSessionId: externalThreadId }
+    );
+    const normalizedItem = rawConversationItemPayload(session.id, {
+      sourceKind: "codex",
+      sourceAdapterVersion: "koed-normalized-import-v1",
+      sourceTransport: "normalized_import",
+      externalSessionId: externalThreadId,
+      externalThreadId,
+      externalTurnId,
+      externalItemId: stableItemId,
+      canonicalStableItemId: stableItemId,
+      canonicalItemKey: codexCanonicalConversationItemKeyForTest({
+        externalThreadId,
+        externalTurnId,
+        stableItemId,
+        component: "message"
+      }),
+      observationComponent: "message",
+      sourceRecordType: "normalized_import_item",
+      sourceEventType: "agent_message",
+      sourceSequence: 4,
+      rawJson: {
+        type: "normalized_import_item",
+        content: "A sanitized AI Client-visible message."
+      },
+      rawText: "A sanitized AI Client-visible message.",
+      metadata: {
+        transcriptType: "agent_message",
+        normalizedImportProvenance: {
+          sourceFormat: "atif",
+          sourceSchemaVersion: "ATIF-v1.7",
+          sourceProducer: "harbor-codex"
+        }
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: { items: [normalizedItem] }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(forwardedItems).toEqual([]);
   });
 
   it("rejects content-like provider identifiers while accepting Codex IDs", async () => {

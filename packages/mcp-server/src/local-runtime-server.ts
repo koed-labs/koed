@@ -36,9 +36,9 @@ import {
 import { logger } from "./logger.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
 
-const MAX_BODY_BYTES = 256 * 1024;
-const DEFAULT_MAX_ACTIVE_ANSWERS = 2;
-const DEFAULT_MAX_QUEUED_ANSWERS = 16;
+export const LOCAL_AI_RUNTIME_MAX_BODY_BYTES = 256 * 1024;
+export const LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS = 2;
+export const LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS = 16;
 
 const callerSchema = z
   .object({
@@ -144,7 +144,10 @@ const readJsonBody = async (
     request.headers["content-length"] ?? "",
     10
   );
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > LOCAL_AI_RUNTIME_MAX_BODY_BYTES
+  ) {
     request.resume();
     throw Object.assign(new Error("Request body is too large"), {
       statusCode: 413
@@ -155,7 +158,7 @@ const readJsonBody = async (
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) {
+    if (size > LOCAL_AI_RUNTIME_MAX_BODY_BYTES) {
       request.resume();
       throw Object.assign(new Error("Request body is too large"), {
         statusCode: 413
@@ -371,11 +374,11 @@ export const startLocalAiRuntime = async ({
   const answerAdmission = new AdmissionGate(
     positiveInteger(
       environment.KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS,
-      DEFAULT_MAX_ACTIVE_ANSWERS
+      LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS
     ),
     positiveInteger(
       environment.KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS,
-      DEFAULT_MAX_QUEUED_ANSWERS
+      LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS
     )
   );
   const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;

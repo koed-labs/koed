@@ -35,6 +35,10 @@ export default defineConfig({
         replacement: `${root}packages/mcp-server/src/claude-transcript-parser.ts`
       },
       {
+        find: "@koed/mcp-server/runtime-contracts",
+        replacement: `${root}packages/mcp-server/src/runtime-contracts.ts`
+      },
+      {
         find: "@koed/mcp-server",
         replacement: `${root}packages/mcp-server/src/index.ts`
       },

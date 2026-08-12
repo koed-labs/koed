@@ -93,6 +93,10 @@ import {
   lcmSummaryLockState,
   resolveLcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
+export type {
+  SessionTitleTelemetry,
+  SessionTitleTelemetryObserver
+} from "./session-title-worker.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 export {

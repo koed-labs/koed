@@ -35,7 +35,7 @@ const jsonResponse = (payload: Record<string, unknown>) => ({
   content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }]
 });
 
-const callerContext = (
+const defaultCallerContext = (
   context: Parameters<NonNullable<Parameters<McpServer["registerTool"]>[2]>>[1]
 ): LocalRuntimeCallerContext => {
   const envelope = (context.mcpReq.envelope ?? {}) as Record<string, unknown>;
@@ -107,13 +107,24 @@ const toolSchema = (name: LocalRuntimeToolName) => {
 export interface CreateKoedMcpServerOptions {
   runtimeClient?: LocalAiRuntimeClient;
   environment?: NodeJS.ProcessEnv;
+  callerContextResolver?: McpCallerContextResolver;
 }
+
+export interface McpCallerContextResolverInput {
+  defaultContext: LocalRuntimeCallerContext;
+  requestContext: McpRequestContext;
+}
+
+export type McpCallerContextResolver = (
+  input: McpCallerContextResolverInput
+) => LocalRuntimeCallerContext;
 
 export const createKoedMcpServer = async (
   _requestContext: McpRequestContext,
   {
     runtimeClient = new LocalAiRuntimeClient(),
-    environment = process.env
+    environment = process.env,
+    callerContextResolver = ({ defaultContext }) => defaultContext
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
   const runtimeCapabilities: BackendToolCapabilities = await runtimeClient
@@ -153,7 +164,10 @@ export const createKoedMcpServer = async (
           await runtimeClient.callTool(
             toolName,
             input as Record<string, unknown>,
-            callerContext(context),
+            callerContextResolver({
+              defaultContext: defaultCallerContext(context),
+              requestContext: _requestContext
+            }),
             context.mcpReq.signal
           )
         )

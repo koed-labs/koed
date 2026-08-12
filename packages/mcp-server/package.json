@@ -23,6 +23,10 @@
     "./claude-transcript-parser": {
       "types": "./dist/claude-transcript-parser.d.ts",
       "import": "./dist/claude-transcript-parser.js"
+    },
+    "./runtime-contracts": {
+      "types": "./dist/runtime-contracts.d.ts",
+      "import": "./dist/runtime-contracts.js"
     }
   },
   "files": [

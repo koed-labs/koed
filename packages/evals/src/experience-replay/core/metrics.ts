@@ -1,0 +1,416 @@
+import type { ReplayCondition } from "./schedule.js";
+
+export type FailureKind = "agent" | "infrastructure";
+export type FailurePhase =
+  | "admission"
+  | "setup"
+  | "agent"
+  | "memory"
+  | "verifier"
+  | "teardown";
+
+export type FailureCategory =
+  | "admission_rejected"
+  | "setup_failed"
+  | "setup_timeout"
+  | "agent_failed"
+  | "agent_timeout"
+  | "memory_failed"
+  | "verifier_failed"
+  | "verifier_timeout"
+  | "teardown_failed"
+  | "missing_outcome"
+  | "other";
+
+export interface DurationTelemetry {
+  agentMs: number | null;
+  setupMs: number | null;
+  verifierMs: number | null;
+}
+
+export interface TokenTelemetry {
+  uncachedInput: number | null;
+  cachedInput: number | null;
+  output: number | null;
+  reasoning: number | null;
+}
+
+export interface CostTelemetry {
+  providerBilledUsd: number | null;
+  apiEquivalentUsd: number | null;
+  subscriptionUsd: number | null;
+}
+
+export interface InteractionTelemetry {
+  turns: number;
+  toolCalls: number;
+  toolFailures: number;
+  mcpCalls: number;
+  mcpFailures: number;
+  memoryAnswerCalls: number;
+  memoryAnswerFailures: number;
+}
+
+export interface WorkerUsageTelemetry {
+  calls: number;
+  failures: number;
+  durationMs: number | null;
+  tokens: TokenTelemetry;
+  costs: CostTelemetry;
+}
+
+export interface WorkerTelemetry {
+  memoryAnswer: WorkerUsageTelemetry;
+  lcmSummary: WorkerUsageTelemetry;
+  sessionTitle: WorkerUsageTelemetry;
+}
+
+export interface RecallTelemetry {
+  searches: number;
+  expansions: number;
+  stages: number;
+  evidenceCount: number;
+}
+
+export interface EmbeddingTelemetry {
+  calls: number;
+  tokens: number;
+  durationMs: number | null;
+}
+
+export interface PipelineTelemetry {
+  projectionMs: number | null;
+  lcmMs: number | null;
+  queueMs: number | null;
+}
+
+export interface RssTelemetry {
+  apiBytes: number | null;
+  runtimeBytes: number | null;
+  workerBytes: number | null;
+}
+
+export interface SourceSplitIdentifiers {
+  sourceTaskDigest: string | null;
+  sourcePassed: boolean | null;
+  sourceCategory: string | null;
+  sourcePassFailSplit: string | null;
+  sourceCategorySplit: string | null;
+}
+
+export interface ReplayOutcome {
+  taskDigest: string;
+  condition: ReplayCondition;
+  repeat: number;
+  reward: number | null;
+  passed?: boolean | null;
+  latencyMs?: number | null;
+  tokens?: number | null;
+  costUsd?: number | null;
+  durations?: DurationTelemetry;
+  tokenUsage?: TokenTelemetry;
+  costs?: CostTelemetry;
+  interactions?: InteractionTelemetry;
+  workers?: WorkerTelemetry;
+  recall?: RecallTelemetry;
+  embedding?: EmbeddingTelemetry;
+  pipeline?: PipelineTelemetry;
+  rss?: RssTelemetry;
+  failureCategory?: FailureCategory | null;
+  failureKind?: FailureKind | null;
+  failurePhase?: FailurePhase | null;
+  source?: SourceSplitIdentifiers;
+}
+
+export interface TaskRewardContract {
+  taskDigest: string;
+  rewardMin: number;
+  rewardMax: number;
+}
+
+export interface Comparison {
+  left: ReplayCondition;
+  right: ReplayCondition;
+}
+
+export const PRIMARY_COMPARISON: Comparison = {
+  left: "relevant",
+  right: "placebo"
+};
+export const REQUIRED_COMPARISONS: readonly Comparison[] = [
+  PRIMARY_COMPARISON,
+  { left: "relevant", right: "cold" },
+  { left: "relevant", right: "empty" },
+  { left: "empty", right: "cold" },
+  { left: "placebo", right: "empty" }
+];
+
+const mean = (values: readonly number[]): number =>
+  values.reduce((total, value) => total + value, 0) / values.length;
+
+const median = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const midpoint = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? ((sorted[midpoint - 1] as number) + (sorted[midpoint] as number)) / 2
+    : (sorted[midpoint] as number);
+};
+
+const validateOutcomes = (
+  outcomes: readonly ReplayOutcome[],
+  contracts: ReadonlyMap<string, TaskRewardContract>,
+  repeats: number
+): void => {
+  const identities = new Set<string>();
+  for (const outcome of outcomes) {
+    const identity = `${outcome.taskDigest}\0${outcome.condition}\0${outcome.repeat}`;
+    if (identities.has(identity))
+      throw new Error(
+        `Duplicate replay outcome ${identity.replaceAll("\0", "/")}`
+      );
+    identities.add(identity);
+    if (
+      !Number.isInteger(outcome.repeat) ||
+      outcome.repeat < 0 ||
+      outcome.repeat >= repeats
+    ) {
+      throw new Error(
+        `Unexpected repeat ${outcome.repeat} for ${outcome.taskDigest}`
+      );
+    }
+    const contract = contracts.get(outcome.taskDigest);
+    if (!contract)
+      throw new Error(`Missing reward contract for ${outcome.taskDigest}`);
+    if (
+      outcome.reward !== null &&
+      (!Number.isFinite(outcome.reward) ||
+        outcome.reward < contract.rewardMin ||
+        outcome.reward > contract.rewardMax)
+    ) {
+      throw new Error(
+        `Reward outside committed range for ${outcome.taskDigest}`
+      );
+    }
+  }
+};
+
+const contractMap = (
+  contracts: readonly TaskRewardContract[]
+): ReadonlyMap<string, TaskRewardContract> => {
+  if (contracts.length === 0)
+    throw new Error("At least one task reward contract is required");
+  const result = new Map<string, TaskRewardContract>();
+  for (const contract of contracts) {
+    if (result.has(contract.taskDigest))
+      throw new Error(`Duplicate reward contract ${contract.taskDigest}`);
+    if (
+      !Number.isFinite(contract.rewardMin) ||
+      !Number.isFinite(contract.rewardMax) ||
+      contract.rewardMin > contract.rewardMax
+    ) {
+      throw new Error(
+        `Invalid committed reward range for ${contract.taskDigest}`
+      );
+    }
+    result.set(contract.taskDigest, contract);
+  }
+  return result;
+};
+
+const taskConditionValues = (
+  outcomes: readonly ReplayOutcome[],
+  taskDigest: string,
+  condition: ReplayCondition
+): ReplayOutcome[] =>
+  outcomes
+    .filter(
+      (outcome) =>
+        outcome.taskDigest === taskDigest && outcome.condition === condition
+    )
+    .sort((a, b) => a.repeat - b.repeat);
+
+export interface TaskDelta {
+  taskDigest: string;
+  leftMean: number;
+  rightMean: number;
+  delta: number;
+}
+
+export const taskFirstDeltas = (
+  outcomes: readonly ReplayOutcome[],
+  contracts: readonly TaskRewardContract[],
+  comparison: Comparison,
+  repeats: number
+): TaskDelta[] => {
+  if (!Number.isInteger(repeats) || repeats < 1)
+    throw new Error("Repeats must be a positive integer");
+  const contractsByTask = contractMap(contracts);
+  validateOutcomes(outcomes, contractsByTask, repeats);
+  const deltas: TaskDelta[] = [];
+  for (const contract of [...contracts].sort((a, b) =>
+    a.taskDigest.localeCompare(b.taskDigest)
+  )) {
+    const left = taskConditionValues(
+      outcomes,
+      contract.taskDigest,
+      comparison.left
+    );
+    const right = taskConditionValues(
+      outcomes,
+      contract.taskDigest,
+      comparison.right
+    );
+    if (
+      left.length !== repeats ||
+      right.length !== repeats ||
+      left.some((item) => item.reward === null) ||
+      right.some((item) => item.reward === null)
+    )
+      continue;
+    const leftMean = mean(left.map((item) => item.reward as number));
+    const rightMean = mean(right.map((item) => item.reward as number));
+    deltas.push({
+      taskDigest: contract.taskDigest,
+      leftMean,
+      rightMean,
+      delta: leftMean - rightMean
+    });
+  }
+  return deltas;
+};
+
+export interface MissingOutcomeBounds {
+  completeCaseEstimate: number | null;
+  bestCaseEstimate: number;
+  worstCaseEstimate: number;
+  completeTaskCount: number;
+  totalTaskCount: number;
+  missingOutcomeCount: number;
+}
+
+export const missingOutcomeBounds = (
+  outcomes: readonly ReplayOutcome[],
+  contracts: readonly TaskRewardContract[],
+  comparison: Comparison,
+  repeats: number
+): MissingOutcomeBounds => {
+  const contractsByTask = contractMap(contracts);
+  validateOutcomes(outcomes, contractsByTask, repeats);
+  const complete = taskFirstDeltas(outcomes, contracts, comparison, repeats);
+  const worst: number[] = [];
+  const best: number[] = [];
+  let missingOutcomeCount = 0;
+  for (const contract of contracts) {
+    const values = (
+      condition: ReplayCondition,
+      missingValue: number
+    ): number[] => {
+      const indexed = new Map(
+        taskConditionValues(outcomes, contract.taskDigest, condition).map(
+          (item) => [item.repeat, item.reward]
+        )
+      );
+      return Array.from({ length: repeats }, (_, repeat) => {
+        const value = indexed.get(repeat);
+        if (value === undefined || value === null) {
+          missingOutcomeCount += 0.5;
+          return missingValue;
+        }
+        return value;
+      });
+    };
+    const worstLeft = values(comparison.left, contract.rewardMin);
+    const worstRight = values(comparison.right, contract.rewardMax);
+    const bestLeft = values(comparison.left, contract.rewardMax);
+    const bestRight = values(comparison.right, contract.rewardMin);
+    worst.push(mean(worstLeft) - mean(worstRight));
+    best.push(mean(bestLeft) - mean(bestRight));
+  }
+  return {
+    completeCaseEstimate:
+      complete.length === 0 ? null : mean(complete.map((item) => item.delta)),
+    bestCaseEstimate: mean(best),
+    worstCaseEstimate: mean(worst),
+    completeTaskCount: complete.length,
+    totalTaskCount: contracts.length,
+    missingOutcomeCount
+  };
+};
+
+export interface ComparisonSummary extends MissingOutcomeBounds {
+  comparison: string;
+  meanDelta: number | null;
+  medianDelta: number | null;
+  latencyMsDelta: number | null;
+  tokensDelta: number | null;
+  costUsdDelta: number | null;
+  wins: number;
+  losses: number;
+  ties: number;
+  taskDeltas: readonly TaskDelta[];
+}
+
+export const taskFirstResourceDelta = (
+  outcomes: readonly ReplayOutcome[],
+  comparison: Comparison,
+  field: "latencyMs" | "tokens" | "costUsd",
+  repeats: number
+): number | null => {
+  const tasks = [...new Set(outcomes.map((outcome) => outcome.taskDigest))];
+  const deltas: number[] = [];
+  for (const task of tasks) {
+    const getValues = (condition: ReplayCondition) => {
+      const records = taskConditionValues(outcomes, task, condition);
+      if (
+        records.length !== repeats ||
+        records.some(
+          (record) => record[field] === null || record[field] === undefined
+        )
+      )
+        return null;
+      return records.map((record) => record[field] as number);
+    };
+    const left = getValues(comparison.left);
+    const right = getValues(comparison.right);
+    if (left && right) deltas.push(mean(left) - mean(right));
+  }
+  return deltas.length ? mean(deltas) : null;
+};
+
+export const summarizeComparison = (
+  outcomes: readonly ReplayOutcome[],
+  contracts: readonly TaskRewardContract[],
+  comparison: Comparison,
+  repeats: number
+): ComparisonSummary => {
+  const deltas = taskFirstDeltas(outcomes, contracts, comparison, repeats);
+  const values = deltas.map((item) => item.delta);
+  return {
+    comparison: `${comparison.left} - ${comparison.right}`,
+    meanDelta: values.length ? mean(values) : null,
+    medianDelta: values.length ? median(values) : null,
+    latencyMsDelta: taskFirstResourceDelta(
+      outcomes,
+      comparison,
+      "latencyMs",
+      repeats
+    ),
+    tokensDelta: taskFirstResourceDelta(
+      outcomes,
+      comparison,
+      "tokens",
+      repeats
+    ),
+    costUsdDelta: taskFirstResourceDelta(
+      outcomes,
+      comparison,
+      "costUsd",
+      repeats
+    ),
+    wins: values.filter((value) => value > 0).length,
+    losses: values.filter((value) => value < 0).length,
+    ties: values.filter((value) => value === 0).length,
+    taskDeltas: deltas,
+    ...missingOutcomeBounds(outcomes, contracts, comparison, repeats)
+  };
+};
