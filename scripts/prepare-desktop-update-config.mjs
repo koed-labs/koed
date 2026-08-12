@@ -43,6 +43,14 @@ export function writeDesktopUpdateConfig({
     url: selectedUrl,
     channel: "latest"
   };
+  if (mode === "public") {
+    config.mac = {
+      ...(config.mac ?? {}),
+      hardenedRuntime: true,
+      strictVerify: true,
+      notarize: true
+    };
+  }
   writeFileSync(out, dump(config, { lineWidth: 120 }));
   return { mode, url: selectedUrl, out };
 }

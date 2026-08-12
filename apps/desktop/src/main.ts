@@ -414,7 +414,14 @@ const bootstrap = async () => {
   });
   desktopUpdateCoordinator = createElectronDesktopUpdateCoordinator({
     appIsPackaged: app.isPackaged,
-    prepareForInstall: () => desktopQuitCoordinator.prepareForInstall()
+    prepareForInstall: () => desktopQuitCoordinator.prepareForInstall(),
+    recoverAfterInstallFailure: () => {
+      // Service managers are intentionally one-shot after shutdown. Relaunching
+      // the current packaged version recreates every owned local service if
+      // updater installation throws, reports a delayed error, or never exits.
+      app.relaunch();
+      app.exit(1);
+    }
   });
   disposeDesktopUpdateIpc?.();
   disposeDesktopUpdateIpc = registerDesktopUpdateIpc(

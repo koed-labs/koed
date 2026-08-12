@@ -1,4 +1,4 @@
-# Unsigned Desktop artifacts for internal testing
+# Desktop release and internal-test artifacts
 
 Koed CI can produce unsigned macOS Desktop DMG/ZIP artifacts for internal install testing. These artifacts validate the current bundled Desktop shape and packaged native runtime behavior. They are unsigned and not notarized.
 
@@ -44,11 +44,11 @@ node scripts/serve-desktop-update-feed.mjs \
 
 The default bind address is `127.0.0.1`; use a controlled internal address
 only when the operator explicitly provides one. This feed is an internal,
-unsigned/ad-hoc validation surface. The configured public target remains
-`https://updates.koed.ai/R2/stable/`, but R2 provisioning, credentials,
-Developer ID signing, notarization, and atomic public promotion are future
-release-gate work. Internal artifacts must never be presented as
-public-trusted updates.
+unsigned/ad-hoc validation surface. The configured public target is
+`https://updates.koed.ai/R2/stable/`. Public releases use a separate,
+fail-closed Developer ID signing, notarization, stapling, Gatekeeper, and R2
+promotion path. Internal artifacts must never be presented as public-trusted
+updates.
 
 Packaging is fail-closed to the loopback feed by default. Release automation
 must explicitly run `prepare-desktop-update-config.mjs --mode public
@@ -68,40 +68,62 @@ pull requests build and smoke only the unpacked `.app`; the Changesets release
 pull request and manual/scheduled full validation build DMG/ZIP outputs for
 validation but do not publish those candidate files.
 
-The post-merge `Release` workflow is the authority for downloadable unsigned
+The post-merge `Release` workflow is the authority for downloadable public
 Desktop artifacts. It cold-builds and validates the native runtime from the
-exact release commit, packages and verifies the app and mounted DMG, runs the
-complete packaged native smoke, and uploads the checksummed DMG/ZIP only while
-the GitHub release remains a draft. See `docs/ci-validation.md` for dispatch
-options and pull-request routing.
+exact release commit, requires the Apple signing and notarization credentials,
+packages and verifies the app and mounted DMG, runs the complete packaged
+native smoke, and uploads the checksummed DMG/ZIP only while the GitHub release
+remains a draft. See `docs/ci-validation.md` for dispatch options and
+pull-request routing.
 
 ## GitHub Release assets
 
 When the `Release` workflow creates a new GitHub Release, it first creates it as a draft. It then runs a macOS job that:
 
 1. builds and validates the macOS arm64 native runtime;
-2. packages unsigned Desktop DMG/ZIP artifacts;
+2. signs the app and bundled native executables with a Developer ID identity,
+   notarizes and staples the app and DMG, and verifies them with `codesign`,
+   `stapler`, and Gatekeeper;
 3. runs packaged Desktop native smoke;
-4. uploads the unsigned DMG, ZIP, and `koed-desktop-macos-arm64-unsigned.sha256` checksum file to the GitHub Release.
+4. uploads the DMG, ZIP, blockmaps, `latest-mac.yml`, and
+   `koed-desktop-macos-arm64.sha256` checksum file to the draft GitHub Release;
+5. uploads versioned candidate objects to R2, promotes the artifacts to
+   `R2/stable/`, and publishes `latest-mac.yml` last;
+6. fetches the public manifest and every referenced artifact successfully
+   before publishing the GitHub Release.
 
 The workflow verifies the Desktop, standalone server, checksum, and release metadata assets before publishing the draft. A failed build therefore leaves a draft instead of a visible partial release. If only the Desktop asset job needs to be rebuilt, run `Recover Desktop release assets` with the existing draft release name. Draft releases do not necessarily have a Git tag, so the workflow resolves the draft's `targetCommitish` to an immutable commit SHA before checkout. It then confirms that source contains both the pinned hermetic OpenSSL builder and the safe Desktop symlink/sealing behavior, repeats native-runtime validation and packaged smoke, replaces the Desktop assets, and publishes the release only when every required asset is present. The recovery workflow deliberately rejects published releases and source such as `v0.4.3` that predates the safe packaging boundary; repair those through a patch release instead of mixing current build tooling into historical source.
 
 Packaged Desktop smoke writes detached supervisor output to `KOED_HOME/logs/supervisor.log`. The live log is capped at 8 MiB. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and creates a uniquely named, smoke-owned child under the configured diagnostics directory for the short-lived workflow artifact. The caller-provided parent is never removed or replaced, copied service logs contain only their final 64 KiB, and secret-bearing configuration files are excluded.
 
-These GitHub Release assets are still unsigned and not notarized until the signing/notarization follow-up is complete.
+The release and recovery workflows fail before publication when Apple signing
+credentials or R2 credentials are missing. A failed candidate cannot replace
+the public manifest because the manifest is promoted only after every release
+artifact has uploaded successfully.
+
+Repository release configuration must provide `CSC_LINK` and
+`CSC_KEY_PASSWORD` for the Developer ID certificate; `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` for notarization; and
+`KOED_R2_ACCESS_KEY_ID`, `KOED_R2_SECRET_ACCESS_KEY`, `KOED_R2_ACCOUNT_ID`, and
+`KOED_R2_BUCKET` for feed publication. The R2 bucket's public custom domain must
+serve the `R2/stable/` key prefix at `https://updates.koed.ai/R2/stable/`.
 
 ## Install/open manually
 
-Download the `Koed-<version>-arm64.dmg` or `Koed-<version>-arm64.zip` asset,
-along with `koed-desktop-macos-arm64-unsigned.sha256`, from the GitHub Release
-for the version under test.
+For a public release, download the `Koed-<version>-arm64.dmg` or
+`Koed-<version>-arm64.zip` asset, along with
+`koed-desktop-macos-arm64.sha256`, from the GitHub Release for the version under
+test. Internal workflow artifacts remain unsigned and should use the
+Gatekeeper-warning procedure below only on dedicated test machines.
 
 DMG path:
 
 1. Open the `.dmg`.
 2. Drag `Koed.app` to `/Applications` or another test location.
 3. Open with Control-click/Right-click → Open.
-4. Confirm the expected unsigned-app warning.
+4. For public release assets, confirm that macOS opens the notarized app without
+   an unidentified-developer warning. For internal artifacts, confirm the
+   expected unsigned-app warning.
 
 ZIP path:
 

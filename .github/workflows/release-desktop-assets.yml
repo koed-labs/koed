@@ -15,7 +15,7 @@ concurrency: recover-desktop-release-${{ inputs.tag }}
 
 jobs:
   recover-desktop-assets:
-    name: Recover unsigned Desktop assets for ${{ inputs.tag }}
+    name: Recover signed Desktop assets for ${{ inputs.tag }}
     runs-on: macos-14
     timeout-minutes: 90
 
@@ -155,12 +155,34 @@ jobs:
           --out apps/desktop/electron-builder.public.yml
           --json
 
-      - name: Build unsigned Desktop artifacts
+      - name: Require public macOS trust credentials
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required public macOS release secret: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build signed and notarized Desktop artifacts
         env:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-recovery/koed-runtime
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: >-
           node scripts/package-desktop-update-artifacts.mjs
           --config apps/desktop/electron-builder.public.yml
+          --public-release
           --json
 
       - name: Validate packaged app public feed selection
@@ -182,6 +204,29 @@ jobs:
       - name: Verify Desktop artifact code integrity
         run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app --dmg release/Koed-*-arm64.dmg
 
+      - name: Notarize and staple Desktop DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          dmg="$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.dmg' -print -quit)"
+          test -n "${dmg}"
+          xcrun notarytool submit "${dmg}" \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait
+          xcrun stapler staple -v "${dmg}"
+
+      - name: Verify Developer ID, notarization, stapling, and Gatekeeper trust
+        run: >-
+          node scripts/verify-macos-public-update-package.mjs
+          --app apps/desktop/release/mac/Koed.app
+          --dmg "$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.dmg' -print -quit)"
+          --json
+
       - name: Packaged Desktop native smoke
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
@@ -197,9 +242,9 @@ jobs:
       - name: Generate Desktop artifact checksums
         run: |
           cd apps/desktop/release
-          shasum -a 256 Koed-*-arm64.dmg Koed-*-arm64.zip > koed-desktop-macos-arm64-unsigned.sha256
+          shasum -a 256 Koed-*-arm64.dmg Koed-*-arm64.zip > koed-desktop-macos-arm64.sha256
 
-      - name: Upload recovered Desktop assets
+      - name: Upload recovered signed Desktop assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -209,10 +254,10 @@ jobs:
             apps/desktop/release/Koed-*-arm64.dmg.blockmap \
             apps/desktop/release/Koed-*-arm64.zip.blockmap \
             apps/desktop/release/latest-mac.yml \
-            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
+            apps/desktop/release/koed-desktop-macos-arm64.sha256 \
             --clobber
 
-      - name: Verify required assets and publish draft
+      - name: Verify required release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
@@ -243,12 +288,65 @@ jobs:
             'Koed-*-arm64.dmg.blockmap' \
             'Koed-*-arm64.zip.blockmap' \
             'latest-mac.yml' \
-            'koed-desktop-macos-arm64-unsigned.sha256'; do
+            'koed-desktop-macos-arm64.sha256'; do
             if ! asset_present "${pattern}"; then
               echo "Missing required release asset: ${pattern}" >&2
               exit 1
             fi
           done
+
+      - name: Promote recovered Desktop updater feed to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.KOED_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.KOED_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.KOED_R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.KOED_R2_BUCKET }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required R2 publication secret: ${name}" >&2
+              exit 1
+            fi
+          done
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          version="${TAG#v}"
+          root="apps/desktop/release"
+          candidate="R2/candidates/${version}/macos-arm64"
+          stable="R2/stable"
+          for path in "${root}"/Koed-*-arm64.dmg "${root}"/Koed-*-arm64.zip "${root}"/*.blockmap "${root}"/koed-desktop-macos-arm64.sha256; do
+            name="$(basename "${path}")"
+            aws s3 cp "${path}" "s3://${R2_BUCKET}/${candidate}/${name}" --endpoint-url "${endpoint}" --only-show-errors
+            aws s3 cp "${path}" "s3://${R2_BUCKET}/${stable}/${name}" --endpoint-url "${endpoint}" --only-show-errors
+          done
+          aws s3 cp "${root}/latest-mac.yml" "s3://${R2_BUCKET}/${candidate}/latest-mac.yml" --endpoint-url "${endpoint}" --only-show-errors
+          aws s3 cp "${root}/latest-mac.yml" "s3://${R2_BUCKET}/${stable}/latest-mac.yml" \
+            --endpoint-url "${endpoint}" \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --content-type "application/yaml" \
+            --only-show-errors
+          aws s3api head-object --bucket "${R2_BUCKET}" --key "${stable}/latest-mac.yml" --endpoint-url "${endpoint}" >/dev/null
+
+      - name: Verify public Desktop updater feed
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          manifest="$(curl --fail --silent --show-error --retry 8 --retry-all-errors https://updates.koed.ai/R2/stable/latest-mac.yml)"
+          grep -Eq "^version: ['\"]?${version}['\"]?$" <<< "${manifest}"
+          while IFS= read -r artifact; do
+            curl --fail --silent --show-error --retry 8 --retry-all-errors --head "https://updates.koed.ai/R2/stable/${artifact}" >/dev/null
+          done < <(printf '%s\n' "${manifest}" | sed -nE 's/^[[:space:]]*(- url:|path:)[[:space:]]+([^[:space:]]+).*$/\2/p' | sort -u)
+
+      - name: Publish recovered release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
           if [ "$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = "true" ]; then
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
           fi

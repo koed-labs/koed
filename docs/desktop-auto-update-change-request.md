@@ -16,11 +16,15 @@ Desktop users should not need to monitor GitHub releases, download a replacement
 # Current Situation
 
 - Koed Desktop is packaged with Electron Builder for macOS arm64 as DMG and ZIP artifacts.
-- The release workflow currently creates internal/ad-hoc-signed Desktop artifacts and does not publish updater metadata or blockmaps.
-- The Desktop renderer displays a hard-coded product version.
+- Local and internal packaging creates ad-hoc-signed Desktop artifacts; public
+  release automation requires Developer ID signing and notarization and
+  publishes updater metadata and blockmaps to the stable R2 feed.
+- The Desktop renderer obtains the running product version from Electron.
 - The main process owns Koed Server and the PDS secret bridge lifecycle. Update installation must close both cleanly before Electron terminates.
-- No Desktop update coordinator, typed update IPC contract, update UI, or two-version update test exists.
-- Production Developer ID signing and Apple notarization are not configured yet.
+- The Desktop update coordinator, typed update IPC contract, update UI, and
+  deterministic two-version test are implemented.
+- Production publication fails closed when Developer ID, Apple notarization, or
+  R2 credentials are unavailable.
 
 # Requested Change
 

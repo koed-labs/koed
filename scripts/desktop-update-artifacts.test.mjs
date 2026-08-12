@@ -27,7 +27,10 @@ import {
   writeDesktopUpdateConfig
 } from "./prepare-desktop-update-config.mjs";
 import { validateDesktopUpdateFeedSelection } from "./validate-desktop-update-feed-selection.mjs";
-import { buildElectronBuilderCommand } from "./package-desktop-update-artifacts.mjs";
+import {
+  assertPublicMacosReleaseEnvironment,
+  buildElectronBuilderCommand
+} from "./package-desktop-update-artifacts.mjs";
 
 function digest(buffer) {
   return createHash("sha512").update(buffer).digest("base64");
@@ -319,6 +322,7 @@ test("enforces explicit internal/public feed selection and app-update.yml inspec
     });
     assert.match(readFileSync(internal, "utf8"), /127\.0\.0\.1/);
     assert.match(readFileSync(publicConfig, "utf8"), /updates\.koed\.ai/);
+    assert.match(readFileSync(publicConfig, "utf8"), /notarize: true/);
     const resources = join(app, "Contents", "Resources");
     mkdirSync(resources, { recursive: true });
     writeFileSync(
@@ -349,4 +353,28 @@ test("workflow packaging helper passes the supported electron-builder config fla
     "dmg",
     "zip"
   ]);
+});
+
+test("public packaging fails closed without signing and notarization credentials", () => {
+  assert.throws(
+    () => assertPublicMacosReleaseEnvironment({}),
+    /CSC_LINK, CSC_KEY_PASSWORD/
+  );
+  assert.throws(
+    () =>
+      assertPublicMacosReleaseEnvironment({
+        CSC_LINK: "certificate",
+        CSC_KEY_PASSWORD: "password"
+      }),
+    /complete Apple API key, Apple ID, or notarytool keychain/
+  );
+  assert.doesNotThrow(() =>
+    assertPublicMacosReleaseEnvironment({
+      CSC_LINK: "certificate",
+      CSC_KEY_PASSWORD: "password",
+      APPLE_ID: "release@example.com",
+      APPLE_APP_SPECIFIC_PASSWORD: "password",
+      APPLE_TEAM_ID: "TEAMID"
+    })
+  );
 });

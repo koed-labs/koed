@@ -38,7 +38,8 @@ class FakeTimers {
 class FakeUpdater implements DesktopUpdateAdapter {
   autoDownload = true;
   autoInstallOnAppQuit = true;
-  channel = "stable";
+  channel = "latest";
+  allowDowngrade = true;
   allowPrerelease = false;
   checkForUpdates = vi.fn<() => Promise<unknown>>(async () => ({
     isUpdateAvailable: false
@@ -155,6 +156,9 @@ describe("DesktopUpdateCoordinator", () => {
     coordinator.start();
     expect(updater.autoDownload).toBe(false);
     expect(updater.autoInstallOnAppQuit).toBe(false);
+    expect(updater.channel).toBe("latest");
+    expect(updater.allowDowngrade).toBe(false);
+    expect(updater.allowPrerelease).toBe(false);
     expect(timers.tasks[0]?.delay).toBe(25);
     timers.runNext();
     await vi.waitFor(() =>
@@ -426,6 +430,81 @@ describe("DesktopUpdateCoordinator", () => {
     expect(coordinator.getState()).toMatchObject({ status: "installing" });
     await retry;
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it("recovers owned services after synchronous, delayed, and timed-out install failures", async () => {
+    const readyCoordinator = (
+      updater: FakeUpdater,
+      timers: FakeTimers,
+      recoverAfterInstallFailure: () => void
+    ) => {
+      const coordinator = new DesktopUpdateCoordinator({
+        appIsPackaged: true,
+        supported: true,
+        updater,
+        timers: timers.api,
+        installExitTimeoutMs: 1_000,
+        recoverAfterInstallFailure
+      });
+      coordinator.start();
+      updater.emit("update-available", availableInfo);
+      return coordinator.downloadUpdate().then(() => {
+        updater.emit("update-downloaded", availableInfo);
+        return coordinator;
+      });
+    };
+
+    const synchronousTimers = new FakeTimers();
+    const synchronousUpdater = new FakeUpdater();
+    synchronousUpdater.quitAndInstall.mockImplementationOnce(() => {
+      throw new Error("install failed");
+    });
+    const synchronousRecovery = vi.fn();
+    const synchronous = await readyCoordinator(
+      synchronousUpdater,
+      synchronousTimers,
+      synchronousRecovery
+    );
+    await synchronous.installUpdate();
+    expect(synchronousRecovery).toHaveBeenCalledTimes(1);
+    expect(synchronous.getState()).toMatchObject({
+      status: "error",
+      recoverable: true
+    });
+
+    const delayedTimers = new FakeTimers();
+    const delayedUpdater = new FakeUpdater();
+    const delayedRecovery = vi.fn();
+    const delayed = await readyCoordinator(
+      delayedUpdater,
+      delayedTimers,
+      delayedRecovery
+    );
+    await delayed.installUpdate();
+    expect(delayed.getState()).toMatchObject({ status: "installing" });
+    delayedUpdater.emit("error", new Error("delayed failure"));
+    await vi.waitFor(() => expect(delayedRecovery).toHaveBeenCalledTimes(1));
+    expect(delayedTimers.tasks).toHaveLength(1);
+
+    const timeoutTimers = new FakeTimers();
+    const timeoutUpdater = new FakeUpdater();
+    const timeoutRecovery = vi.fn();
+    const timedOut = await readyCoordinator(
+      timeoutUpdater,
+      timeoutTimers,
+      timeoutRecovery
+    );
+    await timedOut.installUpdate();
+    const installTimeout = timeoutTimers.tasks.find(
+      ({ delay }) => delay === 1_000
+    );
+    expect(installTimeout).toBeDefined();
+    installTimeout?.handler();
+    await vi.waitFor(() => expect(timeoutRecovery).toHaveBeenCalledTimes(1));
+    expect(timedOut.getState()).toMatchObject({
+      status: "error",
+      recoverable: true
+    });
   });
 
   it("ignores reordered and stale events while stronger operations are active", async () => {

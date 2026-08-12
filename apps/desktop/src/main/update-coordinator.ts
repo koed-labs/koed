@@ -14,6 +14,7 @@ export type {
 export const DESKTOP_UPDATE_STARTUP_DELAY_MS = 5_000;
 export const DESKTOP_UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 export const DESKTOP_UPDATE_JITTER_RATIO = 0.2;
+export const DESKTOP_UPDATE_INSTALL_EXIT_TIMEOUT_MS = 15_000;
 
 export type DesktopUpdateCheckSource = "background" | "manual";
 
@@ -38,6 +39,7 @@ export interface DesktopUpdateAdapter {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   channel?: string;
+  allowDowngrade?: boolean;
   allowPrerelease?: boolean;
   on<Event extends DesktopUpdateEvent>(
     event: Event,
@@ -70,6 +72,8 @@ export interface DesktopUpdateCoordinatorOptions {
   readonly random?: () => number;
   readonly timers?: DesktopUpdateTimerApi;
   readonly prepareForInstall?: () => Promise<void>;
+  readonly recoverAfterInstallFailure?: () => Promise<void> | void;
+  readonly installExitTimeoutMs?: number;
 }
 
 export type DesktopUpdateStateListener = (state: DesktopUpdateState) => void;
@@ -203,6 +207,8 @@ export class DesktopUpdateCoordinator {
   private readonly random: () => number;
   private readonly timers: DesktopUpdateTimerApi;
   private readonly prepareForInstall: () => Promise<void>;
+  private readonly recoverAfterInstallFailure: () => Promise<void> | void;
+  private readonly installExitTimeoutMs: number;
   private readonly listeners = new Set<DesktopUpdateStateListener>();
   private readonly boundListeners = new Map<
     DesktopUpdateEvent,
@@ -210,6 +216,7 @@ export class DesktopUpdateCoordinator {
   >();
   private startupTimer: unknown;
   private periodicTimer: unknown;
+  private installRecoveryTimer: unknown;
   private started = false;
   private disposed = false;
   private operationGeneration = 0;
@@ -249,10 +256,18 @@ export class DesktopUpdateCoordinator {
     this.timers = options.timers ?? DEFAULT_TIMER_API;
     this.prepareForInstall =
       options.prepareForInstall ?? (async () => undefined);
+    this.recoverAfterInstallFailure =
+      options.recoverAfterInstallFailure ?? (() => undefined);
+    this.installExitTimeoutMs = Math.max(
+      1_000,
+      options.installExitTimeoutMs ?? DESKTOP_UPDATE_INSTALL_EXIT_TIMEOUT_MS
+    );
 
     this.updater.autoDownload = false;
     this.updater.autoInstallOnAppQuit = false;
-    if ("channel" in this.updater) this.updater.channel = this.channel;
+    if ("channel" in this.updater)
+      this.updater.channel = this.channel === "stable" ? "latest" : "beta";
+    if ("allowDowngrade" in this.updater) this.updater.allowDowngrade = false;
     if ("allowPrerelease" in this.updater)
       this.updater.allowPrerelease = this.channel === "beta";
 
@@ -304,8 +319,11 @@ export class DesktopUpdateCoordinator {
       this.timers.clearTimeout(this.startupTimer);
     if (this.periodicTimer !== undefined)
       this.timers.clearTimeout(this.periodicTimer);
+    if (this.installRecoveryTimer !== undefined)
+      this.timers.clearTimeout(this.installRecoveryTimer);
     this.startupTimer = undefined;
     this.periodicTimer = undefined;
+    this.installRecoveryTimer = undefined;
     for (const [event, listener] of this.boundListeners) {
       this.updater.removeListener(event, listener as never);
     }
@@ -426,17 +444,17 @@ export class DesktopUpdateCoordinator {
       )
         return this.state;
       this.updater.quitAndInstall(false, true);
-    } catch {
-      if (this.isCurrentOperation(token)) {
-        this.setState({
-          status: "error",
-          message: safeErrorMessage("install"),
-          release,
-          recoverable: true
-        });
+      if (
+        this.installOperation?.token === token &&
+        this.state.status === "installing"
+      ) {
+        this.installRecoveryTimer = this.timers.setTimeout(() => {
+          this.installRecoveryTimer = undefined;
+          void this.recoverFailedInstall(token, release);
+        }, this.installExitTimeoutMs);
       }
-    } finally {
-      if (this.installOperation?.token === token) this.installOperation = null;
+    } catch {
+      await this.recoverFailedInstall(token, release);
     }
     return this.state;
   }
@@ -514,7 +532,10 @@ export class DesktopUpdateCoordinator {
       ) {
         this.handleFailure("download", false);
       } else if (this.state.status === "installing" && this.installOperation) {
-        this.handleFailure("install", false);
+        void this.recoverFailedInstall(
+          this.installOperation.token,
+          this.installOperation.release
+        );
       }
     });
   }
@@ -546,6 +567,33 @@ export class DesktopUpdateCoordinator {
       ...(this.currentRelease ? { release: this.currentRelease } : {}),
       ...(source === "install" ? { recoverable: true } : {})
     });
+  }
+
+  private async recoverFailedInstall(
+    token: number,
+    release: DesktopUpdateRelease
+  ): Promise<void> {
+    if (
+      !this.isCurrentOperation(token) ||
+      this.installOperation?.token !== token
+    )
+      return;
+    if (this.installRecoveryTimer !== undefined) {
+      this.timers.clearTimeout(this.installRecoveryTimer);
+      this.installRecoveryTimer = undefined;
+    }
+    this.installOperation = null;
+    this.setState({
+      status: "error",
+      message: safeErrorMessage("install"),
+      release,
+      recoverable: true
+    });
+    try {
+      await this.recoverAfterInstallFailure();
+    } catch {
+      // The sanitized recoverable state remains visible if relaunch fails.
+    }
   }
 
   private isCurrentOperation(token: number): boolean {

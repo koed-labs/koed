@@ -135,9 +135,9 @@ deferred until each platform has an explicit packaging, signing/trust, feed,
 and lifecycle design. Adding those platforms must preserve the main-process
 ownership and typed IPC contract.
 
-Product implementation, release workflow changes, feed provisioning, and
-platform expansion are downstream tasks. This ADR freezes their contract; it
-does not claim those tasks are complete.
+This ADR freezes the contract. The macOS arm64 implementation and release
+workflow now enforce the public trust and publication gates described here;
+platform expansion remains downstream work.
 
 ## Required downstream evidence
 
@@ -155,7 +155,7 @@ Implementation and release tasks must provide concrete evidence for:
 - atomic channel promotion, failed-candidate non-publication, and
   rollback/corrective-release behavior;
 - public signing, notarization, stapling, Gatekeeper, and fail-closed release
-  checks once Apple credentials are available.
+  checks, with Apple and R2 credentials required by release automation.
 
 ## Consequences
 
