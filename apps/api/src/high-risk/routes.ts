@@ -66,7 +66,6 @@ export interface HighRiskRouteContext {
     deviceRead: RateLimitHandler;
     deviceWrite: RateLimitHandler;
   };
-  explorerPublicUrl?: string;
 }
 
 const forbidden = (
@@ -157,7 +156,7 @@ const statusResponse = (grant: HighRiskActionGrantBindingRecord) =>
           : grant.state,
       activationPath:
         grant.state === "pending" && grant.approvalTier === "step_up"
-          ? `/v1/high-risk/browser-activations/${grant.selector}`
+          ? `/high-risk/browser-activations/${grant.selector}`
           : null,
       expiresAt: grant.expiresAt
     }
@@ -173,17 +172,6 @@ const browserActivationResponse = (grant: HighRiskActionGrantBindingRecord) =>
       targetId: grant.targetId
     }
   });
-
-const acceptsHtml = (request: FastifyRequest): boolean =>
-  request.headers.accept
-    ?.split(",")
-    .some((value) => value.trim().split(";", 1)[0] === "text/html") ?? false;
-
-const explorerActivationUrl = (
-  explorerPublicUrl: string,
-  selector: string
-): string =>
-  `${explorerPublicUrl.replace(/\/+$/, "")}/high-risk/browser-activations/${encodeURIComponent(selector)}`;
 
 export const registerHighRiskRoutes = (
   app: FastifyInstance,
@@ -416,12 +404,8 @@ export const registerHighRiskRoutes = (
       const { selector } = highRiskBrowserActivationParamsSchema.parse(
         request.params
       );
-      if (context.explorerPublicUrl && acceptsHtml(request)) {
-        return reply.redirect(
-          explorerActivationUrl(context.explorerPublicUrl, selector)
-        );
-      }
       const session = await authenticateBrowserSession(request, context);
+      requireFreshAuthentication(session);
       const activation = await context
         .requireRepository()
         .getBrowserActivation({
@@ -431,6 +415,7 @@ export const registerHighRiskRoutes = (
       if (!activation) {
         throw forbidden();
       }
+      reply.header("cache-control", "no-store");
       return browserActivationResponse(activation);
     }
   );
@@ -441,7 +426,7 @@ export const registerHighRiskRoutes = (
       preHandler: context.rateLimit.browser,
       bodyLimit: HIGH_RISK_BODY_LIMIT_BYTES
     },
-    async (request) => {
+    async (request, reply) => {
       const session = await authenticateBrowserSession(request, context);
       requireFreshAuthentication(session);
       const { selector } = highRiskBrowserActivationParamsSchema.parse(
@@ -462,6 +447,7 @@ export const registerHighRiskRoutes = (
       if (!activation) {
         throw forbidden();
       }
+      reply.header("cache-control", "no-store");
       return browserActivationResponse(activation);
     }
   );

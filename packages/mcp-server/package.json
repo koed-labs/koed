@@ -5,9 +5,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "koed-memory-answer-bridge": "dist/answer-bridge.js",
     "koed-mcp": "dist/cli.js",
-    "koed-capture-hook": "dist/capture-hook.js"
+    "koed-capture-hook": "dist/capture-hook.js",
+    "koed-local-ai-runtime": "dist/local-runtime-cli.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -30,18 +30,20 @@
     "bundle": "pnpm run build && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/koed-mcp-bundled.mjs",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "start": "node dist/cli.js",
-    "answer-bridge": "node dist/answer-bridge.js",
+    "local-runtime": "node dist/local-runtime-cli.js",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@koed/core": "workspace:*",
     "@koed/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/core": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "pino": "^10.3.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "esbuild": "^0.28.0"
   }
 }

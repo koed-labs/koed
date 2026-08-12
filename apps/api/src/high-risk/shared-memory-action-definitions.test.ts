@@ -61,7 +61,9 @@ const repository = () => ({
       representation: input.selectedRepresentation,
       sourceRevision: 4
     },
-    effectivePolicyIntersection: input.allowedRepresentations
+    effectivePolicyIntersection: input.allowedRepresentations,
+    sourceOwnerPolicyWillActivate: false,
+    sourceOwnerPolicyWillReplace: false
   })),
   getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
     source: {
@@ -88,6 +90,8 @@ const repository = () => ({
       sourceRevision: 4
     },
     effectivePolicyIntersection: input.allowedRepresentations,
+    sourceOwnerPolicyWillActivate: false,
+    sourceOwnerPolicyWillReplace: false,
     grant: {
       id: input.shareGrantId,
       logicalMemoryId: input.logicalMemoryId,
@@ -191,7 +195,7 @@ describe("Shared Memory action definitions", () => {
     expect(repo.getSharedMemoryPreviewAdmission).toHaveBeenCalledOnce();
   });
 
-  it("steps up a preview that creates or replaces the source-owner policy", async () => {
+  it("keeps a preview direct when its policy proposal differs", async () => {
     const repo = repository();
     repo.getSharedMemoryPreviewAdmission.mockImplementationOnce(
       async (_actor, input) => ({
@@ -214,7 +218,7 @@ describe("Shared Memory action definitions", () => {
       allowedRepresentations: ["lcm_rollups"]
     } as const satisfies HighRiskActionGrantIntent;
 
-    await expect(admit(intent, repo)).resolves.toMatchObject({
+    await expect(admit(intent, repo)).resolves.toEqual({
       operation: sharedMemoryPreviewActionGrantBinding({
         referenceId: ids.request,
         logicalMemoryId: ids.logicalMemory,
@@ -224,22 +228,24 @@ describe("Shared Memory action definitions", () => {
         representation: "lcm_rollups",
         allowedRepresentations: ["lcm_rollups"]
       }),
-      policy: {
-        disposition: "step_up",
-        review: {
-          title: "Change the source policy and preview this Memory?",
-          confirmLabel: "Change policy and preview"
-        }
-      }
+      policy: { disposition: "direct", review: null }
     });
   });
 
-  it("binds consent and Share Grant creation in one decision and steps up only raw Memory", async () => {
+  it("binds consent and Share Grant creation in one decision and steps up raw Memory", async () => {
     const derived = shareIntent("lcm_rollups");
     const raw = shareIntent("memory_events");
+    const rawRepository = repository();
+    rawRepository.getSharedMemoryShareReview.mockImplementationOnce(
+      async (actor, input) => ({
+        ...(await repository().getSharedMemoryShareReview(actor, input)),
+        sourceOwnerPolicyWillActivate: true,
+        sourceOwnerPolicyWillReplace: true
+      })
+    );
 
     const admittedDerived = await admit(derived);
-    const admittedRaw = await admit(raw);
+    const admittedRaw = await admit(raw, rawRepository);
 
     expect(admittedDerived).toMatchObject({
       operation: sharedMemoryShareBundleActionGrantBinding({
@@ -260,7 +266,18 @@ describe("Shared Memory action definitions", () => {
       }),
       policy: { disposition: "native_review" }
     });
-    expect(admittedRaw).toMatchObject({ policy: { disposition: "step_up" } });
+    expect(admittedRaw).toMatchObject({
+      policy: {
+        disposition: "step_up",
+        review: {
+          details: expect.arrayContaining([
+            { label: "Representation", value: "Memory Events" },
+            { label: "Source policy", value: "Replace during this share" }
+          ]),
+          consequence: expect.stringContaining("invalidates other Share Grants")
+        }
+      }
+    });
   });
 
   it("authorizes revocation from the exact source-owned grant without destination read state", async () => {
@@ -291,6 +308,7 @@ describe("Shared Memory action definitions", () => {
         review: {
           details: expect.arrayContaining([
             { label: "Personal Memory", value: source.title },
+            { label: "Representation", value: "LCM Leaves" },
             { label: "Share Grant", value: ids.shareGrant }
           ])
         }
@@ -386,7 +404,15 @@ describe("Shared Memory action definitions", () => {
         expectedGrantVersion: 7,
         expiresAt: null
       }),
-      policy: { disposition: "step_up" }
+      policy: {
+        disposition: "step_up",
+        review: {
+          details: expect.arrayContaining([
+            { label: "Current representation", value: "LCM Leaves" },
+            { label: "New representation", value: "Memory Events" }
+          ])
+        }
+      }
     });
     expect(reactivation).toMatchObject({
       policy: {

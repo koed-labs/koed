@@ -144,6 +144,7 @@ export interface CodexTranscriptJournalResult {
   providerBytesAdvanced: number;
   canonicalCursorOffset: number;
   cursorAdvanced: boolean;
+  turnOpen: boolean;
   turnBoundaryHandled: boolean;
   recordsConsumed: number;
   itemsPersisted: number;
@@ -165,6 +166,18 @@ const responseValue = <T>(
     throw new Error(`journal_api_response_missing_${key}`);
   }
   return value as T;
+};
+
+const isConcurrentCanonicalCursorAdvance = (error: unknown): boolean => {
+  if (!(error instanceof MemoryApiError) || error.status !== 409) return false;
+  const payload =
+    error.payload && typeof error.payload === "object"
+      ? (error.payload as { code?: unknown })
+      : null;
+  return (
+    payload?.code === "conversation_source_consumer_cursor_conflict" ||
+    error.message === "Conversation source consumer cursor conflict"
+  );
 };
 
 const readSourceRange = (
@@ -639,6 +652,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: false,
       turnBoundaryHandled: true,
       recordsConsumed: 0,
       itemsPersisted: persisted.length,
@@ -652,6 +666,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: Boolean(cursor.parserState.activeTurnId),
       turnBoundaryHandled: false,
       recordsConsumed: 0,
       itemsPersisted: 0,
@@ -705,6 +720,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: Boolean(cursor.parserState.activeTurnId),
       turnBoundaryHandled: false,
       recordsConsumed: 0,
       itemsPersisted: 0,
@@ -771,6 +787,7 @@ export const ingestCodexTranscriptJournal = async (input: {
         artifact.providerCursorOffset - providerOffsetBefore,
       canonicalCursorOffset: cursor.sourceOffset,
       cursorAdvanced: false,
+      turnOpen: Boolean(parsed.checkpoint.activeTurnId),
       turnBoundaryHandled: false,
       recordsConsumed: parsed.records.length,
       itemsPersisted: persisted.length,
@@ -778,33 +795,46 @@ export const ingestCodexTranscriptJournal = async (input: {
     };
   }
   const completedTurn = sourceCompletedTurn || boundaryControl !== null;
-  await input.client.advanceConversationSourceCursor(artifact.id, {
-    consumerKind: "canonical_live",
-    expectedSourceOffset: cursor.sourceOffset,
-    sourceOffset: parsed.checkpoint.offset,
-    sourceLine: parsed.checkpoint.lineCount,
-    segmentIndex: checkpointSegment.segmentIndex,
-    lastVerifiedDigest: checkpointSegment.plaintextDigest,
-    parserState: {
-      ...(parsed.checkpoint.lastEventTime
-        ? { lastEventTime: parsed.checkpoint.lastEventTime }
-        : {}),
-      ...(activeTurnId ? { activeTurnId } : {}),
-      ...(parsed.checkpoint.assistantMessagePreference
-        ? {
-            assistantMessagePreference:
-              parsed.checkpoint.assistantMessagePreference
-          }
-        : {})
-    }
-  });
+  let canonicalCursorOffset = parsed.checkpoint.offset;
+  let cursorAdvanced = true;
+  try {
+    await input.client.advanceConversationSourceCursor(artifact.id, {
+      consumerKind: "canonical_live",
+      expectedSourceOffset: cursor.sourceOffset,
+      sourceOffset: parsed.checkpoint.offset,
+      sourceLine: parsed.checkpoint.lineCount,
+      segmentIndex: checkpointSegment.segmentIndex,
+      lastVerifiedDigest: checkpointSegment.plaintextDigest,
+      parserState: {
+        ...(parsed.checkpoint.lastEventTime
+          ? { lastEventTime: parsed.checkpoint.lastEventTime }
+          : {}),
+        ...(activeTurnId ? { activeTurnId } : {}),
+        ...(parsed.checkpoint.assistantMessagePreference
+          ? {
+              assistantMessagePreference:
+                parsed.checkpoint.assistantMessagePreference
+            }
+          : {})
+      }
+    });
+  } catch (error) {
+    if (!isConcurrentCanonicalCursorAdvance(error)) throw error;
+    const winningCursor = await canonicalCursor(input.client, artifact);
+    if (winningCursor.sourceOffset < parsed.checkpoint.offset) throw error;
+    canonicalCursorOffset = winningCursor.sourceOffset;
+    cursorAdvanced = false;
+  }
   return {
     artifact,
     providerBytesAdvanced: artifact.providerCursorOffset - providerOffsetBefore,
-    canonicalCursorOffset: parsed.checkpoint.offset,
-    cursorAdvanced: true,
+    canonicalCursorOffset,
+    cursorAdvanced,
+    turnOpen: !completedTurn && Boolean(activeTurnId),
     turnBoundaryHandled:
-      turnBoundaryAtCheckpoint && (completedTurn || !activeTurnId),
+      turnBoundaryAtCheckpoint &&
+      canonicalCursorOffset >= parsed.checkpoint.offset &&
+      (completedTurn || !activeTurnId),
     recordsConsumed: parsed.records.length,
     itemsPersisted: persisted.length,
     items

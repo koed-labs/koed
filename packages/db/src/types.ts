@@ -42,9 +42,9 @@ export type CaptureState = "enabled" | "disabled" | "ask";
 
 export type CapturePolicyTarget = "global" | "project" | "thread";
 
-export type MemoryQuestionStatus = "pending" | "answered" | "error";
+export type MemoryQuestionStatus = "answered" | "error";
 
-export type MemoryQuestionOrigin = "explorer" | "mcp_memory_answer";
+export type MemoryQuestionOrigin = "mcp_memory_answer";
 
 export type MemoryQuestionSearchDomain = "global" | "project" | "session";
 
@@ -1482,7 +1482,6 @@ export interface ConversationProjectionBacklog {
   liveProjectionRows: number;
   historicalImportRows: number;
   historicalImportBytes: number;
-  interactiveQuestionRows: number;
 }
 
 export interface LcmDispatchReconciliationScope {
@@ -1544,10 +1543,7 @@ export interface MemoryQuestionShellRecord {
   createdAt: string;
   updatedAt: string;
   answeredAt: string | null;
-  processingStartedAt: string | null;
-  processingLeaseUntil: string | null;
   attemptCount: number;
-  lastErrorMessage: string | null;
   evidenceCount: number;
 }
 
@@ -1557,7 +1553,6 @@ export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
   citations: unknown[] | null;
   retrieval: Record<string, unknown> | null;
   localMemoryWorker: Record<string, unknown> | null;
-  localMemoryWorkerConfig: Record<string, unknown> | null;
   response: Record<string, unknown> | null;
 }
 

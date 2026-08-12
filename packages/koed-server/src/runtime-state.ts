@@ -44,7 +44,6 @@ const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
     typeof value.repoRoot === "string" &&
     Boolean(value.repoRoot.trim()) &&
     validHttpUrl(value.apiUrl) &&
-    validHttpUrl(value.explorerUrl) &&
     Array.isArray(value.services) &&
     value.services.every((service) => typeof service === "string") &&
     validRuntimeMode &&
@@ -73,6 +72,5 @@ export const applyActiveRuntimeUrls = (
 ): NodeJS.ProcessEnv => ({
   ...environment,
   ...(runtime?.apiUrl ? { MEMORY_API_URL: runtime.apiUrl } : {}),
-  ...(runtime?.explorerUrl ? { KOED_EXPLORER_URL: runtime.explorerUrl } : {}),
   ...(runtime?.automaticPorts ? { KOED_AUTO_PORTS: "1" } : {})
 });

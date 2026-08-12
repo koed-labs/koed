@@ -68,7 +68,6 @@ describe("allocateAndPersistLocalPorts", () => {
     const generatedEnvironment = {
       KOED_AUTO_PORTS: "1",
       API_HOST_PORT: "3300",
-      EXPLORER_WEB_HOST_PORT: "5174",
       POSTGRES_HOST_PORT: "15432",
       EMBEDDING_SERVICE_HOST_PORT: "3800",
       EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18080",
@@ -88,8 +87,6 @@ describe("allocateAndPersistLocalPorts", () => {
 
     expect(first.API_HOST_PORT).toBe("3300");
     expect(second.API_HOST_PORT).toBe("3301");
-    expect(first.EXPLORER_WEB_HOST_PORT).toBe("5174");
-    expect(second.EXPLORER_WEB_HOST_PORT).toBe("5175");
     expect(first.POSTGRES_HOST_PORT).toBe("15432");
     expect(second.POSTGRES_HOST_PORT).toBe("15433");
     expect(first.EMBEDDING_SERVICE_HOST_PORT).toBe("3800");

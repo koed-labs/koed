@@ -1,7 +1,7 @@
 # Server Deployment Boundary
 
 Koed's server deployment unit is `koed-server` plus its dependencies. API,
-Worker, Explorer, queue processing, and operational checks are implementation
+Worker, queue processing, and operational checks are implementation
 surfaces inside that server boundary; Operators should not need to reason about
 them as separate product deployments unless they are debugging or scaling an
 internal process.
@@ -28,7 +28,7 @@ registration, configuration validation, health/status reporting, supervised app
 processes, local clone-safe device identity, and local setup commands. Device
 identity keeps opaque deployment/device IDs plus non-secret metadata in
 `KOED_HOME`, while raw host proof stays in user-private platform state outside
-`KOED_HOME`. API, Worker, Explorer, MCP Server, Capture Hook, ordinary config,
+`KOED_HOME`. API, Worker, MCP Server, Capture Hook, ordinary config,
 and diagnostics never receive raw proof. Local capture and Recall do not depend
 on proof health; local-edge remote, Team, enrollment, and sync paths evaluate
 identity health and fail closed. Explicit `koed-server identity rotate --json`
@@ -61,12 +61,11 @@ authorization model.
 
 ## Internal Process Names
 
-Older docs and scripts may mention API, Worker, Explorer, or Compose stacks.
+Older docs and scripts may mention API, Worker, or Compose stacks.
 Use this mapping when reading or updating them:
 
 - API means the internal HTTP app served by `koed-server`.
 - Worker means the internal background processor used by `koed-server`.
-- Explorer means the browser UI served beside or inside the server boundary.
 - Docker Compose means one possible dependency starter for source checkouts or
   an Operator-chosen container layout.
 

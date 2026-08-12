@@ -69,13 +69,19 @@ describe("PreferencesView", () => {
     expect(onThemeChange).toHaveBeenCalledWith("dark");
   });
 
-  it("does not invent Capture controls when commands are unavailable", async () => {
+  it("hides Capture until the Desktop integration is available", async () => {
     await renderPreferences();
-    await clickButton(container, "Capture");
-
-    expect(container.textContent).toContain("Capture controls are unavailable");
+    expect(
+      [...container.querySelectorAll("button")].some(
+        (button) => button.textContent === "Capture"
+      )
+    ).toBe(false);
     expect(container.querySelector('[aria-label="Capture State"]')).toBeNull();
-    expect(container.textContent).toContain("No setting has been inferred");
+
+    await renderPreferences({ initialSection: "capture" });
+    expect(
+      container.querySelector("#koed-preference-section-title")?.textContent
+    ).toBe("General");
   });
 
   it("connects to an explicit remote URL and confirms removal in a Dialog", async () => {

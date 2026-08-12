@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { KoedServerPaths } from "./paths.js";
 
-export interface ExplorerCredential {
+export interface LocalAppCredential {
   apiToken: string;
   provisionedAt: string;
   source: "environment" | "repo-env";
@@ -28,8 +28,7 @@ export const resolveLocalApiToken = (
 ): { token: string; source: "environment" | "repo-env" } | null => {
   const envToken = tokenFrom([
     environment.MEMORY_API_TOKEN,
-    environment.CODEX_MEMORY_API_TOKEN,
-    environment.VITE_KOED_API_TOKEN
+    environment.CODEX_MEMORY_API_TOKEN
   ]);
   if (envToken) {
     return { token: envToken, source: "environment" };
@@ -37,8 +36,7 @@ export const resolveLocalApiToken = (
 
   const repoToken = tokenFrom([
     repoEnv.MEMORY_API_TOKEN,
-    repoEnv.CODEX_MEMORY_API_TOKEN,
-    repoEnv.VITE_KOED_API_TOKEN
+    repoEnv.CODEX_MEMORY_API_TOKEN
   ]);
   if (repoToken) {
     return { token: repoToken, source: "repo-env" };
@@ -47,27 +45,27 @@ export const resolveLocalApiToken = (
   return null;
 };
 
-export const writeExplorerCredential = (
+export const writeLocalAppCredential = (
   paths: KoedServerPaths,
-  credential: ExplorerCredential
+  credential: LocalAppCredential
 ): void => {
   writeFileSync(
-    paths.explorerTokenPath,
+    paths.localAppCredentialPath,
     `${JSON.stringify(credential, null, 2)}\n`,
     { mode: 0o600 }
   );
 };
 
-export const loadExplorerCredential = (
+export const loadLocalAppCredential = (
   paths: KoedServerPaths
-): ExplorerCredential | null => {
-  if (!existsSync(paths.explorerTokenPath)) {
+): LocalAppCredential | null => {
+  if (!existsSync(paths.localAppCredentialPath)) {
     return null;
   }
   try {
     const parsed = JSON.parse(
-      readFileSync(paths.explorerTokenPath, "utf8")
-    ) as Partial<ExplorerCredential> | null;
+      readFileSync(paths.localAppCredentialPath, "utf8")
+    ) as Partial<LocalAppCredential> | null;
     if (!parsed?.apiToken) {
       return null;
     }
@@ -87,13 +85,13 @@ export const resolveActiveIntegrationApiToken = (
   repoEnv: Record<string, string>
 ): {
   token: string;
-  source: "environment" | "repo-env" | "explorer-credential";
+  source: "environment" | "repo-env" | "local-app-credential";
 } | null => {
-  const explorerCredential = loadExplorerCredential(paths);
-  if (environment.KOED_AUTO_PORTS === "1" && explorerCredential?.apiToken) {
+  const localAppCredential = loadLocalAppCredential(paths);
+  if (environment.KOED_AUTO_PORTS === "1" && localAppCredential?.apiToken) {
     return {
-      token: explorerCredential.apiToken,
-      source: "explorer-credential"
+      token: localAppCredential.apiToken,
+      source: "local-app-credential"
     };
   }
 
@@ -102,10 +100,10 @@ export const resolveActiveIntegrationApiToken = (
     return localToken;
   }
 
-  if (explorerCredential?.apiToken) {
+  if (localAppCredential?.apiToken) {
     return {
-      token: explorerCredential.apiToken,
-      source: "explorer-credential"
+      token: localAppCredential.apiToken,
+      source: "local-app-credential"
     };
   }
 

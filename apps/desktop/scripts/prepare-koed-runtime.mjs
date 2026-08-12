@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* global console, process */
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
@@ -51,13 +51,6 @@ deploy("@koed/api", "api");
 deploy("@koed/worker", "worker");
 deploy("@koed/embedding-service", "embedding-service");
 deploy("@koed/mcp-server", "mcp-server");
-cpSync(
-  resolve(repoRoot, "apps/explorer/dist"),
-  resolve(runtimeRoot, "explorer-dist"),
-  {
-    recursive: true
-  }
-);
 const nativeRuntimeSource = process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR?.trim();
 if (nativeRuntimeSource) {
   if (!existsSync(nativeRuntimeSource)) {
@@ -83,8 +76,7 @@ const required = [
   "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
-  "mcp-server/dist/prompts/mcp-server-instructions.md",
-  "explorer-dist/index.html"
+  "mcp-server/dist/prompts/mcp-server-instructions.md"
 ];
 const missing = required.filter(
   (entry) => !existsSync(resolve(runtimeRoot, entry))

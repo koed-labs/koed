@@ -8,8 +8,7 @@ const batchConfig = {
   maxConcurrency: 1,
   maxRows: 100,
   maxRuntimeMs: 15_000,
-  maxLiveProjectionRows: 0,
-  maxInteractiveQuestionRows: 0
+  maxLiveProjectionRows: 0
 };
 
 const healthy = {
@@ -21,8 +20,7 @@ const healthy = {
 const emptyBacklog = {
   liveProjectionRows: 0,
   historicalImportRows: 0,
-  historicalImportBytes: 0,
-  interactiveQuestionRows: 0
+  historicalImportBytes: 0
 };
 
 type MemoryEventScope = Awaited<
@@ -365,8 +363,7 @@ const createHistoricalRepository = () => ({
   getConversationProjectionBacklog: vi.fn().mockResolvedValue({
     liveProjectionRows: 0,
     historicalImportRows: 10,
-    historicalImportBytes: 1000,
-    interactiveQuestionRows: 0
+    historicalImportBytes: 1000
   }),
   getNextSemanticMemoryRebuildDueAt: vi.fn().mockResolvedValue(null),
   listConversationProjectionActors: vi.fn(({ limit, workClass }) =>
@@ -547,14 +544,12 @@ describe("raw Projection historical priority", () => {
       .mockResolvedValueOnce({
         liveProjectionRows: 1,
         historicalImportRows: 10,
-        historicalImportBytes: 1000,
-        interactiveQuestionRows: 0
+        historicalImportBytes: 1000
       })
       .mockResolvedValueOnce({
         liveProjectionRows: 0,
         historicalImportRows: 10,
-        historicalImportBytes: 1000,
-        interactiveQuestionRows: 0
+        historicalImportBytes: 1000
       });
 
     await createHistoricalService(repository).service.run();

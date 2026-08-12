@@ -1,28 +1,10 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
-
-const token =
-  process.env.MEMORY_API_TOKEN ?? process.env.CODEX_MEMORY_API_TOKEN;
-if (!token) {
-  console.error(
-    "Set MEMORY_API_TOKEN to a Koed API token from `pnpm api-token:create`."
-  );
-  process.exit(1);
-}
+import { dirname, join, resolve } from "node:path";
 
 const repoRoot = process.cwd();
-const apiUrl =
-  process.env.MEMORY_API_URL ??
-  process.env.CODEX_MEMORY_BASE_URL ??
-  "http://localhost:3300";
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
-const appServerBinary = process.env.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
-const configuredPromptOverrideDirectory = process.env.KOED_PROMPT_DIR?.trim();
-const promptOverrideDirectory = configuredPromptOverrideDirectory
-  ? resolve(repoRoot, configuredPromptOverrideDirectory)
-  : undefined;
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
@@ -44,7 +26,16 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
 
 const markerStart = "# >>> koed";
 const markerEnd = "# <<< koed";
-const koedHome = process.env.KOED_HOME ?? resolve(homedir(), ".koed");
+const configuredKoedHome = process.env.KOED_HOME?.trim();
+const koedHome =
+  !configuredKoedHome || configuredKoedHome === "~"
+    ? configuredKoedHome === "~"
+      ? homedir()
+      : join(homedir(), ".koed")
+    : configuredKoedHome.startsWith("~/") ||
+        configuredKoedHome.startsWith("~\\")
+      ? resolve(homedir(), configuredKoedHome.slice(2))
+      : resolve(configuredKoedHome);
 const hookCommand = [nodeCommand, captureHookPath, "--koed-home", koedHome]
   .map((value) => JSON.stringify(value))
   .join(" ");
@@ -65,9 +56,6 @@ command = ${JSON.stringify(hookCommand)}
 timeout = ${timeout}`
   )
   .join("\n\n");
-const promptOverrideLine = promptOverrideDirectory
-  ? `\nKOED_PROMPT_DIR = ${JSON.stringify(promptOverrideDirectory)}`
-  : "";
 const koedBlock = `${markerStart}
 [mcp_servers.${mcpName}]
 command = "${nodeCommand}"
@@ -75,9 +63,7 @@ args = ["${mcpCliPath}"]
 enabled = true
 
 [mcp_servers.${mcpName}.env]
-MEMORY_API_URL = "${apiUrl}"
-MEMORY_API_TOKEN = "${token}"
-MEMORY_CODEX_APP_SERVER_BINARY = "${appServerBinary}"${promptOverrideLine}
+KOED_HOME = ${JSON.stringify(koedHome)}
 
 ${hookBlocks}
 ${markerEnd}
@@ -94,12 +80,8 @@ mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 
 console.log("Codex integration configured.");
-console.log(`Detected API URL: ${apiUrl}`);
 console.log(`Detected Node command: ${nodeCommand}`);
-console.log(`Detected Codex app-server binary: ${appServerBinary}`);
-if (promptOverrideDirectory) {
-  console.log(`Detected prompt override directory: ${promptOverrideDirectory}`);
-}
+console.log(`Detected Koed home: ${koedHome}`);
 console.log(`Wrote Codex MCP config: ${codexConfigPath}`);
 console.log(
   "Next: restart Codex, then run `pnpm codex:verify-capture` or `pnpm codex:doctor` to confirm the integration is healthy."

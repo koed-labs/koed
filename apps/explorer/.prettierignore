@@ -1,5 +1,0 @@
-node_modules
-dist
-apps/web/dist
-.turbo
-*.tsbuildinfo

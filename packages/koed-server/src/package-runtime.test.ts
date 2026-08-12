@@ -355,6 +355,19 @@ describe("standalone koed-server package runtime", () => {
     expect(invalid.errors.join("\n")).toMatch(/incompatible/);
   });
 
+  it("rejects retired Explorer artifacts", () => {
+    const root = createPackageRoot(tempDir(), "0.2.0");
+    writeFile(resolve(root, "koed-runtime/explorer-dist/index.html"));
+    writeFile(resolve(root, "koed-server/dist/explorer-static-server.js"));
+    writeManifest(root, "0.2.0");
+
+    const result = validateServerPackageRoot(root);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toMatch(/explorer-dist/);
+    expect(result.errors.join("\n")).toMatch(/explorer-static-server/);
+  });
+
   it("installs and activates a verified package archive", async () => {
     const home = tempDir();
     const sourceParent = tempDir();

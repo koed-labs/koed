@@ -21,6 +21,7 @@ const ids = {
   alice: randomUUID(),
   bob: randomUUID(),
   aliceSession: randomUUID(),
+  bobSession: randomUUID(),
   staleSession: randomUUID(),
   activeDevice: randomUUID(),
   team: randomUUID(),
@@ -116,6 +117,20 @@ const sessions = new Map<string, UserSessionContext>([
     }
   ],
   [
+    "bob-session",
+    {
+      sessionId: ids.bobSession,
+      createdAt: new Date(now - 30_000),
+      expiresAt: new Date(now + 60_000),
+      user: {
+        id: ids.bob,
+        email: "bob@example.test",
+        displayName: "Bob",
+        passwordHash: null
+      }
+    }
+  ],
+  [
     "stale-session",
     {
       sessionId: ids.staleSession,
@@ -134,7 +149,6 @@ const sessions = new Map<string, UserSessionContext>([
 const buildServer = async (overrides?: {
   repository?: Partial<ReturnType<HighRiskRouteContext["requireRepository"]>>;
   deviceOperationFamilies?: string[];
-  explorerPublicUrl?: string;
   hashSecret?: HighRiskRouteContext["hashSecret"];
 }) => {
   const repository: ReturnType<HighRiskRouteContext["requireRepository"]> = {
@@ -267,7 +281,9 @@ const buildServer = async (overrides?: {
         representation: input.selectedRepresentation,
         sourceRevision: 1
       },
-      effectivePolicyIntersection: input.allowedRepresentations
+      effectivePolicyIntersection: input.allowedRepresentations,
+      sourceOwnerPolicyWillActivate: false,
+      sourceOwnerPolicyWillReplace: false
     })),
     getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
       source: {
@@ -300,6 +316,8 @@ const buildServer = async (overrides?: {
         sourceRevision: 1
       },
       effectivePolicyIntersection: input.allowedRepresentations,
+      sourceOwnerPolicyWillActivate: false,
+      sourceOwnerPolicyWillReplace: false,
       grant: {
         id: input.shareGrantId,
         logicalMemoryId: input.logicalMemoryId,
@@ -376,10 +394,7 @@ const buildServer = async (overrides?: {
       browser: async () => undefined,
       deviceRead: async () => undefined,
       deviceWrite: async () => undefined
-    },
-    ...(overrides?.explorerPublicUrl
-      ? { explorerPublicUrl: overrides.explorerPublicUrl }
-      : {})
+    }
   });
   await app.ready();
   return { app, repository };
@@ -451,7 +466,7 @@ describe("high-risk action grant routes", () => {
     ).toMatchObject({
       status: {
         selector: binding.selector,
-        activationPath: `/v1/high-risk/browser-activations/${binding.selector}`
+        activationPath: `/high-risk/browser-activations/${binding.selector}`
       }
     });
     expect(
@@ -1083,7 +1098,9 @@ describe("high-risk action grant routes", () => {
             representation: input.selectedRepresentation,
             sourceRevision: 1
           },
-          effectivePolicyIntersection: input.allowedRepresentations
+          effectivePolicyIntersection: input.allowedRepresentations,
+          sourceOwnerPolicyWillActivate: false,
+          sourceOwnerPolicyWillReplace: false
         }))
       }
     });
@@ -1162,10 +1179,8 @@ describe("high-risk action grant routes", () => {
     await fixture.app.close();
   });
 
-  it("redirects browser navigation to Explorer without weakening JSON authentication", async () => {
-    const fixture = await buildServer({
-      explorerPublicUrl: "https://koed.example/explorer"
-    });
+  it("keeps the JSON endpoint authenticated even for HTML accept headers", async () => {
+    const fixture = await buildServer();
 
     const browserNavigation = await fixture.app.inject({
       method: "GET",
@@ -1178,12 +1193,78 @@ describe("high-risk action grant routes", () => {
       headers: { accept: "application/json" }
     });
 
-    expect(browserNavigation.statusCode).toBe(302);
-    expect(browserNavigation.headers.location).toBe(
-      `https://koed.example/explorer/high-risk/browser-activations/${binding.selector}`
-    );
+    expect(browserNavigation.statusCode).toBe(401);
     expect(programmaticRequest.statusCode).toBe(401);
     expect(fixture.repository.getBrowserActivation).not.toHaveBeenCalled();
+    await fixture.app.close();
+  });
+
+  it.each([
+    ["missing credentials", {}, 401],
+    ["an API Token", { authorization: "Bearer api-token" }, 403],
+    [
+      "a device credential",
+      { authorization: "Koed-Device device-key:secret" },
+      403
+    ]
+  ])(
+    "rejects activation decisions authenticated with %s",
+    async (_label, headers, expectedStatus) => {
+      const fixture = await buildServer();
+
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/high-risk/browser-activations/${binding.selector}/decision`,
+        headers,
+        payload: { decision: "approve" }
+      });
+
+      expect(response.statusCode).toBe(expectedStatus);
+      expect(fixture.repository.decideBrowserActivation).not.toHaveBeenCalled();
+      await fixture.app.close();
+    }
+  );
+
+  it("does not let another User inspect or decide an activation", async () => {
+    const getBrowserActivation = vi.fn(
+      async (input: { ownerUserId: string }) =>
+        input.ownerUserId === ids.alice ? binding : null
+    );
+    const decideBrowserActivation = vi.fn(
+      async (input: { ownerUserId: string }) =>
+        input.ownerUserId === ids.alice
+          ? { ...binding, state: "approved" as const }
+          : null
+    );
+    const fixture = await buildServer({
+      repository: { getBrowserActivation, decideBrowserActivation }
+    });
+
+    const inspected = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/high-risk/browser-activations/${binding.selector}`,
+      headers: { cookie: "cm_session=bob-session" }
+    });
+    const decided = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/high-risk/browser-activations/${binding.selector}/decision`,
+      headers: { cookie: "cm_session=bob-session" },
+      payload: { decision: "approve" }
+    });
+
+    expect(inspected.statusCode).toBe(403);
+    expect(decided.statusCode).toBe(403);
+    expect(getBrowserActivation).toHaveBeenCalledWith({
+      selector: binding.selector,
+      ownerUserId: ids.bob
+    });
+    expect(decideBrowserActivation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selector: binding.selector,
+        ownerUserId: ids.bob,
+        userSessionId: ids.bobSession
+      })
+    );
     await fixture.app.close();
   });
 
@@ -1218,9 +1299,14 @@ describe("high-risk action grant routes", () => {
     await fixture.app.close();
   });
 
-  it("requires a fresh browser session for activation decisions", async () => {
+  it("requires a fresh browser session before showing or deciding an activation", async () => {
     const fixture = await buildServer();
 
+    const staleInspection = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/high-risk/browser-activations/${binding.selector}`,
+      headers: { cookie: "cm_session=stale-session" }
+    });
     const stale = await fixture.app.inject({
       method: "POST",
       url: `/v1/high-risk/browser-activations/${binding.selector}/decision`,
@@ -1234,6 +1320,7 @@ describe("high-risk action grant routes", () => {
       payload: { decision: "approve" }
     });
 
+    expect(staleInspection.statusCode).toBe(403);
     expect(stale.statusCode).toBe(403);
     expect(fresh.statusCode).toBe(200);
     expect(
@@ -1246,6 +1333,37 @@ describe("high-risk action grant routes", () => {
         decision: "approve"
       })
     );
+    await fixture.app.close();
+  });
+
+  it("lets a matching freshly authenticated User decide exactly once", async () => {
+    const decideBrowserActivation = vi
+      .fn()
+      .mockResolvedValueOnce({ ...binding, state: "denied" as const })
+      .mockResolvedValueOnce(null);
+    const fixture = await buildServer({
+      repository: { decideBrowserActivation }
+    });
+
+    const first = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/high-risk/browser-activations/${binding.selector}/decision`,
+      headers: { cookie: "cm_session=alice-session" },
+      payload: { decision: "deny" }
+    });
+    const replay = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/high-risk/browser-activations/${binding.selector}/decision`,
+      headers: { cookie: "cm_session=alice-session" },
+      payload: { decision: "approve" }
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(jsonBody<{ status: { state: string } }>(first).status.state).toBe(
+      "denied"
+    );
+    expect(replay.statusCode).toBe(403);
+    expect(decideBrowserActivation).toHaveBeenCalledTimes(2);
     await fixture.app.close();
   });
 

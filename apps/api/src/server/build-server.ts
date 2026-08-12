@@ -119,12 +119,14 @@ import {
 } from "../personal-device-sync/secure-runtime.js";
 import { resolveApiServerConfig } from "./config.js";
 import { registerBrowserWriteCsrfProtection } from "./browser-write-csrf.js";
+import { registerBrowserApprovalRoutes } from "./browser-approval-routes.js";
 import {
   apiLogSchemaVersion,
   apiServiceName,
   authenticatedRequestLogContext,
   formatApiLogBindings,
   getRequestLogContext,
+  redactSensitiveRoutePath,
   resolveRequestId,
   sanitizeZodIssues,
   serializeApiRequest,
@@ -861,7 +863,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       request: {
         id: request.id,
         method: request.method,
-        path: requestPathname(request),
+        path:
+          redactSensitiveRoutePath(
+            requestPathname(request),
+            request.routeOptions.url
+          ) ?? requestPathname(request),
         route: request.routeOptions.url
       },
       http: {
@@ -895,6 +901,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     enqueueEmbedding
   });
 
+  registerBrowserApprovalRoutes(app);
   registerAuthRoutes(app, routeContext);
   registerAnalyticsRoutes(app, routeContext);
   registerApiTokenRoutes(app, routeContext);
@@ -916,8 +923,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       browser: rateLimitHandlers.auth,
       deviceRead: rateLimitHandlers.memoryRead,
       deviceWrite: rateLimitHandlers.memoryWrite
-    },
-    explorerPublicUrl: config.explorerPublicUrl
+    }
   });
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: requireRepository,

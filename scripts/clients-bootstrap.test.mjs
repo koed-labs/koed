@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runClientsBootstrap } from "./clients-bootstrap.mjs";
 
-test("clients bootstrap chains environment, dependencies, codex, and explorer setup", async () => {
+test("clients bootstrap chains environment, dependencies, and Codex setup", async () => {
   const calls = [];
   const result = await runClientsBootstrap({
     environment: { API_HOST_PORT: "4545" },
@@ -20,12 +20,6 @@ test("clients bootstrap chains environment, dependencies, codex, and explorer se
         tokenResult: { owner: { email: "local@koed.ai" }, token: "cmt_token" }
       };
     },
-    runExplorerBootstrapFn: async ({ token, rootDir }) => {
-      calls.push(["explorer-bootstrap", token, rootDir]);
-      return {
-        paths: { explorerEnvPath: "/tmp/koed/apps/explorer/.env.local" }
-      };
-    },
     onComplete: (summary) => {
       calls.push(["complete", summary]);
     }
@@ -39,14 +33,12 @@ test("clients bootstrap chains environment, dependencies, codex, and explorer se
       "Start Koed dependency containers",
       "api-ready",
       "codex-bootstrap",
-      "explorer-bootstrap",
       "complete"
     ]
   );
   assert.equal(calls[2][1], "http://localhost:4545");
   assert.equal(calls[3][1], true);
   assert.deepEqual(calls[3][2], []);
-  assert.equal(calls[4][1], "cmt_token");
 });
 
 test("clients bootstrap can rely on koed-server managed dependencies", async () => {
@@ -67,12 +59,6 @@ test("clients bootstrap can rely on koed-server managed dependencies", async () 
         tokenResult: { owner: { email: "local@koed.ai" }, token: "cmt_token" }
       };
     },
-    runExplorerBootstrapFn: async ({ token, rootDir }) => {
-      calls.push(["explorer-bootstrap", token, rootDir]);
-      return {
-        paths: { explorerEnvPath: "/tmp/koed/apps/explorer/.env.local" }
-      };
-    },
     onComplete: (summary) => {
       calls.push(["complete", summary]);
     }
@@ -80,13 +66,7 @@ test("clients bootstrap can rely on koed-server managed dependencies", async () 
 
   assert.deepEqual(
     calls.map(([first]) => first),
-    [
-      "Prepare local environment",
-      "api-ready",
-      "codex-bootstrap",
-      "explorer-bootstrap",
-      "complete"
-    ]
+    ["Prepare local environment", "api-ready", "codex-bootstrap", "complete"]
   );
   assert.deepEqual(calls[2][2], ["--skip-verify", "--skip-doctor"]);
 });

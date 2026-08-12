@@ -6,6 +6,7 @@ Related decisions:
 
 - [0005 Native Bundled-Local Runtime Asset Provisioning Boundary](./0005-bundled-local-runtime-asset-provisioning.md)
 - [0006 macOS Homebrew-First Runtime Provisioning](./0006-macos-homebrew-first-runtime-provisioning.md)
+- [0025 MCP v2 Local AI Runtime Ownership](./0025-mcp-v2-local-ai-runtime-ownership.md)
 
 ## Context
 
@@ -40,6 +41,10 @@ reimplementing them.
 
 - `koed-server` remains the source of truth for local service lifecycle,
   dependency-mode resolution, setup, status, diagnostics, logs, and verification.
+- `koed-server` supervises one Local AI Runtime per `KOED_HOME`. Short-lived MCP
+  adapters consume that runtime's authenticated local contract and never start
+  persistent Memory Answer, LCM Summary, Curated Memory review, or transcript
+  watcher services themselves.
 - Koed Desktop is an Operator-facing control surface and orchestrator.
   For the local personal target, it may start, stop, restart, and monitor a
   managed `koed-server`, but it does so through stable `koed-server`

@@ -186,6 +186,21 @@ describe("Shared Memory source-content policy", () => {
         }
       }
     });
+    expect(
+      redactEligibleSharedMemorySourceItem({
+        representation: "memory_events",
+        logicalMemoryId,
+        sourceRevision,
+        item: {
+          itemType: "assistant_message",
+          schemaVersion: 1,
+          sourceId: randomUUID(),
+          sourceLogicalMemoryId: logicalMemoryId,
+          sourceRevision,
+          content: { text: "decision", approvalReview: true }
+        }
+      }).content
+    ).toEqual({ text: "decision", approvalReview: true });
 
     const base: SharedMemorySourceItemInput = {
       itemType: "user_message",
@@ -1451,6 +1466,71 @@ describeDb("Shared Memory repository", () => {
       [consentId]
     );
     expect(persisted.rowCount).toBe(0);
+  });
+
+  it("keeps preview policy proposals inactive until the final share bundle", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "deferred-owner-policy");
+    const preview = await createPersistedPreview(
+      fixture,
+      source,
+      "memory_events",
+      1,
+      "deferred-owner-policy",
+      ["memory_events"]
+    );
+    const beforeShare = await pool.query(
+      `select 1 from source_owner_representation_policies
+        where logical_memory_id=$1 and source_owner_principal_id=$2
+          and effective_at<=now() and superseded_at is null`,
+      [source.logicalMemoryId, source.ownerPrincipalId]
+    );
+    expect(beforeShare.rowCount).toBe(0);
+
+    const consentId = randomUUID();
+    const bundled = await repository.createShareBundle(
+      actor(fixture.ownerUserId),
+      {
+        consent: {
+          consentId,
+          preview,
+          mode: "continuous",
+          allowedRepresentations: ["memory_events"],
+          selectedRepresentation: "memory_events",
+          authority: authority(fixture)
+        },
+        grant: {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId,
+          authority: authority(fixture)
+        },
+        expected: {
+          consentId,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          previewId: preview.previewId,
+          previewRevision: preview.previewRevision,
+          previewHash: preview.previewHash
+        }
+      }
+    );
+
+    expect(bundled).not.toBeNull();
+    const afterShare = await pool.query<{
+      allowed_representations: string[];
+      version: number;
+    }>(
+      `select allowed_representations,version
+         from source_owner_representation_policies
+        where logical_memory_id=$1 and source_owner_principal_id=$2
+          and effective_at<=now() and superseded_at is null`,
+      [source.logicalMemoryId, source.ownerPrincipalId]
+    );
+    expect(afterShare.rows).toEqual([
+      { allowed_representations: ["memory_events"], version: 1 }
+    ]);
   });
 
   it("rolls back replacement consent when bundled representation change conflicts", async () => {

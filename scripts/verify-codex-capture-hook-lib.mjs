@@ -11,7 +11,6 @@ const usableUrl = (value) => {
 export const resolveCaptureVerificationConfig = ({
   environment = {},
   rootEnv = {},
-  explorerEnv = {},
   hookConfig = {}
 }) => ({
   apiUrl:
@@ -28,8 +27,5 @@ export const resolveCaptureVerificationConfig = ({
   apiToken:
     usableToken(environment.MEMORY_API_TOKEN) ??
     usableToken(hookConfig.apiToken) ??
-    usableToken(rootEnv.MEMORY_API_TOKEN) ??
-    usableToken(environment.VITE_KOED_API_TOKEN) ??
-    usableToken(rootEnv.VITE_KOED_API_TOKEN) ??
-    usableToken(explorerEnv.VITE_KOED_API_TOKEN)
+    usableToken(rootEnv.MEMORY_API_TOKEN)
 });

@@ -23,8 +23,7 @@
       ],
       "@koed/shared/secure-upstream-fetch": [
         "packages/shared/src/secure-upstream-fetch.ts"
-      ],
-      "~/*": ["apps/explorer/src/*"]
+      ]
     }
   },
   "include": [

@@ -51,6 +51,9 @@ export const resolveApiUrl = (
   repoEnv: Record<string, string>
 ): string =>
   (
+    (environment.KOED_AUTO_PORTS === "1" && environment.API_HOST_PORT
+      ? `http://localhost:${environment.API_HOST_PORT}`
+      : null) ??
     environment.MEMORY_API_URL ??
     (environment.API_HOST_PORT
       ? `http://localhost:${environment.API_HOST_PORT}`
@@ -62,20 +65,4 @@ export const resolveApiUrl = (
     environment.CODEX_MEMORY_BASE_URL ??
     repoEnv.CODEX_MEMORY_BASE_URL ??
     "http://localhost:3300"
-  ).trim();
-
-export const resolveExplorerUrl = (
-  environment: NodeJS.ProcessEnv,
-  repoEnv: Record<string, string>
-): string =>
-  (
-    environment.KOED_EXPLORER_URL ??
-    (environment.EXPLORER_WEB_HOST_PORT
-      ? `http://localhost:${environment.EXPLORER_WEB_HOST_PORT}`
-      : null) ??
-    (repoEnv.EXPLORER_WEB_HOST_PORT
-      ? `http://localhost:${repoEnv.EXPLORER_WEB_HOST_PORT}`
-      : null) ??
-    repoEnv.EXPLORER_API_BASE_URL?.replace(/:3300\/?$/, ":5174") ??
-    "http://localhost:5174"
   ).trim();

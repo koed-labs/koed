@@ -16,7 +16,7 @@
     "dev": "vite --host 127.0.0.1",
     "prestart": "pnpm --filter @koed/koed-server build",
     "package": "pnpm package:mac",
-    "package:workspace:build": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed/core build && pnpm --filter @koed/db build && pnpm --filter @koed/api build && pnpm --filter @koed/mcp-server build && pnpm --filter @koed/worker build && pnpm --filter @koed/embedding-service build && pnpm --filter @koed/explorer build && pnpm --filter @koed/koed-server build && pnpm build:package",
+    "package:workspace:build": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed/core build && pnpm --filter @koed/db build && pnpm --filter @koed/api build && pnpm --filter @koed/mcp-server build && pnpm --filter @koed/worker build && pnpm --filter @koed/embedding-service build && pnpm --filter @koed/koed-server build && pnpm build:package",
     "package:runtime": "node scripts/prepare-koed-runtime.mjs",
     "package:mac": "pnpm package:workspace:build && pnpm package:runtime && rm -rf release/mac release/mac-* && KOED_ADHOC_SIGN_MACOS_APP=true CSC_IDENTITY_AUTO_DISCOVERY=false /usr/bin/time -p electron-builder --mac dir && if [ ! -d release/mac ]; then set -- release/mac-*; [ -d \"$1\" ] && mv \"$1\" release/mac; fi",
     "package:linux": "pnpm package:workspace:build && pnpm package:runtime && /usr/bin/time -p electron-builder --linux dir",

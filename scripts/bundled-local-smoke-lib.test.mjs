@@ -105,7 +105,14 @@ test("builds isolated native bundled-local environment with unique ports", async
   assert.match(context.koedHome, /koed-bundled-smoke-home-test$/);
   assert.equal(context.env.KOED_ENV_PATH, `${context.koedHome}/repo.env`);
   assert.equal(context.env.KOED_REPO_ROOT, "/repo");
+  assert.equal(context.env.KOED_RUNTIME_MODE, "local-personal");
   assert.equal(context.env.KOED_DEPENDENCY_MODE, "bundled-local");
+  assert.equal(context.env.KOED_AUTO_PORTS, "1");
+  assert.equal(context.env.CODEX_HOME, `${context.koedHome}/codex`);
+  assert.equal(
+    context.env.CODEX_CONFIG_PATH,
+    `${context.koedHome}/codex/config.toml`
+  );
   assert.equal(context.env.WORK_QUEUE_BACKEND, "bullmq");
   assert.equal(context.env.KOED_BUNDLED_POSTGRES_MODE, "native");
   assert.equal(context.env.KOED_BUNDLED_EMBEDDING_MODE, "native");
@@ -113,7 +120,7 @@ test("builds isolated native bundled-local environment with unique ports", async
     "postgres-native",
     "embedding-service-native"
   ]);
-  assert.equal(new Set(Object.values(context.ports)).size, 5);
+  assert.equal(new Set(Object.values(context.ports)).size, 4);
 });
 
 test("full preflight does not require Docker", () => {
@@ -395,7 +402,7 @@ test("full smoke creates API Token and calls personal capture recall path", asyn
     spawnSync: (command, args, options) => {
       deps.calls.push({ kind: "spawnSync", command, args, options });
       if (args.includes("api-token:create")) {
-        assert.match(options.env.DATABASE_URL, /:4103\/koed$/);
+        assert.match(options.env.DATABASE_URL, /:4102\/koed$/);
         return success("Created Koed API token.\nToken: cmt_smoke\n");
       }
       if (args.includes("status")) {

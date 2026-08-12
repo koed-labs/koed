@@ -15,13 +15,14 @@
 }
 
 .desktop-rail {
+  --desktop-rail-inline-padding: 8px;
   z-index: 40;
   display: flex;
   min-block-size: 0;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 10px 8px;
+  padding: 10px var(--desktop-rail-inline-padding);
   border-inline-end: 1px solid var(--border);
   background: var(--sidebar);
 }
@@ -36,11 +37,14 @@
 }
 
 .desktop-team-rail {
+  align-items: center;
+  align-self: stretch;
   display: flex;
   min-block-size: 0;
   flex: 1;
   flex-direction: column;
   gap: 8px;
+  margin-inline: calc(-1 * var(--desktop-rail-inline-padding));
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -72,7 +76,7 @@
 .desktop-rail-button[data-active]::before {
   position: absolute;
   inset-block: 8px;
-  inset-inline-start: -8px;
+  inset-inline-start: calc(-1 * var(--desktop-rail-inline-padding));
   inline-size: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--primary);
@@ -196,10 +200,14 @@
 }
 
 .desktop-sidebar-header h1 {
-  margin: 2px 0 0;
+  margin: 0;
   overflow-wrap: anywhere;
   font-size: 16px;
   letter-spacing: 0;
+}
+
+.desktop-sidebar-header h1 + small {
+  margin-top: 2px;
 }
 
 .desktop-sidebar-section {
@@ -237,6 +245,16 @@
 .desktop-sidebar-icon-button:hover {
   background: var(--sidebar-accent);
   color: var(--sidebar-accent-foreground);
+}
+
+.desktop-sidebar-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.desktop-sidebar-icon-button:disabled:hover {
+  background: transparent;
+  color: var(--muted-foreground);
 }
 
 .desktop-sidebar-icon-button > svg {
@@ -310,10 +328,20 @@
 }
 
 .desktop-sidebar-locked {
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr);
   gap: 6px;
   padding: 5px 8px;
   color: var(--muted-foreground);
+}
+
+.desktop-workspace-heading-row {
+  display: flex;
+  align-items: center;
+  padding-inline-end: 2px;
+}
+
+.desktop-workspace-heading-row .desktop-workspace-heading {
+  flex: 1 1 auto;
 }
 
 .desktop-sidebar-locked small {
@@ -433,6 +461,49 @@
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.desktop-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.desktop-breadcrumb > span,
+.desktop-breadcrumb > button,
+.desktop-breadcrumb > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-breadcrumb > span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.desktop-breadcrumb > span > strong {
+  color: var(--foreground);
+}
+
+.desktop-breadcrumb > button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.desktop-breadcrumb > button:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+}
+
+.desktop-breadcrumb > strong {
+  color: var(--foreground);
 }
 
 .desktop-mobile-nav-trigger,
@@ -592,6 +663,7 @@
   }
 
   .desktop-rail {
+    --desktop-rail-inline-padding: 6px;
     padding-inline: 6px;
   }
 

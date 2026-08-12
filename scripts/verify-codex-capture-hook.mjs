@@ -33,11 +33,9 @@ const parseEnvFile = (filePath) => {
   );
 };
 const rootEnv = parseEnvFile(path.resolve(".env"));
-const explorerEnv = parseEnvFile(path.resolve("apps/explorer/.env.local"));
 const { apiUrl, apiToken } = resolveCaptureVerificationConfig({
   environment: process.env,
-  rootEnv,
-  explorerEnv
+  rootEnv
 });
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const hookPath =

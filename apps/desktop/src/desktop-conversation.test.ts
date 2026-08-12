@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  approvalReviewSourceEventId,
   conversationEventPatch,
   conversationEventText,
+  conversationEventToolDisplay,
+  expandConversationDisplayEvents,
   groupConversationEvents,
   mergeConversationEvents,
+  summarizeToolActivity,
   type DesktopConversationEvent
 } from "./desktop-conversation.js";
 
@@ -56,6 +60,96 @@ describe("native Desktop conversation contract", () => {
     });
   });
 
+  it("expands approval-review fallback data into the standard timeline shape", () => {
+    const source = event("approval", "2026-07-13T11:00:00.000Z", {
+      actor: "user",
+      transcriptDisplay: {
+        kind: "approval_review",
+        version: 1,
+        truncated: false,
+        segments: [
+          { kind: "message", sequence: 1, actor: "user", content: "Request" },
+          {
+            kind: "tool_call",
+            sequence: 2,
+            toolName: "exec",
+            content: "pnpm test"
+          },
+          {
+            kind: "tool_result",
+            sequence: 3,
+            toolName: "exec",
+            content: "Tests passed"
+          }
+        ]
+      }
+    });
+
+    const expanded = expandConversationDisplayEvents([source]);
+
+    expect(expanded.map(({ actor }) => actor)).toEqual([
+      "user",
+      "tool",
+      "tool"
+    ]);
+    expect(groupConversationEvents(expanded).map(({ kind }) => kind)).toEqual([
+      "event",
+      "tool-group"
+    ]);
+    expect(approvalReviewSourceEventId(expanded[0]!.id)).toBe(source.id);
+  });
+
+  it("uses display-safe semantic tool summaries and categorizes a group", () => {
+    const tools = [
+      event("command", "2026-07-13T11:00:00.000Z", {
+        actor: "tool",
+        toolDisplay: {
+          kind: "command",
+          label: "Ran command",
+          preview: "pnpm test",
+          toolName: "exec_command"
+        }
+      }),
+      event("patch", "2026-07-13T11:01:00.000Z", {
+        actor: "tool",
+        toolDisplay: {
+          kind: "file_change",
+          label: "Changed files",
+          preview: "src/app.ts",
+          toolName: "apply_patch"
+        }
+      }),
+      event("search", "2026-07-13T11:02:00.000Z", {
+        actor: "tool",
+        toolDisplay: {
+          kind: "search",
+          label: "Searched files",
+          preview: "SecureMarkdown",
+          toolName: "rg"
+        }
+      })
+    ];
+
+    expect(conversationEventToolDisplay(tools[0]!)).toMatchObject({
+      label: "Ran command",
+      preview: "pnpm test"
+    });
+    expect(summarizeToolActivity(tools)).toBe(
+      "1 command · 1 file change · 1 search"
+    );
+  });
+
+  it("classifies write_stdin as terminal activity in renderer fallback", () => {
+    expect(
+      conversationEventToolDisplay(
+        event("stdin", "2026-07-13T11:00:00.000Z", {
+          actor: "tool",
+          metadata: { toolName: "write_stdin" }
+        })
+      )
+    ).toMatchObject({ kind: "command", label: "Ran command" });
+  });
+
   it("recognizes a source diff only when tool identity or content supports it", () => {
     const patch = event("patch", "2026-07-13T11:00:00.000Z", {
       actor: "tool",
@@ -64,7 +158,14 @@ describe("native Desktop conversation contract", () => {
       metadata: { toolName: "apply_patch" }
     });
     expect(conversationEventPatch(patch)).toMatchObject({
-      summary: "1 file changed"
+      summary: expect.stringContaining("1 file changed"),
+      files: [
+        expect.objectContaining({
+          displayName: "app.ts",
+          additions: 1,
+          deletions: 1
+        })
+      ]
     });
     expect(
       conversationEventPatch(

@@ -16,16 +16,18 @@ export const packageProvenanceSchemaVersion = 1;
 
 export const requiredRuntimeFiles = [
   "api/dist/index.js",
+  "api/dist/browser-approval/index.html",
   "worker/dist/index.js",
   "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
-  "explorer-dist/index.html",
   "api/node_modules/@koed/db/dist/index.js",
   "api/node_modules/@koed/db/drizzle/meta/_journal.json"
 ];
 
 export const excludedPackagePatterns = [
+  /^koed-runtime\/explorer-dist(?:\/|$)/,
+  /^koed-server\/dist\/explorer-static-(?:proxy|server)(?:\.|$)/,
   /^koed-runtime\/postgres(?:\/|$)/,
   /^koed-runtime\/llama\.cpp(?:\/|$)/,
   /^koed-runtime\/runtime-asset-manifest\.json$/,
@@ -375,6 +377,24 @@ export const validatePackageRoot = (packageRoot) => {
       existsSync(resolve(runtimeRoot, file)) ? null : `${runtimePath}/${file}`
     )
   ].filter(Boolean);
+  const browserAssetRoot = resolve(
+    runtimeRoot,
+    "api",
+    "dist",
+    "browser-approval",
+    "assets"
+  );
+  const browserAssets = existsSync(browserAssetRoot)
+    ? listFiles(browserAssetRoot)
+    : [];
+  const browserApprovalErrors = [
+    browserAssets.some((file) => /-[A-Za-z0-9_-]{6,}\.js$/.test(file))
+      ? null
+      : "koed-runtime/api/dist/browser-approval/assets/<fingerprinted>.js",
+    browserAssets.some((file) => /-[A-Za-z0-9_-]{6,}\.css$/.test(file))
+      ? null
+      : "koed-runtime/api/dist/browser-approval/assets/<fingerprinted>.css"
+  ].filter(Boolean);
   const files = existsSync(root) ? listFiles(root) : [];
   const excluded = files.filter((file) =>
     excludedPackagePatterns.some((pattern) => pattern.test(file))
@@ -411,6 +431,9 @@ export const validatePackageRoot = (packageRoot) => {
   const errors = [
     ...manifestErrors,
     ...missing.map((file) => `Missing required package file: ${file}`),
+    ...browserApprovalErrors.map(
+      (file) => `Missing required package file: ${file}`
+    ),
     ...excluded.map((file) => `Excluded file is present: ${file}`),
     ...manifestFileErrors,
     ...shaErrors

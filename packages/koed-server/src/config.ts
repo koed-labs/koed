@@ -83,6 +83,18 @@ export const resolveKoedServerConfig = (
     runtimeMode(environment.KOED_RUNTIME_MODE) ??
     runtimeMode(file.runtimeMode) ??
     defaultKoedServerConfig.runtimeMode;
+  const resolvedTranscriptWatcherSetting =
+    codexTranscriptWatcherSetting(
+      environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
+    ) ?? codexTranscriptWatcherSetting(file.codexTranscriptWatcherEnabled);
+  if (
+    resolvedRuntimeMode === "external" &&
+    resolvedTranscriptWatcherSetting === true
+  ) {
+    throw new Error(
+      "Codex Transcript Watcher cannot run in external runtime mode; run capture through a local-personal koed-server."
+    );
+  }
   return {
     runtimeMode: resolvedRuntimeMode,
     dependencyMode:
@@ -90,11 +102,7 @@ export const resolveKoedServerConfig = (
       dependencyMode(file.dependencyMode) ??
       defaultKoedServerConfig.dependencyMode,
     codexTranscriptWatcherEnabled:
-      codexTranscriptWatcherSetting(
-        environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
-      ) ??
-      codexTranscriptWatcherSetting(file.codexTranscriptWatcherEnabled) ??
-      resolvedRuntimeMode !== "external",
+      resolvedTranscriptWatcherSetting ?? resolvedRuntimeMode !== "external",
     external: {
       databaseUrl:
         trim(environment.KOED_EXTERNAL_DATABASE_URL) ??

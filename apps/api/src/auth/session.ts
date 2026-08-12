@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type {} from "@fastify/cookie";
 import type {
   DeviceCredentialAuthContext,
   MemorySourceRepository,

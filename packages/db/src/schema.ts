@@ -108,7 +108,6 @@ export const conversationSourceReplicationOutboxState = pgEnum(
   ["pending", "in_flight", "succeeded", "failed", "quarantined"]
 );
 export const memoryQuestionStatus = pgEnum("memory_question_status", [
-  "pending",
   "answered",
   "error"
 ]);
@@ -4896,21 +4895,9 @@ export const sharedSourceArtifacts = pgTable(
       foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
       name: "shared_source_artifacts_workspace_team_fk"
     }).onDelete("restrict"),
-    foreignKey({
-      columns: [
-        table.sourceOwnerPolicyId,
-        table.sourceOwnerPolicyVersion,
-        table.logicalMemoryId,
-        table.ownerPrincipalId
-      ],
-      foreignColumns: [
-        sourceOwnerRepresentationPolicies.policyId,
-        sourceOwnerRepresentationPolicies.version,
-        sourceOwnerRepresentationPolicies.logicalMemoryId,
-        sourceOwnerRepresentationPolicies.sourceOwnerPrincipalId
-      ],
-      name: "shared_source_artifacts_owner_policy_fk"
-    }).onDelete("restrict"),
+    // The owner-policy binding can be an inactive proposal until the final
+    // reviewed bundle activates it. Repository validation binds the proposal
+    // through the artifact and representation-policy hashes.
     foreignKey({
       columns: [table.teamPolicyId, table.teamPolicyVersion, table.teamId],
       foreignColumns: [
@@ -8360,7 +8347,7 @@ export const memoryQuestions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     visibility: visibilityScope("visibility").notNull().default("personal"),
-    origin: text("origin").notNull().default("explorer"),
+    origin: text("origin").notNull().default("mcp_memory_answer"),
     retrievalScope: text("retrieval_scope").notNull().default("personal"),
     searchDomain: memorySearchDomain("search_domain").notNull(),
     projectId: text("project_id"),
@@ -8371,6 +8358,7 @@ export const memoryQuestions = pgTable(
     }),
     threadId: text("thread_id"),
     threadName: text("thread_name"),
+    idempotencyKey: text("idempotency_key").notNull(),
     query: text("query").notNull(),
     answerMarkdown: text("answer_markdown"),
     errorMessage: text("error_message"),
@@ -8378,19 +8366,9 @@ export const memoryQuestions = pgTable(
     citations: jsonb("citations").$type<unknown>(),
     retrieval: jsonb("retrieval").$type<unknown>(),
     localMemoryWorker: jsonb("local_memory_worker").$type<unknown>(),
-    localMemoryWorkerConfig: jsonb(
-      "local_memory_worker_config"
-    ).$type<unknown>(),
     response: jsonb("response").$type<unknown>(),
-    status: memoryQuestionStatus("status").notNull().default("pending"),
-    processingStartedAt: timestamp("processing_started_at", {
-      withTimezone: true
-    }),
-    processingLeaseUntil: timestamp("processing_lease_until", {
-      withTimezone: true
-    }),
+    status: memoryQuestionStatus("status").notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
-    lastErrorMessage: text("last_error_message"),
     createdAt: now(),
     updatedAt: updatedNow(),
     answeredAt: timestamp("answered_at", { withTimezone: true })
@@ -8409,23 +8387,17 @@ export const memoryQuestions = pgTable(
         table.id.desc()
       )
       .where(sql`${table.visibility} = 'personal'`),
-    index("memory_questions_personal_pending_claim_idx")
-      .on(
-        table.ownerUserId,
-        table.processingLeaseUntil,
-        table.createdAt,
-        table.id
-      )
-      .where(
-        sql`${table.visibility} = 'personal' and ${table.status} = 'pending'`
-      ),
+    uniqueIndex("memory_questions_owner_idempotency_key_idx").on(
+      table.ownerUserId,
+      table.idempotencyKey
+    ),
     check(
       "memory_questions_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
     ),
     check(
       "memory_questions_origin_check",
-      sql`${table.origin} in ('explorer', 'mcp_memory_answer')`
+      sql`${table.origin} = 'mcp_memory_answer'`
     ),
     check(
       "memory_questions_retrieval_scope_check",
@@ -8440,8 +8412,7 @@ export const memoryQuestions = pgTable(
     check(
       "memory_questions_status_check",
       sql`(${table.status} = 'answered' and ${table.answerMarkdown} is not null and ${table.errorMessage} is null)
-        or (${table.status} = 'error' and ${table.errorMessage} is not null)
-        or ${table.status} = 'pending'`
+        or (${table.status} = 'error' and ${table.errorMessage} is not null)`
     )
   ]
 );

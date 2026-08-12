@@ -27,7 +27,7 @@
     "@koed/db": "workspace:*",
     "@koed/mcp-server": "workspace:*",
     "@koed/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "fastify": "^5.8.5",
     "ioredis": "^5.10.1",
     "zod": "^4.4.3"

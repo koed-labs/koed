@@ -20,9 +20,8 @@ const writeRuntime = (koedHome: string) => {
     dependencyMode: "bundled-local",
     repoRoot: "/repo",
     apiUrl: "http://localhost:3300",
-    explorerUrl: "http://localhost:5174",
-    services: ["api", "worker", "explorer"],
-    processes: { api: 10, worker: 11, explorer: 12 }
+    services: ["api", "worker"],
+    processes: { api: 10, worker: 11 }
   };
   writeFileSync(
     resolve(koedHome, "run", "koed-server.json"),
@@ -46,8 +45,8 @@ describe("restartKoedServer", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(order).toEqual(["stop:12", "stop:11", "stop:10", "start"]);
-    expect(result.stoppedPids).toEqual([12, 11, 10]);
+    expect(order).toEqual(["stop:11", "stop:10", "start"]);
+    expect(result.stoppedPids).toEqual([11, 10]);
   });
 
   it("starts koed-server detached when no start override is provided", async () => {
@@ -82,7 +81,7 @@ describe("restartKoedServer", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome);
     const signals: Array<[number, NodeJS.Signals]> = [];
-    const running = new Set([10, 11, 12]);
+    const running = new Set([10, 11]);
     let started = false;
 
     const result = await restartKoedServer({
@@ -105,8 +104,6 @@ describe("restartKoedServer", () => {
     expect(result.ok).toBe(true);
     expect(started).toBe(true);
     expect(signals).toEqual([
-      [12, "SIGTERM"],
-      [12, "SIGKILL"],
       [11, "SIGTERM"],
       [11, "SIGKILL"],
       [10, "SIGTERM"],

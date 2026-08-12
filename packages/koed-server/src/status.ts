@@ -5,11 +5,8 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { resolveKoedServerConfig } from "./config.js";
-import {
-  loadExplorerCredential,
-  resolveActiveIntegrationApiToken
-} from "./credentials.js";
-import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { resolveActiveIntegrationApiToken } from "./credentials.js";
+import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
@@ -378,9 +375,8 @@ const tomlSection = (content: string, sectionName: string): string => {
 };
 
 const inspectCodex = (
-  apiUrl: string,
-  apiToken: string | undefined,
   environment: NodeJS.ProcessEnv,
+  paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ): KoedServerStatus["codex"] => {
   const codexConfigPath = resolve(
@@ -411,39 +407,31 @@ const inspectCodex = (
     };
   }
 
-  const configuredApiUrl = tomlStringValue(mcpEnvBlock, "MEMORY_API_URL");
-  const configuredToken = tomlStringValue(mcpEnvBlock, "MEMORY_API_TOKEN");
-  if (
-    configuredApiUrl &&
-    configuredApiUrl.replace(/\/+$/, "") !== apiUrl.replace(/\/+$/, "")
-  ) {
+  const configuredKoedHome = tomlStringValue(mcpEnvBlock, "KOED_HOME");
+  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  const hasExpectedAdapter = mcpBlock.includes(JSON.stringify(runtime.mcpCli));
+  const containsRetiredCredentials =
+    tomlStringValue(mcpEnvBlock, "MEMORY_API_URL") !== null ||
+    tomlStringValue(mcpEnvBlock, "MEMORY_API_TOKEN") !== null;
+  if (configuredKoedHome !== paths.koedHome || !hasExpectedAdapter) {
     return {
       ...needsAttention(
-        `Codex Koed integration points to ${configuredApiUrl}, but Koed Desktop is running at ${apiUrl}.`,
-        "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
-        { configuredApiUrl, expectedApiUrl: apiUrl, codexConfigPath }
-      ),
-      configured: true
-    };
-  }
-  if (apiToken && configuredToken && configuredToken !== apiToken) {
-    return {
-      ...needsAttention(
-        "Codex Koed integration uses a different API Token than Koed Desktop.",
+        "Codex Koed integration points at a different Local AI Runtime.",
         "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
         {
-          configuredApiUrl: configuredApiUrl ?? null,
-          expectedApiUrl: apiUrl,
+          configuredKoedHome: configuredKoedHome ?? null,
+          expectedKoedHome: paths.koedHome,
+          expectedMcpAdapter: runtime.mcpCli,
           codexConfigPath
         }
       ),
       configured: true
     };
   }
-  if (!configuredApiUrl || !configuredToken) {
+  if (containsRetiredCredentials) {
     return {
       ...needsAttention(
-        "Codex Koed integration is missing API URL or API Token configuration.",
+        "Codex Koed integration still contains retired API credentials.",
         "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
         { codexConfigPath }
       ),
@@ -452,7 +440,8 @@ const inspectCodex = (
   }
   return {
     ...healthy("Codex Koed integration is configured.", {
-      configuredApiUrl,
+      configuredKoedHome,
+      mcpAdapter: runtime.mcpCli,
       codexConfigPath
     }),
     configured: true
@@ -510,9 +499,7 @@ const inspectCaptureHook = (
 };
 
 const inspectMcp = (
-  apiUrl: string,
   environment: NodeJS.ProcessEnv,
-  repoEnv: Record<string, string>,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ) => {
@@ -533,24 +520,20 @@ const inspectMcp = (
       }
     );
   }
-  const token = resolveActiveIntegrationApiToken(
-    paths,
-    environment,
-    repoEnv
-  )?.token;
-  if (!token) {
-    return notConfigured(
-      "MCP Server needs a local API Token.",
-      "Run koed-server setup codex --json."
-    );
-  }
+  const {
+    MEMORY_API_TOKEN: _memoryApiToken,
+    CODEX_MEMORY_API_TOKEN: _codexMemoryApiToken,
+    MEMORY_API_URL: _memoryApiUrl,
+    ...doctorEnvironment
+  } = environment;
+  void _memoryApiToken;
+  void _codexMemoryApiToken;
+  void _memoryApiUrl;
   const result = deps.spawnSync(process.execPath, [cliPath, "doctor"], {
     cwd: paths.repoRoot,
     env: {
-      ...process.env,
-      ...repoEnv,
-      MEMORY_API_URL: apiUrl,
-      MEMORY_API_TOKEN: token
+      ...doctorEnvironment,
+      KOED_HOME: paths.koedHome
     },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
@@ -573,69 +556,14 @@ const inspectMcp = (
   );
 };
 
-const inspectExplorer = async (
-  explorerUrl: string,
-  runtime: KoedServerRuntimeState | null,
-  runtimeProcessRunning: boolean,
-  explorerCredentialConfigured: boolean,
-  deps: Required<KoedServerStatusDependencies>
-): Promise<KoedServerComponentStatus> => {
-  const explorerPid = runtime?.processes?.explorer;
-  const details = {
-    appCredentialProvisioned: explorerCredentialConfigured,
-    explorerPid: explorerPid ?? null
-  };
-  if (!runtimeProcessRunning) {
-    return starting(
-      "Koed server supervisor is not currently running.",
-      details
-    );
-  }
-  if (!explorerPid) {
-    return needsAttention(
-      "Explorer process is not recorded in koed-server runtime state.",
-      "Restart koed-server or inspect Koed logs.",
-      details
-    );
-  }
-  if (!deps.checkPid(explorerPid)) {
-    return needsAttention(
-      "Explorer process is not running.",
-      "Run koed-server restart --json or inspect Koed logs.",
-      details
-    );
-  }
-
-  try {
-    const response = await deps.fetch(explorerUrl);
-    if (response.ok) {
-      return healthy("Explorer is reachable through the Koed local service.", {
-        ...details,
-        httpStatus: response.status
-      });
-    }
-    return needsAttention(
-      `Explorer is not reachable at ${explorerUrl} (HTTP ${response.status}).`,
-      "Run koed-server restart --json or inspect Explorer logs.",
-      { ...details, httpStatus: response.status }
-    );
-  } catch (error) {
-    return needsAttention(
-      `Explorer is not reachable at ${explorerUrl} (${error instanceof Error ? error.message : String(error)}).`,
-      "Run koed-server restart --json or inspect Explorer logs.",
-      details
-    );
-  }
-};
-
 const inspectCodexTranscriptWatcher = (
   enabled: boolean,
   runtime: KoedServerRuntimeState | null,
   runtimeProcessRunning: boolean,
   deps: Required<KoedServerStatusDependencies>
 ): KoedServerComponentStatus => {
-  const watcherPid = runtime?.processes?.codexTranscriptWatcher;
-  const details = { enabled, watcherPid: watcherPid ?? null };
+  const localAiRuntimePid = runtime?.processes?.localAiRuntime;
+  const details = { enabled, localAiRuntimePid: localAiRuntimePid ?? null };
   if (!enabled) {
     return notConfigured(
       "Codex Transcript Watcher is disabled.",
@@ -649,21 +577,24 @@ const inspectCodexTranscriptWatcher = (
       details
     );
   }
-  if (!watcherPid) {
+  if (!localAiRuntimePid) {
     return needsAttention(
-      "Codex Transcript Watcher process is not recorded in koed-server runtime state.",
+      "Local AI Runtime process is not recorded in koed-server runtime state.",
       "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
       details
     );
   }
-  if (!deps.checkPid(watcherPid)) {
+  if (!deps.checkPid(localAiRuntimePid)) {
     return needsAttention(
-      "Codex Transcript Watcher process is not running.",
+      "Local AI Runtime process hosting the Codex Transcript Watcher is not running.",
       "Run koed-server restart --json or inspect Koed logs.",
       details
     );
   }
-  return healthy("Codex Transcript Watcher process is running.", details);
+  return healthy(
+    "Codex Transcript Watcher is running in the Local AI Runtime.",
+    details
+  );
 };
 
 const inspectLastVerification = (
@@ -850,10 +781,6 @@ export const collectKoedServerStatus = async (
     runtimeProcessRunning && runtime?.apiUrl
       ? runtime.apiUrl
       : resolveApiUrl(runtimeEnvironment, repoEnv);
-  const explorerUrl =
-    runtimeProcessRunning && runtime?.explorerUrl
-      ? runtime.explorerUrl
-      : resolveExplorerUrl(runtimeEnvironment, repoEnv);
   // Automatic ports identify a Desktop-owned local control plane. Without a
   // live runtime for this KOED_HOME, a healthy service on the default port may
   // be an unrelated Koed backend and must not satisfy local readiness.
@@ -866,18 +793,8 @@ export const collectKoedServerStatus = async (
   const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
-  const integrationToken = resolveActiveIntegrationApiToken(
-    paths,
-    runtimeEnvironment,
-    repoEnv
-  );
   const apiToken = inspectApiToken(paths, runtimeEnvironment, repoEnv);
-  const codex = inspectCodex(
-    apiUrl,
-    integrationToken?.token,
-    runtimeEnvironment,
-    deps
-  );
+  const codex = inspectCodex(runtimeEnvironment, paths, deps);
   const captureHook = inspectCaptureHook(runtimeEnvironment, paths, deps);
   const codexTranscriptWatcher = inspectCodexTranscriptWatcher(
     serverConfig.codexTranscriptWatcherEnabled,
@@ -885,13 +802,7 @@ export const collectKoedServerStatus = async (
     runtimeProcessRunning,
     deps
   );
-  const mcpServer = inspectMcp(
-    apiUrl,
-    runtimeEnvironment,
-    repoEnv,
-    paths,
-    deps
-  );
+  const mcpServer = inspectMcp(runtimeEnvironment, paths, deps);
   const externalRedisUrl =
     serverConfig.external?.redisUrl ??
     runtimeEnvironment.REDIS_URL ??
@@ -973,14 +884,6 @@ export const collectKoedServerStatus = async (
     inspectDeviceIdentity(paths, environment),
     Promise.resolve(inspectUpstreamBackends(paths, deps))
   ]);
-  const explorerCredential = loadExplorerCredential(paths);
-  const explorer = await inspectExplorer(
-    explorerUrl,
-    runtime,
-    runtimeProcessRunning,
-    Boolean(explorerCredential),
-    deps
-  );
   const statusWithoutState = {
     ok: false,
     state: "starting" as KoedServerComponentState,
@@ -1001,7 +904,6 @@ export const collectKoedServerStatus = async (
     lcmSummaryService,
     deviceIdentity,
     upstreamBackends,
-    explorer: { ...explorer, url: explorerUrl },
     lastVerification
   } satisfies KoedServerStatus;
 

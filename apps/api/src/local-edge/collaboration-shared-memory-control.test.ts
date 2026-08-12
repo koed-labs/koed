@@ -20,6 +20,8 @@ const hashC = "c".repeat(64);
 const uuidFor = (value: number): string =>
   `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 
+type PreviewItem = CollaborationPersistedSharedMemoryPreview["items"][number];
+
 const ids = {
   localOwner: uuidFor(1),
   upstreamUser: uuidFor(2),
@@ -50,7 +52,7 @@ const binding = () => ({
   classifierHash: hash
 });
 
-const sourceItem = (index = 0) => ({
+const sourceItem = (index = 0): PreviewItem => ({
   itemType: "user_message" as const,
   schemaVersion: 1 as const,
   sourceId: uuidFor(100 + index),
@@ -60,7 +62,7 @@ const sourceItem = (index = 0) => ({
   content: { text: `authoritative item ${index}` }
 });
 
-const previewResponse = (items = [sourceItem()]) => ({
+const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
   previewId: ids.preview,
   previewHash: hash,
   previewRevision: 1,
@@ -280,7 +282,7 @@ const createFixture = (
     actionGrantSecret?: string | null;
     persistPreview?: boolean;
     persistGrant?: boolean;
-    previewItems?: ReturnType<typeof sourceItem>[];
+    previewItems?: PreviewItem[];
     prepareLocalLcmRepresentation?: NonNullable<
       CollaborationSharedMemoryControlOptions["prepareLocalLcmRepresentation"]
     >;
@@ -791,6 +793,103 @@ describe("collaboration Shared Memory control", () => {
     expect(persisted).not.toHaveProperty("upstreamAuthorization");
     expect(persisted).not.toHaveProperty("desktopCredential");
     expect(persisted).not.toHaveProperty("backend");
+  });
+
+  it("projects trusted Shared Memory activity with Personal display metadata", async () => {
+    const patch =
+      "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old\n+new\n*** End Patch";
+    const fixture = createFixture({
+      previewItems: [
+        {
+          itemType: "tool_call" as const,
+          schemaVersion: 1 as const,
+          sourceId: uuidFor(150),
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 4,
+          occurredAt: iso,
+          content: {
+            toolName: "apply_patch",
+            toolCallId: "call-shared-patch",
+            payload: { input: patch }
+          }
+        },
+        {
+          itemType: "assistant_message" as const,
+          schemaVersion: 1 as const,
+          sourceId: uuidFor(151),
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 4,
+          occurredAt: iso,
+          content: {
+            approvalReview: true,
+            text: JSON.stringify({
+              outcome: "allow",
+              rationale: "The patch is within the requested scope.",
+              risk_level: "low",
+              user_authorization: "medium"
+            })
+          }
+        },
+        {
+          itemType: "assistant_message" as const,
+          schemaVersion: 1 as const,
+          sourceId: uuidFor(152),
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 4,
+          occurredAt: iso,
+          content: {
+            text: JSON.stringify({
+              outcome: "allow",
+              rationale: "This is ordinary assistant JSON.",
+              risk_level: "low",
+              user_authorization: "medium"
+            })
+          }
+        }
+      ]
+    });
+
+    const result = await fixture.control.dispatch(previewCommand(), context());
+    if (
+      !result?.ok ||
+      result.command !== "collaboration.preview_shared_memory"
+    ) {
+      throw new Error("preview failed");
+    }
+
+    expect(result.data.preview.items[0]).toMatchObject({
+      sourceItems: [
+        {
+          sourceKind: "tool_call",
+          toolDisplay: {
+            kind: "file_change",
+            label: "Changed files",
+            callId: "call-shared-patch",
+            patchSource: patch
+          }
+        }
+      ]
+    });
+    expect(result.data.preview.items[1]).toMatchObject({
+      sourceItems: [
+        {
+          sourceKind: "agent_message",
+          approvalDecisionDisplay: {
+            kind: "auto_approval",
+            outcome: "allow",
+            riskLevel: "low",
+            userAuthorization: "medium"
+          }
+        }
+      ]
+    });
+    const ordinaryAssistantItem = result.data.preview.items[2];
+    if (ordinaryAssistantItem?.representation !== "memory_events") {
+      throw new Error("expected a Memory Events preview item");
+    }
+    expect(
+      ordinaryAssistantItem.sourceItems[0]?.approvalDecisionDisplay
+    ).toBeUndefined();
   });
 
   it("keeps an LCM preview local and retryable until the exact summary snapshot is synced", async () => {

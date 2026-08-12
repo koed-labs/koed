@@ -156,18 +156,18 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
         id: "rollup-question-answering",
         sourceType: "memory_node",
         retrievalStage: "rollup_search",
-        text: "LCM rollup: browser question answering, local MCP startup, and app-server migration decisions.",
+        text: "LCM rollup: local Memory Answer runtime ownership and app-server migration decisions.",
         relevant: true,
         createdDaysAgo: 12,
         lcmDepth: 1,
         lcmSummaryStatus: "summarized"
       },
       {
-        id: "leaf-question-answering-bridge",
+        id: "leaf-local-runtime-ownership",
         sourceType: "memory_node",
         retrievalStage: "scoped_leaf_search",
         parentNodeIds: ["rollup-question-answering"],
-        text: "Scoped LCM leaf: the answer bridge should be part of the MCP-local startup path, not a manual browser setting or backend LLM service.",
+        text: "Scoped LCM leaf: koed-server should supervise one Local AI Runtime, while MCP adapters remain thin and backend LLM synthesis remains prohibited.",
         relevant: true,
         createdDaysAgo: 12,
         lcmDepth: 0,
@@ -187,8 +187,8 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
     ],
     expected: {
       memoryStatus: "found",
-      answerSubstrings: ["MCP-local", "not", "backend"],
-      requiredEvidenceIds: ["leaf-question-answering-bridge"],
+      answerSubstrings: ["Local AI Runtime", "not", "backend"],
+      requiredEvidenceIds: ["leaf-local-runtime-ownership"],
       forbiddenEvidenceIds: ["leaf-unrelated-bridge"],
       requiredStages: ["score_scan", "rollup_search", "scoped_leaf_search"],
       lexical: {

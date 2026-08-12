@@ -36,8 +36,7 @@ describe("resolveWorkerEnv", () => {
         maxBytes: 1_000_000,
         maxRuntimeMs: 15_000,
         maxConcurrency: 1,
-        maxLiveProjectionRows: 0,
-        maxInteractiveQuestionRows: 0
+        maxLiveProjectionRows: 0
       },
       historicalImportApiReadyTimeoutMs: 1_000,
       logLevel: "info",
@@ -69,7 +68,6 @@ describe("resolveWorkerEnv", () => {
         MEMORY_HISTORICAL_IMPORT_BATCH_RUNTIME_MS: "2000",
         MEMORY_HISTORICAL_IMPORT_CONCURRENCY: "1",
         MEMORY_HISTORICAL_IMPORT_LIVE_BACKLOG_MAX: "3",
-        MEMORY_HISTORICAL_IMPORT_INTERACTIVE_BACKLOG_MAX: "2",
         MEMORY_HISTORICAL_IMPORT_API_READY_URL: "http://api.test/ready",
         MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS: "500",
         RETENTION_PURGE_INTERVAL_MS: "1500",
@@ -102,8 +100,7 @@ describe("resolveWorkerEnv", () => {
         maxBytes: 250000,
         maxRuntimeMs: 2000,
         maxConcurrency: 1,
-        maxLiveProjectionRows: 3,
-        maxInteractiveQuestionRows: 2
+        maxLiveProjectionRows: 3
       },
       historicalImportApiReadyUrl: "http://api.test/ready",
       historicalImportApiReadyTimeoutMs: 500,

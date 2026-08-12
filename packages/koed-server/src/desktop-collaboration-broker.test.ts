@@ -930,7 +930,6 @@ describe("desktop collaboration broker", () => {
         startedAt: "2026-07-31T07:00:44.560Z",
         repoRoot: koedHome,
         apiUrl: "http://localhost:3300",
-        explorerUrl: "http://localhost:5174",
         runtimeMode: "developer",
         dependencyMode: "bundled-local",
         automaticPorts: false,

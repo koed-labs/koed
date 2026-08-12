@@ -8,8 +8,7 @@
       "@koed/core": ["packages/core/src/index.ts"],
       "@koed/db": ["packages/db/src/index.ts"],
       "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
-      "@koed/shared": ["packages/shared/src/index.ts"],
-      "~/*": ["apps/explorer/src/*"]
+      "@koed/shared": ["packages/shared/src/index.ts"]
     }
   },
   "include": [
@@ -22,11 +21,5 @@
     "packages/**/*.spec.ts",
     "packages/**/*.spec.tsx"
   ],
-  "exclude": [
-    "**/dist/**",
-    "**/node_modules/**",
-    "apps/desktop/release/**",
-    "apps/explorer/src/**/*.test.ts",
-    "apps/explorer/src/**/*.test.tsx"
-  ]
+  "exclude": ["**/dist/**", "**/node_modules/**", "apps/desktop/release/**"]
 }

@@ -4,7 +4,6 @@ export type HistoricalAdmissionPauseReason =
   | "queue_degraded"
   | "embedding_service_degraded"
   | "live_projection_pressure"
-  | "interactive_pressure"
   | "concurrency_cap";
 
 export interface HistoricalImportBatchConfig {
@@ -13,7 +12,6 @@ export interface HistoricalImportBatchConfig {
   maxRows: number;
   maxRuntimeMs: number;
   maxLiveProjectionRows: number;
-  maxInteractiveQuestionRows: number;
 }
 
 export interface HistoricalAdmissionInput {
@@ -22,7 +20,6 @@ export interface HistoricalAdmissionInput {
   embeddingServiceHealthy: boolean;
   historicalImportRows: number;
   liveProjectionRows: number;
-  interactiveQuestionRows: number;
   activeHistoricalBatches: number;
 }
 
@@ -48,9 +45,6 @@ export const decideHistoricalAdmission = (
   }
   if (input.liveProjectionRows > config.maxLiveProjectionRows) {
     return { admitted: false, reason: "live_projection_pressure" };
-  }
-  if (input.interactiveQuestionRows > config.maxInteractiveQuestionRows) {
-    return { admitted: false, reason: "interactive_pressure" };
   }
   return input.activeHistoricalBatches >= config.maxConcurrency
     ? { admitted: false, reason: "concurrency_cap" }

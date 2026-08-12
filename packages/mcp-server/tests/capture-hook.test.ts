@@ -9,6 +9,7 @@ import {
 } from "../src/capture-hook.js";
 import {
   readCodexTranscriptTurnBoundary,
+  signalCodexTranscriptWatcher,
   watcherWakePath
 } from "../src/codex-transcript-watcher-signal.js";
 
@@ -81,6 +82,37 @@ describe("Codex Capture Hook signal", () => {
     expect(stored).not.toContain("session-sensitive");
     expect(stored).not.toContain("rollout.jsonl");
     expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+  });
+
+  it("publishes a transcript turn boundary before its watcher wake", () => {
+    const koedHome = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-"));
+    temporaryDirectories.push(koedHome);
+    const environment = { KOED_HOME: koedHome };
+    const transcriptPath = path.join(koedHome, "private", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({ type: "event_msg" })}\n`
+    );
+    const writes: Array<{ target: string; content: string }> = [];
+
+    signalCodexTranscriptWatcher(
+      environment,
+      {
+        sourceSessionId: "session-sensitive",
+        transcriptPath,
+        turnBoundary: true
+      },
+      (target, content) => writes.push({ target, content })
+    );
+
+    expect(writes).toHaveLength(3);
+    expect(
+      writes
+        .slice(0, -1)
+        .every(({ content }) => content.includes('"version":2'))
+    ).toBe(true);
+    expect(writes.at(-1)?.target).toBe(watcherWakePath(environment));
   });
 
   it("does not block the AI Client when wake delivery fails", () => {

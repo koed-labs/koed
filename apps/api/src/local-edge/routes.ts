@@ -18,6 +18,7 @@ import {
   localEdgeTeamMemorySearchSchema,
   localEdgeUpstreamOperationSchema,
   listDeviceCredentialsQuerySchema,
+  publicDeviceEnrollmentChallengeSchema,
   redeemDeviceEnrollmentChallengeSchema,
   revokeDeviceCredentialSchema
 } from "./schemas.js";
@@ -89,7 +90,7 @@ const publicDeviceEnrollmentChallenge = (challenge: {
         ? "expired"
         : "pending";
 
-  return {
+  return publicDeviceEnrollmentChallengeSchema.parse({
     id: challenge.id,
     status,
     upstreamBackendId: challenge.upstreamBackendId,
@@ -101,7 +102,7 @@ const publicDeviceEnrollmentChallenge = (challenge: {
     expiresAt: challenge.expiresAt,
     approvedAt: denied ? null : challenge.boundAt,
     deniedAt: denied ? challenge.boundAt : null
-  };
+  });
 };
 
 const deviceCredentialIsActive = (
@@ -499,13 +500,14 @@ export const registerLocalEdgeRoutes = (
       });
 
       const publicChallenge = publicDeviceEnrollmentChallenge(challenge);
+      reply.header("cache-control", "no-store");
       return {
         challenge: publicChallenge,
-        ...(context.config.explorerPublicUrl
+        ...(context.config.browserPublicUrl
           ? {
               activationUrl: new URL(
                 `device-enrollment/${encodeURIComponent(publicChallenge.id)}`,
-                `${context.config.explorerPublicUrl}/`
+                `${context.config.browserPublicUrl}/`
               ).toString()
             }
           : {})
@@ -516,7 +518,8 @@ export const registerLocalEdgeRoutes = (
   app.get(
     "/v1/local-edge/device-enrollments/challenges/:challengeId",
     { preHandler: memoryReadRateLimit },
-    async (request) => {
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
       const repo = requireRepository();
       const params = deviceEnrollmentChallengeParamsSchema.parse(
         request.params
@@ -540,7 +543,8 @@ export const registerLocalEdgeRoutes = (
   app.post(
     "/v1/local-edge/device-enrollments/challenges/:challengeId/approval",
     { preHandler: memoryWriteRateLimit },
-    async (request) => {
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
       const repo = requireRepository();
       const user = await authenticateSession(request);
       const params = deviceEnrollmentChallengeParamsSchema.parse(

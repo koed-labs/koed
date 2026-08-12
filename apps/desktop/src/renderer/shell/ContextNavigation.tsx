@@ -23,6 +23,7 @@ export type ContextNavItem = {
 };
 
 export type WorkspaceNavItem = {
+  canCreateChannel?: boolean;
   channels: readonly ContextNavItem[];
   id: string;
   label: string;
@@ -43,8 +44,8 @@ function SidebarHeader({
   return (
     <header className="desktop-sidebar-header">
       <div>
-        {eyebrow ? <small>{eyebrow}</small> : null}
         <h1>{title}</h1>
+        {eyebrow ? <small>{eyebrow}</small> : null}
       </div>
       {action}
     </header>
@@ -73,19 +74,24 @@ function Section({
 
 function IconButton({
   children,
+  disabled = false,
+  disabledTitle,
   label,
   onClick
 }: {
   children: ReactNode;
+  disabled?: boolean;
+  disabledTitle?: string;
   label: string;
-  onClick: () => void;
+  onClick?: () => void;
 }) {
   return (
     <button
       aria-label={label}
       className="desktop-sidebar-icon-button"
+      disabled={disabled}
       onClick={onClick}
-      title={label}
+      title={disabled ? disabledTitle : label}
       type="button"
     >
       {children}
@@ -135,7 +141,6 @@ export function LockedFeatureRow({
     <div className="desktop-sidebar-locked" title={explanation}>
       <LockKeyhole aria-hidden="true" />
       <span>{label}</span>
-      <small>Unavailable</small>
     </div>
   );
 }
@@ -178,7 +183,7 @@ export function PersonalContextNavigation({
         />
       </Section>
       <Section
-        title="Chat"
+        title="Channels"
         action={
           <IconButton label="Create Personal channel" onClick={onCreateChannel}>
             <Plus aria-hidden="true" />
@@ -224,10 +229,12 @@ export function PersonalContextNavigation({
 }
 
 function WorkspaceSection({
+  onCreateChannel,
   onOpenSharedMemory,
   onSelectChannel,
   workspace
 }: {
+  onCreateChannel?: (workspaceId: string) => void;
   onOpenSharedMemory: (workspaceId: string) => void;
   onSelectChannel: (workspaceId: string, threadId: string) => void;
   workspace: WorkspaceNavItem;
@@ -237,19 +244,29 @@ function WorkspaceSection({
   );
   return (
     <section className="desktop-workspace-section">
-      <button
-        aria-expanded={expanded}
-        className="desktop-workspace-heading"
-        onClick={() => setExpanded((value) => !value)}
-        type="button"
-      >
-        {expanded ? (
-          <ChevronDown aria-hidden="true" />
-        ) : (
-          <ChevronRight aria-hidden="true" />
-        )}
-        <span>{workspace.label}</span>
-      </button>
+      <div className="desktop-workspace-heading-row">
+        <button
+          aria-expanded={expanded}
+          className="desktop-workspace-heading"
+          onClick={() => setExpanded((value) => !value)}
+          type="button"
+        >
+          {expanded ? (
+            <ChevronDown aria-hidden="true" />
+          ) : (
+            <ChevronRight aria-hidden="true" />
+          )}
+          <span>{workspace.label}</span>
+        </button>
+        {onCreateChannel && workspace.canCreateChannel ? (
+          <IconButton
+            label={`Create channel in ${workspace.label}`}
+            onClick={() => onCreateChannel(workspace.id)}
+          >
+            <Plus aria-hidden="true" />
+          </IconButton>
+        ) : null}
+      </div>
       {expanded ? (
         <div className="desktop-sidebar-items">
           {workspace.channels.map((item) => (
@@ -279,6 +296,7 @@ function WorkspaceSection({
 export function TeamContextNavigation({
   directMessages,
   onCreateChannel,
+  onCreateWorkspace,
   onOpenPeople,
   onOpenSharedMemory,
   onSelectChannel,
@@ -290,7 +308,8 @@ export function TeamContextNavigation({
   workspaces
 }: {
   directMessages: readonly ContextNavItem[];
-  onCreateChannel?: () => void;
+  onCreateChannel?: (workspaceId: string) => void;
+  onCreateWorkspace?: () => void;
   onOpenPeople: () => void;
   onOpenSharedMemory: (workspaceId: string) => void;
   onSelectChannel: (workspaceId: string, threadId: string) => void;
@@ -301,9 +320,12 @@ export function TeamContextNavigation({
   teamName: string;
   workspaces: readonly WorkspaceNavItem[];
 }) {
+  const roleLabel = role
+    ? `${role.slice(0, 1).toLocaleUpperCase()}${role.slice(1)}`
+    : role;
   return (
     <div className="desktop-context-content">
-      <SidebarHeader eyebrow={role} title={teamName} />
+      <SidebarHeader eyebrow={roleLabel} title={teamName} />
       <Section title="Team">
         <NavItem
           icon={<UsersRound aria-hidden="true" />}
@@ -343,20 +365,21 @@ export function TeamContextNavigation({
       <Section
         title="Workspaces"
         action={
-          onCreateChannel ? (
-            <IconButton
-              label="Create Workspace channel"
-              onClick={onCreateChannel}
-            >
-              <Plus aria-hidden="true" />
-            </IconButton>
-          ) : undefined
+          <IconButton
+            disabled={!onCreateWorkspace}
+            disabledTitle="Only Team owners and administrators can create Workspaces"
+            label="Create Workspace"
+            onClick={onCreateWorkspace}
+          >
+            <Plus aria-hidden="true" />
+          </IconButton>
         }
       >
         {workspaces.length ? (
           workspaces.map((workspace) => (
             <WorkspaceSection
               key={workspace.id}
+              onCreateChannel={onCreateChannel}
               onOpenSharedMemory={onOpenSharedMemory}
               onSelectChannel={onSelectChannel}
               workspace={workspace}

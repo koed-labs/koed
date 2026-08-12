@@ -36,6 +36,15 @@ describe("route identity contract", () => {
     }
   });
 
+  it("does not advertise the retired Memory Question update route", () => {
+    expect(
+      routeIdentityFor("PATCH", "/v1/memory/questions/{questionId}")
+    ).toBeUndefined();
+    expect(
+      openApiPaths["/v1/memory/questions/{questionId}"]?.patch
+    ).toBeUndefined();
+  });
+
   it("inventories raw-conversation mutation identities and request schemas", () => {
     expect(
       implementedRouteIdentityContracts

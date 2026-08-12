@@ -12,6 +12,9 @@ export type DesktopThreadGroup = {
   invalidatedCount: number;
   latestAt: string;
   sample: string;
+  threadKind?: "conversation" | "subagent";
+  parentThreadId?: string | null;
+  parentSessionId?: string | null;
 };
 
 export type DesktopProjectGroup = {

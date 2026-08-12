@@ -59,7 +59,6 @@ const status: KoedServerStatus = {
     failed: 0,
     notChecked: 0
   },
-  explorer: { state: "healthy", url: "http://localhost:5174" },
   lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
 };
 
@@ -693,7 +692,7 @@ describe("JSON command output", () => {
         message: "Koed server stop completed.",
         stoppedPids: [12, 11, 10],
         missingPids: [],
-        stoppedServices: ["explorer", "worker", "api"],
+        stoppedServices: ["worker", "api"],
         missingServices: []
       })
     });
@@ -717,7 +716,7 @@ describe("JSON command output", () => {
         message: "Koed server restarted.",
         stoppedPids: [12, 11, 10],
         missingPids: [],
-        stoppedServices: ["explorer", "worker", "api"],
+        stoppedServices: ["worker", "api"],
         missingServices: []
       })
     });

@@ -100,19 +100,20 @@ describe("resolveApiServerConfig", () => {
     ]);
   });
 
-  it("validates and normalizes the public Explorer URL", () => {
-    expect(
-      resolveApiServerConfig({
-        EXPLORER_PUBLIC_URL: "https://app.example.test/koed/"
-      }).explorerPublicUrl
-    ).toBe("https://app.example.test/koed");
+  it("validates and normalizes the public browser URL", () => {
+    const config = resolveApiServerConfig({
+      NODE_ENV: "production",
+      BROWSER_PUBLIC_URL: "https://app.example.test/koed/"
+    });
+    expect(config.browserPublicUrl).toBe("https://app.example.test/koed");
+    expect([...config.corsOrigins]).toContain("https://app.example.test");
     expect(() =>
       resolveApiServerConfig({
-        EXPLORER_PUBLIC_URL: "https://user:secret@app.example.test/koed"
+        BROWSER_PUBLIC_URL: "https://user:secret@app.example.test"
       })
     ).toThrow(/without credentials/);
     expect(() =>
-      resolveApiServerConfig({ EXPLORER_PUBLIC_URL: "file:///tmp/explorer" })
+      resolveApiServerConfig({ BROWSER_PUBLIC_URL: "file:///tmp/browser" })
     ).toThrow(/HTTP or HTTPS/);
   });
 

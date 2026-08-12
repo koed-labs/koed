@@ -45,8 +45,6 @@ koed-runtime/
   mcp-server/
     dist/cli.js
     dist/capture-hook.js
-  explorer-dist/
-    index.html
   runtime-asset-manifest.json        # only when native assets are staged
   postgres/                          # optional packaged native runtime asset
   llama.cpp/                         # optional packaged native runtime asset
@@ -96,7 +94,6 @@ koed-server-<version>-<platform>-<arch>/
     worker/
     embedding-service/
     mcp-server/
-    explorer-dist/
 ```
 
 Required `koed-runtime` files:
@@ -108,7 +105,6 @@ Required `koed-runtime` files:
 - `embedding-service/dist/index.js`
 - `mcp-server/dist/cli.js`
 - `mcp-server/dist/capture-hook.js`
-- `explorer-dist/index.html`
 
 The initial CI artifact build is produced by:
 
@@ -119,7 +115,7 @@ pnpm koed-server:package -- --platform linux --arch x64 --json
 
 The script stages production JS/service runtime files with `pnpm deploy`,
 writes `koed-server-package-manifest.json` and `README.txt`, validates the
-required runtime files, rejects native runtime assets, model files, and Python
+required runtime files, rejects retired Explorer artifacts, native runtime assets, model files, and Python
 embedding leftovers, then emits a deterministic tarball and `.sha256` under
 `dist/koed-server-package/<platform>-<arch>/`.
 
@@ -252,7 +248,6 @@ Each standalone package should include a manifest:
       "embedding-service/dist/index.js",
       "mcp-server/dist/cli.js",
       "mcp-server/dist/capture-hook.js",
-      "explorer-dist/index.html",
       "api/node_modules/@koed/db/dist/index.js",
       "api/node_modules/@koed/db/drizzle/meta/_journal.json"
     ]
@@ -503,7 +498,7 @@ KOE-292 is design-first. Recommended follow-up implementation issues:
 - Do not merge native runtime artifacts into the app-runtime package.
 - Do not make Desktop manage remote Team Self-Hosted or Koed-managed cloud
   service lifecycle.
-- Do not decide Explorer-first auth, device enrollment, local-edge upstream
+- Do not decide browser auth, device enrollment, local-edge upstream
   credential semantics, commercial encryption/key management, or managed SaaS
   queryable vector strategy. Those decisions belong to the Team SaaS foundation
   ADRs and are consumed here only as package/runtime requirements.

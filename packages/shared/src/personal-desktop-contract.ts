@@ -1,8 +1,197 @@
 import { z } from "zod";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 1;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 2;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
+
+const APPROVAL_REVIEW_TRANSCRIPT_MAX_SEGMENTS = 200;
+const APPROVAL_REVIEW_TRANSCRIPT_MAX_CONTENT_LENGTH = 65_536;
+const APPROVAL_REVIEW_TRANSCRIPT_MAX_TOTAL_LENGTH = 524_288;
+const APPROVAL_REVIEW_TRANSCRIPT_PREFIXES = [
+  "The following is the Codex agent history whose request action you are assessing",
+  "The following is the Codex agent history added since your last approval assessment"
+] as const;
+
+export const isApprovalReviewTranscriptEnvelopeText = (
+  source: string
+): boolean => {
+  const normalized = source.trimStart();
+  return APPROVAL_REVIEW_TRANSCRIPT_PREFIXES.some((prefix) =>
+    normalized.startsWith(prefix)
+  );
+};
+
+export const approvalReviewTranscriptSegmentSchema = z.discriminatedUnion(
+  "kind",
+  [
+    z
+      .object({
+        kind: z.literal("message"),
+        sequence: z.number().int().safe().nonnegative(),
+        actor: z.enum(["user", "agent"]),
+        content: z.string().max(APPROVAL_REVIEW_TRANSCRIPT_MAX_CONTENT_LENGTH)
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.enum(["tool_call", "tool_result"]),
+        sequence: z.number().int().safe().nonnegative(),
+        toolName: z.string().trim().min(1).max(128),
+        content: z.string().max(APPROVAL_REVIEW_TRANSCRIPT_MAX_CONTENT_LENGTH)
+      })
+      .strict()
+  ]
+);
+
+export const approvalReviewTranscriptDisplaySchema = z
+  .object({
+    kind: z.literal("approval_review"),
+    version: z.literal(1),
+    segments: z
+      .array(approvalReviewTranscriptSegmentSchema)
+      .min(1)
+      .max(APPROVAL_REVIEW_TRANSCRIPT_MAX_SEGMENTS),
+    truncated: z.boolean()
+  })
+  .strict();
+
+export const approvalDecisionDisplaySchema = z
+  .object({
+    kind: z.literal("auto_approval"),
+    version: z.literal(1),
+    riskLevel: z.enum(["low", "medium", "high"]),
+    userAuthorization: z.enum(["low", "medium", "high"]),
+    outcome: z.enum(["allow", "deny"]),
+    rationale: z.string().trim().min(1).max(8_192)
+  })
+  .strict();
+
+export const personalDesktopToolDisplaySchema = z
+  .object({
+    kind: z.enum(["command", "file_change", "file_read", "search", "tool"]),
+    label: z.string().trim().min(1).max(80),
+    preview: z.string().max(2_048),
+    toolName: z.string().max(256).optional(),
+    status: z.string().max(64).optional(),
+    callId: z.string().max(512).optional(),
+    patchSource: z.string().max(1_048_576).optional()
+  })
+  .strict();
+
+type ApprovalReviewTranscriptHeader = {
+  actor?: "user" | "agent";
+  contentStart: number;
+  headerStart: number;
+  kind: "message" | "tool_call" | "tool_result";
+  sequence: number;
+  toolName?: string;
+};
+
+const approvalReviewTranscriptHeaders = (
+  source: string
+): ApprovalReviewTranscriptHeader[] => {
+  const pattern =
+    /\[(\d+)\]\s+(?:(user|assistant):\s*|tool\s+([a-zA-Z0-9_.:-]{1,128})\s+(call|result):\s*)/gu;
+  const headers: ApprovalReviewTranscriptHeader[] = [];
+  let previousSequence = -1;
+  for (const match of source.matchAll(pattern)) {
+    const sequence = Number(match[1]);
+    if (!Number.isSafeInteger(sequence) || sequence <= previousSequence) {
+      continue;
+    }
+    previousSequence = sequence;
+    const role = match[2];
+    const toolName = match[3];
+    const toolDirection = match[4];
+    headers.push({
+      sequence,
+      headerStart: match.index,
+      contentStart: match.index + match[0].length,
+      ...(role
+        ? {
+            kind: "message" as const,
+            actor: role === "user" ? ("user" as const) : ("agent" as const)
+          }
+        : {
+            kind:
+              toolDirection === "call"
+                ? ("tool_call" as const)
+                : ("tool_result" as const),
+            toolName: toolName!
+          })
+    });
+  }
+  return headers;
+};
+
+export const approvalReviewTranscriptDisplayFromText = (
+  source: string
+): ApprovalReviewTranscriptDisplay | undefined => {
+  const normalized = source.trimStart();
+  if (!isApprovalReviewTranscriptEnvelopeText(normalized)) {
+    return undefined;
+  }
+  const start = /\bTRANSCRIPT( DELTA)? START\s+/u.exec(normalized);
+  if (!start) return undefined;
+  const endLabel = start[1] ? "TRANSCRIPT DELTA END" : "TRANSCRIPT END";
+  const contentStart = start.index + start[0].length;
+  const endIndex = normalized.indexOf(endLabel, contentStart);
+  if (endIndex < 0) return undefined;
+  const suffix = normalized.slice(endIndex + endLabel.length, endIndex + 512);
+  if (!/Reviewed Codex session id:\s*[0-9a-f-]{16,}/iu.test(suffix)) {
+    return undefined;
+  }
+
+  const transcript = normalized.slice(contentStart, endIndex).trim();
+  const headers = approvalReviewTranscriptHeaders(transcript);
+  if (headers.length === 0) return undefined;
+  const segments: ApprovalReviewTranscriptSegment[] = [];
+  let totalLength = 0;
+  let truncated = headers.length > APPROVAL_REVIEW_TRANSCRIPT_MAX_SEGMENTS;
+  for (const [index, header] of headers.entries()) {
+    if (segments.length >= APPROVAL_REVIEW_TRANSCRIPT_MAX_SEGMENTS) break;
+    const next = headers[index + 1];
+    const rawContent = transcript
+      .slice(header.contentStart, next?.headerStart ?? transcript.length)
+      .trim();
+    const remaining = Math.max(
+      0,
+      APPROVAL_REVIEW_TRANSCRIPT_MAX_TOTAL_LENGTH - totalLength
+    );
+    if (remaining === 0) {
+      truncated = true;
+      break;
+    }
+    const limit = Math.min(
+      APPROVAL_REVIEW_TRANSCRIPT_MAX_CONTENT_LENGTH,
+      remaining
+    );
+    const content = rawContent.slice(0, limit);
+    if (content.length < rawContent.length) truncated = true;
+    if (header.kind === "message") {
+      segments.push({
+        kind: "message",
+        sequence: header.sequence,
+        actor: header.actor!,
+        content
+      });
+    } else {
+      segments.push({
+        kind: header.kind,
+        sequence: header.sequence,
+        toolName: header.toolName!,
+        content
+      });
+    }
+    totalLength += content.length;
+  }
+  return approvalReviewTranscriptDisplaySchema.parse({
+    kind: "approval_review",
+    version: 1,
+    segments,
+    truncated
+  });
+};
 
 const identifierSchema = z.string().trim().min(1).max(512);
 const projectNameSchema = z.string().trim().min(1).max(160);
@@ -22,7 +211,10 @@ export const personalDesktopProjectThreadSchema = z
     eventCount: z.number().int().safe().nonnegative(),
     invalidatedCount: z.number().int().safe().nonnegative(),
     latestAt: timestampSchema,
-    sample: z.string().max(16_384)
+    sample: z.string().max(16_384),
+    threadKind: z.enum(["conversation", "subagent"]).optional(),
+    parentThreadId: identifierSchema.nullable().optional(),
+    parentSessionId: identifierSchema.nullable().optional()
   })
   .strict();
 
@@ -47,6 +239,9 @@ export const personalDesktopConversationEventSchema = z
     content: z.string().max(1_048_576).optional(),
     contentPreview: z.string().max(16_384),
     invalidatedAt: timestampSchema.nullable(),
+    approvalDecisionDisplay: approvalDecisionDisplaySchema.optional(),
+    transcriptDisplay: approvalReviewTranscriptDisplaySchema.optional(),
+    toolDisplay: personalDesktopToolDisplaySchema.optional(),
     metadata: z
       .object({
         toolName: z.string().max(256).optional()
@@ -238,6 +433,15 @@ export type PersonalDesktopProject = z.infer<
 export type PersonalDesktopConversationEvent = z.infer<
   typeof personalDesktopConversationEventSchema
 >;
+export type ApprovalReviewTranscriptSegment = z.infer<
+  typeof approvalReviewTranscriptSegmentSchema
+>;
+export type ApprovalReviewTranscriptDisplay = z.infer<
+  typeof approvalReviewTranscriptDisplaySchema
+>;
+export type ApprovalDecisionDisplay = z.infer<
+  typeof approvalDecisionDisplaySchema
+>;
 export type PersonalDesktopConversationCursor = z.infer<
   typeof personalDesktopConversationCursorSchema
 >;
@@ -252,6 +456,71 @@ export type PersonalDesktopRequest = z.infer<
   typeof personalDesktopRequestSchema
 >;
 export type PersonalDesktopResult = z.infer<typeof personalDesktopResultSchema>;
+
+export const conversationToolKindAndLabel = (
+  toolName: string,
+  signals: {
+    command?: string;
+    path?: string;
+    query?: string;
+    patchSource?: string;
+  } = {}
+): Pick<
+  NonNullable<PersonalDesktopConversationEvent["toolDisplay"]>,
+  "kind" | "label"
+> => {
+  const canonicalName =
+    toolName
+      .toLocaleLowerCase()
+      .split(/__|[.:/]/u)
+      .at(-1)
+      ?.trim() ?? "";
+  const explicitKinds: Record<
+    string,
+    Pick<
+      NonNullable<PersonalDesktopConversationEvent["toolDisplay"]>,
+      "kind" | "label"
+    >
+  > = {
+    apply_patch: { kind: "file_change", label: "Changed files" },
+    exec_command: { kind: "command", label: "Ran command" },
+    read_file: { kind: "file_read", label: "Read file" },
+    rg: { kind: "search", label: "Searched files" },
+    view_image: { kind: "file_read", label: "Read file" },
+    write_stdin: { kind: "command", label: "Ran command" }
+  };
+  const explicit = explicitKinds[canonicalName];
+  if (explicit) return explicit;
+  const lowerName = toolName.toLocaleLowerCase().replace(/[_-]+/gu, " ");
+  if (
+    signals.command ||
+    /\b(exec|shell|bash|terminal|command|run)\b/u.test(lowerName)
+  ) {
+    return { kind: "command", label: "Ran command" };
+  }
+  if (
+    signals.patchSource ||
+    /\b(write|edit|patch|save|change|diff)\b/u.test(lowerName)
+  ) {
+    return { kind: "file_change", label: "Changed files" };
+  }
+  if (signals.path || /\b(read|open|cat|view|file)\b/u.test(lowerName)) {
+    return { kind: "file_read", label: "Read file" };
+  }
+  if (signals.query || /\b(search|find|grep|rg|list)\b/u.test(lowerName)) {
+    return { kind: "search", label: "Searched files" };
+  }
+  const humanized = toolName
+    .replace(/[_-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return {
+    kind: "tool",
+    label: humanized
+      ? humanized.charAt(0).toLocaleUpperCase() + humanized.slice(1)
+      : "Tool call"
+  };
+};
 
 export interface PersonalDesktopApi {
   listProjects: () => Promise<PersonalDesktopProject[]>;

@@ -278,6 +278,7 @@ export const targetSyncContextResponseSchema = z
   .object({
     target_deployment_id: uuidSchema,
     target_deployment_profile: z.enum([
+      "developer",
       "private_vps",
       "team_self_hosted",
       "koed_managed_cloud"

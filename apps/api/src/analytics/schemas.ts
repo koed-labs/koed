@@ -21,7 +21,6 @@ export const activationAnalyticsEventSchema = z.enum([
 
 export const analyticsSurfaceSchema = z.enum([
   "desktop",
-  "explorer",
   "koed_server",
   "mcp_server",
   "capture_hook",

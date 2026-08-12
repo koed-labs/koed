@@ -5,6 +5,7 @@ import type {
   PersonalDesktopProject,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
+import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
 import { describe, expect, it, vi } from "vitest";
 import {
   PersonalMemoryStore,
@@ -181,7 +182,7 @@ describe("PersonalMemoryStore", () => {
     expect(store.detail(initialThread)).not.toBeNull();
 
     const change: PersonalDesktopChange = {
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -247,7 +248,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -301,7 +302,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadOlder(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -361,7 +362,7 @@ describe("PersonalMemoryStore", () => {
     });
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -424,7 +425,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -494,7 +495,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -553,7 +554,7 @@ describe("PersonalMemoryStore", () => {
     await store.loadInitial(selected);
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {
@@ -610,7 +611,7 @@ describe("PersonalMemoryStore", () => {
     await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(1));
 
     onChange?.({
-      contractVersion: 1,
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       type: "conversation_events_changed",
       eventRefs: [
         {

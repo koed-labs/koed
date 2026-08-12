@@ -16,7 +16,6 @@ const defaultOwnerEmail = "local@koed.ai";
 const defaultTokenName = "Codex";
 const defaultApiUrl = "http://localhost:3300";
 const defaultNodeCommand = "node";
-const defaultAppServerBinary = "codex";
 const setupEnvScript = resolve(rootDir, "scripts/setup-env.mjs");
 const configureCodexScript = resolve(rootDir, "scripts/configure-codex.mjs");
 const verifyCaptureScript = resolve(
@@ -41,8 +40,7 @@ Environment:
   MEMORY_API_URL                 Used when --api-url is not set.
   CODEX_MEMORY_BASE_URL          Used when MEMORY_API_URL is not set.
   MEMORY_NODE_COMMAND            Used when --node-command is not set.
-  MEMORY_CODEX_APP_SERVER_BINARY  Overrides the Codex app-server binary written by configure-codex.
-  KOED_PROMPT_DIR                 Optional prompt override directory written into the MCP environment.
+  KOED_HOME                       Koed data directory written into the MCP environment.
 `;
 
 export const parseBootstrapArgs = (argv, environment = process.env) => {
@@ -243,17 +241,6 @@ export const runCodexBootstrap = async ({
 
     const args = parseBootstrapArgs(argv, environment);
     const resolvedPaths = resolveBootstrapPaths(environment);
-    const appServerBinary =
-      environment.MEMORY_CODEX_APP_SERVER_BINARY ?? defaultAppServerBinary;
-    const configuredPromptOverrideDirectory =
-      environment.KOED_PROMPT_DIR?.trim();
-    const promptOverrideDirectory = configuredPromptOverrideDirectory
-      ? resolve(rootDir, configuredPromptOverrideDirectory)
-      : undefined;
-    const promptOverrideEnv = promptOverrideDirectory
-      ? { KOED_PROMPT_DIR: promptOverrideDirectory }
-      : {};
-
     await runCommandFn({
       label: "Build @koed/db",
       command: "pnpm",
@@ -293,8 +280,7 @@ export const runCodexBootstrap = async ({
         MEMORY_API_URL: args.apiUrl,
         MEMORY_API_TOKEN: tokenResult.token,
         MEMORY_NODE_COMMAND: args.nodeCommand,
-        MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
-        ...promptOverrideEnv
+        ...(environment.KOED_HOME ? { KOED_HOME: environment.KOED_HOME } : {})
       }
     });
 
@@ -319,9 +305,7 @@ export const runCodexBootstrap = async ({
         args: [mcpDoctorScript, "doctor"],
         env: {
           MEMORY_API_URL: args.apiUrl,
-          MEMORY_API_TOKEN: tokenResult.token,
-          MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
-          ...promptOverrideEnv
+          MEMORY_API_TOKEN: tokenResult.token
         },
         captureOutput: true
       });

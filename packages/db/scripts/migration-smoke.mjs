@@ -65,6 +65,7 @@ const pre0020LastIndex = 19;
 const current0020Index = 20;
 const expectedPre0020Tag = "0019_tidy_rhino";
 const expectedCurrent0020Tag = "0020_zippy_apocalypse";
+const expectedLocalRuntimeCutoverTag = "0026_amused_zeigeist";
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -147,6 +148,11 @@ const assertAlphaMigrationContract = async () => {
   ) {
     throw new Error(
       "Current 0020 migration contains discarded experimental Team Chat compatibility objects"
+    );
+  }
+  if (journal.entries.at(-1)?.tag !== expectedLocalRuntimeCutoverTag) {
+    throw new Error(
+      `Expected ${expectedLocalRuntimeCutoverTag} to be the latest migration`
     );
   }
   return journal;
@@ -579,6 +585,91 @@ const verifyAlphaResetUpgrade = async (pool, fixture) => {
   }
 };
 
+const seedLocalRuntimeCutoverFixture = async (pool, provider) => {
+  const ownerUserId = randomUUID();
+  const explorerQuestionId = randomUUID();
+  const pendingQuestionId = randomUUID();
+  const retainedQuestionId = randomUUID();
+  await pool.query("insert into users (id, email) values ($1, $2)", [
+    ownerUserId,
+    `local-runtime-cutover-${ownerUserId}@example.test`
+  ]);
+  await pool.query(
+    `
+      insert into memory_questions (
+        id, owner_user_id, origin, search_domain, project_id, query,
+        answer_markdown, status, answered_at
+      )
+      values
+        ($1, $4, 'explorer', 'project', '/fixture', 'retired explorer question',
+          'retired explorer answer', 'answered', now()),
+        ($2, $4, 'mcp_memory_answer', 'project', '/fixture', 'unfinished MCP question',
+          null, 'pending', null),
+        ($3, $4, 'mcp_memory_answer', 'project', '/fixture', 'retained MCP question',
+          'retained MCP answer', 'answered', now())
+    `,
+    [explorerQuestionId, pendingQuestionId, retainedQuestionId, ownerUserId]
+  );
+  await seedRemovedPathCompanion(pool, provider, {
+    ownerUserId,
+    sourceId: explorerQuestionId,
+    sourceTable: "memory_questions",
+    sourceColumn: "answer_markdown",
+    plaintext: "retired explorer answer"
+  });
+  await seedRemovedPathCompanion(pool, provider, {
+    ownerUserId,
+    sourceId: retainedQuestionId,
+    sourceTable: "memory_questions",
+    sourceColumn: "answer_markdown",
+    plaintext: "retained MCP answer"
+  });
+  return {
+    explorerQuestionId,
+    pendingQuestionId,
+    retainedQuestionId
+  };
+};
+
+const verifyLocalRuntimeCutover = async (pool, fixture) => {
+  const result = await pool.query(
+    `
+      select
+        exists(select 1 from memory_questions where id = $1) as explorer_retained,
+        exists(select 1 from memory_questions where id = $2) as pending_retained,
+        exists(select 1 from memory_questions where id = $3) as final_mcp_retained,
+        (select idempotency_key from memory_questions where id = $3)
+          as final_mcp_idempotency_key,
+        exists(
+          select 1 from encrypted_field_payloads
+          where source_table = 'memory_questions' and source_id = $1
+        ) as explorer_payload_retained,
+        exists(
+          select 1 from encrypted_field_payloads
+          where source_table = 'memory_questions' and source_id = $3
+        ) as final_mcp_payload_retained
+    `,
+    [
+      fixture.explorerQuestionId,
+      fixture.pendingQuestionId,
+      fixture.retainedQuestionId
+    ]
+  );
+  const expected = {
+    explorer_retained: false,
+    pending_retained: false,
+    final_mcp_retained: true,
+    final_mcp_idempotency_key: `alpha-final-memory-question:${fixture.retainedQuestionId}`,
+    explorer_payload_retained: false,
+    final_mcp_payload_retained: true
+  };
+  if (!isDeepStrictEqual(result.rows[0], expected)) {
+    throw new Error(
+      `Local AI Runtime cutover produced an unexpected boundary: ${JSON.stringify(result.rows[0])}`
+    );
+  }
+};
+
 const isPostgresAdminTermination = (error) =>
   typeof error === "object" &&
   error !== null &&
@@ -983,6 +1074,13 @@ try {
     { folderPrefix: "koed-through-0020-migrations-" }
   );
   temporaryFolders.add(through0020Folder);
+  const preLocalRuntimeCutoverIndex = journal.entries.length - 2;
+  const preLocalRuntimeCutoverFolder = await createMigrationSlice(
+    journal,
+    preLocalRuntimeCutoverIndex,
+    { folderPrefix: "koed-pre-local-runtime-cutover-" }
+  );
+  temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
   const pre0020Records = await migrationRecords(
     pre0020Folder,
@@ -992,12 +1090,34 @@ try {
     through0020Folder,
     journal.entries.slice(0, current0020Index + 1)
   );
+  const preLocalRuntimeCutoverRecords = await migrationRecords(
+    preLocalRuntimeCutoverFolder,
+    journal.entries.slice(0, preLocalRuntimeCutoverIndex + 1)
+  );
 
   await runScenario("clean-full-migration", async () => {
     const target = await createDisposableDatabase("clean_full");
     await withPool(target.url, async (pool) => {
       await runDbMigrations(pool);
       await assertMigrationLedger(pool, fullRecords);
+      await assertCurrentSchema(pool);
+    });
+  });
+
+  await runScenario("local-runtime-alpha-question-cutover", async () => {
+    const target = await createDisposableDatabase("local_runtime_cutover");
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 23).toString("base64")
+    );
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, {
+        migrationsFolder: preLocalRuntimeCutoverFolder
+      });
+      await assertMigrationLedger(pool, preLocalRuntimeCutoverRecords);
+      const fixture = await seedLocalRuntimeCutoverFixture(pool, provider);
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      await verifyLocalRuntimeCutover(pool, fixture);
       await assertCurrentSchema(pool);
     });
   });

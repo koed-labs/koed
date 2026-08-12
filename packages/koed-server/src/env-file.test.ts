@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 
 const temps: string[] = [];
 const tempDir = () => {
@@ -38,23 +38,18 @@ describe("local URL resolution", () => {
         { API_HOST_PORT: "3300", MEMORY_API_URL: "http://localhost:3300" }
       )
     ).toBe("http://localhost:4545");
-    expect(
-      resolveExplorerUrl(
-        { EXPLORER_WEB_HOST_PORT: "5574" },
-        { EXPLORER_WEB_HOST_PORT: "5174" }
-      )
-    ).toBe("http://localhost:5574");
   });
 
-  it("prefers the configured Explorer web port over derived API base URLs", () => {
+  it("uses the supervisor-owned automatic API port instead of a stale generated URL", () => {
     expect(
-      resolveExplorerUrl(
-        {},
+      resolveApiUrl(
         {
-          EXPLORER_WEB_HOST_PORT: "5574",
-          EXPLORER_API_BASE_URL: "http://localhost:3300"
-        }
+          KOED_AUTO_PORTS: "1",
+          API_HOST_PORT: "3301",
+          MEMORY_API_URL: "http://localhost:3300"
+        },
+        {}
       )
-    ).toBe("http://localhost:5574");
+    ).toBe("http://localhost:3301");
   });
 });

@@ -1,7 +1,6 @@
 import {
   ChatTimeline,
   SecureMarkdown,
-  type ChatDayDividerRow,
   type ChatMessageRow,
   type ChatTimelineVisibleRange,
   type MarkdownPlatformAdapters
@@ -54,6 +53,7 @@ export type ThreadRouteProps = {
   client: CollaborationRendererClient;
   drafts: CollaborationDrafts;
   markdownAdapters: MarkdownPlatformAdapters;
+  loading?: boolean;
   onEditChannel?: (threadId: string) => void;
   page: CollaborationMessagePage;
   snapshot: CollaborationSnapshot;
@@ -266,6 +266,7 @@ export function ThreadTimeline({
   client,
   currentUserId,
   label,
+  loading = false,
   markdownAdapters,
   page,
   readEligible = true,
@@ -274,6 +275,7 @@ export function ThreadTimeline({
   client: CollaborationRendererClient;
   currentUserId: string;
   label: string;
+  loading?: boolean;
   markdownAdapters: MarkdownPlatformAdapters;
   page: CollaborationMessagePage;
   readEligible?: boolean;
@@ -399,7 +401,15 @@ export function ThreadTimeline({
           <span>Beginning of history</span>
         </div>
       ) : null}
-      {page.items.length === 0 ? (
+      {page.items.length === 0 && loading ? (
+        <div
+          aria-label="Loading messages"
+          className="collab-empty-inline collab-loading-messages"
+          role="status"
+        >
+          <LoaderCircle aria-hidden="true" />
+        </div>
+      ) : page.items.length === 0 ? (
         <div className="collab-empty-inline">No messages yet.</div>
       ) : (
         <ChatTimeline<TimelineMessage>
@@ -419,14 +429,10 @@ export function ThreadTimeline({
             )
           }
           onVisibleRangeChange={setVisibleRange}
-          renderDayDivider={(row: ChatDayDividerRow) => (
-            <TimelineDivider className="collab-day-divider">
-              <time dateTime={row.timestamp}>{formatTime(row.timestamp)}</time>
-            </TimelineDivider>
-          )}
+          renderDayDivider={() => null}
           renderFirstUnread={() => (
             <TimelineDivider className="collab-new-divider">
-              New
+              {null}
             </TimelineDivider>
           )}
           renderGroup={() => null}
@@ -489,8 +495,6 @@ export function MessageComposer({
     thread,
     principalIdForThread(snapshot, thread)
   );
-  const draftBytes = utf8ByteLength(draft);
-  const byteLimit = snapshot.limits.messageMaxUtf8Bytes;
 
   useEffect(() => {
     operationGeneration.current += 1;
@@ -524,9 +528,7 @@ export function MessageComposer({
     if (!body || sending || sendBlocked || !thread.canPost || !authority)
       return;
     if (utf8ByteLength(body) > snapshot.limits.messageMaxUtf8Bytes) {
-      setError(
-        `Messages can be at most ${snapshot.limits.messageMaxUtf8Bytes.toLocaleString()} UTF-8 bytes.`
-      );
+      setError("This message is too long.");
       return;
     }
     const retryInput =
@@ -594,22 +596,11 @@ export function MessageComposer({
           ) : null}
         </div>
       ) : null}
-      <div className="collab-composer-scope">
-        <span>
-          {thread.scope === "personal"
-            ? "Personal · Private to you"
-            : thread.kind === "workspace_channel" ||
-                thread.kind === "shared_session_discussion"
-              ? "Team · Workspace"
-              : "Team · Direct message"}
-        </span>
-        <span
-          aria-label={`${draftBytes.toLocaleString()} of ${byteLimit.toLocaleString()} UTF-8 bytes`}
-          data-over-limit={draftBytes > byteLimit || undefined}
-        >
-          {draftBytes.toLocaleString()} / {byteLimit.toLocaleString()} bytes
-        </span>
-      </div>
+      {thread.scope === "personal" && thread.kind !== "notes_to_self" ? (
+        <div className="collab-composer-scope">
+          <span>Personal · Private to you</span>
+        </div>
+      ) : null}
       <div className="collab-composer">
         <textarea
           name="message"
@@ -659,6 +650,7 @@ export function ThreadRoute({
   client,
   drafts,
   markdownAdapters,
+  loading = false,
   onEditChannel,
   page,
   snapshot,
@@ -668,18 +660,45 @@ export function ThreadRoute({
     thread,
     principalIdForThread(snapshot, thread)
   );
+  const directPerson =
+    thread.kind === "dm"
+      ? snapshot.navigation.teams
+          .find((team) => team.id === thread.teamId)
+          ?.people.find(
+            (person) =>
+              person.id !== principalIdForThread(snapshot, thread) &&
+              thread.participants.some(
+                (participant) => participant.id === person.id
+              )
+          )
+      : null;
   return (
     <section className="collab-conversation" aria-label={title}>
       <header className="collab-content-header">
         <div>
           <h1>
+            {directPerson ? (
+              <span className="collab-header-avatar" aria-hidden="true">
+                {initials(directPerson.displayName)}
+              </span>
+            ) : null}
             {thread.kind === "workspace_channel" ||
             thread.kind === "personal_channel"
               ? "# "
               : ""}
             {title}
           </h1>
-          {thread.topic ? <p>{thread.topic}</p> : null}
+          {directPerson ? (
+            <p className="collab-direct-presence">
+              {(directPerson.teamPresence.mode === "manual"
+                ? directPerson.teamPresence.manualStatus
+                : (directPerson.teamPresence.activityLevel ??
+                  directPerson.presence)
+              ).replaceAll("_", " ")}
+            </p>
+          ) : thread.topic ? (
+            <p>{thread.topic}</p>
+          ) : null}
         </div>
         {(thread.kind === "personal_channel" ||
           thread.kind === "workspace_channel") &&
@@ -699,6 +718,7 @@ export function ThreadRoute({
         client={client}
         currentUserId={principalIdForThread(snapshot, thread)}
         label={title}
+        loading={loading}
         markdownAdapters={markdownAdapters}
         page={page}
         thread={thread}

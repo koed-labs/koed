@@ -9,6 +9,10 @@ export {
   deriveTeamPresenceSnapshot
 } from "./team-presence.js";
 import { assertSecureHttpTransport } from "./http-transport-security.js";
+import {
+  approvalDecisionDisplaySchema,
+  personalDesktopToolDisplaySchema
+} from "./personal-desktop-contract.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 3;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
@@ -992,9 +996,31 @@ const sharedMemoryEventSourceItemSchema = z
     body: boundedRequiredUtf8(MAX_SHARED_SOURCE_BODY_BYTES),
     actorName: collaborationDisplayNameSchema.nullable(),
     toolName: boundedCodePoints(COLLABORATION_NAME_MAX_CODE_POINTS).nullable(),
-    toolCallId: boundedCodePoints(240).nullable()
+    toolCallId: boundedCodePoints(240).nullable(),
+    approvalDecisionDisplay: approvalDecisionDisplaySchema.optional(),
+    toolDisplay: personalDesktopToolDisplaySchema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((item, context) => {
+    if (item.approvalDecisionDisplay && item.sourceKind !== "agent_message") {
+      context.addIssue({
+        code: "custom",
+        path: ["approvalDecisionDisplay"],
+        message: "Auto approval display requires an agent message"
+      });
+    }
+    if (
+      item.toolDisplay &&
+      item.sourceKind !== "tool_call" &&
+      item.sourceKind !== "tool_result"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["toolDisplay"],
+        message: "Tool display requires a tool source item"
+      });
+    }
+  });
 
 const sharedMemoryEventItemSchema = z
   .object({

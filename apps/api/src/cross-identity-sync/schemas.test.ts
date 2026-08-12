@@ -54,6 +54,12 @@ describe("Cross-Identity Sync response schemas", () => {
         ...responseFixture(),
         target_deployment_profile: "developer"
       }).success
+    ).toBe(true);
+    expect(
+      targetSyncRelationshipResponseSchema.safeParse({
+        ...responseFixture(),
+        target_deployment_profile: "local_personal"
+      }).success
     ).toBe(false);
     expect(
       targetSyncRelationshipResponseSchema.safeParse({

@@ -5897,7 +5897,6 @@ export const createMemorySourceRepository = (
         live_projection_rows: string;
         historical_import_rows: string;
         historical_import_bytes: string;
-        interactive_question_rows: string;
       }>(
         `
         select
@@ -5913,12 +5912,7 @@ export const createMemorySourceRepository = (
             + octet_length(coalesce(ci.transport_chunk_text, ''))
           ) filter (
             where ci.projection_work_class = 'historical_import_backfill'
-          ), 0)::text as historical_import_bytes,
-          (
-            select count(*)::text
-            from memory_questions
-            where visibility = 'personal' and status = 'pending'
-          ) as interactive_question_rows
+          ), 0)::text as historical_import_bytes
         from conversation_items ci
         left join sessions s on s.id = ci.session_id
         where ci.projection_status in ('pending', 'error')
@@ -5938,8 +5932,7 @@ export const createMemorySourceRepository = (
       return {
         liveProjectionRows: Number(row?.live_projection_rows ?? 0),
         historicalImportRows: Number(row?.historical_import_rows ?? 0),
-        historicalImportBytes: Number(row?.historical_import_bytes ?? 0),
-        interactiveQuestionRows: Number(row?.interactive_question_rows ?? 0)
+        historicalImportBytes: Number(row?.historical_import_bytes ?? 0)
       } satisfies ConversationProjectionBacklog;
     },
 
@@ -6780,6 +6773,34 @@ export const createMemorySourceRepository = (
               'role', msg.role,
               'transcriptItemId', msg.transcript_item_id,
               'displaySource', 'message'
+            ) || coalesce(
+              (
+                select jsonb_strip_nulls(jsonb_build_object(
+                  'approvalReviewTranscriptDisplay',
+                  ci.metadata -> 'approvalReviewTranscriptDisplay',
+                  'approvalReview',
+                  case
+                    when ci.metadata ->> 'approvalReview' = 'true'
+                      then 'true'::jsonb
+                    else null
+                  end
+                ))
+                from conversation_items ci
+                where ci.owner_user_id = msg.owner_user_id
+                  and ci.visibility = msg.visibility
+                  and msg.idempotency_key = 'message:' || coalesce(
+                    ci.metadata ->> 'canonicalConversationItemKey',
+                    ci.canonical_item_key,
+                    ci.logical_source_id
+                  )
+                  and (
+                    ci.metadata ? 'approvalReviewTranscriptDisplay'
+                    or ci.metadata ->> 'approvalReview' = 'true'
+                  )
+                order by ci.created_at asc, ci.id asc
+                limit 1
+              ),
+              '{}'::jsonb
             ) as metadata
           from messages msg
           cross join cursor_order co
@@ -7217,19 +7238,34 @@ export const createMemorySourceRepository = (
             me.session_id,
             coalesce(s.source_runtime, me.source_runtime) as source_ai_client,
             case
-              when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
+              when coalesce(
+                me.payload #>> '{metadata,threadKind}',
+                me.payload #>> '{metadata,thread_kind}',
+                me.payload #>> '{metadata,threadSource}',
+                me.payload #>> '{metadata,thread_source}',
+                s.metadata ->> 'threadKind',
+                s.metadata ->> 'thread_kind',
+                s.metadata ->> 'threadSource',
+                s.metadata ->> 'thread_source'
+              ) = 'subagent'
                 then 'subagent'
               else 'conversation'
             end as thread_kind,
             coalesce(
               me.payload #>> '{metadata,parentThreadId}',
+              me.payload #>> '{metadata,parent_thread_id}',
               me.payload #>> '{metadata,parentExternalSessionId}',
+              me.payload #>> '{metadata,parent_external_session_id}',
               s.metadata ->> 'parentThreadId',
-              s.metadata ->> 'parentExternalSessionId'
+              s.metadata ->> 'parent_thread_id',
+              s.metadata ->> 'parentExternalSessionId',
+              s.metadata ->> 'parent_external_session_id'
             ) as parent_thread_id,
             coalesce(
               me.payload #>> '{metadata,parentSessionId}',
-              s.metadata ->> 'parentSessionId'
+              me.payload #>> '{metadata,parent_session_id}',
+              s.metadata ->> 'parentSessionId',
+              s.metadata ->> 'parent_session_id'
             ) as parent_session_id,
             coalesce(me.source_event_time, me.captured_at) as event_order_at,
             me.captured_at,
@@ -7280,11 +7316,24 @@ export const createMemorySourceRepository = (
             s.id as session_id,
             s.source_runtime as source_ai_client,
             case
-              when s.metadata ->> 'threadKind' = 'subagent' then 'subagent'
+              when coalesce(
+                s.metadata ->> 'threadKind',
+                s.metadata ->> 'thread_kind',
+                s.metadata ->> 'threadSource',
+                s.metadata ->> 'thread_source'
+              ) = 'subagent' then 'subagent'
               else 'conversation'
             end as thread_kind,
-            coalesce(s.metadata ->> 'parentThreadId', s.metadata ->> 'parentExternalSessionId') as parent_thread_id,
-            s.metadata ->> 'parentSessionId' as parent_session_id,
+            coalesce(
+              s.metadata ->> 'parentThreadId',
+              s.metadata ->> 'parent_thread_id',
+              s.metadata ->> 'parentExternalSessionId',
+              s.metadata ->> 'parent_external_session_id'
+            ) as parent_thread_id,
+            coalesce(
+              s.metadata ->> 'parentSessionId',
+              s.metadata ->> 'parent_session_id'
+            ) as parent_session_id,
             null::timestamptz as event_order_at,
             s.created_at as captured_at,
             s.created_at as order_at,

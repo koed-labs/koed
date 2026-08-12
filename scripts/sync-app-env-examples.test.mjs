@@ -153,9 +153,8 @@ test("sync output is deterministic", () => {
   fs.mkdirSync(path.join(root, "apps/api"), { recursive: true });
   fs.mkdirSync(path.join(root, "apps/worker"), { recursive: true });
   fs.mkdirSync(path.join(root, "apps/embedding-service"), { recursive: true });
-  fs.mkdirSync(path.join(root, "apps/explorer"), { recursive: true });
 
-  for (const app of ["api", "worker", "embedding-service", "explorer"]) {
+  for (const app of ["api", "worker", "embedding-service"]) {
     fs.writeFileSync(
       path.join(root, `apps/${app}/.env.example`),
       "PORT=3300\n# @root omit\nLOCAL_ONLY=1\n"

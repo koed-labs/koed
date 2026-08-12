@@ -10,7 +10,6 @@ test("uses active hook config before static env defaults", () => {
         API_HOST_PORT: "3300",
         MEMORY_API_TOKEN: "static-token"
       },
-      explorerEnv: {},
       hookConfig: {
         apiUrl: "http://localhost:43300/",
         apiToken: "runtime-token"
@@ -31,7 +30,6 @@ test("keeps explicit process overrides authoritative", () => {
         MEMORY_API_TOKEN: "explicit-token"
       },
       rootEnv: {},
-      explorerEnv: {},
       hookConfig: {
         apiUrl: "http://localhost:43300",
         apiToken: "runtime-token"

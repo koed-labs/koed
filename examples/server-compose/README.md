@@ -24,7 +24,6 @@ existing realtime cursors.
 Default public local ports:
 
 - API: `http://localhost:3300`
-- Explorer: `http://localhost:5174`
 
 Postgres, Redis, and the Embedding Service stay private on the Compose network.
 Use a reverse proxy/TLS in front of `koed-server` for a real private VPS or
@@ -33,7 +32,7 @@ rate-limit counters to the included Redis service so limits remain shared when
 the API process is restarted or replicated.
 
 Every service uses Compose's `unless-stopped` restart policy. If an essential
-managed child (API, Worker, or Explorer) exits unexpectedly, the `koed-server`
+managed child (API or Worker) exits unexpectedly, the `koed-server`
 supervisor stops its remaining children and exits nonzero so Compose restarts
 the coherent service set. Postgres, Redis, and the Embedding Service also
 recover after an unexpected container or Docker daemon restart. `docker compose
@@ -41,11 +40,13 @@ stop` and `docker compose down` remain clean manual stops and do not trigger an
 automatic restart.
 
 `MEMORY_API_URL` is intentionally pinned to the container's internal API
-endpoint. Configure the browser-facing Explorer origin separately with
-`API_EXPLORER_PUBLIC_URL` when a reverse proxy, tunnel, or non-default host
-port is used. Include that exact browser origin in `API_CORS_ORIGINS` as well.
-This prevents the server from attempting to reach itself through an
-Operator-facing endpoint while preserving browser CSRF protections.
+endpoint. The same `koed-server` API process serves Step-up and device-
+enrollment pages. If the public browser-reachable address differs from the
+registered backend URL, set `API_BROWSER_PUBLIC_URL` to the public API origin.
+Do not deploy a separate browser client and do not add
+another CORS origin for approval pages; authentication and approval writes are
+same-origin. Behind TLS, set `API_COOKIE_SECURE=true` and configure
+`WORKOS_REDIRECT_URI` on that public API origin.
 
 Browser self-registration is disabled by default. For a local mock server or
 closed dogfood environment where registration is intentionally open, set

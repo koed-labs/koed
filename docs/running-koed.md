@@ -4,7 +4,7 @@
 > Only Codex is supported for knowledge capture. More agents to follow!
 
 Koed's server deployment unit is `koed-server` plus dependencies. Internally,
-`koed-server` supervises API, Worker, Explorer, and the local Transcript Watcher, and connects
+`koed-server` supervises API, Worker, and the local Transcript Watcher, and connects
 to the configured Embedding Service. Postgres with pgvector stores Users, API
 Tokens, Memory Events, Memory Nodes, embeddings, and Capture Policies. Redis
 backs BullMQ queues when `WORK_QUEUE_BACKEND=bullmq`; the Postgres-backed local
@@ -47,7 +47,7 @@ reconnect, backend change, and failure-recovery behavior is documented in
 Operator troubleshooting without exposing reusable credentials to the
 renderer.
 
-`koed-server` owns `KOED_HOME`, runs API, Worker, and Explorer as supervised
+`koed-server` owns `KOED_HOME`, runs API and Worker as supervised
 local app processes, and records runtime state under `KOED_HOME/run`. In
 external dependency mode, Docker Compose or another dependency launcher is
 Operator-managed infrastructure.
@@ -71,9 +71,9 @@ Startup and `status --json` also inspect clone-safe local identity without block
 
 Use `identity rotate --json` only for explicit repair/replacement: it preserves deployment ID, creates a new device ID/proof, preserves local Memory, disables local routes, and invalidates local enrollment references where possible. Koed does not self-revoke remote credentials without authorized upstream flow. If remote revocation remains pending, rotation stays `repair_required` with redacted `pendingRemoteRevocation` state and never reports healthy; revoke remotely, run `identity rotate` again as Operator acknowledgement, then re-enroll.
 
-`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Explorer, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
+`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged, and a terminating supervisor removes the shared lock only while it still owns that lock. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
-API, Worker, Explorer, and the bundled-local native Embedding Service are
+API, Worker, and the bundled-local native Embedding Service are
 essential managed children. After startup, an unexpected exit or process error
 from any one of them makes the supervisor stop the remaining managed children,
 stop owned bundled-local dependencies, remove its runtime ownership state, and
@@ -82,7 +82,7 @@ the deployment supervisor restarts the complete service set. SIGINT, SIGTERM,
 and an identity-bound `koed-server stop` request use the same idempotent cleanup
 path and exit cleanly.
 
-In a source checkout, the supervisor launches the built API, Worker, and Explorer
+In a source checkout, the supervisor launches the built API and Worker
 Node entry points directly. Recorded process IDs therefore identify the service
 processes themselves, so stop and restart do not leave package-manager child
 processes listening on Koed ports.
@@ -312,8 +312,11 @@ Cross-Identity Sync is available only when the complete path is reported by
 capabilities. Relationship creation runs on a `local_personal` or `developer`
 source after explicit User consent and a validated upstream enrollment whose
 device credential includes the `sync` operation family. Remote intake runs only
-on `private_vps`, `team_self_hosted`, or `koed_managed_cloud` targets. Personal
-API Tokens and Capture Hooks cannot exercise this authority.
+on `private_vps`, `team_self_hosted`, or `koed_managed_cloud` targets, except
+for an isolated `developer` target explicitly enabled with
+`KOED_DEVELOPER_TEAM_BACKEND_ENABLED=true`. That local-testing target still
+requires application-layer encryption and a ready Cross-Identity Sync Worker.
+Personal API Tokens and Capture Hooks cannot exercise this authority.
 
 The source remains usable offline. Canonical changes accumulate in its durable
 outbox and resume from the last acknowledged cursor when the target returns.
@@ -365,7 +368,7 @@ and Recall remain device-local.
 
 `koed-server` keeps local state under `KOED_HOME`:
 
-- `config/` for `server.json`, `local-ports.json`, `explorer-token.json`,
+- `config/` for `server.json`, `local-ports.json`, `local-app-credential.json`,
   non-secret `device-identity.json`, local Project metadata, and Project-to-Team
   Workspace mappings
 - `run/` for `koed-server.json`, `last-verification.json`, content-free
@@ -424,12 +427,12 @@ regenerating them would make existing encrypted data or durable cursors unusable
 The server Compose wrapper sets `restart: unless-stopped` on `koed-server`,
 Postgres, Redis, and the Embedding Service. Dependency containers therefore
 recover after unexpected exits, and a nonzero supervisor exit restarts the
-coherent API/Worker/Explorer set. Manual `docker compose stop` and `docker
+coherent API/Worker set. Manual `docker compose stop` and `docker
 compose down` remain stopped until the Operator starts the stack again.
 
-The default local test endpoints are `http://localhost:3300` for the API and
-`http://localhost:5174` for Explorer. In a real private VPS or Team self-hosted
-deployment, put a reverse proxy/TLS boundary in front of `koed-server` and keep
+The default local test endpoint is `http://localhost:3300` for the API. In a
+real private VPS or Team self-hosted deployment, put a reverse proxy/TLS
+boundary in front of `koed-server` and keep
 Postgres, Redis, and the Embedding Service private.
 
 Because the database is private inside this wrapper, create API Tokens from
@@ -441,18 +444,25 @@ docker compose --env-file .env -f examples/server-compose/docker-compose.yml exe
 ```
 
 Do not point normal AI Client integrations directly at this remote/server API.
-Each User's Codex MCP Server and Supported Capture Hook should normally point at
-that User's local `koed-server` API, usually `http://localhost:3300`; that local
-server also supervises the Transcript Watcher. The watcher is enabled by default
-for developer/local-personal runtime modes. External runtime mode must opt in
-with `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` and provide Personal API
-Token access. Transcript roots default to `CODEX_HOME/sessions` and may be
-replaced with explicit local roots. The local `koed-server` then registers
-this server as an upstream and routes approved Team Workspace recall, Share
+Each User's Codex MCP adapter and Supported Capture Hook should normally use
+that User's local `koed-server`. That server supervises an authenticated Local
+AI Runtime, which hosts the Transcript Watcher. External runtime mode does not
+run either user-local component. Transcript roots default to
+`CODEX_HOME/sessions` and may be replaced with explicit local roots. Each
+Supported Capture Hook wake completes one bounded, paginated discovery sweep,
+with concurrent wakes coalesced into a refreshed sweep. A Stop boundary also
+schedules one trailing catch-up so records that Codex flushes after the Hook
+returns do not wait for the next incoming message. While a canonical cursor has
+an open turn, the watcher also rechecks only that transcript with bounded
+backoff until it consumes terminal evidence. A one-second catch-up tick checks
+only a bounded rotation of known sources and the newest discovery page,
+covering missed Hook and filesystem delivery without continuous full scans. The
+local `koed-server` then registers this server as an upstream and routes
+approved Team Workspace recall, Share
 Grant, sync/offload, or remote capture-bearing operations through local-edge
 policy. This keeps watcher capture in Personal Memory and avoids exposing
-upstream/cloud/device credentials to MCP Server, Transcript Watcher, or Capture
-Hook processes.
+upstream/cloud/device credentials to MCP, Transcript Watcher, or Capture Hook
+processes.
 
 ### Bundled-local native runtime
 
@@ -497,13 +507,13 @@ Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when insta
 
 Run Koed inside WSL as Linux tooling. Keep `KOED_HOME` on Linux filesystem paths such as `/home/<user>/.koed`; do not point bundled-local runtime state at Windows paths. Use the same `pnpm install`, `pnpm build`, `runtime status/install`, `models install`, `start`, `status`, and `doctor` commands from WSL.
 
-Windows host browsers can usually reach Koed through WSL localhost forwarding at `http://localhost:<API_HOST_PORT>` and `http://localhost:<EXPLORER_WEB_HOST_PORT>`. If localhost forwarding is not available, resolve the WSL IP from inside WSL and browse that IP from Windows instead:
+Windows host clients can usually reach Koed through WSL localhost forwarding at `http://localhost:<API_HOST_PORT>`. If localhost forwarding is not available, resolve the WSL IP from inside WSL and use that address instead:
 
 ```bash
 wsl.exe hostname -I
 ```
 
-Then open `http://<WSL_IP>:<port>` for the API or Explorer. Native Windows packaged app support is not shipped in this build; use WSL for Windows development.
+Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app support is not shipped in this build; use WSL for Windows development.
 
 ### Packaged Desktop first-run
 
@@ -523,7 +533,7 @@ temporary `KOED_HOME` before native resource checks. The smoke workflow skips
 explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and
 `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation,
 Capture Hook-like personal ingestion, Projection, local queue/embedding work,
-Memory Answer evidence retrieval with a unique marker, Explorer reachability,
+Memory Answer evidence retrieval with a unique marker, API readiness,
 and cleanup through `koed-server stop --json`. Missing native binaries or model
 assets fail clearly instead of falling back to Docker.
 
@@ -539,18 +549,15 @@ If dependency ports conflict with another local app, start the external dependen
 
 ```bash
 REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
-KOED_DEPENDENCY_MODE=external API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_URL=redis://localhost:16380 EMBEDDING_SERVICE_URL=http://localhost:3801 node packages/koed-server/dist/cli.js start
+KOED_DEPENDENCY_MODE=external API_HOST_PORT=3300 REDIS_URL=redis://localhost:16380 EMBEDDING_SERVICE_URL=http://localhost:3801 node packages/koed-server/dist/cli.js start
 ```
-
-The Explorer frontend is available at `http://localhost:5174`, or the host port
-you selected, and is embedded by Koed Desktop.
 
 ### Koed Desktop
 
 Koed Desktop is the Electron control surface for the same local control plane.
 It wraps `koed-server`, shows service status, and can start the supervisor,
-run Codex setup, run doctor, explicitly trigger Homebrew-backed runtime install
-with Operator confirmation, and open the embedded Explorer. Packaged Koed
+run Codex setup, run doctor, and explicitly trigger Homebrew-backed runtime
+install with Operator confirmation. Packaged Koed
 Desktop starts its managed local personal server with bundled-local native
 runtime defaults unless the Operator explicitly overrides runtime/dependency
 mode; source-checkout Desktop keeps the bare developer default and uses explicit

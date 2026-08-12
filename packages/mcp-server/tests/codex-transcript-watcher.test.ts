@@ -147,6 +147,7 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
   policyPaused = false;
   policyVisibility = "personal";
   failProjection = false;
+  conflictNextCanonicalCursor = false;
   private nextItem = 0;
 
   async ensureConversationSourceArtifact(input: Record<string, unknown>) {
@@ -319,6 +320,16 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
       parserState: (input.parserState ?? {}) as Record<string, unknown>
     };
     this.cursors.set(artifactId, cursor);
+    if (this.conflictNextCanonicalCursor) {
+      this.conflictNextCanonicalCursor = false;
+      throw new MemoryApiError("Conversation source consumer cursor conflict", {
+        status: 409,
+        payload: {
+          error: "Conversation source consumer cursor conflict",
+          code: "conversation_source_consumer_cursor_conflict"
+        }
+      });
+    }
     this.operationOrder.push("canonical_cursor");
     return { cursor };
   }
@@ -346,6 +357,8 @@ const watcherConfig = (
   roots: [path.join(root, "codex", "sessions")],
   koedHome: path.join(root, "koed"),
   debounceMs: 60_000,
+  pollMs: 60_000,
+  turnBoundarySettleMs: 25,
   maxEntriesPerScan: 1_000,
   maxFilesPerScan: 100,
   maxBytesPerBatch: 64 * 1024,
@@ -371,6 +384,94 @@ describe("Codex Transcript Watcher source journal", () => {
     );
 
     expect(discovered).toEqual([newTranscript]);
+  });
+
+  it("automatically completes a bounded activation cycle before ingesting live growth", async () => {
+    const root = temporaryDirectory();
+    const transcripts = Array.from({ length: 3 }, (_, index) => {
+      const transcript = transcriptPath(
+        root,
+        `rollout-2026-01-0${index + 1}.jsonl`
+      );
+      writeFileSync(transcript, line(sessionRecord(`baseline-${index}`)));
+      return transcript;
+    });
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      watcherConfig(root, {
+        debounceMs: 5,
+        maxFilesPerScan: 1
+      })
+    );
+
+    await waitFor(() => watcher.snapshot().state === "running");
+
+    expect(watcher.snapshot().scans).toBeGreaterThan(1);
+    expect(client.artifacts.size).toBe(0);
+
+    appendFileSync(
+      transcripts.at(-1)!,
+      line(userRecord("live after activation"))
+    );
+    watcher.wake();
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "live after activation")
+    );
+  });
+
+  it("refreshes a stale directory snapshot after a Hook wake during a bounded live sweep", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(
+      client,
+      watcherConfig(root, {
+        debounceMs: 25,
+        maxFilesPerScan: 1
+      })
+    );
+
+    // Activate while the transcript root is absent so no filesystem watcher can
+    // provide an exact-path hint for the file created later in this test.
+    await watcher.scanNow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const scansBeforeSweep = watcher.snapshot().scans;
+
+    for (let index = 0; index < 12; index += 1) {
+      writeFileSync(
+        transcriptPath(root, `rollout-baseline-${index}.jsonl`),
+        line(
+          sessionRecord(
+            `stale-baseline-${index}`,
+            "/tmp/project",
+            "2025-01-01T00:00:00.000Z"
+          )
+        )
+      );
+    }
+
+    watcher.wake();
+    await waitFor(() => watcher.snapshot().scans > scansBeforeSweep);
+
+    const liveTranscript = transcriptPath(root, "rollout-zzzz-live.jsonl");
+    writeFileSync(
+      liveTranscript,
+      line(sessionRecord("stale-snapshot-live")) +
+        line(userRecord("discover me after refreshing the snapshot"))
+    );
+    watcher.wake();
+
+    await waitFor(() => client.artifacts.has("stale-snapshot-live"), 3_000);
+    expect(
+      client.itemBatches
+        .flat()
+        .some(
+          (item) => item.rawText === "discover me after refreshing the snapshot"
+        )
+    ).toBe(true);
   });
 
   it("reads one final byte for a complete large transcript boundary", () => {
@@ -429,6 +530,40 @@ describe("Codex Transcript Watcher source journal", () => {
           path: projectRoot
         }
       ]
+    });
+  });
+
+  it("stores normalized lineage for native Codex guardian sessions", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root);
+    const parentThreadId = "019fd15a-eaf3-7ea3-94e3-451dac881974";
+    writeFileSync(
+      transcript,
+      line({
+        timestamp: "2099-01-01T00:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "019fd173-d3cd-7753-84a4-421d8010f356",
+          cwd: "/tmp/project",
+          timestamp: "2099-01-01T00:00:00.000Z",
+          thread_source: "subagent",
+          parent_thread_id: parentThreadId,
+          source: { subagent: { other: "guardian" } }
+        }
+      })
+    );
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+
+    await watcher.scanNow();
+    appendFileSync(transcript, line(userRecord("approval history")));
+    await watcher.scanNow();
+
+    expect(client.sourceSessions.at(-1)).toMatchObject({
+      metadata: {
+        threadKind: "subagent",
+        parentThreadId
+      }
     });
   });
 
@@ -626,6 +761,31 @@ describe("Codex Transcript Watcher source journal", () => {
     );
   });
 
+  it("reconciles a canonical cursor advanced by another watcher", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const transcript = transcriptPath(root);
+    writeFileSync(
+      transcript,
+      line(sessionRecord("concurrent-cursor")) +
+        line(userRecord("captured once"))
+    );
+    client.conflictNextCanonicalCursor = true;
+
+    await watcher.scanNow();
+
+    const artifact = client.artifacts.get("concurrent-cursor")!;
+    expect(watcher.snapshot().lastErrorCode).toBeNull();
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      artifact.providerCursorOffset
+    );
+    expect(
+      client.itemBatches.flat().some((item) => item.rawText === "captured once")
+    ).toBe(true);
+  });
+
   it("holds an assistant event until the stable response arrives in a later segment", async () => {
     const root = temporaryDirectory();
     const client = new FakeWatcherClient();
@@ -767,6 +927,119 @@ describe("Codex Transcript Watcher source journal", () => {
         externalTurnId: stoppedTurnId
       })
     );
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      artifact.providerCursorOffset
+    );
+  });
+
+  it("catches assistant records flushed after the Stop wake without another Hook signal", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const config = watcherConfig(root, { debounceMs: 5 });
+    const watcher = trackedWatcher(client, config);
+
+    // Activate before the transcript root exists so the later append cannot be
+    // recovered by an exact filesystem notification in this regression.
+    await watcher.scanNow();
+    const transcript = transcriptPath(root, "rollout-post-stop-flush.jsonl");
+    writeFileSync(
+      transcript,
+      line(sessionRecord("post-stop-flush")) + line(userRecord("question"))
+    );
+    await watcher.scanNow();
+
+    signalCodexTranscriptWatcher(
+      { KOED_HOME: config.koedHome },
+      {
+        sourceSessionId: "post-stop-flush",
+        transcriptPath: transcript,
+        turnBoundary: true
+      }
+    );
+    await watcher.scanNow();
+
+    appendFileSync(
+      transcript,
+      line(assistantResponseRecord("flushed after the Stop hook"))
+    );
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "flushed after the Stop hook")
+    );
+  });
+
+  it("polls an open turn until its terminal assistant records are flushed", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const config = watcherConfig(root, {
+      debounceMs: 5,
+      turnBoundarySettleMs: 10
+    });
+    const watcher = trackedWatcher(client, config);
+
+    // Activate before the root exists so neither Hook nor filesystem delivery
+    // can complete this turn after its initial user record is processed.
+    await watcher.scanNow();
+    const transcript = transcriptPath(root, "rollout-open-turn.jsonl");
+    writeFileSync(
+      transcript,
+      line(sessionRecord("open-turn")) + line(userRecord("question"))
+    );
+    await watcher.scanNow();
+
+    appendFileSync(
+      transcript,
+      line(assistantResponseRecord("terminal records without another wake")) +
+        line(controlRecord())
+    );
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some(
+          (item) => item.rawText === "terminal records without another wake"
+        )
+    );
+    const artifact = client.artifacts.get("open-turn")!;
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      artifact.providerCursorOffset
+    );
+  });
+
+  it("discovers and completes a turn when Hook and filesystem signals are both missed", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const config = watcherConfig(root, {
+      debounceMs: 5,
+      pollMs: 10,
+      turnBoundarySettleMs: 10
+    });
+    const watcher = trackedWatcher(client, config);
+
+    // No root exists when filesystem hints are installed, and this test sends
+    // no explicit watcher wake after activation.
+    await watcher.scanNow();
+    const transcript = transcriptPath(root, "rollout-missed-signals.jsonl");
+    writeFileSync(
+      transcript,
+      line(sessionRecord("missed-signals")) + line(userRecord("question"))
+    );
+    await waitFor(() => client.artifacts.has("missed-signals"));
+
+    appendFileSync(
+      transcript,
+      line(assistantResponseRecord("captured without signals")) +
+        line(controlRecord())
+    );
+
+    await waitFor(() =>
+      client.itemBatches
+        .flat()
+        .some((item) => item.rawText === "captured without signals")
+    );
+    const artifact = client.artifacts.get("missed-signals")!;
     expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
       artifact.providerCursorOffset
     );
