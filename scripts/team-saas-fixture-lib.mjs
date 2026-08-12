@@ -415,6 +415,7 @@ export const fixtureConversationSources = [
   sourceGenerationId: fixtureUuid(
     `conversation-source:${source.key}:generation`
   ),
+  originKeyId: fixtureUuid(`conversation-source:${source.key}:origin-key`),
   mutationId: fixtureUuid(`conversation-source:${source.key}:mutation`),
   segmentIds: source.segments.map((_, index) =>
     fixtureUuid(`conversation-source:${source.key}:segment:${index}`)
@@ -1361,7 +1362,7 @@ const seedConversationSourceFixture = async (client, runtime) => {
     if (!memory)
       throw new Error(`Unknown source fixture memory: ${source.memoryKey}`);
     const owner = fixtureUsers[memory.owner];
-    const originKeyId = `${FIXTURE_VERSION}-${source.key}`;
+    const originKeyId = source.originKeyId;
     const sourceCreatedAt = memory.capturedAt;
     const segmentRows = [];
     let byteCursor = 0;
@@ -1882,6 +1883,16 @@ export const resetFixture = async (client) => {
     await client.query(
       `delete from team_session_share_grants
         where id in (select id from fixture_reset_share_grants)`
+    );
+    await client.query(
+      `delete from conversation_source_segments
+       where artifact_id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.artifactId)]
+    );
+    await client.query(
+      `delete from conversation_source_artifacts
+       where id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.artifactId)]
     );
     await client.query(
       `delete from source_owner_representation_consents

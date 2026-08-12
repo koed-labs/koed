@@ -52,6 +52,12 @@ test("Team SaaS fixture definition is deterministic and realistic", () => {
       ["continuous", "revoked"]
     ]
   );
+  for (const source of fixtureConversationSources) {
+    assert.match(
+      source.originKeyId,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+  }
   assert.ok(
     fixtureMemoryRows.filter((memory) => memory.shareState === "active")
       .length >
