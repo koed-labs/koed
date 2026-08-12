@@ -73,8 +73,14 @@
 }
 
 .personal-project-list {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 0 0.5rem 1rem;
+}
+
+.personal-projects-narrow-state {
+  display: none;
 }
 
 .personal-inactive-toggle {
@@ -979,10 +985,45 @@
   .personal-memory-workspace.route-projects .personal-memory-detail-pane {
     display: none;
   }
+
+  .personal-projects-narrow-state {
+    align-items: center;
+    box-sizing: border-box;
+    color: var(--muted-foreground);
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    justify-content: center;
+    min-height: 100%;
+    padding: 2rem;
+    text-align: center;
+  }
+
+  .personal-projects-narrow-state p {
+    margin: 0;
+  }
+
+  .personal-projects-narrow-state .personal-loading-icon {
+    animation: personal-managed-spin 900ms linear infinite;
+    height: 1.5rem;
+    width: 1.5rem;
+  }
+
+  .personal-projects-narrow-state .personal-error-icon {
+    color: var(--destructive);
+    height: 1.5rem;
+    margin-bottom: 0.2rem;
+    width: 1.5rem;
+  }
+
+  .personal-projects-narrow-state .personal-retry-button {
+    margin-top: 0.3rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .personal-memory-empty-detail .personal-loading-icon,
+  .personal-projects-narrow-state .personal-loading-icon,
   .native-conversation-loading-icon,
   .personal-session-assignment > summary > svg,
   .native-tool-group-disclosure {

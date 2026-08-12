@@ -277,7 +277,7 @@ describe("PersonalMemoryWorkspace", () => {
     expect(container.querySelector(".personal-sessions > header")).toBeNull();
   });
 
-  it("shows initial Project loading only as a spinner in the detail pane", async () => {
+  it("provides initial Project loading states for wide and narrow layouts", async () => {
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(
@@ -307,8 +307,18 @@ describe("PersonalMemoryWorkspace", () => {
       )
     ).not.toBeNull();
     expect(
-      container.querySelector(".personal-projects-pane")?.textContent
-    ).not.toContain("Loading Projects");
+      container
+        .querySelector('.personal-projects-narrow-state[role="status"]')
+        ?.getAttribute("aria-label")
+    ).toBe("Loading Projects");
+    expect(
+      container.querySelector(
+        ".personal-projects-narrow-state .personal-loading-icon"
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".personal-projects-narrow-state")?.textContent
+    ).toBe("");
   });
 
   it("uses a Captured Session icon for the empty Project selection state", async () => {
@@ -331,7 +341,7 @@ describe("PersonalMemoryWorkspace", () => {
     ).not.toBeNull();
   });
 
-  it("presents a concise Project loading failure with a defined Retry action", async () => {
+  it("provides actionable Project loading failures for wide and narrow layouts", async () => {
     const listProjects = vi.fn(async () => {
       throw new Error("internal transport detail");
     });
@@ -350,8 +360,8 @@ describe("PersonalMemoryWorkspace", () => {
       expect(container.textContent).toContain("Projects unavailable")
     );
     expect(
-      container.querySelector(".personal-projects-pane")?.textContent
-    ).not.toContain("Projects unavailable");
+      container.querySelector(".personal-projects-narrow-state")?.textContent
+    ).toContain("Projects unavailable");
     expect(
       container.querySelector(".personal-memory-detail-pane")?.textContent
     ).toContain("Projects unavailable");
@@ -362,9 +372,14 @@ describe("PersonalMemoryWorkspace", () => {
         ".personal-memory-detail-pane .lucide-circle-alert"
       )
     ).not.toBeNull();
-    const retry = [
-      ...container.querySelectorAll<HTMLButtonElement>("button")
-    ].find((button) => button.textContent === "Retry");
+    expect(
+      container.querySelector(
+        ".personal-projects-narrow-state .lucide-circle-alert"
+      )
+    ).not.toBeNull();
+    const retry = container.querySelector<HTMLButtonElement>(
+      ".personal-projects-narrow-state .personal-retry-button"
+    );
     expect(retry?.classList).toContain("personal-retry-button");
     await act(async () => retry?.click());
     expect(listProjects).toHaveBeenCalledTimes(2);

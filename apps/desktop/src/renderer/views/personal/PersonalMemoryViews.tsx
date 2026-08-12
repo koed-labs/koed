@@ -165,12 +165,14 @@ function ProjectRow({
 function ProjectsPane({
   error,
   loading,
+  onRetry,
   onSelect,
   projects,
   selectedProjectId
 }: {
   error: string | null;
   loading: boolean;
+  onRetry: () => void;
   onSelect: (projectId: string) => void;
   projects: readonly PersonalDesktopProject[];
   selectedProjectId: string | null;
@@ -220,8 +222,31 @@ function ProjectsPane({
         />
       </label>
       <div className="personal-project-list">
-        {loading && projects.length === 0 ? null : error &&
-          projects.length === 0 ? null : projects.length === 0 ? (
+        {loading && projects.length === 0 ? (
+          <div
+            aria-label="Loading Projects"
+            className="personal-projects-narrow-state"
+            role="status"
+          >
+            <LoaderCircle
+              aria-hidden="true"
+              className="personal-loading-icon"
+            />
+          </div>
+        ) : error && projects.length === 0 ? (
+          <div className="personal-projects-narrow-state error" role="alert">
+            <CircleAlert aria-hidden="true" className="personal-error-icon" />
+            <strong>Projects unavailable</strong>
+            <p>Koed could not load your Projects.</p>
+            <button
+              className="personal-retry-button"
+              onClick={onRetry}
+              type="button"
+            >
+              Retry
+            </button>
+          </div>
+        ) : projects.length === 0 ? (
           <div className="personal-memory-state" role="status">
             <strong>No Projects yet</strong>
             <p>
@@ -1389,6 +1414,7 @@ export function PersonalMemoryWorkspace({
       <ProjectsPane
         error={snapshot.error}
         loading={snapshot.loading}
+        onRetry={() => void store.loadProjects()}
         onSelect={(projectId) => onNavigate({ kind: "project", projectId })}
         projects={projects}
         selectedProjectId={selectedProject?.id ?? null}
