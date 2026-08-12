@@ -1,4 +1,4 @@
-# Embedding Capacity Calibration And Telemetry
+# ADR 0027: Embedding Capacity Calibration And Telemetry
 
 Status: Accepted.
 
@@ -7,6 +7,8 @@ Related decisions:
 - [0007 Desktop Control Plane Consumes koed-server](./0007-desktop-control-plane-consumes-koed-server.md)
 - [0009 Commercial SaaS Encryption And Key Management](./0009-commercial-saas-encryption-key-management.md)
 - [0010 Managed SaaS Queryable Vectors](./0010-managed-saas-queryable-vectors.md)
+- [0025 MCP v2 and Local AI Runtime Ownership](./0025-mcp-v2-local-ai-runtime-ownership.md)
+- [0026 Pre-launch Schema Reset and Processing Epochs](./0026-pre-launch-schema-reset-and-processing-epochs.md)
 - [Hosted Capacity Plan And Load Checks](../hosted-capacity-plan.md)
 
 ## Context
@@ -46,9 +48,14 @@ Worker uses the sum of the response's validated per-chunk tokenizer counts so
 semantic ingestion and calibration remain available. Equality between the two
 measurements is neither required nor expected.
 
-One versioned capacity profile identifies a stable worker pool, processing
-epoch, compatible model artifact, runtime configuration, hardware class, and
-calibration mode. A short synthetic
+One versioned capacity profile identifies a stable worker pool, embedding
+processing contract, compatible model artifact, runtime configuration, hardware
+class, and calibration mode. This capacity-contract identity measures execution
+throughput; it does not replace ADR 0026's complete embedding compatibility
+identity or publish a generation. Until the bounded generation registry exists,
+the current model, dimensions, artifact, tokenizer, transform, pooling, and
+normalization fields form the fail-closed compatibility subset consumed by this
+feature. A short synthetic
 calibration runs asynchronously after model readiness when no compatible
 profile exists. It uses only generated fixtures and never User Memory. Live
 capture and Recall remain available while calibration is missing or fails, but
@@ -59,7 +66,7 @@ through the production adapter. The profile retains only bounded target class,
 adapter-measured token count, and duration records, never fixture text.
 
 Capacity identity includes the bounded deployment pool key, model key and
-artifact hash, embedding processing epoch and contract, runtime settings that
+artifact hash, embedding capacity-contract revision, runtime settings that
 materially affect throughput, backend class, and a non-reversible hardware
 fingerprint. Non-CPU backends also bind that fingerprint to a non-reversible
 hash of llama-server's device listing; if the listing cannot be established,
@@ -85,9 +92,12 @@ local queue are execution transports and must report equivalent queue
 categories.
 
 Rolling throughput distinguishes Memory Event arrival from completed Memory
-Event, Memory Node, and message embeddings. LCM compaction completion is a
-separate operational class and does not inflate the generic embedding
-completion rate.
+Event, Memory Node, and message embeddings. The Worker owns embedding execution
+and LCM compaction admission; the `koed-server`-supervised Local AI Runtime owns
+AI-client-backed LCM Summary synthesis under ADR 0025. LCM compaction completion
+is therefore a separate operational class and does not prove Local AI Runtime
+synthesis or Memory Node embedding readiness, nor does it inflate the generic
+embedding completion rate.
 
 The operational surfaces are separated:
 

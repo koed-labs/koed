@@ -17,7 +17,7 @@ const profile = (
   poolKey,
   profileKey,
   profileVersion: "koed-embedding-capacity-v1",
-  processingEpoch: "embedding-capacity-v1",
+  capacityContractRevision: "embedding-capacity-v1",
   state: "usable",
   calibrationMode,
   modelKey: "qwen3-0.6b",

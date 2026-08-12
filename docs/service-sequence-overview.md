@@ -367,10 +367,11 @@ audited, and customer-visible; support/admin tooling must not use normal recall
 routes as an impersonation path.
 
 Embedding capacity telemetry follows
-[ADR 0024](adr/0024-embedding-capacity-telemetry.md). `/ops/status` includes a
-redacted Operator snapshot for all configured embedding and LCM queues,
-measured-token throughput, semantic backlog, the active capacity profile, and
-an estimated drain range. The private `/internal/metrics` surface exports
+[ADR 0027](adr/0027-embedding-capacity-telemetry.md). `/ops/status` includes a
+redacted Operator snapshot for configured Worker-owned embedding and LCM
+compaction-admission queues, measured-token throughput, semantic backlog, the
+active capacity profile, and an estimated drain range. These queue counters do
+not represent Local AI Runtime LCM Summary synthesis completion. The private `/internal/metrics` surface exports
 OpenMetrics-compatible aggregates under a dedicated monitoring credential and
 must not be exposed by the public gateway. Neither surface starts calibration;
 the Worker performs missing-profile calibration asynchronously after model

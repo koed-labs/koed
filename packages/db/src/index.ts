@@ -229,7 +229,7 @@ export {
 } from "./migrate.js";
 export {
   CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
-  EMBEDDING_CAPACITY_PROCESSING_EPOCH,
+  EMBEDDING_CAPACITY_CONTRACT_REVISION,
   createEmbeddingCapacityRepository,
   type EmbeddingBackendClass,
   type EmbeddingCalibrationMode,

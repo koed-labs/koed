@@ -6,7 +6,7 @@ repeatable gate that tells us whether the current backend shape has obvious
 bottlenecks before hosted traffic is expanded.
 
 Production embedding capacity and semantic-readiness estimates follow
-[ADR 0024](adr/0024-embedding-capacity-telemetry.md). The capacity harness
+[ADR 0027](adr/0027-embedding-capacity-telemetry.md). The capacity harness
 validates that contract under controlled load; it does not replace the durable
 capacity profile, `/ops/status`, or the private machine-metrics surface.
 

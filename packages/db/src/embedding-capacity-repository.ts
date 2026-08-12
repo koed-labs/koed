@@ -1,7 +1,7 @@
 import type pg from "pg";
 
 export const CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND = 5;
-export const EMBEDDING_CAPACITY_PROCESSING_EPOCH = "embedding-capacity-v1";
+export const EMBEDDING_CAPACITY_CONTRACT_REVISION = "embedding-capacity-v1";
 export const EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS = 120;
 
 export type EmbeddingBackendClass = "cpu" | "metal" | "cuda" | "unknown";
@@ -18,7 +18,7 @@ export interface EmbeddingCapacityProfileInput {
   poolKey: string;
   profileKey: string;
   profileVersion: string;
-  processingEpoch: string;
+  capacityContractRevision: string;
   state: EmbeddingCapacityProfileState;
   calibrationMode: EmbeddingCalibrationMode;
   modelKey: string;
@@ -141,7 +141,7 @@ export interface EmbeddingCapacityRepository {
   listActiveUsableProfiles(input?: {
     modelKey?: string;
     embeddingDimensions?: number;
-    processingEpoch?: string;
+    capacityContractRevision?: string;
   }): Promise<EmbeddingCapacityProfileRecord[]>;
   replaceActiveProfile(
     input: EmbeddingCapacityProfileInput,
@@ -168,7 +168,7 @@ type ProfileRow = {
   pool_key: string;
   profile_key: string;
   profile_version: string;
-  processing_epoch: string;
+  capacity_contract_revision: string;
   state: EmbeddingCapacityProfileState;
   calibration_mode: EmbeddingCalibrationMode;
   model_key: string;
@@ -203,7 +203,7 @@ const mapProfile = (row: ProfileRow): EmbeddingCapacityProfileRecord => ({
   poolKey: row.pool_key,
   profileKey: row.profile_key,
   profileVersion: row.profile_version,
-  processingEpoch: row.processing_epoch,
+  capacityContractRevision: row.capacity_contract_revision,
   state: row.state,
   calibrationMode: row.calibration_mode,
   modelKey: row.model_key,
@@ -302,12 +302,12 @@ export const createEmbeddingCapacityRepository = (
          and updated_at >= now() - make_interval(secs => $4)
          and ($1::text is null or model_key = $1)
          and ($2::int is null or embedding_dimensions = $2)
-         and ($3::text is null or processing_epoch = $3)
+         and ($3::text is null or capacity_contract_revision = $3)
        order by pool_key, calibrated_at desc`,
       [
         input.modelKey ?? null,
         input.embeddingDimensions ?? null,
-        input.processingEpoch ?? null,
+        input.capacityContractRevision ?? null,
         EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS
       ]
     );
@@ -330,7 +330,7 @@ export const createEmbeddingCapacityRepository = (
       );
       const result = await client.query<ProfileRow>(
         `insert into embedding_capacity_profiles (
-           pool_key, profile_key, profile_version, processing_epoch,
+           pool_key, profile_key, profile_version, capacity_contract_revision,
            state, calibration_mode,
            model_key, model_artifact_hash, embedding_dimensions, tokenizer,
            input_transform, pooling, normalization, runtime_kind,
@@ -349,7 +349,7 @@ export const createEmbeddingCapacityRepository = (
           input.poolKey,
           input.profileKey,
           input.profileVersion,
-          input.processingEpoch,
+          input.capacityContractRevision,
           input.state,
           input.calibrationMode,
           input.modelKey,

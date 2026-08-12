@@ -5,7 +5,7 @@ import { currentEmbeddingConfig } from "./embedding-coverage.js";
 import {
   CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
   EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS,
-  EMBEDDING_CAPACITY_PROCESSING_EPOCH
+  EMBEDDING_CAPACITY_CONTRACT_REVISION
 } from "./embedding-capacity-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
 import type {
@@ -207,7 +207,7 @@ const sourceSelect = (): string => {
     where profile.state = 'usable'
       and profile.invalidated_at is null
       and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
-      and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}'
+      and profile.capacity_contract_revision = '${EMBEDDING_CAPACITY_CONTRACT_REVISION}'
       and profile.model_key = '${embedding.model}'
       and profile.embedding_dimensions = ${embedding.dimensions})
     as capacity_tokens_per_second,
@@ -220,7 +220,7 @@ const sourceSelect = (): string => {
     where profile.state = 'usable'
       and profile.invalidated_at is null
       and profile.updated_at >= now() - make_interval(secs => ${EMBEDDING_CAPACITY_PROFILE_STALE_AFTER_SECONDS})
-      and profile.processing_epoch = '${EMBEDDING_CAPACITY_PROCESSING_EPOCH}'
+      and profile.capacity_contract_revision = '${EMBEDDING_CAPACITY_CONTRACT_REVISION}'
       and profile.model_key = '${embedding.model}'
       and profile.embedding_dimensions = ${embedding.dimensions})
     as capacity_calibration_mode,

@@ -1195,7 +1195,7 @@ describeDb("journal-backed historical import repository", () => {
       poolKey: "test-pool",
       profileKey,
       profileVersion: "koed-embedding-capacity-v1",
-      processingEpoch: "embedding-capacity-v1",
+      capacityContractRevision: "embedding-capacity-v1",
       state: "usable",
       calibrationMode: "refined",
       modelKey: "qwen3-0.6b",

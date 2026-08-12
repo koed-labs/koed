@@ -99,7 +99,7 @@ describe("embedding capacity service", () => {
 
     expect(profile).toMatchObject({
       poolKey: "default",
-      processingEpoch: "embedding-capacity-v1",
+      capacityContractRevision: "embedding-capacity-v1",
       state: "usable",
       calibrationMode: "quick",
       backendClass: "cpu",

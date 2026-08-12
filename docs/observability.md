@@ -207,7 +207,7 @@ prohibited.
 ### Embedding Capacity Metrics
 
 Embedding capacity follows
-[ADR 0024](adr/0024-embedding-capacity-telemetry.md). `GET /ops/status` is the
+[ADR 0027](adr/0027-embedding-capacity-telemetry.md). `GET /ops/status` is the
 redacted human-Operator snapshot. `GET /internal/metrics` is the private
 OpenMetrics-compatible machine surface and is disabled unless a dedicated
 monitoring bearer credential is configured. Health and readiness remain coarse
@@ -229,10 +229,12 @@ gauges. Tenant, Team, User, Project, Captured Session, source-row, prompt, path,
 Memory text, and vector values are forbidden as metric labels or values.
 
 The rolling Operator snapshot separates Memory Event arrivals from completed
-Memory Event, Memory Node, and message embeddings. LCM compaction completions
-are reported separately and are excluded from the generic embedding completion
-rate. Arrival counters come from canonical Memory Event rows, while completed
-work uses durable telemetry buckets. Rolling rates use complete minute buckets;
+Memory Event, Memory Node, and message embeddings. Worker-owned LCM compaction
+admission is reported separately and is excluded from the generic embedding
+completion rate. It does not prove AI-client-backed LCM Summary synthesis, which
+belongs to the `koed-server`-supervised Local AI Runtime, or downstream Memory
+Node embedding readiness. Arrival counters come from canonical Memory Event
+rows, while completed work uses durable telemetry buckets. Rolling rates use complete minute buckets;
 active capacity excludes worker pools whose profile heartbeat has expired.
 
 Attach only the content-safe summary required by the structured release record

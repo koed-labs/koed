@@ -2254,7 +2254,7 @@ export const embeddingCapacityProfiles = pgTable(
     poolKey: text("pool_key").notNull(),
     profileKey: text("profile_key").notNull(),
     profileVersion: text("profile_version").notNull(),
-    processingEpoch: text("processing_epoch").notNull(),
+    capacityContractRevision: text("capacity_contract_revision").notNull(),
     state: text("state").notNull(),
     calibrationMode: text("calibration_mode").notNull(),
     modelKey: text("model_key").notNull(),

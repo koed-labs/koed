@@ -4987,7 +4987,7 @@ const createFakeEmbeddingCapacityRepository =
         poolKey: "default",
         profileKey: "a".repeat(64),
         profileVersion: "embedding-capacity-v1",
-        processingEpoch: "embedding-capacity-v1",
+        capacityContractRevision: "embedding-capacity-v1",
         state: "usable",
         calibrationMode: "refined",
         modelKey: "qwen3-0.6b",

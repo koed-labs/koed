@@ -4,7 +4,7 @@ import type {
   EmbeddingCapacityProfileInput,
   EmbeddingCapacityRepository
 } from "@koed/db";
-import { EMBEDDING_CAPACITY_PROCESSING_EPOCH } from "@koed/db";
+import { EMBEDDING_CAPACITY_CONTRACT_REVISION } from "@koed/db";
 import { fetchBoundedJsonObject } from "@koed/shared";
 import { Agent } from "undici";
 import { embedTexts } from "./embedding-workflow.js";
@@ -169,7 +169,7 @@ export const createEmbeddingCapacityService = (config: {
     const current = await identity();
     return sha256({
       profileVersion: PROFILE_VERSION,
-      processingEpoch: EMBEDDING_CAPACITY_PROCESSING_EPOCH,
+      capacityContractRevision: EMBEDDING_CAPACITY_CONTRACT_REVISION,
       poolKey: config.env.embeddingPoolKey,
       modelKey: config.env.embeddingVersion,
       modelArtifactHash: config.env.embeddingModelArtifactHash,
@@ -237,7 +237,7 @@ export const createEmbeddingCapacityService = (config: {
       poolKey: config.env.embeddingPoolKey,
       profileKey: key,
       profileVersion: PROFILE_VERSION,
-      processingEpoch: EMBEDDING_CAPACITY_PROCESSING_EPOCH,
+      capacityContractRevision: EMBEDDING_CAPACITY_CONTRACT_REVISION,
       state: "usable",
       calibrationMode: mode,
       modelKey: config.env.embeddingVersion,
@@ -308,7 +308,7 @@ export const createEmbeddingCapacityService = (config: {
               poolKey: config.env.embeddingPoolKey,
               profileKey: key,
               profileVersion: PROFILE_VERSION,
-              processingEpoch: EMBEDDING_CAPACITY_PROCESSING_EPOCH,
+              capacityContractRevision: EMBEDDING_CAPACITY_CONTRACT_REVISION,
               state: "failed",
               calibrationMode: mode,
               modelKey: config.env.embeddingVersion,

@@ -5,7 +5,7 @@ import {
 } from "@koed/core";
 import {
   CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
-  EMBEDDING_CAPACITY_PROCESSING_EPOCH,
+  EMBEDDING_CAPACITY_CONTRACT_REVISION,
   createDbPool,
   getLatestMigrationTimestamp,
   inspectDatabaseReadiness,
@@ -367,7 +367,7 @@ const collectEmbeddingCapacityStatus = async (
       repository.listActiveUsableProfiles({
         modelKey: expected.key,
         embeddingDimensions: expected.dimensions,
-        processingEpoch: EMBEDDING_CAPACITY_PROCESSING_EPOCH
+        capacityContractRevision: EMBEDDING_CAPACITY_CONTRACT_REVISION
       }),
       repository.getSemanticBacklog({
         model: expected.key,
@@ -420,7 +420,7 @@ const collectEmbeddingCapacityStatus = async (
       details: {
         profile: {
           version: profile.profileVersion,
-          processingEpoch: profile.processingEpoch,
+          capacityContractRevision: profile.capacityContractRevision,
           poolCount: profiles.length,
           mode: profile.calibrationMode,
           model: profile.modelKey,
@@ -1297,7 +1297,7 @@ export const registerOperationalRoutes = (
         embeddingCapacityRepository.listActiveUsableProfiles({
           modelKey: expected.key,
           embeddingDimensions: expected.dimensions,
-          processingEpoch: EMBEDDING_CAPACITY_PROCESSING_EPOCH
+          capacityContractRevision: EMBEDDING_CAPACITY_CONTRACT_REVISION
         }),
         embeddingCapacityRepository.getSemanticBacklog({
           model: expected.key,
