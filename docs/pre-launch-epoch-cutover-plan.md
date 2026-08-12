@@ -1,6 +1,6 @@
 # Pre-launch Epoch Cutover and Validation Plan
 
-Status: implementation plan for [ADR 0025](adr/0025-pre-launch-schema-reset-and-processing-epochs.md). This document specifies work; it does not perform reset, migration, rename, or rebuild.
+Status: implementation plan for [ADR 0026](adr/0026-pre-launch-schema-reset-and-processing-epochs.md). This document specifies work; it does not perform reset, migration, rename, or rebuild.
 
 ## Cutover gates
 
@@ -38,6 +38,7 @@ Activation evidence records release commit, migration revision, generation-set r
 - PDS governance state: Personal Device Group/User subjects, members, signed statements, Key Bundles, membership certificates, Personal Sync Policy, Remote Account Links, freeze/quarantine state, audit, and high-water state. Preserve fixed V1 Authority/Relay operational-host topology. Frozen `koed/pds/v1` source manifests/package bytes remain unchanged; the full current Drizzle journal is applied separately.
 - Immutable signed `koed/pds-artifact/v1` records: encrypted envelopes, manifests, artifact class/schema, source bindings, ordered content/payload hashes, compatibility contracts/hashes, and semantic-work claim provenance. Preserve transport bytes without rewriting them; artifact import/materialization remains derived and reusable only after exact contract validation.
 - Settled high-risk approval and source-download authorization audit records where retention requires them. Pending Action Grants, browser confirmations, and source-download authorizations are not preserved as live authority: revoke or allow them to expire, then require a fresh exact action with current authorization, credential, lifecycle, and operation binding.
+- Final `mcp_memory_answer` Memory Questions and their encrypted companions according to retention policy. These are completed Local AI Runtime results, not a resumable processing queue.
 
 ### Invalidate and rebuild
 
@@ -49,13 +50,14 @@ Activation evidence records release commit, migration revision, generation-set r
 ### Discard or regenerate
 
 - Redis queue state, temporary files, smoke data, fixture databases, stale capability caches, and benchmark output;
+- retired Explorer-origin Memory Questions, pending Memory Questions, processing leases, worker claims, and local worker configuration; migration `0026_amused_zeigeist` purges or removes this unsupported state rather than restoring it;
 - disposable alpha databases in full, after required backup and confirmation.
 
 ## Required ordering
 
 1. Pause release deployment and ensure no incompatible mixed binary is publishing derived rows.
 2. Install binaries and both retained old/new processing assets without activating candidate processing.
-3. Apply the complete current database revision through migration `0024_misty_prodigy`; seed clean release-V1 payload baselines and generation-aware registry support; invalidate capability caches for current alpha schemas `2`-`6`.
+3. Apply the complete current database revision through migration `0026_amused_zeigeist`; seed clean release-V1 payload baselines and generation-aware registry support; invalidate capability caches for current alpha schemas `2`-`6`. Preserve the Shared Memory artifact-policy proposal semantics introduced by `0025_unique_marvel_apes`, and do not recreate the retired Explorer or pending Memory Question state removed by `0026_amused_zeigeist`.
 4. Import preserved canonical records or create a clean database. Preserve frozen PDS source and artifact transport bytes unchanged; after source materialization, verify artifact signatures, source bindings, schema/class, and compatibility contract/hash before any local artifact import.
 5. Reconcile encryption, lifecycle, authorization, versioned collaboration audience/receipt state, Team Presence state, Local-Edge Client Credential and upstream device credential bindings, sync high-water state, accepted Curated Memory evidence manifests, and retained PDS artifact disposition before any derived publish. Revoke or expire pending Action Grants, browser confirmations, and source-download authorizations rather than carrying them through as live authority. If event-only or node-only evidence lacks a provable stable canonical anchor/rebuild mapping, abort `preserve_canonical`; do not invalidate its source or mark its assertion suppressed.
 6. Seed active generation manifests and create candidate generation manifests with one generation-set control row, monotonic transition revision, and bounded per-family `{ current, servable[] }` manifests. Install and route no more than the exact old/new processing and asset versions.
@@ -64,11 +66,12 @@ Activation evidence records release commit, migration revision, generation-set r
    - candidate Memory Event embeddings from candidate Projection output;
    - generation-aware source links, invalidation, and read isolation;
    - deterministic old-to-candidate derived-ID mapping from stable source lineage for Curated Memory evidence.
-8. Run LCM-cohort rebuild:
+8. Run LCM-cohort rebuild through the single `koed-server`-supervised Local AI Runtime for AI-client-backed summary work:
    - candidate LCM leaf placeholders and summaries from candidate Projection output;
    - bottom-up rollups only from compatible completed children;
    - durable `summary_ready -> node_embedding_pending` outbox/reconciler;
-   - candidate Memory Node embeddings only from compatible completed LCM Summary text; placeholders remain internal pending-build state.
+   - candidate Memory Node embeddings only from compatible completed LCM Summary text; placeholders remain internal pending-build state;
+   - short-lived MCP adapters and Desktop/API processes do not own persistent synthesis queues; the Worker retains downstream Memory Event and Memory Node embedding ownership.
 9. Open a database-level derived-write fence, record the canonical high-water, and continue canonical capture.
 10. Catch active and candidate work up to the fence high-water. Rebind Curated Memory evidence to exact candidate Memory Event and Memory Node IDs while retaining old evidence links until replacement validation commits.
 11. Validate Source cohort coverage and every applicable Curated Memory evidence remap through the fence high-water. Publish Source cohort by compare-and-set revision only if query policy and status can safely expose LCM as unavailable and pending without combining new Source evidence with old LCM evidence; otherwise continue to full monolithic publish.
@@ -118,7 +121,7 @@ Canonical capture remains open throughout supported generation transitions. Deri
 ### Local personal / Desktop alpha
 
 - default to safe abort until the Operator confirms the exact database/home classification;
-- for disposable alpha, reprovision local API Token verifier state and atomically replace managed local/Explorer credentials after reset;
+- for disposable alpha, reprovision the Local AI Runtime's API Token verifier state and atomically update Koed-owned local runtime configuration after reset;
 - for approved preservation, validate canonical counts/hashes and rebuild locally in the required order;
 - status exposes generation state, lag, retry, and rollback preflight only; rich transition controls stay out of launch scope.
 

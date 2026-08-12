@@ -1,4 +1,4 @@
-# ADR 0025: Pre-launch schema reset and processing epochs
+# ADR 0026: Pre-launch schema reset and processing epochs
 
 Status: Proposed.
 
@@ -14,6 +14,7 @@ Related decisions:
 - [0023 Collaboration Receipts Use Versioned Audiences](0023-collaboration-receipts-use-versioned-audiences.md)
 - [0023 Team Member Presence](0023-team-member-presence.md)
 - [0024 Tiered Desktop Action Approval](0024-tiered-desktop-action-approval.md)
+- [0025 MCP v2 and Local AI Runtime Ownership](0025-mcp-v2-local-ai-runtime-ownership.md)
 
 Supporting plans:
 
@@ -84,6 +85,8 @@ Normative rules:
 - Authorization, Share Grants, Team Membership, Workspace Access, lifecycle state, deletion floors, replica readiness, sync lineage, and accepted Curated Memory decisions/provenance remain authoritative canonical state and must propagate across every retained generation.
 - Curated Memory evidence pointers to derived Memory Events or Memory Nodes must be rebound to exact candidate-generation replacements through stable source lineage before publication. Missing or ambiguous remapping blocks preservation/activation; it must not suppress an accepted assertion or simulate source deletion.
 - Rollback is not an unconditional pointer flip. It requires coverage, lifecycle, asset, and catch-up preflight against the current canonical high-water.
+- The single `koed-server`-supervised Local AI Runtime owns persistent AI-client-backed work, including candidate LCM Summary processing. Short-lived MCP adapters and Desktop/API processes do not own persistent synthesis queues. The Worker continues to own downstream Memory Event and Memory Node embedding work.
+- Persisted Memory Questions are final `mcp_memory_answer` results created after Local AI Runtime processing. They are not pending jobs, leases, or worker claims, and a processing transition must not recreate the retired Explorer queue.
 
 ### Separate database, payload, processing, and cryptographic namespaces
 
