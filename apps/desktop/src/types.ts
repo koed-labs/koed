@@ -2,6 +2,7 @@ import type {
   CollaborationCommandResult,
   CollaborationRendererCommand,
   CollaborationRendererEvent,
+  DesktopUpdateState,
   PersonalDesktopApi
 } from "@koed/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
@@ -90,6 +91,15 @@ export interface DesktopSetupApi {
   subscribe: (listener: (snapshot: DesktopSetupSnapshot) => void) => () => void;
 }
 
+export interface DesktopUpdateApi {
+  getState: () => Promise<DesktopUpdateState>;
+  check: () => Promise<DesktopUpdateState>;
+  download: () => Promise<DesktopUpdateState>;
+  install: () => Promise<DesktopUpdateState>;
+  subscribe: (listener: (state: DesktopUpdateState) => void) => () => void;
+  getVersion: () => Promise<string>;
+}
+
 export interface DesktopApi {
   invoke: <T = unknown>(
     command: string,
@@ -114,6 +124,7 @@ export interface DesktopApi {
     ) => Promise<{ preference: DesktopThemePreference; resolvedDark: boolean }>;
   };
   setup?: DesktopSetupApi;
+  update?: DesktopUpdateApi;
   collaboration?: {
     command: (
       command: CollaborationRendererCommand

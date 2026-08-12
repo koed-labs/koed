@@ -477,4 +477,52 @@ describe("Desktop collaboration broker transport", () => {
     );
     expect(events).toEqual([]);
   });
+
+  it("does not spawn or respawn a broker after lifecycle shutdown", async () => {
+    const lifecycle = new AbortController();
+    const spawnBroker = vi.fn(() => new FakeBrokerChild());
+    const transport = createCollaborationLocalTransport({
+      lifecycle: {
+        signal: lifecycle.signal,
+        isActive: () => !lifecycle.signal.aborted
+      },
+      openExternal: vi.fn(async () => undefined),
+      spawnBroker: spawnBroker as never
+    });
+
+    lifecycle.abort();
+    await expect(transport.request(command, context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: "temporarily_unavailable" }
+    });
+    await expect(transport.request(command, context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: "temporarily_unavailable" }
+    });
+    expect(spawnBroker).not.toHaveBeenCalled();
+    await expect(transport.stop()).resolves.toBeUndefined();
+  });
+
+  it("aborts broker handshake and settles the request when stop wins the spawn race", async () => {
+    const lifecycle = new AbortController();
+    const child = new FakeBrokerChild();
+    const transport = createCollaborationLocalTransport({
+      lifecycle: {
+        signal: lifecycle.signal,
+        isActive: () => !lifecycle.signal.aborted
+      },
+      openExternal: vi.fn(async () => undefined),
+      spawnBroker: vi.fn(() => child as never) as never
+    });
+
+    const pending = transport.request(command, context());
+    await waitFor(() => child.sent.length === 0 && !child.killed);
+    lifecycle.abort();
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: "temporarily_unavailable" }
+    });
+    await expect(transport.stop()).resolves.toBeUndefined();
+    expect(child.killed).toBe(true);
+  });
 });

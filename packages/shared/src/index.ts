@@ -162,6 +162,20 @@ export {
   personalDesktopSessionProjectInputSchema,
   personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
+
+export {
+  desktopUpdateChannelSchema,
+  desktopUpdateCommandSchema,
+  desktopUpdateReleaseSchema,
+  desktopUpdateStateSchema,
+  desktopUpdateVersionSchema
+} from "./desktop-update-contract.js";
+export type {
+  DesktopUpdateChannel,
+  DesktopUpdateCommand,
+  DesktopUpdateRelease,
+  DesktopUpdateState
+} from "./desktop-update-contract.js";
 export type {
   ApprovalDecisionDisplay,
   ApprovalReviewTranscriptDisplay,
@@ -330,6 +344,7 @@ export {
   fetchWithTimeout,
   fetchBoundedJsonObject,
   readBoundedJsonObject,
+  cancelReadable,
   RemoteRequestTimeoutError,
   RemoteResponseLimitError,
   upstreamApiUrl

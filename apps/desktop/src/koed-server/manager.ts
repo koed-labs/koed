@@ -4,6 +4,7 @@ import {
   approvalReviewTranscriptDisplayFromText,
   approvalReviewTranscriptDisplaySchema,
   collaborationRendererCommandSchema,
+  cancelReadable,
   fetchBoundedJsonObject,
   isApprovalReviewTranscriptEnvelopeText,
   isLoopbackHostname,
@@ -116,6 +117,7 @@ export interface KoedServerManagerOptions {
       cwd: string;
       env: NodeJS.ProcessEnv;
       timeout: number;
+      signal?: AbortSignal;
     },
     callback: (error: Error | null, stdout: string, stderr: string) => void
   ) => void;
@@ -1040,9 +1042,47 @@ export const createKoedServerManager = ({
   let personalDevicePairingServerStart: Promise<PersonalDevicePairingServer> | null =
     null;
   let personalDevicePairingServerError: string | null = null;
+  let stopRequested = false;
+  let lifecycleGeneration = 0;
+  const lifecycleAbortController = new AbortController();
+  const lifecycleControllers = new Set<AbortController>();
+  const lifecycleOperations = new Set<Promise<unknown>>();
+  const lifecycleFailures: unknown[] = [];
+  let resumeInFlight: Promise<unknown> | null = null;
+  let resumeAbortController: AbortController | null = null;
+  let stopDaemonInFlight: Promise<unknown> | null = null;
+  let stopDaemonGeneration = -1;
+  let daemonStartGeneration = 0;
+  let stopInFlight: Promise<unknown> | null = null;
+  let pairingServerCloseInFlight: Promise<void> | null = null;
   void environment;
 
-  const runJson = (args: string[], timeout = 30_000) =>
+  const stoppedResult = () => ({
+    ok: false,
+    state: "stopped",
+    message: "Koed local services are stopping."
+  });
+
+  const lifecycleIsCurrent = (generation: number): boolean =>
+    !stopRequested && lifecycleGeneration === generation;
+
+  const beginLifecycleOperation = () => {
+    if (stopRequested) return null;
+    const controller = new AbortController();
+    const generation = lifecycleGeneration;
+    lifecycleControllers.add(controller);
+    return {
+      generation,
+      signal: controller.signal,
+      release: () => lifecycleControllers.delete(controller)
+    };
+  };
+
+  const assertLifecycleCurrent = (generation: number): void => {
+    if (!lifecycleIsCurrent(generation)) throw new ResumeStoppedError();
+  };
+
+  const runJson = (args: string[], timeout = 30_000, signal?: AbortSignal) =>
     new Promise<unknown>((resolvePromise) => {
       if (!existsSync(cliPath)) {
         resolvePromise(missingCliPayload());
@@ -1056,7 +1096,8 @@ export const createKoedServerManager = ({
         {
           cwd: repoRoot,
           env: invocation.env,
-          timeout
+          timeout,
+          ...(signal ? { signal } : {})
         },
         (_error, stdout) => {
           try {
@@ -1082,6 +1123,10 @@ export const createKoedServerManager = ({
   const createCollaborationTransport = () =>
     createCollaborationLocalTransport({
       openExternal,
+      lifecycle: {
+        signal: lifecycleAbortController.signal,
+        isActive: () => !stopRequested
+      },
       spawnBroker: (sessionToken) => {
         const invocation = createCliInvocation([
           "desktop",
@@ -1112,7 +1157,10 @@ export const createKoedServerManager = ({
       60_000
     );
 
-  const runRuntimeInstallJson = async (args?: Record<string, unknown>) => {
+  const runRuntimeInstallJson = async (
+    args?: Record<string, unknown>,
+    signal?: AbortSignal
+  ) => {
     const provider = selectedRuntimeInstallProvider();
     if (provider === "homebrew" && args?.operatorConsented !== true) {
       return {
@@ -1134,19 +1182,23 @@ export const createKoedServerManager = ({
         "--dependency-mode",
         "bundled-local"
       ],
-      600_000
+      600_000,
+      signal
     );
   };
 
   const runModelJson = () =>
     runJson(["models", "status", "--kind", "embedding"], 60_000);
 
-  const runModelInstallJson = () =>
-    runJson(["models", "install", "--kind", "embedding"], 600_000);
+  const runModelInstallJson = (signal?: AbortSignal) =>
+    runJson(["models", "install", "--kind", "embedding"], 600_000, signal);
 
   const runPackageStatusJson = () => runJson(["package", "status"], 60_000);
 
-  const runPackageInstallJson = async (args?: Record<string, unknown>) => {
+  const runPackageInstallJson = async (
+    args?: Record<string, unknown>,
+    signal?: AbortSignal
+  ) => {
     const plan = resolveServerPackageInstallPlan(environment);
     if (!plan.available) {
       return {
@@ -1186,7 +1238,8 @@ export const createKoedServerManager = ({
         ...(plan.trustPolicy ? ["--trust-policy", plan.trustPolicy] : []),
         "--activate"
       ],
-      600_000
+      600_000,
+      signal
     );
   };
 
@@ -1213,21 +1266,29 @@ export const createKoedServerManager = ({
 
   const scheduleEnrollmentReconciliation = (current: unknown): void => {
     const backendIds = pendingEnrollmentBackendIds(current);
-    if (backendIds.length === 0 || enrollmentReconciliation) {
+    if (backendIds.length === 0 || enrollmentReconciliation || stopRequested) {
       return;
     }
+    const lifecycle = beginLifecycleOperation();
+    if (!lifecycle) return;
     const reconciliation = (async () => {
       for (const backendId of backendIds) {
+        assertLifecycleCurrent(lifecycle.generation);
         await runJson(
           ["upstream", "enroll", "status", "--id", backendId],
-          15_000
+          15_000,
+          lifecycle.signal
         );
+        assertLifecycleCurrent(lifecycle.generation);
       }
     })();
     enrollmentReconciliation = reconciliation;
+    lifecycleOperations.add(reconciliation);
     void reconciliation
       .catch(() => undefined)
       .finally(() => {
+        lifecycleOperations.delete(reconciliation);
+        lifecycle.release();
         if (enrollmentReconciliation === reconciliation) {
           enrollmentReconciliation = null;
         }
@@ -1243,13 +1304,142 @@ export const createKoedServerManager = ({
     return withPackageComponent(current, packageStatus);
   };
 
-  const pollUntilReady = async (attemptLimit = 90) => {
+  class ResumeStoppedError extends Error {
+    constructor() {
+      super("Koed server resume was canceled by shutdown.");
+      this.name = "ResumeStoppedError";
+    }
+  }
+
+  const runLifecycleMutation = async <T>(
+    operation: (generation: number, signal: AbortSignal) => Promise<T>,
+    fallback?: T
+  ): Promise<T> => {
+    const lifecycle = beginLifecycleOperation();
+    if (!lifecycle) return (fallback ?? stoppedResult()) as T;
+    const task = Promise.resolve().then(() =>
+      operation(lifecycle.generation, lifecycle.signal)
+    );
+    lifecycleOperations.add(task);
+    try {
+      const result = await task;
+      assertLifecycleCurrent(lifecycle.generation);
+      return result;
+    } catch (cause) {
+      if (cause instanceof ResumeStoppedError)
+        return (fallback ?? stoppedResult()) as T;
+      lifecycleFailures.push(cause);
+      throw cause;
+    } finally {
+      lifecycleOperations.delete(task);
+      lifecycle.release();
+    }
+  };
+
+  const resumeIsCurrent = (generation: number): boolean =>
+    !stopRequested && lifecycleGeneration === generation;
+
+  const runStrictJson = (args: string[], timeout = 30_000): Promise<unknown> =>
+    new Promise((resolvePromise, rejectPromise) => {
+      if (!existsSync(cliPath)) {
+        rejectPromise(new Error("Koed server CLI is unavailable."));
+        return;
+      }
+      const invocation = createCliInvocation([...args, "--json"]);
+      execFile(
+        invocation.command,
+        invocation.args,
+        { cwd: repoRoot, env: invocation.env, timeout },
+        (error, stdout) => {
+          if (error) {
+            rejectPromise(error);
+            return;
+          }
+          try {
+            const parsed = JSON.parse(stdout) as unknown;
+            if (
+              !parsed ||
+              typeof parsed !== "object" ||
+              (parsed as { ok?: unknown }).ok !== true
+            ) {
+              rejectPromise(new Error("Koed server stop was not successful."));
+              return;
+            }
+            resolvePromise(parsed);
+          } catch {
+            rejectPromise(new Error("Koed server stop returned invalid JSON."));
+          }
+        }
+      );
+    });
+
+  const stopDaemonOnce = async (): Promise<unknown> => {
+    const generation = daemonStartGeneration;
+    if (stopDaemonInFlight && stopDaemonGeneration === generation) {
+      return stopDaemonInFlight;
+    }
+    const operation = runStrictJson(["stop"], 45_000);
+    stopDaemonInFlight = operation;
+    stopDaemonGeneration = generation;
+    void operation.catch(() => {
+      if (stopDaemonInFlight === operation) {
+        stopDaemonInFlight = null;
+        stopDaemonGeneration = -1;
+      }
+    });
+    return operation;
+  };
+
+  const awaitResumeTask = async <T>(
+    task: Promise<T>,
+    signal: AbortSignal
+  ): Promise<T> => {
+    if (signal.aborted) throw new ResumeStoppedError();
+    return await new Promise<T>((resolvePromise, rejectPromise) => {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        rejectPromise(new ResumeStoppedError());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      void task.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolvePromise(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          rejectPromise(error);
+        }
+      );
+    });
+  };
+
+  const cancelResumeIfNeeded = async (generation: number): Promise<void> => {
+    if (resumeIsCurrent(generation)) return;
+    await stopDaemonOnce();
+    throw new ResumeStoppedError();
+  };
+
+  const pollUntilReady = async (
+    attemptLimit = 90,
+    generation?: number,
+    signal?: AbortSignal
+  ) => {
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
-      latest = await runJson(["status"], statusCommandTimeoutMs);
+      if (generation !== undefined) {
+        await cancelResumeIfNeeded(generation);
+      }
+      latest = await runJson(["status"], statusCommandTimeoutMs, signal);
+      if (generation !== undefined) {
+        await cancelResumeIfNeeded(generation);
+      }
       if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         await provisionLocalAppCredential();
+        if (generation !== undefined) {
+          await cancelResumeIfNeeded(generation);
+        }
         return latest;
       }
       await sleep(1_000);
@@ -1290,15 +1480,23 @@ export const createKoedServerManager = ({
 
   const personalMemoryAccess = async ({
     refreshOrigin = false,
-    refreshToken = false
+    refreshToken = false,
+    signal
   }: {
     refreshOrigin?: boolean;
     refreshToken?: boolean;
+    signal?: AbortSignal;
   } = {}) => {
+    const operationSignal = signal ?? lifecycleAbortController.signal;
+    if (operationSignal.aborted || stopRequested) {
+      throw new ResumeStoppedError();
+    }
     if (refreshOrigin) retainedPersonalApiOrigin = null;
     const current = retainedPersonalApiOrigin
       ? null
-      : await runJson(["status"], statusCommandTimeoutMs);
+      : await runJson(["status"], statusCommandTimeoutMs, operationSignal);
+    if (operationSignal.aborted || stopRequested)
+      throw new ResumeStoppedError();
     const apiOrigin =
       retainedPersonalApiOrigin ??
       (current ? localPersonalMemoryOrigin(current) : null);
@@ -1307,6 +1505,8 @@ export const createKoedServerManager = ({
     }
     retainedPersonalApiOrigin = apiOrigin;
     const credential = await provisionLocalAppCredential(refreshToken);
+    if (operationSignal.aborted || stopRequested)
+      throw new ResumeStoppedError();
     if (!credential.ok) {
       throw new PersonalMemoryBoundaryError("not_ready", true);
     }
@@ -1314,14 +1514,21 @@ export const createKoedServerManager = ({
   };
 
   const personalSyncEnvironment = async (
-    overrides: NodeJS.ProcessEnv = {}
+    overrides: NodeJS.ProcessEnv = {},
+    signal?: AbortSignal
   ): Promise<{
     environment: NodeJS.ProcessEnv;
     desktopAuthorization: string;
   }> => {
+    const operationSignal = signal ?? lifecycleAbortController.signal;
+    if (operationSignal.aborted || stopRequested) {
+      throw new ResumeStoppedError();
+    }
     const current = retainedPersonalApiOrigin
       ? null
-      : await runJson(["status"], statusCommandTimeoutMs);
+      : await runJson(["status"], statusCommandTimeoutMs, operationSignal);
+    if (operationSignal.aborted || stopRequested)
+      throw new ResumeStoppedError();
     const apiOrigin =
       retainedPersonalApiOrigin ??
       (current ? localPersonalMemoryOrigin(current) : null);
@@ -1355,12 +1562,18 @@ export const createKoedServerManager = ({
       desktopAuthorization?: string;
       pairingToken?: string;
       fetch?: typeof globalThis.fetch;
+      signal?: AbortSignal;
     } = {}
   ) => {
+    const operationSignal = options.signal ?? lifecycleAbortController.signal;
+    if (operationSignal.aborted || stopRequested)
+      throw new ResumeStoppedError();
     const defaults =
       options.environment && options.desktopAuthorization === undefined
         ? null
-        : await personalSyncEnvironment(options.environment);
+        : await personalSyncEnvironment(options.environment, operationSignal);
+    if (operationSignal.aborted || stopRequested)
+      throw new ResumeStoppedError();
     const commandEnvironment =
       options.environment ?? defaults?.environment ?? environment;
     return await runPersonalSyncCommand(
@@ -1369,6 +1582,7 @@ export const createKoedServerManager = ({
       commandEnvironment,
       {
         fetch: options.fetch ?? personalMemoryFetch,
+        signal: operationSignal,
         ...((options.desktopAuthorization ?? defaults?.desktopAuthorization)
           ? {
               desktopAuthorization:
@@ -1383,9 +1597,10 @@ export const createKoedServerManager = ({
   };
 
   const reconcilePersonalDeviceLocalGroup = async (
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    signal: AbortSignal = lifecycleAbortController.signal
   ): Promise<string> => {
-    const { apiOrigin } = await personalMemoryAccess();
+    const { apiOrigin } = await personalMemoryAccess({ signal });
     const desktop = readDesktopLocalCredentialAuthorization(
       resolveKoedHome(environment)
     );
@@ -1405,7 +1620,12 @@ export const createKoedServerManager = ({
         },
         body: JSON.stringify(payload)
       },
-      { timeoutMs: 30_000, maxBytes: 1_048_576, readErrorBody: true }
+      {
+        timeoutMs: 30_000,
+        maxBytes: 1_048_576,
+        readErrorBody: true,
+        signal
+      }
     );
     if (
       !response.ok ||
@@ -1421,15 +1641,21 @@ export const createKoedServerManager = ({
     return result.local_user_id;
   };
 
-  const wakePersonalDeviceSyncRuntime = async (): Promise<void> => {
-    const { apiOrigin } = await personalMemoryAccess();
+  const wakePersonalDeviceSyncRuntime = async (
+    signal?: AbortSignal
+  ): Promise<void> => {
+    const operationSignal = signal ?? lifecycleAbortController.signal;
+    const { apiOrigin } = await personalMemoryAccess({
+      signal: operationSignal
+    });
     const desktop = readDesktopLocalCredentialAuthorization(
       resolveKoedHome(environment)
     );
     if (!desktop) {
       throw new Error("Koed Desktop local credential is unavailable.");
     }
-    const response = await personalMemoryFetch(
+    const { response } = await fetchBoundedJsonObject(
+      personalMemoryFetch,
       new URL("/v1/personal-device-sync/local-runtime-wake", apiOrigin),
       {
         method: "POST",
@@ -1437,8 +1663,13 @@ export const createKoedServerManager = ({
         headers: {
           accept: "application/json",
           authorization: desktop.authorization
-        },
-        signal: AbortSignal.timeout(10_000)
+        }
+      },
+      {
+        timeoutMs: 10_000,
+        maxBytes: 1_048_576,
+        readErrorBody: true,
+        signal: operationSignal
       }
     );
     if (!response.ok) {
@@ -1459,68 +1690,115 @@ export const createKoedServerManager = ({
       operation
     );
 
-  const ensurePersonalDevicePairingServer =
-    async (): Promise<PersonalDevicePairingServer> => {
-      if (personalDevicePairingServer) return personalDevicePairingServer;
-      if (personalDevicePairingServerStart)
-        return await personalDevicePairingServerStart;
-      personalDevicePairingServerStart = startPairingServer({
-        port: resolvePersonalDevicePairingPort(environment.KOED_PDS_LAN_PORT),
-        forwardControl: async (input) => {
-          const { apiOrigin } = await personalMemoryAccess();
-          const desktop = readDesktopLocalCredentialAuthorization(
-            resolveKoedHome(environment)
-          );
-          if (!desktop && input.mode === "pairing") {
-            throw new Error("Koed Desktop local credential is unavailable.");
-          }
-          const response = await personalMemoryFetch(
-            new URL(input.path, apiOrigin),
-            {
-              method: input.method,
-              redirect: "error",
-              headers: {
-                accept: "application/json",
-                ...input.headers,
-                ...(input.mode === "pairing"
-                  ? { authorization: desktop!.authorization }
-                  : {})
-              },
-              ...(input.body === undefined ? {} : { body: input.body }),
-              signal: AbortSignal.timeout(
-                input.mode === "relay" &&
-                  input.path === "/v1/personal-device-sync/relay/wake"
-                  ? 31 * 60_000
-                  : 10_000
-              )
-            }
-          );
-          const body = await response.text();
-          if (Buffer.byteLength(body, "utf8") > 1_048_576) {
-            throw new Error("PDS control response exceeds maximum size.");
-          }
-          return {
-            status: response.status,
-            headers: {
-              "content-type":
-                response.headers.get("content-type") ??
-                "application/json; charset=utf-8"
-            },
-            body
-          };
+  const ensurePersonalDevicePairingServer = async (
+    generation = lifecycleGeneration,
+    signal?: AbortSignal
+  ): Promise<PersonalDevicePairingServer> => {
+    assertLifecycleCurrent(generation);
+    if (signal?.aborted) throw new ResumeStoppedError();
+    if (personalDevicePairingServer) return personalDevicePairingServer;
+    if (personalDevicePairingServerStart) {
+      const pending = personalDevicePairingServerStart;
+      const started = await awaitResumeTask(
+        pending,
+        signal ?? new AbortController().signal
+      );
+      assertLifecycleCurrent(generation);
+      return started;
+    }
+    const startGeneration = generation;
+    const startPromise = startPairingServer({
+      port: resolvePersonalDevicePairingPort(environment.KOED_PDS_LAN_PORT),
+      forwardControl: async (input) => {
+        const operationSignal = input.signal ?? lifecycleAbortController.signal;
+        if (operationSignal.aborted || stopRequested) {
+          throw new ResumeStoppedError();
         }
-      });
-      try {
-        personalDevicePairingServer = await personalDevicePairingServerStart;
-        personalDevicePairingServerError = null;
-        return personalDevicePairingServer;
-      } finally {
+        const { apiOrigin } = await personalMemoryAccess({
+          signal: operationSignal
+        });
+        const desktop = readDesktopLocalCredentialAuthorization(
+          resolveKoedHome(environment)
+        );
+        if (!desktop && input.mode === "pairing") {
+          throw new Error("Koed Desktop local credential is unavailable.");
+        }
+        const { response, payload } = await fetchBoundedJsonObject(
+          personalMemoryFetch,
+          new URL(input.path, apiOrigin),
+          {
+            method: input.method,
+            redirect: "error",
+            headers: {
+              accept: "application/json",
+              ...input.headers,
+              ...(input.mode === "pairing"
+                ? { authorization: desktop!.authorization }
+                : {})
+            },
+            ...(input.body === undefined ? {} : { body: input.body })
+          },
+          {
+            timeoutMs:
+              input.mode === "relay" &&
+              input.path === "/v1/personal-device-sync/relay/wake"
+                ? 31 * 60_000
+                : 10_000,
+            maxBytes: 1_048_576,
+            readErrorBody: true,
+            signal: operationSignal
+          }
+        );
+        if (operationSignal.aborted || stopRequested) {
+          throw new ResumeStoppedError();
+        }
+        const body = JSON.stringify(payload);
+        return {
+          status: response.status,
+          headers: {
+            "content-type":
+              response.headers.get("content-type") ??
+              "application/json; charset=utf-8"
+          },
+          body
+        };
+      }
+    });
+    personalDevicePairingServerStart = startPromise;
+    void startPromise.catch(() => {
+      if (personalDevicePairingServerStart === startPromise) {
         personalDevicePairingServerStart = null;
       }
-    };
+    });
+    const started = await awaitResumeTask(
+      startPromise,
+      signal ?? new AbortController().signal
+    );
+    if (!lifecycleIsCurrent(startGeneration)) {
+      await started.close();
+      throw new ResumeStoppedError();
+    }
+    personalDevicePairingServer = started;
+    if (personalDevicePairingServerStart === startPromise) {
+      personalDevicePairingServerStart = null;
+    }
+    personalDevicePairingServerError = null;
+    return personalDevicePairingServer;
+  };
 
-  const personalSyncStatusWithLanRelay = async () => {
-    const status = await runPersonalSync(["status"]);
+  const personalSyncStatusWithLanRelay = async (
+    generation = lifecycleGeneration,
+    signal?: AbortSignal
+  ) => {
+    assertLifecycleCurrent(generation);
+    let status: Awaited<ReturnType<typeof runPersonalSync>>;
+    try {
+      status = await runPersonalSync(["status"], { signal });
+    } catch (cause) {
+      if (signal?.aborted) throw new ResumeStoppedError();
+      throw cause;
+    }
+    assertLifecycleCurrent(generation);
     const groups = Array.isArray(status.groups) ? status.groups : [];
     const invitationGroupIds = Array.isArray(
       status.pairing_invitation_group_ids
@@ -1534,10 +1812,11 @@ export const createKoedServerManager = ({
       return status;
     }
     try {
-      await ensurePersonalDevicePairingServer();
+      await ensurePersonalDevicePairingServer(generation, signal);
       personalDevicePairingServerError = null;
       return status;
-    } catch {
+    } catch (cause) {
+      if (cause instanceof ResumeStoppedError) throw cause;
       personalDevicePairingServerError =
         "Same-network Personal Device relay could not be started.";
       return {
@@ -1554,14 +1833,17 @@ export const createKoedServerManager = ({
     invitationId: string,
     token: string,
     payload: Record<string, unknown>,
-    timeoutMs = 10_000
+    timeoutMs = 10_000,
+    signal: AbortSignal = lifecycleAbortController.signal
   ): Promise<Record<string, unknown>> => {
+    if (signal.aborted || stopRequested) throw new ResumeStoppedError();
     const encrypted = encryptPersonalDevicePairingMessage(payload, {
       invitationId,
       token,
       direction: "request"
     });
-    const response = await personalMemoryFetch(
+    const { response, payload: responseBody } = await fetchBoundedJsonObject(
+      personalMemoryFetch,
       new URL(`/v1/pair/${invitationId}/exchange`, invitationUrl.origin),
       {
         method: "POST",
@@ -1570,11 +1852,16 @@ export const createKoedServerManager = ({
           "content-type": "application/json"
         },
         body: JSON.stringify(encrypted),
-        redirect: "error",
-        signal: AbortSignal.timeout(timeoutMs)
+        redirect: "error"
+      },
+      {
+        timeoutMs,
+        maxBytes: 1_048_576,
+        readErrorBody: true,
+        signal
       }
     );
-    const responseBody = await response.json();
+    if (signal.aborted || stopRequested) throw new ResumeStoppedError();
     if (!response.ok) {
       throw new Error(
         responseBody &&
@@ -1600,7 +1887,8 @@ export const createKoedServerManager = ({
     invitationUrl: URL,
     invitationId: string,
     token: string,
-    controlUrl: URL
+    controlUrl: URL,
+    signal: AbortSignal = lifecycleAbortController.signal
   ): typeof globalThis.fetch =>
     (async (input: URL | RequestInfo, init?: RequestInit) => {
       const requestedUrl = new URL(
@@ -1631,18 +1919,25 @@ export const createKoedServerManager = ({
                 throw new Error("Pairing control body is invalid.");
               })();
       const headers = new Headers(init?.headers);
-      const result = await pairingExchange(invitationUrl, invitationId, token, {
-        operation: "control",
-        method,
-        path: requestedUrl.toString().slice(controlPrefix.length),
-        headers: Object.fromEntries(
-          ["accept", "content-type"].flatMap((name) => {
-            const value = headers.get(name);
-            return value ? [[name, value]] : [];
-          })
-        ),
-        ...(rawBody === undefined ? {} : { body: rawBody })
-      });
+      const result = await pairingExchange(
+        invitationUrl,
+        invitationId,
+        token,
+        {
+          operation: "control",
+          method,
+          path: requestedUrl.toString().slice(controlPrefix.length),
+          headers: Object.fromEntries(
+            ["accept", "content-type"].flatMap((name) => {
+              const value = headers.get(name);
+              return value ? [[name, value]] : [];
+            })
+          ),
+          ...(rawBody === undefined ? {} : { body: rawBody })
+        },
+        10_000,
+        signal
+      );
       if (
         typeof result.status !== "number" ||
         typeof result.body !== "string"
@@ -1664,7 +1959,8 @@ export const createKoedServerManager = ({
     value: unknown,
     deviceLabel: unknown,
     requestId: string,
-    onProgress: (progress: PersonalDevicePairingProgress) => void
+    onProgress: (progress: PersonalDevicePairingProgress) => void,
+    signal: AbortSignal = lifecycleAbortController.signal
   ) => {
     const { invitationUrl, token, invitationId } =
       parsePersonalDevicePairingLink(value);
@@ -1672,7 +1968,9 @@ export const createKoedServerManager = ({
       invitationUrl,
       invitationId,
       token,
-      { operation: "invitation" }
+      { operation: "invitation" },
+      10_000,
+      signal
     );
     if (
       !invitationPayload ||
@@ -1723,11 +2021,13 @@ export const createKoedServerManager = ({
                 environment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime"
             },
             pairingToken: token,
+            signal,
             fetch: pairingControlFetch(
               invitationUrl,
               invitationId,
               token,
-              controlUrl
+              controlUrl,
+              signal
             )
           }
         )
@@ -1765,7 +2065,8 @@ export const createKoedServerManager = ({
             ? deviceLabel.trim().slice(0, 80)
             : "New device"
       },
-      10 * 60 * 1_000
+      10 * 60 * 1_000,
+      signal
     );
     if (submitted.approved !== true) {
       throw new Error("Pairing approval was not completed.");
@@ -1787,11 +2088,13 @@ export const createKoedServerManager = ({
             environment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime"
         },
         pairingToken: token,
+        signal,
         fetch: pairingControlFetch(
           invitationUrl,
           invitationId,
           token,
-          controlUrl
+          controlUrl,
+          signal
         )
       }
     );
@@ -1806,24 +2109,30 @@ export const createKoedServerManager = ({
       );
     }
     const localUserId = await reconcilePersonalDeviceLocalGroup(
-      localGroupReconciliation as Record<string, unknown>
+      localGroupReconciliation as Record<string, unknown>,
+      signal
     );
-    await runPersonalSync([
-      "join",
-      "bind-local-user",
-      "--group-id",
-      typedInvitation.group_id,
-      "--user-id",
-      localUserId,
-      "--challenge-id",
-      typedInvitation.challenge_id
-    ]);
-    await wakePersonalDeviceSyncRuntime();
+    await runPersonalSync(
+      [
+        "join",
+        "bind-local-user",
+        "--group-id",
+        typedInvitation.group_id,
+        "--user-id",
+        localUserId,
+        "--challenge-id",
+        typedInvitation.challenge_id
+      ],
+      { signal }
+    );
+    await wakePersonalDeviceSyncRuntime(signal);
     const completion = await pairingExchange(
       invitationUrl,
       invitationId,
       token,
-      { operation: "complete" }
+      { operation: "complete" },
+      10_000,
+      signal
     );
     if (completion.completed !== true) {
       throw new Error("Pairing invitation was not closed after enrollment.");
@@ -1838,13 +2147,21 @@ export const createKoedServerManager = ({
       url: URL;
       init: RequestInit;
     },
-    maximumResponseBytes: number
+    maximumResponseBytes: number,
+    lifecycle?: { generation?: number; signal?: AbortSignal }
   ): Promise<Record<string, unknown>> => {
     const perform = async (options?: {
       refreshOrigin?: boolean;
       refreshToken?: boolean;
     }) => {
-      const access = await personalMemoryAccess(options);
+      const signal = lifecycle?.signal ?? lifecycleAbortController.signal;
+      if (lifecycle?.generation !== undefined) {
+        assertLifecycleCurrent(lifecycle.generation);
+      }
+      const access = await personalMemoryAccess({ ...options, signal });
+      if (lifecycle?.generation !== undefined) {
+        assertLifecycleCurrent(lifecycle.generation);
+      }
       const exactRequest = request(access);
       try {
         return await fetchBoundedJsonObject(
@@ -1859,7 +2176,11 @@ export const createKoedServerManager = ({
               ...exactRequest.init.headers
             }
           },
-          { timeoutMs: 30_000, maxBytes: maximumResponseBytes }
+          {
+            timeoutMs: 30_000,
+            maxBytes: maximumResponseBytes,
+            signal
+          }
         );
       } catch {
         if (!options?.refreshOrigin) {
@@ -1870,15 +2191,21 @@ export const createKoedServerManager = ({
     };
 
     let remote = await perform();
+    if (lifecycle?.generation !== undefined) {
+      assertLifecycleCurrent(lifecycle.generation);
+    }
     let response = remote.response;
     if (response.status === 401) {
       retainedPersonalApiToken = null;
       remote = await perform({ refreshOrigin: true, refreshToken: true });
+      if (lifecycle?.generation !== undefined) {
+        assertLifecycleCurrent(lifecycle.generation);
+      }
       response = remote.response;
     }
     if (!response.ok) {
       const status = response.status;
-      await response.body?.cancel().catch(() => undefined);
+      if (response.body) cancelReadable(response.body);
       throw new PersonalMemoryBoundaryError(
         status === 404
           ? "not_found"
@@ -2010,8 +2337,9 @@ export const createKoedServerManager = ({
     };
   };
 
-  const managedConversation: ManagedConversationDesktopHandler = async (
-    request
+  const managedConversationOperation = async (
+    request: ManagedConversationRequest,
+    lifecycle?: { generation: number; signal: AbortSignal }
   ) => {
     if (request.operation === "start") {
       const payload = await authenticatedPersonalMemoryRequest(
@@ -2026,7 +2354,8 @@ export const createKoedServerManager = ({
             })
           }
         }),
-        1 * 1_024 * 1_024
+        1 * 1_024 * 1_024,
+        lifecycle
       );
       const execution = managedExecutionFrom(payload.execution);
       if (!execution) {
@@ -2100,7 +2429,8 @@ export const createKoedServerManager = ({
           url: new URL("/v1/managed-conversations/target-devices", apiOrigin),
           init: { method: "GET" }
         }),
-        1 * 1_024 * 1_024
+        1 * 1_024 * 1_024,
+        lifecycle
       );
       if (!Array.isArray(payload.devices)) {
         throw new PersonalMemoryBoundaryError("invalid_response", false);
@@ -2122,7 +2452,8 @@ export const createKoedServerManager = ({
           ),
           init: { method: "GET" }
         }),
-        1 * 1_024 * 1_024
+        1 * 1_024 * 1_024,
+        lifecycle
       );
       return parseManagedConversationResult({
         operation: "transfer_status",
@@ -2154,7 +2485,8 @@ export const createKoedServerManager = ({
             })
           }
         }),
-        1 * 1_024 * 1_024
+        1 * 1_024 * 1_024,
+        lifecycle
       );
       return parseManagedConversationResult({
         operation: request.operation,
@@ -2231,7 +2563,8 @@ export const createKoedServerManager = ({
           })
         }
       }),
-      1 * 1_024 * 1_024
+      1 * 1_024 * 1_024,
+      lifecycle
     );
     return parseManagedConversationResult({
       operation: "send",
@@ -2239,6 +2572,18 @@ export const createKoedServerManager = ({
       conversation,
       idempotencyKey: request.idempotencyKey
     });
+  };
+
+  const managedConversation: ManagedConversationDesktopHandler = async (
+    request
+  ) => {
+    const mutating = ["start", "handoff", "fork", "send"].includes(
+      request.operation
+    );
+    if (!mutating) return managedConversationOperation(request);
+    return runLifecycleMutation((generation, signal) =>
+      managedConversationOperation(request, { generation, signal })
+    );
   };
 
   const loadPersonalEventPage = async (
@@ -2323,7 +2668,8 @@ export const createKoedServerManager = ({
     input: Extract<
       PersonalDesktopRequest,
       { operation: "personal.sessions.assign_project" }
-    >["input"]
+    >["input"],
+    lifecycle?: { generation: number; signal: AbortSignal }
   ) => {
     const target =
       input.action === "move"
@@ -2331,6 +2677,7 @@ export const createKoedServerManager = ({
             (project) => project.id === input.targetProjectId
           )
         : null;
+    if (lifecycle) assertLifecycleCurrent(lifecycle.generation);
     if (input.action === "move" && (!target || target.id === "unassigned")) {
       throw new PersonalMemoryBoundaryError("not_found", false);
     }
@@ -2357,8 +2704,10 @@ export const createKoedServerManager = ({
           )
         }
       }),
-      1 * 1_024 * 1_024
+      1 * 1_024 * 1_024,
+      lifecycle
     );
+    if (lifecycle) assertLifecycleCurrent(lifecycle.generation);
     const session = objectValue(payload.session);
     if (!session || !("project" in session)) {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
@@ -2373,7 +2722,10 @@ export const createKoedServerManager = ({
     });
   };
 
-  const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
+  const personalMemoryOperation = async (
+    value: unknown,
+    lifecycle?: { generation: number; signal: AbortSignal }
+  ) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
       const data =
@@ -2381,7 +2733,7 @@ export const createKoedServerManager = ({
           ? await listPersonalProjects()
           : request.operation === "personal.events.load_page"
             ? await loadPersonalEventPage(request.input)
-            : await assignPersonalSessionProject(request.input);
+            : await assignPersonalSessionProject(request.input, lifecycle);
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -2410,69 +2762,165 @@ export const createKoedServerManager = ({
     listener: (change: PersonalDesktopChange) => void,
     signal: AbortSignal
   ): Promise<void> => {
-    while (!signal.aborted) {
-      try {
-        let access = await personalMemoryAccess();
-        const requestStream = (current: typeof access) =>
-          personalMemoryFetch(
-            new URL("/v1/memory/graph/stream", current.apiOrigin),
-            {
-              method: "GET",
-              redirect: "error",
-              signal,
-              headers: {
-                accept: "text/event-stream",
-                authorization: `Bearer ${current.apiToken}`
+    const lifecycle = beginLifecycleOperation();
+    if (!lifecycle) return;
+    const combinedSignal = AbortSignal.any([signal, lifecycle.signal]);
+    const operation = (async () => {
+      while (!combinedSignal.aborted) {
+        let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+        let onReaderAbort: (() => void) | null = null;
+        let stopReconnect = false;
+        try {
+          let access = await personalMemoryAccess({ signal: combinedSignal });
+          const requestStream = async (current: typeof access) => {
+            let rejectAbort: ((reason?: unknown) => void) | null = null;
+            const abort = new Promise<never>((_, reject) => {
+              rejectAbort = reject;
+            });
+            const onAbort = () => {
+              rejectAbort?.(
+                combinedSignal.reason ??
+                  new DOMException("The operation was aborted", "AbortError")
+              );
+            };
+            combinedSignal.addEventListener("abort", onAbort, { once: true });
+            const request = personalMemoryFetch(
+              new URL("/v1/memory/graph/stream", current.apiOrigin),
+              {
+                method: "GET",
+                redirect: "error",
+                signal: combinedSignal,
+                headers: {
+                  accept: "text/event-stream",
+                  authorization: `Bearer ${current.apiToken}`
+                }
               }
+            );
+            void request.catch(() => undefined);
+            try {
+              return await Promise.race([request, abort]);
+            } finally {
+              combinedSignal.removeEventListener("abort", onAbort);
             }
-          );
-        let response = await requestStream(access);
-        if (response.status === 401) {
-          await response.body?.cancel().catch(() => undefined);
-          retainedPersonalApiToken = null;
-          access = await personalMemoryAccess({
-            refreshOrigin: true,
-            refreshToken: true
-          });
-          response = await requestStream(access);
-        }
-        if (!response.ok || !response.body) {
-          await response.body?.cancel().catch(() => undefined);
-          throw new PersonalMemoryBoundaryError("request_failed", true);
-        }
+          };
+          let response = await requestStream(access);
+          if (response.status === 401) {
+            if (response.body) cancelReadable(response.body);
+            retainedPersonalApiToken = null;
+            access = await personalMemoryAccess({
+              refreshOrigin: true,
+              refreshToken: true,
+              signal: combinedSignal
+            });
+            response = await requestStream(access);
+          }
+          if (!response.ok || !response.body) {
+            if (response.body) cancelReadable(response.body);
+            throw new PersonalMemoryBoundaryError("request_failed", true);
+          }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (!signal.aborted) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          if (Buffer.byteLength(buffer, "utf8") > 1_048_576) {
-            await reader.cancel().catch(() => undefined);
-            throw new PersonalMemoryBoundaryError("invalid_response", true);
+          reader = response.body.getReader();
+          onReaderAbort = () => {
+            if (reader) cancelReadable(reader, combinedSignal.reason);
+          };
+          combinedSignal.addEventListener("abort", onReaderAbort, {
+            once: true
+          });
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!combinedSignal.aborted) {
+            let rejectAbort: ((reason?: unknown) => void) | null = null;
+            const abortPromise = new Promise<never>((_, reject) => {
+              rejectAbort = reject;
+            });
+            const read = reader.read();
+            void read.catch(() => undefined);
+            const onReadAbort = () =>
+              rejectAbort?.(
+                combinedSignal.reason ??
+                  new DOMException("The operation was aborted", "AbortError")
+              );
+            combinedSignal.addEventListener("abort", onReadAbort, {
+              once: true
+            });
+            let chunk: ReadableStreamReadResult<Uint8Array>;
+            try {
+              chunk = await Promise.race([read, abortPromise]);
+            } finally {
+              combinedSignal.removeEventListener("abort", onReadAbort);
+            }
+            const { done, value } = chunk;
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            if (Buffer.byteLength(buffer, "utf8") > 1_048_576) {
+              stopReconnect = true;
+              try {
+                cancelReadable(reader);
+              } catch {
+                // Best-effort cancellation; lock release is unconditional.
+              }
+              throw new PersonalMemoryBoundaryError("invalid_response", true);
+            }
+            let boundary = buffer.indexOf("\n\n");
+            while (boundary >= 0) {
+              const frame = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              const change = personalMemoryChangeFromSseFrame(frame);
+              if (change) {
+                try {
+                  listener(change);
+                } catch (error) {
+                  stopReconnect = true;
+                  throw error;
+                }
+              }
+              boundary = buffer.indexOf("\n\n");
+            }
           }
-          let boundary = buffer.indexOf("\n\n");
-          while (boundary >= 0) {
-            const frame = buffer.slice(0, boundary);
-            buffer = buffer.slice(boundary + 2);
-            const change = personalMemoryChangeFromSseFrame(frame);
-            if (change) listener(change);
-            boundary = buffer.indexOf("\n\n");
+        } catch {
+          if (combinedSignal.aborted || stopReconnect) break;
+        } finally {
+          if (onReaderAbort) {
+            combinedSignal.removeEventListener("abort", onReaderAbort);
+          }
+          if (reader) {
+            cancelReadable(reader);
+            try {
+              reader.releaseLock();
+            } catch {
+              // Already released by the underlying stream.
+            }
           }
         }
-      } catch {
-        if (signal.aborted) break;
+        await waitForAbortOrDelay(combinedSignal, 1_500);
       }
-      await waitForAbortOrDelay(signal, 1_500);
+    })();
+    lifecycleOperations.add(operation);
+    try {
+      await operation;
+    } finally {
+      lifecycleOperations.delete(operation);
+      lifecycle.release();
     }
   };
 
-  const requestDaemonStart = async () => {
-    const current = await runJson(["status"], statusCommandTimeoutMs);
+  const requestDaemonStart = async (
+    generation?: number,
+    signal?: AbortSignal
+  ) => {
+    if (generation !== undefined) {
+      assertLifecycleCurrent(generation);
+    }
+    const current = await runJson(["status"], statusCommandTimeoutMs, signal);
+    if (generation !== undefined) {
+      assertLifecycleCurrent(generation);
+    }
     if (hasHealthyApi(current)) {
       retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
       await provisionLocalAppCredential();
+      if (generation !== undefined) {
+        assertLifecycleCurrent(generation);
+      }
       return current;
     }
 
@@ -2487,25 +2935,79 @@ export const createKoedServerManager = ({
       return missingCliPayload();
     }
 
-    const result = await runJson(["start", "--daemon"], 45_000);
+    const result = await runJson(["start", "--daemon"], 45_000, signal);
+    if (
+      typeof result === "object" &&
+      result !== null &&
+      (result as { ok?: unknown }).ok === true
+    ) {
+      daemonStartGeneration += 1;
+    }
+    if (generation !== undefined) {
+      if (!lifecycleIsCurrent(generation)) {
+        await stopDaemonOnce();
+        throw new ResumeStoppedError();
+      }
+    }
     return result;
   };
 
   const start = async () => {
-    const result = await requestDaemonStart();
-    if (
-      typeof result === "object" &&
-      result !== null &&
-      (result as { ok?: unknown }).ok === false
-    ) {
-      return result;
+    return runLifecycleMutation(async (generation, signal) => {
+      const result = await requestDaemonStart(generation, signal);
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        (result as { ok?: unknown }).ok === false
+      ) {
+        return result;
+      }
+      const ready = await pollUntilReady(90, generation, signal);
+      await personalSyncStatusWithLanRelay(generation, signal).catch(
+        (cause) => {
+          if (cause instanceof ResumeStoppedError) throw cause;
+        }
+      );
+      return ready;
+    });
+  };
+
+  const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
+    const request = personalDesktopRequestSchema.parse(value);
+    if (request.operation !== "personal.sessions.assign_project") {
+      return personalMemoryOperation(value);
     }
-    const ready = await pollUntilReady();
-    await personalSyncStatusWithLanRelay().catch(() => undefined);
-    return ready;
+    return runLifecycleMutation(
+      (generation, signal) =>
+        personalMemoryOperation(request, { generation, signal }),
+      personalDesktopResultSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: request.operation,
+        ok: false,
+        error: {
+          code: "not_ready",
+          message: "Koed local services are stopping.",
+          retryable: true
+        }
+      })
+    );
+  };
+
+  const startDaemon = async () => {
+    return runLifecycleMutation((generation, signal) =>
+      requestDaemonStart(generation, signal)
+    );
   };
 
   const resume = async () => {
+    if (stopRequested) {
+      return {
+        ok: false,
+        state: "stopped",
+        message: "Koed local services are stopping."
+      };
+    }
+    const generation = lifecycleGeneration;
     const verificationPath = resolve(
       resolveKoedHome(environment),
       "run",
@@ -2520,18 +3022,55 @@ export const createKoedServerManager = ({
       };
     }
     try {
-      const result = await requestDaemonStart();
-      if (
-        typeof result === "object" &&
-        result !== null &&
-        (result as { ok?: unknown }).ok === false
-      ) {
-        return result;
+      const abortController = new AbortController();
+      resumeAbortController = abortController;
+      const operation = (async () => {
+        const result = await requestDaemonStart(
+          generation,
+          abortController.signal
+        );
+        if (
+          typeof result === "object" &&
+          result !== null &&
+          (result as { ok?: unknown }).ok === false
+        ) {
+          return result;
+        }
+        const ready = await pollUntilReady(
+          30,
+          generation,
+          abortController.signal
+        );
+        try {
+          await personalSyncStatusWithLanRelay(
+            generation,
+            abortController.signal
+          );
+        } catch (error) {
+          if (error instanceof ResumeStoppedError) throw error;
+        }
+        await cancelResumeIfNeeded(generation);
+        return ready;
+      })();
+      resumeInFlight = operation;
+      lifecycleOperations.add(operation);
+      try {
+        return await operation;
+      } finally {
+        lifecycleOperations.delete(operation);
+        if (resumeInFlight === operation) resumeInFlight = null;
+        if (resumeAbortController === abortController) {
+          resumeAbortController = null;
+        }
       }
-      const ready = await pollUntilReady(30);
-      await personalSyncStatusWithLanRelay().catch(() => undefined);
-      return ready;
     } catch (error) {
+      if (error instanceof ResumeStoppedError) {
+        return {
+          ok: false,
+          state: "stopped",
+          message: "Koed local services were stopped before resume completed."
+        };
+      }
       return {
         ok: false,
         state: "needs_attention",
@@ -2545,7 +3084,13 @@ export const createKoedServerManager = ({
 
   const connectTeamBackend = async (
     args?: Record<string, unknown>,
-    options: { openBrowser?: boolean } = { openBrowser: true }
+    options: {
+      openBrowser?: boolean;
+      signal?: AbortSignal;
+      generation?: number;
+    } = {
+      openBrowser: true
+    }
   ) => {
     const parsedUrl = validateTeamBackendUrl(args?.url);
     if (!parsedUrl.ok) {
@@ -2562,8 +3107,12 @@ export const createKoedServerManager = ({
         "--profile",
         "team_self_hosted"
       ],
-      45_000
+      45_000,
+      options.signal
     );
+    if (options.generation !== undefined) {
+      assertLifecycleCurrent(options.generation);
+    }
     if (!resultOk(registerResult)) {
       return registerResult;
     }
@@ -2576,8 +3125,12 @@ export const createKoedServerManager = ({
     }
     const refreshResult = await runJson(
       ["upstream", "refresh", "--id", backendId],
-      45_000
+      45_000,
+      options.signal
     );
+    if (options.generation !== undefined) {
+      assertLifecycleCurrent(options.generation);
+    }
     if (!resultOk(refreshResult)) {
       return refreshResult;
     }
@@ -2596,15 +3149,23 @@ export const createKoedServerManager = ({
         "--admin",
         "enabled"
       ],
-      45_000
+      45_000,
+      options.signal
     );
+    if (options.generation !== undefined) {
+      assertLifecycleCurrent(options.generation);
+    }
     if (!resultOk(policyResult)) {
       return policyResult;
     }
     const enrollResult = await runJson(
       ["upstream", "enroll", "start", "--id", backendId],
-      60_000
+      60_000,
+      options.signal
     );
+    if (options.generation !== undefined) {
+      assertLifecycleCurrent(options.generation);
+    }
     if (!resultOk(enrollResult)) {
       return enrollResult;
     }
@@ -2758,8 +3319,10 @@ export const createKoedServerManager = ({
       completedBytes: number | null;
       message: string;
       totalBytes: number | null;
-    }) => void
+    }) => void,
+    signal?: AbortSignal
   ): Promise<DesktopSetupActionResult> => {
+    if (signal?.aborted || stopRequested) throw new ResumeStoppedError();
     switch (stage) {
       case "package": {
         onProgress({
@@ -2768,7 +3331,7 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          await runPackageInstallJson({ operatorConsented: true }),
+          await runPackageInstallJson({ operatorConsented: true }, signal),
           "Koed package installation failed."
         );
       }
@@ -2779,7 +3342,7 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          await runRuntimeInstallJson({ operatorConsented: true }),
+          await runRuntimeInstallJson({ operatorConsented: true }, signal),
           "Local runtime installation failed."
         );
       }
@@ -2789,7 +3352,14 @@ export const createKoedServerManager = ({
           "embedding",
           environment,
           {
-            fetch: personalMemoryFetch,
+            fetch: async (input, init) =>
+              personalMemoryFetch(input, {
+                ...init,
+                signal: AbortSignal.any([
+                  init?.signal ?? new AbortController().signal,
+                  signal ?? lifecycleAbortController.signal
+                ])
+              }),
             onProgress: (progress) => {
               onProgress({
                 completedBytes: progress.completedBytes,
@@ -2801,7 +3371,8 @@ export const createKoedServerManager = ({
                       : "Embedding model verified.",
                 totalBytes: progress.totalBytes
               });
-            }
+            },
+            signal
           }
         );
         return {
@@ -2829,9 +3400,14 @@ export const createKoedServerManager = ({
           message: "Configuring Codex, MCP, and Capture Hook…",
           totalBytes: null
         });
-        const current = objectValue(await statusWithEnrollmentReconciliation());
+        const current = objectValue(
+          await awaitResumeTask(
+            statusWithEnrollmentReconciliation(),
+            signal ?? lifecycleAbortController.signal
+          )
+        );
         return setupActionResult(
-          await runJson(desktopCodexSetupCommand(current), 120_000),
+          await runJson(desktopCodexSetupCommand(current), 120_000, signal),
           "Codex integration could not be configured."
         );
       }
@@ -2842,7 +3418,7 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          await runJson(["doctor"], 90_000),
+          await runJson(["doctor"], 90_000, signal),
           "Setup verification failed."
         );
       }
@@ -2854,18 +3430,141 @@ export const createKoedServerManager = ({
     runStage: runSetupStage
   });
 
+  const closePersonalDevicePairingServer = async (): Promise<void> => {
+    if (pairingServerCloseInFlight) return pairingServerCloseInFlight;
+    const closeOperation = (async () => {
+      const pendingStart = personalDevicePairingServerStart;
+      if (pendingStart) {
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        try {
+          const timedOut = new Promise<never>((_, reject) => {
+            timeout = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    "Pairing server startup did not settle before shutdown."
+                  )
+                ),
+              5_000
+            );
+            timeout.unref?.();
+          });
+          const started = await Promise.race([pendingStart, timedOut]);
+          if (timeout) clearTimeout(timeout);
+          if (!personalDevicePairingServer) {
+            personalDevicePairingServer = started;
+          }
+        } catch {
+          if (timeout) clearTimeout(timeout);
+          void pendingStart.then(
+            (started) => {
+              if (stopRequested) {
+                void started.close().catch(() => undefined);
+              } else if (!personalDevicePairingServer) {
+                personalDevicePairingServer = started;
+              }
+            },
+            () => undefined
+          );
+        }
+        if (personalDevicePairingServerStart === pendingStart) {
+          personalDevicePairingServerStart = null;
+        }
+      }
+      const server = personalDevicePairingServer;
+      if (!server) return;
+      await server.close();
+      if (personalDevicePairingServer === server) {
+        personalDevicePairingServer = null;
+      }
+    })();
+    pairingServerCloseInFlight = closeOperation;
+    try {
+      await closeOperation;
+    } finally {
+      if (pairingServerCloseInFlight === closeOperation) {
+        pairingServerCloseInFlight = null;
+      }
+    }
+  };
+
   const stop = async () => {
-    await collaborationTransport.stop();
-    if (personalDevicePairingServer) {
-      await personalDevicePairingServer.close();
-      personalDevicePairingServer = null;
-    }
-    const result = await runJson(["stop"], 45_000);
-    if (serverProcess && !serverProcess.killed) {
-      serverProcess.kill("SIGTERM");
-    }
-    serverProcess = null;
-    return result;
+    if (stopInFlight) return stopInFlight;
+    lifecycleFailures.length = 0;
+    stopRequested = true;
+    lifecycleGeneration += 1;
+    lifecycleAbortController.abort();
+    resumeAbortController?.abort();
+    for (const controller of lifecycleControllers) controller.abort();
+    const initiatedDaemonStop = stopDaemonOnce();
+    const operation = (async () => {
+      let firstError: unknown = lifecycleFailures[0];
+      let result: unknown;
+      const runCleanup = async (cleanup: () => Promise<unknown>) => {
+        try {
+          const value = await cleanup();
+          if (result === undefined) result = value;
+        } catch (error) {
+          if (!(error instanceof ResumeStoppedError)) {
+            firstError ??= error;
+          }
+        }
+      };
+      await runCleanup(async () => {
+        if (!resumeInFlight) return;
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        const timedOut = new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () =>
+              reject(new Error("Koed resume did not settle before shutdown.")),
+            5_000
+          );
+          timeout.unref?.();
+        });
+        try {
+          await Promise.race([resumeInFlight, timedOut]);
+        } finally {
+          if (timeout) clearTimeout(timeout);
+        }
+      });
+      const tracked = [...lifecycleOperations];
+      if (tracked.length > 0) {
+        const settled = Promise.allSettled(tracked);
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        const timedOut = new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "Koed lifecycle operations did not settle before shutdown."
+                )
+              ),
+            5_000
+          );
+          timeout.unref?.();
+        });
+        await runCleanup(async () => {
+          await Promise.race([settled, timedOut]);
+          const firstFailure = lifecycleFailures[0];
+          if (firstFailure) throw firstFailure;
+        });
+        if (timeout) clearTimeout(timeout);
+      }
+      await runCleanup(() => collaborationTransport.stop());
+      await runCleanup(() => closePersonalDevicePairingServer());
+      await runCleanup(async () => initiatedDaemonStop);
+      if (serverProcess && !serverProcess.killed) {
+        serverProcess.kill("SIGTERM");
+      }
+      serverProcess = null;
+      if (firstError) throw firstError;
+      return result;
+    })();
+    stopInFlight = operation;
+    void operation.catch(() => {
+      if (stopInFlight === operation) stopInFlight = null;
+    });
+    return operation;
   };
 
   return {
@@ -2877,187 +3576,251 @@ export const createKoedServerManager = ({
       status: statusWithEnrollmentReconciliation,
       doctor: () => runJson(["doctor"], 45_000),
       stop,
-      setup_codex: () => runJson(["setup", "codex"], 120_000),
-      repair_codex: () => runJson(["repair", "codex"], 120_000),
+      setup_codex: () =>
+        runLifecycleMutation((_generation, signal) =>
+          runJson(["setup", "codex"], 120_000, signal)
+        ),
+      repair_codex: () =>
+        runLifecycleMutation((_generation, signal) =>
+          runJson(["repair", "codex"], 120_000, signal)
+        ),
       runtime_status: () => runRuntimeStatusJson(),
-      runtime_install: (args) => runRuntimeInstallJson(args),
+      runtime_install: (args) =>
+        runLifecycleMutation((_generation, signal) =>
+          runRuntimeInstallJson(args, signal)
+        ),
       models_status: () => runModelJson(),
-      models_install: () => runModelInstallJson(),
+      models_install: () =>
+        runLifecycleMutation((_generation, signal) =>
+          runModelInstallJson(signal)
+        ),
       package_status: () => runPackageStatusJson(),
-      package_install: (args) => runPackageInstallJson(args),
+      package_install: (args) =>
+        runLifecycleMutation((_generation, signal) =>
+          runPackageInstallJson(args, signal)
+        ),
       project_list: () => runJson(["project", "list"], 10_000),
       personal_sync_status: async () => {
-        const status = await personalSyncStatusWithLanRelay();
-        return personalDevicePairingServerError
-          ? {
-              ...status,
-              ok: false,
-              state: "needs_attention",
-              error: personalDevicePairingServerError
-            }
-          : status;
+        const operation = beginLifecycleOperation();
+        if (!operation) return stoppedResult();
+        try {
+          const status = await personalSyncStatusWithLanRelay(
+            operation.generation,
+            operation.signal
+          );
+          return personalDevicePairingServerError
+            ? {
+                ...status,
+                ok: false,
+                state: "needs_attention",
+                error: personalDevicePairingServerError
+              }
+            : status;
+        } catch (cause) {
+          if (cause instanceof ResumeStoppedError) return stoppedResult();
+          throw cause;
+        } finally {
+          operation.release();
+        }
       },
       personal_sync_group_bootstrap: async () => {
-        const recoveryKitPath = await selectRecoveryKitPath?.();
-        if (!recoveryKitPath) {
-          return {
-            ok: false,
-            state: "cancelled",
-            error: "Recovery kit location was not selected."
-          };
-        }
-        const recoveryCode = randomBytes(32).toString("base64url");
-        const created = await withProtectedTextFd(
-          resolveKoedServerPaths(environment).runDir,
-          "pds-recovery-code",
-          recoveryCode,
-          (passwordFd) =>
-            runPersonalSync([
-              "group",
-              "bootstrap",
-              "--recovery-kit",
-              recoveryKitPath,
-              "--password-fd",
-              String(passwordFd)
-            ])
-        );
-        if (!created.ok) return created;
-        return {
-          ...created,
-          recoveryCode,
-          recoveryKitPath
-        };
+        return runLifecycleMutation(async (_generation, signal) => {
+          const recoveryKitPath = await selectRecoveryKitPath?.();
+          if (!recoveryKitPath) {
+            return {
+              ok: false,
+              state: "cancelled",
+              error: "Recovery kit location was not selected."
+            };
+          }
+          const recoveryCode = randomBytes(32).toString("base64url");
+          const created = await withProtectedTextFd(
+            resolveKoedServerPaths(environment).runDir,
+            "pds-recovery-code",
+            recoveryCode,
+            (passwordFd) =>
+              runPersonalSync(
+                [
+                  "group",
+                  "bootstrap",
+                  "--recovery-kit",
+                  recoveryKitPath,
+                  "--password-fd",
+                  String(passwordFd)
+                ],
+                { signal }
+              )
+          );
+          if (!created.ok) return created;
+          return { ...created, recoveryCode, recoveryKitPath };
+        });
       },
       personal_sync_group_activate: async () => {
-        await wakePersonalDeviceSyncRuntime();
-        return { ok: true, state: "active" };
+        return runLifecycleMutation(async (_generation, signal) => {
+          await wakePersonalDeviceSyncRuntime(signal);
+          return { ok: true, state: "active" };
+        });
       },
       personal_sync_pause: (args) =>
-        runJson(
-          [
-            "personal-sync",
-            "policy",
-            "pause",
-            "--group-id",
-            String(args?.groupId ?? "")
-          ],
-          20_000
+        runLifecycleMutation((_generation, signal) =>
+          runJson(
+            [
+              "personal-sync",
+              "policy",
+              "pause",
+              "--group-id",
+              String(args?.groupId ?? "")
+            ],
+            20_000,
+            signal
+          )
         ),
       personal_sync_resume: (args) =>
-        runJson(
-          [
-            "personal-sync",
-            "policy",
-            "resume",
-            "--group-id",
-            String(args?.groupId ?? "")
-          ],
-          20_000
+        runLifecycleMutation((_generation, signal) =>
+          runJson(
+            [
+              "personal-sync",
+              "policy",
+              "resume",
+              "--group-id",
+              String(args?.groupId ?? "")
+            ],
+            20_000,
+            signal
+          )
         ),
       personal_sync_retry: (args) =>
-        runJson(
-          ["personal-sync", "retry", "--group-id", String(args?.groupId ?? "")],
-          20_000
+        runLifecycleMutation((_generation, signal) =>
+          runJson(
+            [
+              "personal-sync",
+              "retry",
+              "--group-id",
+              String(args?.groupId ?? "")
+            ],
+            20_000,
+            signal
+          )
         ),
       personal_sync_join_request: (args) =>
-        runJson(
-          [
-            "personal-sync",
-            "join",
-            "request",
-            "--group-id",
-            String(args?.groupId ?? "")
-          ],
-          20_000
+        runLifecycleMutation((_generation, signal) =>
+          runJson(
+            [
+              "personal-sync",
+              "join",
+              "request",
+              "--group-id",
+              String(args?.groupId ?? "")
+            ],
+            20_000,
+            signal
+          )
         ),
       personal_sync_pairing_create: async (args) => {
-        const pairingArgs = optionalExactDesktopArgs(args, "groupId");
-        const requestedGroupId =
-          typeof pairingArgs.groupId === "string"
-            ? pairingArgs.groupId.trim()
-            : "";
-        if (
-          requestedGroupId &&
-          !/^[\x21-\x7e]{1,240}$/.test(requestedGroupId)
-        ) {
-          throw new Error("Personal Device Group is invalid.");
-        }
-        const current = requestedGroupId
-          ? null
-          : await runPersonalSync(["status"]);
-        const groups =
-          current && Array.isArray(current.groups) ? current.groups : [];
-        const groupId =
-          requestedGroupId ||
-          (groups.length === 1 &&
-          groups[0] &&
-          typeof groups[0] === "object" &&
-          !Array.isArray(groups[0]) &&
-          typeof (groups[0] as { group_id?: unknown }).group_id === "string"
-            ? ((groups[0] as { group_id: string }).group_id ?? "")
-            : "");
-        if (!groupId) {
-          return {
-            ok: false,
-            state: "not_configured",
-            error:
-              "Set up Personal Device Sync on this device before pairing another device."
-          };
-        }
-        const status = current ?? (await runPersonalSync(["status"]));
-        const invitationGroupIds = Array.isArray(
-          status.pairing_invitation_group_ids
-        )
-          ? status.pairing_invitation_group_ids.filter(
-              (candidate): candidate is string => typeof candidate === "string"
-            )
-          : [];
-        if (!invitationGroupIds.includes(groupId)) {
-          return {
-            ok: false,
-            state: "authority_host_required",
-            error:
-              "Create the pairing link on the device that originally set up this Personal Device Group."
-          };
-        }
-        const created = await runPersonalSync([
-          "invite",
-          "create",
-          "--group-id",
-          groupId
-        ]);
-        if (
-          !created.invitation ||
-          typeof created.invitation !== "object" ||
-          Array.isArray(created.invitation)
-        ) {
-          throw new Error("Koed could not create a pairing invitation.");
-        }
-        const invitation = created.invitation as Record<string, unknown>;
-        const authority = invitation.authority;
-        if (
-          !authority ||
-          typeof authority !== "object" ||
-          Array.isArray(authority)
-        ) {
-          throw new Error("Koed created an invalid pairing invitation.");
-        }
-        const server = await ensurePersonalDevicePairingServer();
-        const view = server.createInvitation({
-          group_id: String(invitation.group_id ?? ""),
-          challenge_id: String(invitation.challenge_id ?? ""),
-          challenge: String(invitation.challenge ?? ""),
-          expires_at: String(invitation.expires_at ?? ""),
-          browser_subject_id: String(invitation.browser_subject_id ?? ""),
-          browser_deployment_id: String(invitation.browser_deployment_id ?? ""),
-          authority: {
-            key_id: String((authority as Record<string, unknown>).key_id ?? ""),
-            public_key: String(
-              (authority as Record<string, unknown>).public_key ?? ""
-            )
+        const operation = beginLifecycleOperation();
+        if (!operation) return stoppedResult();
+        try {
+          const pairingArgs = optionalExactDesktopArgs(args, "groupId");
+          const requestedGroupId =
+            typeof pairingArgs.groupId === "string"
+              ? pairingArgs.groupId.trim()
+              : "";
+          if (
+            requestedGroupId &&
+            !/^[\x21-\x7e]{1,240}$/.test(requestedGroupId)
+          ) {
+            throw new Error("Personal Device Group is invalid.");
           }
-        });
-        return { ok: true, state: view.state, pairing: view };
+          const current = requestedGroupId
+            ? null
+            : await runPersonalSync(["status"], { signal: operation.signal });
+          const groups =
+            current && Array.isArray(current.groups) ? current.groups : [];
+          const groupId =
+            requestedGroupId ||
+            (groups.length === 1 &&
+            groups[0] &&
+            typeof groups[0] === "object" &&
+            !Array.isArray(groups[0]) &&
+            typeof (groups[0] as { group_id?: unknown }).group_id === "string"
+              ? ((groups[0] as { group_id: string }).group_id ?? "")
+              : "");
+          if (!groupId) {
+            return {
+              ok: false,
+              state: "not_configured",
+              error:
+                "Set up Personal Device Sync on this device before pairing another device."
+            };
+          }
+          const status =
+            current ??
+            (await runPersonalSync(["status"], { signal: operation.signal }));
+          const invitationGroupIds = Array.isArray(
+            status.pairing_invitation_group_ids
+          )
+            ? status.pairing_invitation_group_ids.filter(
+                (candidate): candidate is string =>
+                  typeof candidate === "string"
+              )
+            : [];
+          if (!invitationGroupIds.includes(groupId)) {
+            return {
+              ok: false,
+              state: "authority_host_required",
+              error:
+                "Create the pairing link on the device that originally set up this Personal Device Group."
+            };
+          }
+          const created = await runPersonalSync(
+            ["invite", "create", "--group-id", groupId],
+            { signal: operation.signal }
+          );
+          if (
+            !created.invitation ||
+            typeof created.invitation !== "object" ||
+            Array.isArray(created.invitation)
+          ) {
+            throw new Error("Koed could not create a pairing invitation.");
+          }
+          const invitation = created.invitation as Record<string, unknown>;
+          const authority = invitation.authority;
+          if (
+            !authority ||
+            typeof authority !== "object" ||
+            Array.isArray(authority)
+          ) {
+            throw new Error("Koed created an invalid pairing invitation.");
+          }
+          const server = await ensurePersonalDevicePairingServer(
+            operation.generation,
+            operation.signal
+          );
+          const view = server.createInvitation({
+            group_id: String(invitation.group_id ?? ""),
+            challenge_id: String(invitation.challenge_id ?? ""),
+            challenge: String(invitation.challenge ?? ""),
+            expires_at: String(invitation.expires_at ?? ""),
+            browser_subject_id: String(invitation.browser_subject_id ?? ""),
+            browser_deployment_id: String(
+              invitation.browser_deployment_id ?? ""
+            ),
+            authority: {
+              key_id: String(
+                (authority as Record<string, unknown>).key_id ?? ""
+              ),
+              public_key: String(
+                (authority as Record<string, unknown>).public_key ?? ""
+              )
+            }
+          });
+          return { ok: true, state: view.state, pairing: view };
+        } catch (cause) {
+          if (cause instanceof ResumeStoppedError) return stoppedResult();
+          throw cause;
+        } finally {
+          operation.release();
+        }
       },
       personal_sync_pairing_wait: async (args, context) => {
         const id = pairingIdArg(args);
@@ -3068,39 +3831,46 @@ export const createKoedServerManager = ({
         const pairing = personalDevicePairingServer.inspect(id)[0];
         return { ok: true, state: pairing?.state ?? "cancelled", pairing };
       },
-      personal_sync_pairing_approve: async (args, context) => {
-        const id = pairingIdArg(args);
-        if (!personalDevicePairingServer) {
-          throw new Error("Pairing invitation is unavailable.");
-        }
-        const request = await personalDevicePairingServer.waitForRequest(id);
-        const result = await withPersonalSyncJsonFd(
-          { request },
-          async (fd) =>
-            await runPersonalSync([
-              "active-device",
-              "approve",
-              "--request-fd",
-              String(fd)
-            ])
-        );
-        personalDevicePairingServer.approve(id);
-        await personalDevicePairingServer.waitForCompletion(
-          id,
-          context?.signal
-        );
-        await runPersonalSync(["active-device", "refresh"]);
-        await wakePersonalDeviceSyncRuntime();
-        return {
-          ...result,
-          state: "completed",
-          pairing: personalDevicePairingServer.inspect(id)[0]
-        };
+      personal_sync_pairing_approve: async (args) => {
+        return runLifecycleMutation(async (generation, signal) => {
+          const id = pairingIdArg(args);
+          if (!personalDevicePairingServer) {
+            throw new Error("Pairing invitation is unavailable.");
+          }
+          const request = await personalDevicePairingServer.waitForRequest(
+            id,
+            signal
+          );
+          assertLifecycleCurrent(generation);
+          const result = await withPersonalSyncJsonFd(
+            { request },
+            async (fd) =>
+              await runPersonalSync(
+                ["active-device", "approve", "--request-fd", String(fd)],
+                { signal }
+              )
+          );
+          assertLifecycleCurrent(generation);
+          personalDevicePairingServer.approve(id);
+          await personalDevicePairingServer.waitForCompletion(id, signal);
+          assertLifecycleCurrent(generation);
+          await runPersonalSync(["active-device", "refresh"], { signal });
+          assertLifecycleCurrent(generation);
+          await wakePersonalDeviceSyncRuntime(signal);
+          assertLifecycleCurrent(generation);
+          return {
+            ...result,
+            state: "completed",
+            pairing: personalDevicePairingServer.inspect(id)[0]
+          };
+        });
       },
       personal_sync_pairing_cancel: (args) => {
-        const id = pairingIdArg(args);
-        personalDevicePairingServer?.cancel(id);
-        return { ok: true, state: "cancelled" };
+        return runLifecycleMutation(async () => {
+          const id = pairingIdArg(args);
+          personalDevicePairingServer?.cancel(id);
+          return { ok: true, state: "cancelled" };
+        });
       },
       personal_sync_pairing_redeem: async (args, context) => {
         const pairingArgs = exactDesktopArgs(args, [
@@ -3121,13 +3891,16 @@ export const createKoedServerManager = ({
         ) {
           throw new Error("Pairing request is invalid.");
         }
-        return await redeemPersonalDevicePairing(
-          pairingArgs.url,
-          pairingArgs.deviceLabel,
-          pairingArgs.requestId,
-          (progress) => {
-            context?.emitPersonalDevicePairingProgress?.(progress);
-          }
+        return await runLifecycleMutation((_generation, signal) =>
+          redeemPersonalDevicePairing(
+            pairingArgs.url,
+            pairingArgs.deviceLabel,
+            pairingArgs.requestId as string,
+            (progress) => {
+              context?.emitPersonalDevicePairingProgress?.(progress);
+            },
+            signal
+          )
         );
       },
       personal_sync_recovery_guidance: () =>
@@ -3138,20 +3911,26 @@ export const createKoedServerManager = ({
         if (!deviceId) return { ok: false, error: "deviceId is required." };
         const groupId = typeof args?.groupId === "string" ? args.groupId : "";
         if (!groupId) return { ok: false, error: "groupId is required." };
-        return runJson(
-          [
-            "personal-sync",
-            "device",
-            "revoke",
-            "--group-id",
-            groupId,
-            "--device-id",
-            deviceId
-          ],
-          20_000
+        return runLifecycleMutation((_generation, signal) =>
+          runJson(
+            [
+              "personal-sync",
+              "device",
+              "revoke",
+              "--group-id",
+              groupId,
+              "--device-id",
+              deviceId
+            ],
+            20_000,
+            signal
+          )
         );
       },
-      upstream_connect: (args) => connectTeamBackend(args),
+      upstream_connect: (args) =>
+        runLifecycleMutation((generation, signal) =>
+          connectTeamBackend(args, { openBrowser: true, signal, generation })
+        ),
       collaboration: async (args, context) => {
         const command = collaborationRendererCommandSchema.parse(args);
         if (!context) {
@@ -3160,7 +3939,7 @@ export const createKoedServerManager = ({
         return await collaborationTransport.request(command, context);
       },
       start,
-      start_daemon: requestDaemonStart,
+      start_daemon: startDaemon,
       open_external: async (args) => {
         const url =
           typeof args?.url === "string" ? safeExternalUrl(args.url) : null;
@@ -3183,8 +3962,10 @@ export const createKoedServerManager = ({
         complete: readDesktopOnboardingComplete(onboardingStatePath)
       }),
       onboarding_complete: () => {
-        writeDesktopOnboardingComplete(onboardingStatePath);
-        return { complete: true };
+        return runLifecycleMutation(async () => {
+          writeDesktopOnboardingComplete(onboardingStatePath);
+          return { complete: true };
+        });
       },
       setup_inspect: () => setupWorkflow.inspect(),
       setup_run: (args, context) => {
@@ -3194,7 +3975,16 @@ export const createKoedServerManager = ({
         if (!context?.emitSetupProgress) {
           throw new Error("Desktop setup context is required.");
         }
-        return setupWorkflow.run(context.emitSetupProgress, context.signal);
+        if (stopRequested) throw new ResumeStoppedError();
+        const emitSetupProgress = context.emitSetupProgress;
+        const contextSignal = context.signal;
+        return runLifecycleMutation((generation, signal) => {
+          assertLifecycleCurrent(generation);
+          return setupWorkflow.run(
+            emitSetupProgress,
+            AbortSignal.any([contextSignal, signal])
+          );
+        });
       }
     },
     stop

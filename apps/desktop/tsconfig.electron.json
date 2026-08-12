@@ -11,7 +11,9 @@
     "types": ["node"]
   },
   "include": [
+    "src/bootstrap.ts",
     "src/main.ts",
+    "src/main/**/*.ts",
     "src/preload.cts",
     "src/pds-*.ts",
     "src/ipc/**/*.ts",

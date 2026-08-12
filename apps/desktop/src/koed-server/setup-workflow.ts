@@ -36,7 +36,8 @@ export type DesktopSetupWorkflowDependencies = {
   randomId?: () => string;
   runStage: (
     stage: DesktopSetupStageId,
-    onProgress: (progress: DesktopSetupStageProgress) => void
+    onProgress: (progress: DesktopSetupStageProgress) => void,
+    signal?: AbortSignal
   ) => Promise<DesktopSetupActionResult>;
 };
 
@@ -90,6 +91,9 @@ export const createDesktopSetupWorkflow = ({
     emit: (snapshot: DesktopSetupSnapshot) => void,
     signal?: AbortSignal
   ): Promise<DesktopSetupSnapshot> => {
+    if (signal?.aborted) {
+      throw new Error("Setup was interrupted.");
+    }
     const initial = await inspect();
     let sequence = initial.sequence;
     let snapshot: DesktopSetupSnapshot = {
@@ -128,14 +132,18 @@ export const createDesktopSetupWorkflow = ({
 
       let result: DesktopSetupActionResult;
       try {
-        result = await runStage(stageId, (progress) => {
-          snapshot.stages[index] = {
-            ...snapshot.stages[index]!,
-            ...progress,
-            state: "running"
-          };
-          publish();
-        });
+        result = await runStage(
+          stageId,
+          (progress) => {
+            snapshot.stages[index] = {
+              ...snapshot.stages[index]!,
+              ...progress,
+              state: "running"
+            };
+            publish();
+          },
+          signal
+        );
       } catch (error) {
         result = {
           ok: false,

@@ -7,7 +7,7 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/bootstrap.js",
   "scripts": {
     "prebuild": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build",
     "build": "pnpm build:package",
@@ -38,6 +38,7 @@
     "@koed/memory-ui": "workspace:*",
     "@koed/shared": "workspace:*",
     "@koed/ui": "workspace:*",
+    "electron-updater": "6.8.9",
     "lucide-react": "^0.564.0",
     "qrcode": "1.5.4",
     "react": "19.2.6",

@@ -153,11 +153,12 @@ expecting new captures.
 Packaged Desktop uses `Koed` app metadata, `assets/icon.icns`, and
 `assets/koed-icon.png` for branding. First run starts bundled-local
 `koed-server`, allocates ports, and verifies runtime/model assets under
-`KOED_HOME` before the main window reports healthy. Packaged release
-signing/notarization is not turned on in this repo yet; `desktop:package` and
-`desktop:package:smoke:mac` are unsigned local smoke builds, and
-`desktop:package:release` still needs local Developer ID credentials and
-release setup. Native Windows packaged app support is not shipped here;
+`KOED_HOME` before the main window reports healthy. `desktop:package` and
+`desktop:package:smoke:mac` are unsigned local smoke builds. Public release
+automation requires Developer ID and Apple notarization credentials, verifies
+signing, stapling, and Gatekeeper, and promotes updater artifacts to the public
+R2 feed before publishing the GitHub Release. Native Windows packaged app
+support is not shipped here;
 Linux/WSL use is limited to smoke and unpacked-artifact testing.
 
 ## Notes

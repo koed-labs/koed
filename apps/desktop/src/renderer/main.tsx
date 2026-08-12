@@ -8,6 +8,20 @@ function DesktopRoot() {
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(
     null
   );
+  const [version, setVersion] = useState("unknown");
+
+  useEffect(() => {
+    let active = true;
+    void window.koedDesktop?.update
+      ?.getVersion()
+      .then((nextVersion) => {
+        if (active) setVersion(nextVersion);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -44,6 +58,7 @@ function DesktopRoot() {
         setOnboardingComplete(true);
       }}
       onboardingComplete={onboardingComplete}
+      version={version}
     />
   );
 }

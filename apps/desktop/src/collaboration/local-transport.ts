@@ -42,6 +42,10 @@ interface CollaborationBrokerChild {
 export interface CollaborationLocalTransportOptions {
   spawnBroker: (sessionToken: string) => ChildProcessWithIpc;
   openExternal: (url: string) => Promise<unknown>;
+  lifecycle?: {
+    signal: AbortSignal;
+    isActive: () => boolean;
+  };
   commandTimeoutMs?: number;
   longPollCommandTimeoutMs?: number;
   handshakeTimeoutMs?: number;
@@ -106,6 +110,36 @@ export const createCollaborationLocalTransport = (
   >();
   const pending = new Map<string, PendingCommand>();
   let broker: CollaborationBrokerChild | null = null;
+  let stopRequested = false;
+  let stopInFlight: Promise<void> | null = null;
+
+  const lifecycleIsActive = (): boolean =>
+    !stopRequested &&
+    (options.lifecycle?.isActive() ?? true) &&
+    !(options.lifecycle?.signal.aborted ?? false);
+
+  const awaitLifecycle = async <T>(task: Promise<T>): Promise<T> => {
+    const signal = options.lifecycle?.signal;
+    if (!signal) return task;
+    if (signal.aborted) throw new Error("Collaboration transport stopped.");
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        reject(new Error("Collaboration transport stopped."));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      void task.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        }
+      );
+    });
+  };
 
   const emitDisconnectedToOwners = () => {
     const event = collaborationConnectionEventSchema.parse({
@@ -249,12 +283,19 @@ export const createCollaborationLocalTransport = (
   };
 
   const ensureBroker = async (): Promise<CollaborationBrokerChild> => {
+    if (!lifecycleIsActive()) {
+      throw new Error("Collaboration transport stopped.");
+    }
     if (broker) {
-      await broker.ready;
+      await awaitLifecycle(broker.ready);
       return broker;
     }
     const sessionToken = randomBytes(32).toString("base64url");
     const child = options.spawnBroker(sessionToken);
+    if (!lifecycleIsActive()) {
+      child.kill("SIGTERM");
+      throw new Error("Collaboration transport stopped.");
+    }
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => {
@@ -296,7 +337,7 @@ export const createCollaborationLocalTransport = (
       }
     });
     try {
-      await ready;
+      await awaitLifecycle(ready);
       return created;
     } catch (error) {
       clearTimeout(handshakeTimer);
@@ -325,6 +366,9 @@ export const createCollaborationLocalTransport = (
     context: CollaborationTransportContext
   ): Promise<CollaborationCommandResult> => {
     const parsed = collaborationRendererCommandSchema.parse(command);
+    if (!lifecycleIsActive()) {
+      return failureResult(parsed, safeError("temporarily_unavailable"));
+    }
     ownerEmitters.set(context.ownerId, context.emitCollaborationEvent);
     if (!ownerReleaseSignals.has(context.ownerId)) {
       const release = () => stopOwner(context.ownerId);
@@ -338,6 +382,9 @@ export const createCollaborationLocalTransport = (
     try {
       current = await ensureBroker();
     } catch {
+      return failureResult(parsed, safeError("temporarily_unavailable"));
+    }
+    if (!lifecycleIsActive() || context.signal.aborted) {
       return failureResult(parsed, safeError("temporarily_unavailable"));
     }
     const envelopeId = createEnvelopeId();
@@ -378,39 +425,49 @@ export const createCollaborationLocalTransport = (
   };
 
   const stop = async () => {
-    const current = broker;
-    if (!current) return;
-    for (const ownerId of [...ownerEmitters.keys()]) {
-      stopOwner(ownerId);
-    }
-    const envelopeId = createEnvelopeId();
-    try {
-      const message = desktopCollaborationBrokerParentMessageSchema.parse({
-        protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
-        contractVersion: COLLABORATION_CONTRACT_VERSION,
-        sessionToken: current.sessionToken,
-        type: "shutdown",
-        envelopeId
-      });
-      current.child.send(message);
-    } catch {
+    stopRequested = true;
+    if (stopInFlight) return stopInFlight;
+    const operation = (async () => {
+      const current = broker;
       broker = null;
-      current.child.kill("SIGTERM");
-      return;
-    }
-    broker = null;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
+      failPending(safeError("temporarily_unavailable"));
+      if (!current) return;
+      for (const ownerId of [...ownerEmitters.keys()]) {
+        stopOwner(ownerId);
+      }
+      const envelopeId = createEnvelopeId();
+      try {
+        const message = desktopCollaborationBrokerParentMessageSchema.parse({
+          protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          sessionToken: current.sessionToken,
+          type: "shutdown",
+          envelopeId
+        });
+        current.child.send(message);
+      } catch {
         current.child.kill("SIGTERM");
-        resolve();
-      }, shutdownTimeoutMs);
-      timer.unref?.();
-      current.child.once("exit", () => {
-        clearTimeout(timer);
-        resolve();
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          current.child.kill("SIGTERM");
+          resolve();
+        }, shutdownTimeoutMs);
+        timer.unref?.();
+        current.child.once("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
       });
-    });
+    })();
+    stopInFlight = operation;
+    return operation;
   };
+
+  options.lifecycle?.signal.addEventListener("abort", () => {
+    void stop();
+  });
 
   return { request, stop, stopOwner };
 };

@@ -32,6 +32,8 @@ import type { CollaborationRendererClient } from "../../../collaboration/rendere
 import type { ComponentStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { useDesktopStatus } from "../../state/use-status.js";
+import { DesktopUpdateSection } from "../../update/DesktopUpdate.js";
+import type { DesktopUpdateController } from "../../update/use-desktop-update.js";
 import "./preferences.css";
 
 export type PreferencesSection =
@@ -75,6 +77,7 @@ export type PreferencesViewProps = {
   onThemeChange: (theme: DesktopThemePreference) => void;
   statusStore: DesktopStatusStore;
   theme: DesktopThemePreference;
+  update?: DesktopUpdateController;
   version: string;
 };
 
@@ -424,8 +427,9 @@ function AboutSection({
     "React and Electron — open-source software",
     "Base UI and Lucide — open-source interface components"
   ],
-  version
-}: Pick<PreferencesViewProps, "acknowledgements" | "version">) {
+  version,
+  update
+}: Pick<PreferencesViewProps, "acknowledgements" | "version" | "update">) {
   return (
     <div className="koed-preference-section">
       <dl className="koed-about-list">
@@ -446,6 +450,12 @@ function AboutSection({
           ))}
         </ul>
       </section>
+      {update ? (
+        <section aria-labelledby="koed-updates-section-title">
+          <h2 id="koed-updates-section-title">Updates</h2>
+          <DesktopUpdateSection controller={update} />
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -566,6 +576,7 @@ export function PreferencesView({
   onThemeChange,
   statusStore,
   theme,
+  update,
   version
 }: PreferencesViewProps) {
   const [section, setSection] = useState(initialSection);
@@ -615,7 +626,11 @@ export function PreferencesView({
           />
         ) : null}
         {section === "about" ? (
-          <AboutSection acknowledgements={acknowledgements} version={version} />
+          <AboutSection
+            acknowledgements={acknowledgements}
+            update={update}
+            version={version}
+          />
         ) : null}
         {section === "advanced" ? (
           <AdvancedSection statusStore={statusStore} />
