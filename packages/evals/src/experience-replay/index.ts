@@ -54,7 +54,7 @@ export const runExperienceReplayCli = async (
         executionKind: result.runPlan.kind,
         profile: result.config.profile,
         semanticConfigHash: result.config.semantic_config_hash,
-        codingAgentAttempts: result.config.coding_agent_attempt_count,
+        codingAgentAttempts: result.runPlan.codingAgentAttemptCount,
         sourceTasks: result.runPlan.sourceTaskDigests.length,
         replayTargetTasks: result.runPlan.replayTargetTaskDigests.length,
         concurrency: result.config.concurrency,
