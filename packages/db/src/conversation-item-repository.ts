@@ -871,9 +871,13 @@ const trustedNormalizedImportItems = new WeakMap<
   NormalizedImportAttestation
 >();
 
-const normalizedImportFailure = (): never => {
+const normalizedImportFailure = (
+  boundary: "batch" | "item" | "session" = "item"
+): never => {
   throw Object.assign(
-    new Error("Normalized import failed exact adapter admission"),
+    new Error(
+      `Normalized import failed exact adapter admission (${boundary} boundary)`
+    ),
     { statusCode: 400, code: "normalized_import_admission_invalid" }
   );
 };
@@ -937,7 +941,7 @@ const assertNormalizedImportAdmission = (
     tool_result: "tool_result"
   };
   if (!attestation || !transcriptType || !isRecord(provenance)) {
-    normalizedImportFailure();
+    normalizedImportFailure("item");
   }
   const trustedAttestation = attestation as NormalizedImportAttestation;
   const trustedTranscriptType = transcriptType as string;
@@ -1075,7 +1079,7 @@ const assertNormalizedImportAdmission = (
       componentByTranscriptType[trustedTranscriptType] ||
     item.canonicalItemKey !== expectedCanonicalItemKey
   ) {
-    normalizedImportFailure();
+    normalizedImportFailure("item");
   }
 };
 
@@ -1455,7 +1459,7 @@ const assertNormalizedImportSessionAttestation = (
     !isRecord(item.metadata?.normalizedImportAttestation) ||
     item.metadata.normalizedImportAttestation.ownerUserId !== undefined
   ) {
-    normalizedImportFailure();
+    normalizedImportFailure("session");
   }
 };
 
@@ -1805,11 +1809,11 @@ export const createConversationItemRepository = (
       input.items.length > 10_000 ||
       input.attestation.sequenceStart !== 0
     ) {
-      normalizedImportFailure();
+      normalizedImportFailure("batch");
     }
     const items = input.items.map((item, index) => {
       if (item.sourceSequence !== input.attestation.sequenceStart + index) {
-        normalizedImportFailure();
+        normalizedImportFailure("batch");
       }
       const trustedItem: ConversationItemInput = {
         ...item,

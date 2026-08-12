@@ -6,7 +6,11 @@ import {
   ExperienceReplayDatabaseTemplates
 } from "./database-templates.js";
 
-const within = async <T>(label: string, promise: Promise<T>): Promise<T> => {
+const within = async <T>(
+  label: string,
+  promise: Promise<T>,
+  timeoutMs = 5_000
+): Promise<T> => {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
@@ -14,7 +18,7 @@ const within = async <T>(label: string, promise: Promise<T>): Promise<T> => {
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error(`Timed out while ${label}`)),
-          5_000
+          timeoutMs
         );
       })
     ]);
@@ -93,7 +97,7 @@ describe("experience replay database template guards", () => {
       statement: string
     ) => {
       statements.push(statement);
-      if (statement === `DROP DATABASE IF EXISTS "${clone}"`) {
+      if (statement === `DROP DATABASE IF EXISTS "${clone}" WITH (FORCE)`) {
         throw new Error("forced clone cleanup failure");
       }
       return { rows: [], rowCount: 0 } as never;
@@ -114,9 +118,15 @@ describe("experience replay database template guards", () => {
       "Failed to remove benchmark databases"
     );
 
-    expect(statements).toContain(`DROP DATABASE IF EXISTS "${clone}"`);
-    expect(statements).toContain(`DROP DATABASE IF EXISTS "${template}"`);
-    expect(statements).not.toContain(`DROP DATABASE IF EXISTS "${source}"`);
+    expect(statements).toContain(
+      `DROP DATABASE IF EXISTS "${clone}" WITH (FORCE)`
+    );
+    expect(statements).toContain(
+      `DROP DATABASE IF EXISTS "${template}" WITH (FORCE)`
+    );
+    expect(statements).not.toContain(
+      `DROP DATABASE IF EXISTS "${source}" WITH (FORCE)`
+    );
   });
 
   it("owns a database only after its explicit create succeeds", async () => {
@@ -187,7 +197,9 @@ describe("experience replay database template guards", () => {
     });
     await manager.close();
 
-    expect(statements).toContain(`DROP DATABASE IF EXISTS "${template}"`);
+    expect(statements).toContain(
+      `DROP DATABASE IF EXISTS "${template}" WITH (FORCE)`
+    );
   });
 
   it("separates ephemeral cleanup from preserved frozen templates", async () => {
@@ -215,8 +227,12 @@ describe("experience replay database template guards", () => {
     });
     await manager.close({ preserveTemplates: true });
 
-    expect(statements).toContain(`DROP DATABASE IF EXISTS "${stage}"`);
-    expect(statements).not.toContain(`DROP DATABASE IF EXISTS "${template}"`);
+    expect(statements).toContain(
+      `DROP DATABASE IF EXISTS "${stage}" WITH (FORCE)`
+    );
+    expect(statements).not.toContain(
+      `DROP DATABASE IF EXISTS "${template}" WITH (FORCE)`
+    );
     expect(
       statements.find((statement) =>
         statement.startsWith(`COMMENT ON DATABASE "${template}"`)
@@ -289,7 +305,7 @@ describe("experience replay database template guards", () => {
         await within("closing clone client", cloneClient.end());
       } finally {
         try {
-          await within("closing template manager", manager.close());
+          await within("closing template manager", manager.close(), 15_000);
         } finally {
           await within(
             "dropping caller-owned source database",
@@ -299,6 +315,6 @@ describe("experience replay database template guards", () => {
         }
       }
     },
-    30_000
+    45_000
   );
 });

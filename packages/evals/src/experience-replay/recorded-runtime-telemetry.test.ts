@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createRecordedReplayTelemetryCollector,
+  recordedApiEquivalentCost,
   registerRecordedAttemptObservation
 } from "./recorded-runtime-telemetry.js";
 import type { CapturedHarborExecutionResult } from "./harbor-execution-adapter.js";
@@ -23,10 +24,38 @@ const captured = {
   }
 } as CapturedHarborExecutionResult;
 
+const telemetryOptions = {
+  authMode: "subscription" as const,
+  workflowModels: {
+    mcp_memory_answer: "gpt-5.6-luna",
+    lcm_summary: "gpt-5.6-luna",
+    session_title: "gpt-5.6-luna"
+  },
+  prices: {
+    "gpt-5.6-luna": {
+      uncached_input_usd_per_million: 1,
+      cached_input_usd_per_million: 0.1,
+      output_usd_per_million: 5
+    }
+  }
+};
+
 describe("recorded replay telemetry provisioning", () => {
+  it("prices uncached, cached, and output tokens independently", () => {
+    expect(
+      recordedApiEquivalentCost(
+        { input: 100, cachedInput: 25, output: 10 },
+        telemetryOptions.prices["gpt-5.6-luna"]!
+      )
+    ).toBeCloseTo(0.0001275, 12);
+  });
+
   it("rejects a non-cold attempt without a live identity-bound observation", async () => {
     await expect(
-      createRecordedReplayTelemetryCollector()({ identity, captured })
+      createRecordedReplayTelemetryCollector(telemetryOptions)({
+        identity,
+        captured
+      })
     ).rejects.toThrow("Mandatory recorded attempt observation is absent");
   });
 
@@ -48,7 +77,10 @@ describe("recorded replay telemetry provisioning", () => {
     });
     try {
       await expect(
-        createRecordedReplayTelemetryCollector()({ identity, captured })
+        createRecordedReplayTelemetryCollector(telemetryOptions)({
+          identity,
+          captured
+        })
       ).rejects.toThrow("lacks its database observation");
     } finally {
       unregister();
@@ -57,7 +89,9 @@ describe("recorded replay telemetry provisioning", () => {
 
   it("reports observed cold inactivity and explicit unavailable process metrics", async () => {
     const cold = { ...identity, condition: "cold" as const };
-    const result = await createRecordedReplayTelemetryCollector()({
+    const result = await createRecordedReplayTelemetryCollector(
+      telemetryOptions
+    )({
       identity: cold,
       captured
     });
@@ -71,6 +105,13 @@ describe("recorded replay telemetry provisioning", () => {
       turns: 3,
       toolCalls: 2,
       mcpCalls: 0
+    });
+    expect(result.codex?.metrics).toMatchObject({
+      costs: {
+        providerBilledUsd: 0,
+        apiEquivalentUsd: 0.02,
+        subscriptionUsd: 0
+      }
     });
     expect(result.processRss?.metrics).toEqual({
       apiBytes: null,

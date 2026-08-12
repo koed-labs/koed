@@ -1,6 +1,8 @@
 import type { ReplayCondition } from "./core/index.js";
 
 export const BENCHMARK_MCP_TOKEN_ENV = "KOED_BENCHMARK_MCP_TOKEN";
+export const PRODUCT_PATH_MEMORY_INSTRUCTION =
+  "This is a product-path validation run. Before making changes, call the available memory_answer tool exactly once with a concise project-scoped query asking for prior experience relevant to the task. Use the answer if useful, then complete the task normally. Do not call memory_answer again.";
 
 const tomlString = (value: string): string => JSON.stringify(value);
 
@@ -17,13 +19,15 @@ export const createTrialCodexConfiguration = ({
   model,
   reasoningEffort,
   bridgeUrl,
-  bridgeToken
+  bridgeToken,
+  requireMemoryAnswer = false
 }: {
   condition: ReplayCondition;
   model: string;
   reasoningEffort: "low" | "medium" | "high" | "xhigh";
   bridgeUrl?: string;
   bridgeToken?: string;
+  requireMemoryAnswer?: boolean;
 }): TrialCodexConfiguration => {
   const koedEnabled = condition !== "cold";
   if (koedEnabled !== Boolean(bridgeUrl && bridgeToken)) {
@@ -31,6 +35,11 @@ export const createTrialCodexConfiguration = ({
       koedEnabled
         ? "Koed replay conditions require a bridge URL and credential"
         : "Cold replay must not receive a Koed bridge"
+    );
+  }
+  if (requireMemoryAnswer && condition !== "relevant") {
+    throw new Error(
+      "Required product-path memory recall is valid only for the relevant arm"
     );
   }
   if (bridgeUrl) {
@@ -52,12 +61,21 @@ export const createTrialCodexConfiguration = ({
     `model_reasoning_effort = ${tomlString(reasoningEffort)}`,
     'model_reasoning_summary = "concise"',
     'approval_policy = "never"',
+    "suppress_unstable_features_warning = true",
+    ...(requireMemoryAnswer
+      ? [
+          `developer_instructions = ${tomlString(PRODUCT_PATH_MEMORY_INSTRUCTION)}`
+        ]
+      : []),
     "include_permissions_instructions = false",
     "include_apps_instructions = false",
     "include_collaboration_mode_instructions = false",
     "include_environment_context = false",
     "project_doc_max_bytes = 0",
     'web_search = "disabled"',
+    "",
+    "[features]",
+    "mcp_2026_07_28 = true",
     "",
     "[agents]",
     "enabled = false",
@@ -81,12 +99,17 @@ export const createTrialCodexConfiguration = ({
     model_reasoning_effort: reasoningEffort,
     model_reasoning_summary: "concise",
     approval_policy: "never",
+    suppress_unstable_features_warning: true,
+    ...(requireMemoryAnswer
+      ? { developer_instructions: PRODUCT_PATH_MEMORY_INSTRUCTION }
+      : {}),
     include_permissions_instructions: false,
     include_apps_instructions: false,
     include_collaboration_mode_instructions: false,
     include_environment_context: false,
     project_doc_max_bytes: 0,
     web_search: "disabled",
+    features: { mcp_2026_07_28: true },
     agents: { enabled: false },
     skills: { include_instructions: false },
     ...(koedEnabled

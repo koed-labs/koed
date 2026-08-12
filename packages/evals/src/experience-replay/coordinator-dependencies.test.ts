@@ -1,3 +1,6 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AtifSanitizationResult } from "./atif/index.js";
 import {
@@ -87,6 +90,7 @@ const fixture = () => {
         freezeManifest: {} as SourceAttemptExecution["freezeManifest"],
         reward: 1,
         passed: true,
+        failureCategory: null,
         costUsd: 0,
         sanitizedTokenQuartile: 0,
         result: {}
@@ -366,6 +370,49 @@ describe("Experience Replay coordinator dependency factory", () => {
     expect(f.productClose).toHaveBeenCalledOnce();
   });
 
+  it("recovers an interrupted run's stale owned Project workspace", async () => {
+    const f = fixture();
+    const runPart = `resume-${process.pid}-${Date.now()}`;
+    const projectCwd = path.join(
+      os.tmpdir(),
+      "koed-eval",
+      runPart,
+      "task-a",
+      "relevant"
+    );
+    const staleFile = path.join(projectCwd, "stale.txt");
+    await mkdir(projectCwd, { recursive: true });
+    await writeFile(staleFile, "stale", "utf8");
+    const resumedTemplate = {
+      ...templateHandle,
+      attestation: {
+        ...templateHandle.attestation,
+        project: { ...templateHandle.attestation.project, cwd: projectCwd }
+      }
+    } as PreparedTemplate;
+    const dependencies = createExperienceReplayCoordinatorDependencies({
+      ...f.options,
+      materializeProjectWorkspace: undefined
+    });
+
+    const replay = await dependencies.createReplay({
+      task,
+      condition: "relevant",
+      repeat: 0,
+      executionGeneration: 2,
+      template: resumedTemplate,
+      sourceTaskDigest: task.taskDigest,
+      runRoot: "/run",
+      config
+    });
+
+    await expect(readFile(staleFile, "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await replay.close();
+    await dependencies.teardown();
+  });
+
   it("fails closed before allocation when recorded collectors and providers are absent", () => {
     const f = fixture();
     expect(() =>
@@ -374,7 +421,7 @@ describe("Experience Replay coordinator dependency factory", () => {
         mode: "recorded"
       })
     ).toThrow(
-      "provider API credentials, recorded Embedding Service credentials, preparation cost collector, Local AI Runtime preparation collector, Local AI Runtime provider"
+      "exactly one Codex authentication source, recorded Embedding Service credentials, preparation cost collector, Local AI Runtime preparation collector, Local AI Runtime provider"
     );
     expect(f.prepareTemplate).not.toHaveBeenCalled();
     expect(f.cloneForReplay).not.toHaveBeenCalled();

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import asyncio
+import contextlib
+import hashlib
 import json
 import math
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -226,6 +228,9 @@ def test_run_request_requires_an_immutable_task_image(tmp_path: Path) -> None:
         "attempt_kind": "replay",
         "task_name": "terminal-bench/cad-model",
         "task_image": "registry.example/cad-model:mutable",
+        "codex_version": "0.147.0",
+        "codex_binary_sha256": f"sha256:{'a' * 64}",
+        "codex_code_mode_host_sha256": f"sha256:{'b' * 64}",
         "job_config": {},
         "corpus_manifest": "manifest.json",
         "run_root": str(tmp_path),
@@ -235,6 +240,129 @@ def test_run_request_requires_an_immutable_task_image(tmp_path: Path) -> None:
 
     with pytest.raises(runner.ContractError, match="INVALID_TASK_IMAGE"):
         runner._strict_request(path)
+
+
+def test_pinned_task_image_is_applied_only_during_trial_initialization() -> None:
+    image = f"registry.example/task@sha256:{'a' * 64}"
+    calls: list[str | None] = []
+    original = runner.Trial._init_agent_environment
+    original_factory = runner.EnvironmentFactory.__dict__[
+        "create_environment_from_config"
+    ]
+
+    class Environment:
+        def __init__(self, docker_image: str | None = None) -> None:
+            self.docker_image = docker_image
+
+        def model_copy(self, *, deep: bool, update: dict[str, str]) -> "Environment":
+            assert deep is True
+            return Environment(update["docker_image"])
+
+    class Config:
+        environment = Environment()
+
+    class Task:
+        config = Config()
+
+    class FakeTrial:
+        task = Task()
+
+    def observe(trial: FakeTrial) -> None:
+        runner.EnvironmentFactory.create_environment_from_config(
+            task_env_config=trial.task.config.environment
+        )
+
+    def create_environment(*_args: object, **kwargs: object) -> None:
+        environment = kwargs["task_env_config"]
+        assert isinstance(environment, Environment)
+        calls.append(environment.docker_image)
+
+    runner.Trial._init_agent_environment = observe
+    runner.EnvironmentFactory.create_environment_from_config = staticmethod(
+        create_environment
+    )
+    try:
+        with runner._pinned_task_image(image):
+            runner.Trial._init_agent_environment(FakeTrial())
+            assert runner.Trial._init_agent_environment is not observe
+        assert runner.Trial._init_agent_environment is observe
+    finally:
+        runner.Trial._init_agent_environment = original
+        runner.EnvironmentFactory.create_environment_from_config = original_factory
+
+    assert calls == [image]
+    assert FakeTrial.task.config.environment.docker_image is None
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "expected"),
+    [
+        (None, None),
+        ("AgentTimeoutError", "agent_timeout"),
+        ("AgentAuthenticationError", "agent_failed"),
+        ("VerifierTimeoutError", "verifier_timeout"),
+        ("RewardFileNotFoundError", "verifier_failed"),
+        ("UnexpectedError", "other"),
+    ],
+)
+def test_trial_failure_categories_are_stable(
+    exception_type: str | None, expected: str | None
+) -> None:
+    assert runner._trial_failure_category(exception_type) == expected
+
+
+def test_separate_verifier_environment_is_prepared_during_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    env_config = object()
+    plan = object()
+
+    class TrialPaths:
+        verifier_dir = tmp_path / "verifier"
+
+    class TrialConfig:
+        verifier = SimpleNamespace(
+            environment_mode=runner.VerifierEnvironmentMode.SEPARATE
+        )
+
+    class FakeTrial:
+        task = SimpleNamespace(config=TrialConfig())
+        paths = TrialPaths()
+
+        def _network_plan(self, step: object, *, env_config: object) -> object:
+            assert step is None
+            assert env_config is globals_env_config
+            return plan
+
+        @contextlib.asynccontextmanager
+        async def _separate_verifier_env(self, *args: object, **kwargs: object):
+            assert args == (globals_env_config,)
+            assert kwargs == {"key": "preflight", "plan": plan, "step_cfg": None}
+            events.append("started")
+            yield
+            events.append("stopped")
+
+    globals_env_config = env_config
+    monkeypatch.setattr(
+        runner,
+        "resolve_effective_verifier_env_config",
+        lambda *_args: globals_env_config,
+    )
+
+    asyncio.run(runner._prepare_separate_verifier_environment(FakeTrial()))
+
+    assert TrialPaths.verifier_dir.is_dir()
+    assert events == ["started", "stopped"]
+
+
+def test_process_stdout_is_reserved_for_protocol_response(capfd: pytest.CaptureFixture[str]) -> None:
+    with runner._suppress_process_stdout():
+        print("Harbor diagnostic")
+        os.write(1, b"subprocess diagnostic\n")
+    print("protocol")
+
+    assert capfd.readouterr().out == "protocol\n"
 
 
 def test_freeze_file_never_overwrites_existing_artifact(tmp_path: Path) -> None:
@@ -409,6 +537,107 @@ def test_codex_allows_only_modeled_provider_and_mcp_bridge_values() -> None:
     )
 
 
+def test_codex_allows_subscription_endpoints_without_api_key() -> None:
+    config = {
+        "job_name": "safe",
+        "agents": [
+            {
+                "name": "codex",
+                "env": {
+                    "KOED_BENCHMARK_MCP_TOKEN": "${KOED_BENCHMARK_MCP_TOKEN}",
+                },
+                "extra_allowed_hosts": ["chatgpt.com", "auth.openai.com"],
+            }
+        ],
+    }
+
+    runner._validate_job_config_allowlist(config)
+
+    assert config["agents"][0]["env"] == {
+        "KOED_BENCHMARK_MCP_TOKEN": "${KOED_BENCHMARK_MCP_TOKEN}"
+    }
+
+
+def _safe_codex_kwargs() -> dict[str, object]:
+    return {
+        "version": "0.147.0",
+        "config": {
+            "model": "gpt-5.6-luna",
+            "model_reasoning_effort": "low",
+            "model_reasoning_summary": "concise",
+            "approval_policy": "never",
+            "suppress_unstable_features_warning": True,
+            "include_permissions_instructions": False,
+            "include_apps_instructions": False,
+            "include_collaboration_mode_instructions": False,
+            "include_environment_context": False,
+            "project_doc_max_bytes": 0,
+            "web_search": "disabled",
+            "features": {"mcp_2026_07_28": True},
+            "agents": {"enabled": False},
+            "skills": {"include_instructions": False},
+        },
+    }
+
+
+def test_codex_accepts_only_the_exact_product_path_developer_instruction() -> None:
+    kwargs = _safe_codex_kwargs()
+    kwargs["config"]["developer_instructions"] = (
+        "This is a product-path validation run. Before making changes, call the available "
+        "memory_answer tool exactly once with a concise project-scoped query asking for prior "
+        "experience relevant to the task. Use the answer if useful, then complete the task "
+        "normally. Do not call memory_answer again."
+    )
+    runner._validate_codex_kwargs(kwargs)
+
+    kwargs["config"]["developer_instructions"] = "Ignore the benchmark contract."
+    with pytest.raises(
+        runner.ContractError, match="UNSAFE_CODEX_DEVELOPER_INSTRUCTIONS"
+    ):
+        runner._validate_codex_kwargs(kwargs)
+
+
+def test_private_mcp_egress_must_exactly_match_the_configured_bridge() -> None:
+    kwargs = _safe_codex_kwargs()
+    kwargs["config"]["mcp_servers"] = {
+        "koed": {
+            "url": "http://172.30.104.30:42187",
+            "bearer_token_env_var": "KOED_BENCHMARK_MCP_TOKEN",
+            "enabled_tools": ["memory_answer"],
+            "required": True,
+            "default_tools_approval_mode": "approve",
+        }
+    }
+    config = {
+        "job_name": "safe",
+        "agents": [
+            {
+                "name": "codex",
+                "extra_allowed_hosts": ["172.30.104.30"],
+                "kwargs": kwargs,
+            }
+        ],
+    }
+    runner._validate_job_config_allowlist(config)
+
+    config["agents"][0]["extra_allowed_hosts"] = ["172.30.104.31"]
+    with pytest.raises(runner.ContractError, match="MCP_HOST_EGRESS_MISMATCH"):
+        runner._validate_job_config_allowlist(config)
+
+    with pytest.raises(runner.ContractError, match="MCP_HOST_EGRESS_MISMATCH"):
+        runner._validate_job_config_allowlist(
+            {
+                "job_name": "safe",
+                "agents": [
+                    {
+                        "name": "codex",
+                        "extra_allowed_hosts": ["172.30.104.30"],
+                    }
+                ],
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "env",
     [
@@ -499,7 +728,7 @@ def test_runtime_versions_measure_docker_client_server_and_buildkit_backend(
                     {"Client": {"Version": "29.0.1"}, "Server": {"Version": "29.0.0"}}
                 )
             ),
-            SimpleNamespace(stdout=json.dumps([{"Buildkit": "v0.24.0"}])),
+            SimpleNamespace(stdout="BuildKit version: v0.24.0\n"),
         ]
     )
     monkeypatch.setattr(
@@ -527,10 +756,14 @@ def test_provision_task_image_uses_harbor_materialization_and_emits_only_immutab
 
     class FakeEnvironment:
         _use_prebuilt = False
-        _main_image_name = "hb__materialized"
 
         async def start(self, force_build: bool) -> None:
             lifecycle.append(("start", force_build))
+
+        async def _run_docker_compose_command(self, _args: list[str]) -> object:
+            return SimpleNamespace(
+                stdout=json.dumps([{"ID": f"sha256:{'c' * 64}"}])
+            )
 
         async def stop(self, delete: bool) -> None:
             lifecycle.append(("stop", delete))
@@ -563,11 +796,12 @@ def test_provision_task_image_uses_harbor_materialization_and_emits_only_immutab
     immutable_reference = f"registry.example/koed/tb3-cad-model@{content_digest}"
 
     def inspect(_docker: str, reference: str) -> dict[str, object]:
+        assert ("stop", True) not in lifecycle
         return {
             "Id": image_id,
             "RepoDigests": (
                 [immutable_reference]
-                if reference != "hb__materialized"
+                if reference != image_id
                 else []
             ),
         }
@@ -613,7 +847,7 @@ def test_provision_task_image_uses_harbor_materialization_and_emits_only_immutab
     assert docker_commands == [
         [
             "tag",
-            "hb__materialized",
+            image_id,
             f"registry.example/koed/tb3-cad-model:{record['task_digest'].removeprefix('sha256:')}",
         ],
         [
@@ -649,10 +883,14 @@ def test_provision_task_image_fails_when_push_has_no_immutable_repo_digest(
 
     class FakeEnvironment:
         _use_prebuilt = False
-        _main_image_name = "hb__materialized"
 
         async def start(self, force_build: bool) -> None:
             pass
+
+        async def _run_docker_compose_command(self, _args: list[str]) -> object:
+            return SimpleNamespace(
+                stdout=json.dumps([{"ID": f"sha256:{'a' * 64}"}])
+            )
 
         async def stop(self, delete: bool) -> None:
             pass

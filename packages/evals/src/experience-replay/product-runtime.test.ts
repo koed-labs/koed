@@ -3,7 +3,8 @@ import {
   StreamableHTTPClientTransport
 } from "@modelcontextprotocol/client";
 import Fastify from "fastify";
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -81,7 +82,7 @@ const startApi = async (): Promise<ProductApiHandle> => {
   };
 };
 
-const fixture = async () => {
+const fixture = async (codexAuthJsonPath?: string) => {
   const calls: Array<{
     name: string;
     input: Record<string, unknown>;
@@ -126,6 +127,7 @@ const fixture = async () => {
     projectCwd,
     trialWorkspaceRoot,
     identity,
+    ...(codexAuthJsonPath ? { codexAuthJsonPath } : {}),
     dependencies
   });
   open.push(runtime);
@@ -177,6 +179,24 @@ describe("Experience Replay product runtime", () => {
       await client.close();
     }
     expect(calls).toHaveLength(1);
+  });
+
+  it("copies subscription auth into the isolated Codex home and removes it at teardown", async () => {
+    const sourceRoot = await mkdtemp(
+      path.join(os.tmpdir(), "koed-auth-source-")
+    );
+    const source = path.join(sourceRoot, "auth.json");
+    await writeFile(source, '{"auth_mode":"chatgpt","tokens":{}}', {
+      mode: 0o600
+    });
+    const { runtime } = await fixture(source);
+    const isolated = path.join(runtime.codexHome, "auth.json");
+    await expect(readFile(isolated, "utf8")).resolves.toBe(
+      '{"auth_mode":"chatgpt","tokens":{}}'
+    );
+    await runtime.close();
+    open.splice(open.indexOf(runtime), 1);
+    await expect(access(isolated)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("revokes the bridge credential before closing ordinary resources", async () => {

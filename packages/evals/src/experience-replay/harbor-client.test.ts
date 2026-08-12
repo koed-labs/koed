@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createConnection } from "node:net";
@@ -80,6 +80,9 @@ const fixture = async (): Promise<{
       attempt_kind: "source",
       task_name: "terminal-bench/cad-model",
       task_image: `registry.example/cad-model@sha256:${"c".repeat(64)}`,
+      codex_version: "0.147.0",
+      codex_binary_sha256: `sha256:${"d".repeat(64)}`,
+      codex_code_mode_host_sha256: `sha256:${"e".repeat(64)}`,
       job_config: { job_name: "source-cad-model", retry: { max_retries: 0 } },
       corpus_manifest: path.join(root, "tb3.json"),
       run_root: runRoot,
@@ -151,6 +154,30 @@ describe("HarborClient", () => {
       category: "invalid-request"
     });
     expect(executor).not.toHaveBeenCalled();
+  });
+
+  it("retains a validated local request when the runner fails", async () => {
+    const { runRoot, request } = await fixture();
+    const client = new HarborClient({
+      executor: async () => ({
+        exitCode: 2,
+        signal: null,
+        stdout: "",
+        stderr: "experience-replay Harbor contract error\n"
+      }),
+      uvExecutable: "uv-test",
+      harborProject: "/locked/harbor",
+      requestId: () => "failed-id"
+    });
+
+    await expect(client.run(request)).rejects.toMatchObject({
+      category: "process-exit"
+    });
+    const retained = await readFile(
+      path.join(runRoot, ".harbor-requests/failed-id.json"),
+      "utf8"
+    );
+    expect(JSON.parse(retained)).toEqual(request);
   });
 
   it("allows literal environment references without serializing values", async () => {
@@ -277,6 +304,30 @@ describe("HarborClient", () => {
     });
     await expect(client.run(request)).rejects.toMatchObject({
       category: "output-limit"
+    });
+  });
+
+  it("recovers a completed result from its persisted artifact", async () => {
+    const { runRoot, request } = await fixture();
+    const client = new HarborClient({
+      executor: async (invocation) => {
+        await notifyLifecycle(invocation.env, "agent_started");
+        await notifyLifecycle(invocation.env, "agent_ended");
+        await notifyLifecycle(invocation.env, "trial_ended");
+        const resultPath = path.join(runRoot, request.result_path!);
+        await mkdir(path.dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, `${result}\n`);
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: `Harbor diagnostic\n${result}\n`,
+          stderr: ""
+        };
+      }
+    });
+
+    await expect(client.run(request)).resolves.toMatchObject({
+      schema_version: "koed-harbor-result-v1"
     });
   });
 

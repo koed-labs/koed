@@ -594,13 +594,17 @@ export class LocalExperienceReplayProductAdapter {
   private apiEnvironment(
     url: string,
     runtime: EmbeddingRuntime,
-    pepper: string
+    pepper: string,
+    dataEncryptionKey?: string
   ): NodeJS.ProcessEnv {
     return {
       ...this.options.productApiEnvironment,
       NODE_ENV: "test",
       DATABASE_URL: url,
       API_TOKEN_PEPPER: pepper,
+      ...(dataEncryptionKey
+        ? { API_DATA_ENCRYPTION_KEY: dataEncryptionKey }
+        : {}),
       WORK_QUEUE_BACKEND: "local",
       CACHE_STORE: "memory",
       RATE_LIMIT_STORE: "memory",
@@ -1089,7 +1093,12 @@ export class LocalExperienceReplayProductAdapter {
       });
       await clonePool.end();
       api = await startProductApiProcess({
-        environment: this.apiEnvironment(url, runtime, pepper)
+        environment: this.apiEnvironment(
+          url,
+          runtime,
+          pepper,
+          randomBytes(32).toString("base64")
+        )
       });
     } catch (error) {
       await clonePool.end().catch(() => undefined);

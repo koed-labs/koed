@@ -15,7 +15,8 @@ const config = (profile: "smoke" | "quick" = "quick") =>
     codex_cli: {
       version: "test-v1",
       host_sha256: "a".repeat(64),
-      container_sha256: "b".repeat(64)
+      container_sha256: "b".repeat(64),
+      container_code_mode_host_sha256: "c".repeat(64)
     },
     coding_agent: { id: "gpt-5.6-luna", reasoning_effort: "low" },
     memory_answer: {
@@ -94,12 +95,17 @@ describe("Experience Replay immutable run plans", () => {
   });
 
   it("locks the paid proof to two sources, one target, four arms and six attempts", () => {
-    const plan = createProductPathProofRunPlan(config(), {
-      targetTaskDigest: `sha256:${"a".repeat(64)}`,
-      donorTaskDigest: `sha256:${"b".repeat(64)}`
-    });
+    const plan = createProductPathProofRunPlan(
+      config(),
+      {
+        targetTaskDigest: `sha256:${"a".repeat(64)}`,
+        donorTaskDigest: `sha256:${"b".repeat(64)}`
+      },
+      "subscription"
+    );
     expect(plan).toMatchObject({
       kind: "product_path_proof",
+      codexAuthMode: "subscription",
       replayTargetTaskDigests: [`sha256:${"a".repeat(64)}`],
       replayAttemptsPerCondition: 1,
       codingAgentAttemptCount: 6,
@@ -142,6 +148,12 @@ describe("Experience Replay immutable run plans", () => {
       verifyExperienceReplayRunPlan({
         ...valid,
         codingAgentAttemptCount: 10
+      })
+    ).toThrow("hash mismatch");
+    expect(() =>
+      verifyExperienceReplayRunPlan({
+        ...valid,
+        codexAuthMode: "invalid" as "api_key"
       })
     ).toThrow("hash mismatch");
   });

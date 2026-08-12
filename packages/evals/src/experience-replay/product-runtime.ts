@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -69,8 +69,10 @@ export interface StartExperienceReplayProductRuntimeOptions {
   identity: TrialBridgeIdentity;
   scope?: AsyncResourceScope;
   environment?: NodeJS.ProcessEnv;
+  codexAuthJsonPath?: string;
   dependencies?: Partial<ProductRuntimeDependencies>;
   bridgeCredentialLifetimeMs?: number;
+  dockerAccessibleBridge?: boolean;
 }
 
 export interface ExperienceReplayProductRuntimeHandle {
@@ -165,6 +167,11 @@ export const startExperienceReplayProductRuntime = async (
       mkdir(koedHome, { recursive: true, mode: 0o700 }),
       mkdir(codexHome, { recursive: true, mode: 0o700 })
     ]);
+    if (options.codexAuthJsonPath) {
+      const destination = path.join(codexHome, "auth.json");
+      await copyFile(options.codexAuthJsonPath, destination);
+      await chmod(destination, 0o600);
+    }
     scope.register(`${prefix}:homes`, () =>
       rm(root, { recursive: true, force: true })
     );
@@ -225,7 +232,8 @@ export const startExperienceReplayProductRuntime = async (
       runtimeClient,
       projectCwd: options.projectCwd,
       trialWorkspaceRoot: options.trialWorkspaceRoot,
-      identity: options.identity
+      identity: options.identity,
+      dockerAccess: options.dockerAccessibleBridge ?? false
     });
     assertLoopbackUrl(bridge.url, "Experience Replay benchmark bridge");
     scope.registerCredentialRevocation(`${prefix}:bridge-credential`, () => {

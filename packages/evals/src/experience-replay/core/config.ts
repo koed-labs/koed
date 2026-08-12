@@ -97,7 +97,8 @@ const configSchema = z
       .object({
         version: immutableIdentifier,
         host_sha256: sha256Schema,
-        container_sha256: sha256Schema
+        container_sha256: sha256Schema,
+        container_code_mode_host_sha256: sha256Schema
       })
       .strict(),
     coding_agent: modelSchema,

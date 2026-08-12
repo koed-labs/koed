@@ -103,7 +103,9 @@ export const normalizedImportPayload = ({
       type: item.type,
       ...(item.content !== undefined ? { content: item.content } : {}),
       ...(item.toolCall ? { toolCall: item.toolCall } : {}),
-      ...(item.sourceCallId ? { sourceCallId: item.sourceCallId } : {})
+      ...(item.type === "tool_result" && item.sourceCallId
+        ? { sourceCallId: item.sourceCallId }
+        : {})
     }
   };
   return {

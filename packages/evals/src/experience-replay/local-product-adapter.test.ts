@@ -166,6 +166,28 @@ const integrationUrl = process.env.KOED_EXPERIENCE_REPLAY_DATABASE_URL;
         await resumed.adoptTemplate(template);
 
         const first = await resumed.cloneForReplay(template);
+        await expect(
+          first.api.request({
+            method: "POST",
+            path: "/v1/memory/questions/final",
+            headers: { authorization: first.authorization },
+            body: {
+              idempotency_key: "experience-replay-encrypted-question",
+              query: "What was recalled?",
+              origin: "mcp_memory_answer",
+              retrieval_scope: "personal",
+              search_domain: "project",
+              project_id: template.attestation.project.id,
+              status: "answered",
+              answer_markdown: "A prior implementation was recalled."
+            }
+          })
+        ).resolves.toMatchObject({
+          question: {
+            query: "What was recalled?",
+            answerMarkdown: "A prior implementation was recalled."
+          }
+        });
         const firstPool = new pg.Pool({ connectionString: first.databaseUrl });
         await firstPool.query(
           "CREATE TABLE replay_clone_probe (value text NOT NULL)"

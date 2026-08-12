@@ -10,7 +10,8 @@ const config = resolveExperienceReplayConfig({
   codex_cli: {
     version: "deterministic",
     host_sha256: "a".repeat(64),
-    container_sha256: "a".repeat(64)
+    container_sha256: "a".repeat(64),
+    container_code_mode_host_sha256: "b".repeat(64)
   },
   coding_agent: { id: "deterministic", reasoning_effort: "low" },
   memory_answer: {

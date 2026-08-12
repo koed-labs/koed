@@ -1,5 +1,7 @@
 import { countTokensForModel } from "@koed/core";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
+import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
+import { resolveRecordedCodexAuthentication } from "./codex-auth.js";
 import { createExperienceReplayCoordinatorDependencies } from "./coordinator-dependencies.js";
 import type { LocalProductTemplateHandle } from "./local-product-adapter.js";
 import { ProductPathPrerequisiteError } from "./preflight.js";
@@ -40,12 +42,21 @@ export const createRecordedCliExperienceReplayDependencies = (
     corpusManifest: string;
     postgres: { adminUrl: string; user: string; password: string };
     frozenTaskImages: Readonly<Record<string, string>>;
+    codexAuthMode: ExperienceReplayCodexAuthMode;
+    productPathProof: boolean;
   }
 ) => {
-  const providerApiKey = required(environment, "OPENAI_API_KEY");
+  const authentication = resolveRecordedCodexAuthentication(
+    environment,
+    options.codexAuthMode
+  );
   const appServerBinary = required(
     environment,
     "MEMORY_CODEX_APP_SERVER_BINARY"
+  );
+  const containerCodexBinary = required(
+    environment,
+    "KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_BINARY"
   );
   const embeddingUrl = required(
     environment,
@@ -56,7 +67,9 @@ export const createRecordedCliExperienceReplayDependencies = (
     "KOED_EXPERIENCE_REPLAY_EMBEDDING_TOKEN"
   );
   const runtimeEnvironment: NodeJS.ProcessEnv = {
-    OPENAI_API_KEY: providerApiKey,
+    ...(authentication.mode === "api_key"
+      ? { OPENAI_API_KEY: authentication.apiKey }
+      : {}),
     EMBEDDING_SERVICE_URL: embeddingUrl,
     EMBEDDING_SERVICE_TOKEN: embeddingToken,
     EMBEDDING_MODEL: config.embedding.model,
@@ -87,9 +100,21 @@ export const createRecordedCliExperienceReplayDependencies = (
     postgres: options.postgres,
     countEmbeddingTokens: (text) =>
       countTokensForModel(text, { model: config.embedding.tokenizer }).tokens,
-    providerApiKey,
+    ...(authentication.mode === "api_key"
+      ? { providerApiKey: authentication.apiKey }
+      : { codexAuthJsonPath: authentication.authJsonPath }),
+    containerCodexBinary,
+    productPathProof: options.productPathProof,
     frozenTaskImages: options.frozenTaskImages,
-    collectReplayTelemetry: createRecordedReplayTelemetryCollector(environment),
+    collectReplayTelemetry: createRecordedReplayTelemetryCollector({
+      authMode: authentication.mode,
+      workflowModels: {
+        mcp_memory_answer: config.memory_answer.model.id,
+        lcm_summary: config.lcm_summary.model.id,
+        session_title: config.session_title.model.id
+      },
+      prices: config.price_table.models
+    }),
     recordedEmbedding: {
       url: embeddingUrl,
       token: embeddingToken,

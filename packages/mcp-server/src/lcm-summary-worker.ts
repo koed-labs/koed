@@ -118,7 +118,7 @@ export type LcmSummaryPromptResult = {
   errorMessage?: string;
 };
 
-type VersionedLcmSummaryPromptResult = LcmSummaryPromptResult & {
+export type VersionedLcmSummaryPromptResult = LcmSummaryPromptResult & {
   promptVersion: string;
 };
 
@@ -690,7 +690,7 @@ export const runLcmSummary: LcmSummaryRunner = (
     timeoutMs
   );
 
-const runPromptWithRetries = async (
+export const runLcmSummaryPromptWithRetries = async (
   prompt: string,
   promptVersion: string,
   sourcePayloads: string[],
@@ -995,7 +995,7 @@ const reduceShardSummaries = async (
     stats.promptTokenSum += tokens;
     stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
     stats.promptCallCount += 1;
-    const result = await runPromptWithRetries(
+    const result = await runLcmSummaryPromptWithRetries(
       prompt.text,
       prompt.version,
       prompt.exactSourcePayloads,
@@ -1049,7 +1049,7 @@ const summarizeNode = async (
       stats.promptTokenSum += tokens;
       stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
       stats.promptCallCount += 1;
-      const result = await runPromptWithRetries(
+      const result = await runLcmSummaryPromptWithRetries(
         entry.prompt,
         entry.promptVersion,
         entry.exactSourcePayloads,

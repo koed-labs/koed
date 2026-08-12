@@ -32,7 +32,8 @@ import {
   EXPERIENCE_REPLAY_REPOSITORY_ROOT,
   ProductPathPrerequisiteError,
   preflightExperienceReplay,
-  type PreflightResult
+  type PreflightResult,
+  type RecordedRunAttestation
 } from "./preflight.js";
 import {
   planAttemptResume,
@@ -94,6 +95,7 @@ export interface SourceAttemptExecution {
   freezeManifest: HarborFreezeManifest;
   reward: number | null;
   passed: boolean;
+  failureCategory: string | null;
   costUsd: number;
   /** Source metadata only. Replay observations must never influence matching. */
   sanitizedTokenQuartile: 0 | 1 | 2 | 3;
@@ -328,6 +330,7 @@ const reportFromOutcomes = async (
   const report = createMachineReport({
     runId,
     executionKind: runPlan.kind,
+    codexAuthMode: runPlan.codexAuthMode,
     profile: config.profile,
     model: config.coding_agent.id,
     taskCount: tasks.length,
@@ -747,9 +750,9 @@ export const runExperienceReplay = async (
           directory.root,
           entry
         );
-        if (source.reward === null)
+        if (source.failureCategory === "other")
           throw new Error(
-            `Source ${task.name} crossed the irreversible agent boundary without a result; dependent preparation is forbidden`
+            `Source ${task.name} failed in Harbor runtime or environment setup`
           );
         sources.set(task.taskDigest, { ...source, task });
         continue;
@@ -812,6 +815,10 @@ export const runExperienceReplay = async (
             config,
             signal
           });
+          if (source.failureCategory === "other")
+            throw new Error(
+              `Source ${task.name} failed in Harbor runtime or environment setup`
+            );
           const resultPath = sourceResultPathFor(task, generation);
           await publishAttemptResult(directory, journal, {
             attemptId: id,
@@ -819,7 +826,7 @@ export const runExperienceReplay = async (
             resultPath,
             artifact: { ...source },
             reward: source.reward,
-            failureCategory: source.reward === null ? "missing_outcome" : null
+            failureCategory: source.failureCategory
           });
           return {
             value: { ...source, task },
@@ -847,12 +854,6 @@ export const runExperienceReplay = async (
       else if (result.status === "failed" || result.status === "cancelled")
         throw result.error;
       else throw new Error("Paid stop prevented the complete source cohort");
-    }
-    for (const source of sources.values()) {
-      if (source.reward === null)
-        throw new Error(
-          `Source ${source.task.name} has no valid result; dependent preparation is forbidden`
-        );
     }
     await phase(journal, "source_attempts", "completed");
 
@@ -1650,7 +1651,8 @@ const tasksFromManifest = async (
     config,
     requireRunnable: false,
     confirmPaidRun: config.profile !== "smoke",
-    executionKind: manifest.run_plan.kind
+    executionKind: manifest.run_plan.kind,
+    codexAuthMode: manifest.run_plan.codexAuthMode
   });
   const tasks = selectedTasks(admitted);
   if (immutableHash(admitted.runPlan) !== immutableHash(manifest.run_plan)) {
@@ -1747,6 +1749,7 @@ export const readExperienceReplayResumeIdentity = async (
   config: ResolvedExperienceReplayConfig;
   runId: string;
   runPlan: ExperienceReplayRunPlan;
+  recordedRunAttestation: RecordedRunAttestation | null;
 }> => {
   const runRoot = await validateExistingRunDirectory(
     runDirectory,
@@ -1764,11 +1767,23 @@ export const readExperienceReplayResumeIdentity = async (
   if (typeof manifest.run_id !== "string" || !manifest.run_id.trim())
     throw new Error("Persisted run identity is invalid");
   verifyExperienceReplayRunPlan(manifest.run_plan);
+  const recordedRunAttestation =
+    config.profile === "smoke"
+      ? null
+      : (
+          await readJsonArtifact<{
+            recordedRunAttestation: RecordedRunAttestation | null;
+          }>(runRoot, "attestations/preflight.json")
+        ).recordedRunAttestation;
+  if (config.profile !== "smoke" && !recordedRunAttestation) {
+    throw new Error("Persisted recorded-run attestation is missing");
+  }
   return {
     runRoot,
     config,
     runId: manifest.run_id,
-    runPlan: manifest.run_plan
+    runPlan: manifest.run_plan,
+    recordedRunAttestation
   };
 };
 

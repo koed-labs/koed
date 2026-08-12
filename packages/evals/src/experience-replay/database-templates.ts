@@ -73,7 +73,7 @@ export class ExperienceReplayDatabaseTemplates {
       database: parsed.pathname.slice(1),
       user,
       password,
-      max: 1,
+      max: 4,
       allowExitOnIdle: true,
       statement_timeout: 30_000,
       query_timeout: 30_000
@@ -216,8 +216,9 @@ export class ExperienceReplayDatabaseTemplates {
         `ALTER DATABASE ${quoted(name)} WITH ALLOW_CONNECTIONS true IS_TEMPLATE false`
       )
       .catch(() => undefined);
-    await this.terminateConnections(name);
-    await this.admin.query(`DROP DATABASE IF EXISTS ${quoted(name)}`);
+    await this.admin.query(
+      `DROP DATABASE IF EXISTS ${quoted(name)} WITH (FORCE)`
+    );
     this.ephemeral.delete(name);
     this.templates.delete(name);
   }
@@ -274,10 +275,12 @@ export class ExperienceReplayDatabaseTemplates {
       ...this.ephemeral,
       ...(preserveTemplates ? [] : [...this.templates])
     ];
-    for (const name of [...cleanupNames].reverse()) {
-      try {
-        await this.dropRunOwned(name);
-      } catch (error) {
+    const cleanupResults = await Promise.allSettled(
+      cleanupNames.map((name) => this.dropRunOwned(name))
+    );
+    for (const result of cleanupResults) {
+      if (result.status === "rejected") {
+        const error: unknown = result.reason;
         failures.push(
           error instanceof Error ? error : new Error(String(error))
         );

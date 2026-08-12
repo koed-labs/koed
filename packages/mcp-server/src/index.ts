@@ -118,6 +118,7 @@ export {
   buildLcmSummaryPrompt,
   parseStructuredLcmSummary,
   runLcmSummary,
+  runLcmSummaryPromptWithRetries,
   resolveLcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
 export type {
@@ -125,7 +126,8 @@ export type {
   LcmSummaryNode,
   LcmSummaryPromptResult,
   LcmSummaryWorkerConfig,
-  StructuredLcmSummary
+  StructuredLcmSummary,
+  VersionedLcmSummaryPromptResult
 } from "./lcm-summary-worker.js";
 
 export type RetrievalScope = "personal";

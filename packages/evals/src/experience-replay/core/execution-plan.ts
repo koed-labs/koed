@@ -5,6 +5,8 @@ export type ExperienceReplayExecutionKind =
   | "benchmark_profile"
   | "product_path_proof";
 
+export type ExperienceReplayCodexAuthMode = "api_key" | "subscription";
+
 export const SMOKE_TASK_DIGESTS = [
   `sha256:${"a".repeat(64)}`,
   `sha256:${"b".repeat(64)}`
@@ -13,6 +15,7 @@ export const SMOKE_TASK_DIGESTS = [
 export interface ExperienceReplayRunPlan {
   version: 1;
   kind: ExperienceReplayExecutionKind;
+  codexAuthMode: ExperienceReplayCodexAuthMode;
   profile: ResolvedExperienceReplayConfig["profile"];
   sourceTaskDigests: readonly string[];
   replayTargetTaskDigests: readonly string[];
@@ -53,7 +56,8 @@ const assertLunaLow = (config: ResolvedExperienceReplayConfig): void => {
 
 export const createBenchmarkRunPlan = (
   config: ResolvedExperienceReplayConfig,
-  taskDigests: readonly string[]
+  taskDigests: readonly string[],
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key"
 ): Readonly<ExperienceReplayRunPlan> => {
   assertUnique(taskDigests, "Benchmark task digests");
   if (taskDigests.length !== config.task_count) {
@@ -62,6 +66,7 @@ export const createBenchmarkRunPlan = (
   return buildPlan({
     version: 1,
     kind: "benchmark_profile",
+    codexAuthMode,
     profile: config.profile,
     sourceTaskDigests: [...taskDigests],
     replayTargetTaskDigests: [...taskDigests],
@@ -73,7 +78,8 @@ export const createBenchmarkRunPlan = (
 
 export const createProductPathProofRunPlan = (
   config: ResolvedExperienceReplayConfig,
-  roles: { targetTaskDigest: string; donorTaskDigest: string }
+  roles: { targetTaskDigest: string; donorTaskDigest: string },
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key"
 ): Readonly<ExperienceReplayRunPlan> => {
   if (config.profile !== "quick") {
     throw new Error("Product-path proof requires the quick model policy");
@@ -90,6 +96,7 @@ export const createProductPathProofRunPlan = (
   return buildPlan({
     version: 1,
     kind: "product_path_proof",
+    codexAuthMode,
     profile: config.profile,
     sourceTaskDigests,
     replayTargetTaskDigests: [roles.targetTaskDigest],
@@ -106,6 +113,8 @@ export const verifyExperienceReplayRunPlan = (
   if (immutableHash(body) !== planHash) {
     throw new Error("Immutable Experience Replay run-plan hash mismatch");
   }
+  if (plan.codexAuthMode !== "api_key" && plan.codexAuthMode !== "subscription")
+    throw new Error("Run-plan Codex authentication mode is invalid");
   assertUnique(plan.sourceTaskDigests, "Run-plan source task digests");
   assertUnique(plan.replayTargetTaskDigests, "Run-plan replay task digests");
   const sources = new Set(plan.sourceTaskDigests);

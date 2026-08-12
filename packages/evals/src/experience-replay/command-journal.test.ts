@@ -19,7 +19,8 @@ describe("experience replay command parsing", () => {
       name: "run",
       configPath: "run.json",
       confirmPaidRun: true,
-      productPathProof: false
+      productPathProof: false,
+      codexSubscription: false
     });
     expect(
       parseExperienceReplayCommand(["resume", "--run", "/tmp/run"])
@@ -33,7 +34,8 @@ describe("experience replay command parsing", () => {
       name: "run",
       configPath: "run.json",
       confirmPaidRun: false,
-      productPathProof: false
+      productPathProof: false,
+      codexSubscription: false
     });
     expect(
       parseExperienceReplayCommand([
@@ -41,13 +43,15 @@ describe("experience replay command parsing", () => {
         "--config",
         "proof.json",
         "--confirm-paid-run",
-        "--product-path-proof"
+        "--product-path-proof",
+        "--codex-subscription"
       ])
     ).toEqual({
       name: "preflight",
       configPath: "proof.json",
       confirmPaidRun: true,
-      productPathProof: true
+      productPathProof: true,
+      codexSubscription: true
     });
     expect(() =>
       parseExperienceReplayCommand(["report", "--config", "x"])
@@ -55,6 +59,14 @@ describe("experience replay command parsing", () => {
     expect(() =>
       parseExperienceReplayCommand(["run", "--config", "a", "--config", "b"])
     ).toThrow("Duplicate");
+    expect(() =>
+      parseExperienceReplayCommand([
+        "resume",
+        "--run",
+        "/tmp/run",
+        "--codex-subscription"
+      ])
+    ).toThrow("accepts only");
   });
 });
 

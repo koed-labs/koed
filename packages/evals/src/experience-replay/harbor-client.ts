@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { lstat, realpath, unlink } from "node:fs/promises";
+import { lstat, readFile, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -61,6 +61,9 @@ interface HarborRunRequestBase {
   job_config: Record<string, JsonValue>;
   corpus_manifest: string;
   run_root: string;
+  codex_version: string;
+  codex_binary_sha256: string;
+  codex_code_mode_host_sha256: string;
   result_path?: string;
 }
 
@@ -308,6 +311,9 @@ const validateRequest = async (
     "job_config",
     "corpus_manifest",
     "run_root",
+    "codex_version",
+    "codex_binary_sha256",
+    "codex_code_mode_host_sha256",
     "freeze_manifest_path",
     "freeze_trajectory_to",
     "result_path"
@@ -352,6 +358,21 @@ const validateRequest = async (
       );
     }
   }
+  if (!/^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/u.test(input.codex_version)) {
+    throw new HarborClientError("invalid-request", "codex_version is invalid");
+  }
+  if (!/^sha256:[a-f0-9]{64}$/u.test(input.codex_binary_sha256)) {
+    throw new HarborClientError(
+      "invalid-request",
+      "codex_binary_sha256 is invalid"
+    );
+  }
+  if (!/^sha256:[a-f0-9]{64}$/u.test(input.codex_code_mode_host_sha256)) {
+    throw new HarborClientError(
+      "invalid-request",
+      "codex_code_mode_host_sha256 is invalid"
+    );
+  }
   const runRoot = await validateRunRoot(input.run_root);
   try {
     if (input.attempt_kind === "source") {
@@ -383,6 +404,9 @@ const validateRequest = async (
     job_config: input.job_config,
     corpus_manifest: input.corpus_manifest,
     run_root: runRoot,
+    codex_version: input.codex_version,
+    codex_binary_sha256: input.codex_binary_sha256,
+    codex_code_mode_host_sha256: input.codex_code_mode_host_sha256,
     ...(input.result_path !== undefined
       ? { result_path: input.result_path }
       : {})
@@ -453,6 +477,31 @@ const parseResult = (
     );
   }
   return parsed as HarborRunResult;
+};
+
+const readPersistedResult = async (
+  request: HarborRunRequest
+): Promise<HarborRunResult> => {
+  if (!request.result_path)
+    throw new HarborClientError(
+      "invalid-output",
+      "Harbor runner did not persist its completed result"
+    );
+  const resultPath = path.join(request.run_root, request.result_path);
+  try {
+    await assertNoSymlinkComponents(resultPath, request.run_root);
+    return parseResult(
+      `${JSON.stringify(JSON.parse(await readFile(resultPath, "utf8")))}\n`,
+      request.attempt_kind
+    );
+  } catch (error) {
+    if (error instanceof HarborClientError) throw error;
+    throw new HarborClientError(
+      "invalid-output",
+      "Harbor runner persisted an invalid completed result",
+      { cause: error }
+    );
+  }
 };
 
 export interface HarborClientOptions {
@@ -564,6 +613,7 @@ export class HarborClient {
         ? { eventTimeoutMs: this.lifecycleEventTimeoutMs }
         : {})
     });
+    let completed = false;
     try {
       try {
         await writeTextArtifactAtomic(
@@ -644,14 +694,24 @@ export class HarborClient {
           { cause: error }
         );
       }
-      return parseResult(execution.stdout, request.attempt_kind);
+      let result: HarborRunResult;
+      try {
+        result = parseResult(execution.stdout, request.attempt_kind);
+      } catch (error) {
+        if (!(error instanceof HarborClientError)) throw error;
+        result = await readPersistedResult(request);
+      }
+      completed = true;
+      return result;
     } finally {
       await lifecycle.close();
-      try {
-        await unlink(requestPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          // A failed cleanup must not replace the categorized execution failure.
+      if (completed) {
+        try {
+          await unlink(requestPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            // A failed cleanup must not replace the categorized execution failure.
+          }
         }
       }
     }

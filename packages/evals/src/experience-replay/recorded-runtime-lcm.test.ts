@@ -12,7 +12,8 @@ const config = resolveExperienceReplayConfig({
   codex_cli: {
     version: "codex-1",
     host_sha256: "a".repeat(64),
-    container_sha256: "a".repeat(64)
+    container_sha256: "a".repeat(64),
+    container_code_mode_host_sha256: "b".repeat(64)
   },
   coding_agent: { id: "gpt-5.6-luna", reasoning_effort: "low" },
   memory_answer: {
@@ -155,5 +156,76 @@ describe("recorded LCM preparation", () => {
     await expect(
       run({ repository, actor: { userId: "user-1" }, scheduledEventIds: [] })
     ).resolves.toMatchObject({ inputTokens: 0, outputTokens: 0 });
+  });
+
+  it("uses the production repair path and accounts for both calls", async () => {
+    const updateLcmNodeSummary = vi.fn().mockResolvedValue(undefined);
+    const repository = {
+      listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([
+        {
+          visibility: "personal",
+          workClass: "historical_import_backfill",
+          pendingMemoryEventIds: ["event-1"]
+        }
+      ]),
+      createLcmNodes: vi.fn().mockResolvedValue({
+        leafNodeIds: ["node-1"],
+        rollupNodeId: null
+      }),
+      getLcmNodeForSummarization: vi.fn().mockResolvedValue({
+        id: "node-1",
+        ownerUserId: "user-1",
+        visibility: "personal",
+        kind: "leaf",
+        depth: 0,
+        summaryText: "pending",
+        sourceItems: [{ kind: "memory_event", text: "exact source phrase" }],
+        sourceTokenEstimate: 3,
+        summaryTokenEstimate: null,
+        summaryModel: null,
+        summaryPromptVersion: null,
+        summaryStructuredJson: null,
+        summaryStructuredSchemaVersion: null,
+        lcmAlgorithmVersion: "v1"
+      }),
+      updateLcmNodeSummary
+    } as unknown as MemorySourceRepository;
+    const runner = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+          title: "Recorded summary",
+          summary_text: "A grounded summary.",
+          lexical_anchors: ["invented anchor"]
+        }),
+        model: "codex-app-server:gpt-5.6-luna:low",
+        tokenUsage: { total: { inputTokens: 120, outputTokens: 20 } }
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ lexical_anchors: ["exact source phrase"] }),
+        model: "codex-app-server:gpt-5.6-luna:low",
+        tokenUsage: { total: { inputTokens: 40, outputTokens: 5 } }
+      });
+    const run = createRecordedLcmJobRunner({
+      config,
+      environment: { MEMORY_CODEX_APP_SERVER_BINARY: "/opt/codex" },
+      runner
+    });
+
+    await expect(
+      run({
+        repository,
+        actor: { userId: "user-1" },
+        scheduledEventIds: ["event-1"]
+      })
+    ).resolves.toMatchObject({ inputTokens: 160, outputTokens: 25 });
+    expect(runner).toHaveBeenCalledTimes(2);
+    const persisted = updateLcmNodeSummary.mock.calls.at(-1)?.[0] as
+      | { summaryStructuredJson?: { lexical_anchors?: string[] } }
+      | undefined;
+    expect(persisted?.summaryStructuredJson?.lexical_anchors).toEqual([
+      "exact source phrase"
+    ]);
   });
 });

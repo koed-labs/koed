@@ -89,6 +89,43 @@ describe("normalized experience import", () => {
     );
   });
 
+  it("keeps a tool call identity distinct from a tool result parent link", () => {
+    const toolCallId = "call-1";
+    const payload = normalizedImportPayload({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      externalThreadId: normalizedImportThreadId("sha256:task", "source-1"),
+      projectId: "/benchmark/task-a",
+      taskDigest: "sha256:task",
+      sourceAttemptId: "source-1",
+      sanitizationManifestHash: `sha256:${"c".repeat(64)}`,
+      item: {
+        ...item,
+        type: "tool_call",
+        content: undefined,
+        sourceCallId: toolCallId,
+        toolCall: {
+          tool_call_id: toolCallId,
+          function_name: "exec",
+          arguments: { command: "true" }
+        }
+      }
+    });
+
+    expect(payload.rawJson).toEqual({
+      type: "normalized_import_item",
+      payload: {
+        type: "tool_call",
+        toolCall: {
+          tool_call_id: toolCallId,
+          function_name: "exec",
+          arguments: { command: "true" }
+        }
+      }
+    });
+    expect(payload).not.toHaveProperty("parentExternalItemId");
+    expect(payload.metadata).toMatchObject({ toolCallId });
+  });
+
   it("uses the API boundary and projects every returned canonical item", async () => {
     const createSession = vi.fn(async () => ({ session: { id: "session-a" } }));
     const createTrustedNormalizedImport = vi.fn<

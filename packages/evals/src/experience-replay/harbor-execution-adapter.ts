@@ -51,8 +51,9 @@ export interface CapturedHarborExecutionResult {
     trialId: string;
     taskName: string;
     rewardField: "reward";
-    reward: number;
+    reward: number | null;
     passed: boolean;
+    failureCategory: string | null;
     usage: {
       inputTokens: number;
       cachedInputTokens: number;
@@ -79,8 +80,14 @@ export interface HarborExecutionAdapterOptions {
   mode: "smoke" | "recorded";
   corpusManifest: string;
   providerApiKey?: string;
+  /** Host subscription credential uploaded by Harbor into each ephemeral trial. */
+  codexAuthJsonPath?: string;
+  /** Preflight-approved Linux Codex binary uploaded into each Harbor trial. */
+  containerCodexBinary?: string;
   /** Preflight-approved immutable task image by canonical task name. */
   frozenTaskImages?: Readonly<Record<string, string>>;
+  /** Requires one real relevant-arm recall only for the non-estimate proof. */
+  productPathProof?: boolean;
   executor?: SubprocessExecutor;
   harborProject?: string;
   uvExecutable?: string;
@@ -177,18 +184,22 @@ const extractCapturedResult = (
   if (
     result.n_total_trials !== 1 ||
     result.n_completed_trials !== 1 ||
-    result.n_errored_trials !== 0 ||
+    ![0, 1].includes(result.n_errored_trials as number) ||
     !Array.isArray(result.trials) ||
     result.trials.length !== 1
   )
-    throw new Error("Harbor execution was not one successful isolated trial");
+    throw new Error("Harbor execution was not one completed isolated trial");
   const trial = exactRecord(
     result.trials[0],
-    ["trial_id", "task_name", "primary_reward", "errored"],
+    ["trial_id", "task_name", "primary_reward", "errored", "failure_category"],
     "Harbor trial result"
   );
-  if (trial.task_name !== task.name || trial.errored !== false)
-    throw new Error("Harbor trial identity or error state is invalid");
+  if (
+    trial.task_name !== task.name ||
+    typeof trial.errored !== "boolean" ||
+    result.n_errored_trials !== (trial.errored ? 1 : 0)
+  )
+    throw new Error("Harbor trial identity or error count is invalid");
   const primary = exactRecord(
     trial.primary_reward,
     ["field", "value", "passed"],
@@ -222,14 +233,25 @@ const extractCapturedResult = (
     if (!Number.isSafeInteger(value) || (value as number) < 0)
       throw new Error(`Harbor ATIF interaction ${key} is invalid`);
   }
+  const failureCategory = trial.failure_category;
+  const validFailureCategory = [
+    "agent_failed",
+    "agent_timeout",
+    "verifier_failed",
+    "verifier_timeout",
+    "other"
+  ].includes(failureCategory as string);
   if (
     primary.field !== "reward" ||
-    typeof reward !== "number" ||
-    !Number.isFinite(reward) ||
-    reward < task.reward.minimum ||
-    reward > task.reward.maximum ||
     typeof primary.passed !== "boolean" ||
-    primary.passed !== (reward === task.reward.successValue)
+    (trial.errored
+      ? reward !== null || primary.passed || !validFailureCategory
+      : typeof reward !== "number" ||
+        !Number.isFinite(reward) ||
+        reward < task.reward.minimum ||
+        reward > task.reward.maximum ||
+        primary.passed !== (reward === task.reward.successValue) ||
+        failureCategory !== null)
   )
     throw new Error(
       "Harbor primary reward violates the CoordinatorTask contract"
@@ -272,8 +294,9 @@ const extractCapturedResult = (
       trialId: safeString(trial.trial_id, "Harbor trial id"),
       taskName: task.name,
       rewardField: "reward",
-      reward,
+      reward: reward as number | null,
       passed: primary.passed,
+      failureCategory: failureCategory as string | null,
       usage: {
         inputTokens: usage.input_tokens as number,
         cachedInputTokens: usage.cached_input_tokens as number,
@@ -297,11 +320,19 @@ const extractCapturedResult = (
 const safeJobPart = (value: string): string =>
   value.replace(/^terminal-bench\//u, "").replace(/[^A-Za-z0-9._-]/gu, "-");
 
+export const recordedCodexAllowedHosts = (
+  authentication: "api_key" | "subscription"
+): readonly string[] =>
+  authentication === "api_key"
+    ? ["api.openai.com"]
+    : ["chatgpt.com", "auth.openai.com"];
+
 const jobConfig = (
   input: CommonExecutionInput,
   jobName: string,
   condition: ReplayCondition,
-  codex: ReturnType<typeof createTrialCodexConfiguration>
+  codex: ReturnType<typeof createTrialCodexConfiguration>,
+  authentication: "api_key" | "subscription"
 ): Record<string, JsonValue> => ({
   job_name: jobName,
   quiet: true,
@@ -318,18 +349,29 @@ const jobConfig = (
       n_concurrent: 1,
       override_timeout_sec: input.config.timeouts.agent_seconds,
       extra_allowed_hosts: [
-        ...(condition === "cold" ? [] : ["host.docker.internal"]),
-        ...(input.config.profile === "smoke" ? [] : ["api.openai.com"])
+        ...(condition === "cold"
+          ? []
+          : [
+              new URL(
+                (codex.inline.mcp_servers as { koed: { url: string } }).koed.url
+              ).hostname
+            ]),
+        ...(input.config.profile === "smoke"
+          ? []
+          : recordedCodexAllowedHosts(authentication))
       ],
       env: {
-        ...(input.config.profile === "smoke"
+        ...(input.config.profile === "smoke" || authentication !== "api_key"
           ? {}
           : { OPENAI_API_KEY: "${OPENAI_API_KEY}" }),
         ...(codex.agentEnvironment
           ? { KOED_BENCHMARK_MCP_TOKEN: "${KOED_BENCHMARK_MCP_TOKEN}" }
           : {})
       },
-      kwargs: { config: codex.inline as JsonValue }
+      kwargs: {
+        config: codex.inline as JsonValue,
+        version: input.config.codex_cli.version
+      }
     }
   ]
 });
@@ -414,6 +456,21 @@ export class HarborExecutionAdapter {
       );
     if (options.mode === "recorded" && !options.frozenTaskImages)
       throw new Error("Recorded mode requires preflight-approved task images");
+    if (
+      options.mode === "recorded" &&
+      Boolean(options.providerApiKey) === Boolean(options.codexAuthJsonPath)
+    )
+      throw new Error(
+        "Recorded mode requires exactly one Codex authentication source"
+      );
+    if (
+      options.mode === "recorded" &&
+      !path.isAbsolute(options.containerCodexBinary ?? "")
+    ) {
+      throw new Error(
+        "Recorded mode requires an absolute pinned container Codex binary"
+      );
+    }
   }
 
   private taskImage(task: CoordinatorTask): string {
@@ -470,6 +527,8 @@ export class HarborExecutionAdapter {
       condition,
       model: input.config.coding_agent.id,
       reasoningEffort: input.config.coding_agent.reasoning_effort,
+      requireMemoryAnswer:
+        this.options.productPathProof === true && condition === "relevant",
       ...(bridgeUrl ? { bridgeUrl } : {}),
       ...(bridgeToken ? { bridgeToken } : {})
     });
@@ -484,20 +543,31 @@ export class HarborExecutionAdapter {
       attempt_kind: "source",
       task_name: input.task.name,
       task_image: this.taskImage(input.task),
+      codex_version: input.config.codex_cli.version,
+      codex_binary_sha256: `sha256:${input.config.codex_cli.container_sha256}`,
+      codex_code_mode_host_sha256: `sha256:${input.config.codex_cli.container_code_mode_host_sha256}`,
       job_config: jobConfig(
         input,
         `source-${safeJobPart(input.task.name)}-${input.executionGeneration}`,
         "cold",
-        codex
+        codex,
+        this.options.codexAuthJsonPath ? "subscription" : "api_key"
       ),
       corpus_manifest: this.options.corpusManifest,
       run_root: input.runRoot,
+      result_path: `harbor-results/source-${safeJobPart(input.task.name)}-${input.executionGeneration}.json`,
       freeze_manifest_path: input.freezeManifestPath,
       freeze_trajectory_to: input.freezeTrajectoryPath
     };
     const output = await this.client(input, {
       ...(this.options.providerApiKey
         ? { OPENAI_API_KEY: this.options.providerApiKey }
+        : {}),
+      ...(this.options.codexAuthJsonPath
+        ? { CODEX_AUTH_JSON_PATH: this.options.codexAuthJsonPath }
+        : {}),
+      ...(this.options.containerCodexBinary
+        ? { KOED_HARBOR_CODEX_BINARY: this.options.containerCodexBinary }
         : {})
     }).run(request, input.signal);
     const captured = extractCapturedResult(
@@ -528,6 +598,7 @@ export class HarborExecutionAdapter {
       freezeManifest,
       reward: captured.trial.reward,
       passed: captured.trial.passed,
+      failureCategory: captured.trial.failureCategory,
       costUsd: captured.trial.usage.costUsd,
       sanitizedTokenQuartile: input.sanitizedTokenQuartile,
       result: captured as unknown as Record<string, unknown>
@@ -553,19 +624,31 @@ export class HarborExecutionAdapter {
       attempt_kind: "replay",
       task_name: input.task.name,
       task_image: this.taskImage(input.task),
+      codex_version: input.config.codex_cli.version,
+      codex_binary_sha256: `sha256:${input.config.codex_cli.container_sha256}`,
+      codex_code_mode_host_sha256: `sha256:${input.config.codex_cli.container_code_mode_host_sha256}`,
       job_config: jobConfig(
         input,
         `replay-${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}`,
         input.condition,
-        codex
+        codex,
+        this.options.codexAuthJsonPath ? "subscription" : "api_key"
       ),
       corpus_manifest: this.options.corpusManifest,
       run_root: input.runRoot,
-      ...(input.resultPath ? { result_path: input.resultPath } : {})
+      result_path:
+        input.resultPath ??
+        `harbor-results/replay-${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}.json`
     };
     const output = await this.client(input, {
       ...(this.options.providerApiKey
         ? { OPENAI_API_KEY: this.options.providerApiKey }
+        : {}),
+      ...(this.options.codexAuthJsonPath
+        ? { CODEX_AUTH_JSON_PATH: this.options.codexAuthJsonPath }
+        : {}),
+      ...(this.options.containerCodexBinary
+        ? { KOED_HARBOR_CODEX_BINARY: this.options.containerCodexBinary }
         : {}),
       ...(codex.agentEnvironment ?? {})
     }).run(request, input.signal);
@@ -592,9 +675,17 @@ export class HarborExecutionAdapter {
         setupMs: captured.trial.phaseTimings.setupMs,
         agentMs: captured.trial.phaseTimings.agentMs,
         verifierMs: captured.trial.phaseTimings.verifierMs,
-        failureCategory: null,
-        failureKind: null,
-        failurePhase: null
+        failureCategory: captured.trial.failureCategory,
+        failureKind: captured.trial.failureCategory
+          ? captured.trial.failureCategory.startsWith("agent")
+            ? "agent"
+            : "infrastructure"
+          : null,
+        failurePhase: captured.trial.failureCategory
+          ? captured.trial.failureCategory.startsWith("agent")
+            ? "agent"
+            : "verifier"
+          : null
       }),
       ...observers
     };

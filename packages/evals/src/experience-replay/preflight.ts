@@ -10,6 +10,7 @@ import {
   verifyExperienceReplayRunPlan,
   resolveExperienceReplayConfig,
   type ExperienceReplayExecutionKind,
+  type ExperienceReplayCodexAuthMode,
   type ExperienceReplayRunPlan,
   type ResolvedExperienceReplayConfig
 } from "./core/index.js";
@@ -42,7 +43,7 @@ export const EXPERIENCE_REPLAY_REPOSITORY_ROOT = path.resolve(
   sourceRoot,
   "../../../.."
 );
-const benchmarkSourceRoot = path.join(
+export const EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT = path.join(
   EXPERIENCE_REPLAY_REPOSITORY_ROOT,
   "packages/evals/src/experience-replay"
 );
@@ -138,7 +139,10 @@ export const attestPinnedInputs = async (
   profile: ResolvedExperienceReplayConfig["profile"],
   executionKind: ExperienceReplayExecutionKind = "benchmark_profile"
 ): Promise<PinnedInputsAttestation> => {
-  const corpusPath = path.join(benchmarkSourceRoot, "fixtures/tb3-v3.0.0.json");
+  const corpusPath = path.join(
+    EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
+    "fixtures/tb3-v3.0.0.json"
+  );
   const corpusText = await readFile(corpusPath, "utf8");
   const corpus = JSON.parse(corpusText) as CorpusManifest;
   if (
@@ -158,11 +162,11 @@ export const attestPinnedInputs = async (
   assertTaskManifest(corpus.tasks, 74);
 
   const uvLock = await readFile(
-    path.join(benchmarkSourceRoot, "harbor/uv.lock"),
+    path.join(EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT, "harbor/uv.lock"),
     "utf8"
   );
   const pyproject = await readFile(
-    path.join(benchmarkSourceRoot, "harbor/pyproject.toml"),
+    path.join(EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT, "harbor/pyproject.toml"),
     "utf8"
   );
   if (
@@ -185,7 +189,10 @@ export const attestPinnedInputs = async (
   }
   if (executionKind === "product_path_proof") {
     const proof = await readJson<ProductProofManifest>(
-      path.join(benchmarkSourceRoot, "fixtures/product-proof-2.json")
+      path.join(
+        EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
+        "fixtures/product-proof-2.json"
+      )
     );
     if (
       proof.schema_version !== "koed-terminal-bench-product-proof-v1" ||
@@ -222,7 +229,7 @@ export const attestPinnedInputs = async (
   if (profile === "quick" || profile === "standard") {
     const subset = await readJson<SubsetManifest>(
       path.join(
-        benchmarkSourceRoot,
+        EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
         `fixtures/${profile === "quick" ? "quick-12" : "standard-24"}.json`
       )
     );
@@ -305,6 +312,11 @@ export interface RecordedRunPreflightFactoryOptions {
    * build. The factory freezes and independently reinspects its OCI identity.
    */
   provisionTaskImage: TaskImageBuilder;
+  /**
+   * Immutable image evidence from the original admission. Resume must verify
+   * these exact images instead of rebuilding nominally equivalent ones.
+   */
+  persistedTaskImages?: readonly TaskImageAttestation[];
   hostCodex: RecordedCodexAuthContext;
   containerCodex: RecordedCodexAuthContext;
   dockerExecutable?: string;
@@ -401,13 +413,39 @@ export const createRecordedRunPreflightAdapters = (
     repositoryStatus: status,
     attestTaskImages: async (tasks) => {
       await assertClean();
-      const frozen = await freezeTaskImages(
-        tasks.map((task) => ({
-          taskName: task.name,
-          taskDigest: task.task_digest
-        })),
-        options.provisionTaskImage
-      );
+      const requested = tasks.map((task) => ({
+        taskName: task.name,
+        taskDigest: task.task_digest
+      }));
+      const frozen = options.persistedTaskImages
+        ? (() => {
+            const persistedByName = new Map(
+              options.persistedTaskImages.map((image) => [
+                image.taskName,
+                image
+              ])
+            );
+            if (
+              persistedByName.size !== options.persistedTaskImages.length ||
+              persistedByName.size !== requested.length
+            ) {
+              throw new Error(
+                "Persisted task-image set differs from selected tasks"
+              );
+            }
+            return Object.freeze(
+              requested.map((task) => {
+                const image = persistedByName.get(task.taskName);
+                if (!image || image.taskDigest !== task.taskDigest) {
+                  throw new Error(
+                    `Persisted task-image identity differs for ${task.taskName}`
+                  );
+                }
+                return image;
+              })
+            );
+          })()
+        : await freezeTaskImages(requested, options.provisionTaskImage);
       for (const image of frozen) {
         const inspected = await inspectImage({
           immutableReference: image.immutableReference,
@@ -516,7 +554,8 @@ export const preflightExperienceReplay = async ({
   requireRunnable = true,
   recordedRunAdapters,
   productPathReady = false,
-  executionKind = "benchmark_profile"
+  executionKind = "benchmark_profile",
+  codexAuthMode = "api_key"
 }: {
   config: ResolvedExperienceReplayConfig;
   confirmPaidRun?: boolean;
@@ -524,6 +563,7 @@ export const preflightExperienceReplay = async ({
   recordedRunAdapters?: RecordedRunPreflightAdapters;
   productPathReady?: boolean;
   executionKind?: ExperienceReplayExecutionKind;
+  codexAuthMode?: ExperienceReplayCodexAuthMode;
 }): Promise<PreflightResult> => {
   const repositoryRoot = await realpath(EXPERIENCE_REPLAY_REPOSITORY_ROOT);
   if (executionKind === "product_path_proof" && config.profile === "smoke") {
@@ -538,11 +578,15 @@ export const preflightExperienceReplay = async ({
       : pins.selectedTasks.map((task) => task.task_digest);
   const runPlan =
     executionKind === "product_path_proof"
-      ? createProductPathProofRunPlan(config, {
-          targetTaskDigest: selectedTaskDigests[0] ?? "",
-          donorTaskDigest: selectedTaskDigests[1] ?? ""
-        })
-      : createBenchmarkRunPlan(config, selectedTaskDigests);
+      ? createProductPathProofRunPlan(
+          config,
+          {
+            targetTaskDigest: selectedTaskDigests[0] ?? "",
+            donorTaskDigest: selectedTaskDigests[1] ?? ""
+          },
+          codexAuthMode
+        )
+      : createBenchmarkRunPlan(config, selectedTaskDigests, codexAuthMode);
   verifyExperienceReplayRunPlan(runPlan);
   if (config.profile !== "smoke" && !confirmPaidRun) {
     throw new ProductPathPrerequisiteError([

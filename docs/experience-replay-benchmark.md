@@ -51,7 +51,9 @@ two sources and four replays.
 The proof fails closed unless the relevant replay completes `memory_answer`
 successfully through the real product path. Its report identifies the execution
 as `product_path_proof`, omits confidence claims and states that it is not a
-benchmark estimate.
+benchmark estimate. For this proof only, the relevant replay is explicitly
+required to make one `memory_answer` call before editing. Recorded benchmark
+profiles retain normal intention-to-treat behavior and do not force tool use.
 
 ## Deterministic Smoke
 
@@ -103,15 +105,43 @@ export KOED_EXPERIENCE_REPLAY_EMBEDDING_URL='http://127.0.0.1:<port>'
 export KOED_EXPERIENCE_REPLAY_EMBEDDING_TOKEN='<benchmark embedding credential>'
 ```
 
-The two Codex homes must be distinct authenticated contexts. The OCI registry
+API-key authentication is the default recorded-run mode. The two Codex homes
+must be distinct authenticated contexts. The OCI registry
 must support pushes and digest-qualified pulls from the Docker host. The
 Embedding Service model, dimensions and artifact hash must match the resolved
 configuration.
 
+For an explicitly local subscription-backed run, omit `OPENAI_API_KEY` and the
+two Codex-home variables, then provide the private auth file created by the
+host Codex login:
+
+```bash
+export KOED_EXPERIENCE_REPLAY_CODEX_AUTH_JSON_PATH="$HOME/.codex/auth.json"
+```
+
+Add `--codex-subscription` to both preflight and run. The locked Harbor Codex
+adapter uploads the credential and the exact attested `codex` and
+`codex-code-mode-host` binary pair into each ephemeral task container, while
+each host-side worker gets a private credential copy in its disposable Codex
+home. Credentials are never serialized into benchmark requests or reports and
+are removed during trial teardown. Subscription mode is for trusted local
+execution of the pinned corpus; API-key mode remains the default.
+
+The benchmark bridge uses `host.docker.internal` on supported native Docker
+hosts. On WSL it advertises the current private WSL `eth0` address because
+Docker Desktop's host-gateway alias does not route back into the WSL namespace.
+The task runner accepts that private address only when it exactly matches the
+attested MCP URL host.
+
+Completed task failures are retained with a null reward and a stable failure
+classification. Their frozen source trajectories remain in the cohort;
+discarding them would introduce survivorship bias. Runtime, lifecycle,
+credential, attestation, and malformed-output failures still stop the run.
+
 Run preflight first. It verifies the clean repository, locked corpus and
 toolchain, exact host/container Codex identities, model availability, task
-image build provenance, registry digest and capacity. A paid run then requires
-explicit confirmation:
+image build provenance, registry digest, separate verifier environment builds
+and capacity. A paid run then requires explicit confirmation:
 
 ```bash
 pnpm --filter @koed/evals eval:experience-replay -- \
@@ -131,6 +161,11 @@ pnpm --filter @koed/evals eval:experience-replay -- \
   run --config <resolved-quick-config.json> --confirm-paid-run \
   --product-path-proof
 ```
+
+For the subscription-backed proof, replace `--confirm-paid-run` with
+`--codex-subscription`. The configured monetary limits remain conservative
+API-equivalent accounting bounds; subscription mode does not submit paid API
+requests.
 
 The configured paid stop prevents new admissions. In-flight work may consume
 at most the reported concurrency overshoot. The independent provider spending

@@ -76,15 +76,29 @@ describe("recorded task image attestations", () => {
 
   it("inspects the exact digest with bounded shell-free argv", async () => {
     const reference = `registry.example/task@${digest("b")}`;
+    let invocation = 0;
     const executor = vi.fn(async (command) => {
-      expect(command).toMatchObject({
-        file: "docker-safe",
-        args: ["image", "inspect", reference, "--format", "{{json .}}"],
-        timeoutMs: 30_000,
-        maxOutputBytes: 1024 * 1024
-      });
+      invocation += 1;
+      expect(command).toMatchObject(
+        invocation === 1
+          ? {
+              file: "docker-safe",
+              args: ["pull", reference],
+              timeoutMs: 30 * 60_000,
+              maxOutputBytes: 1024 * 1024
+            }
+          : {
+              file: "docker-safe",
+              args: ["image", "inspect", reference, "--format", "{{json .}}"],
+              timeoutMs: 30_000,
+              maxOutputBytes: 1024 * 1024
+            }
+      );
       return {
-        stdout: JSON.stringify({ Id: digest("c"), RepoDigests: [reference] }),
+        stdout:
+          invocation === 1
+            ? ""
+            : JSON.stringify({ Id: digest("c"), RepoDigests: [reference] }),
         stderr: ""
       };
     });
@@ -99,6 +113,7 @@ describe("recorded task image attestations", () => {
       imageId: digest("c"),
       contentDigest: digest("b")
     });
+    expect(executor).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed on malformed or mismatched Docker inspection output", async () => {

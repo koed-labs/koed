@@ -8,7 +8,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalAiRuntimeClient } from "@koed/mcp-server/runtime-contracts";
-import { startBenchmarkBridge, type BenchmarkBridgeHandle } from "./bridge.js";
+import {
+  isBenchmarkDockerPeer,
+  resolveDockerBridgeHost,
+  startBenchmarkBridge,
+  type BenchmarkBridgeHandle
+} from "./bridge.js";
 import { collectBridgeTelemetry } from "./bridge-telemetry.js";
 
 const open: BenchmarkBridgeHandle[] = [];
@@ -76,6 +81,37 @@ const rawStatus = async (
   });
 
 describe("experience replay MCP bridge", () => {
+  it("advertises WSL eth0 directly and keeps the standard Docker host elsewhere", () => {
+    expect(
+      resolveDockerBridgeHost({
+        osRelease: "6.6.87.2-microsoft-standard-WSL2",
+        interfaces: {
+          eth0: [
+            {
+              address: "172.30.104.30",
+              netmask: "255.255.240.0",
+              family: "IPv4",
+              mac: "00:00:00:00:00:00",
+              internal: false,
+              cidr: "172.30.104.30/20"
+            }
+          ]
+        }
+      })
+    ).toBe("172.30.104.30");
+    expect(
+      resolveDockerBridgeHost({ osRelease: "6.8.0-linux", interfaces: {} })
+    ).toBe("host.docker.internal");
+  });
+
+  it("accepts only the dedicated Docker private pool as container peers", () => {
+    expect(isBenchmarkDockerPeer("172.16.0.2")).toBe(true);
+    expect(isBenchmarkDockerPeer("::ffff:172.31.255.254")).toBe(true);
+    expect(isBenchmarkDockerPeer("172.15.255.254")).toBe(false);
+    expect(isBenchmarkDockerPeer("192.168.1.2")).toBe(false);
+    expect(isBenchmarkDockerPeer("172.16.0.999")).toBe(false);
+  });
+
   it("rejects inactive credentials and forged origins", async () => {
     const { bridge } = await start();
     expect(

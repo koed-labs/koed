@@ -1,17 +1,16 @@
 import {
   countTokensForModel,
-  lcmLexicalAnchorGroundingPayloads,
-  validateLcmLexicalAnchors
+  lcmLexicalAnchorGroundingPayloads
 } from "@koed/core";
 import type { ActorContext, MemorySourceRepository } from "@koed/db";
 import {
   buildLcmSummaryPrompt,
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   loadPrompt,
-  parseStructuredLcmSummary,
   resolveLcmSummaryWorkerConfig,
-  runCodexAppServerLcmSummary,
-  type CodexLcmSummaryRunner,
+  runLcmSummary,
+  runLcmSummaryPromptWithRetries,
+  type LcmSummaryRunner,
   type LcmSummaryWorkerConfig
 } from "@koed/mcp-server";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
@@ -20,10 +19,10 @@ import type { ScheduledLcmJobAttestation } from "./local-product-adapter.js";
 export interface RecordedLcmJobRunnerOptions {
   config: ResolvedExperienceReplayConfig;
   environment: NodeJS.ProcessEnv;
-  runner?: CodexLcmSummaryRunner;
+  runner?: LcmSummaryRunner;
 }
 
-const usage = (result: Awaited<ReturnType<CodexLcmSummaryRunner>>) => {
+const usage = (result: Awaited<ReturnType<LcmSummaryRunner>>) => {
   const measured = result.tokenUsage?.total ?? result.tokenUsage?.last;
   const inputTokens = measured?.inputTokens;
   const outputTokens = measured?.outputTokens;
@@ -76,7 +75,7 @@ const createNodes = async (
 export const createRecordedLcmJobRunner = ({
   config,
   environment,
-  runner = runCodexAppServerLcmSummary
+  runner = runLcmSummary
 }: RecordedLcmJobRunnerOptions) => {
   if (
     config.lcm_summary.output_schema_version !==
@@ -139,32 +138,26 @@ export const createRecordedLcmJobRunner = ({
           `Recorded LCM prompt exceeds configured input limit for ${nodeId}`
         );
       }
-      let result: Awaited<ReturnType<CodexLcmSummaryRunner>> | undefined;
-      let failure: unknown;
-      for (let attempt = 1; attempt <= workerConfig.maxAttempts; attempt += 1) {
-        try {
-          result = await runner(
-            prompt,
-            workerConfig,
-            workerConfig.timeoutMs * attempt
-          );
-          break;
-        } catch (error) {
-          failure = error;
-        }
-      }
-      if (!result) throw failure;
-      const structured = parseStructuredLcmSummary(result.text);
-      const grounding = validateLcmLexicalAnchors(
-        structured.lexical_anchors,
-        lcmLexicalAnchorGroundingPayloads(node.sourceItems)
+      const promptResults: Array<
+        Awaited<ReturnType<LcmSummaryRunner>> & { promptVersion: string }
+      > = [];
+      const result = await runLcmSummaryPromptWithRetries(
+        prompt,
+        config.lcm_summary.prompt_version,
+        lcmLexicalAnchorGroundingPayloads(node.sourceItems),
+        workerConfig,
+        runner,
+        promptResults
       );
-      if (grounding.rejected.length > 0) {
-        throw new Error(`Recorded LCM summary has unsupported lexical anchors`);
+      const structured = result.structuredSummary;
+      if (!structured) {
+        throw new Error("Recorded LCM result lacks a structured summary");
       }
-      const measured = usage(result);
-      inputTokens += measured.inputTokens;
-      outputTokens += measured.outputTokens;
+      for (const promptResult of promptResults) {
+        const measured = usage(promptResult);
+        inputTokens += measured.inputTokens;
+        outputTokens += measured.outputTokens;
+      }
       await repository.updateLcmNodeSummary({
         nodeId,
         summaryText: structured.summary_text,

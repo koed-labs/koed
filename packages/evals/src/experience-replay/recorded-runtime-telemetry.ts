@@ -6,6 +6,7 @@ import type {
   TelemetryEnvelope
 } from "./telemetry.js";
 import type { BridgeCallTelemetry } from "./bridge-telemetry.js";
+import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
 
 type Collector = NonNullable<
   HarborExecutionAdapterOptions["collectReplayTelemetry"]
@@ -25,6 +26,33 @@ export interface RecordedAttemptObservation {
     durationMs: number;
   };
 }
+
+export interface RecordedReplayTelemetryOptions {
+  authMode: ExperienceReplayCodexAuthMode;
+  workflowModels: Readonly<
+    Record<"mcp_memory_answer" | "lcm_summary" | "session_title", string>
+  >;
+  prices: Readonly<
+    Record<
+      string,
+      {
+        uncached_input_usd_per_million: number;
+        cached_input_usd_per_million: number;
+        output_usd_per_million: number;
+      }
+    >
+  >;
+}
+
+export const recordedApiEquivalentCost = (
+  tokens: { input: number; cachedInput: number; output: number },
+  price: RecordedReplayTelemetryOptions["prices"][string]
+): number =>
+  (Math.max(0, tokens.input - tokens.cachedInput) *
+    price.uncached_input_usd_per_million +
+    tokens.cachedInput * price.cached_input_usd_per_million +
+    tokens.output * price.output_usd_per_million) /
+  1_000_000;
 
 const key = (identity: AttemptTelemetryIdentity): string =>
   JSON.stringify([identity.taskDigest, identity.condition, identity.repeat]);
@@ -70,15 +98,16 @@ const zeroWorker = {
   durationMs: null,
   tokens: { uncachedInput: 0, cachedInput: 0, output: 0, reasoning: 0 },
   costs: {
-    providerBilledUsd: null,
-    apiEquivalentUsd: null,
-    subscriptionUsd: null
+    providerBilledUsd: 0,
+    apiEquivalentUsd: 0,
+    subscriptionUsd: 0
   }
 };
 
 const databaseObservers = async (
   identity: AttemptTelemetryIdentity,
-  observation: RecordedAttemptObservation
+  observation: RecordedAttemptObservation,
+  options: RecordedReplayTelemetryOptions
 ): Promise<
   Pick<Observers, "modelWorkflows"> & { workerBytes: number | null }
 > => {
@@ -99,22 +128,25 @@ const databaseObservers = async (
     max: 1
   });
   try {
-    const usage = await pool.query<{
+    type UsageRow = {
       workflow_type: string;
       calls: string;
       input_tokens: string;
       cached_input_tokens: string;
       output_tokens: string;
       reasoning_tokens: string;
-    }>(
-      `select workflow_type, count(distinct coalesce(workflow_id, id::text))::text calls,
+      model: string | null;
+    };
+    const usage = await pool.query<UsageRow>(
+      `select workflow_type, model,
+      count(distinct coalesce(workflow_id, id::text))::text calls,
       coalesce(sum(input_tokens),0)::text input_tokens,
       coalesce(sum(cached_input_tokens),0)::text cached_input_tokens,
       coalesce(sum(output_tokens),0)::text output_tokens,
       coalesce(sum(reasoning_output_tokens),0)::text reasoning_tokens
       from workflow_token_usage where owner_user_id=$1
       and usage_accuracy='provider_reported' and usage_kind='turn_delta'
-      group by workflow_type`,
+      group by workflow_type, model`,
       [observation.ownerUserId]
     );
     const questions = await pool.query<{
@@ -127,25 +159,59 @@ const databaseObservers = async (
        from memory_questions where owner_user_id=$1 and origin='mcp_memory_answer'`,
       [observation.ownerUserId]
     );
-    const byType = new Map(usage.rows.map((row) => [row.workflow_type, row]));
+    const byType = new Map<string, UsageRow[]>();
+    for (const row of usage.rows) {
+      byType.set(row.workflow_type, [
+        ...(byType.get(row.workflow_type) ?? []),
+        row
+      ]);
+    }
     const worker = (workflow: string, callsOverride?: number, failures = 0) => {
-      const row = byType.get(workflow);
-      const input = Number(row?.input_tokens ?? 0);
-      const cached = Number(row?.cached_input_tokens ?? 0);
+      const rows = byType.get(workflow) ?? [];
+      const expectedModel =
+        options.workflowModels[
+          workflow as keyof RecordedReplayTelemetryOptions["workflowModels"]
+        ];
+      if (
+        rows.some(
+          (row) =>
+            row.model !== null &&
+            row.model !== expectedModel &&
+            !row.model.includes(expectedModel)
+        )
+      ) {
+        throw new Error(`Recorded ${workflow} usage has an unexpected model`);
+      }
+      const price = options.prices[expectedModel];
+      if (!price && rows.length > 0) {
+        throw new Error(`Recorded ${workflow} model has no price entry`);
+      }
+      const sum = (field: keyof (typeof rows)[number]) =>
+        rows.reduce((total, row) => total + Number(row[field] ?? 0), 0);
+      const input = sum("input_tokens");
+      const cached = sum("cached_input_tokens");
+      const output = sum("output_tokens");
+      const apiEquivalentUsd = price
+        ? recordedApiEquivalentCost(
+            { input, cachedInput: cached, output },
+            price
+          )
+        : 0;
       return {
-        calls: callsOverride ?? Number(row?.calls ?? 0),
+        calls: callsOverride ?? sum("calls"),
         failures,
         durationMs: null,
         tokens: {
           uncachedInput: Math.max(0, input - cached),
           cachedInput: cached,
-          output: Number(row?.output_tokens ?? 0),
-          reasoning: Number(row?.reasoning_tokens ?? 0)
+          output,
+          reasoning: sum("reasoning_tokens")
         },
         costs: {
-          providerBilledUsd: null,
-          apiEquivalentUsd: null,
-          subscriptionUsd: null
+          providerBilledUsd:
+            options.authMode === "api_key" ? apiEquivalentUsd : 0,
+          apiEquivalentUsd,
+          subscriptionUsd: 0
         }
       };
     };
@@ -169,9 +235,8 @@ const databaseObservers = async (
 };
 
 export const createRecordedReplayTelemetryCollector = (
-  environment: Readonly<NodeJS.ProcessEnv> = {}
+  options: RecordedReplayTelemetryOptions
 ): Collector => {
-  void environment;
   return async ({ identity, captured }) => {
     const observation = observations.get(key(identity));
     if (!observation) {
@@ -194,7 +259,7 @@ export const createRecordedReplayTelemetryCollector = (
       evidenceCount: 0,
       workerPeakRssBytes: null
     };
-    const database = await databaseObservers(identity, active);
+    const database = await databaseObservers(identity, active, options);
     const embedding = active.embeddings?.() ?? {
       calls: 0,
       tokens: 0,
@@ -213,9 +278,10 @@ export const createRecordedReplayTelemetryCollector = (
           reasoning: null
         },
         costs: {
-          providerBilledUsd: captured.trial.usage.costUsd,
-          apiEquivalentUsd: null,
-          subscriptionUsd: null
+          providerBilledUsd:
+            options.authMode === "api_key" ? captured.trial.usage.costUsd : 0,
+          apiEquivalentUsd: captured.trial.usage.costUsd,
+          subscriptionUsd: 0
         },
         turns: captured.trial.interactions.turns,
         toolCalls: captured.trial.interactions.toolCalls,

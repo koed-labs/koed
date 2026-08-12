@@ -1,4 +1,6 @@
 import path from "node:path";
+import os from "node:os";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { resolveExperienceReplayConfig } from "./core/index.js";
 import {
@@ -20,7 +22,8 @@ const config = resolveExperienceReplayConfig({
   codex_cli: {
     version: "codex 1.2.3",
     host_sha256: "a".repeat(64),
-    container_sha256: "b".repeat(64)
+    container_sha256: "b".repeat(64),
+    container_code_mode_host_sha256: "c".repeat(64)
   },
   coding_agent: { id: "gpt-5.6-luna", reasoning_effort: "low" },
   memory_answer: {
@@ -163,6 +166,34 @@ describe("recorded preflight runtime", () => {
         KOED_EXPERIENCE_REPLAY_DOCKER_BINARY: "/tools/podman"
       })
     ).toThrow("must name the docker executable");
+  });
+
+  it("accepts a private subscription auth file without API credentials or duplicate homes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-preflight-auth-"));
+    const authJsonPath = path.join(root, "auth.json");
+    await writeFile(
+      authJsonPath,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        OPENAI_API_KEY: null,
+        tokens: { access_token: "test-only" }
+      }),
+      { mode: 0o600 }
+    );
+    expect(() =>
+      createRecordedPreflightRuntime(
+        config,
+        {
+          ...environment,
+          OPENAI_API_KEY: undefined,
+          KOED_EXPERIENCE_REPLAY_HOST_CODEX_HOME: undefined,
+          KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_HOME: undefined,
+          KOED_EXPERIENCE_REPLAY_CODEX_AUTH_JSON_PATH: authJsonPath
+        },
+        {},
+        "subscription"
+      )
+    ).not.toThrow();
   });
 
   it("exposes a frozen execution map without credential or mutable image data", () => {

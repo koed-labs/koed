@@ -24,6 +24,32 @@ describe("isolated Codex replay configuration", () => {
     });
     expect(config.serialized).toContain("enabled = false");
     expect(config.serialized).toContain('web_search = "disabled"');
+    expect(config.inline.features).toEqual({ mcp_2026_07_28: true });
+    expect(config.inline.suppress_unstable_features_warning).toBe(true);
+  });
+
+  it("adds the exact recall instruction only to a relevant product-path proof", () => {
+    const proof = createTrialCodexConfiguration({
+      condition: "relevant",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+      bridgeUrl: "http://127.0.0.1:4567",
+      bridgeToken: "token",
+      requireMemoryAnswer: true
+    });
+    expect(proof.inline.developer_instructions).toContain(
+      "call the available memory_answer tool exactly once"
+    );
+    expect(() =>
+      createTrialCodexConfiguration({
+        condition: "empty",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "low",
+        bridgeUrl: "http://127.0.0.1:4567",
+        bridgeToken: "token",
+        requireMemoryAnswer: true
+      })
+    ).toThrow("relevant arm");
   });
 
   it("gives cold no Koed connection and proves the other arms differ only by MCP", () => {

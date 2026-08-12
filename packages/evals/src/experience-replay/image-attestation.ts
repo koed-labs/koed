@@ -61,7 +61,7 @@ export const assertImmutableImageReference = (reference: string): string => {
   return match[2]!;
 };
 
-/** Inspect an already built image by digest, never by a mutable tag. */
+/** Pull and inspect an image by exact registry digest, never by a mutable tag. */
 export const inspectImmutableOciImage = async ({
   immutableReference,
   dockerExecutable = "docker",
@@ -72,6 +72,12 @@ export const inspectImmutableOciImage = async ({
   executor?: BoundedCommandExecutor;
 }): Promise<OciImageInspection> => {
   const contentDigest = assertImmutableImageReference(immutableReference);
+  await executor({
+    file: dockerExecutable,
+    args: ["pull", immutableReference],
+    timeoutMs: 30 * 60_000,
+    maxOutputBytes: 1024 * 1024
+  });
   const result = await executor({
     file: dockerExecutable,
     args: ["image", "inspect", immutableReference, "--format", "{{json .}}"],

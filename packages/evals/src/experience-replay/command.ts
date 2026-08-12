@@ -4,11 +4,12 @@ export type ExperienceReplayCommand =
       configPath: string;
       confirmPaidRun: boolean;
       productPathProof: boolean;
+      codexSubscription: boolean;
     }
   | { name: "resume" | "report" | "sanitize"; runDirectory: string };
 
 const usage =
-  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] [--product-path-proof] | <resume|report|sanitize> --run <dir>";
+  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] [--product-path-proof] [--codex-subscription] | <resume|report|sanitize> --run <dir>";
 
 export class CommandLineError extends Error {
   override readonly name = "CommandLineError";
@@ -29,6 +30,7 @@ export const parseExperienceReplayCommand = (
   const values = new Map<string, string>();
   let confirmPaidRun = false;
   let productPathProof = false;
+  let codexSubscription = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index] as string;
     if (argument === "--confirm-paid-run") {
@@ -41,6 +43,12 @@ export const parseExperienceReplayCommand = (
       if (productPathProof)
         throw new CommandLineError("Duplicate --product-path-proof");
       productPathProof = true;
+      continue;
+    }
+    if (argument === "--codex-subscription") {
+      if (codexSubscription)
+        throw new CommandLineError("Duplicate --codex-subscription");
+      codexSubscription = true;
       continue;
     }
     if (argument !== "--config" && argument !== "--run") {
@@ -65,10 +73,16 @@ export const parseExperienceReplayCommand = (
       name: commandName,
       configPath,
       confirmPaidRun,
-      productPathProof
+      productPathProof,
+      codexSubscription
     };
   }
-  if (values.has("--config") || confirmPaidRun || productPathProof) {
+  if (
+    values.has("--config") ||
+    confirmPaidRun ||
+    productPathProof ||
+    codexSubscription
+  ) {
     throw new CommandLineError(`${commandName} accepts only --run <dir>`);
   }
   const runDirectory = values.get("--run");

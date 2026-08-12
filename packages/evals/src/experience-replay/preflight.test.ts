@@ -22,7 +22,8 @@ const config = (profile: "smoke" | "quick") =>
     codex_cli: {
       version: "pinned-codex",
       host_sha256: "a".repeat(64),
-      container_sha256: "a".repeat(64)
+      container_sha256: "a".repeat(64),
+      container_code_mode_host_sha256: "b".repeat(64)
     },
     coding_agent: { id: "gpt-5.6-luna", reasoning_effort: "low" },
     memory_answer: {
@@ -341,6 +342,56 @@ describe("experience replay strict preflight", () => {
         requiredModelIds: ["gpt-5.6-luna"]
       })
     );
+
+    const resumeBuilder = vi.fn();
+    const resumeAdapters = createRecordedRunPreflightAdapters({
+      config: exactConfig,
+      provisionTaskImage: resumeBuilder,
+      persistedTaskImages: images,
+      hostCodex: {
+        binary: "/bin/host-codex",
+        environment: hostEnvironment,
+        cwd: "/workspace"
+      },
+      containerCodex: {
+        binary: "/bin/container-codex",
+        environment: containerEnvironment,
+        cwd: "/app"
+      },
+      executor,
+      operations: { attestCodex: attestCodex as never, inspectImage }
+    });
+    await expect(
+      resumeAdapters.attestTaskImages(pins.selectedTasks)
+    ).resolves.toEqual(images);
+    expect(resumeBuilder).not.toHaveBeenCalled();
+    expect(inspectImage).toHaveBeenCalledTimes(24);
+
+    const mismatched = [
+      { ...images[0]!, taskDigest: digest("9") },
+      ...images.slice(1)
+    ];
+    const mismatchedAdapters = createRecordedRunPreflightAdapters({
+      config: exactConfig,
+      provisionTaskImage: resumeBuilder,
+      persistedTaskImages: mismatched,
+      hostCodex: {
+        binary: "/bin/host-codex",
+        environment: hostEnvironment,
+        cwd: "/workspace"
+      },
+      containerCodex: {
+        binary: "/bin/container-codex",
+        environment: containerEnvironment,
+        cwd: "/app"
+      },
+      executor,
+      operations: { attestCodex: attestCodex as never, inspectImage }
+    });
+    await expect(
+      mismatchedAdapters.attestTaskImages(pins.selectedTasks)
+    ).rejects.toThrow("Persisted task-image identity differs");
+    expect(resumeBuilder).not.toHaveBeenCalled();
   });
 
   it("fails closed on shared auth contexts and repository drift during attestation", async () => {

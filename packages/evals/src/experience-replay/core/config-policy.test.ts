@@ -12,7 +12,12 @@ const base = {
   profile: "quick" as const,
   seed: "experiment",
   output_dir: "/tmp/run-a",
-  codex_cli: { version: "1.2.3", host_sha256: hash, container_sha256: hash },
+  codex_cli: {
+    version: "1.2.3",
+    host_sha256: hash,
+    container_sha256: hash,
+    container_code_mode_host_sha256: hash
+  },
   coding_agent: worker.model,
   memory_answer: worker,
   lcm_summary: worker,

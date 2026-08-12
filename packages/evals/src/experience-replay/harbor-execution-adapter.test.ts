@@ -8,7 +8,8 @@ import { resolveExperienceReplayConfig } from "./core/index.js";
 import type { CoordinatorTask } from "./coordinator.js";
 import {
   HarborExecutionAdapter,
-  createDeterministicSmokeTelemetry
+  createDeterministicSmokeTelemetry,
+  recordedCodexAllowedHosts
 } from "./harbor-execution-adapter.js";
 import type {
   HarborRunRequest,
@@ -40,7 +41,8 @@ const config = (runRoot: string) =>
     codex_cli: {
       version: "deterministic-codex",
       host_sha256: "a".repeat(64),
-      container_sha256: "a".repeat(64)
+      container_sha256: "a".repeat(64),
+      container_code_mode_host_sha256: "b".repeat(64)
     },
     coding_agent: { id: "deterministic-codex", reasoning_effort: "low" },
     memory_answer: {
@@ -138,7 +140,11 @@ interface ExecutorCapture {
 const successfulExecutor =
   (
     capture: ExecutorCapture,
-    options: { reward?: number; passed?: boolean } = {}
+    options: {
+      reward?: number | null;
+      passed?: boolean;
+      failureCategory?: string | null;
+    } = {}
   ): SubprocessExecutor =>
   async (invocation) => {
     const requestPath = invocation.args.at(-1);
@@ -200,8 +206,9 @@ const successfulExecutor =
     }
     await lifecycleEvent(invocation, request, "trial_ended");
 
-    const reward = options.reward ?? 1;
+    const reward = options.reward === undefined ? 1 : options.reward;
     const passed = options.passed ?? reward === 1;
+    const failureCategory = options.failureCategory ?? null;
     const output = {
       schema_version: "koed-harbor-result-v1",
       runtime: {
@@ -221,7 +228,7 @@ const successfulExecutor =
         job_id: `job-${request.attempt_kind}`,
         n_total_trials: 1,
         n_completed_trials: 1,
-        n_errored_trials: 0,
+        n_errored_trials: reward === null ? 1 : 0,
         phase_timings: {
           setup_ms: 12.5,
           agent_ms: 34.25,
@@ -239,7 +246,8 @@ const successfulExecutor =
             trial_id: `trial-${request.attempt_kind}`,
             task_name: request.task_name,
             primary_reward: { field: "reward", value: reward, passed },
-            errored: false
+            errored: reward === null,
+            failure_category: failureCategory
           }
         ]
       }
@@ -309,7 +317,10 @@ describe("HarborExecutionAdapter", () => {
           {
             name: "codex",
             n_concurrent: 1,
-            kwargs: { config: { approval_policy: "never" } }
+            kwargs: {
+              config: { approval_policy: "never" },
+              version: "deterministic-codex"
+            }
           }
         ]
       }
@@ -381,6 +392,80 @@ describe("HarborExecutionAdapter", () => {
       setupMs: 12.5,
       agentMs: 34.25,
       verifierMs: 5.75
+    });
+  });
+
+  it("requires one relevant recall only in the explicit product-path proof", async () => {
+    const { runRoot, corpusManifest } = await fixture();
+    const capture: ExecutorCapture = { requests: [], invocations: [] };
+    const adapter = new HarborExecutionAdapter({
+      mode: "smoke",
+      corpusManifest,
+      executor: successfulExecutor(capture),
+      productPathProof: true
+    });
+    await adapter.runReplay({
+      task,
+      condition: "relevant",
+      repeat: 0,
+      executionGeneration: 1,
+      runRoot,
+      bridgeUrl: "http://127.0.0.1:4321",
+      bridgeToken: "opaque-bridge-credential",
+      lifecycle: acknowledgedLifecycle([]),
+      config: config(runRoot)
+    });
+
+    expect(JSON.stringify(capture.requests[0]?.job_config)).toContain(
+      "call the available memory_answer tool exactly once"
+    );
+  });
+
+  it("preserves completed failed trials as null-reward evidence", async () => {
+    const { runRoot, corpusManifest } = await fixture();
+    const capture: ExecutorCapture = { requests: [], invocations: [] };
+    const adapter = new HarborExecutionAdapter({
+      mode: "smoke",
+      corpusManifest,
+      executor: successfulExecutor(capture, {
+        reward: null,
+        passed: false,
+        failureCategory: "verifier_failed"
+      })
+    });
+
+    const result = await adapter.runSource({
+      task,
+      attemptId: `source:${task.taskDigest}`,
+      executionGeneration: 1,
+      runRoot,
+      freezeTrajectoryPath: "source/failed/trajectory.json",
+      freezeManifestPath: "source/failed/manifest.json",
+      sanitizedTokenQuartile: 2,
+      lifecycle: acknowledgedLifecycle([]),
+      config: config(runRoot)
+    });
+
+    expect(result).toMatchObject({ reward: null, passed: false });
+    expect(result.result).toMatchObject({
+      trial: { reward: null, failureCategory: "verifier_failed" }
+    });
+
+    const replay = await adapter.runReplay({
+      task,
+      condition: "cold",
+      repeat: 0,
+      executionGeneration: 1,
+      runRoot,
+      lifecycle: acknowledgedLifecycle([]),
+      config: config(runRoot)
+    });
+    expect(replay.telemetry.harbor?.metrics).toMatchObject({
+      reward: null,
+      passed: false,
+      failureCategory: "verifier_failed",
+      failureKind: "infrastructure",
+      failurePhase: "verifier"
     });
   });
 
@@ -467,6 +552,34 @@ describe("HarborExecutionAdapter", () => {
     expect(
       () => new HarborExecutionAdapter({ mode: "recorded", corpusManifest })
     ).toThrow("preflight-approved task images");
+    expect(
+      () =>
+        new HarborExecutionAdapter({
+          mode: "recorded",
+          corpusManifest,
+          frozenTaskImages: {},
+          providerApiKey: "test-only",
+          codexAuthJsonPath: "/tmp/auth.json"
+        })
+    ).toThrow("exactly one Codex authentication source");
+    expect(
+      () =>
+        new HarborExecutionAdapter({
+          mode: "recorded",
+          corpusManifest,
+          frozenTaskImages: {},
+          codexAuthJsonPath: "/tmp/auth.json",
+          containerCodexBinary: "/tmp/codex"
+        })
+    ).not.toThrow();
+  });
+
+  it("limits recorded Codex network access to its authentication endpoints", () => {
+    expect(recordedCodexAllowedHosts("api_key")).toEqual(["api.openai.com"]);
+    expect(recordedCodexAllowedHosts("subscription")).toEqual([
+      "chatgpt.com",
+      "auth.openai.com"
+    ]);
   });
 
   it("builds all mandatory deterministic observer envelopes", () => {

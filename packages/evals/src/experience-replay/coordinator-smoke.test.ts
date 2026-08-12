@@ -185,7 +185,8 @@ const smokeConfig = (output: string) =>
     codex_cli: {
       version: "deterministic-fake",
       host_sha256: "a".repeat(64),
-      container_sha256: "a".repeat(64)
+      container_sha256: "a".repeat(64),
+      container_code_mode_host_sha256: "b".repeat(64)
     },
     coding_agent: { id: "deterministic-fake", reasoning_effort: "low" },
     memory_answer: {
@@ -304,6 +305,7 @@ const fakeDependencies = (
       freezeManifest: freezeManifest(task.name, frozen),
       reward: passed ? 1 : 0,
       passed,
+      failureCategory: null,
       costUsd: 0,
       sanitizedTokenQuartile: passed ? 0 : 1,
       result: { verifier: "deterministic-fake" }
@@ -940,6 +942,38 @@ describe("unified experience replay coordinator", () => {
           .map((entry) => entry.executionGeneration)
       ).toEqual([2]);
     }
+  });
+
+  it("stops the source cohort on a Harbor runtime failure", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const runSource = vi.fn(
+      async (
+        input: Parameters<
+          ExperienceReplayCoordinatorDependencies["runSource"]
+        >[0]
+      ) => {
+        const frozen = trajectory(input.task.name);
+        return {
+          frozenTrajectory: frozen,
+          freezeManifest: freezeManifest(input.task.name, frozen),
+          reward: null,
+          passed: false,
+          failureCategory: "other",
+          costUsd: 0,
+          sanitizedTokenQuartile: 0 as const,
+          result: { runtime: "failed" }
+        };
+      }
+    );
+
+    await expect(
+      runExperienceReplay(config, {
+        preflight: admitted,
+        dependencies: fakeDependencies([], { runSource })
+      })
+    ).rejects.toThrow("failed in Harbor runtime or environment setup");
   });
 
   it("preserves a source interruption after agent start and refuses dependent preparation", async () => {

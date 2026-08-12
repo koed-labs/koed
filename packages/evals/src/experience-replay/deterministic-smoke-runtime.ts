@@ -309,7 +309,8 @@ export const createDeterministicSmokeHarborExecutor =
             trial_id: `smoke-${request.attempt_kind}-${safeId(request.task_name)}`,
             task_name: request.task_name,
             primary_reward: { field: "reward", value: 1, passed: true },
-            errored: false
+            errored: false,
+            failure_category: null
           }
         ]
       }

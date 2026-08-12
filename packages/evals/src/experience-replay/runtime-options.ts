@@ -1,16 +1,22 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
+import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
 import { createExperienceReplayCoordinatorDependencies } from "./coordinator-dependencies.js";
-import { ProductPathPrerequisiteError } from "./preflight.js";
+import {
+  EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
+  ProductPathPrerequisiteError
+} from "./preflight.js";
 import {
   createDeterministicSmokeHarborExecutor,
   createDeterministicSmokeProductRuntimeDependencies
 } from "./deterministic-smoke-runtime.js";
 import { createRecordedCliExperienceReplayDependencies } from "./recorded-runtime.js";
 
-const sourceRoot = path.dirname(fileURLToPath(import.meta.url));
+const corpusManifest = path.join(
+  EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
+  "fixtures/tb3-v3.0.0.json"
+);
 
 const required = (
   environment: Readonly<NodeJS.ProcessEnv>,
@@ -43,24 +49,29 @@ export const createCliExperienceReplayDependencies = (
   config: ResolvedExperienceReplayConfig,
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
   runId: string = randomUUID(),
-  frozenTaskImages: Readonly<Record<string, string>> = Object.freeze({})
+  frozenTaskImages: Readonly<Record<string, string>> = Object.freeze({}),
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key",
+  productPathProof = false
 ) => {
   if (config.profile !== "smoke") {
     return createRecordedCliExperienceReplayDependencies(config, environment, {
       runId,
-      corpusManifest: path.join(sourceRoot, "fixtures/tb3-v3.0.0.json"),
+      corpusManifest,
       postgres: postgres(environment),
-      frozenTaskImages
+      frozenTaskImages,
+      codexAuthMode,
+      productPathProof
     });
   }
   return createExperienceReplayCoordinatorDependencies({
     mode: "smoke",
     runId,
-    corpusManifest: path.join(sourceRoot, "fixtures/tb3-v3.0.0.json"),
+    corpusManifest,
     postgres: postgres(environment),
     countEmbeddingTokens: (text) =>
       text.match(/[\p{L}\p{N}_./:-]+/gu)?.length ?? 0,
     smokeExecutor: createDeterministicSmokeHarborExecutor(),
+    productPathProof,
     productRuntimeDependencies:
       createDeterministicSmokeProductRuntimeDependencies(),
     lcmSummaryConfig: {

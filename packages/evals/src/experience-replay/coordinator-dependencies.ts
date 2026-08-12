@@ -71,7 +71,10 @@ export interface ExperienceReplayCoordinatorDependencyFactoryOptions {
   countEmbeddingTokens(text: string): number;
   smokeExecutor?: SubprocessExecutor;
   providerApiKey?: string;
+  codexAuthJsonPath?: string;
+  containerCodexBinary?: string;
   frozenTaskImages?: Readonly<Record<string, string>>;
+  productPathProof?: boolean;
   collectReplayTelemetry?: HarborExecutionAdapterOptions["collectReplayTelemetry"];
   recordedEmbedding?: RecordedEmbeddingServiceOptions;
   productApiEnvironment?: Readonly<NodeJS.ProcessEnv>;
@@ -155,6 +158,10 @@ const defaultWorkspace = async ({
   ) {
     throw new Error("Template Project cwd cannot be safely materialized");
   }
+  // A killed coordinator can leave this run-owned directory behind before its
+  // resource scope closes. The journal lock prevents a concurrent resume, so
+  // remove only the attested Project directory before recreating it.
+  await rm(projectCwd, { recursive: true, force: true });
   await mkdir(path.dirname(projectCwd), { recursive: true, mode: 0o700 });
   // Exclusive creation proves this factory owns the directory it later removes.
   await mkdir(projectCwd, { mode: 0o700 });
@@ -190,14 +197,19 @@ const assertFactoryOptions = (
     throw new Error("Smoke mode requires the deterministic Harbor executor");
   }
   if (options.mode === "recorded") {
+    const authenticationCount = [
+      options.providerApiKey?.trim(),
+      options.codexAuthJsonPath?.trim()
+    ].filter(Boolean).length;
     const missing = [
-      !options.providerApiKey?.trim() && "provider API credentials",
+      authenticationCount !== 1 && "exactly one Codex authentication source",
       !options.recordedEmbedding && "recorded Embedding Service credentials",
       !options.preparationCostUsd && "preparation cost collector",
       !options.runScheduledLcmJobs && "Local AI Runtime preparation collector",
       !options.productRuntimeDependencies?.startAppServer &&
         !options.productRuntimeEnvironment?.MEMORY_CODEX_APP_SERVER_BINARY &&
-        "Local AI Runtime provider"
+        "Local AI Runtime provider",
+      !options.containerCodexBinary && "pinned container Codex binary"
     ].filter(Boolean);
     if (missing.length) {
       throw new Error(
@@ -225,11 +237,26 @@ export const createExperienceReplayCoordinatorDependencies = (
       ...(options.providerApiKey
         ? { providerApiKey: options.providerApiKey }
         : {}),
+      ...(options.codexAuthJsonPath
+        ? { codexAuthJsonPath: options.codexAuthJsonPath }
+        : {}),
+      ...(options.containerCodexBinary
+        ? { containerCodexBinary: options.containerCodexBinary }
+        : {}),
+      productPathProof: options.productPathProof === true,
       ...(options.mode === "recorded"
         ? {
             collectReplayTelemetry:
               options.collectReplayTelemetry ??
-              createRecordedReplayTelemetryCollector(),
+              createRecordedReplayTelemetryCollector({
+                authMode: "api_key",
+                workflowModels: {
+                  mcp_memory_answer: "unconfigured",
+                  lcm_summary: "unconfigured",
+                  session_title: "unconfigured"
+                },
+                prices: {}
+              }),
             frozenTaskImages: options.frozenTaskImages
           }
         : {})
@@ -442,6 +469,9 @@ export const createExperienceReplayCoordinatorDependencies = (
             condition: input.condition
           },
           environment: { ...options.productRuntimeEnvironment },
+          ...(options.codexAuthJsonPath
+            ? { codexAuthJsonPath: options.codexAuthJsonPath }
+            : {}),
           dependencies: {
             ...options.productRuntimeDependencies,
             // The cloned adapter API owns the matching token pepper. Reusing
@@ -450,7 +480,8 @@ export const createExperienceReplayCoordinatorDependencies = (
           },
           ...(options.bridgeCredentialLifetimeMs
             ? { bridgeCredentialLifetimeMs: options.bridgeCredentialLifetimeMs }
-            : {})
+            : {}),
+          dockerAccessibleBridge: options.mode === "recorded"
         });
       } catch (error) {
         await Promise.allSettled([
@@ -511,7 +542,7 @@ export const createExperienceReplayCoordinatorDependencies = (
                 runRoot: input.runRoot,
                 lifecycle,
                 config: input.config,
-                bridgeUrl: runtime.bridge.url,
+                bridgeUrl: runtime.bridge.containerUrl ?? runtime.bridge.url,
                 bridgeToken: runtime.bridge.token,
                 signal
               })

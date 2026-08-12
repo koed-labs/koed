@@ -1,6 +1,7 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
+import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
+import { resolveRecordedCodexAuthentication } from "./codex-auth.js";
 import type {
   TaskImageAttestation,
   TaskImageBuildInput,
@@ -8,6 +9,7 @@ import type {
 } from "./image-attestation.js";
 import {
   createRecordedRunPreflightAdapters,
+  EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
   ProductPathPrerequisiteError,
   type RecordedRunAttestation,
   type RecordedRunPreflightAdapters
@@ -17,9 +19,14 @@ import {
   type BoundedCommandExecutor
 } from "./toolchain.js";
 
-const sourceRoot = path.dirname(fileURLToPath(import.meta.url));
-const harborProject = path.join(sourceRoot, "harbor");
-const corpusManifest = path.join(sourceRoot, "fixtures/tb3-v3.0.0.json");
+const harborProject = path.join(
+  EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
+  "harbor"
+);
+const corpusManifest = path.join(
+  EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
+  "fixtures/tb3-v3.0.0.json"
+);
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 
 const required = (
@@ -143,7 +150,9 @@ export interface RecordedPreflightRuntimeOperations {
 export const createRecordedPreflightRuntime = (
   config: ResolvedExperienceReplayConfig,
   environment: Readonly<NodeJS.ProcessEnv>,
-  operations: RecordedPreflightRuntimeOperations = {}
+  operations: RecordedPreflightRuntimeOperations = {},
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key",
+  persistedTaskImages?: readonly TaskImageAttestation[]
 ): RecordedPreflightRuntime => {
   if (config.profile === "smoke")
     throw new Error("Recorded preflight runtime cannot be used for smoke");
@@ -168,19 +177,22 @@ export const createRecordedPreflightRuntime = (
     environment,
     "KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_BINARY"
   );
-  const hostCodexHome = absolute(
+  const authentication = resolveRecordedCodexAuthentication(
     environment,
-    "KOED_EXPERIENCE_REPLAY_HOST_CODEX_HOME"
+    codexAuthMode
   );
-  const containerCodexHome = absolute(
-    environment,
-    "KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_HOME"
-  );
-  if (hostCodexHome === containerCodexHome)
+  const hostCodexHome =
+    authentication.mode === "subscription"
+      ? authentication.codexHome
+      : absolute(environment, "KOED_EXPERIENCE_REPLAY_HOST_CODEX_HOME");
+  const containerCodexHome =
+    authentication.mode === "subscription"
+      ? authentication.codexHome
+      : absolute(environment, "KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_HOME");
+  if (authentication.mode === "api_key" && hostCodexHome === containerCodexHome)
     throw new ProductPathPrerequisiteError([
       "host and container Codex auth homes must be separate"
     ]);
-  const providerApiKey = required(environment, "OPENAI_API_KEY");
   const executor = operations.executor ?? executeBoundedCommand;
   const provisionTaskImage = async (
     task: TaskImageBuildInput
@@ -220,18 +232,26 @@ export const createRecordedPreflightRuntime = (
   const adapters = createRecordedRunPreflightAdapters({
     config,
     provisionTaskImage,
+    ...(persistedTaskImages ? { persistedTaskImages } : {}),
     dockerExecutable,
     hostCodex: {
       binary: hostBinary,
       cwd: path.dirname(hostBinary),
-      environment: { CODEX_HOME: hostCodexHome, OPENAI_API_KEY: providerApiKey }
+      environment: {
+        CODEX_HOME: hostCodexHome,
+        ...(authentication.mode === "api_key"
+          ? { OPENAI_API_KEY: authentication.apiKey }
+          : {})
+      }
     },
     containerCodex: {
       binary: containerBinary,
       cwd: path.dirname(containerBinary),
       environment: {
         CODEX_HOME: containerCodexHome,
-        OPENAI_API_KEY: providerApiKey
+        ...(authentication.mode === "api_key"
+          ? { OPENAI_API_KEY: authentication.apiKey }
+          : {})
       }
     },
     executor

@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import contextlib
 import hashlib
+import ipaddress
 import importlib.metadata
 import json
 import math
@@ -26,8 +28,12 @@ from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
 from dirhash import dirhash
+from harbor.agents.installed.codex import Codex
+from harbor.environments.factory import EnvironmentFactory
 from harbor.job import Job
 from harbor.models.job.config import DatasetConfig, JobConfig
+from harbor.models.task.config import VerifierEnvironmentMode
+from harbor.models.task.verifier_mode import resolve_effective_verifier_env_config
 from harbor.publisher.packager import Packager
 from harbor.trial.hooks import TrialHookEvent
 from harbor.trial.trial import Trial
@@ -110,19 +116,29 @@ SAFE_RETRY_CONFIG_FIELDS = frozenset(
 )
 CODEX_AGENT_NAME = "codex"
 CODEX_AGENT_ENV_FIELDS = frozenset({"OPENAI_API_KEY", "KOED_BENCHMARK_MCP_TOKEN"})
-CODEX_EXTRA_ALLOWED_HOSTS = frozenset({"api.openai.com", "host.docker.internal"})
+CODEX_EXTRA_ALLOWED_HOSTS = frozenset(
+    {
+        "api.openai.com",
+        "auth.openai.com",
+        "chatgpt.com",
+        "host.docker.internal",
+    }
+)
 SAFE_CODEX_CONFIG_FIELDS = frozenset(
     {
         "model",
         "model_reasoning_effort",
         "model_reasoning_summary",
         "approval_policy",
+        "suppress_unstable_features_warning",
+        "developer_instructions",
         "include_permissions_instructions",
         "include_apps_instructions",
         "include_collaboration_mode_instructions",
         "include_environment_context",
         "project_doc_max_bytes",
         "web_search",
+        "features",
         "agents",
         "skills",
         "mcp_servers",
@@ -392,21 +408,11 @@ def _runtime_versions(docker: str) -> tuple[str, str]:
         raise ContractError("INVALID_DOCKER_VERSION")
     buildkit_output = _run_docker(
         docker,
-        ["buildx", "inspect", "--bootstrap", "--format", "{{json .Nodes}}"],
-    ).stdout.strip()
-    try:
-        nodes = json.loads(buildkit_output)
-    except json.JSONDecodeError as error:
-        raise ContractError("INVALID_BUILDKIT_VERSION") from error
-    if not isinstance(nodes, list) or not nodes:
-        raise ContractError("INVALID_BUILDKIT_VERSION")
-    buildkit_versions = {
-        node.get("Buildkit")
-        for node in nodes
-        if isinstance(node, dict)
-        and isinstance(node.get("Buildkit"), str)
-        and node.get("Buildkit")
-    }
+        ["buildx", "inspect", "--bootstrap"],
+    ).stdout
+    buildkit_versions = set(
+        re.findall(r"^BuildKit version:\s*(\S+)\s*$", buildkit_output, re.MULTILINE)
+    )
     if len(buildkit_versions) != 1:
         raise ContractError("INVALID_BUILDKIT_VERSION")
     buildkit = next(iter(buildkit_versions))
@@ -643,6 +649,20 @@ def _validate_reward_values(
         "primary_value": primary,
         "passed": passed,
     }
+
+
+def _trial_failure_category(exception_type: str | None) -> str | None:
+    if exception_type is None:
+        return None
+    if exception_type == "AgentTimeoutError":
+        return "agent_timeout"
+    if exception_type == "VerifierTimeoutError":
+        return "verifier_timeout"
+    if exception_type.startswith("Agent"):
+        return "agent_failed"
+    if exception_type.startswith("Verifier") or exception_type.startswith("Reward"):
+        return "verifier_failed"
+    return "other"
 
 
 def _task_record(task_dir: Path) -> dict[str, Any]:
@@ -1084,6 +1104,9 @@ def _strict_request(path: Path) -> dict[str, Any]:
         "job_config",
         "corpus_manifest",
         "run_root",
+        "codex_version",
+        "codex_binary_sha256",
+        "codex_code_mode_host_sha256",
         "freeze_manifest_path",
         "freeze_trajectory_to",
         "result_path",
@@ -1099,6 +1122,18 @@ def _strict_request(path: Path) -> dict[str, Any]:
         raise ContractError("unsupported run request schema")
     if not isinstance(request["job_config"], dict):
         raise ContractError("INVALID_JOB_CONFIG")
+    if not isinstance(request["codex_version"], str) or not re.fullmatch(
+        r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", request["codex_version"]
+    ):
+        raise ContractError("INVALID_CODEX_VERSION")
+    if not isinstance(request["codex_binary_sha256"], str) or not re.fullmatch(
+        r"sha256:[a-f0-9]{64}", request["codex_binary_sha256"]
+    ):
+        raise ContractError("INVALID_CODEX_BINARY_DIGEST")
+    if not isinstance(request["codex_code_mode_host_sha256"], str) or not re.fullmatch(
+        r"sha256:[a-f0-9]{64}", request["codex_code_mode_host_sha256"]
+    ):
+        raise ContractError("INVALID_CODE_MODE_HOST_DIGEST")
     if request.get("attempt_kind") not in {"source", "replay"}:
         raise ContractError("INVALID_ATTEMPT_KIND")
     if not isinstance(request["task_image"], str) or not re.fullmatch(
@@ -1178,24 +1213,56 @@ def _validate_codex_agent_env(value: Any) -> None:
 
 
 def _validate_extra_allowed_hosts(value: Any) -> None:
+    def allowed(item: str) -> bool:
+        if item in CODEX_EXTRA_ALLOWED_HOSTS:
+            return True
+        try:
+            address = ipaddress.ip_address(item)
+        except ValueError:
+            return False
+        return (
+            isinstance(address, ipaddress.IPv4Address)
+            and address.is_private
+            and not address.is_loopback
+            and not address.is_link_local
+        )
+
     if (
         not isinstance(value, list)
         or any(not isinstance(item, str) for item in value)
-        or not set(value).issubset(CODEX_EXTRA_ALLOWED_HOSTS)
+        or any(not allowed(item) for item in value)
     ):
         raise ContractError("DISALLOWED_EXTRA_ALLOWED_HOST")
 
 
-def _validate_codex_kwargs(value: Any) -> None:
-    kwargs = _strict_nested_config(value, frozenset({"config"}), "DISALLOWED_CODEX_KWARG")
+def _validate_codex_kwargs(value: Any) -> str | None:
+    kwargs = _strict_nested_config(
+        value, frozenset({"config", "version"}), "DISALLOWED_CODEX_KWARG"
+    )
+    if not isinstance(kwargs.get("version"), str) or not re.fullmatch(
+        r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", kwargs["version"]
+    ):
+        raise ContractError("INVALID_CODEX_VERSION")
     config = _strict_nested_config(
         kwargs.get("config"), SAFE_CODEX_CONFIG_FIELDS, "DISALLOWED_CODEX_CONFIG_FIELD"
     )
-    required = SAFE_CODEX_CONFIG_FIELDS - {"mcp_servers"}
+    required = SAFE_CODEX_CONFIG_FIELDS - {"mcp_servers", "developer_instructions"}
     if not required.issubset(config):
         raise ContractError("INCOMPLETE_CODEX_CONFIG")
     if config.get("approval_policy") != "never" or config.get("web_search") != "disabled":
         raise ContractError("UNSAFE_CODEX_CONFIG")
+    if config.get("features") != {"mcp_2026_07_28": True}:
+        raise ContractError("MCP_2026_PROTOCOL_REQUIRED")
+    if config.get("suppress_unstable_features_warning") is not True:
+        raise ContractError("UNSTABLE_FEATURE_WARNING_MUST_BE_SUPPRESSED")
+    developer_instructions = config.get("developer_instructions")
+    if developer_instructions is not None and developer_instructions != (
+        "This is a product-path validation run. Before making changes, call the available "
+        "memory_answer tool exactly once with a concise project-scoped query asking for prior "
+        "experience relevant to the task. Use the answer if useful, then complete the task "
+        "normally. Do not call memory_answer again."
+    ):
+        raise ContractError("UNSAFE_CODEX_DEVELOPER_INSTRUCTIONS")
     for key in (
         "include_permissions_instructions",
         "include_apps_instructions",
@@ -1212,7 +1279,7 @@ def _validate_codex_kwargs(value: Any) -> None:
         raise ContractError("UNSAFE_CODEX_CONFIG")
     servers = config.get("mcp_servers")
     if servers is None:
-        return
+        return None
     if not isinstance(servers, dict) or set(servers) != {"koed"}:
         raise ContractError("DISALLOWED_CODEX_MCP_CONFIG")
     koed = _strict_nested_config(
@@ -1228,15 +1295,35 @@ def _validate_codex_kwargs(value: Any) -> None:
         ),
         "DISALLOWED_CODEX_MCP_CONFIG",
     )
+    url_match = (
+        re.fullmatch(
+            r"http://(?P<host>[^/:]+):[1-9][0-9]{0,4}", koed.get("url", "")
+        )
+        if isinstance(koed.get("url"), str)
+        else None
+    )
+    mcp_host = url_match.group("host") if url_match else None
+    if mcp_host not in {"127.0.0.1", "host.docker.internal"}:
+        try:
+            mcp_address = ipaddress.ip_address(mcp_host or "")
+        except ValueError:
+            mcp_address = None
+        if not (
+            isinstance(mcp_address, ipaddress.IPv4Address)
+            and mcp_address.is_private
+            and not mcp_address.is_loopback
+            and not mcp_address.is_link_local
+        ):
+            raise ContractError("UNSAFE_CODEX_MCP_CONFIG")
     if (
-        not isinstance(koed.get("url"), str)
-        or not re.fullmatch(r"http://(?:127\.0\.0\.1|host\.docker\.internal):[1-9][0-9]{0,4}", koed["url"])
+        not url_match
         or koed.get("bearer_token_env_var") != "KOED_BENCHMARK_MCP_TOKEN"
         or koed.get("enabled_tools") != ["memory_answer"]
         or koed.get("required") is not True
         or koed.get("default_tools_approval_mode") != "approve"
     ):
         raise ContractError("UNSAFE_CODEX_MCP_CONFIG")
+    return mcp_host
 
 
 def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
@@ -1280,6 +1367,7 @@ def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
             agent = _strict_nested_config(
                 agent, SAFE_AGENT_CONFIG_FIELDS, "DISALLOWED_AGENT_CONFIG_FIELD"
             )
+            mcp_host: str | None = None
             if "env" in agent:
                 if agent.get("name") != CODEX_AGENT_NAME:
                     raise ContractError("DISALLOWED_AGENT_ENV")
@@ -1291,7 +1379,23 @@ def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
             if "kwargs" in agent:
                 if agent.get("name") != CODEX_AGENT_NAME:
                     raise ContractError("DISALLOWED_AGENT_KWARGS")
-                _validate_codex_kwargs(agent["kwargs"])
+                mcp_host = _validate_codex_kwargs(agent["kwargs"])
+            private_hosts = {
+                host
+                for host in agent.get("extra_allowed_hosts", [])
+                if host not in CODEX_EXTRA_ALLOWED_HOSTS
+            }
+            expected_private_hosts = (
+                {mcp_host}
+                if mcp_host not in {None, "127.0.0.1", "host.docker.internal"}
+                else set()
+            )
+            if private_hosts != expected_private_hosts:
+                raise ContractError("MCP_HOST_EGRESS_MISMATCH")
+            if mcp_host and mcp_host != "127.0.0.1" and mcp_host not in agent.get(
+                "extra_allowed_hosts", []
+            ):
+                raise ContractError("MCP_HOST_EGRESS_MISMATCH")
 
 
 def _verify_resolved_tasks(job: Job, manifest: dict[str, Any], task_name: str) -> None:
@@ -1322,6 +1426,175 @@ def _verify_resolved_tasks(job: Job, manifest: dict[str, Any], task_name: str) -
     failed = {key: values for key, values in mismatches.items() if values[0] != values[1]}
     if failed:
         raise ContractError(f"resolved Harbor task differs from corpus manifest: {failed}")
+
+
+def _validate_pinned_task_image(task_image: str) -> None:
+    if not re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9./:_-]*[a-z0-9])?@sha256:[a-f0-9]{64}",
+        task_image,
+    ):
+        raise ContractError("INVALID_TASK_IMAGE")
+
+
+@contextlib.contextmanager
+def _pinned_task_image(task_image: str):
+    """Bridge Harbor 0.21's missing public per-trial image override."""
+    _validate_pinned_task_image(task_image)
+    original = Trial._init_agent_environment
+    original_factory_descriptor = EnvironmentFactory.__dict__[
+        "create_environment_from_config"
+    ]
+    original_factory = EnvironmentFactory.create_environment_from_config
+
+    def initialize(trial: Trial) -> None:
+        def create_agent_environment(*args: Any, **kwargs: Any) -> Any:
+            task_env_config = kwargs.get("task_env_config")
+            if task_env_config is None:
+                raise ContractError("HARBOR_AGENT_ENVIRONMENT_CONFIG_MISSING")
+            kwargs["task_env_config"] = task_env_config.model_copy(
+                deep=True,
+                update={"docker_image": task_image},
+            )
+            return original_factory(*args, **kwargs)
+
+        EnvironmentFactory.create_environment_from_config = staticmethod(
+            create_agent_environment
+        )
+        try:
+            original(trial)
+        finally:
+            EnvironmentFactory.create_environment_from_config = (
+                original_factory_descriptor
+            )
+
+    Trial._init_agent_environment = initialize
+    try:
+        yield
+    finally:
+        Trial._init_agent_environment = original
+
+
+@contextlib.contextmanager
+def _pinned_codex_binary(request: dict[str, Any]):
+    """Install the exact preflight-attested Linux Codex binary in the trial."""
+    configured = os.environ.get("KOED_HARBOR_CODEX_BINARY")
+    if not configured:
+        raise ContractError("CODEX_BINARY_PATH_MISSING")
+    binary = Path(configured)
+    try:
+        info = binary.lstat()
+        resolved = binary.resolve(strict=True)
+    except OSError as error:
+        raise ContractError("CODEX_BINARY_UNAVAILABLE") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ContractError("CODEX_BINARY_UNSAFE")
+    if _sha256_file(resolved) != request["codex_binary_sha256"]:
+        raise ContractError("CODEX_BINARY_DIGEST_MISMATCH")
+    helper = resolved.with_name("codex-code-mode-host")
+    try:
+        helper_info = helper.lstat()
+        helper_resolved = helper.resolve(strict=True)
+    except OSError as error:
+        raise ContractError("CODE_MODE_HOST_UNAVAILABLE") from error
+    if stat.S_ISLNK(helper_info.st_mode) or not stat.S_ISREG(helper_info.st_mode):
+        raise ContractError("CODE_MODE_HOST_UNSAFE")
+    if _sha256_file(helper_resolved) != request["codex_code_mode_host_sha256"]:
+        raise ContractError("CODE_MODE_HOST_DIGEST_MISMATCH")
+
+    original = Codex.install
+
+    async def install(agent: Codex, environment: Any) -> None:
+        del agent
+        temporary = "/tmp/koed-pinned-codex"
+        helper_temporary = "/tmp/koed-pinned-codex-code-mode-host"
+        await environment.upload_file(resolved, temporary)
+        await environment.upload_file(helper_resolved, helper_temporary)
+        result = await environment.exec(
+            command=(
+                f"install -m 0755 {temporary} /usr/local/bin/codex && "
+                f"install -m 0755 {helper_temporary} /usr/local/bin/codex-code-mode-host && "
+                f"rm -f {temporary} {helper_temporary} && "
+                "sha256sum /usr/local/bin/codex /usr/local/bin/codex-code-mode-host && "
+                "codex --version"
+            ),
+            user="root",
+        )
+        if result.return_code != 0:
+            raise ContractError("PINNED_CODEX_INSTALL_FAILED")
+        output = result.stdout or ""
+        expected = request["codex_binary_sha256"].removeprefix("sha256:")
+        helper_expected = request["codex_code_mode_host_sha256"].removeprefix(
+            "sha256:"
+        )
+        if (
+            expected not in output
+            or helper_expected not in output
+            or request["codex_version"] not in output
+        ):
+            raise ContractError("PINNED_CODEX_ATTESTATION_FAILED")
+
+    Codex.install = install
+    try:
+        yield
+    finally:
+        Codex.install = original
+
+
+@contextlib.contextmanager
+def _suppress_process_stdout():
+    """Reserve stdout for the runner's single JSON protocol response."""
+    sys.stdout.flush()
+    saved_stdout = os.dup(1)
+    try:
+        with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+            os.dup2(sink.fileno(), 1)
+            yield
+            sink.flush()
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdout)
+
+
+async def _compose_built_image_reference(environment: Any) -> str:
+    result = await environment._run_docker_compose_command(
+        ["images", "--format", "json"]
+    )
+    try:
+        images = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE") from error
+    if not isinstance(images, list) or len(images) != 1:
+        raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE")
+    image = images[0]
+    if not isinstance(image, dict):
+        raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE")
+    image_id = image.get("ID")
+    if not isinstance(image_id, str) or not re.fullmatch(
+        r"sha256:[a-f0-9]{64}", image_id
+    ):
+        raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE")
+    return image_id
+
+
+async def _prepare_separate_verifier_environment(trial: Trial) -> None:
+    verifier = getattr(trial.task.config, "verifier", None)
+    if (
+        verifier is None
+        or verifier.environment_mode != VerifierEnvironmentMode.SEPARATE
+    ):
+        return
+    env_config = resolve_effective_verifier_env_config(trial.task.config, None)
+    if env_config is None:
+        raise ContractError("SEPARATE_VERIFIER_ENVIRONMENT_MISSING")
+    trial.paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+    plan = trial._network_plan(None, env_config=env_config)
+    async with trial._separate_verifier_env(
+        env_config,
+        key="preflight",
+        plan=plan,
+        step_cfg=None,
+    ):
+        pass
 
 
 async def provision_task_image(
@@ -1401,60 +1674,61 @@ async def provision_task_image(
             if use_prebuilt is True:
                 built_reference = trial.task.config.environment.docker_image
             elif use_prebuilt is False:
-                built_reference = getattr(environment, "_main_image_name", None)
+                built_reference = await _compose_built_image_reference(environment)
             else:
                 raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE")
             if not isinstance(built_reference, str) or not built_reference:
                 raise ContractError("HARBOR_IMAGE_IDENTITY_UNAVAILABLE")
+
+            if _sha256_file(dockerfile) != dockerfile_sha256:
+                raise ContractError("DOCKERFILE_CHANGED_DURING_BUILD")
+            built = _docker_inspect(docker, built_reference)
+            image_id = built["Id"]
+            _run_docker(docker, ["tag", built_reference, tag])
+            _run_docker(docker, ["push", tag], timeout=1800)
+            pushed = _docker_inspect(docker, tag)
+            if pushed["Id"] != image_id:
+                raise ContractError("OCI_IMAGE_CHANGED_DURING_PUSH")
+            immutable_candidates = {
+                value
+                for value in pushed["RepoDigests"]
+                if value.startswith(f"{repository}@")
+                and re.fullmatch(r"sha256:[a-f0-9]{64}", value.rsplit("@", 1)[1])
+            }
+            if len(immutable_candidates) != 1:
+                raise ContractError("OCI_IMMUTABLE_IDENTITY_UNAVAILABLE")
+            immutable_reference = next(iter(immutable_candidates))
+            content_digest = immutable_reference.rsplit("@", 1)[1]
+            immutable = _docker_inspect(docker, immutable_reference)
+            if (
+                immutable["Id"] != image_id
+                or immutable_reference not in immutable["RepoDigests"]
+            ):
+                raise ContractError("OCI_IMMUTABLE_IDENTITY_MISMATCH")
+            base_digests = _resolved_base_digests(docker, base_references)
+            if base_digests != base_digests_before_build:
+                raise ContractError("BASE_IMAGE_CHANGED_DURING_BUILD")
+            docker_version, buildkit_version = _runtime_versions(docker)
+            provenance_sha256 = _available_provenance_sha256(
+                docker, immutable_reference
+            )
+            await _prepare_separate_verifier_environment(trial)
+            return {
+                "schema_version": TASK_IMAGE_SCHEMA,
+                "task_name": task_name,
+                "task_digest": task_digest,
+                "immutable_reference": immutable_reference,
+                "image_id": image_id,
+                "content_digest": content_digest,
+                "resolved_base_image_digests": base_digests,
+                "dockerfile_sha256": dockerfile_sha256,
+                "docker_version": docker_version,
+                "buildkit_version": buildkit_version,
+                "provenance_sha256": provenance_sha256,
+            }
         finally:
             if started:
                 await environment.stop(delete=True)
-
-        if _sha256_file(dockerfile) != dockerfile_sha256:
-            raise ContractError("DOCKERFILE_CHANGED_DURING_BUILD")
-        built = _docker_inspect(docker, built_reference)
-        image_id = built["Id"]
-        _run_docker(docker, ["tag", built_reference, tag])
-        _run_docker(docker, ["push", tag], timeout=1800)
-        pushed = _docker_inspect(docker, tag)
-        if pushed["Id"] != image_id:
-            raise ContractError("OCI_IMAGE_CHANGED_DURING_PUSH")
-        immutable_candidates = {
-            value
-            for value in pushed["RepoDigests"]
-            if value.startswith(f"{repository}@")
-            and re.fullmatch(r"sha256:[a-f0-9]{64}", value.rsplit("@", 1)[1])
-        }
-        if len(immutable_candidates) != 1:
-            raise ContractError("OCI_IMMUTABLE_IDENTITY_UNAVAILABLE")
-        immutable_reference = next(iter(immutable_candidates))
-        content_digest = immutable_reference.rsplit("@", 1)[1]
-        immutable = _docker_inspect(docker, immutable_reference)
-        if (
-            immutable["Id"] != image_id
-            or immutable_reference not in immutable["RepoDigests"]
-        ):
-            raise ContractError("OCI_IMMUTABLE_IDENTITY_MISMATCH")
-        base_digests = _resolved_base_digests(docker, base_references)
-        if base_digests != base_digests_before_build:
-            raise ContractError("BASE_IMAGE_CHANGED_DURING_BUILD")
-        docker_version, buildkit_version = _runtime_versions(docker)
-        provenance_sha256 = _available_provenance_sha256(
-            docker, immutable_reference
-        )
-        return {
-            "schema_version": TASK_IMAGE_SCHEMA,
-            "task_name": task_name,
-            "task_digest": task_digest,
-            "immutable_reference": immutable_reference,
-            "image_id": image_id,
-            "content_digest": content_digest,
-            "resolved_base_image_digests": base_digests,
-            "dockerfile_sha256": dockerfile_sha256,
-            "docker_version": docker_version,
-            "buildkit_version": buildkit_version,
-            "provenance_sha256": provenance_sha256,
-        }
 
 
 def _trial_lock_validator(record: dict[str, Any]):
@@ -1546,10 +1820,6 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     inspected = _docker_inspect(docker, task_image)
     if task_image not in inspected["RepoDigests"]:
         raise ContractError("TASK_IMAGE_DIGEST_NOT_PRESENT")
-    job._task_configs[0].environment.docker_image = task_image
-    if job._task_configs[0].environment.docker_image != task_image:
-        raise ContractError("TASK_IMAGE_PIN_NOT_APPLIED")
-
     recorder = LifecycleRecorder(
         attempt_kind=request["attempt_kind"],
         manifest_path=manifest_path,
@@ -1563,26 +1833,45 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     job.on_trial_ended(recorder.on_trial_ended)
     job.on_trial_cancelled(recorder.on_trial_cancelled)
     recorder.begin_run()
-    result = await job.run()
+    with _pinned_task_image(task_image), _pinned_codex_binary(request):
+        result = await job.run()
     trial_results = []
     reward_contract = manifest_by_name[task_name]["reward_contract"]
     for trial in result.trial_results:
-        validated_reward = _validate_reward_values(
-            trial.verifier_result.rewards
-            if trial.verifier_result is not None
-            else None,
-            reward_contract,
+        exception_type = (
+            trial.exception_info.exception_type
+            if trial.exception_info is not None
+            else None
         )
+        validated_reward = (
+            _validate_reward_values(trial.verifier_result.rewards, reward_contract)
+            if trial.verifier_result is not None
+            else None
+        )
+        if validated_reward is None and exception_type is None:
+            raise ContractError("MISSING_REWARD_VALUES")
+        missing_outcome = validated_reward is None
         trial_results.append(
             {
                 "trial_id": str(trial.id),
                 "task_name": trial.task_name,
                 "primary_reward": {
-                    "field": validated_reward["primary_field"],
-                    "value": validated_reward["primary_value"],
-                    "passed": validated_reward["passed"],
+                    "field": reward_contract["primary_field"],
+                    "value": (
+                        validated_reward["primary_value"]
+                        if validated_reward is not None
+                        else None
+                    ),
+                    "passed": (
+                        validated_reward["passed"]
+                        if validated_reward is not None
+                        else False
+                    ),
                 },
-                "errored": trial.exception_info is not None,
+                "errored": missing_outcome,
+                "failure_category": (
+                    _trial_failure_category(exception_type) if missing_outcome else None
+                ),
             }
         )
     output = {
@@ -1593,7 +1882,9 @@ async def run_request(request_path: Path) -> dict[str, Any]:
             "job_id": str(result.id),
             "n_total_trials": result.n_total_trials,
             "n_completed_trials": result.stats.n_completed_trials,
-            "n_errored_trials": result.stats.n_errored_trials,
+            "n_errored_trials": sum(
+                1 for trial_result in trial_results if trial_result["errored"]
+            ),
             "phase_timings": recorder.phase_timings(),
             "interactions": recorder.interactions(),
             "usage": {
@@ -1640,7 +1931,9 @@ def main() -> int:
     args = _parser().parse_args()
     try:
         if args.command == "run":
-            print(json.dumps(asyncio.run(run_request(args.request)), sort_keys=True))
+            with _suppress_process_stdout():
+                result = asyncio.run(run_request(args.request))
+            print(json.dumps(result, sort_keys=True))
         elif args.command == "build-manifests":
             write_manifests(args.source, args.output_dir)
         elif args.command == "provision-task-image":

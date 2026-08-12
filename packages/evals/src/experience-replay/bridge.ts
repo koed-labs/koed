@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import http from "node:http";
+import { networkInterfaces, release } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -84,6 +85,40 @@ export interface TrialBridgeIdentity {
   condition: "empty" | "placebo" | "relevant";
 }
 
+const privateIpv4 = (value: string): boolean => {
+  const octets = value.split(".").map(Number);
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  )
+    return false;
+  return (
+    octets[0] === 10 ||
+    (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
+};
+
+export const resolveDockerBridgeHost = ({
+  osRelease = release(),
+  interfaces = networkInterfaces()
+}: {
+  osRelease?: string;
+  interfaces?: ReturnType<typeof networkInterfaces>;
+} = {}): string => {
+  if (!/microsoft|wsl/iu.test(osRelease)) return "host.docker.internal";
+  const candidate = interfaces.eth0?.find(
+    (address) =>
+      address.family === "IPv4" &&
+      !address.internal &&
+      privateIpv4(address.address)
+  )?.address;
+  if (!candidate) {
+    throw new Error("WSL benchmark bridge has no private eth0 address");
+  }
+  return candidate;
+};
+
 class TrialCredential {
   constructor(readonly identity: TrialBridgeIdentity) {}
   readonly id = randomUUID();
@@ -142,6 +177,7 @@ class TrialCredential {
 
 export interface BenchmarkBridgeHandle {
   url: string;
+  containerUrl?: string;
   token: string;
   credentialId: string;
   activate(lifetimeMs: number): void;
@@ -157,6 +193,14 @@ export interface BenchmarkBridgeHandle {
   close(): Promise<void>;
 }
 
+export const isBenchmarkDockerPeer = (address: string): boolean => {
+  const match = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.(\d+)$/u.exec(address);
+  if (!match) return false;
+  const octets = match.slice(1).map(Number);
+  if (octets.some((octet) => octet < 0 || octet > 255)) return false;
+  return octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31;
+};
+
 export const startBenchmarkBridge = async ({
   runtimeClient,
   projectCwd,
@@ -168,6 +212,8 @@ export const startBenchmarkBridge = async ({
   maxActiveRequests = LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS,
   requestTimeoutMs = 120_000,
   isolatedInterfaceAddress,
+  dockerAccess = false,
+  dockerHost,
   now = Date.now
 }: {
   runtimeClient: LocalAiRuntimeClient;
@@ -180,6 +226,8 @@ export const startBenchmarkBridge = async ({
   maxActiveRequests?: number;
   requestTimeoutMs?: number;
   isolatedInterfaceAddress?: string;
+  dockerAccess?: boolean;
+  dockerHost?: string;
   now?: () => number;
 }): Promise<BenchmarkBridgeHandle> => {
   if (!path.isAbsolute(projectCwd) || !path.isAbsolute(trialWorkspaceRoot)) {
@@ -233,8 +281,24 @@ export const startBenchmarkBridge = async ({
       "Benchmark Project cwd must be beneath the trial workspace root"
     );
   }
-  const loopbackHost = host === "127.0.0.1" || host === "::1";
-  if (!loopbackHost && isolatedInterfaceAddress !== host) {
+  if (dockerAccess && host !== "127.0.0.1") {
+    throw new Error("Docker-accessible bridge controls its own bind address");
+  }
+  const containerHost = dockerAccess
+    ? (dockerHost ?? resolveDockerBridgeHost())
+    : null;
+  if (
+    containerHost &&
+    containerHost !== "host.docker.internal" &&
+    !privateIpv4(containerHost)
+  ) {
+    throw new Error(
+      "Docker benchmark bridge host must be private IPv4 or host.docker.internal"
+    );
+  }
+  const bindHost = dockerAccess ? "0.0.0.0" : host;
+  const loopbackHost = bindHost === "127.0.0.1" || bindHost === "::1";
+  if (!loopbackHost && !dockerAccess && isolatedInterfaceAddress !== bindHost) {
     throw new Error(
       "Benchmark bridge must bind loopback or one explicitly attested isolated interface"
     );
@@ -272,13 +336,19 @@ export const startBenchmarkBridge = async ({
     void (async () => {
       if (
         !request.socket.remoteAddress ||
-        !allowedPeers.has(request.socket.remoteAddress)
+        (!allowedPeers.has(request.socket.remoteAddress) &&
+          !(
+            dockerAccess && isBenchmarkDockerPeer(request.socket.remoteAddress)
+          ))
       ) {
         response.writeHead(403, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "Unapproved trial peer" }));
         return;
       }
-      const hostValidation = validateHostHeader(request.headers.host, [host]);
+      const hostValidation = validateHostHeader(request.headers.host, [
+        host,
+        ...(containerHost ? [containerHost] : [])
+      ]);
       if (!hostValidation.ok) {
         response.writeHead(421, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "Invalid Host header" }));
@@ -372,7 +442,7 @@ export const startBenchmarkBridge = async ({
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, host, resolve);
+    server.listen(port, bindHost, resolve);
   });
   const address = server.address();
   if (!address || typeof address === "string") {
@@ -387,6 +457,9 @@ export const startBenchmarkBridge = async ({
   let closed = false;
   return {
     url: expectedOrigin,
+    ...(dockerAccess
+      ? { containerUrl: `http://${containerHost}:${address.port}` }
+      : {}),
     token: credential.token,
     credentialId: credential.id,
     activate: (lifetimeMs) => credential.activate(lifetimeMs, now()),

@@ -32,16 +32,25 @@ export const runExperienceReplayCli = async (
   switch (command.name) {
     case "preflight": {
       const config = await loadExperienceReplayConfig(command.configPath);
+      const codexAuthMode = command.codexSubscription
+        ? "subscription"
+        : "api_key";
       const recorded =
         config.profile === "smoke"
           ? null
-          : createRecordedPreflightRuntime(config, process.env);
+          : createRecordedPreflightRuntime(
+              config,
+              process.env,
+              {},
+              codexAuthMode
+            );
       const result = await preflightExperienceReplay({
         config,
-        confirmPaidRun: command.confirmPaidRun,
+        confirmPaidRun: command.confirmPaidRun || command.codexSubscription,
         executionKind: command.productPathProof
           ? "product_path_proof"
           : "benchmark_profile",
+        codexAuthMode,
         requireRunnable: true,
         ...(recorded
           ? {
@@ -52,6 +61,7 @@ export const runExperienceReplayCli = async (
       });
       return {
         executionKind: result.runPlan.kind,
+        codexAuthMode: result.runPlan.codexAuthMode,
         profile: result.config.profile,
         semanticConfigHash: result.config.semantic_config_hash,
         codingAgentAttempts: result.runPlan.codingAgentAttemptCount,
@@ -65,16 +75,25 @@ export const runExperienceReplayCli = async (
     }
     case "run": {
       const config = await loadExperienceReplayConfig(command.configPath);
+      const codexAuthMode = command.codexSubscription
+        ? "subscription"
+        : "api_key";
       const recorded =
         config.profile === "smoke"
           ? null
-          : createRecordedPreflightRuntime(config, process.env);
+          : createRecordedPreflightRuntime(
+              config,
+              process.env,
+              {},
+              codexAuthMode
+            );
       const result = await preflightExperienceReplay({
         config,
-        confirmPaidRun: command.confirmPaidRun,
+        confirmPaidRun: command.confirmPaidRun || command.codexSubscription,
         executionKind: command.productPathProof
           ? "product_path_proof"
           : "benchmark_profile",
+        codexAuthMode,
         requireRunnable: true,
         ...(recorded
           ? {
@@ -87,7 +106,9 @@ export const runExperienceReplayCli = async (
         config,
         process.env,
         undefined,
-        result.frozenTaskImages
+        result.frozenTaskImages,
+        codexAuthMode,
+        result.runPlan.kind === "product_path_proof"
       );
       return runExperienceReplay(config, { preflight: result, dependencies });
     }
@@ -98,11 +119,18 @@ export const runExperienceReplayCli = async (
       const recorded =
         identity.config.profile === "smoke"
           ? null
-          : createRecordedPreflightRuntime(identity.config, process.env);
+          : createRecordedPreflightRuntime(
+              identity.config,
+              process.env,
+              {},
+              identity.runPlan.codexAuthMode,
+              identity.recordedRunAttestation?.taskImages
+            );
       const result = await preflightExperienceReplay({
         config: identity.config,
         confirmPaidRun: identity.config.profile !== "smoke",
         executionKind: identity.runPlan.kind,
+        codexAuthMode: identity.runPlan.codexAuthMode,
         requireRunnable: true,
         ...(recorded
           ? {
@@ -115,7 +143,9 @@ export const runExperienceReplayCli = async (
         identity.config,
         process.env,
         identity.runId,
-        result.frozenTaskImages
+        result.frozenTaskImages,
+        identity.runPlan.codexAuthMode,
+        identity.runPlan.kind === "product_path_proof"
       );
       return {
         reportPath: await resumeExperienceReplay(identity.runRoot, {

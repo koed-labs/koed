@@ -1,6 +1,7 @@
 import type { BootstrapInterval } from "./bootstrap.js";
 import type { ExperienceReplayProfile } from "./config.js";
 import type { ExperienceReplayExecutionKind } from "./execution-plan.js";
+import type { ExperienceReplayCodexAuthMode } from "./execution-plan.js";
 import type {
   ComparisonSummary,
   ReplayOutcome,
@@ -29,6 +30,7 @@ export interface ReplayExclusion {
 export interface ExperienceReplayReportInput {
   runId: string;
   executionKind: ExperienceReplayExecutionKind;
+  codexAuthMode: ExperienceReplayCodexAuthMode;
   profile: ExperienceReplayProfile;
   model: string;
   taskCount: number;
@@ -148,6 +150,7 @@ export const renderMarkdownReport = (
     "",
     `- Run: ${report.runId}`,
     `- Execution: ${report.executionKind}`,
+    `- Codex authentication: ${report.codexAuthMode}`,
     `- Profile policy: ${report.profile}`,
     `- Model: ${report.model}`,
     `- Tasks: ${report.taskCount}`,
