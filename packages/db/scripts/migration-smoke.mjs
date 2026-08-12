@@ -150,9 +150,15 @@ const assertAlphaMigrationContract = async () => {
       "Current 0020 migration contains discarded experimental Team Chat compatibility objects"
     );
   }
-  if (journal.entries.at(-1)?.tag !== expectedLocalRuntimeCutoverTag) {
+  const localRuntimeCutoverEntries = journal.entries.filter(
+    (entry) => entry.tag === expectedLocalRuntimeCutoverTag
+  );
+  if (
+    localRuntimeCutoverEntries.length !== 1 ||
+    localRuntimeCutoverEntries[0].idx < 1
+  ) {
     throw new Error(
-      `Expected ${expectedLocalRuntimeCutoverTag} to be the latest migration`
+      `Expected exactly one ${expectedLocalRuntimeCutoverTag} migration with a predecessor`
     );
   }
   return journal;
@@ -1074,7 +1080,10 @@ try {
     { folderPrefix: "koed-through-0020-migrations-" }
   );
   temporaryFolders.add(through0020Folder);
-  const preLocalRuntimeCutoverIndex = journal.entries.length - 2;
+  const localRuntimeCutoverIndex = journal.entries.findIndex(
+    (entry) => entry.tag === expectedLocalRuntimeCutoverTag
+  );
+  const preLocalRuntimeCutoverIndex = localRuntimeCutoverIndex - 1;
   const preLocalRuntimeCutoverFolder = await createMigrationSlice(
     journal,
     preLocalRuntimeCutoverIndex,
