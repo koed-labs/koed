@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { lstat, realpath } from "node:fs/promises";
 import http from "node:http";
+import path from "node:path";
 import { Readable } from "node:stream";
 import {
   createMcpHandler,
@@ -152,6 +154,7 @@ export interface BenchmarkBridgeHandle {
 export const startBenchmarkBridge = async ({
   runtimeClient,
   projectCwd,
+  trialWorkspaceRoot,
   identity,
   host = "127.0.0.1",
   port = 0,
@@ -162,6 +165,7 @@ export const startBenchmarkBridge = async ({
 }: {
   runtimeClient: LocalAiRuntimeClient;
   projectCwd: string;
+  trialWorkspaceRoot: string;
   identity: TrialBridgeIdentity;
   host?: string;
   port?: number;
@@ -170,8 +174,56 @@ export const startBenchmarkBridge = async ({
   requestTimeoutMs?: number;
   isolatedInterfaceAddress?: string;
 }): Promise<BenchmarkBridgeHandle> => {
-  if (!projectCwd.startsWith("/")) {
-    throw new Error("Benchmark Project cwd must be absolute");
+  if (!path.isAbsolute(projectCwd) || !path.isAbsolute(trialWorkspaceRoot)) {
+    throw new Error(
+      "Benchmark Project cwd and trial workspace root must be absolute"
+    );
+  }
+  const lexicalRoot = path.resolve(trialWorkspaceRoot);
+  const lexicalProject = path.resolve(projectCwd);
+  const relativeProject = path.relative(lexicalRoot, lexicalProject);
+  if (
+    !relativeProject ||
+    relativeProject === ".." ||
+    relativeProject.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeProject)
+  ) {
+    throw new Error(
+      "Benchmark Project cwd must be beneath the trial workspace root"
+    );
+  }
+  let canonicalRoot: string;
+  let canonicalProject: string;
+  try {
+    const rootInfo = await lstat(lexicalRoot);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+      throw new Error("unsafe root");
+    }
+    canonicalRoot = await realpath(lexicalRoot);
+    let current = canonicalRoot;
+    for (const component of relativeProject.split(path.sep)) {
+      current = path.join(current, component);
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) throw new Error("symlink");
+    }
+    const projectInfo = await lstat(current);
+    if (!projectInfo.isDirectory()) throw new Error("not a directory");
+    canonicalProject = await realpath(current);
+  } catch {
+    throw new Error(
+      "Benchmark Project cwd and trial workspace root must exist as real directories without symlinks"
+    );
+  }
+  const canonicalRelative = path.relative(canonicalRoot, canonicalProject);
+  if (
+    !canonicalRelative ||
+    canonicalRelative === ".." ||
+    canonicalRelative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(canonicalRelative)
+  ) {
+    throw new Error(
+      "Benchmark Project cwd must be beneath the trial workspace root"
+    );
   }
   const loopbackHost = host === "127.0.0.1" || host === "::1";
   if (!loopbackHost && isolatedInterfaceAddress !== host) {
@@ -200,7 +252,7 @@ export const startBenchmarkBridge = async ({
           if (defaultContext.protocolVersion !== KOED_MCP_PROTOCOL_VERSION) {
             throw new Error("Benchmark bridge requires MCP 2026-07-28");
           }
-          return { ...defaultContext, cwd: projectCwd };
+          return { ...defaultContext, cwd: canonicalProject };
         }
       }),
     { legacy: "reject" }

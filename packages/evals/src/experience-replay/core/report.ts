@@ -451,6 +451,26 @@ const projectAttempt = (value: unknown): JsonRecord => {
       )
     );
   }
+  if (isRecord(value.telemetryStatus)) {
+    const telemetryStatus = value.telemetryStatus;
+    projected.telemetryStatus = Object.fromEntries(
+      [
+        "harbor",
+        "codex",
+        "koedRecall",
+        "modelWorkflows",
+        "embeddings",
+        "processRss"
+      ].flatMap((source) => {
+        const state = telemetryStatus[source];
+        return state === "available" ||
+          state === "missing" ||
+          state === "failed"
+          ? [[source, state]]
+          : [];
+      })
+    );
+  }
   return projected;
 };
 

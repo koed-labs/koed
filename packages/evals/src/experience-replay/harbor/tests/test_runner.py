@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import math
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +14,119 @@ import runner
 
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
+
+
+def lifecycle_event(trial_dir: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        trial_id="trial-one",
+        task_name="terminal-bench/cad-model",
+        timestamp=datetime(2026, 8, 12, tzinfo=UTC),
+        result=SimpleNamespace(trial_uri=trial_dir.as_uri()),
+    )
+
+
+def test_source_lifecycle_freezes_before_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trial = tmp_path / "trial"
+    trajectory = trial / "agent" / "trajectory.json"
+    trajectory.parent.mkdir(parents=True)
+    trajectory.write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.7",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "source": "agent",
+                        "message": "done",
+                        "extra": {"last_native_event_ordinal": 1},
+                    }
+                ],
+            }
+        )
+    )
+    notifications: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_notify_lifecycle",
+        lambda _event, name, _kind: notifications.append(name),
+    )
+    recorder = runner.LifecycleRecorder(
+        attempt_kind="source",
+        manifest_path=tmp_path / "manifest.json",
+        freeze_destination=tmp_path / "frozen.json",
+        freeze_relative_path="source/frozen.json",
+    )
+    event = lifecycle_event(trial)
+    async def exercise() -> None:
+        await recorder.on_agent_started(event)
+        await recorder.on_agent_ended(event)
+        await recorder.on_verification_started(event)
+        await recorder.on_trial_ended(event)
+
+    asyncio.run(exercise())
+
+    assert notifications == ["agent_started", "agent_ended", "trial_ended"]
+    assert (tmp_path / "frozen.json").read_text() == trajectory.read_text()
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert [entry["event"] for entry in manifest["lifecycle"]] == [
+        "agent_started",
+        "agent_ended",
+        "trajectory_materialized",
+        "verification_started",
+    ]
+
+
+def test_replay_lifecycle_never_freezes_trajectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notifications: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_notify_lifecycle",
+        lambda _event, name, _kind: notifications.append(name),
+    )
+    recorder = runner.LifecycleRecorder(attempt_kind="replay")
+    event = lifecycle_event(tmp_path)
+    async def exercise() -> None:
+        await recorder.on_agent_started(event)
+        await recorder.on_agent_ended(event)
+        await recorder.on_verification_started(event)
+        await recorder.on_trial_ended(event)
+
+    asyncio.run(exercise())
+
+    assert notifications == ["agent_started", "agent_ended", "trial_ended"]
+    assert recorder.manifest is None
+    assert not list(tmp_path.glob("**/frozen*"))
+
+
+def test_cancelled_agent_attempt_acknowledges_without_freezing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notifications: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_notify_lifecycle",
+        lambda _event, name, _kind: notifications.append(name),
+    )
+    recorder = runner.LifecycleRecorder(
+        attempt_kind="source",
+        manifest_path=tmp_path / "manifest.json",
+        freeze_destination=tmp_path / "frozen.json",
+        freeze_relative_path="source/frozen.json",
+    )
+    event = lifecycle_event(tmp_path)
+    async def exercise() -> None:
+        await recorder.on_agent_started(event)
+        await recorder.on_trial_cancelled(event)
+
+    asyncio.run(exercise())
+
+    assert notifications == ["agent_started", "trial_cancelled"]
+    assert not (tmp_path / "manifest.json").exists()
+    assert not (tmp_path / "frozen.json").exists()
 
 
 def test_committed_corpus_manifest_has_locked_pins_and_all_tasks() -> None:
@@ -165,6 +281,110 @@ def test_nested_job_config_rejects_arbitrary_path_surfaces(
 ) -> None:
     with pytest.raises(runner.ContractError, match=reason):
         runner._validate_job_config_allowlist({"job_name": "safe", section: value})
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"environment": {"delete": False}},
+        {"verifier": {"disable": True}},
+    ],
+)
+def test_scored_run_cannot_keep_environment_or_disable_verifier(
+    config: dict[str, object],
+) -> None:
+    with pytest.raises(
+        runner.ContractError, match="ENVIRONMENT_DELETION_REQUIRED|VERIFIER_REQUIRED"
+    ):
+        runner._validate_job_config_allowlist({"job_name": "safe", **config})
+
+
+def test_scored_run_pins_mandatory_cleanup_and_verification() -> None:
+    config: dict[str, object] = {"job_name": "safe"}
+
+    runner._validate_job_config_allowlist(config)
+
+    assert config["environment"] == {"delete": True}
+    assert config["verifier"] == {"disable": False}
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"environment": {"env": {"HOME": "/host"}}},
+        {"verifier": {"env": {"OPENAI_API_KEY": "secret"}}},
+        {"agents": [{"name": "codex", "env": {"HOME": "/host"}}]},
+        {
+            "agents": [
+                {
+                    "name": "codex",
+                    "extra_allowed_hosts": ["attacker.example"],
+                }
+            ]
+        },
+        {"environment": {"extra_allowed_hosts": ["169.254.169.254"]}},
+        {
+            "agents": [
+                {
+                    "name": "oracle",
+                    "env": {"KOED_BENCHMARK_MCP_TOKEN": "token"},
+                }
+            ]
+        },
+    ],
+)
+def test_scored_run_rejects_arbitrary_env_and_network_egress(
+    config: dict[str, object],
+) -> None:
+    with pytest.raises(runner.ContractError, match="ENV|HOST"):
+        runner._validate_job_config_allowlist({"job_name": "safe", **config})
+
+
+def test_codex_allows_only_modeled_provider_and_mcp_bridge_values() -> None:
+    config = {
+        "job_name": "safe",
+        "environment": {
+            "extra_allowed_hosts": ["host.docker.internal"],
+        },
+        "agents": [
+            {
+                "name": "codex",
+                "env": {
+                    "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+                    "KOED_BENCHMARK_MCP_TOKEN": "${KOED_BENCHMARK_MCP_TOKEN}",
+                },
+                "extra_allowed_hosts": [
+                    "api.openai.com",
+                    "host.docker.internal",
+                ],
+            }
+        ],
+    }
+
+    runner._validate_job_config_allowlist(config)
+
+    assert config["environment"]["delete"] is True
+    assert config["verifier"]["disable"] is False
+    assert (
+        config["agents"][0]["env"]["KOED_BENCHMARK_MCP_TOKEN"]
+        == "${KOED_BENCHMARK_MCP_TOKEN}"
+    )
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"OPENAI_API_KEY": "literal-or-wrong-provider-secret"},
+        {"OPENAI_API_KEY": "${AWS_SECRET_ACCESS_KEY}"},
+        {"KOED_BENCHMARK_MCP_TOKEN": "not-a-real-bridge-token"},
+        {"KOED_BENCHMARK_MCP_TOKEN": "t" * 43},
+    ],
+)
+def test_codex_rejects_unmodeled_credential_values(env: dict[str, str]) -> None:
+    with pytest.raises(runner.ContractError, match="CREDENTIAL|MCP_TOKEN"):
+        runner._validate_job_config_allowlist(
+            {"job_name": "safe", "agents": [{"name": "codex", "env": env}]}
+        )
 
 
 def test_strict_request_does_not_echo_secret_unknown_keys(tmp_path: Path) -> None:

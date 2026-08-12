@@ -1,9 +1,9 @@
 import { pathToFileURL } from "node:url";
 import { parseExperienceReplayCommand } from "./command.js";
 import {
-  reportExistingSmokeRun,
-  resumeSmokeRun,
-  runSmokeExperienceReplay,
+  reportExistingRun,
+  resumeExperienceReplay,
+  runExperienceReplay,
   sanitizeRunReport
 } from "./coordinator.js";
 import {
@@ -47,12 +47,12 @@ export const runExperienceReplayCli = async (
         confirmPaidRun: command.confirmPaidRun,
         requireRunnable: true
       });
-      return runSmokeExperienceReplay(config, result);
+      return runExperienceReplay(config, { preflight: result });
     }
     case "resume":
-      return { reportPath: await resumeSmokeRun(command.runDirectory) };
+      return { reportPath: await resumeExperienceReplay(command.runDirectory) };
     case "report":
-      return { reportPath: await reportExistingSmokeRun(command.runDirectory) };
+      return { reportPath: await reportExistingRun(command.runDirectory) };
     case "sanitize":
       return {
         publicationDirectory: await sanitizeRunReport(command.runDirectory)

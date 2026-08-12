@@ -24,7 +24,7 @@ export interface DatabaseTemplateAttestation {
 
 export class ExperienceReplayDatabaseTemplates {
   private readonly admin: pg.Pool;
-  private readonly created = new Set<string>();
+  private readonly runOwned = new Set<string>();
   private closed = false;
 
   constructor({
@@ -68,12 +68,16 @@ export class ExperienceReplayDatabaseTemplates {
     this.assertOpen();
     assertEvalDatabaseName(templateName);
     assertEvalDatabaseName(sourceDatabaseName);
-    this.created.add(sourceDatabaseName);
+    if (templateName === sourceDatabaseName) {
+      throw new Error("Benchmark template and source databases must differ");
+    }
     await this.terminateConnections(sourceDatabaseName);
     await this.admin.query(
       `CREATE DATABASE ${quoted(templateName)} WITH TEMPLATE ${quoted(sourceDatabaseName)}`
     );
-    this.created.add(templateName);
+    // Ownership begins only after our CREATE succeeds. In particular, the
+    // caller-owned source database must never enter the cleanup set.
+    this.runOwned.add(templateName);
     await this.terminateConnections(templateName);
     await this.admin.query(
       `ALTER DATABASE ${quoted(templateName)} WITH ALLOW_CONNECTIONS false IS_TEMPLATE true`
@@ -90,17 +94,28 @@ export class ExperienceReplayDatabaseTemplates {
     this.assertOpen();
     assertEvalDatabaseName(templateName);
     assertEvalDatabaseName(cloneName);
-    if (!this.created.has(templateName)) {
+    if (!this.runOwned.has(templateName)) {
       throw new Error(`Unknown benchmark template ${templateName}`);
+    }
+    if (templateName === cloneName) {
+      throw new Error("Benchmark template and clone databases must differ");
     }
     await this.admin.query(
       `CREATE DATABASE ${quoted(cloneName)} WITH TEMPLATE ${quoted(templateName)}`
     );
-    this.created.add(cloneName);
+    this.runOwned.add(cloneName);
   }
 
   async drop(name: string): Promise<void> {
+    this.assertOpen();
     assertEvalDatabaseName(name);
+    if (!this.runOwned.has(name)) {
+      throw new Error(`Benchmark database is not owned by this run: ${name}`);
+    }
+    await this.dropRunOwned(name);
+  }
+
+  private async dropRunOwned(name: string): Promise<void> {
     await this.admin
       .query(
         `ALTER DATABASE ${quoted(name)} WITH ALLOW_CONNECTIONS true IS_TEMPLATE false`
@@ -108,7 +123,7 @@ export class ExperienceReplayDatabaseTemplates {
       .catch(() => undefined);
     await this.terminateConnections(name);
     await this.admin.query(`DROP DATABASE IF EXISTS ${quoted(name)}`);
-    this.created.delete(name);
+    this.runOwned.delete(name);
   }
 
   private async terminateConnections(name: string): Promise<void> {
@@ -122,9 +137,9 @@ export class ExperienceReplayDatabaseTemplates {
   async close(): Promise<void> {
     if (this.closed) return;
     const failures: Error[] = [];
-    for (const name of [...this.created].reverse()) {
+    for (const name of [...this.runOwned].reverse()) {
       try {
-        await this.drop(name);
+        await this.dropRunOwned(name);
       } catch (error) {
         failures.push(
           error instanceof Error ? error : new Error(String(error))

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertEvalDatabaseName,
   ExperienceReplayDatabaseTemplates
@@ -23,6 +23,10 @@ const within = async <T>(label: string, promise: Promise<T>): Promise<T> => {
   }
 };
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("experience replay database template guards", () => {
   it("accepts only disposable eval-prefixed database names", () => {
     expect(() =>
@@ -37,6 +41,82 @@ describe("experience replay database template guards", () => {
     ]) {
       expect(() => assertEvalDatabaseName(unsafe)).toThrow("Unsafe");
     }
+  });
+
+  it("never owns or drops a caller-owned source when template freezing fails", async () => {
+    const source = "koed_eval_forced_source";
+    const template = "koed_eval_forced_template";
+    const statements: string[] = [];
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      statements.push(statement);
+      if (statement.startsWith(`ALTER DATABASE "${template}" WITH`)) {
+        throw new Error("forced freeze failure");
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark"
+    });
+
+    await expect(
+      manager.createTemplate({
+        templateName: template,
+        sourceDatabaseName: source
+      })
+    ).rejects.toThrow("forced freeze failure");
+    await expect(manager.drop(source)).rejects.toThrow("not owned");
+    await manager.close();
+
+    expect(
+      statements.some((statement) =>
+        statement.startsWith(`DROP DATABASE IF EXISTS "${template}"`)
+      )
+    ).toBe(true);
+    expect(
+      statements.some((statement) =>
+        statement.startsWith(`DROP DATABASE IF EXISTS "${source}"`)
+      )
+    ).toBe(false);
+  });
+
+  it("cleans every run-owned template and clone despite a forced drop failure", async () => {
+    const source = "koed_eval_cleanup_source";
+    const template = "koed_eval_cleanup_template";
+    const clone = "koed_eval_cleanup_clone";
+    const statements: string[] = [];
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      statements.push(statement);
+      if (statement === `DROP DATABASE IF EXISTS "${clone}"`) {
+        throw new Error("forced clone cleanup failure");
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark"
+    });
+
+    await manager.createTemplate({
+      templateName: template,
+      sourceDatabaseName: source
+    });
+    await manager.cloneTemplate({ templateName: template, cloneName: clone });
+    await expect(manager.close()).rejects.toThrow(
+      "Failed to remove benchmark databases"
+    );
+
+    expect(statements).toContain(`DROP DATABASE IF EXISTS "${clone}"`);
+    expect(statements).toContain(`DROP DATABASE IF EXISTS "${template}"`);
+    expect(statements).not.toContain(`DROP DATABASE IF EXISTS "${source}"`);
   });
 
   const databaseUrl = process.env.DATABASE_URL;
@@ -103,8 +183,15 @@ describe("experience replay database template guards", () => {
         ).resolves.toMatchObject({ rows: [{ value: "frozen" }] });
         await within("closing clone client", cloneClient.end());
       } finally {
-        await within("closing template manager", manager.close());
-        await within("closing admin pool", admin.end());
+        try {
+          await within("closing template manager", manager.close());
+        } finally {
+          await within(
+            "dropping caller-owned source database",
+            admin.query(`DROP DATABASE IF EXISTS "${source}"`)
+          );
+          await within("closing admin pool", admin.end());
+        }
       }
     },
     30_000

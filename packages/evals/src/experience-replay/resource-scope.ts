@@ -1,5 +1,8 @@
+import { performance } from "node:perf_hooks";
+
 export type CleanupPriority = "normal" | "credential-revocation";
-export type CleanupTrigger = "explicit" | `signal:${"SIGINT" | "SIGTERM"}`;
+export type RunSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
+export type CleanupTrigger = "explicit" | `signal:${RunSignal}`;
 
 export interface CleanupContext {
   signal: AbortSignal;
@@ -14,8 +17,11 @@ export interface RegisterCleanupOptions {
 
 export interface CleanupErrorAttestation {
   cleanupName: string;
-  kind: "handler_failure" | "timeout";
-  message: "Cleanup handler failed" | "Cleanup handler timed out";
+  kind: "handler_failure" | "timeout" | "global_deadline";
+  message:
+    | "Cleanup handler failed"
+    | "Cleanup handler timed out"
+    | "Global cleanup deadline exceeded";
   timeoutMs?: number;
 }
 
@@ -26,7 +32,7 @@ export interface CleanupAttestationEntry {
   startedAt: string;
   completedAt: string;
   durationMs: number;
-  status: "completed" | "failed" | "timed_out";
+  status: "completed" | "failed" | "timed_out" | "deadline_exceeded";
   error?: CleanupErrorAttestation;
 }
 
@@ -36,19 +42,27 @@ export interface CleanupAttestation {
   startedAt: string;
   completedAt: string;
   durationMs: number;
+  cleanupCount: number;
+  omittedCleanupCount: number;
+  errorCount: number;
+  omittedErrorCount: number;
+  deadlineExceeded: boolean;
   cleanups: CleanupAttestationEntry[];
   errors: CleanupErrorAttestation[];
 }
 
 export interface SignalSource {
-  on(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
-  removeListener(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  on(signal: RunSignal, listener: () => void): unknown;
+  removeListener(signal: RunSignal, listener: () => void): unknown;
 }
 
 export interface ResourceScopeOptions {
   scopeId: string;
   defaultTimeoutMs?: number;
+  cleanupDeadlineMs?: number;
+  maxAttestationEntries?: number;
   now?: () => number;
+  monotonicNow?: () => number;
 }
 
 interface RegisteredCleanup {
@@ -59,8 +73,10 @@ interface RegisteredCleanup {
   registrationIndex: number;
 }
 
-const SIGNALS = ["SIGINT", "SIGTERM"] as const;
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_CLEANUP_DEADLINE_MS = 30_000;
+const DEFAULT_MAX_ATTESTATION_ENTRIES = 256;
 
 const assertIdentifier = (value: string, label: string): void => {
   const containsControlCharacter = [...value].some((character) => {
@@ -74,11 +90,9 @@ const assertIdentifier = (value: string, label: string): void => {
   }
 };
 
-const assertTimeout = (timeoutMs: number): void => {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new Error(
-      "Cleanup timeout must be a positive integer number of milliseconds"
-    );
+const assertPositiveInteger = (value: number, label: string): void => {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
   }
 };
 
@@ -91,31 +105,45 @@ export class ResourceCleanupError extends AggregateError {
   constructor(readonly attestation: CleanupAttestation) {
     super(
       attestation.errors.map((failure) => new Error(failure.message)),
-      `${attestation.errors.length} resource cleanup operation(s) failed`
+      `${attestation.errorCount} resource cleanup operation(s) failed`
     );
   }
 }
 
-/**
- * Owns async resources for one benchmark run or trial.
- *
- * Cleanup is LIFO within each priority. Credential revocations always run
- * before normal cleanup, so revocation can be registered as soon as a
- * credential is issued without depending on later registration order.
- */
+/** Owns async resources for one benchmark run or trial. */
 export class AsyncResourceScope {
   private readonly cleanups: RegisteredCleanup[] = [];
   private readonly cleanupNames = new Set<string>();
   private readonly defaultTimeoutMs: number;
+  private readonly cleanupDeadlineMs: number;
+  private readonly maxAttestationEntries: number;
   private readonly now: () => number;
+  private readonly monotonicNow: () => number;
   private readonly signalDetachments = new Set<() => void>();
+  private readonly runAbort = new AbortController();
   private closePromise: Promise<CleanupAttestation> | undefined;
 
   constructor(private readonly options: ResourceScopeOptions) {
     assertIdentifier(options.scopeId, "Resource scope ID");
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-    assertTimeout(this.defaultTimeoutMs);
+    this.cleanupDeadlineMs =
+      options.cleanupDeadlineMs ?? DEFAULT_CLEANUP_DEADLINE_MS;
+    this.maxAttestationEntries =
+      options.maxAttestationEntries ?? DEFAULT_MAX_ATTESTATION_ENTRIES;
+    assertPositiveInteger(this.defaultTimeoutMs, "Cleanup timeout");
+    assertPositiveInteger(this.cleanupDeadlineMs, "Cleanup deadline");
+    assertPositiveInteger(
+      this.maxAttestationEntries,
+      "Maximum attestation entries"
+    );
     this.now = options.now ?? Date.now;
+    this.monotonicNow =
+      options.monotonicNow ?? performance.now.bind(performance);
+  }
+
+  /** Aborts synchronously when an installed process signal is observed. */
+  get signal(): AbortSignal {
+    return this.runAbort.signal;
   }
 
   register(
@@ -133,7 +161,7 @@ export class AsyncResourceScope {
       throw new Error(`Cleanup name is already registered: ${name}`);
     }
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
-    assertTimeout(timeoutMs);
+    assertPositiveInteger(timeoutMs, "Cleanup timeout");
     const priority = options.priority ?? "normal";
     this.cleanupNames.add(name);
     this.cleanups.push({
@@ -163,7 +191,7 @@ export class AsyncResourceScope {
       );
     }
     let attached = true;
-    const listeners = new Map<(typeof SIGNALS)[number], () => void>();
+    const listeners = new Map<RunSignal, () => void>();
     const detach = (): void => {
       if (!attached) return;
       attached = false;
@@ -174,10 +202,21 @@ export class AsyncResourceScope {
     };
     for (const signal of SIGNALS) {
       const listener = (): void => {
-        void this.close(`signal:${signal}`).catch(() => {
-          // The caller can observe the same aggregate through close(). Signals
-          // must not create an unhandled rejection while cleanup continues.
-        });
+        // Cancellation is synchronous: a coordinator checking this signal cannot
+        // schedule another trial after process termination was requested.
+        if (!this.runAbort.signal.aborted) this.runAbort.abort(signal);
+        const cleanup = this.close(`signal:${signal}`);
+        if (source === process) {
+          // Installing a signal listener suppresses Node's default termination.
+          // Re-deliver it after bounded cleanup so the process cannot resume its
+          // normal scheduling loop merely because cleanup settled.
+          void cleanup.then(
+            () => process.kill(process.pid, signal),
+            () => process.kill(process.pid, signal)
+          );
+        } else {
+          void cleanup.catch(() => undefined);
+        }
       };
       listeners.set(signal, listener);
       source.on(signal, listener);
@@ -187,9 +226,7 @@ export class AsyncResourceScope {
   }
 
   close(trigger: CleanupTrigger = "explicit"): Promise<CleanupAttestation> {
-    if (!this.closePromise) {
-      this.closePromise = this.runClose(trigger);
-    }
+    if (!this.closePromise) this.closePromise = this.runClose(trigger);
     return this.closePromise;
   }
 
@@ -200,47 +237,76 @@ export class AsyncResourceScope {
   private async runClose(trigger: CleanupTrigger): Promise<CleanupAttestation> {
     this.detachSignalHandlers();
     const started = this.now();
+    const deadline = this.monotonicNow() + this.cleanupDeadlineMs;
     const ordered = [...this.cleanups].sort((left, right) => {
       if (left.priority !== right.priority) {
         return left.priority === "credential-revocation" ? -1 : 1;
       }
       return right.registrationIndex - left.registrationIndex;
     });
-    const entries: CleanupAttestationEntry[] = [];
-    const errors: CleanupErrorAttestation[] = [];
+    const allEntries: CleanupAttestationEntry[] = [];
+    const allErrors: CleanupErrorAttestation[] = [];
+    let deadlineExceeded = false;
 
     for (const cleanup of ordered) {
-      const entry = await this.runCleanup(cleanup);
-      entries.push(entry);
-      if (entry.error) errors.push(entry.error);
+      const remainingMs = deadline - this.monotonicNow();
+      if (remainingMs <= 0) {
+        deadlineExceeded = true;
+        allErrors.push({
+          cleanupName: cleanup.name,
+          kind: "global_deadline",
+          message: "Global cleanup deadline exceeded",
+          timeoutMs: this.cleanupDeadlineMs
+        });
+        break;
+      }
+      const entry = await this.runCleanup(cleanup, remainingMs);
+      allEntries.push(entry);
+      if (entry.error) allErrors.push(entry.error);
+      if (entry.status === "deadline_exceeded") {
+        deadlineExceeded = true;
+        break;
+      }
     }
 
     const completed = this.now();
+    const cleanups = allEntries.slice(0, this.maxAttestationEntries);
+    const errors = allErrors.slice(0, this.maxAttestationEntries);
     const attestation: CleanupAttestation = {
       scopeId: this.options.scopeId,
       trigger,
       startedAt: iso(started),
       completedAt: iso(completed),
       durationMs: Math.max(0, completed - started),
-      cleanups: entries,
+      cleanupCount: ordered.length,
+      omittedCleanupCount: ordered.length - cleanups.length,
+      errorCount: allErrors.length,
+      omittedErrorCount: allErrors.length - errors.length,
+      deadlineExceeded,
+      cleanups,
       errors
     };
-    if (errors.length > 0) throw new ResourceCleanupError(attestation);
+    if (allErrors.length > 0 || deadlineExceeded) {
+      throw new ResourceCleanupError(attestation);
+    }
     return attestation;
   }
 
   private async runCleanup(
-    cleanup: RegisteredCleanup
+    cleanup: RegisteredCleanup,
+    remainingMs: number
   ): Promise<CleanupAttestationEntry> {
     const started = this.now();
     const abort = new AbortController();
+    const boundedTimeoutMs = Math.min(cleanup.timeoutMs, remainingMs);
+    const hitGlobalDeadline = remainingMs <= cleanup.timeoutMs;
     const timeoutMarker = Symbol("cleanup-timeout");
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<typeof timeoutMarker>((resolve) => {
       timer = setTimeout(() => {
-        abort.abort();
+        abort.abort(hitGlobalDeadline ? "global-deadline" : "handler-timeout");
         resolve(timeoutMarker);
-      }, cleanup.timeoutMs);
+      }, boundedTimeoutMs);
     });
     const operation = Promise.resolve().then(() =>
       cleanup.handler({ signal: abort.signal })
@@ -251,13 +317,20 @@ export class AsyncResourceScope {
     try {
       const result = await Promise.race([operation, timeout]);
       if (result === timeoutMarker) {
-        status = "timed_out";
-        error = {
-          cleanupName: cleanup.name,
-          kind: "timeout",
-          message: "Cleanup handler timed out",
-          timeoutMs: cleanup.timeoutMs
-        };
+        status = hitGlobalDeadline ? "deadline_exceeded" : "timed_out";
+        error = hitGlobalDeadline
+          ? {
+              cleanupName: cleanup.name,
+              kind: "global_deadline",
+              message: "Global cleanup deadline exceeded",
+              timeoutMs: this.cleanupDeadlineMs
+            }
+          : {
+              cleanupName: cleanup.name,
+              kind: "timeout",
+              message: "Cleanup handler timed out",
+              timeoutMs: cleanup.timeoutMs
+            };
       }
     } catch {
       status = "failed";

@@ -1,7 +1,8 @@
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveExperienceReplayConfig } from "./core/index.js";
+import { freezeTaskImages } from "./image-attestation.js";
 import {
   attestPinnedInputs,
   preflightExperienceReplay,
@@ -106,6 +107,109 @@ describe("experience replay strict preflight", () => {
         config: config("quick"),
         confirmPaidRun: true
       })
-    ).rejects.toThrow("real isolated Harbor replay execution is not wired");
+    ).rejects.toThrow("Koed worktree must be clean for a recorded run");
+  });
+
+  it("requires explicit paid confirmation before invoking recorded-run adapters", async () => {
+    const repositoryStatus = vi.fn(async () => "");
+    await expect(
+      preflightExperienceReplay({
+        config: config("quick"),
+        recordedRunAdapters: {
+          repositoryStatus,
+          attestTaskImages: vi.fn(),
+          attestHostCodex: vi.fn(),
+          attestContainerCodex: vi.fn()
+        }
+      })
+    ).rejects.toThrow("paid run confirmation");
+    expect(repositoryStatus).not.toHaveBeenCalled();
+  });
+
+  it("keeps smoke local and never invokes paid/network-capable adapters", async () => {
+    const repositoryStatus = vi.fn(async () => {
+      throw new Error("must not run");
+    });
+    await expect(
+      preflightExperienceReplay({
+        config: config("smoke"),
+        recordedRunAdapters: {
+          repositoryStatus,
+          attestTaskImages: vi.fn(),
+          attestHostCodex: vi.fn(),
+          attestContainerCodex: vi.fn()
+        }
+      })
+    ).resolves.toMatchObject({ recordedRunAttestation: null });
+    expect(repositoryStatus).not.toHaveBeenCalled();
+  });
+
+  it("rejects dirty worktrees before image or Codex attestation", async () => {
+    const attestTaskImages = vi.fn();
+    const attestHostCodex = vi.fn();
+    const attestContainerCodex = vi.fn();
+    await expect(
+      preflightExperienceReplay({
+        config: config("quick"),
+        confirmPaidRun: true,
+        requireRunnable: false,
+        recordedRunAdapters: {
+          repositoryStatus: async () => " M package.json\n",
+          attestTaskImages,
+          attestHostCodex,
+          attestContainerCodex
+        }
+      })
+    ).resolves.toMatchObject({ recordedRunAttestation: null });
+    expect(attestTaskImages).not.toHaveBeenCalled();
+    expect(attestHostCodex).not.toHaveBeenCalled();
+    expect(attestContainerCodex).not.toHaveBeenCalled();
+  });
+
+  it("validates exact per-task images and separate auth-context toolchains", async () => {
+    const model = {
+      id: "gpt-5.6-luna",
+      model: "gpt-5.6-luna",
+      label: "Luna",
+      description: "Pinned",
+      hidden: false,
+      isDefault: true,
+      supportedReasoningEfforts: []
+    };
+    const executable = {
+      path: "/pinned/codex",
+      sha256: "a".repeat(64),
+      sizeBytes: 1,
+      version: "pinned-codex",
+      versionOutput: "pinned-codex"
+    };
+    const result = await preflightExperienceReplay({
+      config: config("quick"),
+      confirmPaidRun: true,
+      requireRunnable: false,
+      recordedRunAdapters: {
+        repositoryStatus: async () => "",
+        attestTaskImages: async (tasks) =>
+          freezeTaskImages(
+            tasks.map((task) => ({
+              taskName: task.name,
+              taskDigest: task.task_digest
+            })),
+            async (task) => ({
+              immutableReference: `registry.example/${task.taskName}@sha256:${"d".repeat(64)}`,
+              imageId: `sha256:${"e".repeat(64)}`,
+              contentDigest: `sha256:${"d".repeat(64)}`,
+              resolvedBaseImageDigests: [`sha256:${"f".repeat(64)}`],
+              dockerfileSha256: `sha256:${"1".repeat(64)}`,
+              dockerVersion: "Docker 29",
+              buildkitVersion: "BuildKit 0.24",
+              provenanceSha256: null
+            })
+          ),
+        attestHostCodex: async () => ({ executable, models: [model] }),
+        attestContainerCodex: async () => ({ executable, models: [model] })
+      }
+    });
+    expect(result.recordedRunAttestation?.taskImages).toHaveLength(12);
   });
 });

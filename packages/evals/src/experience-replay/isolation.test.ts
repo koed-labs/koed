@@ -1,7 +1,7 @@
 import { Redis } from "ioredis";
-import { stat } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   assertEvalDatabaseUrl,
   assertLoopbackUrl,
@@ -70,5 +70,36 @@ describe("experience replay isolation", () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
     await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
     expect(() => process.kill(redis.pid, 0)).toThrow();
+    if (process.platform !== "win32") {
+      expect(() => process.kill(-redis.processGroupId, 0)).toThrow();
+    }
+  });
+
+  it("does not delete the runtime directory without shutdown proof", async () => {
+    if (process.platform === "win32") return;
+    const redis = await startTrialRedis({ shutdownTimeoutMs: 20 });
+    const directory = path.dirname(redis.socketPath);
+    const originalKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === -redis.processGroupId && signal === 0) {
+        const error = new Error("permission denied") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      }
+      return originalKill(pid, signal);
+    });
+
+    try {
+      await expect(redis.close()).rejects.toThrow("Failed to prove");
+      expect((await stat(directory)).isDirectory()).toBe(true);
+    } finally {
+      kill.mockRestore();
+      try {
+        originalKill(-redis.processGroupId, "SIGKILL");
+      } catch {
+        // The group may already have been reaped after the failed proof.
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

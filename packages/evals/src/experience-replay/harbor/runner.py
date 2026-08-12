@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,10 @@ MANIFEST_SCHEMA = "koed-terminal-bench-corpus-v1"
 RUN_REQUEST_SCHEMA = "koed-harbor-run-v1"
 FREEZE_MANIFEST_SCHEMA = "koed-harbor-freeze-v1"
 MAX_TRAJECTORY_BYTES = 256 * 1024 * 1024
+MAX_LIFECYCLE_LINE_BYTES = 16 * 1024
+LIFECYCLE_SOCKET_ENV = "KOED_HARBOR_LIFECYCLE_SOCKET"
+LIFECYCLE_TOKEN_ENV = "KOED_HARBOR_LIFECYCLE_TOKEN"
+LIFECYCLE_TIMEOUT_ENV = "KOED_HARBOR_LIFECYCLE_TIMEOUT_MS"
 REWARD_CONTRACTS_PATH = Path(__file__).with_name("reward-contracts.json")
 SAFE_JOB_CONFIG_FIELDS = frozenset(
     {
@@ -97,6 +102,9 @@ SAFE_RETRY_CONFIG_FIELDS = frozenset(
         "max_wait_sec",
     }
 )
+CODEX_AGENT_NAME = "codex"
+CODEX_AGENT_ENV_FIELDS = frozenset({"OPENAI_API_KEY", "KOED_BENCHMARK_MCP_TOKEN"})
+CODEX_EXTRA_ALLOWED_HOSTS = frozenset({"api.openai.com", "host.docker.internal"})
 
 QUICK_TASKS = (
     "terminal-bench/cad-model",
@@ -130,6 +138,57 @@ STANDARD_EXTRA_TASKS = (
 
 class ContractError(RuntimeError):
     """An immutable benchmark input or lifecycle contract was violated."""
+
+
+def _notify_lifecycle(event: TrialHookEvent, name: str, attempt_kind: str) -> None:
+    socket_path = os.environ.get(LIFECYCLE_SOCKET_ENV)
+    token = os.environ.get(LIFECYCLE_TOKEN_ENV)
+    timeout_text = os.environ.get(LIFECYCLE_TIMEOUT_ENV)
+    if not socket_path or not token or not timeout_text:
+        raise ContractError("LIFECYCLE_CHANNEL_MISSING")
+    try:
+        timeout = int(timeout_text) / 1000
+    except ValueError as error:
+        raise ContractError("INVALID_LIFECYCLE_TIMEOUT") from error
+    payload = json.dumps(
+        {
+            "schema_version": "koed-harbor-lifecycle-v1",
+            "token": token,
+            "attempt_kind": attempt_kind,
+            "event": name,
+            "trial_id": str(event.trial_id),
+            "task_name": event.task_name,
+            "timestamp": event.timestamp.isoformat(),
+        },
+        separators=(",", ":"),
+    ).encode() + b"\n"
+    if len(payload) > MAX_LIFECYCLE_LINE_BYTES:
+        raise ContractError("LIFECYCLE_EVENT_TOO_LARGE")
+    received = bytearray()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout)
+            client.connect(socket_path)
+            client.sendall(payload)
+            client.shutdown(socket.SHUT_WR)
+            while b"\n" not in received:
+                chunk = client.recv(1024)
+                if not chunk:
+                    break
+                received.extend(chunk)
+                if len(received) > 1024:
+                    raise ContractError("INVALID_LIFECYCLE_ACK")
+    except (OSError, TimeoutError) as error:
+        raise ContractError("LIFECYCLE_ACK_FAILED") from error
+    try:
+        ack = json.loads(bytes(received))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ContractError("INVALID_LIFECYCLE_ACK") from error
+    if ack != {
+        "schema_version": "koed-harbor-lifecycle-ack-v1",
+        "accepted": True,
+    }:
+        raise ContractError("LIFECYCLE_EVENT_REJECTED")
 
 
 def _sha256_file(path: Path) -> str:
@@ -588,9 +647,10 @@ def _freeze_file(
 
 @dataclass
 class LifecycleRecorder:
-    manifest_path: Path
-    freeze_destination: Path
-    freeze_relative_path: str
+    attempt_kind: str
+    manifest_path: Path | None = None
+    freeze_destination: Path | None = None
+    freeze_relative_path: str | None = None
     states: dict[str, str] = field(default_factory=dict)
     records: list[dict[str, Any]] = field(default_factory=list)
     manifest: dict[str, Any] | None = None
@@ -608,6 +668,7 @@ class LifecycleRecorder:
         key = str(event.trial_id)
         if key in self.states:
             raise ContractError("agent-started event was duplicated or out of order")
+        await asyncio.to_thread(_notify_lifecycle, event, "agent_started", self.attempt_kind)
         self.states[key] = "agent-started"
         self._record(event, "agent_started")
 
@@ -615,6 +676,7 @@ class LifecycleRecorder:
         key = str(event.trial_id)
         if self.states.get(key) != "agent-started":
             raise ContractError("agent-ended event occurred before agent-started")
+        await asyncio.to_thread(_notify_lifecycle, event, "agent_ended", self.attempt_kind)
         self.states[key] = "agent-ended"
         self._record(event, "agent_ended")
 
@@ -622,6 +684,12 @@ class LifecycleRecorder:
         key = str(event.trial_id)
         if self.states.get(key) != "agent-ended":
             raise ContractError("verification-started event occurred before agent-ended")
+        if self.attempt_kind == "replay":
+            self.states[key] = "verification-started"
+            self._record(event, "verification_started")
+            return
+        if self.freeze_destination is None or self.freeze_relative_path is None or self.manifest_path is None:
+            raise ContractError("SOURCE_FREEZE_OUTPUTS_MISSING")
         frozen = _freeze_file(
             _trial_dir(event) / "agent" / "trajectory.json",
             self.freeze_destination,
@@ -651,6 +719,12 @@ class LifecycleRecorder:
             "frozen_artifact": frozen,
         }
         _atomic_json(self.manifest_path, self.manifest, no_overwrite=True)
+
+    async def on_trial_ended(self, event: TrialHookEvent) -> None:
+        await asyncio.to_thread(_notify_lifecycle, event, "trial_ended", self.attempt_kind)
+
+    async def on_trial_cancelled(self, event: TrialHookEvent) -> None:
+        await asyncio.to_thread(_notify_lifecycle, event, "trial_cancelled", self.attempt_kind)
 
 
 def _step_identities(path: Path) -> tuple[list[dict[str, Any]], int | None]:
@@ -696,6 +770,7 @@ def _strict_request(path: Path) -> dict[str, Any]:
         raise ContractError("RUN_REQUEST_NOT_OBJECT")
     allowed = {
         "schema_version",
+        "attempt_kind",
         "task_name",
         "job_config",
         "corpus_manifest",
@@ -707,7 +782,7 @@ def _strict_request(path: Path) -> dict[str, Any]:
     unknown = set(request) - allowed
     if unknown:
         raise ContractError("UNKNOWN_RUN_REQUEST_KEY")
-    required = allowed - {"result_path"}
+    required = allowed - {"result_path", "freeze_manifest_path", "freeze_trajectory_to"}
     missing = required - set(request)
     if missing:
         raise ContractError("MISSING_RUN_REQUEST_KEY")
@@ -715,6 +790,16 @@ def _strict_request(path: Path) -> dict[str, Any]:
         raise ContractError("unsupported run request schema")
     if not isinstance(request["job_config"], dict):
         raise ContractError("INVALID_JOB_CONFIG")
+    if request.get("attempt_kind") not in {"source", "replay"}:
+        raise ContractError("INVALID_ATTEMPT_KIND")
+    freeze_fields = {"freeze_manifest_path", "freeze_trajectory_to"} & set(request)
+    if request["attempt_kind"] == "source" and freeze_fields != {
+        "freeze_manifest_path",
+        "freeze_trajectory_to",
+    }:
+        raise ContractError("SOURCE_FREEZE_OUTPUTS_REQUIRED")
+    if request["attempt_kind"] == "replay" and freeze_fields:
+        raise ContractError("REPLAY_FREEZE_OUTPUTS_FORBIDDEN")
     return request
 
 
@@ -757,6 +842,36 @@ def _strict_nested_config(
     return value
 
 
+def _validate_empty_env(value: Any, reason: str) -> None:
+    if not isinstance(value, dict) or value:
+        raise ContractError(reason)
+
+
+def _validate_codex_agent_env(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) - CODEX_AGENT_ENV_FIELDS:
+        raise ContractError("DISALLOWED_AGENT_ENV")
+    if any(not isinstance(item, str) or not item for item in value.values()):
+        raise ContractError("INVALID_AGENT_ENV")
+    if value.get("OPENAI_API_KEY", "${OPENAI_API_KEY}") != "${OPENAI_API_KEY}":
+        raise ContractError("INVALID_CODEX_PROVIDER_CREDENTIAL")
+    if (
+        value.get(
+            "KOED_BENCHMARK_MCP_TOKEN", "${KOED_BENCHMARK_MCP_TOKEN}"
+        )
+        != "${KOED_BENCHMARK_MCP_TOKEN}"
+    ):
+        raise ContractError("INVALID_BENCHMARK_MCP_TOKEN_REFERENCE")
+
+
+def _validate_extra_allowed_hosts(value: Any) -> None:
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(item, str) for item in value)
+        or not set(value).issubset(CODEX_EXTRA_ALLOWED_HOSTS)
+    ):
+        raise ContractError("DISALLOWED_EXTRA_ALLOWED_HOST")
+
+
 def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
     if set(job_fields) - SAFE_JOB_CONFIG_FIELDS:
         raise ContractError("DISALLOWED_JOB_CONFIG_FIELD")
@@ -764,26 +879,48 @@ def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
         _strict_nested_config(
             job_fields["retry"], SAFE_RETRY_CONFIG_FIELDS, "DISALLOWED_RETRY_CONFIG_FIELD"
         )
+    job_fields.setdefault("environment", {})
     if "environment" in job_fields:
-        _strict_nested_config(
+        environment = _strict_nested_config(
             job_fields["environment"],
             SAFE_ENVIRONMENT_CONFIG_FIELDS,
             "DISALLOWED_ENVIRONMENT_CONFIG_FIELD",
         )
+        if environment.get("delete", True) is not True:
+            raise ContractError("ENVIRONMENT_DELETION_REQUIRED")
+        if "env" in environment:
+            _validate_empty_env(environment["env"], "DISALLOWED_ENVIRONMENT_ENV")
+        if "extra_allowed_hosts" in environment:
+            _validate_extra_allowed_hosts(environment["extra_allowed_hosts"])
+        environment["delete"] = True
+    job_fields.setdefault("verifier", {})
     if "verifier" in job_fields:
-        _strict_nested_config(
+        verifier = _strict_nested_config(
             job_fields["verifier"],
             SAFE_VERIFIER_CONFIG_FIELDS,
             "DISALLOWED_VERIFIER_CONFIG_FIELD",
         )
+        if verifier.get("disable", False) is not False:
+            raise ContractError("VERIFIER_REQUIRED")
+        if "env" in verifier:
+            _validate_empty_env(verifier["env"], "DISALLOWED_VERIFIER_ENV")
+        verifier["disable"] = False
     if "agents" in job_fields:
         agents = job_fields["agents"]
         if not isinstance(agents, list):
             raise ContractError("INVALID_AGENTS_CONFIG")
         for agent in agents:
-            _strict_nested_config(
+            agent = _strict_nested_config(
                 agent, SAFE_AGENT_CONFIG_FIELDS, "DISALLOWED_AGENT_CONFIG_FIELD"
             )
+            if "env" in agent:
+                if agent.get("name") != CODEX_AGENT_NAME:
+                    raise ContractError("DISALLOWED_AGENT_ENV")
+                _validate_codex_agent_env(agent["env"])
+            if "extra_allowed_hosts" in agent:
+                if agent.get("name") != CODEX_AGENT_NAME:
+                    raise ContractError("DISALLOWED_EXTRA_ALLOWED_HOST")
+                _validate_extra_allowed_hosts(agent["extra_allowed_hosts"])
 
 
 def _verify_resolved_tasks(job: Job, manifest: dict[str, Any], task_name: str) -> None:
@@ -838,10 +975,12 @@ def _trial_lock_validator(record: dict[str, Any]):
 async def run_request(request_path: Path) -> dict[str, Any]:
     request = _strict_request(request_path)
     run_root = _validated_run_root(request["run_root"])
-    freeze_destination, freeze_relative = _output_beneath(
-        run_root, request["freeze_trajectory_to"]
-    )
-    manifest_path, _ = _output_beneath(run_root, request["freeze_manifest_path"])
+    freeze_destination = freeze_relative = manifest_path = None
+    if request["attempt_kind"] == "source":
+        freeze_destination, freeze_relative = _output_beneath(
+            run_root, request["freeze_trajectory_to"]
+        )
+        manifest_path, _ = _output_beneath(run_root, request["freeze_manifest_path"])
     result_destination = None
     if request.get("result_path") is not None:
         result_destination, _ = _output_beneath(run_root, request["result_path"])
@@ -865,7 +1004,7 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     ):
         raise ContractError("INVALID_JOB_NAME")
     job_dir, _ = _output_beneath(run_root, f"harbor-jobs/{job_name}")
-    requested_outputs = [freeze_destination, manifest_path]
+    requested_outputs = [output for output in [freeze_destination, manifest_path] if output is not None]
     if result_destination is not None:
         requested_outputs.append(result_destination)
     if any(output.is_relative_to(job_dir) for output in requested_outputs):
@@ -886,6 +1025,10 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         config = JobConfig.model_validate(job_fields)
     except Exception as error:
         raise ContractError("INVALID_JOB_CONFIG") from error
+    if config.verifier.disable:
+        raise ContractError("VERIFIER_REQUIRED")
+    if not config.environment.delete:
+        raise ContractError("ENVIRONMENT_DELETION_REQUIRED")
     if config.retry.max_retries != 0:
         raise ContractError("Harbor retries must remain disabled for scored attempts")
     job = await Job.create(config)
@@ -894,6 +1037,7 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     _verify_resolved_tasks(job, manifest, task_name)
 
     recorder = LifecycleRecorder(
+        attempt_kind=request["attempt_kind"],
         manifest_path=manifest_path,
         freeze_destination=freeze_destination,
         freeze_relative_path=freeze_relative,
@@ -902,6 +1046,8 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     job.on_agent_started(recorder.on_agent_started)
     job.on_agent_ended(recorder.on_agent_ended)
     job.on_verification_started(recorder.on_verification_started)
+    job.on_trial_ended(recorder.on_trial_ended)
+    job.on_trial_cancelled(recorder.on_trial_cancelled)
     result = await job.run()
     trial_results = []
     reward_contract = manifest_by_name[task_name]["reward_contract"]
@@ -928,7 +1074,6 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         "schema_version": "koed-harbor-result-v1",
         "runtime": runtime,
         "job_lock_sha256": _sha256_file(job.job_dir / "lock.json"),
-        "freeze_manifest_sha256": _sha256_file(manifest_path),
         "result": {
             "job_id": str(result.id),
             "n_total_trials": result.n_total_trials,
@@ -937,9 +1082,12 @@ async def run_request(request_path: Path) -> dict[str, Any]:
             "trials": trial_results,
         },
     }
+    if request["attempt_kind"] == "source":
+        assert manifest_path is not None
+        output["freeze_manifest_sha256"] = _sha256_file(manifest_path)
     if result_destination is not None:
         _atomic_json(result_destination, output, no_overwrite=True)
-    if recorder.manifest is None:
+    if request["attempt_kind"] == "source" and recorder.manifest is None:
         raise ContractError("source attempt ended without a frozen pre-verifier trajectory")
     return output
 
@@ -967,7 +1115,12 @@ def main() -> int:
         else:
             load_and_verify_manifest(args.manifest)
             verify_runtime(Path(__file__).resolve().parent)
-    except (ContractError, json.JSONDecodeError, OSError, subprocess.CalledProcessError):
+    except (
+        ContractError,
+        json.JSONDecodeError,
+        OSError,
+        subprocess.CalledProcessError,
+    ):
         # Request content, paths, subprocess output, and nested Harbor models may
         # contain credentials. The CLI emits a stable non-sensitive failure only.
         print("experience-replay Harbor contract error", file=sys.stderr)

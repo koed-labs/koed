@@ -42,18 +42,18 @@ export interface CostTelemetry {
 }
 
 export interface InteractionTelemetry {
-  turns: number;
-  toolCalls: number;
-  toolFailures: number;
-  mcpCalls: number;
-  mcpFailures: number;
-  memoryAnswerCalls: number;
-  memoryAnswerFailures: number;
+  turns: number | null;
+  toolCalls: number | null;
+  toolFailures: number | null;
+  mcpCalls: number | null;
+  mcpFailures: number | null;
+  memoryAnswerCalls: number | null;
+  memoryAnswerFailures: number | null;
 }
 
 export interface WorkerUsageTelemetry {
-  calls: number;
-  failures: number;
+  calls: number | null;
+  failures: number | null;
   durationMs: number | null;
   tokens: TokenTelemetry;
   costs: CostTelemetry;
@@ -66,15 +66,15 @@ export interface WorkerTelemetry {
 }
 
 export interface RecallTelemetry {
-  searches: number;
-  expansions: number;
-  stages: number;
-  evidenceCount: number;
+  searches: number | null;
+  expansions: number | null;
+  stages: number | null;
+  evidenceCount: number | null;
 }
 
 export interface EmbeddingTelemetry {
-  calls: number;
-  tokens: number;
+  calls: number | null;
+  tokens: number | null;
   durationMs: number | null;
 }
 
@@ -88,6 +88,17 @@ export interface RssTelemetry {
   apiBytes: number | null;
   runtimeBytes: number | null;
   workerBytes: number | null;
+}
+
+export type TelemetryCollectionState = "available" | "missing" | "failed";
+
+export interface TelemetryCollectionStatus {
+  harbor: TelemetryCollectionState;
+  codex: TelemetryCollectionState;
+  koedRecall: TelemetryCollectionState;
+  modelWorkflows: TelemetryCollectionState;
+  embeddings: TelemetryCollectionState;
+  processRss: TelemetryCollectionState;
 }
 
 export interface SourceSplitIdentifiers {
@@ -116,6 +127,7 @@ export interface ReplayOutcome {
   embedding?: EmbeddingTelemetry;
   pipeline?: PipelineTelemetry;
   rss?: RssTelemetry;
+  telemetryStatus?: TelemetryCollectionStatus;
   failureCategory?: FailureCategory | null;
   failureKind?: FailureKind | null;
   failurePhase?: FailurePhase | null;

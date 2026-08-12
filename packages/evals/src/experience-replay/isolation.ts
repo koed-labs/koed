@@ -34,6 +34,7 @@ export const assertEvalDatabaseUrl = (value: string): URL => {
 export interface TrialRedisHandle {
   url: string;
   pid: number;
+  processGroupId: number;
   socketPath: string;
   password: string;
   close(): Promise<void>;
@@ -43,30 +44,59 @@ const isRunning = (child: ChildProcess): boolean =>
   Boolean(child.pid) && child.exitCode === null && child.signalCode === null;
 
 const waitForStop = async (
-  stopped: Promise<void>,
+  isStopped: () => boolean,
   timeoutMs: number
 ): Promise<boolean> => {
-  let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
-  });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (isStopped()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return isStopped();
+};
+
+const processGroupExists = (processGroupId: number): boolean => {
   try {
-    return await Promise.race([stopped.then(() => true), timedOut]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+};
+
+const signalProcessGroup = (
+  child: ChildProcess,
+  processGroupId: number,
+  signal: NodeJS.Signals
+): void => {
+  if (process.platform === "win32") {
+    child.kill(signal);
+    return;
+  }
+  try {
+    process.kill(-processGroupId, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
 };
 
 const stopChild = async (
   child: ChildProcess,
-  stopped: Promise<void>,
+  processGroupId: number,
   gracefulTimeoutMs: number
 ): Promise<void> => {
-  if (!isRunning(child)) return;
-  child.kill("SIGTERM");
-  if (await waitForStop(stopped, gracefulTimeoutMs)) return;
-  if (isRunning(child)) child.kill("SIGKILL");
-  await waitForStop(stopped, gracefulTimeoutMs);
+  const isStopped = (): boolean =>
+    !isRunning(child) &&
+    (process.platform === "win32" || !processGroupExists(processGroupId));
+  if (isStopped()) return;
+  signalProcessGroup(child, processGroupId, "SIGTERM");
+  if (await waitForStop(isStopped, gracefulTimeoutMs)) return;
+  signalProcessGroup(child, processGroupId, "SIGKILL");
+  if (!(await waitForStop(isStopped, gracefulTimeoutMs))) {
+    throw new Error(
+      `Failed to prove isolated Redis process group ${processGroupId} stopped`
+    );
+  }
 };
 
 const redisUrl = (socketPath: string, password: string): string =>
@@ -121,7 +151,10 @@ export const startTrialRedis = async ({
       "--dbfilename",
       "disabled.rdb"
     ],
-    { stdio: ["ignore", "ignore", "pipe"] }
+    {
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "ignore", "pipe"]
+    }
   );
   const stderr: Buffer[] = [];
   child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
@@ -136,13 +169,14 @@ export const startTrialRedis = async ({
   });
   child.once("exit", () => markStopped?.());
   if (!child.pid) {
-    await waitForStop(stopped, startupTimeoutMs);
+    await waitForStop(() => childError !== undefined, startupTimeoutMs);
     await rm(directory, { recursive: true, force: true });
     throw new Error(
       `Failed to start isolated Redis${childError ? `: ${childError.message}` : ""}`
     );
   }
   const pid = child.pid;
+  const processGroupId = pid;
   const url = redisUrl(socketPath, password);
   const deadline = Date.now() + startupTimeoutMs;
   let ready = false;
@@ -175,7 +209,7 @@ export const startTrialRedis = async ({
     ]);
   }
   if (!ready) {
-    await stopChild(child, stopped, shutdownTimeoutMs);
+    await stopChild(child, processGroupId, shutdownTimeoutMs);
     await rm(directory, { recursive: true, force: true });
     const detail =
       childError?.message ??
@@ -189,13 +223,14 @@ export const startTrialRedis = async ({
   return {
     url,
     pid,
+    processGroupId,
     socketPath,
     password,
     close() {
       cleanup ??= (async () => {
         // Redis handles SIGTERM as a graceful shutdown. A wedged process gets
         // only the configured grace period before forced termination.
-        await stopChild(child, stopped, shutdownTimeoutMs);
+        await stopChild(child, processGroupId, shutdownTimeoutMs);
         await rm(directory, { recursive: true, force: true });
       })();
       return cleanup;

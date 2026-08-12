@@ -2,15 +2,29 @@ import {
   Client,
   StreamableHTTPClientTransport
 } from "@modelcontextprotocol/client";
+import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import http from "node:http";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalAiRuntimeClient } from "@koed/mcp-server/runtime-contracts";
 import { startBenchmarkBridge, type BenchmarkBridgeHandle } from "./bridge.js";
 
 const open: BenchmarkBridgeHandle[] = [];
+let trialWorkspaceRoot: string;
+let projectCwd: string;
+
+beforeEach(async () => {
+  trialWorkspaceRoot = await mkdtemp(
+    path.join(os.tmpdir(), "koed-replay-bridge-")
+  );
+  projectCwd = path.join(trialWorkspaceRoot, "task-a");
+  await mkdir(projectCwd);
+});
 
 afterEach(async () => {
   await Promise.all(open.splice(0).map((bridge) => bridge.close()));
+  await rm(trialWorkspaceRoot, { recursive: true, force: true });
 });
 
 const start = async () => {
@@ -26,7 +40,8 @@ const start = async () => {
   } as unknown as LocalAiRuntimeClient;
   const bridge = await startBenchmarkBridge({
     runtimeClient,
-    projectCwd: "/benchmark/task-a",
+    projectCwd,
+    trialWorkspaceRoot,
     identity: {
       runId: "run-a",
       trialId: "trial-a",
@@ -126,7 +141,8 @@ describe("experience replay MCP bridge", () => {
     } as unknown as LocalAiRuntimeClient;
     const bridge = await startBenchmarkBridge({
       runtimeClient,
-      projectCwd: "/benchmark/task-a",
+      projectCwd,
+      trialWorkspaceRoot,
       identity: {
         runId: "run-a",
         trialId: "trial-unapproved-peer",
@@ -210,7 +226,7 @@ describe("experience replay MCP bridge", () => {
         ).resolves.toMatchObject({
           structuredContent: {
             caller: {
-              cwd: "/benchmark/task-a",
+              cwd: projectCwd,
               protocolVersion: "2026-07-28"
             }
           }
@@ -220,6 +236,101 @@ describe("experience replay MCP bridge", () => {
     } finally {
       await client.close();
     }
+  });
+
+  it("canonicalizes a real Project beneath its explicit trial root", async () => {
+    const nested = path.join(trialWorkspaceRoot, "nested", "task-b");
+    await mkdir(nested, { recursive: true });
+    const callTool = vi.fn<LocalAiRuntimeClient["callTool"]>(
+      async (_name, _input, caller) => ({ caller })
+    );
+    const runtimeClient = {
+      capabilities: async () => ({
+        protocolVersion: 1 as const,
+        curatedMemoryIntakeAvailable: false
+      }),
+      callTool
+    } as unknown as LocalAiRuntimeClient;
+    const bridge = await startBenchmarkBridge({
+      runtimeClient,
+      projectCwd: path.join(nested, "..", "task-b"),
+      trialWorkspaceRoot,
+      identity: {
+        runId: "run-a",
+        trialId: "trial-canonical",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        condition: "empty"
+      }
+    });
+    open.push(bridge);
+    bridge.activate(60_000);
+    const client = new Client(
+      { name: "experience-replay-test", version: "1.0.0" },
+      {
+        capabilities: {},
+        versionNegotiation: { mode: { pin: "2026-07-28" } }
+      }
+    );
+    const transport = new StreamableHTTPClientTransport(new URL(bridge.url), {
+      authProvider: { token: async () => bridge.token }
+    });
+    await client.connect(transport);
+    try {
+      await client.callTool({
+        name: "memory_answer",
+        arguments: { query: "canonical" }
+      });
+      expect(callTool.mock.calls[0]?.[2]).toMatchObject({ cwd: nested });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("rejects nonexistent, outside, root-equal, and symlinked Projects", async () => {
+    const runtimeClient = {
+      capabilities: vi.fn(),
+      callTool: vi.fn()
+    } as unknown as LocalAiRuntimeClient;
+    const identity = {
+      runId: "run-a",
+      trialId: "trial-invalid-project",
+      taskDigest: `sha256:${"a".repeat(64)}`,
+      condition: "empty" as const
+    };
+    await expect(
+      startBenchmarkBridge({
+        runtimeClient,
+        projectCwd: path.join(trialWorkspaceRoot, "missing"),
+        trialWorkspaceRoot,
+        identity
+      })
+    ).rejects.toThrow("must exist");
+    await expect(
+      startBenchmarkBridge({
+        runtimeClient,
+        projectCwd: path.dirname(trialWorkspaceRoot),
+        trialWorkspaceRoot,
+        identity
+      })
+    ).rejects.toThrow("beneath");
+    await expect(
+      startBenchmarkBridge({
+        runtimeClient,
+        projectCwd: trialWorkspaceRoot,
+        trialWorkspaceRoot,
+        identity
+      })
+    ).rejects.toThrow("beneath");
+    const link = path.join(trialWorkspaceRoot, "linked-task");
+    await symlink(projectCwd, link, "dir");
+    await expect(
+      startBenchmarkBridge({
+        runtimeClient,
+        projectCwd: link,
+        trialWorkspaceRoot,
+        identity
+      })
+    ).rejects.toThrow("without symlinks");
   });
 
   it("rejects any MCP protocol other than 2026-07-28", async () => {
