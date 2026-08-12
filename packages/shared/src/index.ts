@@ -475,7 +475,9 @@ export {
   sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareBundleActionGrantBinding,
-  sharedMemoryShareActionGrantBinding
+  sharedMemoryShareActionGrantBinding,
+  sharedMemoryTranscriptAccessActionGrantBinding,
+  sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";
 export type {
   SharedMemoryActionGrantBinding,

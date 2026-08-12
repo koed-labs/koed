@@ -182,6 +182,29 @@ export const shareGrantParamsSchema = z
   .object({ shareGrantId: uuidSchema })
   .strict();
 
+export const putTeamConversationSourceGrantSchema = z
+  .object({
+    mutationId: uuidSchema,
+    teamId: uuidSchema,
+    expectedVersion: nonNegativeVersionSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    authority: sharedMemoryAuthoritySchema
+  })
+  .strict();
+
+export const revokeTeamConversationSourceGrantSchema = z
+  .object({
+    mutationId: uuidSchema,
+    teamId: uuidSchema,
+    expectedVersion: positiveVersionSchema,
+    reasonCode: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,119}$/),
+    authority: sharedMemoryAuthoritySchema
+  })
+  .strict();
+
 export const scopedShareGrantParamsSchema = z
   .object({
     teamId: uuidSchema,

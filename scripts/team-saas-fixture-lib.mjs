@@ -1940,7 +1940,7 @@ export const seedFixture = async (client, runtime) => {
           infrastructure.deviceCredentialId,
           owner.id,
           infrastructure.deviceCredentialKeyId,
-          `${FIXTURE_VERSION}-${userKey}-device-instance`,
+          fixtureUuid(`device-instance:${userKey}`),
           infrastructure.deviceCredentialLineageId,
           process.env.API_TOKEN_PEPPER?.trim()
             ? fixtureSessionHash(

@@ -202,6 +202,28 @@ const matrixCases: Array<{
   },
   {
     intent: {
+      action: "shared_memory.conversation_source_grant",
+      mutationId: uuid(6),
+      teamId: uuid(1),
+      shareGrantId: uuid(7),
+      expectedVersion: 0,
+      mode: "continuous"
+    },
+    expected: "step_up"
+  },
+  {
+    intent: {
+      action: "shared_memory.conversation_source_revoke",
+      mutationId: uuid(6),
+      teamId: uuid(1),
+      shareGrantId: uuid(7),
+      expectedVersion: 1,
+      reasonCode: "owner_revoked"
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
       action: "shared_memory.change_representation",
       mutationId: uuid(6),
       logicalMemoryId: uuid(3),

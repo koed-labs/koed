@@ -1624,6 +1624,24 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
         .max(120)
         .regex(/^[A-Za-z0-9_.:-]+$/)
     }),
+    actionGrantIntent("collaboration.share_conversation_source", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedVersion: z.number().int().safe().min(0),
+      mode: z.enum(["snapshot", "continuous"])
+    }),
+    actionGrantIntent("collaboration.revoke_conversation_source", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedVersion: positiveVersionSchema,
+      reasonCode: z
+        .string()
+        .min(1)
+        .max(120)
+        .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,119}$/)
+    }),
     actionGrantIntent("collaboration.change_shared_memory_representation", {
       mutationId: z.uuid(),
       logicalMemoryId: z.uuid(),

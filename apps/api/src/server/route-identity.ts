@@ -1578,6 +1578,66 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "PUT",
+    "/v1/shared-memory/share-grants/{shareGrantId}/transcript-access",
+    "session_or_device_credential",
+    "shared_memory",
+    "Grant independent read-only access to a captured Conversation Source.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/share-grants/{shareGrantId}/transcript-access/revoke",
+    "session_or_device_credential",
+    "shared_memory",
+    "Revoke independent Conversation Source access.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/share-grants/{shareGrantId}/transcript/manifest",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read an authorized Conversation Source manifest.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/share-grants/{shareGrantId}/transcript/segments/{segmentId}",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read one authorized Conversation Source segment.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/share-grants/{shareGrantId}/transcript/stream",
+    "session_or_device_credential",
+    "shared_memory",
+    "Stream durable Conversation Source segment availability.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/share-grants/{shareGrantId}/transcript/fork-snapshot",
+    "session",
+    "shared_memory",
+    "Export a completed-turn Conversation Source snapshot for local forking.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/shared-memory/logical-memories/{logicalMemoryId}/share-grants",
     "session_or_device_credential",

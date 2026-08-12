@@ -107,6 +107,7 @@ import {
 } from "../collaboration/index.js";
 import { registerHighRiskRoutes } from "../high-risk/index.js";
 import { registerSharedMemoryRoutes } from "../shared-memory/index.js";
+import { createTeamConversationSourceService } from "../team-conversation-source/index.js";
 import { registerRetentionRoutes } from "../retention/index.js";
 import {
   registerPersonalDeviceSyncRoutes,
@@ -407,6 +408,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     registerRoutes(): void;
     close(): Promise<void>;
   } | null = null;
+  let teamConversationSourceService: {
+    close(): Promise<void>;
+  } | null = null;
   let localEdgeSecureFetch: ReturnType<
     typeof createSecureUpstreamFetch
   > | null = null;
@@ -432,6 +436,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     graphStreamService?.close();
     collaborationRealtimeService?.close();
     await collaborationRealtimeBroker?.close();
+    await teamConversationSourceService?.close();
     if (relayCleanupTimer) clearInterval(relayCleanupTimer);
     await Promise.all([
       embeddingQueue?.close(),
@@ -939,6 +944,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: requireRepository,
+    requireTeamConversationSourceRepository: requireRepository,
     requireCollaborationRepository,
     requireHighRiskRepository: requireRepository,
     authenticateSession: authHelpers.authenticateSession,
@@ -948,6 +954,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       authHelpers.authenticateSessionOrDeviceCredential,
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  teamConversationSourceService = createTeamConversationSourceService({
+    app,
+    context: routeContext,
+    pool
   });
   registerRetentionRoutes(app, {
     requireRetentionRepository,

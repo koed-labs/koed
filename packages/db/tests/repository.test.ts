@@ -9266,6 +9266,409 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("authorizes Team Conversation source access and follows continuous source generations", async () => {
+    const owner = await repo.createUser({
+      email: `source-share-owner-${randomUUID()}@example.com`,
+      displayName: "Source Share Owner"
+    });
+    const member = await repo.createUser({
+      email: `source-share-member-${randomUUID()}@example.com`,
+      displayName: "Source Share Member"
+    });
+    const outsider = await repo.createUser({
+      email: `source-share-outsider-${randomUUID()}@example.com`,
+      displayName: "Source Share Outsider"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Conversation Source Team" }
+    );
+    await inviteExistingTeamMember({
+      actorUserId: owner.id,
+      teamId: team.id,
+      user: member
+    });
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Conversation Source Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read",
+        expectedVersion: null
+      }
+    );
+    const externalSessionId = `source-share-${randomUUID()}`;
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        projectId: "source-share-project",
+        externalSessionId,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const shareGrant = await insertValidSharedMemoryGrant({
+      ownerUserId: owner.id,
+      sessionId: session.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id
+    });
+    const logicalSourceId = randomUUID();
+    const createArtifact = async (sourceCreatedAt: Date) => {
+      const artifact = await repo.ensureConversationSourceArtifact(
+        { userId: owner.id },
+        {
+          sessionId: session.id,
+          logicalSourceId,
+          sourceGenerationId: randomUUID(),
+          replicaRole: "origin_local",
+          sourceKind: "codex",
+          sourceRuntime: "codex",
+          externalSessionId,
+          sourceFingerprint: createHash("sha256")
+            .update(`${externalSessionId}:${sourceCreatedAt.toISOString()}`)
+            .digest("hex"),
+          artifactFormat: "jsonl",
+          artifactFormatVersion: 1,
+          sourceAdapterVersion: "codex-transcript-v1",
+          journalStartOffset: 0,
+          journalStartLine: 0,
+          liveStartOffset: 0,
+          liveStartLine: 0,
+          currentSourceLength: 24,
+          sourceCreatedAt: sourceCreatedAt.toISOString(),
+          storageProvider: "filesystem",
+          storagePrefix: `team-source-share-${randomUUID()}`,
+          originDeploymentId: `deployment-${randomUUID()}`,
+          originDeviceId: `device-${randomUUID()}`,
+          originKeyId: `key-${randomUUID()}`,
+          originPublicKey: "a".repeat(43),
+          redactedSourceLabel: "Codex session"
+        }
+      );
+      const digest = randomBytes(32).toString("hex");
+      const segment = await pool.query<{ id: string }>(
+        `insert into conversation_source_segments (
+           artifact_id, segment_index, source_start_offset, source_end_offset,
+           source_start_line, source_end_line, plaintext_digest,
+           plaintext_size, stored_size, storage_key, storage_provider,
+           signed_manifest, origin_signature, manifest_digest,
+           previous_content_digest, content_digest
+         ) values (
+           $1, 0, 0, 24, 0, 1, $2, 24, 24, $3, 'filesystem',
+           '{"version":1}'::jsonb, $4, $5, null, $6
+         ) returning id`,
+        [
+          artifact.id,
+          digest,
+          `${artifact.storagePrefix}/00000000.jsonl`,
+          "a".repeat(86),
+          randomBytes(32).toString("hex"),
+          randomBytes(32).toString("hex")
+        ]
+      );
+      await pool.query(
+        `update conversation_source_artifacts
+            set current_journal_sequence=0, provider_cursor_offset=24,
+                provider_cursor_line=1, current_source_length=24,
+                source_modified_at=$2, updated_at=$2
+          where id=$1`,
+        [artifact.id, sourceCreatedAt]
+      );
+      return { artifactId: artifact.id, segmentId: segment.rows[0]!.id };
+    };
+
+    const first = await createArtifact(new Date("2026-08-10T00:00:00.000Z"));
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: randomUUID(),
+          expectedVersion: 0,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("not authorized");
+    await expect(
+      pool.query(
+        "select count(*)::int as count from team_conversation_source_grants where share_grant_id=$1",
+        [shareGrant.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await pool.query(
+      `update source_owner_representation_consents
+          set expires_at=now()-interval '1 second'
+        where id=$1`,
+      [shareGrant.consentId]
+    );
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 0,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("not authorized");
+    await pool.query(
+      "update source_owner_representation_consents set expires_at=null where id=$1",
+      [shareGrant.consentId]
+    );
+    await pool.query(
+      "update teams set entitlement_status='suspended' where id=$1",
+      [team.id]
+    );
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 0,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("not authorized");
+    await pool.query(
+      "update teams set entitlement_status='active' where id=$1",
+      [team.id]
+    );
+    const grantMutationId = randomUUID();
+    const grant = await repo.putTeamConversationSourceGrant(
+      { userId: owner.id },
+      {
+        mutationId: grantMutationId,
+        shareGrantId: shareGrant.id,
+        teamId: team.id,
+        expectedVersion: 0,
+        mode: "continuous",
+        creatorAuthority: "repository_test"
+      }
+    );
+    expect(grant).toMatchObject({
+      artifactId: first.artifactId,
+      logicalSourceId,
+      mode: "continuous",
+      version: 1,
+      lifecycle: "active"
+    });
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: grantMutationId,
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 0,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).resolves.toMatchObject({ id: grant.id, version: 1 });
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: grantMutationId,
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 0,
+          mode: "snapshot",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("mutation identity conflict");
+    await expect(
+      repo.getTeamConversationSourceManifest(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id, afterSegmentIndex: -1, limit: 100 }
+      )
+    ).resolves.toMatchObject({
+      artifact: { id: first.artifactId },
+      segments: [{ id: first.segmentId, segmentIndex: 0 }]
+    });
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: outsider.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toBeNull();
+
+    const second = await createArtifact(new Date("2026-08-10T00:01:00.000Z"));
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toMatchObject({ artifact: { id: second.artifactId } });
+    await expect(
+      repo.getTeamConversationSourceManifest(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id, afterSegmentIndex: -1, limit: 100 }
+      )
+    ).resolves.toMatchObject({
+      artifact: { id: second.artifactId },
+      segments: [{ id: second.segmentId, segmentIndex: 0 }]
+    });
+    await expect(
+      repo.getTeamConversationSourceSegment(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id, segmentId: first.segmentId }
+      )
+    ).resolves.toMatchObject({
+      artifact: { id: first.artifactId },
+      segment: { id: first.segmentId }
+    });
+
+    const snapshotGrant = await repo.putTeamConversationSourceGrant(
+      { userId: owner.id },
+      {
+        mutationId: randomUUID(),
+        shareGrantId: shareGrant.id,
+        teamId: team.id,
+        expectedVersion: 1,
+        mode: "snapshot",
+        creatorAuthority: "repository_test"
+      }
+    );
+    expect(snapshotGrant).toMatchObject({
+      artifactId: second.artifactId,
+      mode: "snapshot",
+      maximumSegmentIndex: 0,
+      version: 2
+    });
+    await createArtifact(new Date("2026-08-10T00:02:00.000Z"));
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toMatchObject({ artifact: { id: second.artifactId } });
+    await expect(
+      repo.getTeamConversationSourceManifest(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id, afterSegmentIndex: -1, limit: 100 }
+      )
+    ).resolves.toMatchObject({
+      artifact: { id: second.artifactId },
+      segments: [{ id: second.segmentId, segmentIndex: 0 }]
+    });
+
+    await pool.query(
+      `update team_session_share_grants
+          set personal_deleted_at=now(), personal_deleted_by_user_id=$2,
+              personal_deletion_reason='owner_deleted'
+        where id=$1`,
+      [shareGrant.id, owner.id]
+    );
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toBeNull();
+    await pool.query(
+      `update team_session_share_grants
+          set personal_deleted_at=null, personal_deleted_by_user_id=null,
+              personal_deletion_reason=null
+        where id=$1`,
+      [shareGrant.id]
+    );
+
+    await pool.query(
+      `update source_owner_representation_consents
+          set expires_at=now()-interval '1 second'
+        where id=$1`,
+      [shareGrant.consentId]
+    );
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toBeNull();
+    await pool.query(
+      "update source_owner_representation_consents set expires_at=null where id=$1",
+      [shareGrant.consentId]
+    );
+
+    await pool.query(
+      `update team_workspace_access_grants
+          set can_share_owned_memory=false
+        where team_workspace_id=$1 and user_id=$2`,
+      [workspace!.id, owner.id]
+    );
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 2,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("not authorized");
+    await expect(
+      repo.revokeTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: randomUUID(),
+          expectedVersion: 2,
+          reasonCode: "owner_revoked"
+        }
+      )
+    ).rejects.toThrow();
+
+    const revokeMutationId = randomUUID();
+    const revoked = await repo.revokeTeamConversationSourceGrant(
+      { userId: owner.id },
+      {
+        mutationId: revokeMutationId,
+        shareGrantId: shareGrant.id,
+        teamId: team.id,
+        expectedVersion: 2,
+        reasonCode: "owner_revoked"
+      }
+    );
+    expect(revoked).toMatchObject({ lifecycle: "revoked", version: 3 });
+    await expect(
+      repo.revokeTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: revokeMutationId,
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 2,
+          reasonCode: "different_reason"
+        }
+      )
+    ).rejects.toThrow("mutation identity conflict");
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toBeNull();
+  });
+
   it("retains Team session share grants through personal deletion and member exit", async () => {
     const owner = await repo.createUser({
       email: `retention-owner-${randomUUID()}@example.com`,

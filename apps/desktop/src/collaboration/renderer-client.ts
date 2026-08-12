@@ -1419,6 +1419,9 @@ export const createCollaborationRendererClient = (
       "collaboration.revoke_shared_memory": "Revoke Shared Memory",
       "collaboration.change_shared_memory_representation":
         "Change Shared Memory representation",
+      "collaboration.share_conversation_source": "Share Conversation source",
+      "collaboration.revoke_conversation_source":
+        "Revoke Conversation source access",
       "collaboration.managed_conversation_handoff":
         "Move Conversation to another device",
       "collaboration.managed_conversation_fork":

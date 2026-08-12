@@ -330,6 +330,18 @@ export {
   type TeamAccessRepository
 } from "./team-access-repository.js";
 export {
+  createTeamConversationSourceRepository,
+  TeamConversationSourceAuthorizationError,
+  TeamConversationSourceConflictError,
+  type TeamConversationSourceAccessRecord,
+  type TeamConversationSourceGrantLifecycle,
+  type TeamConversationSourceGrantMode,
+  type TeamConversationSourceGrantRecord,
+  type TeamConversationSourceGrantReviewRecord,
+  type TeamConversationSourceManifestRecord,
+  type TeamConversationSourceRepository
+} from "./team-conversation-source-repository.js";
+export {
   createUserApiTokenRepository,
   mapUserRecord
 } from "./user-api-token-repository.js";

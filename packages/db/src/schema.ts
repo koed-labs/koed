@@ -5611,6 +5611,11 @@ export const teamSessionShareGrants = pgTable(
       table.teamWorkspaceId,
       table.logicalMemoryId
     ),
+    unique("team_session_share_grants_source_scope_unique").on(
+      table.id,
+      table.teamId,
+      table.teamWorkspaceId
+    ),
     uniqueIndex("team_session_share_grants_destination_unique")
       .on(table.logicalMemoryId, table.teamWorkspaceId)
       .where(sql`${table.logicalMemoryId} is not null`),
@@ -5673,6 +5678,95 @@ export const teamSessionShareGrants = pgTable(
         and ${table.retentionTriggeredAt} is not null
         and ${table.retainUntil} is not null
       )`
+    )
+  ]
+);
+
+export const teamConversationSourceGrants = pgTable(
+  "team_conversation_source_grants",
+  {
+    id: id(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    artifactId: uuid("artifact_id")
+      .notNull()
+      .references(() => conversationSourceArtifacts.id, {
+        onDelete: "restrict"
+      }),
+    logicalSourceId: uuid("logical_source_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "restrict" }),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    mode: text("mode").notNull(),
+    maximumSegmentIndex: integer("maximum_segment_index"),
+    maximumSourceOffset: bigint("maximum_source_offset", { mode: "number" }),
+    version: integer("version").notNull().default(1),
+    lifecycle: text("lifecycle").notNull().default("active"),
+    mutationId: uuid("mutation_id").notNull(),
+    grantedByUserId: uuid("granted_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    creatorAuthority: text("creator_authority").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+      onDelete: "restrict"
+    }),
+    revocationReason: text("revocation_reason")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.shareGrantId, table.teamId, table.teamWorkspaceId],
+      foreignColumns: [
+        teamSessionShareGrants.id,
+        teamSessionShareGrants.teamId,
+        teamSessionShareGrants.teamWorkspaceId
+      ],
+      name: "team_conversation_source_grants_share_scope_fk"
+    }).onDelete("cascade"),
+    unique("team_conversation_source_grants_share_unique").on(
+      table.shareGrantId
+    ),
+    unique("team_conversation_source_grants_mutation_unique").on(
+      table.mutationId
+    ),
+    index("team_conversation_source_grants_workspace_active_idx")
+      .on(table.teamId, table.teamWorkspaceId, table.updatedAt.desc())
+      .where(sql`${table.lifecycle} = 'active'`),
+    index("team_conversation_source_grants_artifact_active_idx")
+      .on(table.artifactId, table.updatedAt.desc())
+      .where(sql`${table.lifecycle} = 'active'`),
+    index("team_conversation_source_grants_logical_source_active_idx")
+      .on(table.logicalSourceId, table.updatedAt.desc())
+      .where(sql`${table.lifecycle} = 'active'`),
+    check(
+      "team_conversation_source_grants_mode_check",
+      sql`(${table.mode} = 'continuous'
+          and ${table.maximumSegmentIndex} is null
+          and ${table.maximumSourceOffset} is null)
+        or (${table.mode} = 'snapshot'
+          and ${table.maximumSegmentIndex} >= 0
+          and ${table.maximumSourceOffset} >= 0)`
+    ),
+    check(
+      "team_conversation_source_grants_lifecycle_check",
+      sql`(${table.lifecycle} = 'active'
+          and ${table.revokedAt} is null
+          and ${table.revokedByUserId} is null
+          and ${table.revocationReason} is null)
+        or (${table.lifecycle} = 'revoked'
+          and ${table.revokedAt} is not null
+          and ${table.revokedByUserId} is not null
+          and length(trim(${table.revocationReason})) between 1 and 120)`
+    ),
+    check(
+      "team_conversation_source_grants_version_check",
+      sql`${table.version} > 0 and length(trim(${table.creatorAuthority})) > 0`
     )
   ]
 );

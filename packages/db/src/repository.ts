@@ -55,6 +55,7 @@ import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-
 import { createSettingsRepository } from "./settings-repository.js";
 import { createSharedMemoryRepository } from "./shared-memory-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
+import { createTeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import {
   isGenericDevelopmentActivity,
   presentMemoryText
@@ -3831,6 +3832,7 @@ export const createMemorySourceRepository = (
       resolveOwnerPrivateReplicaEncryptionProvider: () =>
         Promise.resolve(requireOwnerPrivateReplicaEnvelopeEncryptionProvider())
     }),
+    ...createTeamConversationSourceRepository(pool),
     ...createHighRiskActionRepository(db, {
       pool,
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,

@@ -8,9 +8,12 @@ import type {
   SharedMemoryRedactedSourceItemDto,
   SharedMemoryRepository,
   SharedMemoryRepresentationRecord,
+  TeamConversationSourceGrantRecord,
+  TeamConversationSourceRepository,
   DeviceCredentialAuthContext,
   HighRiskActionRepository
 } from "@koed/db";
+import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import {
   sharedMemoryConsentActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
@@ -19,6 +22,8 @@ import {
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareActionGrantBinding,
   sharedMemoryShareBundleActionGrantBinding,
+  sharedMemoryTranscriptAccessActionGrantBinding,
+  sharedMemoryTranscriptRevokeActionGrantBinding,
   type SharedMemoryActionGrantBinding
 } from "@koed/shared";
 import {
@@ -26,7 +31,9 @@ import {
   SHARED_MEMORY_AUTHORITY,
   SharedMemoryAuthorizationError,
   SharedMemoryConflictError,
-  SharedMemorySourceItemRejectedError
+  SharedMemorySourceItemRejectedError,
+  TeamConversationSourceAuthorizationError,
+  TeamConversationSourceConflictError
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
@@ -41,10 +48,12 @@ import {
   listWorkspaceSharedMemoryQuerySchema,
   materializeGrantRepresentationSchema,
   putSharedMemoryPolicySchema,
+  putTeamConversationSourceGrantSchema,
   readGrantRepresentationPageQuerySchema,
   readGrantRepresentationQuerySchema,
   representationParamsSchema,
   revokeShareGrantSchema,
+  revokeTeamConversationSourceGrantSchema,
   scopedShareGrantParamsSchema,
   selectGrantRepresentationSchema,
   shareGrantParamsSchema,
@@ -103,6 +112,20 @@ const mapSharedMemoryError = (error: unknown): never => {
   ) {
     throw rejectedSource();
   }
+  if (
+    error instanceof TeamConversationSourceAuthorizationError ||
+    (error instanceof Error &&
+      error.name === "TeamConversationSourceAuthorizationError")
+  ) {
+    throw forbidden();
+  }
+  if (
+    error instanceof TeamConversationSourceConflictError ||
+    (error instanceof Error &&
+      error.name === "TeamConversationSourceConflictError")
+  ) {
+    throw conflict();
+  }
   throw error;
 };
 
@@ -118,6 +141,7 @@ const executeRepositoryOperation = async <T>(
 
 export interface SharedMemoryRouteContext {
   requireSharedMemoryRepository(): SharedMemoryRepository;
+  requireTeamConversationSourceRepository(): TeamConversationSourceRepository;
   requireCollaborationRepository(): CollaborationRepository;
   requireHighRiskRepository(): Pick<
     HighRiskActionRepository,
@@ -170,6 +194,7 @@ const authenticateSourceOwnerAuthority = async (
     return {
       kind: "browser" as const,
       actor: session.user,
+      sessionCreatedAt: session.createdAt,
       authority: {
         ...authority,
         referenceId: session.sessionId
@@ -201,6 +226,7 @@ type AuthenticatedSourceOwner =
   | {
       kind: "browser";
       actor: { id: string };
+      sessionCreatedAt: Date;
       authority: SharedMemoryAuthorityContext;
     }
   | {
@@ -242,6 +268,56 @@ const runHighRiskSharedMemoryWrite = async <TBody>(
   });
   if (!result) throw forbidden();
   return result;
+};
+
+const runHighRiskTeamConversationSourceWrite = async <TBody>(
+  context: SharedMemoryRouteContext,
+  authenticated: AuthenticatedSourceOwner,
+  binding: SharedMemoryActionGrantBinding,
+  execute: (
+    repository: TeamConversationSourceRepository
+  ) => Promise<{ statusCode: number; body: TBody } | null>
+): Promise<{ statusCode: number; body: TBody }> => {
+  if (authenticated.kind === "browser") {
+    const result = await execute(
+      context.requireTeamConversationSourceRepository()
+    );
+    if (!result) throw forbidden();
+    return result;
+  }
+  if (authenticated.authority.source !== "device_action_grant") {
+    throw forbidden();
+  }
+  const result = await context.requireHighRiskRepository().executeActionGrant({
+    actionGrant: authenticated.actionGrant,
+    ownerUserId: authenticated.actor.id,
+    deviceCredentialId: authenticated.auth.credential.id,
+    upstreamBackendId: authenticated.auth.credential.upstreamBackendId,
+    teamId: binding.teamId,
+    operationFamily: binding.operationFamily,
+    action: binding.action,
+    targetId: binding.targetId,
+    scopeHash: binding.scopeHash,
+    requestHash: binding.requestHash,
+    execute: async ({ teamConversationSource }) =>
+      execute(teamConversationSource)
+  });
+  if (!result) throw forbidden();
+  return result;
+};
+
+const requireFreshBrowserAuthority = (
+  authenticated: AuthenticatedSourceOwner
+): void => {
+  if (authenticated.kind !== "browser") return;
+  const ageMs = Date.now() - authenticated.sessionCreatedAt.getTime();
+  if (
+    !Number.isFinite(ageMs) ||
+    ageMs < 0 ||
+    ageMs > defaultFreshAuthenticationMaxAgeMs
+  ) {
+    throw forbidden();
+  }
 };
 
 const authenticateReader = async (
@@ -421,6 +497,22 @@ const grantDto = (grant: SharedMemoryGrantRecord) => ({
   updatedAt: grant.updatedAt,
   revokedAt: grant.revokedAt,
   companionScope: grant.companionScope
+});
+
+const transcriptAccessDto = (grant: TeamConversationSourceGrantRecord) => ({
+  id: grant.id,
+  shareGrantId: grant.shareGrantId,
+  sessionId: grant.sessionId,
+  teamId: grant.teamId,
+  teamWorkspaceId: grant.teamWorkspaceId,
+  mode: grant.mode,
+  maximumSegmentIndex: grant.maximumSegmentIndex,
+  maximumSourceOffset: grant.maximumSourceOffset,
+  version: grant.version,
+  lifecycle: grant.lifecycle,
+  createdAt: grant.createdAt,
+  updatedAt: grant.updatedAt,
+  revokedAt: grant.revokedAt
 });
 
 const representationDto = (
@@ -1035,6 +1127,105 @@ export const registerSharedMemoryRoutes = (
         throw forbidden();
       }
       return { representation: representationDto(representation) };
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/share-grants/:shareGrantId/transcript-access/revoke",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      rejectApiToken(request);
+      const params = shareGrantParamsSchema.parse(request.params);
+      const input = revokeTeamConversationSourceGrantSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      const binding = sharedMemoryTranscriptRevokeActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        teamId: input.teamId,
+        shareGrantId: params.shareGrantId,
+        expectedVersion: input.expectedVersion,
+        reasonCode: input.reasonCode
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskTeamConversationSourceWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const grant = await repository.revokeTeamConversationSourceGrant(
+              { userId: authenticated.actor.id },
+              {
+                mutationId: input.mutationId,
+                shareGrantId: params.shareGrantId,
+                teamId: input.teamId,
+                expectedVersion: input.expectedVersion,
+                reasonCode: input.reasonCode
+              }
+            );
+            if (grant.lifecycle !== "revoked") {
+              return null;
+            }
+            return {
+              statusCode: 200,
+              body: { transcriptAccess: transcriptAccessDto(grant) }
+            };
+          }
+        )
+      );
+      return result.body;
+    }
+  );
+
+  app.put(
+    "/v1/shared-memory/share-grants/:shareGrantId/transcript-access",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const params = shareGrantParamsSchema.parse(request.params);
+      const input = putTeamConversationSourceGrantSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      requireFreshBrowserAuthority(authenticated);
+      const binding = sharedMemoryTranscriptAccessActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        teamId: input.teamId,
+        shareGrantId: params.shareGrantId,
+        expectedVersion: input.expectedVersion,
+        mode: input.mode
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskTeamConversationSourceWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const grant = await repository.putTeamConversationSourceGrant(
+              { userId: authenticated.actor.id },
+              {
+                mutationId: input.mutationId,
+                shareGrantId: params.shareGrantId,
+                teamId: input.teamId,
+                expectedVersion: input.expectedVersion,
+                mode: input.mode,
+                creatorAuthority: `${authenticated.authority.source}:${authenticated.authority.referenceId}`
+              }
+            );
+            return {
+              statusCode: input.expectedVersion === 0 ? 201 : 200,
+              body: { transcriptAccess: transcriptAccessDto(grant) }
+            };
+          }
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
     }
   );
 

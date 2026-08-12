@@ -10,6 +10,8 @@ import type {
   SharedMemoryReadResult,
   SharedMemoryRepository,
   SharedMemoryRepresentationRecord,
+  TeamConversationSourceGrantRecord,
+  TeamConversationSourceRepository,
   UserRecord
 } from "@koed/db";
 import {
@@ -58,6 +60,8 @@ const createFixture = () => {
     preview: randomUUID(),
     lcmPreview: randomUUID(),
     source: randomUUID(),
+    sourceArtifact: randomUUID(),
+    sourceSession: randomUUID(),
     sessionAuthority: randomUUID(),
     actionGrantAuthority: randomUUID()
   };
@@ -87,6 +91,8 @@ const createFixture = () => {
   let revoked = false;
   let representationAvailable = true;
   let repositoryCalls = 0;
+  let sourceGrantVersion = 0;
+  let sourceGrantLifecycle: "active" | "revoked" = "active";
   let lastListInput:
     | {
         teamId: string;
@@ -549,10 +555,83 @@ const createFixture = () => {
     }
   };
 
+  const sourceGrantRecord = (input: {
+    mutationId: string;
+    mode?: "snapshot" | "continuous";
+    creatorAuthority?: string;
+    reasonCode?: string;
+  }): TeamConversationSourceGrantRecord => ({
+    id: randomUUID(),
+    shareGrantId: ids.grant,
+    artifactId: ids.sourceArtifact,
+    logicalSourceId: randomUUID(),
+    ownerUserId: ids.alice,
+    sessionId: ids.sourceSession,
+    teamId: ids.teamA,
+    teamWorkspaceId: ids.workspaceA,
+    mode: input.mode ?? "continuous",
+    maximumSegmentIndex: input.mode === "snapshot" ? 4 : null,
+    maximumSourceOffset: input.mode === "snapshot" ? 4096 : null,
+    version: sourceGrantVersion,
+    lifecycle: sourceGrantLifecycle,
+    mutationId: input.mutationId,
+    grantedByUserId: ids.alice,
+    creatorAuthority: input.creatorAuthority ?? "browser_session:test",
+    createdAt: iso,
+    updatedAt: iso,
+    revokedAt: sourceGrantLifecycle === "revoked" ? iso : null,
+    revokedByUserId: sourceGrantLifecycle === "revoked" ? ids.alice : null,
+    revocationReason:
+      sourceGrantLifecycle === "revoked"
+        ? (input.reasonCode ?? "owner_revoked")
+        : null
+  });
+  const sourceRepository = {
+    async putTeamConversationSourceGrant(
+      actor: { userId: string },
+      input: Parameters<
+        TeamConversationSourceRepository["putTeamConversationSourceGrant"]
+      >[1]
+    ) {
+      repositoryCalls += 1;
+      if (
+        actor.userId !== ids.alice ||
+        input.shareGrantId !== ids.grant ||
+        input.teamId !== ids.teamA ||
+        input.expectedVersion !== sourceGrantVersion
+      ) {
+        throw new SharedMemoryAuthorizationError("private source detail");
+      }
+      sourceGrantVersion += 1;
+      sourceGrantLifecycle = "active";
+      return sourceGrantRecord(input);
+    },
+    async revokeTeamConversationSourceGrant(
+      actor: { userId: string },
+      input: Parameters<
+        TeamConversationSourceRepository["revokeTeamConversationSourceGrant"]
+      >[1]
+    ) {
+      repositoryCalls += 1;
+      if (
+        actor.userId !== ids.alice ||
+        input.shareGrantId !== ids.grant ||
+        input.teamId !== ids.teamA ||
+        input.expectedVersion !== sourceGrantVersion
+      ) {
+        throw new SharedMemoryAuthorizationError("private source detail");
+      }
+      sourceGrantVersion += 1;
+      sourceGrantLifecycle = "revoked";
+      return sourceGrantRecord(input);
+    }
+  } as TeamConversationSourceRepository;
+
   return {
     ids,
     users,
     repository,
+    sourceRepository,
     get repositoryCalls() {
       return repositoryCalls;
     },
@@ -571,7 +650,10 @@ const createFixture = () => {
   };
 };
 
-const buildTestServer = async (fixture: ReturnType<typeof createFixture>) => {
+const buildTestServer = async (
+  fixture: ReturnType<typeof createFixture>,
+  options: { sessionCreatedAt?: Date } = {}
+) => {
   const app = Fastify({ logger: false });
   await app.register(cookie);
   app.setErrorHandler((error, _request, reply) => {
@@ -678,7 +760,8 @@ const buildTestServer = async (fixture: ReturnType<typeof createFixture>) => {
     ) {
       if (input.actionGrant !== "hrg_test_shared_memory_secret") return null;
       const receipt = await input.execute({
-        sharedMemory: fixture.repository
+        sharedMemory: fixture.repository,
+        teamConversationSource: fixture.sourceRepository
       } as never);
       return receipt ? { ...receipt, replayed: false } : null;
     }
@@ -751,12 +834,13 @@ const buildTestServer = async (fixture: ReturnType<typeof createFixture>) => {
   } as unknown as CollaborationRepository;
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: () => fixture.repository,
+    requireTeamConversationSourceRepository: () => fixture.sourceRepository,
     requireCollaborationRepository: () => collaborationRepository,
     requireHighRiskRepository: () => highRiskRepository,
     authenticateSession: sessionUser,
     authenticateSessionContext: async (request) => ({
       sessionId: fixture.ids.sessionAuthority,
-      createdAt: new Date(iso),
+      createdAt: options.sessionCreatedAt ?? new Date(),
       expiresAt: new Date("2099-01-01T00:00:00.000Z"),
       user: await sessionUser(request)
     }),
@@ -818,6 +902,118 @@ const ownerGrantIndexUrl = (fixture: ReturnType<typeof createFixture>) =>
   `/v1/shared-memory/logical-memories/${fixture.ids.logicalMemory}/share-grants`;
 
 describe("Shared Memory HTTP routes", () => {
+  it("grants and revokes independent Team Conversation source access", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const put = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/transcript-access`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: {
+        mutationId: randomUUID(),
+        teamId: fixture.ids.teamA,
+        expectedVersion: 0,
+        mode: "continuous",
+        authority: authority()
+      }
+    });
+    const revoke = await app.inject({
+      method: "POST",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/transcript-access/revoke`,
+      headers: {
+        authorization: "Koed-Device owner-share:secret",
+        "x-koed-action-grant": "hrg_test_shared_memory_secret"
+      },
+      payload: {
+        mutationId: randomUUID(),
+        teamId: fixture.ids.teamA,
+        expectedVersion: 1,
+        reasonCode: "owner_revoked",
+        authority: {
+          action: SHARED_MEMORY_AUTHORITY,
+          source: "device_action_grant",
+          referenceId: fixture.ids.actionGrantAuthority
+        }
+      }
+    });
+
+    expect(put.statusCode).toBe(201);
+    expect(
+      jsonBody<{ transcriptAccess: Record<string, unknown> }>(put)
+    ).toMatchObject({
+      transcriptAccess: {
+        shareGrantId: fixture.ids.grant,
+        teamId: fixture.ids.teamA,
+        mode: "continuous",
+        version: 1,
+        lifecycle: "active"
+      }
+    });
+    expect(revoke.statusCode).toBe(200);
+    expect(
+      jsonBody<{ transcriptAccess: Record<string, unknown> }>(revoke)
+    ).toMatchObject({
+      transcriptAccess: {
+        version: 2,
+        lifecycle: "revoked"
+      }
+    });
+    expect(put.body).not.toContain(fixture.ids.sourceArtifact);
+    expect(revoke.body).not.toContain("creatorAuthority");
+    await app.close();
+  });
+
+  it("denies API Tokens and unrelated Users from source grant management", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const payload = {
+      mutationId: randomUUID(),
+      teamId: fixture.ids.teamA,
+      expectedVersion: 0,
+      mode: "continuous",
+      authority: authority()
+    };
+    const bearer = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/transcript-access`,
+      headers: { authorization: "Bearer personal-api-token" },
+      payload
+    });
+    const unrelated = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/transcript-access`,
+      headers: sessionHeaders(fixture.ids.carol),
+      payload: { ...payload, mutationId: randomUUID() }
+    });
+
+    expect([bearer.statusCode, unrelated.statusCode]).toEqual([403, 403]);
+    expect(fixture.repositoryCalls).toBe(1);
+    await app.close();
+  });
+
+  it("requires fresh browser authentication to grant source access", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture, {
+      sessionCreatedAt: new Date(Date.now() - 60 * 60 * 1000)
+    });
+    const response = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/transcript-access`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: {
+        mutationId: randomUUID(),
+        teamId: fixture.ids.teamA,
+        expectedVersion: 0,
+        mode: "continuous",
+        authority: authority()
+      }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(fixture.repositoryCalls).toBe(0);
+    await app.close();
+  });
+
   it("denies API Tokens from owner mutations, previews, and Team reads", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);

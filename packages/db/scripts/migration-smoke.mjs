@@ -66,7 +66,7 @@ const current0020Index = 20;
 const expectedPre0020Tag = "0019_tidy_rhino";
 const expectedCurrent0020Tag = "0020_zippy_apocalypse";
 const expectedLocalRuntimeCutoverTag = "0026_amused_zeigeist";
-const expectedLatestMigrationTag = "0027_friendly_king_cobra";
+const expectedLatestMigrationTag = "0028_deep_expediter";
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
