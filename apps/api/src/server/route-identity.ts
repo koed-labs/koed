@@ -951,20 +951,6 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
-    "/v1/memory/questions",
-    "session_or_api_token",
-    "local_synthesis",
-    "Create local Memory Question."
-  ),
-  route(
-    "POST",
-    "/v1/memory/questions/claim-pending",
-    "session_or_api_token",
-    "local_synthesis",
-    "Claim pending local Memory Questions."
-  ),
-  route(
-    "POST",
     "/v1/memory/questions/final",
     "session_or_api_token",
     "local_synthesis",
@@ -976,13 +962,6 @@ export const routeIdentityContracts = [
     "session_or_api_token",
     "local_synthesis",
     "Read local Memory Question."
-  ),
-  route(
-    "PATCH",
-    "/v1/memory/questions/{questionId}",
-    "session_or_api_token",
-    "local_synthesis",
-    "Update local Memory Question."
   ),
   route(
     "GET",

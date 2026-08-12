@@ -105,6 +105,17 @@ describe("koed-server config", () => {
     ).toMatchObject({ codexTranscriptWatcherEnabled: false });
   });
 
+  it("rejects Transcript Watcher ownership in external runtime mode", () => {
+    const root = tempDir();
+
+    expect(() =>
+      resolveKoedServerConfig(paths(root), {
+        KOED_RUNTIME_MODE: "external",
+        MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "true"
+      })
+    ).toThrow("Codex Transcript Watcher cannot run in external runtime mode");
+  });
+
   it("loads server config and lets environment override it", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });

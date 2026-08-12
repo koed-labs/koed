@@ -20,7 +20,7 @@ const scriptPath = path.join(
   "configure-codex.mjs"
 );
 
-test("codex configure writes credential-free signal hooks and MCP credentials", async () => {
+test("codex configure writes credential-free signal hooks and KOED_HOME-only MCP config", async () => {
   const dir = path.join(
     realpathSync(tmpdir()),
     `koed-configure-codex-${process.pid}-${Date.now()}`
@@ -37,10 +37,7 @@ test("codex configure writes credential-free signal hooks and MCP credentials", 
       cwd: dir,
       env: {
         ...process.env,
-        MEMORY_API_TOKEN: "cmt_test",
-        MEMORY_API_URL: "http://127.0.0.1:3300",
         MEMORY_NODE_COMMAND: "node",
-        KOED_PROMPT_DIR: "custom-prompts",
         KOED_HOME: koedHome,
         CODEX_CONFIG_PATH: codexConfigPath
       }
@@ -48,16 +45,15 @@ test("codex configure writes credential-free signal hooks and MCP credentials", 
 
     assert.equal(existsSync(hookConfigPath), false);
     const codexConfig = readFileSync(codexConfigPath, "utf8");
-    assert.match(codexConfig, /MEMORY_API_TOKEN = "cmt_test"/);
+    assert.ok(codexConfig.includes(`KOED_HOME = ${JSON.stringify(koedHome)}`));
+    assert.doesNotMatch(codexConfig, /MEMORY_API_URL/);
+    assert.doesNotMatch(codexConfig, /MEMORY_API_TOKEN/);
+    assert.doesNotMatch(codexConfig, /MEMORY_CODEX_APP_SERVER_BINARY/);
+    assert.doesNotMatch(codexConfig, /KOED_PROMPT_DIR/);
     assert.doesNotMatch(codexConfig, /capture-hook[^"\n]*--config/);
     assert.ok(
       codexConfig.includes(
         `\\"--koed-home\\" \\"${koedHome.replaceAll("\\", "\\\\")}\\"`
-      )
-    );
-    assert.ok(
-      codexConfig.includes(
-        `KOED_PROMPT_DIR = ${JSON.stringify(path.join(dir, "custom-prompts"))}`
       )
     );
     for (const eventName of [

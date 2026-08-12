@@ -5,11 +5,18 @@ see [../SECURITY.md](../SECURITY.md). Do not disclose captured Memory data,
 database exports, backups, API Tokens, cookies, or private deployment secrets in
 public reports.
 
-Koed uses local operator token bootstrap for AI-client access. `pnpm api-token:create` creates a passwordless local owner user when needed, creates a bearer API token for that user, stores only the token hash and prefix, and prints the full token once.
+Koed uses local operator token bootstrap for the Local AI Runtime's backend
+access. `pnpm api-token:create` creates a passwordless local owner user when
+needed, creates a bearer API token for that user, stores only the token hash and
+prefix, and prints the full token once.
 
 Operators list and revoke local tokens with `pnpm api-token:list` and `pnpm api-token:revoke`. Browser session registration is disabled by default in deployed environments; use local operator scripts from the deployment checkout instead.
 
-AI-client integrations use bearer API tokens. Store generated API tokens immediately; only token prefixes are listed later.
+The `koed-server` supervisor retains that credential for its Local AI Runtime.
+The AI Client's thin MCP adapter discovers the runtime through an owner-only
+registration under `KOED_HOME`; the adapter configuration and process receive
+neither the API Token nor upstream credentials. Store manually generated API
+Tokens immediately; only token prefixes are listed later.
 
 Do not expose Postgres, Redis, or the Embedding Service publicly. Server and
 private VPS installs should expose only the intended browser/API-facing

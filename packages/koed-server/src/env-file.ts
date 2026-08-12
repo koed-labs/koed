@@ -51,6 +51,9 @@ export const resolveApiUrl = (
   repoEnv: Record<string, string>
 ): string =>
   (
+    (environment.KOED_AUTO_PORTS === "1" && environment.API_HOST_PORT
+      ? `http://localhost:${environment.API_HOST_PORT}`
+      : null) ??
     environment.MEMORY_API_URL ??
     (environment.API_HOST_PORT
       ? `http://localhost:${environment.API_HOST_PORT}`

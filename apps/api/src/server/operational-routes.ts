@@ -337,8 +337,7 @@ const collectHistoricalImportStatus = async (
         diagnosticOnly: true,
         pendingRows: backlog.historicalImportRows,
         pendingBytes: backlog.historicalImportBytes,
-        liveProjectionRows: backlog.liveProjectionRows,
-        interactiveQuestionRows: backlog.interactiveQuestionRows
+        liveProjectionRows: backlog.liveProjectionRows
       }
     };
   } catch {

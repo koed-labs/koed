@@ -1,6 +1,7 @@
 /* global window */
 
 import { randomUUID } from "node:crypto";
+import { COLLABORATION_CONTRACT_VERSION } from "../packages/shared/dist/index.js";
 import {
   connectElectronCdp,
   ensureKoedElectronSetup
@@ -8,14 +9,14 @@ import {
 
 const collaborationCommand = (client, command, input) =>
   client.evaluate(
-    async (commandName, commandInput) =>
+    async (commandName, commandInput, contractVersion) =>
       window.koedDesktop.collaboration.command({
-        contractVersion: 1,
+        contractVersion,
         requestId: crypto.randomUUID(),
         command: commandName,
         input: commandInput
       }),
-    [command, input]
+    [command, input, COLLABORATION_CONTRACT_VERSION]
   );
 
 const desktopStatus = (client) =>
@@ -116,6 +117,7 @@ export const runMultiDeviceElectronDogfood = async ({
 }) => {
   const deviceA = await connect({ port: deviceAPort, timeoutMs });
   const deviceB = await connect({ port: deviceBPort, timeoutMs });
+  const subscriptions = [];
   try {
     await ensureSetup(deviceA, { timeoutMs });
     await ensureSetup(deviceB, { timeoutMs });
@@ -153,6 +155,23 @@ export const runMultiDeviceElectronDogfood = async ({
       throw new Error(
         "Electron devices do not resolve the same Notes-to-self thread."
       );
+    }
+
+    for (const [device, label] of [
+      [deviceA, "Device A"],
+      [deviceB, "Device B"]
+    ]) {
+      const subscribed = requireSuccess(
+        await collaborationCommand(device, "collaboration.subscribe", {
+          scope: { scope: "personal" }
+        }),
+        "collaboration.subscribe",
+        `${label}: collaboration.subscribe`
+      );
+      subscriptions.push({
+        device,
+        id: subscribed.data.subscription.id
+      });
     }
 
     const aToB = await sendAndObserve({
@@ -340,6 +359,13 @@ export const runMultiDeviceElectronDogfood = async ({
       diagnostics
     };
   } finally {
+    await Promise.all(
+      subscriptions.map(({ device, id }) =>
+        collaborationCommand(device, "collaboration.unsubscribe", {
+          subscriptionId: id
+        }).catch(() => null)
+      )
+    );
     deviceA.close();
     deviceB.close();
   }

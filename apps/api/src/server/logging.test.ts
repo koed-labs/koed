@@ -74,7 +74,7 @@ describe("API logging", () => {
       body: {
         query: "shared roadmap memory sentinel",
         evidence: [{ text: "private customer evidence sentinel" }],
-        localMemoryWorkerConfig: {
+        localMemoryWorker: {
           prompt: "worker prompt sentinel"
         },
         apiKey: "sk-team-do-not-log"

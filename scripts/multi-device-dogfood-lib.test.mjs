@@ -61,6 +61,23 @@ const createHarness = ({
             data: { durableSend: { state: "queued", body: input.body } }
           };
         }
+        if (command === "collaboration.subscribe") {
+          return {
+            ok: true,
+            command,
+            data: {
+              subscription: {
+                id:
+                  port === 9224
+                    ? "10000000-0000-4000-8000-000000000004"
+                    : "10000000-0000-4000-8000-000000000005"
+              }
+            }
+          };
+        }
+        if (command === "collaboration.unsubscribe") {
+          return { ok: true, command, data: {} };
+        }
         if (command === "collaboration.select") {
           return {
             ok: true,

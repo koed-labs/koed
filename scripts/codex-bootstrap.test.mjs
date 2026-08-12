@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import path from "node:path";
 import { test } from "node:test";
 import { parseBootstrapArgs, runCodexBootstrap } from "./codex-bootstrap.mjs";
 
@@ -25,8 +24,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
   const environment = {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_NODE_COMMAND: "node",
-    MEMORY_CODEX_APP_SERVER_BINARY: "codex",
-    KOED_PROMPT_DIR: "/opt/koed/prompts",
+    KOED_HOME: "/tmp/koed-home",
     CODEX_CONFIG_PATH: "/tmp/koed-config.toml"
   };
   const tokenResult = {
@@ -114,8 +112,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_API_TOKEN: "cmt_test_token",
     MEMORY_NODE_COMMAND: "node",
-    MEMORY_CODEX_APP_SERVER_BINARY: "codex",
-    KOED_PROMPT_DIR: "/opt/koed/prompts"
+    KOED_HOME: "/tmp/koed-home"
   });
 
   const verifyCall = calls.find(([label]) => label === "Verify capture");
@@ -131,9 +128,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
   assert.equal(doctorCall[4], true);
   assert.deepEqual(doctorCall[3], {
     MEMORY_API_URL: "http://127.0.0.1:3300",
-    MEMORY_API_TOKEN: "cmt_test_token",
-    MEMORY_CODEX_APP_SERVER_BINARY: "codex",
-    KOED_PROMPT_DIR: "/opt/koed/prompts"
+    MEMORY_API_TOKEN: "cmt_test_token"
   });
 });
 
@@ -157,8 +152,7 @@ test("codex bootstrap loads root env before resolving defaults", async () => {
       calls.push(["load-root-env"]);
       env.MEMORY_API_URL = "http://127.0.0.1:3300";
       env.MEMORY_NODE_COMMAND = "/opt/node";
-      env.MEMORY_CODEX_APP_SERVER_BINARY = "/opt/codex";
-      env.KOED_PROMPT_DIR = "custom-prompts";
+      env.KOED_HOME = "/tmp/loaded-koed-home";
     },
     createTokenBootstrap: async () => tokenResult,
     runCommandFn: async ({ label, env = {} }) => {
@@ -178,7 +172,6 @@ test("codex bootstrap loads root env before resolving defaults", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_API_TOKEN: "cmt_env_token",
     MEMORY_NODE_COMMAND: "/opt/node",
-    MEMORY_CODEX_APP_SERVER_BINARY: "/opt/codex",
-    KOED_PROMPT_DIR: path.resolve("custom-prompts")
+    KOED_HOME: "/tmp/loaded-koed-home"
   });
 });

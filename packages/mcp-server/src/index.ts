@@ -1,6 +1,5 @@
 import {
   answerWithMemoryWorker,
-  resolveManualMemoryAnswerWorkerConfig,
   resolveMemoryAnswerWorkerConfig,
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerWorkerConfig,
@@ -76,11 +75,7 @@ export type {
 
 export type RetrievalScope = "personal";
 
-export {
-  answerWithMemoryWorker,
-  resolveManualMemoryAnswerWorkerConfig,
-  resolveMemoryAnswerWorkerConfig
-};
+export { answerWithMemoryWorker, resolveMemoryAnswerWorkerConfig };
 export type {
   MemoryAnswerRetrievalClient,
   MemoryAnswerWorkerConfig,
@@ -188,17 +183,6 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     maxExpansions: number;
     appServerBinary: string;
     defaultResponseDetail: "answer_only";
-  };
-  localManualMemoryAnswerWorker: {
-    provider: string;
-    model: string;
-    reasoningEffort: string;
-    timeoutMs: number;
-    maxAttempts: number;
-    maxSearches: number;
-    maxExpansions: number;
-    appServerBinary: string;
-    configuredFrom: "memory_question_or_env";
   };
   localLcmSummaryWorker: {
     provider: string;
@@ -337,14 +321,24 @@ export const backendToolCapabilitiesFrom = (
 export const normalizeApiUrl = (apiUrl: string): string =>
   apiUrl.replace(/\/+$/, "");
 
-export const defaultConfig = (): McpServerConfig => ({
-  apiUrl: process.env.MEMORY_API_URL ?? "http://localhost:3300",
-  apiToken: process.env.MEMORY_API_TOKEN,
-  requestTimeoutMs: positiveIntEnv("MEMORY_API_REQUEST_TIMEOUT_MS", 60_000)
+export const defaultConfig = (
+  environment: NodeJS.ProcessEnv = process.env
+): McpServerConfig => ({
+  apiUrl: environment.MEMORY_API_URL ?? "http://localhost:3300",
+  apiToken: environment.MEMORY_API_TOKEN,
+  requestTimeoutMs: positiveIntEnv(
+    environment,
+    "MEMORY_API_REQUEST_TIMEOUT_MS",
+    60_000
+  )
 });
 
-const positiveIntEnv = (name: string, fallback: number): number => {
-  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+const positiveIntEnv = (
+  environment: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number
+): number => {
+  const parsed = Number.parseInt(environment[name] ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
@@ -620,12 +614,6 @@ export class MemoryApiClient {
     );
   }
 
-  async createQuestion(
-    input: Record<string, unknown>
-  ): Promise<Record<string, unknown>> {
-    return this.request("POST", "/v1/memory/questions", input);
-  }
-
   async createFinalQuestion(
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
@@ -636,23 +624,6 @@ export class MemoryApiClient {
     return this.request(
       "GET",
       `/v1/memory/questions/${encodeURIComponent(questionId)}`
-    );
-  }
-
-  async claimPendingQuestions(
-    input: Record<string, unknown> = {}
-  ): Promise<Record<string, unknown>> {
-    return this.request("POST", "/v1/memory/questions/claim-pending", input);
-  }
-
-  async updateQuestion(
-    questionId: string,
-    input: Record<string, unknown>
-  ): Promise<Record<string, unknown>> {
-    return this.request(
-      "PATCH",
-      `/v1/memory/questions/${encodeURIComponent(questionId)}`,
-      input
     );
   }
 
@@ -837,7 +808,7 @@ export class MemoryApiClient {
       (this.config.apiToken ? `Bearer ${this.config.apiToken}` : null);
     if (!authorization) {
       throw new MemoryApiError(
-        "Memory API token is not configured. Set MEMORY_API_TOKEN and MEMORY_API_URL before starting the MCP server or Capture Hook.",
+        "Memory API token is not configured. Start the Local AI Runtime through koed-server or configure the Capture Hook integration.",
         { status: 401 }
       );
     }
@@ -911,7 +882,6 @@ export const memoryAccessCheck = async (
 ): Promise<MemoryAccessCheckResult> => {
   const access = await client.accessCheck();
   const answerWorker = resolveMemoryAnswerWorkerConfig();
-  const manualAnswerWorker = resolveManualMemoryAnswerWorkerConfig();
   const lcmSummaryWorker = resolveLcmSummaryWorkerConfig();
   const lcmSummaryService = resolveLcmSummaryServiceConfig();
   const curatedMemoryReviewWorker = resolveCuratedMemoryReviewConfig();
@@ -960,17 +930,6 @@ export const memoryAccessCheck = async (
       maxExpansions: answerWorker.maxExpansions,
       appServerBinary: answerWorker.appServerBinary,
       defaultResponseDetail: "answer_only"
-    },
-    localManualMemoryAnswerWorker: {
-      provider: manualAnswerWorker.provider,
-      model: manualAnswerWorker.model,
-      reasoningEffort: manualAnswerWorker.reasoningEffort,
-      timeoutMs: manualAnswerWorker.timeoutMs,
-      maxAttempts: manualAnswerWorker.maxAttempts,
-      maxSearches: manualAnswerWorker.maxSearches,
-      maxExpansions: manualAnswerWorker.maxExpansions,
-      appServerBinary: manualAnswerWorker.appServerBinary,
-      configuredFrom: "memory_question_or_env"
     },
     localLcmSummaryWorker: {
       provider: lcmSummaryWorker.provider,

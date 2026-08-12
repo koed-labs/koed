@@ -38,8 +38,7 @@ const workerEnv: WorkerEnvConfig = {
     maxBytes: 1_000_000,
     maxRuntimeMs: 15_000,
     maxConcurrency: 1,
-    maxLiveProjectionRows: 0,
-    maxInteractiveQuestionRows: 0
+    maxLiveProjectionRows: 0
   },
   historicalImportApiReadyTimeoutMs: 1_000,
   logLevel: "silent",

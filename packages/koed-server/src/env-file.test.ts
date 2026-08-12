@@ -39,4 +39,17 @@ describe("local URL resolution", () => {
       )
     ).toBe("http://localhost:4545");
   });
+
+  it("uses the supervisor-owned automatic API port instead of a stale generated URL", () => {
+    expect(
+      resolveApiUrl(
+        {
+          KOED_AUTO_PORTS: "1",
+          API_HOST_PORT: "3301",
+          MEMORY_API_URL: "http://localhost:3300"
+        },
+        {}
+      )
+    ).toBe("http://localhost:3301");
+  });
 });

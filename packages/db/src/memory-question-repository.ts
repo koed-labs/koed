@@ -22,25 +22,10 @@ export interface MemoryQuestionRepositoryOptions {
 }
 
 export interface MemoryQuestionRepository {
-  createMemoryQuestion(
-    actor: ActorContext,
-    input: {
-      query: string;
-      origin?: MemoryQuestionOrigin;
-      retrievalScope?: MemoryQuestionRetrievalScope;
-      searchDomain: MemoryQuestionSearchDomain;
-      projectId?: string;
-      projectName?: string;
-      projectPath?: string;
-      sessionId?: string;
-      threadId?: string;
-      threadName?: string;
-      localMemoryWorkerConfig?: Record<string, unknown>;
-    }
-  ): Promise<MemoryQuestionDetailRecord>;
   createFinalMemoryQuestion(
     actor: ActorContext,
     input: {
+      idempotencyKey: string;
       query: string;
       origin?: MemoryQuestionOrigin;
       retrievalScope?: MemoryQuestionRetrievalScope;
@@ -80,51 +65,9 @@ export interface MemoryQuestionRepository {
       offset?: number;
     }
   ): Promise<MemoryQuestionShellRecord[]>;
-  claimPendingMemoryQuestions(
-    actor: ActorContext,
-    input?: {
-      questionId?: string;
-      origin?: MemoryQuestionOrigin;
-      limit?: number;
-      leaseSeconds?: number;
-    }
-  ): Promise<MemoryQuestionDetailRecord[]>;
   getMemoryQuestion(
     actor: ActorContext,
     questionId: string
-  ): Promise<MemoryQuestionDetailRecord | null>;
-  updateMemoryQuestion(
-    actor: ActorContext,
-    questionId: string,
-    input:
-      | {
-          status: "answered";
-          answerMarkdown: string;
-          attemptCount?: number;
-          response?: Record<string, unknown>;
-          evidence?: unknown[];
-          citations?: unknown[];
-          retrieval?: Record<string, unknown>;
-          localMemoryWorker?: Record<string, unknown>;
-        }
-      | {
-          status: "error";
-          errorMessage: string;
-          attemptCount?: number;
-          response?: Record<string, unknown>;
-          retrieval?: Record<string, unknown>;
-          localMemoryWorker?: Record<string, unknown>;
-        }
-      | {
-          status: "pending";
-          lastErrorMessage: string;
-          attemptCount?: number;
-          response?: Record<string, unknown>;
-          evidence?: unknown[];
-          citations?: unknown[];
-          retrieval?: Record<string, unknown>;
-          localMemoryWorker?: Record<string, unknown>;
-        }
   ): Promise<MemoryQuestionDetailRecord | null>;
 }
 
@@ -149,10 +92,7 @@ type MemoryQuestionShellRow = {
   created_at: Date;
   updated_at: Date;
   answered_at: Date | null;
-  processing_started_at: Date | null;
-  processing_lease_until: Date | null;
   attempt_count: string | number | null;
-  last_error_message: string | null;
   evidence?: unknown[] | null;
   evidence_count?: string | number | null;
 };
@@ -163,7 +103,6 @@ type MemoryQuestionDetailRow = MemoryQuestionShellRow & {
   citations: unknown[] | null;
   retrieval: Record<string, unknown> | null;
   local_memory_worker: Record<string, unknown> | null;
-  local_memory_worker_config: Record<string, unknown> | null;
   response: Record<string, unknown> | null;
 };
 
@@ -221,12 +160,10 @@ type MemoryQuestionEncryptedColumn =
   | "query"
   | "answer_markdown"
   | "error_message"
-  | "last_error_message"
   | "evidence"
   | "citations"
   | "retrieval"
   | "local_memory_worker"
-  | "local_memory_worker_config"
   | "response";
 
 const previewMarkdown = (value: string | null): string | null =>
@@ -255,10 +192,7 @@ const mapMemoryQuestionShell = (
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
   answeredAt: row.answered_at?.toISOString() ?? null,
-  processingStartedAt: row.processing_started_at?.toISOString() ?? null,
-  processingLeaseUntil: row.processing_lease_until?.toISOString() ?? null,
   attemptCount: Number(row.attempt_count ?? 0),
-  lastErrorMessage: row.last_error_message,
   evidenceCount: Number(row.evidence_count ?? 0)
 });
 
@@ -271,7 +205,6 @@ const mapMemoryQuestionDetail = (
   citations: row.citations,
   retrieval: row.retrieval,
   localMemoryWorker: row.local_memory_worker,
-  localMemoryWorkerConfig: row.local_memory_worker_config,
   response: row.response
 });
 
@@ -399,20 +332,6 @@ export const createMemoryQuestionRepository = (
       }
       hydrated.error_message = plaintext;
     }
-    if (row.last_error_message === ENCRYPTED_MEMORY_QUESTION_TEXT) {
-      const plaintext = await decryptQuestionField(
-        actor,
-        row,
-        "last_error_message"
-      );
-      if (typeof plaintext !== "string") {
-        throw new Error(
-          "Encrypted Memory Question last_error_message is invalid"
-        );
-      }
-      hydrated.last_error_message = plaintext;
-    }
-
     if ("evidence" in hydrated) {
       const detail = hydrated as MemoryQuestionDetailRow;
       if (isEncryptedMemoryQuestionArrayMarker(detail.evidence)) {
@@ -433,7 +352,6 @@ export const createMemoryQuestionRepository = (
       for (const sourceColumn of [
         "retrieval",
         "local_memory_worker",
-        "local_memory_worker_config",
         "response"
       ] as const) {
         if (isEncryptedMemoryQuestionJsonMarker(detail[sourceColumn])) {
@@ -460,92 +378,6 @@ export const createMemoryQuestionRepository = (
   };
 
   return {
-    async createMemoryQuestion(actor, input) {
-      const suppressPlaintextPayload =
-        managedCloudPlaintextMemoryPayloadsDisabled();
-      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
-        throw new Error(
-          "Envelope encryption provider is required when plaintext Memory Question storage is disabled"
-        );
-      }
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        const result = await client.query<MemoryQuestionDetailRow>(
-          `
-        insert into memory_questions (
-          owner_user_id,
-          visibility,
-          origin,
-          retrieval_scope,
-          search_domain,
-          project_id,
-          project_name,
-          project_path,
-          session_id,
-          thread_id,
-          thread_name,
-          query,
-          local_memory_worker_config
-        )
-        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-        returning
-          id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-          project_id, project_name, project_path, session_id, thread_id,
-          thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, local_memory_worker_config,
-          response, status, created_at, updated_at, answered_at,
-          processing_started_at, processing_lease_until, attempt_count,
-          last_error_message,
-          jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
-      `,
-          [
-            actor.userId,
-            input.origin ?? "explorer",
-            input.retrievalScope ?? "personal",
-            input.searchDomain,
-            input.projectId ?? null,
-            input.projectName ?? null,
-            input.projectPath ?? null,
-            input.sessionId ?? null,
-            input.threadId ?? null,
-            input.threadName ?? null,
-            suppressPlaintextPayload
-              ? ENCRYPTED_MEMORY_QUESTION_TEXT
-              : input.query,
-            input.localMemoryWorkerConfig
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionJsonMarker()
-                    : input.localMemoryWorkerConfig
-                )
-              : null
-          ]
-        );
-        const row = result.rows[0]!;
-        if (suppressPlaintextPayload) {
-          await persistEncryptedQuestionFields(
-            client,
-            actor,
-            row.id,
-            row.visibility,
-            {
-              query: input.query,
-              local_memory_worker_config: input.localMemoryWorkerConfig
-            }
-          );
-        }
-        await client.query("commit");
-
-        return mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row));
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
-
     async createFinalMemoryQuestion(actor, input) {
       const suppressPlaintextPayload =
         managedCloudPlaintextMemoryPayloadsDisabled();
@@ -571,6 +403,7 @@ export const createMemoryQuestionRepository = (
           session_id,
           thread_id,
           thread_name,
+          idempotency_key,
           query,
           status,
           answer_markdown,
@@ -581,27 +414,25 @@ export const createMemoryQuestionRepository = (
           retrieval,
           local_memory_worker,
           answered_at,
-          attempt_count,
-          last_error_message
+          attempt_count
         )
         values (
-          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-          $12::memory_question_status, $13, $14, $15::jsonb, $16::jsonb,
-          $17::jsonb, $18::jsonb, $19::jsonb, now(), $20, $21
+          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+          $13::memory_question_status, $14, $15, $16::jsonb, $17::jsonb,
+          $18::jsonb, $19::jsonb, $20::jsonb, now(), $21
         )
+        on conflict (owner_user_id, idempotency_key) do nothing
         returning
           id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, local_memory_worker_config,
-          response, status, created_at, updated_at, answered_at,
-          processing_started_at, processing_lease_until, attempt_count,
-          last_error_message,
+          citations, retrieval, local_memory_worker, response, status,
+          created_at, updated_at, answered_at, attempt_count,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
       `,
           [
             actor.userId,
-            input.origin ?? "explorer",
+            input.origin ?? "mcp_memory_answer",
             input.retrievalScope ?? "personal",
             input.searchDomain,
             input.projectId ?? null,
@@ -610,6 +441,7 @@ export const createMemoryQuestionRepository = (
             input.sessionId ?? null,
             input.threadId ?? null,
             input.threadName ?? null,
+            input.idempotencyKey,
             suppressPlaintextPayload
               ? ENCRYPTED_MEMORY_QUESTION_TEXT
               : input.query,
@@ -659,16 +491,31 @@ export const createMemoryQuestionRepository = (
                     : input.localMemoryWorker
                 )
               : null,
-            input.attemptCount ?? 1,
-            input.status === "error"
-              ? suppressPlaintextPayload
-                ? ENCRYPTED_MEMORY_QUESTION_TEXT
-                : input.errorMessage
-              : null
+            input.attemptCount ?? 1
           ]
         );
-        const row = result.rows[0]!;
-        if (suppressPlaintextPayload) {
+        const inserted = result.rows[0];
+        const row =
+          inserted ??
+          (
+            await client.query<MemoryQuestionDetailRow>(
+              `
+                select
+                  id, owner_user_id, visibility, origin, retrieval_scope,
+                  search_domain, project_id, project_name, project_path,
+                  session_id, thread_id, thread_name, query, answer_markdown,
+                  error_message, evidence, citations, retrieval,
+                  local_memory_worker, response, status, created_at,
+                  updated_at, answered_at, attempt_count,
+                  jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+                from memory_questions
+                where owner_user_id = $1 and idempotency_key = $2
+                limit 1
+              `,
+              [actor.userId, input.idempotencyKey]
+            )
+          ).rows[0]!;
+        if (inserted && suppressPlaintextPayload) {
           await persistEncryptedQuestionFields(
             client,
             actor,
@@ -686,9 +533,7 @@ export const createMemoryQuestionRepository = (
               citations:
                 input.status === "answered" ? input.citations : undefined,
               retrieval: input.retrieval,
-              local_memory_worker: input.localMemoryWorker,
-              last_error_message:
-                input.status === "error" ? input.errorMessage : undefined
+              local_memory_worker: input.localMemoryWorker
             }
           );
         }
@@ -722,8 +567,7 @@ export const createMemoryQuestionRepository = (
             project_id, project_name, project_path, session_id, thread_id,
             thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
             error_message, status, created_at, updated_at, answered_at,
-            processing_started_at, processing_lease_until, attempt_count,
-            last_error_message, evidence,
+            attempt_count, evidence,
             jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
           from memory_questions
           where owner_user_id = $1
@@ -798,8 +642,7 @@ export const createMemoryQuestionRepository = (
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
           error_message, status, created_at, updated_at, answered_at,
-          processing_started_at, processing_lease_until, attempt_count,
-          last_error_message, evidence,
+          attempt_count, evidence,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
         from memory_questions
         where owner_user_id = $1
@@ -837,68 +680,6 @@ export const createMemoryQuestionRepository = (
       return hydratedRows.map(mapMemoryQuestionShell);
     },
 
-    async claimPendingMemoryQuestions(actor, input = {}) {
-      const limit = Math.min(Math.max(input.limit ?? 1, 1), 10);
-      const leaseSeconds = Math.min(
-        Math.max(input.leaseSeconds ?? 180, 30),
-        3600
-      );
-      const result = await pool.query<MemoryQuestionDetailRow>(
-        `
-        with candidates as (
-          select id
-          from memory_questions
-          where owner_user_id = $1
-            and visibility = 'personal'
-            and status = 'pending'
-            and ($2::uuid is null or id = $2)
-            and ($5::text is null or origin = $5)
-            and (
-              processing_lease_until is null
-              or processing_lease_until < now()
-            )
-          order by created_at asc, id asc
-          limit $3
-          for update skip locked
-        )
-        update memory_questions question
-        set
-          processing_started_at = now(),
-          processing_lease_until = now() + ($4::int * interval '1 second'),
-          attempt_count = attempt_count + 1,
-          last_error_message = null,
-          updated_at = now()
-        from candidates
-        where question.id = candidates.id
-        returning
-          question.id, question.owner_user_id,
-          question.visibility, question.origin, question.retrieval_scope, question.search_domain,
-          question.project_id, question.project_name, question.project_path,
-          question.session_id, question.thread_id, question.thread_name,
-          question.query, question.answer_markdown, question.error_message,
-          question.evidence, question.citations, question.retrieval,
-          question.local_memory_worker, question.local_memory_worker_config,
-          question.response, question.status, question.created_at,
-          question.updated_at, question.answered_at,
-          question.processing_started_at, question.processing_lease_until,
-          question.attempt_count, question.last_error_message,
-          jsonb_array_length(coalesce(question.evidence, '[]'::jsonb)) as evidence_count
-      `,
-        [
-          actor.userId,
-          input.questionId ?? null,
-          limit,
-          leaseSeconds,
-          input.origin ?? null
-        ]
-      );
-
-      const hydratedRows = await Promise.all(
-        result.rows.map((row) => hydrateQuestionRow(actor, row))
-      );
-      return hydratedRows.map(mapMemoryQuestionDetail);
-    },
-
     async getMemoryQuestion(actor, questionId) {
       const result = await pool.query<MemoryQuestionDetailRow>(
         `
@@ -906,10 +687,8 @@ export const createMemoryQuestionRepository = (
           id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, local_memory_worker_config,
-          response, status,
-          created_at, updated_at, answered_at, processing_started_at,
-          processing_lease_until, attempt_count, last_error_message,
+          citations, retrieval, local_memory_worker, response, status,
+          created_at, updated_at, answered_at, attempt_count,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
         from memory_questions
         where id = $2
@@ -925,158 +704,6 @@ export const createMemoryQuestionRepository = (
             await hydrateQuestionRow(actor, result.rows[0])
           )
         : null;
-    },
-
-    async updateMemoryQuestion(actor, questionId, input) {
-      const suppressPlaintextPayload =
-        managedCloudPlaintextMemoryPayloadsDisabled();
-      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
-        throw new Error(
-          "Envelope encryption provider is required when plaintext Memory Question storage is disabled"
-        );
-      }
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        const result = await client.query<MemoryQuestionDetailRow>(
-          `
-        update memory_questions
-        set
-          status = $3::memory_question_status,
-          answer_markdown = case when $3::text = 'answered' then $4 else null end,
-          error_message = case when $3::text = 'error' then $5 else null end,
-          response = coalesce($6::jsonb, response),
-          evidence = coalesce($7::jsonb, evidence),
-          citations = coalesce($8::jsonb, citations),
-          retrieval = coalesce($9::jsonb, retrieval),
-          local_memory_worker = coalesce($10::jsonb, local_memory_worker),
-          processing_lease_until = null,
-          processing_started_at = case
-            when $3::text = 'pending' then null
-            else processing_started_at
-          end,
-          last_error_message = case
-            when $3::text = 'error' then $5
-            when $3::text = 'pending' then $12
-            else null
-          end,
-          answered_at = case
-            when $3::text in ('answered', 'error') then now()
-            else null
-          end,
-          updated_at = now()
-        where id = $2
-          and owner_user_id = $1
-          and visibility = 'personal'
-          and status = 'pending'
-          and (
-            ($11::int is not null and attempt_count = $11)
-            or ($11::int is null and processing_lease_until is null)
-          )
-        returning
-          id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
-          project_id, project_name, project_path, session_id, thread_id,
-          thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, local_memory_worker_config,
-          response, status,
-          created_at, updated_at, answered_at, processing_started_at,
-          processing_lease_until, attempt_count, last_error_message,
-          jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
-      `,
-          [
-            actor.userId,
-            questionId,
-            input.status,
-            input.status === "answered"
-              ? suppressPlaintextPayload
-                ? ENCRYPTED_MEMORY_QUESTION_TEXT
-                : input.answerMarkdown
-              : null,
-            input.status === "error"
-              ? suppressPlaintextPayload
-                ? ENCRYPTED_MEMORY_QUESTION_TEXT
-                : input.errorMessage
-              : null,
-            input.response
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionJsonMarker()
-                    : input.response
-                )
-              : null,
-            "evidence" in input && input.evidence
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionArrayMarker()
-                    : input.evidence
-                )
-              : null,
-            "citations" in input && input.citations
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionArrayMarker()
-                    : input.citations
-                )
-              : null,
-            input.retrieval
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionJsonMarker()
-                    : input.retrieval
-                )
-              : null,
-            input.localMemoryWorker
-              ? JSON.stringify(
-                  suppressPlaintextPayload
-                    ? encryptedMemoryQuestionJsonMarker()
-                    : input.localMemoryWorker
-                )
-              : null,
-            input.attemptCount ?? null,
-            input.status === "pending" && input.lastErrorMessage != null
-              ? suppressPlaintextPayload
-                ? ENCRYPTED_MEMORY_QUESTION_TEXT
-                : input.lastErrorMessage
-              : null
-          ]
-        );
-        const row = result.rows[0];
-        if (row && suppressPlaintextPayload) {
-          await persistEncryptedQuestionFields(
-            client,
-            actor,
-            row.id,
-            row.visibility,
-            {
-              answer_markdown:
-                input.status === "answered" ? input.answerMarkdown : undefined,
-              error_message:
-                input.status === "error" ? input.errorMessage : undefined,
-              response: input.response,
-              evidence: "evidence" in input ? input.evidence : undefined,
-              citations: "citations" in input ? input.citations : undefined,
-              retrieval: input.retrieval,
-              local_memory_worker: input.localMemoryWorker,
-              last_error_message:
-                input.status === "pending"
-                  ? input.lastErrorMessage
-                  : input.status === "error"
-                    ? input.errorMessage
-                    : undefined
-            }
-          );
-        }
-        await client.query("commit");
-
-        return row
-          ? mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row))
-          : null;
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
-      }
     }
   };
 };

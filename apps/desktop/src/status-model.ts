@@ -57,9 +57,9 @@ export const componentDefinitions = {
     description: "Local service that turns memory text into retrieval vectors."
   },
   apiToken: {
-    label: "Local credential/API Token",
+    label: "Local runtime credential",
     description:
-      "User-owned API Token available to the local AI Client integration."
+      "User-owned API Token retained by the supervised Local AI Runtime."
   },
   mcpServer: {
     label: "MCP Server",
@@ -170,7 +170,7 @@ export const statusCards = [
   {
     id: "api",
     title: "Core API",
-    role: "HTTP API used by Desktop, Capture Hook, MCP Server, and recall.",
+    role: "HTTP API used by Desktop, Capture Hook, the Local AI Runtime, and recall.",
     impact:
       "Capture, recall, settings, and Desktop calls fail when unreachable.",
     componentKeys: ["api"],
@@ -257,7 +257,7 @@ export const statusCards = [
   {
     id: "aiClientIntegration",
     title: "AI Client Integration",
-    role: "API Token, Codex config, and MCP Server used for Memory Answer recall.",
+    role: "Local runtime credential, Codex config, and MCP adapter used for Memory Answer recall.",
     impact:
       "The AI Client cannot call Koed memory tools when this is incomplete.",
     componentKeys: ["apiToken", "mcpServer", "codex"],

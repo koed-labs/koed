@@ -7,13 +7,13 @@ settings, and question APIs.
 
 The API stores and retrieves memory, but it does not perform server-side LLM
 synthesis. Answer Synthesis and LCM Summary creation are delegated to the
-connected AI Client through the MCP Server.
+connected AI Client through the `koed-server`-supervised Local AI Runtime.
 
 ## Responsibilities
 
 - Authenticate browser sessions and API Token requests.
 - Persist raw `conversation_items` submitted by the Supported Capture Hook and
-  MCP-local background workflows.
+  Local AI Runtime background workflows.
 - Run Projection through `/v1/memory/conversation-items/project`.
 - Serve Memory Answer evidence through `/v1/memory/search`,
   `/v1/memory/answer`, and memory-node expansion routes.

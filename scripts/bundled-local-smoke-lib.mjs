@@ -139,6 +139,7 @@ export const buildBundledLocalSmokeEnvironment = async ({
     koedHome ??
     (await deps.mkdtemp(path.join(os.tmpdir(), "koed-bundled-smoke-home-")));
   const envPath = path.join(home, "repo.env");
+  const codexHome = path.join(home, "codex");
   const ports = {
     api: await deps.getFreePort(),
     postgres: await deps.getFreePort(),
@@ -152,7 +153,11 @@ export const buildBundledLocalSmokeEnvironment = async ({
     KOED_HOME: home,
     KOED_REPO_ROOT: root,
     KOED_ENV_PATH: envPath,
+    KOED_RUNTIME_MODE: "local-personal",
     KOED_DEPENDENCY_MODE: "bundled-local",
+    KOED_AUTO_PORTS: "1",
+    CODEX_HOME: codexHome,
+    CODEX_CONFIG_PATH: path.join(codexHome, "config.toml"),
     KOED_BUNDLED_POSTGRES_MODE: "native",
     KOED_BUNDLED_EMBEDDING_MODE: "native",
     WORK_QUEUE_BACKEND: queueBackend,

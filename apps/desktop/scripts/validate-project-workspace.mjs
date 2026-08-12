@@ -765,6 +765,14 @@ const run = async () => {
     assert.ok(railAfterEnd.scrollTop > 0);
     assert.equal(railAfterEnd.addTeamVisible, true);
 
+    const initialActivityCommands = await window.webContents.executeJavaScript(
+      `window.__koedBrowserCommands ?? []`
+    );
+    assert.ok(
+      initialActivityCommands.includes("collaboration.report_team_activity"),
+      JSON.stringify({ initialActivityCommands })
+    );
+
     const teamSelectionCommandCount =
       await window.webContents.executeJavaScript(
         `window.__koedBrowserCommandCount ?? 0`
@@ -812,8 +820,9 @@ const run = async () => {
     const teamSelectionCommands = await window.webContents.executeJavaScript(
       `window.__koedBrowserCommands?.slice(${teamSelectionCommandIndex}) ?? []`
     );
-    // Team activation selects People, loads its authorized invitation page,
-    // and records delivery. Activity reporting is independently throttled.
+    // Initial focus has already reported Team activity. Navigation within the
+    // write-throttle window selects People and records delivery without
+    // generating another activity write.
     assert.deepEqual(teamSelectionCommands, [
       "collaboration.select",
       "collaboration.list_invitations",

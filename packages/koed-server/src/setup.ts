@@ -85,7 +85,6 @@ const configureCodexIntegration = ({
   paths,
   environment,
   apiUrl,
-  apiToken,
   readFileSync,
   writeFileSync,
   mkdirSync,
@@ -94,7 +93,6 @@ const configureCodexIntegration = ({
   paths: ReturnType<typeof resolveKoedServerPaths>;
   environment: NodeJS.ProcessEnv;
   apiUrl: string;
-  apiToken: string;
   readFileSync: typeof nodeReadFileSync;
   writeFileSync: typeof nodeWriteFileSync;
   mkdirSync: typeof nodeMkdirSync;
@@ -112,7 +110,6 @@ const configureCodexIntegration = ({
   }
 
   const nodeCommand = environment.MEMORY_NODE_COMMAND ?? "node";
-  const appServerBinary = environment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
   const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
@@ -152,14 +149,11 @@ args = [${tomlString(runtime.mcpCli)}]
 enabled = true
 
 [mcp_servers.${mcpName}.env]
-MEMORY_API_URL = ${tomlString(apiUrl)}
-MEMORY_API_TOKEN = ${tomlString(apiToken)}
-MEMORY_CODEX_APP_SERVER_BINARY = ${tomlString(appServerBinary)}
+KOED_HOME = ${tomlString(paths.koedHome)}
 
 ${hookBlocks}
 ${markerEnd}
 `;
-
   const existing = existsSync(codexConfigPath)
     ? String(readFileSync(codexConfigPath, "utf8"))
     : "";
@@ -179,7 +173,6 @@ ${markerEnd}
       "Codex integration configured.",
       `Detected API URL: ${apiUrl}`,
       `Detected Node command: ${nodeCommand}`,
-      `Detected Codex app-server binary: ${appServerBinary}`,
       `Wrote Codex MCP config: ${codexConfigPath}`
     ].join("\n")
   };
@@ -220,7 +213,7 @@ export const repairCodexIntegration = ({
       apiUrl,
       checkedAt,
       command: "write Codex config",
-      error: "No Koed API Token is available for the Codex integration.",
+      error: "No Koed API Token is available for the Local AI Runtime.",
       action:
         "Start Koed Desktop first so it can provision a local API Token, then run Fix Codex integration again."
     };
@@ -231,7 +224,6 @@ export const repairCodexIntegration = ({
       paths,
       environment: { ...repoEnv, ...environment },
       apiUrl,
-      apiToken: apiToken.token,
       readFileSync,
       writeFileSync,
       mkdirSync,
@@ -431,7 +423,6 @@ const prepareSetupCodex = (
     context: {
       ...base,
       childEnv: {
-        ...process.env,
         ...base.repoEnv,
         ...base.environment,
         ...database.environment,

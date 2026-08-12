@@ -444,26 +444,25 @@ docker compose --env-file .env -f examples/server-compose/docker-compose.yml exe
 ```
 
 Do not point normal AI Client integrations directly at this remote/server API.
-Each User's Codex MCP Server and Supported Capture Hook should normally point at
-that User's local `koed-server` API, usually `http://localhost:3300`; that local
-server also supervises the Transcript Watcher. The watcher is enabled by default
-for developer/local-personal runtime modes. External runtime mode must opt in
-with `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED=true` and provide Personal API
-Token access. Transcript roots default to `CODEX_HOME/sessions` and may be
-replaced with explicit local roots. Each Supported Capture Hook wake completes
-one bounded, paginated discovery sweep, with concurrent wakes coalesced into a
-refreshed sweep. A Stop boundary also schedules one trailing catch-up so records
-that Codex flushes after the Hook returns do not wait for the next incoming
-message. While a canonical cursor has an open turn, the watcher also rechecks
-only that transcript with bounded backoff until it consumes terminal evidence.
-A one-second catch-up tick checks only a bounded rotation of known sources and
-the newest discovery page, covering missed Hook and filesystem delivery without
-continuous full scans. The local `koed-server` then registers this server as an
-upstream and routes approved Team Workspace recall, Share
+Each User's Codex MCP adapter and Supported Capture Hook should normally use
+that User's local `koed-server`. That server supervises an authenticated Local
+AI Runtime, which hosts the Transcript Watcher. External runtime mode does not
+run either user-local component. Transcript roots default to
+`CODEX_HOME/sessions` and may be replaced with explicit local roots. Each
+Supported Capture Hook wake completes one bounded, paginated discovery sweep,
+with concurrent wakes coalesced into a refreshed sweep. A Stop boundary also
+schedules one trailing catch-up so records that Codex flushes after the Hook
+returns do not wait for the next incoming message. While a canonical cursor has
+an open turn, the watcher also rechecks only that transcript with bounded
+backoff until it consumes terminal evidence. A one-second catch-up tick checks
+only a bounded rotation of known sources and the newest discovery page,
+covering missed Hook and filesystem delivery without continuous full scans. The
+local `koed-server` then registers this server as an upstream and routes
+approved Team Workspace recall, Share
 Grant, sync/offload, or remote capture-bearing operations through local-edge
 policy. This keeps watcher capture in Personal Memory and avoids exposing
-upstream/cloud/device credentials to MCP Server, Transcript Watcher, or Capture
-Hook processes.
+upstream/cloud/device credentials to MCP, Transcript Watcher, or Capture Hook
+processes.
 
 ### Bundled-local native runtime
 

@@ -112,3 +112,40 @@ test("ensureKoedElectronSetup completes setup and trust guidance", async () => {
     ["Continue", "first"]
   ]);
 });
+
+test("ensureKoedElectronSetup resumes interrupted trust guidance", async () => {
+  const client = setupClient("guidance-3");
+  assert.deepEqual(await ensureKoedElectronSetup(client), {
+    changed: true,
+    state: "ready"
+  });
+  assert.deepEqual(client.clicks, [
+    ["Next", "first"],
+    ["Next", "first"],
+    ["Finish", "first"]
+  ]);
+  assert.equal(
+    client.clicks.some(([label]) => label === "Set up Koed"),
+    false
+  );
+});
+
+test("ensureKoedElectronSetup waits for the application shell after reload", async () => {
+  let shellReady = false;
+  const client = {
+    bodyText: async () => "",
+    evaluate: async () => shellReady,
+    waitForBody: async () => {
+      shellReady = true;
+      return "Personal Memory";
+    },
+    clickButton: async () => {
+      throw new Error("setup controls must not be used after reload");
+    }
+  };
+
+  assert.deepEqual(await ensureKoedElectronSetup(client), {
+    changed: false,
+    state: "ready"
+  });
+});

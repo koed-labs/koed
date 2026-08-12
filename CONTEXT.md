@@ -90,6 +90,13 @@ _Avoid_: LCM placeholder, source outline, concatenation
 Local background work that turns pending LCM placeholders into LCM summaries through the AI client.
 _Avoid_: Agent tool, backend LLM worker, manual summarization
 
+**Local AI Runtime**:
+The `koed-server`-supervised local process that runs persistent AI-client work,
+including Memory Answer workers, LCM Summary work, Curated Memory review, and
+transcript watching. It is shared by short-lived MCP adapters for one
+`KOED_HOME`.
+_Avoid_: MCP Server, backend LLM service, browser bridge
+
 **Local Operator Scripts**:
 Trusted commands run from the deployment checkout, such as API Token bootstrap.
 _Avoid_: Console, dashboard, admin app
@@ -289,13 +296,15 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   without deleting retained **Memory**
 - A **Workspace Archive** hides a **Workspace** from normal active flows without
   deleting retained **Team-shared Memory**
-- In the current build, one **API Token** may be used by the **MCP Server**, **Transcript Watcher**, and **Supported Capture Hook**
+- In the current build, one local **API Token** is held by the **Local AI Runtime**; it is not written into **MCP Server** or **Capture Hook** configuration
 - A **Project** may provide local context for zero or more **Conversations**
 - An **AI Client** produces one or more **Conversations**
 - A **Supported AI Client Integration** requires one **Transcript Watcher** for automatic capture correctness
 - A **Supported AI Client Integration** uses one **Supported Capture Hook** for low-latency signals and completion evidence
 - A **Supported AI Client Integration** requires recall through Koed memory tools
 - An **AI Client** may use one **MCP Server** to call Koed memory tools
+- One or more **MCP Servers** may forward typed work to one **Local AI Runtime** per **KOED_HOME**
+- The **Local AI Runtime** is supervised by **Koed Server Control Plane** and owns persistent local AI-client work
 - A **Diagnostic Memory Tool** is hidden unless explicitly enabled
 - The **Transcript Watcher** owns transcript-growth capture correctness
 - The **Supported Capture Hook** is the TypeScript Codex capture hook
