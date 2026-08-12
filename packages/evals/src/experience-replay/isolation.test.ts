@@ -1,4 +1,5 @@
 import { Redis } from "ioredis";
+import { spawnSync } from "node:child_process";
 import { rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -7,6 +8,9 @@ import {
   assertLoopbackUrl,
   startTrialRedis
 } from "./isolation.js";
+
+const redisServerAvailable =
+  spawnSync("redis-server", ["--version"], { stdio: "ignore" }).status === 0;
 
 describe("experience replay isolation", () => {
   it("rejects non-loopback services and non-eval databases", () => {
@@ -21,8 +25,10 @@ describe("experience replay isolation", () => {
         .pathname
     ).toBe("/koed_eval_trial_a");
   });
+});
 
-  it("starts authenticated, socket-only Redis processes with separated trial data", async () => {
+describe.runIf(redisServerAvailable)("native Redis trial isolation", () => {
+  it("starts authenticated, socket-only processes with separated trial data", async () => {
     const first = await startTrialRedis();
     const second = await startTrialRedis();
     try {
