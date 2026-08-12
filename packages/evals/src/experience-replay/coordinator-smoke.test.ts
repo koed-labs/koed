@@ -3,7 +3,11 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { immutableHash, resolveExperienceReplayConfig } from "./core/index.js";
+import {
+  createProductPathProofRunPlan,
+  immutableHash,
+  resolveExperienceReplayConfig
+} from "./core/index.js";
 import type { HarborFreezeManifest } from "./atif/index.js";
 import {
   reportExistingRun,
@@ -231,6 +235,49 @@ const smokeConfig = (output: string) =>
     }
   });
 
+const productProofConfig = (output: string) => {
+  const smoke = smokeConfig(output);
+  return resolveExperienceReplayConfig({
+    version: 1,
+    profile: "quick",
+    seed: "product-proof-test-seed",
+    output_dir: output,
+    codex_cli: smoke.codex_cli,
+    coding_agent: { id: "gpt-5.6-luna", reasoning_effort: "low" },
+    memory_answer: {
+      ...smoke.memory_answer,
+      model: { id: "gpt-5.6-luna", reasoning_effort: "low" }
+    },
+    lcm_summary: {
+      ...smoke.lcm_summary,
+      model: { id: "gpt-5.6-luna", reasoning_effort: "low" }
+    },
+    session_title: {
+      ...smoke.session_title,
+      model: { id: "gpt-5.6-luna", reasoning_effort: "low" }
+    },
+    embedding: smoke.embedding,
+    price_table: {
+      version: "deterministic-v1",
+      sha256: "c".repeat(64),
+      models: {
+        "gpt-5.6-luna": {
+          uncached_input_usd_per_million: 0,
+          cached_input_usd_per_million: 0,
+          output_usd_per_million: 0
+        }
+      }
+    },
+    timeouts: smoke.timeouts,
+    admission: {
+      ...smoke.admission,
+      provider_spending_limit_usd: 1
+    },
+    paid_cost_stop_usd: 1,
+    concurrency: 1
+  });
+};
+
 const fakeDependencies = (
   events: string[],
   overrides: Partial<ExperienceReplayCoordinatorDependencies> = {}
@@ -330,7 +377,10 @@ const fakeDependencies = (
               passed: condition === "relevant",
               setupMs: 1,
               agentMs: 2,
-              verifierMs: 1
+              verifierMs: 1,
+              failureCategory: null,
+              failureKind: null,
+              failurePhase: null
             }
           },
           codex: {
@@ -353,7 +403,7 @@ const fakeDependencies = (
               toolFailures: 0,
               mcpCalls: 0,
               mcpFailures: 0,
-              memoryAnswerCalls: 0,
+              memoryAnswerCalls: condition === "relevant" ? 1 : 0,
               memoryAnswerFailures: 0
             }
           },
@@ -375,7 +425,7 @@ const fakeDependencies = (
             status: "available",
             metrics: {
               memoryAnswer: {
-                calls: 0,
+                calls: condition === "relevant" ? 1 : 0,
                 failures: 0,
                 durationMs: 0,
                 tokens: {
@@ -559,6 +609,92 @@ describe("unified experience replay coordinator", () => {
     await expect(
       readFile(path.join(publication, "summary.json"), "utf8")
     ).resolves.toContain('"standard_leaderboard_comparable": false');
+  }, 30_000);
+
+  it("runs two proof sources but replays only the pinned target across four arms", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-proof-test-"));
+    const output = path.join(root, "run");
+    const config = productProofConfig(output);
+    const base = await preflightExperienceReplay({
+      config: smokeConfig(path.join(root, "unused-smoke"))
+    });
+    const selectedTasks = [
+      {
+        name: "terminal-bench/synthetic-alpha",
+        task_digest: `sha256:${"a".repeat(64)}`,
+        harbor_task_checksum: `sha256:${"1".repeat(64)}`,
+        source_path: "tasks/synthetic-alpha",
+        category: "synthetic",
+        expert_time_quartile: 0,
+        expert_time_seconds: 1,
+        resource_class: "synthetic-cpu",
+        primary_reward: {
+          field: "reward",
+          minimum: 0,
+          maximum: 1,
+          success: { operator: "equals", value: 1 }
+        }
+      },
+      {
+        name: "terminal-bench/synthetic-beta",
+        task_digest: `sha256:${"b".repeat(64)}`,
+        harbor_task_checksum: `sha256:${"2".repeat(64)}`,
+        source_path: "tasks/synthetic-beta",
+        category: "synthetic",
+        expert_time_quartile: 0,
+        expert_time_seconds: 2,
+        resource_class: "synthetic-cpu",
+        primary_reward: {
+          field: "reward",
+          minimum: 0,
+          maximum: 1,
+          success: { operator: "equals", value: 1 }
+        }
+      }
+    ];
+    const runPlan = createProductPathProofRunPlan(config, {
+      targetTaskDigest: selectedTasks[0]!.task_digest,
+      donorTaskDigest: selectedTasks[1]!.task_digest
+    });
+    const admitted = {
+      ...base,
+      config,
+      runPlan,
+      pins: { ...base.pins, selectedTasks }
+    };
+    const events: string[] = [];
+    const result = await runExperienceReplay(config, {
+      preflight: admitted,
+      dependencies: fakeDependencies(events)
+    });
+    expect(result.replayAttemptCount).toBe(4);
+    expect(events.filter((event) => event.startsWith("source:"))).toHaveLength(
+      2
+    );
+    expect(
+      events.filter((event) => event.startsWith("template:"))
+    ).toHaveLength(3);
+    const replays = events.filter((event) => event.startsWith("replay:"));
+    expect(replays).toHaveLength(4);
+    expect(replays.every((event) => event.includes("synthetic-alpha"))).toBe(
+      true
+    );
+    expect(events.find((event) => event.includes(":placebo:"))).toContain(
+      "synthetic-beta"
+    );
+    const manifest = JSON.parse(
+      await readFile(path.join(output, "manifest.json"), "utf8")
+    ) as { execution_kind: string; execution_boundary: unknown };
+    expect(manifest).toMatchObject({
+      execution_kind: "product_path_proof",
+      execution_boundary: { terminal_bench_estimate: false }
+    });
+    const report = await readFile(
+      path.join(output, "report/summary.md"),
+      "utf8"
+    );
+    expect(report).toContain("two-source, one-target");
+    expect(report).toContain("Replay attempts: 4");
   }, 30_000);
 
   it("fails closed instead of claiming an incomplete product path and still tears down", async () => {

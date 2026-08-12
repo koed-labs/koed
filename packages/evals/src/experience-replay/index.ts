@@ -39,6 +39,9 @@ export const runExperienceReplayCli = async (
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun,
+        executionKind: command.productPathProof
+          ? "product_path_proof"
+          : "benchmark_profile",
         requireRunnable: true,
         ...(recorded
           ? {
@@ -48,9 +51,12 @@ export const runExperienceReplayCli = async (
           : {})
       });
       return {
+        executionKind: result.runPlan.kind,
         profile: result.config.profile,
         semanticConfigHash: result.config.semantic_config_hash,
         codingAgentAttempts: result.config.coding_agent_attempt_count,
+        sourceTasks: result.runPlan.sourceTaskDigests.length,
+        replayTargetTasks: result.runPlan.replayTargetTaskDigests.length,
         concurrency: result.config.concurrency,
         paidCostStopUsd: result.config.paid_cost_stop_usd ?? null,
         capacity: result.capacity,
@@ -66,6 +72,9 @@ export const runExperienceReplayCli = async (
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun,
+        executionKind: command.productPathProof
+          ? "product_path_proof"
+          : "benchmark_profile",
         requireRunnable: true,
         ...(recorded
           ? {
@@ -93,6 +102,7 @@ export const runExperienceReplayCli = async (
       const result = await preflightExperienceReplay({
         config: identity.config,
         confirmPaidRun: identity.config.profile !== "smoke",
+        executionKind: identity.runPlan.kind,
         requireRunnable: true,
         ...(recorded
           ? {

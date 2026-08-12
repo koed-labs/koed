@@ -2,9 +2,15 @@ import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  createBenchmarkRunPlan,
+  createProductPathProofRunPlan,
   immutableHash,
+  SMOKE_TASK_DIGESTS,
   sha256,
+  verifyExperienceReplayRunPlan,
   resolveExperienceReplayConfig,
+  type ExperienceReplayExecutionKind,
+  type ExperienceReplayRunPlan,
   type ResolvedExperienceReplayConfig
 } from "./core/index.js";
 import {
@@ -78,6 +84,15 @@ interface SubsetManifest {
   tasks: CorpusTask[];
 }
 
+interface ProductProofManifest {
+  schema_version: "koed-terminal-bench-product-proof-v1";
+  corpus_schema_version: string;
+  target_task: string;
+  donor_task: string;
+  task_count: 2;
+  tasks: [CorpusTask, CorpusTask];
+}
+
 const readJson = async <T>(filename: string): Promise<T> =>
   JSON.parse(await readFile(filename, "utf8")) as T;
 
@@ -120,7 +135,8 @@ export interface PinnedInputsAttestation {
 }
 
 export const attestPinnedInputs = async (
-  profile: ResolvedExperienceReplayConfig["profile"]
+  profile: ResolvedExperienceReplayConfig["profile"],
+  executionKind: ExperienceReplayExecutionKind = "benchmark_profile"
 ): Promise<PinnedInputsAttestation> => {
   const corpusPath = path.join(benchmarkSourceRoot, "fixtures/tb3-v3.0.0.json");
   const corpusText = await readFile(corpusPath, "utf8");
@@ -165,6 +181,40 @@ export const attestPinnedInputs = async (
       subsetHash: null,
       uvLockHash: sha256(uvLock),
       selectedTasks: []
+    };
+  }
+  if (executionKind === "product_path_proof") {
+    const proof = await readJson<ProductProofManifest>(
+      path.join(benchmarkSourceRoot, "fixtures/product-proof-2.json")
+    );
+    if (
+      proof.schema_version !== "koed-terminal-bench-product-proof-v1" ||
+      proof.corpus_schema_version !== corpus.schema_version ||
+      proof.task_count !== 2 ||
+      proof.target_task === proof.donor_task ||
+      proof.tasks[0]?.name !== proof.target_task ||
+      proof.tasks[1]?.name !== proof.donor_task
+    ) {
+      throw new Error("Pinned product-path proof identity mismatch");
+    }
+    assertTaskManifest(proof.tasks, 2);
+    const corpusByName = new Map(corpus.tasks.map((task) => [task.name, task]));
+    for (const task of proof.tasks) {
+      const corpusTask = corpusByName.get(task.name);
+      if (!corpusTask || immutableHash(corpusTask) !== immutableHash(task)) {
+        throw new Error(
+          `Pinned product proof task differs from corpus: ${task.name}`
+        );
+      }
+    }
+    if (proof.tasks.some((task) => task.resource_class !== "cpu")) {
+      throw new Error("Product-path proof tasks must be CPU-compatible");
+    }
+    return {
+      corpusHash: sha256(corpusText),
+      subsetHash: immutableHash(proof),
+      uvLockHash: sha256(uvLock),
+      selectedTasks: proof.tasks
     };
   }
   let selectedTasks = corpus.tasks;
@@ -215,6 +265,7 @@ export class ProductPathPrerequisiteError extends Error {
 
 export interface PreflightResult {
   config: ResolvedExperienceReplayConfig;
+  runPlan: Readonly<ExperienceReplayRunPlan>;
   pins: PinnedInputsAttestation;
   repositoryRoot: string;
   capacity: RunCapacityEstimate;
@@ -464,32 +515,54 @@ export const preflightExperienceReplay = async ({
   confirmPaidRun = false,
   requireRunnable = true,
   recordedRunAdapters,
-  productPathReady = false
+  productPathReady = false,
+  executionKind = "benchmark_profile"
 }: {
   config: ResolvedExperienceReplayConfig;
   confirmPaidRun?: boolean;
   requireRunnable?: boolean;
   recordedRunAdapters?: RecordedRunPreflightAdapters;
   productPathReady?: boolean;
+  executionKind?: ExperienceReplayExecutionKind;
 }): Promise<PreflightResult> => {
   const repositoryRoot = await realpath(EXPERIENCE_REPLAY_REPOSITORY_ROOT);
-  const pins = await attestPinnedInputs(config.profile);
+  if (executionKind === "product_path_proof" && config.profile === "smoke") {
+    throw new Error(
+      "Product-path proof cannot use the deterministic smoke profile"
+    );
+  }
+  const pins = await attestPinnedInputs(config.profile, executionKind);
+  const selectedTaskDigests =
+    config.profile === "smoke"
+      ? [...SMOKE_TASK_DIGESTS]
+      : pins.selectedTasks.map((task) => task.task_digest);
+  const runPlan =
+    executionKind === "product_path_proof"
+      ? createProductPathProofRunPlan(config, {
+          targetTaskDigest: selectedTaskDigests[0] ?? "",
+          donorTaskDigest: selectedTaskDigests[1] ?? ""
+        })
+      : createBenchmarkRunPlan(config, selectedTaskDigests);
+  verifyExperienceReplayRunPlan(runPlan);
   if (config.profile !== "smoke" && !confirmPaidRun) {
     throw new ProductPathPrerequisiteError([
       "paid run confirmation is required (--confirm-paid-run)"
     ]);
   }
   const estimatedCapacity = estimateRunCapacity({
-    sourceAttempts: config.task_count,
+    sourceAttempts: runPlan.sourceTaskDigests.length,
     replayAttempts:
-      config.task_count * 4 * config.replay_attempts_per_condition,
+      runPlan.replayTargetTaskDigests.length *
+      4 *
+      runPlan.replayAttemptsPerCondition,
     maximumTrajectoryBytes: config.admission.maximum_trajectory_bytes,
     estimatedAttemptArtifactBytes:
       config.admission.estimated_attempt_artifact_bytes,
     estimatedImageBytes:
       config.profile === "smoke"
         ? 0
-        : config.task_count * config.admission.estimated_image_bytes_per_task,
+        : runPlan.sourceTaskDigests.length *
+          config.admission.estimated_image_bytes_per_task,
     scratchMultiplier: config.admission.scratch_multiplier,
     reserveBytes: config.admission.minimum_free_space_reserve_bytes,
     attemptDurationSeconds: {
@@ -559,6 +632,7 @@ export const preflightExperienceReplay = async ({
     }
     return {
       config,
+      runPlan,
       pins,
       repositoryRoot,
       capacity,
@@ -576,6 +650,7 @@ export const preflightExperienceReplay = async ({
   }
   return {
     config,
+    runPlan,
     pins,
     repositoryRoot,
     capacity,

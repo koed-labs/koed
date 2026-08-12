@@ -265,6 +265,7 @@ describe("report and disclosure", () => {
     );
     const machine = createMachineReport({
       runId: "run-1",
+      executionKind: "benchmark_profile",
       profile: "quick",
       model: "gpt-5.6-luna",
       taskCount: 2,
@@ -310,6 +311,7 @@ describe("report and disclosure", () => {
     );
     const report = createMachineReport({
       runId: "run-publication",
+      executionKind: "benchmark_profile",
       profile: "standard",
       model: "test-model",
       taskCount: 2,
@@ -478,6 +480,7 @@ describe("report and disclosure", () => {
     );
     const base = {
       runId: "ledger-check",
+      executionKind: "benchmark_profile" as const,
       profile: "quick" as const,
       model: "test-model",
       taskCount: 2,

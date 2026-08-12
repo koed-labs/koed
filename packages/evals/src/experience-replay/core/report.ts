@@ -1,5 +1,6 @@
 import type { BootstrapInterval } from "./bootstrap.js";
 import type { ExperienceReplayProfile } from "./config.js";
+import type { ExperienceReplayExecutionKind } from "./execution-plan.js";
 import type {
   ComparisonSummary,
   ReplayOutcome,
@@ -27,6 +28,7 @@ export interface ReplayExclusion {
 
 export interface ExperienceReplayReportInput {
   runId: string;
+  executionKind: ExperienceReplayExecutionKind;
   profile: ExperienceReplayProfile;
   model: string;
   taskCount: number;
@@ -58,7 +60,13 @@ export interface ExperienceReplayMachineReport extends ExperienceReplayReportInp
   exclusions: readonly ReplayExclusion[];
 }
 
-const scopeFor = (profile: ExperienceReplayProfile): string => {
+const scopeFor = (
+  executionKind: ExperienceReplayExecutionKind,
+  profile: ExperienceReplayProfile
+): string => {
+  if (executionKind === "product_path_proof") {
+    return "Manual two-source, one-target Terminal-Bench 3.0 product-path integration proof; not a benchmark estimate.";
+  }
   switch (profile) {
     case "smoke":
       return "Synthetic orchestration check; no Terminal-Bench estimate.";
@@ -121,7 +129,7 @@ export const createMachineReport = (
     benchmark_kind: "koed_experience_replay",
     standard_leaderboard_comparable: false,
     disclosure: SCIENTIFIC_DISCLOSURE,
-    scope: scopeFor(input.profile)
+    scope: scopeFor(input.executionKind, input.profile)
   };
 };
 
@@ -139,7 +147,8 @@ export const renderMarkdownReport = (
     report.scope,
     "",
     `- Run: ${report.runId}`,
-    `- Profile: ${report.profile}`,
+    `- Execution: ${report.executionKind}`,
+    `- Profile policy: ${report.profile}`,
     `- Model: ${report.model}`,
     `- Tasks: ${report.taskCount}`,
     `- Replay attempts: ${report.attemptedReplayCount}`,
@@ -507,6 +516,7 @@ const projectPublicationReport = (value: unknown): unknown => {
         (key) => (typeof value[key] === "string" ? [[key, value[key]]] : [])
       )
     ),
+    ...selectEnum(value, "executionKind", ["benchmark", "product_path_proof"]),
     ...selectEnum(value, "profile", ["smoke", "quick", "standard", "full"]),
     ...selectNumbers(value, [
       "report_version",

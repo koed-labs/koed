@@ -18,7 +18,8 @@ describe("experience replay command parsing", () => {
     ).toEqual({
       name: "run",
       configPath: "run.json",
-      confirmPaidRun: true
+      confirmPaidRun: true,
+      productPathProof: false
     });
     expect(
       parseExperienceReplayCommand(["resume", "--run", "/tmp/run"])
@@ -31,7 +32,22 @@ describe("experience replay command parsing", () => {
     ).toEqual({
       name: "run",
       configPath: "run.json",
-      confirmPaidRun: false
+      confirmPaidRun: false,
+      productPathProof: false
+    });
+    expect(
+      parseExperienceReplayCommand([
+        "preflight",
+        "--config",
+        "proof.json",
+        "--confirm-paid-run",
+        "--product-path-proof"
+      ])
+    ).toEqual({
+      name: "preflight",
+      configPath: "proof.json",
+      confirmPaidRun: true,
+      productPathProof: true
     });
     expect(() =>
       parseExperienceReplayCommand(["report", "--config", "x"])

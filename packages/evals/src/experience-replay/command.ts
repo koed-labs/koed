@@ -1,9 +1,14 @@
 export type ExperienceReplayCommand =
-  | { name: "preflight" | "run"; configPath: string; confirmPaidRun: boolean }
+  | {
+      name: "preflight" | "run";
+      configPath: string;
+      confirmPaidRun: boolean;
+      productPathProof: boolean;
+    }
   | { name: "resume" | "report" | "sanitize"; runDirectory: string };
 
 const usage =
-  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] | <resume|report|sanitize> --run <dir>";
+  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] [--product-path-proof] | <resume|report|sanitize> --run <dir>";
 
 export class CommandLineError extends Error {
   override readonly name = "CommandLineError";
@@ -23,12 +28,19 @@ export const parseExperienceReplayCommand = (
   const commandName = name as ExperienceReplayCommand["name"];
   const values = new Map<string, string>();
   let confirmPaidRun = false;
+  let productPathProof = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index] as string;
     if (argument === "--confirm-paid-run") {
       if (confirmPaidRun)
         throw new CommandLineError("Duplicate --confirm-paid-run");
       confirmPaidRun = true;
+      continue;
+    }
+    if (argument === "--product-path-proof") {
+      if (productPathProof)
+        throw new CommandLineError("Duplicate --product-path-proof");
+      productPathProof = true;
       continue;
     }
     if (argument !== "--config" && argument !== "--run") {
@@ -49,9 +61,14 @@ export const parseExperienceReplayCommand = (
     const configPath = values.get("--config");
     if (!configPath)
       throw new CommandLineError(`${commandName} requires --config`);
-    return { name: commandName, configPath, confirmPaidRun };
+    return {
+      name: commandName,
+      configPath,
+      confirmPaidRun,
+      productPathProof
+    };
   }
-  if (values.has("--config") || confirmPaidRun) {
+  if (values.has("--config") || confirmPaidRun || productPathProof) {
     throw new CommandLineError(`${commandName} accepts only --run <dir>`);
   }
   const runDirectory = values.get("--run");

@@ -38,6 +38,21 @@ profile requires an exact Codex binary identity, immutable task and image
 digests, a versioned price table, sufficient capacity, a paid-cost stop and an
 external provider spending limit. No profile silently falls back to smoke.
 
+## Product-Path Proof
+
+For the cheapest recorded integration check, use the dedicated product-path
+proof. It uses the `quick` profile's GPT-5.6 Luna low-reasoning policy, but it
+is not a quick-profile estimate. The immutable proof plan runs exactly two
+pinned Terminal-Bench 3.0 source tasks, then replays one target once under each
+of the cold, empty, placebo and relevant conditions. The second source is used
+only as the placebo donor. This is six top-level coding-agent attempts in total:
+two sources and four replays.
+
+The proof fails closed unless the relevant replay completes `memory_answer`
+successfully through the real product path. Its report identifies the execution
+as `product_path_proof`, omits confidence claims and states that it is not a
+benchmark estimate.
+
 ## Deterministic Smoke
 
 Prerequisites are Node/pnpm and a PostgreSQL 17 server with pgvector. Use a
@@ -103,6 +118,18 @@ pnpm --filter @koed/evals eval:experience-replay -- \
   preflight --config <resolved-config.json> --confirm-paid-run
 pnpm --filter @koed/evals eval:experience-replay -- \
   run --config <resolved-config.json> --confirm-paid-run
+```
+
+Run the two-source product-path proof by adding the same flag to preflight and
+run:
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  preflight --config <resolved-quick-config.json> --confirm-paid-run \
+  --product-path-proof
+pnpm --filter @koed/evals eval:experience-replay -- \
+  run --config <resolved-quick-config.json> --confirm-paid-run \
+  --product-path-proof
 ```
 
 The configured paid stop prevents new admissions. In-flight work may consume

@@ -3,18 +3,22 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   assignMatchedPlacebos,
+  assignProductPathProofPlacebo,
   createMachineReport,
   createReplaySchedule,
   immutableHash,
   redactPublicationReport,
   renderMarkdownReport,
   REQUIRED_COMPARISONS,
+  SMOKE_TASK_DIGESTS,
   summarizeComparison,
   verifyPlaceboAssignment,
+  verifyExperienceReplayRunPlan,
   verifyReplaySchedule,
   type ReplayCondition,
   type ReplayOutcome,
   type ReplaySchedule,
+  type ExperienceReplayRunPlan,
   type ResolvedExperienceReplayConfig,
   type TaskRewardContract
 } from "./core/index.js";
@@ -60,7 +64,7 @@ import { acquireRunLease } from "./run-lease.js";
 const SMOKE_TASKS: readonly CoordinatorTask[] = [
   {
     name: "terminal-bench/synthetic-alpha",
-    taskDigest: `sha256:${"a".repeat(64)}`,
+    taskDigest: SMOKE_TASK_DIGESTS[0],
     category: "synthetic",
     expertTimeSeconds: 1,
     resourceClass: "synthetic-cpu",
@@ -68,7 +72,7 @@ const SMOKE_TASKS: readonly CoordinatorTask[] = [
   },
   {
     name: "terminal-bench/synthetic-beta",
-    taskDigest: `sha256:${"b".repeat(64)}`,
+    taskDigest: SMOKE_TASK_DIGESTS[1],
     category: "synthetic",
     expertTimeSeconds: 2,
     resourceClass: "synthetic-cpu",
@@ -303,6 +307,7 @@ const taskContracts = (
 const reportFromOutcomes = async (
   runRoot: string,
   config: ResolvedExperienceReplayConfig,
+  runPlan: ExperienceReplayRunPlan,
   tasks: readonly CoordinatorTask[],
   outcomes: readonly ReplayOutcome[],
   preparationCostUsd = 0,
@@ -317,11 +322,12 @@ const reportFromOutcomes = async (
       outcomes,
       contracts,
       comparison,
-      config.replay_attempts_per_condition
+      runPlan.replayAttemptsPerCondition
     )
   );
   const report = createMachineReport({
     runId,
+    executionKind: runPlan.kind,
     profile: config.profile,
     model: config.coding_agent.id,
     taskCount: tasks.length,
@@ -368,6 +374,19 @@ const selectedTasks = (preflight: PreflightResult): CoordinatorTask[] => {
       successValue: task.primary_reward.success.value
     }
   }));
+};
+
+const replayTargetTasks = (
+  runPlan: ExperienceReplayRunPlan,
+  tasks: readonly CoordinatorTask[]
+): CoordinatorTask[] => {
+  const byDigest = new Map(tasks.map((task) => [task.taskDigest, task]));
+  return runPlan.replayTargetTaskDigests.map((taskDigest) => {
+    const task = byDigest.get(taskDigest);
+    if (!task)
+      throw new Error(`Pinned replay target is missing: ${taskDigest}`);
+    return task;
+  });
 };
 
 const SHA256 = /^(?:sha256:)?[a-f0-9]{64}$/u;
@@ -557,9 +576,17 @@ export const runExperienceReplay = async (
     options.preflight ?? (await preflightExperienceReplay({ config }));
   if (admitted.config.semantic_config_hash !== config.semantic_config_hash)
     throw new Error("Preflight configuration differs from coordinator config");
+  verifyExperienceReplayRunPlan(admitted.runPlan);
   const tasks = selectedTasks(admitted);
-  if (tasks.length !== config.task_count)
-    throw new Error(`Profile ${config.profile} selected the wrong task count`);
+  if (
+    immutableHash(tasks.map((task) => task.taskDigest)) !==
+    immutableHash(admitted.runPlan.sourceTaskDigests)
+  ) {
+    throw new Error(
+      "Preflight source tasks differ from the immutable run plan"
+    );
+  }
+  const replayTasks = replayTargetTasks(admitted.runPlan, tasks);
 
   const outputPath = options.resumeRunDirectory ?? config.output_dir;
   if (
@@ -613,6 +640,8 @@ export const runExperienceReplay = async (
           configuration_hash: string;
           profile: string;
           task_digests: string[];
+          replay_task_digests: string[];
+          run_plan: ExperienceReplayRunPlan;
         } & Record<string, unknown>
       >(directory.root, "manifest.json")
     : undefined;
@@ -638,11 +667,14 @@ export const runExperienceReplay = async (
   const proposedManifest = {
     manifest_version: 1,
     benchmark_kind: "koed_experience_replay",
+    execution_kind: admitted.runPlan.kind,
     run_id: runId,
     standard_leaderboard_comparable: false,
     profile: config.profile,
     configuration_hash: config.semantic_config_hash,
     task_digests: tasks.map((task) => task.taskDigest),
+    replay_task_digests: replayTasks.map((task) => task.taskDigest),
+    run_plan: admitted.runPlan,
     pins: {
       harbor_commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
       terminal_bench_commit: "2b0442c3c583b710ca8da14c8e601b99f2f1f244",
@@ -654,7 +686,7 @@ export const runExperienceReplay = async (
     execution_boundary: {
       deterministic_no_paid_or_network_calls: config.profile === "smoke",
       product_path_attestation_required: true,
-      terminal_bench_estimate: config.profile !== "smoke"
+      terminal_bench_estimate: admitted.runPlan.terminalBenchEstimate
     }
   };
   if (
@@ -662,7 +694,10 @@ export const runExperienceReplay = async (
     (priorManifest.configuration_hash !== config.semantic_config_hash ||
       priorManifest.profile !== config.profile ||
       immutableHash(priorManifest.task_digests) !==
-        immutableHash(tasks.map((task) => task.taskDigest)))
+        immutableHash(tasks.map((task) => task.taskDigest)) ||
+      immutableHash(priorManifest.replay_task_digests) !==
+        immutableHash(replayTasks.map((task) => task.taskDigest)) ||
+      immutableHash(priorManifest.run_plan) !== immutableHash(admitted.runPlan))
   ) {
     throw new Error("Persisted run manifest differs from resolved execution");
   }
@@ -677,6 +712,7 @@ export const runExperienceReplay = async (
       await publishOrVerifyJson(directory.root, "attestations/preflight.json", {
         schema: "koed-experience-replay-preflight-v1",
         repositoryRoot: admitted.repositoryRoot,
+        runPlan: admitted.runPlan,
         pins: admitted.pins,
         capacity: admitted.capacity,
         recordedModelPathReady: admitted.recordedModelPathReady,
@@ -685,8 +721,8 @@ export const runExperienceReplay = async (
     await phase(journal, "preflight", "completed");
 
     const schedule = createReplaySchedule(
-      tasks.map((task) => task.taskDigest),
-      config.replay_attempts_per_condition,
+      replayTasks.map((task) => task.taskDigest),
+      admitted.runPlan.replayAttemptsPerCondition,
       config.seed
     );
     verifyReplaySchedule(schedule);
@@ -846,20 +882,33 @@ export const runExperienceReplay = async (
     await phase(journal, "atif_sanitization", "completed");
 
     await phase(journal, "placebo_assignment", "started");
-    const assignment = assignMatchedPlacebos(
-      tasks.map((task) => {
-        const source = sources.get(task.taskDigest)!;
-        return {
-          taskDigest: task.taskDigest,
-          category: task.category,
-          sourcePassed: source.passed,
-          sanitizedTokenQuartile: source.sanitizedTokenQuartile,
-          expertTimeSeconds: task.expertTimeSeconds,
-          resourceClass: task.resourceClass
-        };
-      }),
-      config.seed
-    );
+    const placeboCandidates = tasks.map((task) => {
+      const source = sources.get(task.taskDigest)!;
+      return {
+        taskDigest: task.taskDigest,
+        category: task.category,
+        sourcePassed: source.passed,
+        sanitizedTokenQuartile: source.sanitizedTokenQuartile,
+        expertTimeSeconds: task.expertTimeSeconds,
+        resourceClass: task.resourceClass
+      };
+    });
+    let assignment;
+    if (admitted.runPlan.kind === "product_path_proof") {
+      const targetDigest = admitted.runPlan.replayTargetTaskDigests[0];
+      const target = placeboCandidates.find(
+        (candidate) => candidate.taskDigest === targetDigest
+      );
+      const donor = placeboCandidates.find(
+        (candidate) => candidate.taskDigest !== targetDigest
+      );
+      if (!target || !donor) {
+        throw new Error("Product-path proof target or donor source is missing");
+      }
+      assignment = assignProductPathProofPlacebo(target, donor, config.seed);
+    } else {
+      assignment = assignMatchedPlacebos(placeboCandidates, config.seed);
+    }
     verifyPlaceboAssignment(assignment);
     await publishOrVerifyJson(
       directory.root,
@@ -889,7 +938,7 @@ export const runExperienceReplay = async (
       }
     }
     const templateJobs: ReplaySchedulerJob<PersistedTemplate>[] = [];
-    for (const task of tasks) {
+    for (const task of replayTasks) {
       for (const condition of ["empty", "placebo", "relevant"] as const) {
         const sourceDigest =
           condition === "empty"
@@ -1208,6 +1257,17 @@ export const runExperienceReplay = async (
                 );
                 assertCompleteReplayTelemetry(telemetry);
                 const merged = mergeReplayTelemetry(telemetry);
+                if (
+                  admitted.runPlan.kind === "product_path_proof" &&
+                  condition === "relevant" &&
+                  ((merged.outcome.interactions?.memoryAnswerCalls ?? 0) < 1 ||
+                    (merged.outcome.interactions?.memoryAnswerFailures ?? 0) >=
+                      (merged.outcome.interactions?.memoryAnswerCalls ?? 0))
+                ) {
+                  throw new Error(
+                    "Product-path proof relevant replay did not complete memory_answer successfully"
+                  );
+                }
                 const observedCostUsd = merged.outcome.costUsd;
                 if (observedCostUsd === null || observedCostUsd === undefined)
                   throw new Error("Replay cost telemetry is incomplete");
@@ -1417,13 +1477,30 @@ export const runExperienceReplay = async (
         )
       );
     await phase(journal, "replay_execution", "completed");
+    if (admitted.runPlan.kind === "product_path_proof") {
+      const relevant = outcomes.find(
+        (outcome) => outcome.condition === "relevant"
+      );
+      if (
+        !relevant ||
+        relevant.reward === null ||
+        (relevant.interactions?.memoryAnswerCalls ?? 0) < 1 ||
+        (relevant.interactions?.memoryAnswerFailures ?? 0) >=
+          (relevant.interactions?.memoryAnswerCalls ?? 0)
+      ) {
+        throw new Error(
+          "Product-path proof requires one successful relevant memory_answer replay"
+        );
+      }
+    }
     await phase(journal, "metric_merge", "started");
     await phase(journal, "metric_merge", "completed");
     await phase(journal, "report_generation", "started");
     await reportFromOutcomes(
       directory.root,
       config,
-      tasks,
+      admitted.runPlan,
+      replayTasks,
       outcomes,
       preparationCostUsd,
       runId
@@ -1558,23 +1635,36 @@ const verifyResolvedConfig = (config: ResolvedExperienceReplayConfig): void => {
 const tasksFromManifest = async (
   runRoot: string,
   config: ResolvedExperienceReplayConfig
-): Promise<CoordinatorTask[]> => {
-  const manifest = await readJsonArtifact<{ task_digests: string[] }>(
-    runRoot,
-    "manifest.json"
-  );
+): Promise<{
+  sourceTasks: CoordinatorTask[];
+  replayTasks: CoordinatorTask[];
+  runPlan: ExperienceReplayRunPlan;
+}> => {
+  const manifest = await readJsonArtifact<{
+    task_digests: string[];
+    replay_task_digests: string[];
+    run_plan: ExperienceReplayRunPlan;
+  }>(runRoot, "manifest.json");
+  verifyExperienceReplayRunPlan(manifest.run_plan);
   const admitted = await preflightExperienceReplay({
     config,
     requireRunnable: false,
-    confirmPaidRun: config.profile !== "smoke"
+    confirmPaidRun: config.profile !== "smoke",
+    executionKind: manifest.run_plan.kind
   });
   const tasks = selectedTasks(admitted);
+  if (immutableHash(admitted.runPlan) !== immutableHash(manifest.run_plan)) {
+    throw new Error("Pinned run plan changed; refusing run artifact");
+  }
+  const replayTasks = replayTargetTasks(admitted.runPlan, tasks);
   if (
     immutableHash(tasks.map((task) => task.taskDigest)) !==
-    immutableHash(manifest.task_digests)
+      immutableHash(manifest.task_digests) ||
+    immutableHash(replayTasks.map((task) => task.taskDigest)) !==
+      immutableHash(manifest.replay_task_digests)
   )
     throw new Error("Pinned task digest set changed; refusing run artifact");
-  return tasks;
+  return { sourceTasks: tasks, replayTasks, runPlan: admitted.runPlan };
 };
 
 export const reportExistingRun = async (
@@ -1612,10 +1702,12 @@ export const reportExistingRun = async (
     runRoot,
     "manifest.json"
   );
+  const tasks = await tasksFromManifest(runRoot, config);
   await reportFromOutcomes(
     runRoot,
     config,
-    await tasksFromManifest(runRoot, config),
+    tasks.runPlan,
+    tasks.replayTasks,
     await outcomesFromRun(runRoot, schedule, entries),
     preparationCostUsd,
     manifest.run_id
@@ -1654,6 +1746,7 @@ export const readExperienceReplayResumeIdentity = async (
   runRoot: string;
   config: ResolvedExperienceReplayConfig;
   runId: string;
+  runPlan: ExperienceReplayRunPlan;
 }> => {
   const runRoot = await validateExistingRunDirectory(
     runDirectory,
@@ -1664,13 +1757,19 @@ export const readExperienceReplayResumeIdentity = async (
     "config.resolved.json"
   );
   verifyResolvedConfig(config);
-  const manifest = await readJsonArtifact<{ run_id: string }>(
-    runRoot,
-    "manifest.json"
-  );
+  const manifest = await readJsonArtifact<{
+    run_id: string;
+    run_plan: ExperienceReplayRunPlan;
+  }>(runRoot, "manifest.json");
   if (typeof manifest.run_id !== "string" || !manifest.run_id.trim())
     throw new Error("Persisted run identity is invalid");
-  return { runRoot, config, runId: manifest.run_id };
+  verifyExperienceReplayRunPlan(manifest.run_plan);
+  return {
+    runRoot,
+    config,
+    runId: manifest.run_id,
+    runPlan: manifest.run_plan
+  };
 };
 
 export const sanitizeRunReport = async (

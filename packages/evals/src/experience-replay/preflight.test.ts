@@ -94,6 +94,32 @@ describe("experience replay strict preflight", () => {
     expect(pins.uvLockHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("pins the product-path proof to two CPU sources and one replay target", async () => {
+    const pins = await attestPinnedInputs("quick", "product_path_proof");
+    expect(pins.selectedTasks.map((task) => task.name)).toEqual([
+      "terminal-bench/html-js-filter",
+      "terminal-bench/photonic-waveguide-routing"
+    ]);
+    expect(
+      pins.selectedTasks.every((task) => task.resource_class === "cpu")
+    ).toBe(true);
+    const result = await preflightExperienceReplay({
+      config: config("quick"),
+      confirmPaidRun: true,
+      requireRunnable: false,
+      executionKind: "product_path_proof"
+    });
+    expect(result.runPlan).toMatchObject({
+      kind: "product_path_proof",
+      codingAgentAttemptCount: 6,
+      replayTargetTaskDigests: [pins.selectedTasks[0]?.task_digest]
+    });
+    expect(result.capacity).toMatchObject({
+      requiredBytes: 8192,
+      estimatedDurationSeconds: { minimum: 6, maximum: 960 }
+    });
+  });
+
   it("admits deterministic smoke but requires recorded-run adapters", async () => {
     await expect(
       preflightExperienceReplay({ config: config("smoke") })

@@ -238,6 +238,50 @@ export const assignMatchedPlacebos = (
   });
 };
 
+export const assignProductPathProofPlacebo = (
+  target: PlaceboCandidate,
+  donor: PlaceboCandidate,
+  seed: string
+): Readonly<PlaceboAssignment> => {
+  if (!seed) throw new Error("Placebo seed must not be empty");
+  if (target.taskDigest === donor.taskDigest) {
+    throw new Error("Product-path proof target and donor must be distinct");
+  }
+  if (target.resourceClass !== donor.resourceClass) {
+    throw new Error(
+      "Product-path proof target and donor must be resource-compatible"
+    );
+  }
+  for (const candidate of [target, donor]) {
+    if (
+      !Number.isSafeInteger(candidate.expertTimeSeconds) ||
+      candidate.expertTimeSeconds < 0
+    ) {
+      throw new Error(`Invalid expert time for ${candidate.taskDigest}`);
+    }
+  }
+  const edge: PlaceboEdge = {
+    targetDigest: target.taskDigest,
+    sourceDigest: donor.taskDigest,
+    cost: [
+      Number(target.category !== donor.category),
+      Number(target.sourcePassed !== donor.sourcePassed),
+      Math.abs(target.sanitizedTokenQuartile - donor.sanitizedTokenQuartile),
+      Math.abs(target.expertTimeSeconds - donor.expertTimeSeconds)
+    ],
+    tieBreak: sha256(`${seed}\0${target.taskDigest}\0${donor.taskDigest}`)
+  };
+  const body = {
+    version: 1 as const,
+    seed,
+    edges: [edge],
+    assignments: [
+      { targetDigest: target.taskDigest, sourceDigest: donor.taskDigest }
+    ]
+  };
+  return deepFreeze({ ...body, assignmentHash: immutableHash(body) });
+};
+
 export const verifyPlaceboAssignment = (
   assignment: PlaceboAssignment
 ): void => {

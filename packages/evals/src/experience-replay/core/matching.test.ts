@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assignProductPathProofPlacebo,
   assignMatchedPlacebos,
   verifyPlaceboAssignment,
   type PlaceboCandidate
@@ -95,5 +96,25 @@ describe("matched placebo assignment", () => {
     const changed = structuredClone(assignment);
     (changed.assignments[0] as { sourceDigest: string }).sourceDigest = "c";
     expect(() => verifyPlaceboAssignment(changed)).toThrow("hash mismatch");
+  });
+
+  it("records the proof target-to-donor edge without relaxing benchmark matching", () => {
+    const assignment = assignProductPathProofPlacebo(
+      candidates[0] as PlaceboCandidate,
+      candidates[1] as PlaceboCandidate,
+      "proof-seed"
+    );
+    expect(assignment.assignments).toEqual([
+      { targetDigest: "a", sourceDigest: "b" }
+    ]);
+    expect(assignment.edges).toHaveLength(1);
+    expect(() => verifyPlaceboAssignment(assignment)).not.toThrow();
+    expect(() =>
+      assignProductPathProofPlacebo(
+        candidates[0] as PlaceboCandidate,
+        candidates[0] as PlaceboCandidate,
+        "proof-seed"
+      )
+    ).toThrow("distinct");
   });
 });
