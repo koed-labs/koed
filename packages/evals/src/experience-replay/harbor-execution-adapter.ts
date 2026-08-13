@@ -120,6 +120,7 @@ export interface HarborSourceExecutionInput extends CommonExecutionInput {
   freezeTrajectoryPath: string;
   freezeManifestPath: string;
   sanitizedTokenQuartile: 0 | 1 | 2 | 3;
+  developerInstructions?: string;
 }
 
 export interface HarborReplayExecutionInput extends CommonExecutionInput {
@@ -407,7 +408,10 @@ export const createDeterministicSmokeTelemetry = (
 ): NonHarborTelemetry => {
   const recallRan = identity.condition !== "cold";
   const evidenceCount =
-    identity.condition === "placebo" || identity.condition === "relevant"
+    identity.condition === "placebo" ||
+    identity.condition === "relevant" ||
+    identity.condition === "irrelevant" ||
+    identity.condition.startsWith("relevant_")
       ? 1
       : 0;
   return {
@@ -533,23 +537,32 @@ export class HarborExecutionAdapter {
     input: CommonExecutionInput,
     condition: ReplayCondition,
     bridgeUrl?: string,
-    bridgeToken?: string
+    bridgeToken?: string,
+    developerInstructions?: string
   ) {
     return createTrialCodexConfiguration({
       condition,
       model: input.config.coding_agent.id,
       reasoningEffort: input.config.coding_agent.reasoning_effort,
       requireMemoryAnswer:
-        this.options.productPathProof === true && condition === "relevant",
+        this.options.productPathProof === true &&
+        (condition === "relevant" || condition.startsWith("relevant_")),
       ...(bridgeUrl ? { bridgeUrl } : {}),
-      ...(bridgeToken ? { bridgeToken } : {})
+      ...(bridgeToken ? { bridgeToken } : {}),
+      ...(developerInstructions ? { developerInstructions } : {})
     });
   }
 
   async runSource(
     input: HarborSourceExecutionInput
   ): Promise<SourceAttemptExecution> {
-    const codex = this.codex(input, "cold");
+    const codex = this.codex(
+      input,
+      "cold",
+      undefined,
+      undefined,
+      input.developerInstructions
+    );
     const request: HarborRunRequest = {
       schema_version: "koed-harbor-run-v1",
       attempt_kind: "source",
@@ -569,7 +582,14 @@ export class HarborExecutionAdapter {
       run_root: input.runRoot,
       result_path: `harbor-results/source-${safeJobPart(input.task.name)}-${input.executionGeneration}.json`,
       freeze_manifest_path: input.freezeManifestPath,
-      freeze_trajectory_to: input.freezeTrajectoryPath
+      freeze_trajectory_to: input.freezeTrajectoryPath,
+      ...(input.developerInstructions
+        ? {
+            developer_instructions_sha256: createHash("sha256")
+              .update(input.developerInstructions)
+              .digest("hex")
+          }
+        : {})
     };
     const output = await this.client(input, {
       ...(this.options.providerApiKey

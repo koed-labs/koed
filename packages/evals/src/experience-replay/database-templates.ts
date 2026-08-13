@@ -1,5 +1,6 @@
 import pg from "pg";
 import { assertLoopbackUrl } from "./isolation.js";
+import type { MemoryReplayCondition } from "./core/schedule.js";
 
 const DATABASE_NAME = /^koed_eval_[a-z0-9_]{1,52}$/;
 const OWNERSHIP_SCHEMA = "koed-experience-replay-database-owner-v1";
@@ -28,7 +29,7 @@ const quotedLiteral = (value: string): string =>
 
 export interface DatabaseTemplateAttestation {
   name: string;
-  state: "empty" | "placebo" | "relevant";
+  state: MemoryReplayCondition;
   taskDigest: string;
   sourceStateHash: string;
   frozenAt: string;

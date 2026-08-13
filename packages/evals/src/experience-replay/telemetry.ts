@@ -186,7 +186,11 @@ const conditions = new Set<ReplayCondition>([
   "cold",
   "empty",
   "placebo",
-  "relevant"
+  "relevant",
+  "irrelevant",
+  "relevant_guidance",
+  "relevant_trace",
+  "relevant_full"
 ]);
 const collectionStates = new Set<TelemetryCollectionState>([
   "available",

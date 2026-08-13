@@ -21,6 +21,7 @@ import {
   registerBridgeTelemetry,
   type BridgeCallTelemetry
 } from "./bridge-telemetry.js";
+import type { MemoryReplayCondition } from "./core/schedule.js";
 
 const equal = (left: string, right: string): boolean => {
   const leftBytes = Buffer.from(left);
@@ -82,7 +83,7 @@ export interface TrialBridgeIdentity {
   runId: string;
   trialId: string;
   taskDigest: string;
-  condition: "empty" | "placebo" | "relevant";
+  condition: MemoryReplayCondition;
 }
 
 const privateIpv4 = (value: string): boolean => {

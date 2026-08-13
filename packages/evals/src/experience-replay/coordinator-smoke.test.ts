@@ -5,12 +5,12 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createProductPathProofRunPlan,
+  createOracleSeededProductProofRunPlan,
   immutableHash,
   resolveExperienceReplayConfig
 } from "./core/index.js";
 import type { HarborFreezeManifest } from "./atif/index.js";
 import {
-  reportExistingRun,
   resumeExperienceReplay,
   runExperienceReplay,
   sanitizeRunReport,
@@ -129,53 +129,65 @@ const trajectory = (taskName: string): string =>
 const freezeManifest = (
   taskName: string,
   frozen: string
-): HarborFreezeManifest => ({
-  schema_version: "koed-harbor-freeze-v1",
-  adapter: {
-    name: "harbor-codex",
-    version: "0.21.0",
-    commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
-    raw_reasoning_capture_disabled: true
-  },
-  source_attempt: {
-    trial_id: `source-${taskName}`,
-    task_name: `terminal-bench/${taskName}`
-  },
-  lifecycle: [
-    {
-      ordinal: 1,
-      event: "agent_started",
-      timestamp: "2026-08-12T00:00:00.000Z"
+): HarborFreezeManifest => {
+  const stepCount = (
+    JSON.parse(frozen) as { steps: Array<Record<string, unknown>> }
+  ).steps.length;
+  return {
+    schema_version: "koed-harbor-freeze-v1",
+    adapter: {
+      name: "harbor-codex",
+      version: "0.21.0",
+      commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
+      raw_reasoning_capture_disabled: true
     },
-    { ordinal: 2, event: "agent_ended", timestamp: "2026-08-12T00:00:02.000Z" },
-    {
-      ordinal: 3,
-      event: "trajectory_materialized",
-      timestamp: "2026-08-12T00:00:03.000Z"
+    source_attempt: {
+      trial_id: `source-${taskName}`,
+      task_name: `terminal-bench/${taskName}`
     },
-    {
-      ordinal: 4,
-      event: "verification_started",
-      timestamp: "2026-08-12T00:00:04.000Z"
+    lifecycle: [
+      {
+        ordinal: 1,
+        event: "agent_started",
+        timestamp: "2026-08-12T00:00:00.000Z"
+      },
+      {
+        ordinal: 2,
+        event: "agent_ended",
+        timestamp: "2026-08-12T00:00:02.000Z"
+      },
+      {
+        ordinal: 3,
+        event: "trajectory_materialized",
+        timestamp: "2026-08-12T00:00:03.000Z"
+      },
+      {
+        ordinal: 4,
+        event: "verification_started",
+        timestamp: "2026-08-12T00:00:04.000Z"
+      }
+    ],
+    cutoff: {
+      agent_last_native_event_ordinal: stepCount,
+      step_identities: Array.from(
+        { length: stepCount },
+        (_, index) => index + 1
+      ).map((ordinal) => ({
+        step_id: ordinal,
+        identity_sha256: `sha256:${createHash("sha256")
+          .update(`${ordinal}:${ordinal}`)
+          .digest("hex")}`,
+        last_native_event_ordinal: ordinal
+      }))
+    },
+    frozen_artifact: {
+      relative_path: `source/${taskName}/frozen-trajectory.json`,
+      sha256: `sha256:${createHash("sha256").update(frozen).digest("hex")}`,
+      size_bytes: Buffer.byteLength(frozen),
+      file_identity: { device: 1, inode: 1 }
     }
-  ],
-  cutoff: {
-    agent_last_native_event_ordinal: 2,
-    step_identities: [1, 2].map((ordinal) => ({
-      step_id: ordinal,
-      identity_sha256: `sha256:${createHash("sha256")
-        .update(`${ordinal}:${ordinal}`)
-        .digest("hex")}`,
-      last_native_event_ordinal: ordinal
-    }))
-  },
-  frozen_artifact: {
-    relative_path: `source/${taskName}/frozen-trajectory.json`,
-    sha256: `sha256:${createHash("sha256").update(frozen).digest("hex")}`,
-    size_bytes: Buffer.byteLength(frozen),
-    file_identity: { device: 1, inode: 1 }
-  }
-});
+  };
+};
 
 const smokeConfig = (output: string) =>
   resolveExperienceReplayConfig({
@@ -296,7 +308,7 @@ const fakeDependencies = (
 ): ExperienceReplayCoordinatorDependencies => ({
   countEmbeddingTokens: (text) =>
     text.trim() ? text.trim().split(/\s+/).length : 0,
-  async runSource({ task, lifecycle }) {
+  async runSource({ task, lifecycle, developerInstructions }) {
     events.push(`source:${task.name}`);
     const callbackEvent = {
       schema_version: "koed-harbor-lifecycle-v1" as const,
@@ -309,7 +321,21 @@ const fakeDependencies = (
     await lifecycle.onAgentStarted?.(callbackEvent);
     await lifecycle.onAgentEnded?.({ ...callbackEvent, event: "agent_ended" });
     await lifecycle.onTrialEnded?.({ ...callbackEvent, event: "trial_ended" });
-    const frozen = trajectory(task.name);
+    const baseTrajectory = JSON.parse(trajectory(task.name)) as {
+      steps: Array<Record<string, unknown>>;
+    };
+    if (developerInstructions) {
+      baseTrajectory.steps.unshift({
+        step_id: 0,
+        source: "system",
+        message: developerInstructions,
+        timestamp: new Date(0).toISOString()
+      });
+      baseTrajectory.steps.forEach((step, index) => {
+        step.step_id = index + 1;
+      });
+    }
+    const frozen = JSON.stringify(baseTrajectory);
     const passed = task.name === "terminal-bench/synthetic-alpha";
     return {
       frozenTrajectory: frozen,
@@ -322,12 +348,23 @@ const fakeDependencies = (
       result: { verifier: "deterministic-fake" }
     };
   },
-  async prepareTemplate({ task, condition, sourceTask, sanitizedSource }) {
+  async prepareTemplate({
+    task,
+    condition,
+    sourceTask,
+    sourceAttemptId,
+    sanitizedSource
+  }) {
     events.push(
       `template:${task.name}:${condition}:${sourceTask?.name ?? "none"}`
     );
     if (condition === "empty") expect(sanitizedSource).toBeNull();
     else expect(sanitizedSource?.normalizedItems.length).toBeGreaterThan(0);
+    if (condition === "irrelevant") {
+      expect(sourceAttemptId).toBe(`oracle:distractor:${task.taskDigest}`);
+    } else if (condition.startsWith("relevant_")) {
+      expect(sourceAttemptId).toBe(`oracle:${condition}:${task.taskDigest}`);
+    }
     return {
       templateId: `template:${task.taskDigest}:${condition}`,
       sourceStateHash: `state:${sourceTask?.taskDigest ?? "empty"}`,
@@ -394,8 +431,12 @@ const fakeDependencies = (
             identity: { taskDigest: task.taskDigest, condition, repeat },
             status: "available",
             metrics: {
-              reward: condition === "relevant" ? 1 : 0,
-              passed: condition === "relevant",
+              reward:
+                condition === "relevant" || condition.startsWith("relevant_")
+                  ? 1
+                  : 0,
+              passed:
+                condition === "relevant" || condition.startsWith("relevant_"),
               setupMs: 1,
               agentMs: 2,
               verifierMs: 1,
@@ -424,7 +465,10 @@ const fakeDependencies = (
               toolFailures: 0,
               mcpCalls: 0,
               mcpFailures: 0,
-              memoryAnswerCalls: condition === "relevant" ? 1 : 0,
+              memoryAnswerCalls:
+                condition === "relevant" || condition.startsWith("relevant_")
+                  ? 1
+                  : 0,
               memoryAnswerFailures: 0
             }
           },
@@ -435,7 +479,10 @@ const fakeDependencies = (
               searches: 0,
               expansions: 0,
               stages: 0,
-              evidenceCount: 0,
+              evidenceCount:
+                condition === "relevant" || condition.startsWith("relevant_")
+                  ? 1
+                  : 0,
               projectionMs: 0,
               lcmMs: 0,
               queueMs: 0
@@ -446,7 +493,10 @@ const fakeDependencies = (
             status: "available",
             metrics: {
               memoryAnswer: {
-                calls: condition === "relevant" ? 1 : 0,
+                calls:
+                  condition === "relevant" || condition.startsWith("relevant_")
+                    ? 1
+                    : 0,
                 failures: 0,
                 durationMs: 0,
                 tokens: {
@@ -672,7 +722,6 @@ describe("unified experience replay coordinator", () => {
       )
     ).toBe(true);
     expect(markdown).toContain("## Blind trajectory judgments");
-    await expect(reportExistingRun(output)).resolves.toContain("summary.md");
     const publication = await sanitizeRunReport(output);
     await expect(
       readFile(path.join(publication, "summary.json"), "utf8")
@@ -797,6 +846,101 @@ describe("unified experience replay coordinator", () => {
       readFile(path.join(config.output_dir, "manifest.json"), "utf8")
     ).resolves.toContain('"run_id"');
   });
+
+  it("qualifies one oracle source and replays all six isolated artifact arms", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-oracle-test-"));
+    const output = path.join(root, "run");
+    const config = productProofConfig(output);
+    const brief =
+      "Use the task parser's existing selector and update the exact filtered nodes.";
+    const briefSha256 = createHash("sha256").update(brief).digest("hex");
+    const base = await preflightExperienceReplay({
+      config: smokeConfig(path.join(root, "unused-smoke"))
+    });
+    const task = {
+      name: "terminal-bench/synthetic-alpha",
+      task_digest: `sha256:${"a".repeat(64)}`,
+      harbor_task_checksum: `sha256:${"1".repeat(64)}`,
+      source_path: "tasks/synthetic-alpha",
+      category: "synthetic",
+      expert_time_quartile: 0,
+      expert_time_seconds: 1,
+      resource_class: "synthetic-cpu",
+      primary_reward: {
+        field: "reward",
+        minimum: 0,
+        maximum: 1,
+        success: { operator: "equals", value: 1 }
+      }
+    };
+    const runPlan = createOracleSeededProductProofRunPlan(
+      config,
+      task.task_digest,
+      briefSha256
+    );
+    const admitted = {
+      ...base,
+      config,
+      runPlan,
+      pins: { ...base.pins, selectedTasks: [task] }
+    };
+    const events: string[] = [];
+    const result = await runExperienceReplay(config, {
+      preflight: admitted,
+      dependencies: fakeDependencies(events),
+      oracleBrief: brief
+    });
+
+    expect(result.replayAttemptCount).toBe(6);
+    expect(events.filter((event) => event.startsWith("source:"))).toHaveLength(
+      1
+    );
+    expect(
+      events.filter((event) => event.startsWith("template:"))
+    ).toHaveLength(5);
+    expect(events.filter((event) => event.startsWith("replay:"))).toHaveLength(
+      6
+    );
+    const provenance = await readFile(
+      path.join(output, "source/synthetic-alpha/oracle-provenance.json"),
+      "utf8"
+    );
+    expect(provenance).not.toContain(brief);
+    expect(provenance).toContain(briefSha256);
+    const report = JSON.parse(
+      await readFile(path.join(output, "report/summary.json"), "utf8")
+    ) as { benchmark_kind: string; attemptedReplayCount: number };
+    expect(report).toMatchObject({
+      benchmark_kind: "koed_oracle_seeded_experience_reuse",
+      attemptedReplayCount: 6
+    });
+    const publication = await sanitizeRunReport(output);
+    const publicationJson = await readFile(
+      path.join(publication, "summary.json"),
+      "utf8"
+    );
+    expect(publicationJson).not.toContain(brief);
+    expect(publicationJson).toContain("relevant_guidance");
+    expect(publicationJson).toContain('"codexAuthMode": "api_key"');
+    const publicationMarkdown = await readFile(
+      path.join(publication, "summary.md"),
+      "utf8"
+    );
+    expect(publicationMarkdown).not.toContain(brief);
+    expect(publicationMarkdown).toContain("relevant_guidance");
+
+    await writeFile(
+      path.join(output, "oracle-private/brief.txt"),
+      `${brief} tampered`,
+      "utf8"
+    );
+    await expect(
+      resumeExperienceReplay(output, {
+        preflight: admitted,
+        dependencies: fakeDependencies([])
+      })
+    ).rejects.toThrow("brief differs from the run plan");
+  }, 30_000);
 
   it("rejects database clone reuse and revokes through the Harbor lifecycle", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));

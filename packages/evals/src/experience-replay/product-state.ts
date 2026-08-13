@@ -9,6 +9,7 @@ import type {
   ProductApiHandle,
   ProductApiJson
 } from "./product-api-process.js";
+import type { MemoryReplayCondition } from "./core/schedule.js";
 
 type Repository = Pick<
   MemorySourceRepository,
@@ -80,7 +81,7 @@ export interface ExpectedProjectionDisposition {
 }
 
 export interface ExperienceReplayProductStateExpectation {
-  condition: "empty" | "placebo" | "relevant";
+  condition: MemoryReplayCondition;
   actor: ActorContext;
   projectId: string;
   sessionId?: string;

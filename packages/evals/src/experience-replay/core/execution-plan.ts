@@ -3,7 +3,8 @@ import { deepFreeze, immutableHash } from "./hash.js";
 
 export type ExperienceReplayExecutionKind =
   | "benchmark_profile"
-  | "product_path_proof";
+  | "product_path_proof"
+  | "oracle_seeded_product_proof";
 
 export type ExperienceReplayCodexAuthMode = "api_key" | "subscription";
 
@@ -22,6 +23,7 @@ export interface ExperienceReplayRunPlan {
   replayAttemptsPerCondition: number;
   codingAgentAttemptCount: number;
   terminalBenchEstimate: boolean;
+  oracleBriefSha256?: string;
   planHash: string;
 }
 
@@ -114,6 +116,43 @@ export const createProductPathProofRunPlan = (
   });
 };
 
+export const createOracleSeededProductProofRunPlan = (
+  config: ResolvedExperienceReplayConfig,
+  taskDigest: string,
+  oracleBriefSha256: string,
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key"
+): Readonly<ExperienceReplayRunPlan> => {
+  if (config.profile !== "quick") {
+    throw new Error(
+      "Oracle-seeded product proof requires the quick model policy"
+    );
+  }
+  if (config.concurrency !== 1) {
+    throw new Error("Oracle-seeded product proof requires concurrency 1");
+  }
+  assertLunaLow(config);
+  if (!taskDigest) {
+    throw new Error(
+      "Oracle-seeded product proof task digest must not be empty"
+    );
+  }
+  if (!/^[a-f0-9]{64}$/u.test(oracleBriefSha256)) {
+    throw new Error("Oracle-seeded product proof brief digest is invalid");
+  }
+  return buildPlan({
+    version: 1,
+    kind: "oracle_seeded_product_proof",
+    codexAuthMode,
+    profile: config.profile,
+    sourceTaskDigests: [taskDigest],
+    replayTargetTaskDigests: [taskDigest],
+    replayAttemptsPerCondition: 1,
+    codingAgentAttemptCount: 7,
+    terminalBenchEstimate: false,
+    oracleBriefSha256
+  });
+};
+
 export const verifyExperienceReplayRunPlan = (
   plan: ExperienceReplayRunPlan
 ): void => {
@@ -123,6 +162,13 @@ export const verifyExperienceReplayRunPlan = (
   }
   if (plan.codexAuthMode !== "api_key" && plan.codexAuthMode !== "subscription")
     throw new Error("Run-plan Codex authentication mode is invalid");
+  if (
+    plan.kind !== "benchmark_profile" &&
+    plan.kind !== "product_path_proof" &&
+    plan.kind !== "oracle_seeded_product_proof"
+  ) {
+    throw new Error("Run-plan execution kind is invalid");
+  }
   assertUnique(plan.sourceTaskDigests, "Run-plan source task digests");
   assertUnique(plan.replayTargetTaskDigests, "Run-plan replay task digests");
   const sources = new Set(plan.sourceTaskDigests);
@@ -131,7 +177,9 @@ export const verifyExperienceReplayRunPlan = (
   }
   const expectedAttempts =
     plan.sourceTaskDigests.length +
-    plan.replayTargetTaskDigests.length * 4 * plan.replayAttemptsPerCondition;
+    plan.replayTargetTaskDigests.length *
+      (plan.kind === "oracle_seeded_product_proof" ? 6 : 4) *
+      plan.replayAttemptsPerCondition;
   if (plan.codingAgentAttemptCount !== expectedAttempts) {
     throw new Error("Run-plan coding-attempt count is inconsistent");
   }
@@ -143,5 +191,17 @@ export const verifyExperienceReplayRunPlan = (
       plan.terminalBenchEstimate)
   ) {
     throw new Error("Product-path proof run plan is invalid");
+  }
+  if (
+    plan.kind === "oracle_seeded_product_proof" &&
+    (plan.sourceTaskDigests.length !== 1 ||
+      plan.replayTargetTaskDigests.length !== 1 ||
+      plan.sourceTaskDigests[0] !== plan.replayTargetTaskDigests[0] ||
+      plan.replayAttemptsPerCondition !== 1 ||
+      plan.terminalBenchEstimate ||
+      !plan.oracleBriefSha256 ||
+      !/^[a-f0-9]{64}$/u.test(plan.oracleBriefSha256))
+  ) {
+    throw new Error("Oracle-seeded product proof run plan is invalid");
   }
 };

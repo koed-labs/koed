@@ -24,6 +24,7 @@ import {
   type DeterministicEmbeddingServiceHandle
 } from "./deterministic-embedding.js";
 import { immutableHash } from "./core/hash.js";
+import type { MemoryReplayCondition } from "./core/schedule.js";
 import {
   importNormalizedAttempt,
   type NormalizedProjectionAttestation
@@ -132,7 +133,7 @@ export interface LocalProductEmbeddingAttestation {
 
 export interface LocalProductTemplateAttestation {
   schema: "koed-experience-replay-local-product-template-v1";
-  condition: "empty" | "placebo" | "relevant";
+  condition: MemoryReplayCondition;
   taskDigest: string;
   sourceTaskDigest: string | null;
   projectId: string;
@@ -617,7 +618,7 @@ export class LocalExperienceReplayProductAdapter {
   }
 
   async prepareTemplate(input: {
-    condition: "empty" | "placebo" | "relevant";
+    condition: MemoryReplayCondition;
     taskDigest: string;
     sourceTaskDigest: string | null;
     sourceAttemptId?: string;

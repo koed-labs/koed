@@ -11,6 +11,8 @@ import type { TrajectoryJudgeResult } from "../trajectory-judge.js";
 
 export const SCIENTIFIC_DISCLOSURE =
   "This is not a standard Terminal-Bench leaderboard evaluation. Relevant Koed conditions intentionally received the AI Client-visible trajectory of an earlier attempt on the same task. Every replay used a clean task environment and a fresh AI Client session. Verifier output, hidden tests and reference solutions were excluded from Memory. This experiment measures episodic experience reuse, not first-encounter generalisation.";
+export const ORACLE_SCIENTIFIC_DISCLOSURE =
+  "This is not a standard Terminal-Bench leaderboard evaluation. A successful source attempt was deliberately given benchmark-only solution guidance, qualified by the unchanged verifier, and separated into guidance, trace and combined Memory treatments. Replays used clean task environments and fresh AI Client sessions. This diagnostic measures oracle-seeded experience reuse, not natural prior experience or first-encounter generalisation.";
 
 export type ExclusionCategory =
   | "task_not_in_profile"
@@ -58,7 +60,9 @@ export interface ExperienceReplayReportInput {
 
 export interface ExperienceReplayMachineReport extends ExperienceReplayReportInput {
   report_version: 1;
-  benchmark_kind: "koed_experience_replay";
+  benchmark_kind:
+    | "koed_experience_replay"
+    | "koed_oracle_seeded_experience_reuse";
   standard_leaderboard_comparable: false;
   disclosure: string;
   scope: string;
@@ -72,6 +76,9 @@ const scopeFor = (
 ): string => {
   if (executionKind === "product_path_proof") {
     return "Manual two-source, one-target Terminal-Bench 3.0 product-path integration proof; not a benchmark estimate.";
+  }
+  if (executionKind === "oracle_seeded_product_proof") {
+    return "Manual one-task, six-arm oracle-seeded product-path smoke proof; not a benchmark estimate or efficacy claim.";
   }
   switch (profile) {
     case "smoke":
@@ -158,9 +165,15 @@ export const createMachineReport = (
   return {
     ...input,
     report_version: 1,
-    benchmark_kind: "koed_experience_replay",
+    benchmark_kind:
+      input.executionKind === "oracle_seeded_product_proof"
+        ? "koed_oracle_seeded_experience_reuse"
+        : "koed_experience_replay",
     standard_leaderboard_comparable: false,
-    disclosure: SCIENTIFIC_DISCLOSURE,
+    disclosure:
+      input.executionKind === "oracle_seeded_product_proof"
+        ? ORACLE_SCIENTIFIC_DISCLOSURE
+        : SCIENTIFIC_DISCLOSURE,
     scope: scopeFor(input.executionKind, input.profile)
   };
 };
@@ -172,7 +185,7 @@ export const renderMarkdownReport = (
   report: ExperienceReplayMachineReport
 ): string => {
   const lines = [
-    SCIENTIFIC_DISCLOSURE,
+    report.disclosure,
     "",
     "# Koed Experience Replay Benchmark",
     "",
@@ -320,7 +333,17 @@ const comparisonNames = [
   "relevant - cold",
   "relevant - empty",
   "empty - cold",
-  "placebo - empty"
+  "placebo - empty",
+  "relevant_guidance - irrelevant",
+  "relevant_trace - irrelevant",
+  "relevant_full - irrelevant",
+  "relevant_guidance - empty",
+  "relevant_trace - empty",
+  "relevant_full - empty",
+  "relevant_full - cold",
+  "relevant_full - relevant_guidance",
+  "relevant_full - relevant_trace",
+  "irrelevant - empty"
 ] as const;
 
 const projectComparison = (value: unknown): JsonRecord => {
@@ -515,7 +538,16 @@ const projectAttempt = (value: unknown): JsonRecord => {
     ...(typeof value.taskDigest === "string"
       ? { taskDigest: value.taskDigest }
       : {}),
-    ...selectEnum(value, "condition", ["cold", "empty", "placebo", "relevant"]),
+    ...selectEnum(value, "condition", [
+      "cold",
+      "empty",
+      "placebo",
+      "relevant",
+      "irrelevant",
+      "relevant_guidance",
+      "relevant_trace",
+      "relevant_full"
+    ]),
     ...selectNumbers(value, [
       "repeat",
       "reward",
@@ -649,6 +681,10 @@ const projectTrajectoryJudgment = (value: unknown): JsonRecord => {
       "empty",
       "placebo",
       "relevant",
+      "irrelevant",
+      "relevant_guidance",
+      "relevant_trace",
+      "relevant_full",
       "tie"
     ]),
     ...selectNumbers(value, ["repeat", "confidence", "latencyMs", "costUsd"]),
@@ -660,7 +696,16 @@ const projectTrajectoryJudgment = (value: unknown): JsonRecord => {
   if (isRecord(value.assessments)) {
     const assessments = value.assessments;
     projected.assessments = Object.fromEntries(
-      ["cold", "empty", "placebo", "relevant"].flatMap((condition) =>
+      [
+        "cold",
+        "empty",
+        "placebo",
+        "relevant",
+        "irrelevant",
+        "relevant_guidance",
+        "relevant_trace",
+        "relevant_full"
+      ].flatMap((condition) =>
         isRecord(assessments[condition])
           ? [[condition, projectJudgeAssessment(assessments[condition])]]
           : []
@@ -686,8 +731,13 @@ const projectPublicationReport = (value: unknown): unknown => {
         (key) => (typeof value[key] === "string" ? [[key, value[key]]] : [])
       )
     ),
-    ...selectEnum(value, "executionKind", ["benchmark", "product_path_proof"]),
+    ...selectEnum(value, "executionKind", [
+      "benchmark_profile",
+      "product_path_proof",
+      "oracle_seeded_product_proof"
+    ]),
     ...selectEnum(value, "profile", ["smoke", "quick", "standard", "full"]),
+    ...selectEnum(value, "codexAuthMode", ["api_key", "subscription"]),
     ...selectNumbers(value, [
       "report_version",
       "taskCount",

@@ -1,4 +1,6 @@
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { parseExperienceReplayCommand } from "./command.js";
 import {
   reportExistingRun,
@@ -20,6 +22,7 @@ export * from "./coordinator.js";
 export * from "./cost-admission.js";
 export * from "./journal.js";
 export * from "./local-product-adapter.js";
+export * from "./oracle-corpus.js";
 export * from "./preflight.js";
 export * from "./recorded-preflight-runtime.js";
 export * from "./replay-scheduler.js";
@@ -32,6 +35,12 @@ export const runExperienceReplayCli = async (
   switch (command.name) {
     case "preflight": {
       const config = await loadExperienceReplayConfig(command.configPath);
+      const oracleBrief = command.oracleBriefPath
+        ? await readFile(command.oracleBriefPath, "utf8")
+        : undefined;
+      const oracleBriefSha256 = oracleBrief
+        ? createHash("sha256").update(oracleBrief).digest("hex")
+        : undefined;
       const codexAuthMode = command.codexSubscription
         ? "subscription"
         : "api_key";
@@ -47,9 +56,12 @@ export const runExperienceReplayCli = async (
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun || command.codexSubscription,
-        executionKind: command.productPathProof
-          ? "product_path_proof"
-          : "benchmark_profile",
+        executionKind: command.oracleSeededProof
+          ? "oracle_seeded_product_proof"
+          : command.productPathProof
+            ? "product_path_proof"
+            : "benchmark_profile",
+        oracleBriefSha256,
         codexAuthMode,
         requireRunnable: true,
         ...(recorded
@@ -75,6 +87,12 @@ export const runExperienceReplayCli = async (
     }
     case "run": {
       const config = await loadExperienceReplayConfig(command.configPath);
+      const oracleBrief = command.oracleBriefPath
+        ? await readFile(command.oracleBriefPath, "utf8")
+        : undefined;
+      const oracleBriefSha256 = oracleBrief
+        ? createHash("sha256").update(oracleBrief).digest("hex")
+        : undefined;
       const codexAuthMode = command.codexSubscription
         ? "subscription"
         : "api_key";
@@ -90,9 +108,12 @@ export const runExperienceReplayCli = async (
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun || command.codexSubscription,
-        executionKind: command.productPathProof
-          ? "product_path_proof"
-          : "benchmark_profile",
+        executionKind: command.oracleSeededProof
+          ? "oracle_seeded_product_proof"
+          : command.productPathProof
+            ? "product_path_proof"
+            : "benchmark_profile",
+        oracleBriefSha256,
         codexAuthMode,
         requireRunnable: true,
         ...(recorded
@@ -108,9 +129,14 @@ export const runExperienceReplayCli = async (
         undefined,
         result.frozenTaskImages,
         codexAuthMode,
-        result.runPlan.kind === "product_path_proof"
+        result.runPlan.kind === "product_path_proof" ||
+          result.runPlan.kind === "oracle_seeded_product_proof"
       );
-      return runExperienceReplay(config, { preflight: result, dependencies });
+      return runExperienceReplay(config, {
+        preflight: result,
+        dependencies,
+        ...(oracleBrief ? { oracleBrief } : {})
+      });
     }
     case "resume": {
       const identity = await readExperienceReplayResumeIdentity(
@@ -130,6 +156,7 @@ export const runExperienceReplayCli = async (
         config: identity.config,
         confirmPaidRun: identity.config.profile !== "smoke",
         executionKind: identity.runPlan.kind,
+        oracleBriefSha256: identity.runPlan.oracleBriefSha256,
         codexAuthMode: identity.runPlan.codexAuthMode,
         requireRunnable: true,
         ...(recorded
@@ -145,7 +172,8 @@ export const runExperienceReplayCli = async (
         identity.runId,
         result.frozenTaskImages,
         identity.runPlan.codexAuthMode,
-        identity.runPlan.kind === "product_path_proof"
+        identity.runPlan.kind === "product_path_proof" ||
+          identity.runPlan.kind === "oracle_seeded_product_proof"
       );
       return {
         reportPath: await resumeExperienceReplay(identity.runRoot, {

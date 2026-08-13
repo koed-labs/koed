@@ -318,6 +318,33 @@ def test_source_request_forbids_replay_trajectory_output(tmp_path: Path) -> None
         runner._strict_request(path)
 
 
+def test_replay_request_forbids_source_developer_instruction_digest(
+    tmp_path: Path,
+) -> None:
+    request = {
+        "schema_version": runner.RUN_REQUEST_SCHEMA,
+        "attempt_kind": "replay",
+        "task_name": "terminal-bench/cad-model",
+        "task_image": f"registry.example/cad-model@sha256:{'a' * 64}",
+        "job_config": {},
+        "corpus_manifest": "manifest.json",
+        "run_root": str(tmp_path),
+        "codex_version": "0.147.0",
+        "codex_binary_sha256": f"sha256:{'b' * 64}",
+        "codex_code_mode_host_sha256": f"sha256:{'c' * 64}",
+        "freeze_manifest_path": "replay/manifest.json",
+        "replay_trajectory_path": "replay/trajectory.json",
+        "developer_instructions_sha256": "d" * 64,
+    }
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request))
+
+    with pytest.raises(
+        runner.ContractError, match="INVALID_DEVELOPER_INSTRUCTIONS_DIGEST"
+    ):
+        runner._strict_request(path)
+
+
 def test_pinned_task_image_is_applied_only_during_trial_initialization() -> None:
     image = f"registry.example/task@sha256:{'a' * 64}"
     calls: list[str | None] = []
@@ -671,6 +698,19 @@ def test_codex_accepts_only_the_exact_product_path_developer_instruction() -> No
         runner.ContractError, match="UNSAFE_CODEX_DEVELOPER_INSTRUCTIONS"
     ):
         runner._validate_codex_kwargs(kwargs)
+
+
+def test_codex_accepts_source_guidance_only_with_its_exact_digest() -> None:
+    kwargs = _safe_codex_kwargs()
+    guidance = "Private benchmark-only source guidance."
+    kwargs["config"]["developer_instructions"] = guidance
+    digest = hashlib.sha256(guidance.encode()).hexdigest()
+
+    runner._validate_codex_kwargs(kwargs, digest)
+    with pytest.raises(
+        runner.ContractError, match="UNSAFE_CODEX_DEVELOPER_INSTRUCTIONS"
+    ):
+        runner._validate_codex_kwargs(kwargs, "0" * 64)
 
 
 def test_private_mcp_egress_must_exactly_match_the_configured_bridge() -> None:

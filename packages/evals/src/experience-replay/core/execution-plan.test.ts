@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveExperienceReplayConfig } from "./config.js";
 import {
   createBenchmarkRunPlan,
+  createOracleSeededProductProofRunPlan,
   createProductPathProofRunPlan,
   verifyExperienceReplayRunPlan
 } from "./execution-plan.js";
@@ -119,6 +120,27 @@ describe("Experience Replay immutable run plans", () => {
       replayAttemptsPerCondition: 1,
       codingAgentAttemptCount: 6,
       terminalBenchEstimate: false
+    });
+    expect(() => verifyExperienceReplayRunPlan(plan)).not.toThrow();
+  });
+
+  it("locks the oracle-seeded proof to one source/target and six replay arms", () => {
+    const digest = `sha256:${"c".repeat(64)}`;
+    const plan = createOracleSeededProductProofRunPlan(
+      config(),
+      digest,
+      "a".repeat(64),
+      "subscription"
+    );
+    expect(plan).toMatchObject({
+      kind: "oracle_seeded_product_proof",
+      codexAuthMode: "subscription",
+      sourceTaskDigests: [digest],
+      replayTargetTaskDigests: [digest],
+      replayAttemptsPerCondition: 1,
+      codingAgentAttemptCount: 7,
+      terminalBenchEstimate: false,
+      oracleBriefSha256: "a".repeat(64)
     });
     expect(() => verifyExperienceReplayRunPlan(plan)).not.toThrow();
   });

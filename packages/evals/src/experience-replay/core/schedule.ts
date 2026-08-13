@@ -1,29 +1,93 @@
 import { deepFreeze, immutableHash, sha256 } from "./hash.js";
 
-export const CONDITIONS = ["cold", "empty", "placebo", "relevant"] as const;
-export type ReplayCondition = (typeof CONDITIONS)[number];
+export const NATURAL_CONDITIONS = [
+  "cold",
+  "empty",
+  "placebo",
+  "relevant"
+] as const;
+/** Public name for the natural replay conditions. */
+export const CONDITIONS = NATURAL_CONDITIONS;
+export const ORACLE_CONDITIONS = [
+  "cold",
+  "empty",
+  "irrelevant",
+  "relevant_guidance",
+  "relevant_trace",
+  "relevant_full"
+] as const;
+export type NaturalReplayCondition = (typeof NATURAL_CONDITIONS)[number];
+export type OracleReplayCondition = (typeof ORACLE_CONDITIONS)[number];
+export type ExperienceReplayCondition =
+  | NaturalReplayCondition
+  | OracleReplayCondition;
+export type ReplayCondition = ExperienceReplayCondition;
+export type MemoryReplayCondition = Exclude<ExperienceReplayCondition, "cold">;
 export const WILLIAMS_ROWS = ["ABDC", "BCAD", "CDBA", "DACB"] as const;
+export const ORACLE_WILLIAMS_ROWS = [
+  "ABFCED",
+  "BCADFE",
+  "CDBEAF",
+  "DECFBA",
+  "EFDACB",
+  "FAEBDC"
+] as const;
 
-export interface ScheduleEntry {
+export type ReplayConditionSet =
+  | readonly NaturalReplayCondition[]
+  | readonly OracleReplayCondition[];
+
+export interface ScheduleEntry<
+  Condition extends ExperienceReplayCondition = ReplayCondition
+> {
   taskDigest: string;
   repeat: number;
-  sequenceRow: (typeof WILLIAMS_ROWS)[number];
-  conditions: readonly ReplayCondition[];
+  sequenceRow:
+    | (typeof WILLIAMS_ROWS)[number]
+    | (typeof ORACLE_WILLIAMS_ROWS)[number];
+  conditions: readonly Condition[];
 }
 
-export interface ReplaySchedule {
+export interface ReplaySchedule<
+  Condition extends ExperienceReplayCondition = ReplayCondition
+> {
   version: 1;
   seed: string;
-  letterAssignment: Readonly<Record<"A" | "B" | "C" | "D", ReplayCondition>>;
-  entries: readonly ScheduleEntry[];
+  letterAssignment: Readonly<Record<string, Condition>>;
+  entries: readonly ScheduleEntry<Condition>[];
   scheduleHash: string;
 }
 
-export interface FrozenReplayScheduleInputs {
+export interface FrozenReplayScheduleInputs<
+  Condition extends ExperienceReplayCondition = ReplayCondition
+> {
   taskDigests: readonly string[];
   repeats: number;
   seed: string;
+  conditions?: readonly Condition[];
 }
+
+const sameConditions = (
+  actual: readonly ExperienceReplayCondition[],
+  expected: readonly ExperienceReplayCondition[]
+): boolean =>
+  actual.length === expected.length &&
+  actual.every((condition, index) => condition === expected[index]);
+
+const designFor = (conditions: readonly ExperienceReplayCondition[]) => {
+  if (sameConditions(conditions, NATURAL_CONDITIONS)) {
+    return { conditions: NATURAL_CONDITIONS, rows: WILLIAMS_ROWS } as const;
+  }
+  if (sameConditions(conditions, ORACLE_CONDITIONS)) {
+    return {
+      conditions: ORACLE_CONDITIONS,
+      rows: ORACLE_WILLIAMS_ROWS
+    } as const;
+  }
+  throw new Error(
+    "Replay conditions must be the natural or oracle condition set"
+  );
+};
 
 const seededOrder = <T extends string>(
   items: readonly T[],
@@ -37,22 +101,26 @@ const seededOrder = <T extends string>(
       ) || a.localeCompare(b)
   );
 
-export const createReplaySchedule = (
+export const createReplaySchedule = <
+  Condition extends ExperienceReplayCondition = ReplayCondition
+>(
   taskDigests: readonly string[],
   repeats: number,
-  seed: string
-): Readonly<ReplaySchedule> => {
+  seed: string,
+  conditions: readonly Condition[] = CONDITIONS as unknown as readonly Condition[]
+): Readonly<ReplaySchedule<Condition>> => {
   if (!Number.isInteger(repeats) || repeats < 1)
     throw new Error("Repeats must be a positive integer");
   if (new Set(taskDigests).size !== taskDigests.length)
     throw new Error("Task digests must be unique");
-  const shuffledConditions = seededOrder(CONDITIONS, seed, "letters");
-  const letterAssignment = {
-    A: shuffledConditions[0] as ReplayCondition,
-    B: shuffledConditions[1] as ReplayCondition,
-    C: shuffledConditions[2] as ReplayCondition,
-    D: shuffledConditions[3] as ReplayCondition
-  };
+  const design = designFor(conditions);
+  const shuffledConditions = seededOrder(design.conditions, seed, "letters");
+  const letterAssignment = Object.fromEntries(
+    shuffledConditions.map((condition, index) => [
+      String.fromCharCode("A".charCodeAt(0) + index),
+      condition
+    ])
+  ) as Record<string, Condition>;
   const units = taskDigests.flatMap((taskDigest) =>
     Array.from({ length: repeats }, (_, repeat) => ({ taskDigest, repeat }))
   );
@@ -65,13 +133,14 @@ export const createReplaySchedule = (
       a.repeat - b.repeat
   );
   const rowOffset =
-    Number.parseInt(sha256(`${seed}\0row-offset`).slice(0, 8), 16) % 4;
-  const entries = units.map((unit, index): ScheduleEntry => {
-    const sequenceRow = WILLIAMS_ROWS[
-      (index + rowOffset) % 4
-    ] as (typeof WILLIAMS_ROWS)[number];
+    Number.parseInt(sha256(`${seed}\0row-offset`).slice(0, 8), 16) %
+    design.rows.length;
+  const entries = units.map((unit, index): ScheduleEntry<Condition> => {
+    const sequenceRow = design.rows[
+      (index + rowOffset) % design.rows.length
+    ] as ScheduleEntry<Condition>["sequenceRow"];
     const conditions = [...sequenceRow].map(
-      (letter) => letterAssignment[letter as "A" | "B" | "C" | "D"]
+      (letter) => letterAssignment[letter] as Condition
     );
     return { ...unit, sequenceRow, conditions };
   });
@@ -79,9 +148,11 @@ export const createReplaySchedule = (
   return deepFreeze({ ...body, scheduleHash: immutableHash(body) });
 };
 
-export const verifyReplaySchedule = (
-  schedule: ReplaySchedule,
-  frozenInputs?: FrozenReplayScheduleInputs
+export const verifyReplaySchedule = <
+  Condition extends ExperienceReplayCondition = ReplayCondition
+>(
+  schedule: ReplaySchedule<Condition>,
+  frozenInputs?: FrozenReplayScheduleInputs<Condition>
 ): void => {
   const expected = immutableHash({
     version: schedule.version,
@@ -95,26 +166,35 @@ export const verifyReplaySchedule = (
     const regenerated = createReplaySchedule(
       frozenInputs.taskDigests,
       frozenInputs.repeats,
-      frozenInputs.seed
+      frozenInputs.seed,
+      frozenInputs.conditions
     );
     if (regenerated.scheduleHash !== schedule.scheduleHash) {
       throw new Error("Replay schedule does not match frozen run inputs");
     }
   }
-  const assigned = Object.values(schedule.letterAssignment);
-  if (
-    new Set(assigned).size !== 4 ||
-    CONDITIONS.some((condition) => !assigned.includes(condition))
-  ) {
+  const assigned: readonly ExperienceReplayCondition[] = Object.values(
+    schedule.letterAssignment
+  );
+  const supportedConditions = [NATURAL_CONDITIONS, ORACLE_CONDITIONS].find(
+    (conditions) =>
+      assigned.length === conditions.length &&
+      conditions.every((condition) => assigned.includes(condition))
+  );
+  if (!supportedConditions || new Set(assigned).size !== assigned.length) {
     throw new Error(
       "Schedule does not assign every mandatory condition exactly once"
     );
   }
+  const validRows =
+    supportedConditions === NATURAL_CONDITIONS
+      ? WILLIAMS_ROWS
+      : ORACLE_WILLIAMS_ROWS;
   for (const entry of schedule.entries) {
-    if (!WILLIAMS_ROWS.includes(entry.sequenceRow))
+    if (!(validRows as readonly string[]).includes(entry.sequenceRow))
       throw new Error(`Invalid Williams row ${entry.sequenceRow}`);
     const expectedConditions = [...entry.sequenceRow].map(
-      (letter) => schedule.letterAssignment[letter as "A" | "B" | "C" | "D"]
+      (letter) => schedule.letterAssignment[letter]
     );
     if (
       expectedConditions.some(

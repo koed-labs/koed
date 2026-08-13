@@ -7,6 +7,9 @@ import {
 import { canonicalJson, immutableHash } from "./hash.js";
 import {
   CONDITIONS,
+  NATURAL_CONDITIONS,
+  ORACLE_CONDITIONS,
+  ORACLE_WILLIAMS_ROWS,
   WILLIAMS_ROWS,
   createReplaySchedule,
   verifyReplaySchedule
@@ -165,6 +168,7 @@ describe("canonical hashing and Williams schedule", () => {
   });
 
   it("uses the required rows and balances rows over complete task-repeat units", () => {
+    expect(CONDITIONS).toBe(NATURAL_CONDITIONS);
     expect(WILLIAMS_ROWS).toEqual(["ABDC", "BCAD", "CDBA", "DACB"]);
     const schedule = createReplaySchedule(["t1", "t2", "t3", "t4"], 2, "seed");
     verifyReplaySchedule(schedule);
@@ -182,6 +186,68 @@ describe("canonical hashing and Williams schedule", () => {
       schedule
     );
     expect(Object.isFrozen(schedule.entries)).toBe(true);
+  });
+
+  it("builds a deterministic balanced six-arm oracle schedule", () => {
+    expect(ORACLE_WILLIAMS_ROWS).toEqual([
+      "ABFCED",
+      "BCADFE",
+      "CDBEAF",
+      "DECFBA",
+      "EFDACB",
+      "FAEBDC"
+    ]);
+    const tasks = ["t1", "t2", "t3", "t4", "t5", "t6"];
+    const schedule = createReplaySchedule(
+      tasks,
+      1,
+      "oracle-seed",
+      ORACLE_CONDITIONS
+    );
+    verifyReplaySchedule(schedule, {
+      taskDigests: tasks,
+      repeats: 1,
+      seed: "oracle-seed",
+      conditions: ORACLE_CONDITIONS
+    });
+    expect(schedule.entries).toHaveLength(6);
+    expect(
+      ORACLE_WILLIAMS_ROWS.map(
+        (row) =>
+          schedule.entries.filter((entry) => entry.sequenceRow === row).length
+      )
+    ).toEqual([1, 1, 1, 1, 1, 1]);
+    for (const entry of schedule.entries) {
+      expect(new Set(entry.conditions)).toEqual(new Set(ORACLE_CONDITIONS));
+    }
+    for (const condition of ORACLE_CONDITIONS) {
+      for (
+        let position = 0;
+        position < ORACLE_CONDITIONS.length;
+        position += 1
+      ) {
+        expect(
+          schedule.entries.filter(
+            (entry) => entry.conditions[position] === condition
+          )
+        ).toHaveLength(1);
+      }
+      for (const successor of ORACLE_CONDITIONS) {
+        if (successor === condition) continue;
+        expect(
+          schedule.entries.filter((entry) =>
+            entry.conditions.some(
+              (candidate, index) =>
+                candidate === condition &&
+                entry.conditions[index + 1] === successor
+            )
+          )
+        ).toHaveLength(1);
+      }
+    }
+    expect(
+      createReplaySchedule(tasks, 1, "oracle-seed", ORACLE_CONDITIONS)
+    ).toEqual(schedule);
   });
 
   it("detects schedule changes on resume", () => {

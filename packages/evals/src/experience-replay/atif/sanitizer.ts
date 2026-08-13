@@ -166,6 +166,12 @@ export interface AtifSanitizationResult {
   canonicalJson: string;
 }
 
+export interface SanitizedAtifMaterializationOptions {
+  taskDigest: string;
+  sourceAttemptId: string;
+  sourceManifest: AtifSanitizationManifest;
+}
+
 export class AtifSanitizationError extends Error {
   override readonly name = "AtifSanitizationError";
 
@@ -1307,6 +1313,39 @@ const normalizedItems = (
   return items;
 };
 
+/**
+ * Re-materializes an already sanitized trajectory after a structural
+ * projection. This deliberately does not inspect or redact content: callers
+ * may only supply the sanitizer's allowlisted trajectory type.
+ */
+export const materializeSanitizedAtifTrajectory = (
+  trajectory: SanitizedAtifTrajectory,
+  options: SanitizedAtifMaterializationOptions
+): AtifSanitizationResult => {
+  const canonicalJson = canonicalize(trajectory);
+  const manifest: AtifSanitizationManifest = {
+    ...options.sourceManifest,
+    allowedFieldCounts: { ...options.sourceManifest.allowedFieldCounts },
+    removedFieldCounts: { ...options.sourceManifest.removedFieldCounts },
+    redactionCounts: { ...options.sourceManifest.redactionCounts },
+    limitUsage: {
+      ...options.sourceManifest.limitUsage,
+      steps: trajectory.steps.length
+    },
+    outputSha256: sha256(canonicalJson)
+  };
+  return {
+    trajectory,
+    normalizedItems: normalizedItems(
+      trajectory,
+      requireNonEmpty(options.taskDigest, "INVALID_TASK_DIGEST"),
+      requireNonEmpty(options.sourceAttemptId, "INVALID_SOURCE_ATTEMPT_ID")
+    ),
+    manifest,
+    canonicalJson
+  };
+};
+
 export const sanitizeAtifTrajectory = (
   input: string | Buffer,
   options: AtifSanitizationOptions
@@ -1355,22 +1394,15 @@ export const sanitizeAtifTrajectory = (
       inputSha256,
       bytes.byteLength
     );
-    const canonicalJson = canonicalize(trajectory);
     const manifest = baseManifest();
-    manifest.outputSha256 = sha256(canonicalJson);
     manifest.schemaVersion = ATIF_SCHEMA_VERSION;
     manifest.limitUsage.steps = trajectory.steps.length;
     manifest.cutoffAttested = true;
-    return {
-      trajectory,
-      normalizedItems: normalizedItems(
-        trajectory,
-        requireNonEmpty(options.taskDigest, "INVALID_TASK_DIGEST"),
-        requireNonEmpty(options.sourceAttemptId, "INVALID_SOURCE_ATTEMPT_ID")
-      ),
-      manifest,
-      canonicalJson
-    };
+    return materializeSanitizedAtifTrajectory(trajectory, {
+      taskDigest: options.taskDigest,
+      sourceAttemptId: options.sourceAttemptId,
+      sourceManifest: manifest
+    });
   } catch (error) {
     const reason =
       error instanceof Reject

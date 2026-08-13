@@ -401,7 +401,10 @@ export const createExperienceReplayCoordinatorDependencies = (
         taskDigest: input.task.taskDigest,
         sourceTaskDigest,
         ...(sourceTaskDigest
-          ? { sourceAttemptId: `source:${sourceTaskDigest}` }
+          ? {
+              sourceAttemptId:
+                input.sourceAttemptId ?? `source:${sourceTaskDigest}`
+            }
           : {}),
         sanitizedSource: input.sanitizedSource,
         recallQuery: normalizedProbe(input.task.name, input.sanitizedSource),

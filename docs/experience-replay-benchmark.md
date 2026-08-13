@@ -62,6 +62,35 @@ benchmark estimate. For this proof only, the relevant replay is explicitly
 required to make one `memory_answer` call before editing. Recorded benchmark
 profiles retain normal intention-to-treat behavior and do not force tool use.
 
+## Oracle-Seeded Product Proof
+
+The oracle-seeded proof is a separate diagnostic for establishing whether a
+known useful prior solution can be retrieved and reused. It does not alter the
+natural four-condition benchmark. The proof runs one pinned task once with a
+private solution brief, requires that source to pass the unchanged
+Terminal-Bench verifier, and derives three provenance-separated Memory
+artifacts: guidance only, sanitized execution trace only, and both together.
+
+The target is then replayed once under six conditions: cold, empty, an
+irrelevant distractor, guidance plus that distractor, trace plus that
+distractor, and full experience plus that distractor. Relevant conditions must
+retrieve evidence through the production Memory Answer path. The private brief
+and corpus payloads remain in the run's private artifacts and are excluded from
+publication reports. A single proof validates integration and provides only a
+stochastic smoke signal; it is not evidence of efficacy.
+
+Use a concise brief that describes a viable approach without verifier output,
+hidden tests, or a literal reference patch:
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  preflight --config <resolved-quick-config.json> --codex-subscription \
+  --oracle-seeded-proof --oracle-brief <private-brief.txt>
+pnpm --filter @koed/evals eval:experience-replay -- \
+  run --config <resolved-quick-config.json> --codex-subscription \
+  --oracle-seeded-proof --oracle-brief <private-brief.txt>
+```
+
 ## Deterministic Smoke
 
 Prerequisites are Node/pnpm and a PostgreSQL 17 server with pgvector. Use a

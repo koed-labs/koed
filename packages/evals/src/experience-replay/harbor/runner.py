@@ -1149,6 +1149,7 @@ def _strict_request(path: Path) -> dict[str, Any]:
         "freeze_trajectory_to",
         "replay_trajectory_path",
         "result_path",
+        "developer_instructions_sha256",
     }
     unknown = set(request) - allowed
     if unknown:
@@ -1158,6 +1159,7 @@ def _strict_request(path: Path) -> dict[str, Any]:
         "freeze_manifest_path",
         "freeze_trajectory_to",
         "replay_trajectory_path",
+        "developer_instructions_sha256",
     }
     missing = required - set(request)
     if missing:
@@ -1193,6 +1195,13 @@ def _strict_request(path: Path) -> dict[str, Any]:
         raise ContractError("SOURCE_FREEZE_OUTPUTS_REQUIRED")
     if request["attempt_kind"] == "source" and "replay_trajectory_path" in request:
         raise ContractError("SOURCE_REPLAY_TRAJECTORY_FORBIDDEN")
+    developer_instructions_sha256 = request.get("developer_instructions_sha256")
+    if developer_instructions_sha256 is not None and (
+        request["attempt_kind"] != "source"
+        or not isinstance(developer_instructions_sha256, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", developer_instructions_sha256)
+    ):
+        raise ContractError("INVALID_DEVELOPER_INSTRUCTIONS_DIGEST")
     if request["attempt_kind"] == "replay" and "replay_trajectory_path" not in request:
         raise ContractError("REPLAY_TRAJECTORY_OUTPUT_REQUIRED")
     if request["attempt_kind"] == "replay" and freeze_fields != {
@@ -1285,7 +1294,9 @@ def _validate_extra_allowed_hosts(value: Any) -> None:
         raise ContractError("DISALLOWED_EXTRA_ALLOWED_HOST")
 
 
-def _validate_codex_kwargs(value: Any) -> str | None:
+def _validate_codex_kwargs(
+    value: Any, developer_instructions_sha256: str | None = None
+) -> str | None:
     kwargs = _strict_nested_config(
         value, frozenset({"config", "version"}), "DISALLOWED_CODEX_KWARG"
     )
@@ -1306,13 +1317,21 @@ def _validate_codex_kwargs(value: Any) -> str | None:
     if config.get("suppress_unstable_features_warning") is not True:
         raise ContractError("UNSTABLE_FEATURE_WARNING_MUST_BE_SUPPRESSED")
     developer_instructions = config.get("developer_instructions")
-    if developer_instructions is not None and developer_instructions != (
+    product_path_instructions = (
         "This is a product-path validation run. Before making changes, call the available "
         "memory_answer tool exactly once with a concise project-scoped query asking for prior "
         "experience relevant to the task. Use the answer if useful, then complete the task "
         "normally. Do not call memory_answer again."
-    ):
-        raise ContractError("UNSAFE_CODEX_DEVELOPER_INSTRUCTIONS")
+    )
+    if developer_instructions is not None:
+        valid_product_path = developer_instructions == product_path_instructions
+        valid_oracle_source = (
+            developer_instructions_sha256 is not None
+            and hashlib.sha256(developer_instructions.encode("utf-8")).hexdigest()
+            == developer_instructions_sha256
+        )
+        if not valid_product_path and not valid_oracle_source:
+            raise ContractError("UNSAFE_CODEX_DEVELOPER_INSTRUCTIONS")
     for key in (
         "include_permissions_instructions",
         "include_apps_instructions",
@@ -1376,7 +1395,9 @@ def _validate_codex_kwargs(value: Any) -> str | None:
     return mcp_host
 
 
-def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
+def _validate_job_config_allowlist(
+    job_fields: dict[str, Any], developer_instructions_sha256: str | None = None
+) -> None:
     if set(job_fields) - SAFE_JOB_CONFIG_FIELDS:
         raise ContractError("DISALLOWED_JOB_CONFIG_FIELD")
     if "retry" in job_fields:
@@ -1429,7 +1450,9 @@ def _validate_job_config_allowlist(job_fields: dict[str, Any]) -> None:
             if "kwargs" in agent:
                 if agent.get("name") != CODEX_AGENT_NAME:
                     raise ContractError("DISALLOWED_AGENT_KWARGS")
-                mcp_host = _validate_codex_kwargs(agent["kwargs"])
+                mcp_host = _validate_codex_kwargs(
+                    agent["kwargs"], developer_instructions_sha256
+                )
             private_hosts = {
                 host
                 for host in agent.get("extra_allowed_hosts", [])
@@ -1831,7 +1854,9 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         raise ContractError(f"task {task_name!r} is not in the pinned corpus manifest")
     task_selector = Path(manifest_by_name[task_name]["source_path"]).name
     job_fields = dict(request["job_config"])
-    _validate_job_config_allowlist(job_fields)
+    _validate_job_config_allowlist(
+        job_fields, request.get("developer_instructions_sha256")
+    )
     job_name = job_fields.get("job_name")
     if not isinstance(job_name, str) or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", job_name

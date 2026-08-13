@@ -71,6 +71,7 @@ export interface HarborSourceRunRequest extends HarborRunRequestBase {
   attempt_kind: "source";
   freeze_manifest_path: string;
   freeze_trajectory_to: string;
+  developer_instructions_sha256?: string;
 }
 
 export interface HarborReplayRunRequest extends HarborRunRequestBase {
@@ -319,7 +320,8 @@ const validateRequest = async (
     "freeze_manifest_path",
     "freeze_trajectory_to",
     "replay_trajectory_path",
-    "result_path"
+    "result_path",
+    "developer_instructions_sha256"
   ]);
   if (Object.keys(input).some((key) => !allowed.has(key))) {
     throw new HarborClientError(
@@ -387,6 +389,12 @@ const validateRequest = async (
       if (Object.hasOwn(input, "replay_trajectory_path")) {
         throw new Error("source replay trajectory output is forbidden");
       }
+      if (
+        input.developer_instructions_sha256 !== undefined &&
+        !/^[a-f0-9]{64}$/u.test(input.developer_instructions_sha256)
+      ) {
+        throw new Error("source developer-instruction digest is invalid");
+      }
     } else {
       if (Object.hasOwn(input, "freeze_trajectory_to"))
         throw new Error("replay source trajectory output is forbidden");
@@ -394,6 +402,9 @@ const validateRequest = async (
         throw new Error("replay freeze manifest is required");
       if (!input.replay_trajectory_path) {
         throw new Error("replay trajectory output is required");
+      }
+      if (Object.hasOwn(input, "developer_instructions_sha256")) {
+        throw new Error("replay developer-instruction digest is forbidden");
       }
       validateArtifactRelativePath(input.freeze_manifest_path);
       validateArtifactRelativePath(input.replay_trajectory_path);
@@ -427,7 +438,12 @@ const validateRequest = async (
         ...common,
         attempt_kind: "source",
         freeze_manifest_path: input.freeze_manifest_path,
-        freeze_trajectory_to: input.freeze_trajectory_to
+        freeze_trajectory_to: input.freeze_trajectory_to,
+        ...(input.developer_instructions_sha256
+          ? {
+              developer_instructions_sha256: input.developer_instructions_sha256
+            }
+          : {})
       }
     : {
         ...common,

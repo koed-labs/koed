@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createBenchmarkRunPlan,
+  createOracleSeededProductProofRunPlan,
   createProductPathProofRunPlan,
   immutableHash,
   SMOKE_TASK_DIGESTS,
@@ -187,7 +188,10 @@ export const attestPinnedInputs = async (
       selectedTasks: []
     };
   }
-  if (executionKind === "product_path_proof") {
+  if (
+    executionKind === "product_path_proof" ||
+    executionKind === "oracle_seeded_product_proof"
+  ) {
     const proof = await readJson<ProductProofManifest>(
       path.join(
         EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
@@ -221,7 +225,10 @@ export const attestPinnedInputs = async (
       corpusHash: sha256(corpusText),
       subsetHash: immutableHash(proof),
       uvLockHash: sha256(uvLock),
-      selectedTasks: proof.tasks
+      selectedTasks:
+        executionKind === "oracle_seeded_product_proof"
+          ? [proof.tasks[0]!]
+          : proof.tasks
     };
   }
   let selectedTasks = corpus.tasks;
@@ -557,7 +564,8 @@ export const preflightExperienceReplay = async ({
   recordedRunAdapters,
   productPathReady = false,
   executionKind = "benchmark_profile",
-  codexAuthMode = "api_key"
+  codexAuthMode = "api_key",
+  oracleBriefSha256
 }: {
   config: ResolvedExperienceReplayConfig;
   confirmPaidRun?: boolean;
@@ -566,9 +574,10 @@ export const preflightExperienceReplay = async ({
   productPathReady?: boolean;
   executionKind?: ExperienceReplayExecutionKind;
   codexAuthMode?: ExperienceReplayCodexAuthMode;
+  oracleBriefSha256?: string;
 }): Promise<PreflightResult> => {
   const repositoryRoot = await realpath(EXPERIENCE_REPLAY_REPOSITORY_ROOT);
-  if (executionKind === "product_path_proof" && config.profile === "smoke") {
+  if (executionKind !== "benchmark_profile" && config.profile === "smoke") {
     throw new Error(
       "Product-path proof cannot use the deterministic smoke profile"
     );
@@ -588,7 +597,14 @@ export const preflightExperienceReplay = async ({
           },
           codexAuthMode
         )
-      : createBenchmarkRunPlan(config, selectedTaskDigests, codexAuthMode);
+      : executionKind === "oracle_seeded_product_proof"
+        ? createOracleSeededProductProofRunPlan(
+            config,
+            selectedTaskDigests[0] ?? "",
+            oracleBriefSha256 ?? "",
+            codexAuthMode
+          )
+        : createBenchmarkRunPlan(config, selectedTaskDigests, codexAuthMode);
   verifyExperienceReplayRunPlan(runPlan);
   if (config.profile !== "smoke" && !confirmPaidRun) {
     throw new ProductPathPrerequisiteError([
@@ -599,7 +615,7 @@ export const preflightExperienceReplay = async ({
     sourceAttempts: runPlan.sourceTaskDigests.length,
     replayAttempts:
       runPlan.replayTargetTaskDigests.length *
-      4 *
+      (executionKind === "oracle_seeded_product_proof" ? 6 : 4) *
       runPlan.replayAttemptsPerCondition,
     maximumTrajectoryBytes: config.admission.maximum_trajectory_bytes,
     estimatedAttemptArtifactBytes:

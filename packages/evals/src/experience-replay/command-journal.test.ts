@@ -20,6 +20,8 @@ describe("experience replay command parsing", () => {
       configPath: "run.json",
       confirmPaidRun: true,
       productPathProof: false,
+      oracleSeededProof: false,
+      oracleBriefPath: null,
       codexSubscription: false
     });
     expect(
@@ -35,6 +37,8 @@ describe("experience replay command parsing", () => {
       configPath: "run.json",
       confirmPaidRun: false,
       productPathProof: false,
+      oracleSeededProof: false,
+      oracleBriefPath: null,
       codexSubscription: false
     });
     expect(
@@ -51,6 +55,8 @@ describe("experience replay command parsing", () => {
       configPath: "proof.json",
       confirmPaidRun: true,
       productPathProof: true,
+      oracleSeededProof: false,
+      oracleBriefPath: null,
       codexSubscription: true
     });
     expect(() =>
@@ -67,6 +73,39 @@ describe("experience replay command parsing", () => {
         "--codex-subscription"
       ])
     ).toThrow("accepts only");
+    expect(
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "oracle.json",
+        "--oracle-seeded-proof",
+        "--oracle-brief",
+        "/tmp/brief.txt"
+      ])
+    ).toMatchObject({
+      oracleSeededProof: true,
+      oracleBriefPath: "/tmp/brief.txt",
+      productPathProof: false
+    });
+    expect(() =>
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "oracle.json",
+        "--oracle-seeded-proof"
+      ])
+    ).toThrow("requires exactly one");
+    expect(() =>
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "oracle.json",
+        "--oracle-seeded-proof",
+        "--oracle-brief",
+        "/tmp/brief.txt",
+        "--product-path-proof"
+      ])
+    ).toThrow("mutually exclusive");
   });
 });
 

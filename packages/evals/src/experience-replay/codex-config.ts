@@ -20,7 +20,8 @@ export const createTrialCodexConfiguration = ({
   reasoningEffort,
   bridgeUrl,
   bridgeToken,
-  requireMemoryAnswer = false
+  requireMemoryAnswer = false,
+  developerInstructions
 }: {
   condition: ReplayCondition;
   model: string;
@@ -28,6 +29,7 @@ export const createTrialCodexConfiguration = ({
   bridgeUrl?: string;
   bridgeToken?: string;
   requireMemoryAnswer?: boolean;
+  developerInstructions?: string;
 }): TrialCodexConfiguration => {
   const koedEnabled = condition !== "cold";
   if (koedEnabled !== Boolean(bridgeUrl && bridgeToken)) {
@@ -37,11 +39,31 @@ export const createTrialCodexConfiguration = ({
         : "Cold replay must not receive a Koed bridge"
     );
   }
-  if (requireMemoryAnswer && condition !== "relevant") {
+  if (
+    requireMemoryAnswer &&
+    condition !== "relevant" &&
+    condition !== "relevant_guidance" &&
+    condition !== "relevant_trace" &&
+    condition !== "relevant_full"
+  ) {
     throw new Error(
-      "Required product-path memory recall is valid only for the relevant arm"
+      "Required product-path memory recall is valid only for a relevant arm"
     );
   }
+  if (
+    developerInstructions !== undefined &&
+    (!developerInstructions.trim() || developerInstructions.includes("\0"))
+  ) {
+    throw new Error("Developer instructions must be non-empty safe text");
+  }
+  if (requireMemoryAnswer && developerInstructions !== undefined) {
+    throw new Error(
+      "Product-path recall and source-generation instructions cannot be combined"
+    );
+  }
+  const resolvedDeveloperInstructions = requireMemoryAnswer
+    ? PRODUCT_PATH_MEMORY_INSTRUCTION
+    : developerInstructions;
   if (bridgeUrl) {
     const parsed = new URL(bridgeUrl);
     if (
@@ -62,9 +84,9 @@ export const createTrialCodexConfiguration = ({
     'model_reasoning_summary = "concise"',
     'approval_policy = "never"',
     "suppress_unstable_features_warning = true",
-    ...(requireMemoryAnswer
+    ...(resolvedDeveloperInstructions
       ? [
-          `developer_instructions = ${tomlString(PRODUCT_PATH_MEMORY_INSTRUCTION)}`
+          `developer_instructions = ${tomlString(resolvedDeveloperInstructions)}`
         ]
       : []),
     "include_permissions_instructions = false",
@@ -100,8 +122,8 @@ export const createTrialCodexConfiguration = ({
     model_reasoning_summary: "concise",
     approval_policy: "never",
     suppress_unstable_features_warning: true,
-    ...(requireMemoryAnswer
-      ? { developer_instructions: PRODUCT_PATH_MEMORY_INSTRUCTION }
+    ...(resolvedDeveloperInstructions
+      ? { developer_instructions: resolvedDeveloperInstructions }
       : {}),
     include_permissions_instructions: false,
     include_apps_instructions: false,

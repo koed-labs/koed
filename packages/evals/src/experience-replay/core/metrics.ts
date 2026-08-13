@@ -156,6 +156,19 @@ export const REQUIRED_COMPARISONS: readonly Comparison[] = [
   { left: "empty", right: "cold" },
   { left: "placebo", right: "empty" }
 ];
+export const ORACLE_REQUIRED_COMPARISONS: readonly Comparison[] = [
+  { left: "relevant_guidance", right: "irrelevant" },
+  { left: "relevant_trace", right: "irrelevant" },
+  { left: "relevant_full", right: "irrelevant" },
+  { left: "relevant_guidance", right: "empty" },
+  { left: "relevant_trace", right: "empty" },
+  { left: "relevant_full", right: "empty" },
+  { left: "relevant_full", right: "cold" },
+  { left: "relevant_full", right: "relevant_guidance" },
+  { left: "relevant_full", right: "relevant_trace" },
+  { left: "irrelevant", right: "empty" },
+  { left: "empty", right: "cold" }
+];
 
 const mean = (values: readonly number[]): number =>
   values.reduce((total, value) => total + value, 0) / values.length;
