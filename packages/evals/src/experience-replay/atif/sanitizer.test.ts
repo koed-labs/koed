@@ -267,6 +267,22 @@ describe("strict ATIF-v1.7 sanitization", () => {
     );
   });
 
+  it("allows Koed tool identifiers while rejecting Koed API keys", () => {
+    const identifier = trajectory();
+    identifier.steps[1]!.tool_calls![0]!.arguments = {
+      input: "Call mcp__koed__memory_answer once"
+    };
+    identifier.steps[1]!.observation!.results[0]!.content =
+      "Available tool: mcp__koed__memory_answer";
+    expect(() => sanitize(identifier)).not.toThrow();
+
+    for (const secret of ["koed_abcdefghijk", "koed_live_abcdefghijk"]) {
+      const value = trajectory();
+      value.steps[2]!.message = `Use ${secret} to continue`;
+      expect(rejection(value).reason).toBe("UNSAFE_EMBEDDED_CREDENTIAL");
+    }
+  });
+
   it("rejects unresolved, duplicate, and cross-step tool linkage", () => {
     const unresolved = trajectory();
     unresolved.steps[1]!.observation!.results[0]!.source_call_id = "missing";

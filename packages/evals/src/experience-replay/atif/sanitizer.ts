@@ -575,7 +575,7 @@ const exactCredentialType = (value: string): CredentialType | null => {
     return "BEARER_TOKEN";
   }
   if (
-    /^(?:sk-(?:proj-)?[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|AKIA[A-Z0-9]{16}|npm_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|koed_(?:live_)?[A-Za-z0-9_-]{8,})$/.test(
+    /^(?:sk-(?:proj-)?[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|AKIA[A-Z0-9]{16}|npm_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|koed_(?:live_)?[A-Za-z0-9][A-Za-z0-9_-]{7,})$/.test(
       value
     )
   ) {
@@ -585,7 +585,7 @@ const exactCredentialType = (value: string): CredentialType | null => {
 };
 
 const containsCredential = (value: string): boolean =>
-  /(?:Bearer\s+\S{8,}|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|(?:sk-(?:proj-)?|github_pat_|gh[pousr]_|AKIA|npm_|xox[baprs]-|koed_(?:live_)?)[A-Za-z0-9_-]{8,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/i.test(
+  /(?:Bearer\s+\S{8,}|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|(?:sk-(?:proj-)?|github_pat_|gh[pousr]_|AKIA|npm_|xox[baprs]-)[A-Za-z0-9_-]{8,}|koed_(?:live_)?[A-Za-z0-9][A-Za-z0-9_-]{7,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/i.test(
     value
   ) ||
   /(?:https?|socks5?|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s/@:]+:[^\s/@]+@/i.test(
