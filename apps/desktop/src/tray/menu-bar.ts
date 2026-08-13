@@ -105,14 +105,22 @@ const statusUpdatedAt = (value: unknown): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const isBypassedRedis = (value: unknown): boolean => {
+  const redis = statusRecord(value);
+  const details = statusRecord(redis?.details);
+  return details?.required === false;
+};
+
 export const createMenuBarStatusSnapshot = (
   value: unknown
 ): MenuBarStatusSnapshot => {
   const record = statusRecord(value);
-  const services = trayServiceDefinitions.map(({ key, label }) => {
-    const state = componentState(record?.[key]);
-    return { key, label, state, stateLabel: stateLabel(state) };
-  });
+  const services = trayServiceDefinitions
+    .filter(({ key }) => key !== "redis" || !isBypassedRedis(record?.redis))
+    .map(({ key, label }) => {
+      const state = componentState(record?.[key]);
+      return { key, label, state, stateLabel: stateLabel(state) };
+    });
   const healthyCount = services.filter(
     (service) => service.state === "healthy"
   ).length;

@@ -12,7 +12,10 @@ const healthyStatus = () => ({
   generatedAt: "2026-08-12T10:44:00.000Z",
   api: { state: "healthy" },
   database: { state: "healthy" },
-  redis: { state: "healthy" },
+  redis: {
+    state: "healthy",
+    details: undefined as Record<string, unknown> | undefined
+  },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
   lcmSummaryService: { state: "healthy" }
@@ -88,6 +91,18 @@ describe("Desktop menu-bar status", () => {
 
     expect(createMenuBarStatusSnapshot(status).summary).toBe(
       "4 of 6 services running — needs attention"
+    );
+  });
+
+  it("does not count Redis when the local queue bypasses it", () => {
+    const status = healthyStatus();
+    status.redis.details = { backend: "local", required: false };
+
+    const snapshot = createMenuBarStatusSnapshot(status);
+
+    expect(snapshot.summary).toBe("5 of 5 services running");
+    expect(snapshot.services.some((service) => service.key === "redis")).toBe(
+      false
     );
   });
 

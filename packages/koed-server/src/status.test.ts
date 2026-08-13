@@ -182,6 +182,10 @@ describe("status and doctor JSON contracts", () => {
     expect(status.redis.message).toBe(
       "Postgres-backed local queue does not require Redis."
     );
+    expect(status.redis.details).toMatchObject({
+      backend: "local",
+      required: false
+    });
     expect(status.workerQueues.state).toBe("starting");
   });
 

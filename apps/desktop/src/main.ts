@@ -103,16 +103,11 @@ let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 
-const acceptPairingDeepLink = (value: string): void => {
+const acceptPairingDeepLink = (value: string): string | null => {
   const pairingLink = pairingLinkFromDeepLink(value);
-  if (!pairingLink) return;
+  if (!pairingLink) return null;
   pairingLinkInbox.accept(pairingLink);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    mainWindow.webContents.send(personalDevicePairingLinkChannel, pairingLink);
-  }
+  return pairingLink;
 };
 
 if (process.defaultApp && process.argv[1]) {
@@ -134,18 +129,15 @@ if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
       const deepLink = argv.find((argument) =>
         argument.startsWith("koed-pair://")
       );
-      if (deepLink) acceptPairingDeepLink(deepLink);
-      else {
-        mainWindow?.show();
-        mainWindow?.focus();
-      }
+      if (deepLink) void showPairingDeepLink(deepLink);
+      else void showDesktopWindow();
     });
   }
 }
 
 app.on("open-url", (event, url) => {
   event.preventDefault();
-  acceptPairingDeepLink(url);
+  void showPairingDeepLink(url);
 });
 
 protocol.registerSchemesAsPrivileged([
@@ -291,7 +283,7 @@ const createWindow = async () => {
     .catch(() => undefined);
 };
 
-const showDesktopWindow = async (): Promise<void> => {
+async function showDesktopWindow(): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed()) {
     await createWindow();
     return;
@@ -299,7 +291,16 @@ const showDesktopWindow = async (): Promise<void> => {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-};
+}
+
+async function showPairingDeepLink(value: string): Promise<void> {
+  const pairingLink = acceptPairingDeepLink(value);
+  if (!pairingLink) return;
+  await showDesktopWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(personalDevicePairingLinkChannel, pairingLink);
+  }
+}
 
 const bootstrap = async () => {
   await app.whenReady();
