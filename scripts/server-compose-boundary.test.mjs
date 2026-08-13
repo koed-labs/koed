@@ -14,3 +14,24 @@ test("server Compose keeps machine telemetry behind a deny-by-default public gat
   assert.match(gateway, /proxy_pass http:\/\/koed-server:3300;/);
   assert.doesNotMatch(gateway, /proxy_pass[^;]*internal\/metrics/);
 });
+
+test("server Compose maps root API Team Memory config to the API service", async () => {
+  const compose = await readFile(
+    "examples/server-compose/docker-compose.yml",
+    "utf8"
+  );
+
+  for (const suffix of [
+    "DATA_ENCRYPTION_KEY",
+    "ENVELOPE_ENCRYPTION_PROVIDER",
+    "MANAGED_KMS_KEY_ID",
+    "MANAGED_KMS_KEY_VERSION",
+    "MANAGED_KMS_ENDPOINT_URL",
+    "MANAGED_KMS_AUTH_TOKEN"
+  ]) {
+    assert.match(
+      compose,
+      new RegExp(`TEAM_MEMORY_${suffix}: \\$\\{API_TEAM_MEMORY_${suffix}`)
+    );
+  }
+});

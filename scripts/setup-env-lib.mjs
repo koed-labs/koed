@@ -6,7 +6,7 @@ export const retainedCompatibilityKeys = new Set([
   "EMBEDDING_SERVICE_TOKEN",
   "MEMORY_API_TOKEN",
   "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
-  "TEAM_MEMORY_DATA_ENCRYPTION_KEY"
+  "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"
 ]);
 
 export const splitEnvLine = (line) => {
