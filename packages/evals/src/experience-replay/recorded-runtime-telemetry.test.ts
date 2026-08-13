@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createRecordedReplayTelemetryCollector,
+  reconcileMemoryAnswerInteractionCounts,
   recordedApiEquivalentCost,
   registerRecordedAttemptObservation
 } from "./recorded-runtime-telemetry.js";
@@ -48,6 +49,52 @@ describe("recorded replay telemetry provisioning", () => {
         telemetryOptions.prices["gpt-5.6-luna"]!
       )
     ).toBeCloseTo(0.0001275, 12);
+  });
+
+  it("reconciles successful persisted Memory Questions with bridge observations", () => {
+    expect(
+      reconcileMemoryAnswerInteractionCounts(
+        {
+          mcpCalls: 0,
+          mcpFailures: 0,
+          memoryAnswerCalls: 0,
+          memoryAnswerFailures: 0
+        },
+        { calls: 1, failures: 0 }
+      )
+    ).toEqual({
+      mcpCalls: 1,
+      mcpFailures: 0,
+      memoryAnswerCalls: 1,
+      memoryAnswerFailures: 0
+    });
+    expect(
+      reconcileMemoryAnswerInteractionCounts(
+        {
+          mcpCalls: 3,
+          mcpFailures: 1,
+          memoryAnswerCalls: 2,
+          memoryAnswerFailures: 1
+        },
+        { calls: 1, failures: 0 }
+      )
+    ).toEqual({
+      mcpCalls: 3,
+      mcpFailures: 1,
+      memoryAnswerCalls: 2,
+      memoryAnswerFailures: 1
+    });
+    expect(() =>
+      reconcileMemoryAnswerInteractionCounts(
+        {
+          mcpCalls: 0,
+          mcpFailures: 0,
+          memoryAnswerCalls: 0,
+          memoryAnswerFailures: 0
+        },
+        { calls: 0, failures: 1 }
+      )
+    ).toThrow("failures exceed calls");
   });
 
   it("rejects a non-cold attempt without a live identity-bound observation", async () => {

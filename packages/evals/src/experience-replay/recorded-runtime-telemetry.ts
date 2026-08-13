@@ -54,6 +54,30 @@ export const recordedApiEquivalentCost = (
     tokens.output * price.output_usd_per_million) /
   1_000_000;
 
+export const reconcileMemoryAnswerInteractionCounts = (
+  bridge: Pick<
+    BridgeCallTelemetry,
+    "mcpCalls" | "mcpFailures" | "memoryAnswerCalls" | "memoryAnswerFailures"
+  >,
+  persisted: { calls: number; failures: number }
+) => {
+  for (const [label, value] of Object.entries(persisted)) {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new Error(`Persisted Memory Answer ${label} count is invalid`);
+  }
+  if (persisted.failures > persisted.calls)
+    throw new Error("Persisted Memory Answer failures exceed calls");
+  return {
+    mcpCalls: Math.max(bridge.mcpCalls, persisted.calls),
+    mcpFailures: Math.max(bridge.mcpFailures, persisted.failures),
+    memoryAnswerCalls: Math.max(bridge.memoryAnswerCalls, persisted.calls),
+    memoryAnswerFailures: Math.max(
+      bridge.memoryAnswerFailures,
+      persisted.failures
+    )
+  };
+};
+
 const key = (identity: AttemptTelemetryIdentity): string =>
   JSON.stringify([identity.taskDigest, identity.condition, identity.repeat]);
 const observations = new Map<string, RecordedAttemptObservation>();
@@ -109,7 +133,10 @@ const databaseObservers = async (
   observation: RecordedAttemptObservation,
   options: RecordedReplayTelemetryOptions
 ): Promise<
-  Pick<Observers, "modelWorkflows"> & { workerBytes: number | null }
+  Pick<Observers, "modelWorkflows"> & {
+    workerBytes: number | null;
+    memoryQuestions: { calls: number; failures: number };
+  }
 > => {
   if (!observation.databaseUrl || !observation.ownerUserId) {
     if (identity.condition !== "cold")
@@ -120,7 +147,8 @@ const databaseObservers = async (
         lcmSummary: zeroWorker,
         sessionTitle: zeroWorker
       }),
-      workerBytes: null
+      workerBytes: null,
+      memoryQuestions: { calls: 0, failures: 0 }
     };
   }
   const pool = new pg.Pool({
@@ -216,18 +244,32 @@ const databaseObservers = async (
       };
     };
     const question = questions.rows[0];
+    const memoryQuestions = {
+      calls: Number(question?.calls ?? 0),
+      failures: Number(question?.failures ?? 0)
+    };
+    reconcileMemoryAnswerInteractionCounts(
+      {
+        mcpCalls: 0,
+        mcpFailures: 0,
+        memoryAnswerCalls: 0,
+        memoryAnswerFailures: 0
+      },
+      memoryQuestions
+    );
     return {
       modelWorkflows: available(identity, {
         memoryAnswer: worker(
           "mcp_memory_answer",
-          Number(question?.calls ?? 0),
-          Number(question?.failures ?? 0)
+          memoryQuestions.calls,
+          memoryQuestions.failures
         ),
         lcmSummary: worker("lcm_summary"),
         sessionTitle: worker("session_title")
       }),
       workerBytes:
-        question?.worker_rss == null ? null : Number(question.worker_rss)
+        question?.worker_rss == null ? null : Number(question.worker_rss),
+      memoryQuestions
     };
   } finally {
     await pool.end();
@@ -260,6 +302,10 @@ export const createRecordedReplayTelemetryCollector = (
       workerPeakRssBytes: null
     };
     const database = await databaseObservers(identity, active, options);
+    const interactions = reconcileMemoryAnswerInteractionCounts(
+      bridge,
+      database.memoryQuestions
+    );
     const embedding = active.embeddings?.() ?? {
       calls: 0,
       tokens: 0,
@@ -286,10 +332,10 @@ export const createRecordedReplayTelemetryCollector = (
         turns: captured.trial.interactions.turns,
         toolCalls: captured.trial.interactions.toolCalls,
         toolFailures: null,
-        mcpCalls: bridge.mcpCalls,
-        mcpFailures: bridge.mcpFailures,
-        memoryAnswerCalls: bridge.memoryAnswerCalls,
-        memoryAnswerFailures: bridge.memoryAnswerFailures
+        mcpCalls: interactions.mcpCalls,
+        mcpFailures: interactions.mcpFailures,
+        memoryAnswerCalls: interactions.memoryAnswerCalls,
+        memoryAnswerFailures: interactions.memoryAnswerFailures
       }),
       koedRecall: available(identity, {
         searches: bridge.searches,
