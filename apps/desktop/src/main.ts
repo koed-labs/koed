@@ -58,7 +58,10 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
-import { shouldQuitAfterAllWindowsClosed } from "./window/lifecycle.js";
+import {
+  createDesktopWindowActivator,
+  shouldQuitAfterAllWindowsClosed
+} from "./window/lifecycle.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
 import { createPersonalDevicePairingInbox } from "./personal-device-pairing-inbox.js";
 import {
@@ -283,15 +286,13 @@ const createWindow = async () => {
     .catch(() => undefined);
 };
 
-async function showDesktopWindow(): Promise<void> {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    await createWindow();
-    return;
+const showDesktopWindow = createDesktopWindowActivator({
+  createWindow,
+  getWindow: () => mainWindow,
+  waitForBootstrap: async () => {
+    await bootstrapPromise;
   }
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
-}
+});
 
 async function showPairingDeepLink(value: string): Promise<void> {
   const pairingLink = acceptPairingDeepLink(value);
@@ -406,8 +407,8 @@ if (ownsDesktopInstance) {
       break;
     }
   }
-  void bootstrap();
 }
+const bootstrapPromise = ownsDesktopInstance ? bootstrap() : Promise.resolve();
 
 app.on("window-all-closed", () => {
   if (shouldQuitAfterAllWindowsClosed(process.platform)) {
