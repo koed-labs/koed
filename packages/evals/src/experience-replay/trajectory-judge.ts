@@ -371,7 +371,11 @@ export const runTrajectoryJudge = async (
       options.config,
       options.config.timeoutMs
     );
-    if (raw.model !== options.config.model)
+    if (
+      raw.model !== options.config.model &&
+      raw.model !==
+        `codex-app-server:${options.config.model}:${options.config.reasoningEffort}`
+    )
       throw new Error("Trajectory judge returned an unexpected model");
     const judgment = parseTrajectoryJudgeOutput(raw.text);
     const allowedReferences = {

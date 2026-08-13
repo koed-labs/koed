@@ -137,7 +137,7 @@ describe("blinded Experience Replay trajectory judge", () => {
         expect(prompt).not.toContain(labels.A.condition);
         return {
           text: JSON.stringify(output("A")),
-          model: "gpt-5.6-luna",
+          model: "codex-app-server:gpt-5.6-luna:medium",
           tokenUsage: {
             total: {
               inputTokens: 100,
@@ -193,6 +193,27 @@ describe("blinded Experience Replay trajectory judge", () => {
       preferredCondition: null,
       costUsd: null,
       error: "judge unavailable"
+    });
+  });
+
+  it("rejects a judge result from a different app-server model identity", async () => {
+    const assessment = await runTrajectoryJudge(input(), {
+      config: {
+        appServerBinary: "/bin/codex",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "medium",
+        timeoutMs: 1_000,
+        cwd: "/tmp",
+        env: {}
+      },
+      runner: async () => ({
+        text: JSON.stringify(output("A")),
+        model: "codex-app-server:gpt-5.6-luna:low"
+      })
+    });
+    expect(assessment).toMatchObject({
+      status: "error",
+      error: "Trajectory judge returned an unexpected model"
     });
   });
 });
