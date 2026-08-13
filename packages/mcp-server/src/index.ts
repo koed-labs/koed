@@ -786,6 +786,22 @@ export class MemoryApiClient {
     );
   }
 
+  async teamMemoryAnswer(
+    upstreamBackendId: string,
+    input: Record<string, unknown>,
+    authorization: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/team-memory/answer",
+      {
+        upstream_backend_id: upstreamBackendId,
+        input
+      },
+      { authorization }
+    );
+  }
+
   async teamMemoryExpand(
     upstreamBackendId: string,
     nodeId: string,

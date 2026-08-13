@@ -1362,11 +1362,14 @@ describe("LCM summary background service", () => {
     const backendId = "fixture-team-backend";
     const hintSentinel = "GARNET_HINT_MUST_STAY_ENCRYPTED";
     const personalToken = "personal-token-must-not-reach-team-route";
+    const authorizationBoundary = "fixture-frozen-team-boundary";
     const teamRequests: Array<{
       authorization: string | undefined;
       body: Record<string, unknown>;
     }> = [];
+    const answerBootstrapRequests: Record<string, unknown>[] = [];
     const persistedQuestions: Record<string, unknown>[] = [];
+    const remoteQuestionId = randomUUID();
     let personalSearchCount = 0;
     storeLocalEdgeClientCredential(directory, {
       backendId,
@@ -1438,6 +1441,21 @@ describe("LCM summary background service", () => {
           );
           return;
         }
+        if (request.url === "/v1/local-edge/team-memory/answer") {
+          answerBootstrapRequests.push(parsed);
+          response.end(
+            JSON.stringify({
+              markdown: "",
+              authorizationBoundary,
+              evidenceBundle: {
+                query: "What did the Team decide?",
+                evidence: [],
+                retrieval: { mode: "team_shared_semantic_score_scan" }
+              }
+            })
+          );
+          return;
+        }
         if (request.url === "/v1/memory/search") {
           personalSearchCount += 1;
           response.statusCode = 500;
@@ -1448,7 +1466,7 @@ describe("LCM summary background service", () => {
         }
         if (request.url === "/v1/local-edge/team-memory/questions/final") {
           persistedQuestions.push(parsed.input as Record<string, unknown>);
-          response.end(JSON.stringify({ question: { id: randomUUID() } }));
+          response.end(JSON.stringify({ question: { id: remoteQuestionId } }));
           return;
         }
         response.end(JSON.stringify({}));
@@ -1483,6 +1501,14 @@ describe("LCM summary background service", () => {
         { cwd: "/repo/koed" }
       );
       expect(result.markdown).toEqual(expect.any(String));
+      expect(answerBootstrapRequests).toHaveLength(1);
+      expect(answerBootstrapRequests[0]).toMatchObject({
+        upstream_backend_id: backendId,
+        input: {
+          team_workspace_id: teamWorkspaceId,
+          retrieval_stage: "score_scan"
+        }
+      });
       expect(teamRequests.length).toBeGreaterThan(0);
       expect(personalSearchCount).toBe(0);
       expect(
@@ -1504,6 +1530,13 @@ describe("LCM summary background service", () => {
         )
       ).toBe(true);
       expect(JSON.stringify(teamRequests)).toContain(hintSentinel);
+      expect(
+        teamRequests.every(
+          (entry) =>
+            (entry.body.input as Record<string, unknown>)
+              .authorization_boundary === authorizationBoundary
+        )
+      ).toBe(true);
       expect(persistedQuestions).toHaveLength(1);
       expect(persistedQuestions[0]).toMatchObject({
         team_workspace_id: teamWorkspaceId,

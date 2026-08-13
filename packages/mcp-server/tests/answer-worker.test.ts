@@ -2564,7 +2564,8 @@ describe("memory answer worker", () => {
     expect(requests[0]).toMatchObject({
       retrieval_stage: "score_scan",
       retrieval_scope: "team",
-      exact_hints: ["Osprey"]
+      exact_hints: ["Osprey"],
+      limit: 10
     });
     expect(result.searches).toEqual([
       expect.objectContaining({

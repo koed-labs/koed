@@ -3009,6 +3009,26 @@ describeDb("Shared Memory repository", () => {
         vector: queryVector
       });
     }
+    const decryptsBeforeScoreScan = decryptSpy.mock.calls.length;
+    const scoreScan = await repository.scanAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector,
+        model: semanticModel,
+        dimensions: 384,
+        version: semanticVersion,
+        limit: 1,
+        searchDomain: "global"
+      }
+    );
+    expect(decryptSpy.mock.calls.length).toBe(decryptsBeforeScoreScan);
+    expect(scoreScan.map((scan) => scan.representation).sort()).toEqual([
+      "lcm_leaves",
+      "lcm_rollups",
+      "memory_events"
+    ]);
+    expect(scoreScan.every((scan) => scan.candidateCount === 1)).toBe(true);
     const baselineCandidates =
       await repository.searchAuthorizedSharedMemorySemanticItems(
         actor(fixture.readerUserId),
@@ -4088,16 +4108,17 @@ describeDb("Shared Memory repository", () => {
         | "supporting_evidence"
         | "superseding_evidence"
         | "conflicting_evidence",
-      evidenceId: string
+      evidenceId: string,
+      expiresAt: string | null = null
     ) => {
       const id = randomUUID();
       await pool.query(
         `insert into curated_memory_assertions (
            id,owner_user_id,visibility,assertion_text,normalized_assertion,
-           sensitivity,confidence,tags,metadata,status,observed_at
+           sensitivity,confidence,tags,metadata,status,observed_at,expires_at
          ) values ($1,$2,'personal','[koed encrypted curated memory]',
-           $3,'normal',90,'{}','{}','current',now())`,
-        [id, fixture.ownerUserId, `encrypted:${randomUUID()}`]
+           $3,'normal',90,'{}','{}','current',now(),$4)`,
+        [id, fixture.ownerUserId, `encrypted:${randomUUID()}`, expiresAt]
       );
       await upsertEncryptedFieldPayloadWithClient(
         pool,
@@ -4129,7 +4150,8 @@ describeDb("Shared Memory repository", () => {
     await addAssertion(
       "Supporting exact-session assertion.",
       "supporting_evidence",
-      sourceId
+      sourceId,
+      "2099-01-02T03:04:05.000Z"
     );
     await addAssertion(
       "Superseding exact-session assertion.",
@@ -4174,6 +4196,14 @@ describeDb("Shared Memory repository", () => {
       }
     );
     expect(materialized.representation).toBe("curated_assertions");
+    const materializedExpiry = await pool.query<{ expires_at: Date | null }>(
+      `select curated_expires_at as expires_at
+         from team_memory_representations where id=$1`,
+      [materialized.id]
+    );
+    expect(materializedExpiry.rows[0]?.expires_at?.toISOString()).toBe(
+      "2099-01-02T03:04:05.000Z"
+    );
     expect(personalDecrypt).toHaveBeenCalled();
     expect(ownerEncrypt).toHaveBeenCalled();
     expect(teamEncrypt).toHaveBeenCalled();
@@ -4270,6 +4300,34 @@ describeDb("Shared Memory repository", () => {
     );
     expect(storage.rows[0]!.storage).not.toContain(
       "MIXED_SESSION_CURATED_SENTINEL"
+    );
+
+    await pool.query(
+      `update team_memory_representations
+          set curated_expires_at=now()-interval '1 second'
+        where id=$1`,
+      [materialized.id]
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: curatedCandidate!.candidateId,
+          searchDomain: "global"
+        }
+      )
+    ).resolves.toBeNull();
+    await pool.query(
+      `update team_memory_representations
+          set curated_expires_at=$2
+        where id=$1`,
+      [materialized.id, "2099-01-02T03:04:05.000Z"]
     );
 
     const failureClient = await pool.connect();

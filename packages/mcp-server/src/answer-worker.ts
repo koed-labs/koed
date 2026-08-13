@@ -2896,7 +2896,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             query,
             ...common,
             retrieval_stage: "score_scan",
-            limit: 1
+            limit: options.limit
           })
         );
         const hits = hitsFromSearch(result);
@@ -2916,7 +2916,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             recentDays: options.recentDays,
             sourceAfter: options.sourceAfter,
             sourceBefore: options.sourceBefore,
-            limit: 1,
+            limit: options.limit,
             hitCount: hits.length,
             phase: "first_pass" as const,
             durationMs: Date.now() - started

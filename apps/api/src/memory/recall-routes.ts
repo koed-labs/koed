@@ -177,36 +177,45 @@ export const registerRecallRoutes = (
             );
         const embedding = await embedTeamSemanticQuery(
           input.query,
-          context.localEdge.fetch
+          context.internalServices.fetch
         );
-        const candidates = await repo.searchAuthorizedSharedMemorySemanticItems(
-          { userId: user.id },
-          {
-            teamWorkspaceId: input.team_workspace_id,
-            queryVector: embedding.vector,
-            model: embedding.model,
-            dimensions: embedding.dimensions,
-            version: embedding.version,
-            limit: input.limit,
-            searchDomain: input.search_domain,
-            sessionId: input.session_id,
-            projectId: input.project_id,
-            recentDays: input.recent_days,
-            sourceAfter: input.source_after?.toISOString(),
-            sourceBefore: input.source_before?.toISOString(),
-            exactHints: input.exact_hints,
-            representations: teamRepresentationsForStage(input.retrieval_stage),
-            parentCandidateIds: input.parent_node_ids,
-            strictLimit: input.strict_limit,
-            authorizationBoundary
-          }
+        const semanticInput = {
+          teamWorkspaceId: input.team_workspace_id,
+          queryVector: embedding.vector,
+          model: embedding.model,
+          dimensions: embedding.dimensions,
+          version: embedding.version,
+          limit: input.limit,
+          searchDomain: input.search_domain,
+          sessionId: input.session_id,
+          projectId: input.project_id,
+          recentDays: input.recent_days,
+          sourceAfter: input.source_after?.toISOString(),
+          sourceBefore: input.source_before?.toISOString(),
+          exactHints: input.exact_hints,
+          representations: teamRepresentationsForStage(input.retrieval_stage),
+          parentCandidateIds: input.parent_node_ids,
+          authorizationBoundary
+        };
+        const scoreScan = input.retrieval_stage === "score_scan";
+        const stageScans = scoreScan
+          ? await repo.scanAuthorizedSharedMemorySemanticItems(
+              { userId: user.id },
+              semanticInput
+            )
+          : [];
+        const candidates = scoreScan
+          ? []
+          : await repo.searchAuthorizedSharedMemorySemanticItems(
+              { userId: user.id },
+              { ...semanticInput, strictLimit: input.strict_limit }
+            );
+        const hits = candidates.map((candidate) =>
+          teamHit(candidate, true, input.parent_node_ids)
         );
-        const hits =
-          input.retrieval_stage === "score_scan"
-            ? []
-            : candidates.map((candidate) =>
-                teamHit(candidate, true, input.parent_node_ids)
-              );
+        const candidateCount = scoreScan
+          ? stageScans.reduce((sum, scan) => sum + scan.candidateCount, 0)
+          : candidates.length;
         const stages = (
           [
             ["rollup_search", "lcm_rollups"],
@@ -218,6 +227,9 @@ export const registerRecallRoutes = (
           const selected = candidates.filter(
             (candidate) => candidate.representation === representation
           );
+          const scan = stageScans.find(
+            (candidate) => candidate.representation === representation
+          );
           const ran = teamStageRan(input.retrieval_stage, name);
           return {
             name,
@@ -226,7 +238,7 @@ export const registerRecallRoutes = (
               input.retrieval_stage !== "score_scan" &&
               ran &&
               selected.length > 0,
-            candidateCount: ran ? selected.length : 0,
+            candidateCount: ran ? (scan?.candidateCount ?? selected.length) : 0,
             selectedCount:
               input.retrieval_stage !== "score_scan" && ran
                 ? selected.length
@@ -236,8 +248,10 @@ export const registerRecallRoutes = (
             temporalFilterApplied: Boolean(
               input.source_after || input.source_before || input.recent_days
             ),
-            topScore: selected[0]?.score,
-            countAboveThreshold: ran ? selected.length : 0,
+            topScore: scan?.topScore ?? selected[0]?.score,
+            countAboveThreshold: ran
+              ? (scan?.candidateCount ?? selected.length)
+              : 0,
             maxAllowed: ran ? input.limit : 0
           };
         });
@@ -248,20 +262,20 @@ export const registerRecallRoutes = (
             .length,
           retrieval: {
             retrievalMode: "semantic_vector",
-            vectorHitsCount: candidates.length,
+            vectorHitsCount: candidateCount,
             textHitsCount: 0,
             embeddingModel: embedding.model,
             embeddingDimensions: embedding.dimensions,
-            vectorCandidateCount: candidates.length,
+            vectorCandidateCount: candidateCount,
             stages
           },
           retrievalMode: "semantic_vector",
-          vectorHitsCount: candidates.length,
+          vectorHitsCount: candidateCount,
           textHitsCount: 0,
           embeddingModel: embedding.model,
           embeddingDimensions: embedding.dimensions,
           semanticRetrievalComplete: true,
-          vectorCandidateCount: candidates.length,
+          vectorCandidateCount: candidateCount,
           rerankedCount: 0,
           rerankerModel: null,
           rerankingEnabled: false,
@@ -354,37 +368,45 @@ export const registerRecallRoutes = (
           });
         const embedding = await embedTeamSemanticQuery(
           input.query,
-          context.localEdge.fetch
+          context.internalServices.fetch
         );
-        const candidates = await repo.searchAuthorizedSharedMemorySemanticItems(
-          { userId: user.id },
-          {
-            teamWorkspaceId: input.team_workspace_id,
-            queryVector: embedding.vector,
-            model: embedding.model,
-            dimensions: embedding.dimensions,
-            version: embedding.version,
-            limit: input.limit,
-            searchDomain: input.search_domain,
-            sessionId: input.session_id,
-            projectId: input.project_id,
-            recentDays: input.recent_days,
-            sourceAfter: input.source_after?.toISOString(),
-            sourceBefore: input.source_before?.toISOString(),
-            exactHints: input.exact_hints,
-            representations: teamRepresentationsForStage(input.retrieval_stage),
-            parentCandidateIds: input.parent_node_ids,
-            strictLimit: input.strict_limit,
-            authorizationBoundary
-          }
+        const semanticInput = {
+          teamWorkspaceId: input.team_workspace_id,
+          queryVector: embedding.vector,
+          model: embedding.model,
+          dimensions: embedding.dimensions,
+          version: embedding.version,
+          limit: input.limit,
+          searchDomain: input.search_domain,
+          sessionId: input.session_id,
+          projectId: input.project_id,
+          recentDays: input.recent_days,
+          sourceAfter: input.source_after?.toISOString(),
+          sourceBefore: input.source_before?.toISOString(),
+          exactHints: input.exact_hints,
+          representations: teamRepresentationsForStage(input.retrieval_stage),
+          parentCandidateIds: input.parent_node_ids,
+          authorizationBoundary
+        };
+        const scoreScan = input.retrieval_stage === "score_scan";
+        const stageScans = scoreScan
+          ? await repo.scanAuthorizedSharedMemorySemanticItems(
+              { userId: user.id },
+              semanticInput
+            )
+          : [];
+        const candidates = scoreScan
+          ? []
+          : await repo.searchAuthorizedSharedMemorySemanticItems(
+              { userId: user.id },
+              { ...semanticInput, strictLimit: input.strict_limit }
+            );
+        const evidence = candidates.map((candidate) =>
+          teamHit(candidate, true, input.parent_node_ids)
         );
-        const evidence =
-          input.retrieval_stage === "score_scan"
-            ? []
-            : candidates.map((candidate) =>
-                teamHit(candidate, true, input.parent_node_ids)
-              );
-        const candidateCount = candidates.length;
+        const candidateCount = scoreScan
+          ? stageScans.reduce((sum, scan) => sum + scan.candidateCount, 0)
+          : candidates.length;
         const stages = (
           [
             ["rollup_search", "lcm_rollups"],
@@ -396,6 +418,9 @@ export const registerRecallRoutes = (
           const selected = candidates.filter(
             (candidate) => candidate.representation === representation
           );
+          const scan = stageScans.find(
+            (candidate) => candidate.representation === representation
+          );
           const ran = teamStageRan(input.retrieval_stage, name);
           return {
             name,
@@ -404,14 +429,17 @@ export const registerRecallRoutes = (
               input.retrieval_stage !== "score_scan" &&
               ran &&
               selected.length > 0,
-            candidateCount: ran ? selected.length : 0,
+            candidateCount: ran ? (scan?.candidateCount ?? selected.length) : 0,
             selectedCount:
               input.retrieval_stage !== "score_scan" && ran
                 ? selected.length
                 : 0,
             durationMs: Math.max(0, performance.now() - retrievalStartedAt),
             parallelGroup: "team_shared_semantic_first_pass",
-            countAboveThreshold: ran ? selected.length : 0,
+            topScore: scan?.topScore ?? selected[0]?.score,
+            countAboveThreshold: ran
+              ? (scan?.candidateCount ?? selected.length)
+              : 0,
             maxAllowed: ran ? input.limit : 0
           };
         });

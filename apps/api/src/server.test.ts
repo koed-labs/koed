@@ -12227,6 +12227,18 @@ describe("account and access flows", () => {
         freshness: "fresh"
       }
     ];
+    repository.scanAuthorizedSharedMemorySemanticItems = async () => [
+      {
+        representation: "lcm_rollups",
+        candidateCount: 1,
+        topScore: 0.9
+      },
+      {
+        representation: "memory_events",
+        candidateCount: 1,
+        topScore: 0.8
+      }
+    ];
     repository.freezeSharedMemorySemanticRecallBoundary = async (
       _actor,
       input
@@ -12242,7 +12254,12 @@ describe("account and access flows", () => {
     });
     const app = await buildServer({
       repository,
-      fetch: async () =>
+      fetch: async () => {
+        throw new Error(
+          "Local-edge upstream transport must not embed Team queries"
+        );
+      },
+      internalServiceFetch: async () =>
         new Response(
           JSON.stringify({
             model: "qwen3-0.6b",
@@ -12409,10 +12426,19 @@ describe("account and access flows", () => {
     }>(deviceScoreScan);
     expect(scoreScan.hits).toEqual([]);
     expect(scoreScan.rawHitsCount).toBe(0);
-    expect(scoreScan.retrieval.vectorCandidateCount).toBe(1);
+    expect(scoreScan.retrieval.vectorCandidateCount).toBe(2);
     expect(scoreScan.retrieval.stages).toContainEqual(
       expect.objectContaining({
         name: "rollup_search",
+        used: false,
+        selectedCount: 0,
+        countAboveThreshold: 1,
+        maxAllowed: 1
+      })
+    );
+    expect(scoreScan.retrieval.stages).toContainEqual(
+      expect.objectContaining({
+        name: "fresh_pending_search",
         used: false,
         selectedCount: 0,
         countAboveThreshold: 1,

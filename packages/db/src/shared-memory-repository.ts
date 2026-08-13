@@ -386,6 +386,12 @@ export interface SharedMemorySemanticCandidate {
   freshness: "fresh" | "stale";
 }
 
+export interface SharedMemorySemanticStageScan {
+  representation: SharedMemoryRepresentation;
+  candidateCount: number;
+  topScore: number;
+}
+
 export interface SharedMemorySemanticExpansionItem {
   candidateId: string;
   pseudonymousSourceId: string;
@@ -798,6 +804,26 @@ export interface SharedMemoryRepository {
       authorizationBoundary?: SharedMemorySemanticAuthorizationBoundary;
     }
   ): Promise<SharedMemorySemanticCandidate[]>;
+  scanAuthorizedSharedMemorySemanticItems(
+    actor: ActorContext,
+    input: {
+      teamWorkspaceId: string;
+      queryVector: number[];
+      model: string;
+      dimensions: 384 | 1024 | 1536 | 3072;
+      version: string;
+      limit: number;
+      searchDomain: "global" | "session" | "project";
+      sessionId?: string;
+      projectId?: string;
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+      representations?: SharedMemoryRepresentation[];
+      parentCandidateIds?: string[];
+      authorizationBoundary?: SharedMemorySemanticAuthorizationBoundary;
+    }
+  ): Promise<SharedMemorySemanticStageScan[]>;
   expandAuthorizedSharedMemorySemanticItem(
     actor: ActorContext,
     input: {
@@ -7495,15 +7521,23 @@ export const createSharedMemoryRepository = (
         }
         if (preview.representation === "curated_assertions") {
           const assertionIds = previewBody.items.map((item) => item.sourceId);
-          const expiry = await client.query<{ expires_at: Date | null }>(
-            `select case when bool_or(expires_at is null) then null
-                         else min(expires_at) end as expires_at
+          const expiry = await client.query<{
+            expires_at: Date | null;
+            selected_count: number;
+          }>(
+            `select min(expires_at) as expires_at,
+                    count(*)::integer as selected_count
                from curated_memory_assertions
               where id=any($1::uuid[]) and owner_user_id=$2
                 and status='current' and suppressed_at is null
                 and (expires_at is null or expires_at>now())`,
             [assertionIds, actor.userId]
           );
+          if (expiry.rows[0]?.selected_count !== new Set(assertionIds).size) {
+            throw new SharedMemoryConflictError(
+              "Curated assertion validity changed after preview approval"
+            );
+          }
           await client.query(
             `update team_memory_representations
                 set curated_expires_at=$2
@@ -7917,7 +7951,8 @@ export const createSharedMemoryRepository = (
              and mr.disabled_at is null
            join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
-             and sr.state <> 'purge_pending'
+             and sr.revoked_at is null
+             and sr.state in ('processing','partially_available','ready','stale')
            join lateral (
              select r0.state,r0.source_revision,r0.updated_at
                from team_memory_representations r0
@@ -8512,6 +8547,145 @@ export const createSharedMemoryRepository = (
       };
     },
 
+    async scanAuthorizedSharedMemorySemanticItems(actor, input) {
+      assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
+      if (input.queryVector.length !== input.dimensions) {
+        throw new TypeError("queryVector does not match embedding dimensions");
+      }
+      input.parentCandidateIds?.forEach((id) =>
+        assertUuid(id, "parentCandidateId")
+      );
+      const perRepresentationLimit = Math.min(Math.max(input.limit, 1), 50);
+      const rows = await pool.query<Row>(
+        `select r.representation,
+                least(count(*)::integer,$11::integer) as candidate_count,
+                max(1-(v.embedding <=> $6::${semanticVectorCast(input.dimensions)})) as top_score
+           from team_memory_semantic_items smi
+           join ${semanticVectorTable(input.dimensions)} v on v.semantic_item_id=smi.id
+           join team_memory_representations r on r.id=smi.representation_id
+             and r.state in ('available','stale') and r.invalidated_at is null
+             and (r.curated_expires_at is null or r.curated_expires_at>now())
+           join team_session_share_grants g on g.id=smi.share_grant_id
+             and g.team_workspace_id=$2 and g.lifecycle='active' and g.revoked_at is null
+             and g.active_representation=r.representation and g.consent_id=r.consent_id
+           join teams t on t.id=g.team_id and t.lifecycle='active'
+             and t.entitlement_status in ('active','grace')
+           join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$1
+             and tm.status='enabled' and tm.disabled_at is null
+           join users u on u.id=tm.user_id and u.disabled_at is null and u.deleted_at is null
+           join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
+             and tw.lifecycle='active' and tw.archived_at is null
+           join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
+             and wa.team_id=g.team_id and wa.user_id=$1 and wa.disabled_at is null
+             and wa.access in ('read','write')
+           join source_owner_representation_consents c on c.id=g.consent_id
+             and c.state='active' and c.revoked_at is null
+             and (c.expires_at is null or c.expires_at>now())
+           join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
+             and op.version=g.source_owner_policy_version and op.superseded_at is null
+           join team_representation_policies tp on tp.policy_id=g.team_policy_id
+             and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
+           join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
+             and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
+             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+           join memory_replicas mr on mr.id=g.remote_replica_id and mr.lifecycle='active'
+             and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
+             and mr.disabled_at is null
+           join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
+             and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
+             and sr.revoked_at is null
+             and sr.state in ('processing','partially_available','ready','stale')
+           join shared_source_previews sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+           join shared_source_artifacts sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
+           join logical_memories lm on lm.id=smi.logical_memory_id
+             and lm.local_session_id is not null
+           join sessions source_session on source_session.id=lm.local_session_id
+             and source_session.owner_user_id=g.owner_user_id
+          where smi.embedding_state='embedded'
+            and smi.embedding_model=$3 and smi.embedding_dimensions=$4 and smi.embedding_version=$5
+            and smi.team_workspace_id=$2 and smi.source_revision=r.source_revision
+            and smi.representation_policy_revision=g.representation_policy_revision
+            and smi.content_policy_version=g.content_policy_version
+            and smi.classifier_version=g.classifier_version
+            and r.source_owner_policy_id=g.source_owner_policy_id
+            and r.source_owner_policy_version=g.source_owner_policy_version
+            and r.team_policy_id=g.team_policy_id and r.team_policy_version=g.team_policy_version
+            and r.workspace_policy_id=g.workspace_policy_id and r.workspace_policy_version=g.workspace_policy_version
+            and g.active_representation=any(g.owner_allowed_representations)
+            and g.active_representation=any(c.allowed_representations)
+            and g.active_representation=any(op.allowed_representations)
+            and g.active_representation=any(tp.allowed_representations)
+            and g.active_representation=any(wp.allowed_representations)
+            and (
+              $12::text='global'
+              or ($12::text='session' and lm.local_session_id=$13::uuid)
+              or ($12::text='project' and coalesce(
+                source_session.project_override_id,
+                source_session.automatic_project_id
+              )=$14)
+            )
+            and ($15::integer is null or smi.occurred_at >=
+              now() - make_interval(days => $15))
+            and ($7::timestamptz is null or smi.occurred_at >= $7)
+            and ($8::timestamptz is null or smi.occurred_at < $8)
+            and ($9::shared_memory_representation[] is null
+              or r.representation=any($9))
+            and ($10::uuid[] is null or exists (
+              select 1 from team_memory_semantic_items parent
+               where parent.id=any($10)
+                 and parent.team_workspace_id=smi.team_workspace_id
+                 and parent.logical_memory_id=smi.logical_memory_id
+                 and parent.share_grant_id=smi.share_grant_id
+                 and parent.embedding_state='embedded'
+            ))
+            and ($16::uuid[] is null or g.id=any($16))
+            and ($17::uuid is null or (
+              t.id=$17 and t.version=$18 and tw.version=$19
+              and tm.version=$20 and wa.version=$21 and u.xmin::text=$22
+            ))
+            and not exists (
+              select 1 from team_memory_representations newer
+               where newer.share_grant_id=r.share_grant_id
+                 and newer.representation=r.representation
+                 and newer.state in ('available','stale')
+                 and newer.source_revision>r.source_revision
+            )
+          group by r.representation
+          order by r.representation`,
+        [
+          actor.userId,
+          input.teamWorkspaceId,
+          input.model,
+          input.dimensions,
+          input.version,
+          JSON.stringify(input.queryVector),
+          input.sourceAfter ?? null,
+          input.sourceBefore ?? null,
+          input.representations === undefined ? null : input.representations,
+          input.parentCandidateIds?.length ? input.parentCandidateIds : null,
+          perRepresentationLimit,
+          input.searchDomain,
+          input.sessionId ?? null,
+          input.projectId ?? null,
+          input.recentDays ?? null,
+          input.authorizationBoundary?.shareGrantIds ?? null,
+          input.authorizationBoundary?.teamId ?? null,
+          input.authorizationBoundary?.teamVersion ?? null,
+          input.authorizationBoundary?.workspaceVersion ?? null,
+          input.authorizationBoundary?.membershipVersion ?? null,
+          input.authorizationBoundary?.workspaceAccessVersion ?? null,
+          input.authorizationBoundary?.userRowVersion ?? null
+        ]
+      );
+      return rows.rows.map((row) => ({
+        representation: stringValue(
+          row.representation
+        ) as SharedMemoryRepresentation,
+        candidateCount: numberValue(row.candidate_count),
+        topScore: Number(row.top_score)
+      }));
+    },
+
     async searchAuthorizedSharedMemorySemanticItems(actor, input) {
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       if (input.queryVector.length !== input.dimensions) {
@@ -8686,8 +8860,14 @@ export const createSharedMemoryRepository = (
         `select smi.*,r.representation,r.provenance_hash
            from team_memory_semantic_items smi
            join team_memory_representations r on r.id=smi.representation_id
+             and r.share_grant_id=smi.share_grant_id
+             and r.team_id=smi.team_id and r.team_workspace_id=smi.team_workspace_id
+             and r.logical_memory_id=smi.logical_memory_id
+             and r.state in ('available','stale') and r.invalidated_at is null
+             and (r.curated_expires_at is null or r.curated_expires_at>now())
            join team_session_share_grants g on g.id=smi.share_grant_id
              and g.lifecycle='active' and g.revoked_at is null
+             and g.active_representation=r.representation and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
              and t.entitlement_status in ('active','grace')
            join users u on u.id=$9 and u.disabled_at is null and u.deleted_at is null
@@ -8698,11 +8878,45 @@ export const createSharedMemoryRepository = (
            join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
              and wa.team_id=g.team_id and wa.user_id=u.id and wa.disabled_at is null
              and wa.access in ('read','write')
+           join source_owner_representation_consents consent on consent.id=g.consent_id
+             and consent.state='active' and consent.revoked_at is null
+             and (consent.expires_at is null or consent.expires_at>now())
+           join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
+             and op.version=g.source_owner_policy_version and op.superseded_at is null
+           join team_representation_policies tp on tp.policy_id=g.team_policy_id
+             and tp.version=g.team_policy_version and tp.team_id=g.team_id
+             and tp.superseded_at is null
+           join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
+             and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
+             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+           join memory_replicas mr on mr.id=g.remote_replica_id
+             and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
+             and mr.lifecycle='active' and mr.disabled_at is null
+           join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
+             and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
+             and sr.revoked_at is null
+             and sr.state in ('processing','partially_available','ready','stale')
+           join shared_source_previews sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+           join shared_source_artifacts sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join logical_memories lm on lm.id=smi.logical_memory_id
              and lm.local_session_id is not null
            join sessions source_session on source_session.id=lm.local_session_id
              and source_session.owner_user_id=g.owner_user_id
           where smi.id=$1 and smi.team_workspace_id=$2 and smi.embedding_state='embedded'
+            and smi.source_revision=r.source_revision
+            and smi.representation_policy_revision=g.representation_policy_revision
+            and smi.content_policy_version=g.content_policy_version
+            and smi.classifier_version=g.classifier_version
+            and r.source_owner_policy_id=g.source_owner_policy_id
+            and r.source_owner_policy_version=g.source_owner_policy_version
+            and r.team_policy_id=g.team_policy_id and r.team_policy_version=g.team_policy_version
+            and r.workspace_policy_id=g.workspace_policy_id
+            and r.workspace_policy_version=g.workspace_policy_version
+            and g.active_representation=any(g.owner_allowed_representations)
+            and g.active_representation=any(consent.allowed_representations)
+            and g.active_representation=any(op.allowed_representations)
+            and g.active_representation=any(tp.allowed_representations)
+            and g.active_representation=any(wp.allowed_representations)
             and (
               $3::text='global'
               or ($3::text='session' and lm.local_session_id=$4::uuid)
@@ -8986,6 +9200,8 @@ export const createSharedMemoryRepository = (
               where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
                 and r0.representation=g.active_representation
                 and r0.state in ('available','stale')
+                and r0.invalidated_at is null
+                and (r0.curated_expires_at is null or r0.curated_expires_at>now())
                 and r0.source_owner_policy_id=g.source_owner_policy_id
                 and r0.source_owner_policy_version=g.source_owner_policy_version
                 and r0.team_policy_id=g.team_policy_id

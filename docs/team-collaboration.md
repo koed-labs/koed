@@ -589,13 +589,21 @@ preserving genuinely distinct child sources. Expansion never emits the
 selected parent as its own child.
 
 Team staged recall follows the Personal retrieval contract: `score_scan`
-returns ranked grant-scoped candidate metadata without readable evidence;
+returns bounded grant-scoped candidate counts and top scores independently for
+each available representation, without hydrating or decrypting readable
+evidence;
 `rollup_search`, `scoped_leaf_search`/`leaf_search`, and
 `fresh_pending_search` select only rollups, leaves, and Memory Events,
 respectively, while `curated_memory_search` selects eligible consent-bound
 Curated Memory. Parent candidate IDs bound leaf search to the same logical
 Captured Session, and `strict_limit` is applied during vector candidate
 selection. Unsupported plaintext/raw stages return no Team candidates.
+
+The MCP Server obtains the signed Team authorization boundary from one initial
+Team Memory Answer request before starting its local answer worker. Every
+worker search and expansion reuses that same boundary. The API's embedding
+request uses the trusted internal-service transport; local-edge upstream fetch
+policy is reserved for user-configured remote backends.
 
 The embedding generation is more than a model label. It versions the trusted
 item composition (plain redacted event/tool text and LCM summary text followed

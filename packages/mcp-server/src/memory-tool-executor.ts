@@ -274,16 +274,28 @@ export class MemoryToolExecutor {
             localEdgeClientCredential!.authorization
           )
         : this.client;
-    const evidence = {
-      markdown: "",
-      evidenceBundle: {
-        query: answerInput.query,
-        instructions:
-          "Use Koed memory RAG tools to gather and judge evidence before answering.",
-        evidence: [],
-        retrieval: { mode: "app_server_dynamic_tools" }
-      }
-    };
+    const evidence =
+      teamWorkspaceId && upstreamBackendId
+        ? await this.client.teamMemoryAnswer(
+            upstreamBackendId,
+            {
+              ...answerInput,
+              team_workspace_id: teamWorkspaceId,
+              project_id: projectId,
+              retrieval_stage: "score_scan"
+            },
+            localEdgeClientCredential!.authorization
+          )
+        : {
+            markdown: "",
+            evidenceBundle: {
+              query: answerInput.query,
+              instructions:
+                "Use Koed memory RAG tools to gather and judge evidence before answering.",
+              evidence: [],
+              retrieval: { mode: "app_server_dynamic_tools" }
+            }
+          };
     const answer = await (
       this.services.answerWithMemoryWorker ?? answerWithMemoryWorker
     )(evidence, {
@@ -355,7 +367,13 @@ export class MemoryToolExecutor {
         "koed memory_answer question history persistence skipped"
       );
     }
-    await this.recordTokenUsage(answer, input, projectId, recordedQuestion);
+    await this.recordTokenUsage(
+      answer,
+      input,
+      projectId,
+      recordedQuestion,
+      upstreamBackendId
+    );
     return toolAnswerResponse(answer, requestedResponseDetail);
   }
 
@@ -363,8 +381,15 @@ export class MemoryToolExecutor {
     answer: Awaited<ReturnType<typeof answerWithMemoryWorker>>,
     input: MemoryAnswerToolInput,
     projectId: string | undefined,
-    recordedQuestion: McpMemoryQuestion | null
+    recordedQuestion: McpMemoryQuestion | null,
+    upstreamBackendId: string | undefined
   ): Promise<void> {
+    const upstreamQuestionId = upstreamBackendId
+      ? recordedQuestion?.id
+      : undefined;
+    const localQuestionId = upstreamBackendId
+      ? undefined
+      : recordedQuestion?.id;
     const executions = answer.localMemoryWorker.appServerExecutions?.length
       ? answer.localMemoryWorker.appServerExecutions
       : [
@@ -383,7 +408,7 @@ export class MemoryToolExecutor {
           await this.client.recordTokenUsage({
             workflowType: "mcp_memory_answer",
             workflowId: answer.localMemoryWorker.jobId,
-            questionId: recordedQuestion?.id,
+            questionId: localQuestionId,
             answerJobId: answer.localMemoryWorker.jobId,
             sessionId: input.session_id,
             sourceRuntime: "codex",
@@ -406,7 +431,9 @@ export class MemoryToolExecutor {
               appServerThreadId:
                 execution.primaryThreadId ?? execution.threadId,
               appServerTurnId: execution.turnId,
-              questionId: recordedQuestion?.id,
+              questionId: localQuestionId,
+              upstreamQuestionId,
+              upstreamBackendId,
               answerJobId: answer.localMemoryWorker.jobId,
               primaryAppServerThreadId: execution.primaryThreadId,
               executionThreadId: execution.threadId,

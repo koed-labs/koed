@@ -116,6 +116,10 @@ export interface ApiRouteContext {
       principalUserId: string;
     } | null;
   };
+  internalServices: {
+    /** Trusted transport for Operator-configured internal service endpoints. */
+    fetch: typeof fetch;
+  };
   workos: {
     client: WorkosAuthKitClient;
   };

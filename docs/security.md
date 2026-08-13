@@ -32,7 +32,9 @@ Diagnostics are redacted by design: they report whether secrets are configured, 
 The Embedding Service is an internal backend component. Keep it off public
 networks. Docker Compose passes `EMBEDDING_SERVICE_TOKEN` to the Embedding
 Service, API, and Worker so embedding and reranking requests require a shared
-internal header.
+internal header. API requests to that Operator-configured service use a
+separate trusted internal-service transport. They do not pass through the
+local-edge upstream transport or its user-configured remote URL policy.
 
 Team Shared Memory embedding keeps the exact Share Grant, representation,
 consent, policy, replica, source-artifact, semantic-item, and encrypted-chunk
@@ -50,6 +52,12 @@ cannot broaden an active run; revocation, disablement, row replacement, token
 tampering, expiry, or cross-User/Workspace replay fails closed. The contract is
 limited to 128 grants and is forwarded by trusted MCP code, not the synthesis
 model.
+
+Direct Team representation reads, semantic searches, score scans, and
+expansion all revalidate current representation, consent, policy, replica,
+source-artifact, and curated-expiry state before returning metadata or
+decrypting content. A mixed permanent/expiring Curated representation expires
+at its earliest contributing assertion expiry.
 
 ## Data At Rest
 

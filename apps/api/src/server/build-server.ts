@@ -158,6 +158,8 @@ export interface BuildServerOptions {
   cacheProvider?: CacheProvider;
   upstreamBackendsPath?: string;
   upstreamEnrollmentsPath?: string;
+  /** Test/deployment injection for trusted internal service requests. */
+  internalServiceFetch?: typeof fetch;
   fetch?: typeof fetch;
   resolveUpstreamAuthorization?: ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"];
   resolveUpstreamEnrollmentBinding?: ApiRouteContext["localEdge"]["resolveUpstreamEnrollmentBinding"];
@@ -747,6 +749,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
       resolveUpstreamEnrollmentBinding:
         localEdgeResolveUpstreamEnrollmentBinding
+    },
+    internalServices: {
+      fetch: options.internalServiceFetch ?? fetch
     },
     workos: {
       client:
