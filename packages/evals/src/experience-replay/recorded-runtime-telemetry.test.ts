@@ -118,7 +118,11 @@ describe("recorded replay telemetry provisioning", () => {
         expansions: 1,
         stages: 4,
         evidenceCount: 5,
-        workerPeakRssBytes: 8192
+        workerPeakRssBytes: 8192,
+        memoryAnswerRequests: [
+          { responseDetail: "answer_only", searchDomain: "project" },
+          { responseDetail: "answer_only", searchDomain: "project" }
+        ]
       }),
       embeddings: () => ({ calls: 2, tokens: null, durationMs: 12 })
     });

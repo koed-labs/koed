@@ -199,4 +199,97 @@ describe("strict Experience Replay journal generations", () => {
       )
     ).toThrow("unexpected attempt");
   });
+
+  it("retries only pre-agent setup failures", async () => {
+    const entries = [
+      {
+        ...base,
+        sequence: 0,
+        type: "attempt_state" as const,
+        attemptId: "replay:task:empty:0",
+        executionGeneration: 1,
+        state: "admitted" as const
+      },
+      {
+        ...base,
+        sequence: 1,
+        type: "attempt_result" as const,
+        attemptId: "replay:task:empty:0",
+        executionGeneration: 1,
+        resultPath: "attempts/task/empty/0/generation-1/failure-result.json",
+        resultSha256: `sha256:${"a".repeat(64)}`,
+        resultIdentity: {
+          attemptId: "replay:task:empty:0",
+          executionGeneration: 1
+        },
+        reward: null,
+        failureCategory: "setup_failed"
+      }
+    ] satisfies RunJournalEntry[];
+
+    expect(planAttemptResume(["replay:task:empty:0"], entries)).toEqual([
+      {
+        attemptId: "replay:task:empty:0",
+        action: "rerun_before_agent",
+        nextExecutionGeneration: 2
+      }
+    ]);
+    await expect(
+      readEntries([
+        ...entries,
+        {
+          ...base,
+          sequence: 2,
+          type: "attempt_state",
+          attemptId: "replay:task:empty:0",
+          executionGeneration: 2,
+          state: "admitted"
+        }
+      ])
+    ).resolves.toHaveLength(3);
+  });
+
+  it("does not retry a setup-labelled result after the agent started", () => {
+    const entries = [
+      {
+        ...base,
+        sequence: 0,
+        type: "attempt_state" as const,
+        attemptId: "replay:task:empty:0",
+        executionGeneration: 1,
+        state: "admitted" as const
+      },
+      {
+        ...base,
+        sequence: 1,
+        type: "attempt_state" as const,
+        attemptId: "replay:task:empty:0",
+        executionGeneration: 1,
+        state: "agent_started" as const
+      },
+      {
+        ...base,
+        sequence: 2,
+        type: "attempt_result" as const,
+        attemptId: "replay:task:empty:0",
+        executionGeneration: 1,
+        resultPath: "attempts/task/empty/0/generation-1/failure-result.json",
+        resultSha256: `sha256:${"a".repeat(64)}`,
+        resultIdentity: {
+          attemptId: "replay:task:empty:0",
+          executionGeneration: 1
+        },
+        reward: null,
+        failureCategory: "setup_failed"
+      }
+    ] satisfies RunJournalEntry[];
+
+    expect(planAttemptResume(["replay:task:empty:0"], entries)).toEqual([
+      {
+        attemptId: "replay:task:empty:0",
+        action: "skip_completed",
+        nextExecutionGeneration: 1
+      }
+    ]);
+  });
 });

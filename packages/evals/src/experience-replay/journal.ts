@@ -61,6 +61,16 @@ export type RunJournalEntry =
     });
 type AttemptJournalEntry = Exclude<RunJournalEntry, { type: "phase" }>;
 
+const RETRYABLE_PRE_AGENT_FAILURES = new Set(["setup_failed", "setup_timeout"]);
+
+const isRetryablePreAgentResult = (
+  result: Extract<AttemptJournalEntry, { type: "attempt_result" }> | undefined,
+  agentStarted: boolean
+): boolean =>
+  !agentStarted &&
+  result?.failureCategory != null &&
+  RETRYABLE_PRE_AGENT_FAILURES.has(result.failureCategory);
+
 type JournalEntryInput<T> = T extends unknown
   ? Omit<T, keyof JournalBase>
   : never;
@@ -229,14 +239,21 @@ const validateAttemptHistory = (entries: readonly RunJournalEntry[]): void => {
           `Attempt ${attemptId} generation ${generation} completed before admission`
         );
       }
-      if (results.length === 1) terminalGeneration = generation;
+      const retryablePreAgentResult = isRetryablePreAgentResult(
+        results[0],
+        started.length === 1
+      );
+      if (results.length === 1 && !retryablePreAgentResult) {
+        terminalGeneration = generation;
+      }
       if (terminalGeneration !== undefined && generation > terminalGeneration) {
         throw new Error(
           `Attempt ${attemptId} continued after a terminal result`
         );
       }
       priorGenerationReachedAgent =
-        started.length === 1 || results.length === 1;
+        started.length === 1 ||
+        (results.length === 1 && !retryablePreAgentResult);
     }
   }
 };
@@ -370,20 +387,28 @@ export const planAttemptResume = (
           : Math.max(maximum, entry.executionGeneration),
       0
     );
-    const terminal = values.find((entry) => entry.type === "attempt_result");
-    if (terminal) {
+    const latest = values.filter(
+      (entry): entry is AttemptJournalEntry =>
+        entry.type !== "phase" && entry.executionGeneration === generation
+    );
+    const terminal = latest.find(
+      (
+        entry
+      ): entry is Extract<AttemptJournalEntry, { type: "attempt_result" }> =>
+        entry.type === "attempt_result"
+    );
+    const agentStarted = latest.some(
+      (entry) =>
+        entry.type === "attempt_state" && entry.state === "agent_started"
+    );
+    if (terminal && !isRetryablePreAgentResult(terminal, agentStarted)) {
       return {
         attemptId,
         action: "skip_completed",
         nextExecutionGeneration: terminal.executionGeneration
       };
     }
-    if (
-      values.some(
-        (entry) =>
-          entry.type === "attempt_state" && entry.state === "agent_started"
-      )
-    ) {
+    if (agentStarted) {
       return {
         attemptId,
         action: "preserve_missing",

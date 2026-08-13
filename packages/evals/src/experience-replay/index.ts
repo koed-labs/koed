@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { parseExperienceReplayCommand } from "./command.js";
 import {
   reportExistingRun,
@@ -10,11 +11,50 @@ import {
   sanitizeRunReport
 } from "./coordinator.js";
 import {
+  EXPERIENCE_REPLAY_REPOSITORY_ROOT,
   loadExperienceReplayConfig,
   preflightExperienceReplay
 } from "./preflight.js";
 import { createRecordedPreflightRuntime } from "./recorded-preflight-runtime.js";
 import { createCliExperienceReplayDependencies } from "./runtime-options.js";
+import {
+  inspectOracleCorpusArtifact,
+  loadOracleCorpusArtifact,
+  type OracleCorpusArtifactEntry,
+  type OracleCorpusArtifactIdentity,
+  type OracleCorpusArtifactLocation
+} from "./oracle-corpus-artifact.js";
+
+const oracleArtifactLocation = (
+  corpusDirectory: string,
+  repositoryRoot: string
+): OracleCorpusArtifactLocation => ({ corpusDirectory, repositoryRoot });
+
+const oracleArtifactIdentity = (
+  result: Awaited<ReturnType<typeof preflightExperienceReplay>>,
+  corpus?: OracleCorpusArtifactEntry
+): OracleCorpusArtifactIdentity => {
+  const task = result.pins.selectedTasks[0];
+  const image = result.recordedRunAttestation?.taskImages[0];
+  if (!task || !image) {
+    throw new Error(
+      "Oracle corpus requires one recorded task-image attestation"
+    );
+  }
+  return {
+    model: corpus?.identity.model ?? result.config.coding_agent.id,
+    reasoningEffort:
+      corpus?.identity.reasoningEffort ??
+      result.config.coding_agent.reasoning_effort,
+    task: { name: task.name, digest: task.task_digest },
+    codex: { version: result.config.codex_cli.version },
+    taskImage: {
+      ...image,
+      resolvedBaseImageDigests: [...image.resolvedBaseImageDigests]
+    },
+    sanitizer: { name: "koed-atif-sanitizer", version: "ATIF-v1.7" }
+  };
+};
 
 export * from "./artifacts.js";
 export * from "./command.js";
@@ -23,6 +63,7 @@ export * from "./cost-admission.js";
 export * from "./journal.js";
 export * from "./local-product-adapter.js";
 export * from "./oracle-corpus.js";
+export * from "./oracle-corpus-artifact.js";
 export * from "./preflight.js";
 export * from "./recorded-preflight-runtime.js";
 export * from "./replay-scheduler.js";
@@ -44,6 +85,14 @@ export const runExperienceReplayCli = async (
       const codexAuthMode = command.codexSubscription
         ? "subscription"
         : "api_key";
+      const inspectedCorpus = command.oracleRepeatedStudy
+        ? await inspectOracleCorpusArtifact(
+            oracleArtifactLocation(
+              command.oracleCorpusPath!,
+              EXPERIENCE_REPLAY_REPOSITORY_ROOT
+            )
+          )
+        : undefined;
       const recorded =
         config.profile === "smoke"
           ? null
@@ -51,17 +100,24 @@ export const runExperienceReplayCli = async (
               config,
               process.env,
               {},
-              codexAuthMode
+              codexAuthMode,
+              inspectedCorpus ? [inspectedCorpus.identity.taskImage] : undefined
             );
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun || command.codexSubscription,
         executionKind: command.oracleSeededProof
           ? "oracle_seeded_product_proof"
-          : command.productPathProof
-            ? "product_path_proof"
-            : "benchmark_profile",
+          : command.oracleRepeatedStudy
+            ? "oracle_seeded_repeated_study"
+            : command.productPathProof
+              ? "product_path_proof"
+              : "benchmark_profile",
         oracleBriefSha256,
+        oracleCorpusManifestSha256: inspectedCorpus?.attestationSha256,
+        ...(command.oracleRepeats === null
+          ? {}
+          : { oracleRepeats: command.oracleRepeats }),
         codexAuthMode,
         requireRunnable: true,
         ...(recorded
@@ -71,6 +127,15 @@ export const runExperienceReplayCli = async (
             }
           : {})
       });
+      if (command.oracleRepeatedStudy) {
+        await loadOracleCorpusArtifact(
+          oracleArtifactLocation(
+            command.oracleCorpusPath!,
+            EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          ),
+          oracleArtifactIdentity(result, inspectedCorpus)
+        );
+      }
       return {
         executionKind: result.runPlan.kind,
         codexAuthMode: result.runPlan.codexAuthMode,
@@ -96,6 +161,15 @@ export const runExperienceReplayCli = async (
       const codexAuthMode = command.codexSubscription
         ? "subscription"
         : "api_key";
+      const artifactLocation = command.oracleCorpusPath
+        ? oracleArtifactLocation(
+            command.oracleCorpusPath,
+            EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          )
+        : undefined;
+      const inspectedCorpus = command.oracleRepeatedStudy
+        ? await inspectOracleCorpusArtifact(artifactLocation!)
+        : undefined;
       const recorded =
         config.profile === "smoke"
           ? null
@@ -103,17 +177,24 @@ export const runExperienceReplayCli = async (
               config,
               process.env,
               {},
-              codexAuthMode
+              codexAuthMode,
+              inspectedCorpus ? [inspectedCorpus.identity.taskImage] : undefined
             );
       const result = await preflightExperienceReplay({
         config,
         confirmPaidRun: command.confirmPaidRun || command.codexSubscription,
         executionKind: command.oracleSeededProof
           ? "oracle_seeded_product_proof"
-          : command.productPathProof
-            ? "product_path_proof"
-            : "benchmark_profile",
+          : command.oracleRepeatedStudy
+            ? "oracle_seeded_repeated_study"
+            : command.productPathProof
+              ? "product_path_proof"
+              : "benchmark_profile",
         oracleBriefSha256,
+        oracleCorpusManifestSha256: inspectedCorpus?.attestationSha256,
+        ...(command.oracleRepeats === null
+          ? {}
+          : { oracleRepeats: command.oracleRepeats }),
         codexAuthMode,
         requireRunnable: true,
         ...(recorded
@@ -123,6 +204,13 @@ export const runExperienceReplayCli = async (
             }
           : {})
       });
+      const oracleCorpus: OracleCorpusArtifactEntry | undefined =
+        command.oracleRepeatedStudy
+          ? await loadOracleCorpusArtifact(
+              artifactLocation!,
+              oracleArtifactIdentity(result, inspectedCorpus)
+            )
+          : undefined;
       const dependencies = createCliExperienceReplayDependencies(
         config,
         process.env,
@@ -130,12 +218,22 @@ export const runExperienceReplayCli = async (
         result.frozenTaskImages,
         codexAuthMode,
         result.runPlan.kind === "product_path_proof" ||
-          result.runPlan.kind === "oracle_seeded_product_proof"
+          result.runPlan.kind === "oracle_seeded_product_proof" ||
+          result.runPlan.kind === "oracle_seeded_repeated_study"
       );
       return runExperienceReplay(config, {
         preflight: result,
         dependencies,
-        ...(oracleBrief ? { oracleBrief } : {})
+        ...(oracleBrief ? { oracleBrief } : {}),
+        ...(oracleCorpus ? { oracleCorpusArtifactEntry: oracleCorpus } : {}),
+        ...(command.oracleSeededProof && artifactLocation
+          ? {
+              oracleCorpusArtifactTarget: {
+                location: artifactLocation,
+                identity: oracleArtifactIdentity(result)
+              }
+            }
+          : {})
       });
     }
     case "resume": {
@@ -157,6 +255,7 @@ export const runExperienceReplayCli = async (
         confirmPaidRun: identity.config.profile !== "smoke",
         executionKind: identity.runPlan.kind,
         oracleBriefSha256: identity.runPlan.oracleBriefSha256,
+        oracleCorpusManifestSha256: identity.runPlan.oracleCorpusManifestSha256,
         codexAuthMode: identity.runPlan.codexAuthMode,
         requireRunnable: true,
         ...(recorded
@@ -173,12 +272,29 @@ export const runExperienceReplayCli = async (
         result.frozenTaskImages,
         identity.runPlan.codexAuthMode,
         identity.runPlan.kind === "product_path_proof" ||
-          identity.runPlan.kind === "oracle_seeded_product_proof"
+          identity.runPlan.kind === "oracle_seeded_product_proof" ||
+          identity.runPlan.kind === "oracle_seeded_repeated_study"
       );
+      const resumedCorpusLocation = oracleArtifactLocation(
+        path.join(identity.runRoot, "oracle-private"),
+        EXPERIENCE_REPLAY_REPOSITORY_ROOT
+      );
+      const inspectedResumedCorpus = identity.runPlan.oracleCorpusManifestSha256
+        ? await inspectOracleCorpusArtifact(resumedCorpusLocation)
+        : undefined;
+      const resumedOracleCorpus = inspectedResumedCorpus
+        ? await loadOracleCorpusArtifact(
+            resumedCorpusLocation,
+            oracleArtifactIdentity(result, inspectedResumedCorpus)
+          )
+        : undefined;
       return {
         reportPath: await resumeExperienceReplay(identity.runRoot, {
           preflight: result,
-          dependencies
+          dependencies,
+          ...(resumedOracleCorpus
+            ? { oracleCorpusArtifactEntry: resumedOracleCorpus }
+            : {})
         })
       };
     }

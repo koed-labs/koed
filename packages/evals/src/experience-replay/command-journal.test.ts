@@ -21,7 +21,10 @@ describe("experience replay command parsing", () => {
       confirmPaidRun: true,
       productPathProof: false,
       oracleSeededProof: false,
+      oracleRepeatedStudy: false,
       oracleBriefPath: null,
+      oracleCorpusPath: null,
+      oracleRepeats: null,
       codexSubscription: false
     });
     expect(
@@ -38,7 +41,10 @@ describe("experience replay command parsing", () => {
       confirmPaidRun: false,
       productPathProof: false,
       oracleSeededProof: false,
+      oracleRepeatedStudy: false,
       oracleBriefPath: null,
+      oracleCorpusPath: null,
+      oracleRepeats: null,
       codexSubscription: false
     });
     expect(
@@ -56,7 +62,10 @@ describe("experience replay command parsing", () => {
       confirmPaidRun: true,
       productPathProof: true,
       oracleSeededProof: false,
+      oracleRepeatedStudy: false,
       oracleBriefPath: null,
+      oracleCorpusPath: null,
+      oracleRepeats: null,
       codexSubscription: true
     });
     expect(() =>
@@ -80,13 +89,53 @@ describe("experience replay command parsing", () => {
         "oracle.json",
         "--oracle-seeded-proof",
         "--oracle-brief",
-        "/tmp/brief.txt"
+        "/tmp/brief.txt",
+        "--oracle-corpus",
+        "/tmp/corpus"
       ])
     ).toMatchObject({
       oracleSeededProof: true,
       oracleBriefPath: "/tmp/brief.txt",
+      oracleCorpusPath: "/tmp/corpus",
       productPathProof: false
     });
+    expect(
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "oracle.json",
+        "--oracle-repeated-study",
+        "--oracle-corpus",
+        "/tmp/corpus",
+        "--oracle-repeats",
+        "3"
+      ])
+    ).toMatchObject({
+      oracleRepeatedStudy: true,
+      oracleCorpusPath: "/tmp/corpus",
+      oracleRepeats: 3
+    });
+    expect(() =>
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "oracle.json",
+        "--oracle-repeats",
+        "0"
+      ])
+    ).toThrow("only with --oracle-repeated-study");
+    expect(() =>
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "oracle.json",
+        "--oracle-repeated-study",
+        "--oracle-corpus",
+        "/tmp/corpus",
+        "--oracle-repeats",
+        "101"
+      ])
+    ).toThrow("integer from 1 to 100");
     expect(() =>
       parseExperienceReplayCommand([
         "run",

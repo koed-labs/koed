@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createBenchmarkRunPlan,
+  createOracleSeededRepeatedStudyRunPlan,
   createOracleSeededProductProofRunPlan,
   createProductPathProofRunPlan,
   immutableHash,
@@ -190,7 +191,8 @@ export const attestPinnedInputs = async (
   }
   if (
     executionKind === "product_path_proof" ||
-    executionKind === "oracle_seeded_product_proof"
+    executionKind === "oracle_seeded_product_proof" ||
+    executionKind === "oracle_seeded_repeated_study"
   ) {
     const proof = await readJson<ProductProofManifest>(
       path.join(
@@ -226,7 +228,8 @@ export const attestPinnedInputs = async (
       subsetHash: immutableHash(proof),
       uvLockHash: sha256(uvLock),
       selectedTasks:
-        executionKind === "oracle_seeded_product_proof"
+        executionKind === "oracle_seeded_product_proof" ||
+        executionKind === "oracle_seeded_repeated_study"
           ? [proof.tasks[0]!]
           : proof.tasks
     };
@@ -565,7 +568,9 @@ export const preflightExperienceReplay = async ({
   productPathReady = false,
   executionKind = "benchmark_profile",
   codexAuthMode = "api_key",
-  oracleBriefSha256
+  oracleBriefSha256,
+  oracleCorpusManifestSha256,
+  oracleRepeats
 }: {
   config: ResolvedExperienceReplayConfig;
   confirmPaidRun?: boolean;
@@ -575,6 +580,8 @@ export const preflightExperienceReplay = async ({
   executionKind?: ExperienceReplayExecutionKind;
   codexAuthMode?: ExperienceReplayCodexAuthMode;
   oracleBriefSha256?: string;
+  oracleCorpusManifestSha256?: string;
+  oracleRepeats?: number;
 }): Promise<PreflightResult> => {
   const repositoryRoot = await realpath(EXPERIENCE_REPLAY_REPOSITORY_ROOT);
   if (executionKind !== "benchmark_profile" && config.profile === "smoke") {
@@ -604,7 +611,15 @@ export const preflightExperienceReplay = async ({
             oracleBriefSha256 ?? "",
             codexAuthMode
           )
-        : createBenchmarkRunPlan(config, selectedTaskDigests, codexAuthMode);
+        : executionKind === "oracle_seeded_repeated_study"
+          ? createOracleSeededRepeatedStudyRunPlan(
+              config,
+              selectedTaskDigests[0] ?? "",
+              oracleCorpusManifestSha256 ?? "",
+              oracleRepeats ?? 10,
+              codexAuthMode
+            )
+          : createBenchmarkRunPlan(config, selectedTaskDigests, codexAuthMode);
   verifyExperienceReplayRunPlan(runPlan);
   if (config.profile !== "smoke" && !confirmPaidRun) {
     throw new ProductPathPrerequisiteError([
@@ -612,10 +627,17 @@ export const preflightExperienceReplay = async ({
     ]);
   }
   const estimatedCapacity = estimateRunCapacity({
-    sourceAttempts: runPlan.sourceTaskDigests.length,
+    sourceAttempts:
+      executionKind === "oracle_seeded_repeated_study"
+        ? 0
+        : runPlan.sourceTaskDigests.length,
     replayAttempts:
       runPlan.replayTargetTaskDigests.length *
-      (executionKind === "oracle_seeded_product_proof" ? 6 : 4) *
+      (executionKind === "oracle_seeded_product_proof"
+        ? 6
+        : executionKind === "oracle_seeded_repeated_study"
+          ? 3
+          : 4) *
       runPlan.replayAttemptsPerCondition,
     maximumTrajectoryBytes: config.admission.maximum_trajectory_bytes,
     estimatedAttemptArtifactBytes:

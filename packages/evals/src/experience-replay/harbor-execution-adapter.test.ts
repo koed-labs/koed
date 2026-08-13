@@ -494,6 +494,34 @@ describe("HarborExecutionAdapter", () => {
     });
   });
 
+  it("authorizes private developer instructions on replay attempts", async () => {
+    const { runRoot, corpusManifest } = await fixture();
+    const capture: ExecutorCapture = { requests: [], invocations: [] };
+    const adapter = new HarborExecutionAdapter({
+      mode: "smoke",
+      corpusManifest,
+      executor: successfulExecutor(capture)
+    });
+    const developerInstructions = "Private verifier-qualified guidance.";
+
+    await adapter.runReplay({
+      task,
+      condition: "direct_guidance",
+      repeat: 0,
+      executionGeneration: 1,
+      runRoot,
+      developerInstructions,
+      lifecycle: acknowledgedLifecycle([]),
+      config: config(runRoot)
+    });
+
+    expect(capture.requests[0]).toMatchObject({
+      developer_instructions_sha256: createHash("sha256")
+        .update(developerInstructions)
+        .digest("hex")
+    });
+  });
+
   it("requires one relevant recall only in the explicit product-path proof", async () => {
     const { runRoot, corpusManifest } = await fixture();
     const capture: ExecutorCapture = { requests: [], invocations: [] };

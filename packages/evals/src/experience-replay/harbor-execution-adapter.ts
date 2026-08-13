@@ -8,6 +8,7 @@ import type {
   ReplayCondition,
   ResolvedExperienceReplayConfig
 } from "./core/index.js";
+import { conditionUsesKoed } from "./core/index.js";
 import {
   HarborClient,
   HarborClientError,
@@ -130,6 +131,8 @@ export interface HarborReplayExecutionInput extends CommonExecutionInput {
   resultPath?: string;
   bridgeUrl?: string;
   bridgeToken?: string;
+  developerInstructions?: string;
+  requireMemoryAnswer?: boolean;
 }
 
 const exactRecord = (
@@ -362,7 +365,7 @@ const jobConfig = (
       n_concurrent: 1,
       override_timeout_sec: input.config.timeouts.agent_seconds,
       extra_allowed_hosts: [
-        ...(condition === "cold"
+        ...(!conditionUsesKoed(condition)
           ? []
           : [
               new URL(
@@ -406,7 +409,7 @@ const inactiveWorkerTelemetry = {
 export const createDeterministicSmokeTelemetry = (
   identity: AttemptTelemetryIdentity
 ): NonHarborTelemetry => {
-  const recallRan = identity.condition !== "cold";
+  const recallRan = conditionUsesKoed(identity.condition);
   const evidenceCount =
     identity.condition === "placebo" ||
     identity.condition === "relevant" ||
@@ -437,7 +440,10 @@ export const createDeterministicSmokeTelemetry = (
       evidenceCount,
       projectionMs: null,
       lcmMs: null,
-      queueMs: null
+      queueMs: null,
+      memoryAnswerRequests: recallRan
+        ? [{ responseDetail: "answer_only", searchDomain: "project" }]
+        : []
     }),
     modelWorkflows: available(identity, {
       // Smoke exercises the contract with a deterministic executor, not an LLM.
@@ -538,15 +544,17 @@ export class HarborExecutionAdapter {
     condition: ReplayCondition,
     bridgeUrl?: string,
     bridgeToken?: string,
-    developerInstructions?: string
+    developerInstructions?: string,
+    requireMemoryAnswer = false
   ) {
     return createTrialCodexConfiguration({
       condition,
       model: input.config.coding_agent.id,
       reasoningEffort: input.config.coding_agent.reasoning_effort,
       requireMemoryAnswer:
-        this.options.productPathProof === true &&
-        (condition === "relevant" || condition.startsWith("relevant_")),
+        requireMemoryAnswer ||
+        (this.options.productPathProof === true &&
+          (condition === "relevant" || condition.startsWith("relevant_"))),
       ...(bridgeUrl ? { bridgeUrl } : {}),
       ...(bridgeToken ? { bridgeToken } : {}),
       ...(developerInstructions ? { developerInstructions } : {})
@@ -644,7 +652,9 @@ export class HarborExecutionAdapter {
       input,
       input.condition,
       input.bridgeUrl,
-      input.bridgeToken
+      input.bridgeToken,
+      input.developerInstructions,
+      input.requireMemoryAnswer
     );
     const identity: AttemptTelemetryIdentity = {
       taskDigest: input.task.taskDigest,
@@ -674,7 +684,14 @@ export class HarborExecutionAdapter {
       freeze_manifest_path: replayManifestPath,
       result_path:
         input.resultPath ??
-        `harbor-results/replay-${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}.json`
+        `harbor-results/replay-${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}.json`,
+      ...(input.developerInstructions
+        ? {
+            developer_instructions_sha256: createHash("sha256")
+              .update(input.developerInstructions)
+              .digest("hex")
+          }
+        : {})
     };
     const output = await this.client(input, {
       ...(this.options.providerApiKey

@@ -5,13 +5,16 @@ export type ExperienceReplayCommand =
       confirmPaidRun: boolean;
       productPathProof: boolean;
       oracleSeededProof: boolean;
+      oracleRepeatedStudy: boolean;
       oracleBriefPath: string | null;
+      oracleCorpusPath: string | null;
+      oracleRepeats: number | null;
       codexSubscription: boolean;
     }
   | { name: "resume" | "report" | "sanitize"; runDirectory: string };
 
 const usage =
-  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] [--product-path-proof | --oracle-seeded-proof --oracle-brief <file>] [--codex-subscription] | <resume|report|sanitize> --run <dir>";
+  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] [--product-path-proof | --oracle-seeded-proof --oracle-brief <file> --oracle-corpus <absolute-dir> | --oracle-repeated-study --oracle-corpus <absolute-dir> [--oracle-repeats <1..100>]] [--codex-subscription] | <resume|report|sanitize> --run <dir>";
 
 export class CommandLineError extends Error {
   override readonly name = "CommandLineError";
@@ -33,6 +36,7 @@ export const parseExperienceReplayCommand = (
   let confirmPaidRun = false;
   let productPathProof = false;
   let oracleSeededProof = false;
+  let oracleRepeatedStudy = false;
   let codexSubscription = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index] as string;
@@ -54,6 +58,12 @@ export const parseExperienceReplayCommand = (
       oracleSeededProof = true;
       continue;
     }
+    if (argument === "--oracle-repeated-study") {
+      if (oracleRepeatedStudy)
+        throw new CommandLineError("Duplicate --oracle-repeated-study");
+      oracleRepeatedStudy = true;
+      continue;
+    }
     if (argument === "--codex-subscription") {
       if (codexSubscription)
         throw new CommandLineError("Duplicate --codex-subscription");
@@ -63,7 +73,9 @@ export const parseExperienceReplayCommand = (
     if (
       argument !== "--config" &&
       argument !== "--run" &&
-      argument !== "--oracle-brief"
+      argument !== "--oracle-brief" &&
+      argument !== "--oracle-corpus" &&
+      argument !== "--oracle-repeats"
     ) {
       throw new CommandLineError(`Unknown argument: ${argument}\n${usage}`);
     }
@@ -82,9 +94,12 @@ export const parseExperienceReplayCommand = (
     const configPath = values.get("--config");
     if (!configPath)
       throw new CommandLineError(`${commandName} requires --config`);
-    if (productPathProof && oracleSeededProof) {
+    if (
+      [productPathProof, oracleSeededProof, oracleRepeatedStudy].filter(Boolean)
+        .length > 1
+    ) {
       throw new CommandLineError(
-        "--product-path-proof and --oracle-seeded-proof are mutually exclusive"
+        "Product-path proof modes are mutually exclusive"
       );
     }
     const oracleBriefPath = values.get("--oracle-brief") ?? null;
@@ -93,13 +108,42 @@ export const parseExperienceReplayCommand = (
         "--oracle-seeded-proof requires exactly one --oracle-brief <file>"
       );
     }
+    const oracleCorpusPath = values.get("--oracle-corpus") ?? null;
+    if (
+      (oracleSeededProof || oracleRepeatedStudy) !== Boolean(oracleCorpusPath)
+    ) {
+      throw new CommandLineError(
+        "Oracle proof and repeated study modes require exactly one --oracle-corpus <absolute-dir>"
+      );
+    }
+    const oracleRepeatsValue = values.get("--oracle-repeats") ?? null;
+    if (oracleRepeatsValue !== null && !oracleRepeatedStudy) {
+      throw new CommandLineError(
+        "--oracle-repeats is valid only with --oracle-repeated-study"
+      );
+    }
+    const oracleRepeats =
+      oracleRepeatsValue === null ? null : Number(oracleRepeatsValue);
+    if (
+      oracleRepeats !== null &&
+      (!Number.isSafeInteger(oracleRepeats) ||
+        oracleRepeats < 1 ||
+        oracleRepeats > 100)
+    ) {
+      throw new CommandLineError(
+        "--oracle-repeats must be an integer from 1 to 100"
+      );
+    }
     return {
       name: commandName,
       configPath,
       confirmPaidRun,
       productPathProof,
       oracleSeededProof,
+      oracleRepeatedStudy,
       oracleBriefPath,
+      oracleCorpusPath,
+      oracleRepeats,
       codexSubscription
     };
   }
@@ -108,7 +152,10 @@ export const parseExperienceReplayCommand = (
     confirmPaidRun ||
     productPathProof ||
     oracleSeededProof ||
+    oracleRepeatedStudy ||
     values.has("--oracle-brief") ||
+    values.has("--oracle-corpus") ||
+    values.has("--oracle-repeats") ||
     codexSubscription
   ) {
     throw new CommandLineError(`${commandName} accepts only --run <dir>`);

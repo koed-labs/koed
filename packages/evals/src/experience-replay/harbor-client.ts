@@ -79,6 +79,7 @@ export interface HarborReplayRunRequest extends HarborRunRequestBase {
   replay_trajectory_path: string;
   freeze_manifest_path: string;
   freeze_trajectory_to?: never;
+  developer_instructions_sha256?: string;
 }
 
 export type HarborRunRequest = HarborSourceRunRequest | HarborReplayRunRequest;
@@ -403,8 +404,11 @@ const validateRequest = async (
       if (!input.replay_trajectory_path) {
         throw new Error("replay trajectory output is required");
       }
-      if (Object.hasOwn(input, "developer_instructions_sha256")) {
-        throw new Error("replay developer-instruction digest is forbidden");
+      if (
+        input.developer_instructions_sha256 !== undefined &&
+        !/^[a-f0-9]{64}$/u.test(input.developer_instructions_sha256)
+      ) {
+        throw new Error("replay developer-instruction digest is invalid");
       }
       validateArtifactRelativePath(input.freeze_manifest_path);
       validateArtifactRelativePath(input.replay_trajectory_path);
@@ -449,7 +453,12 @@ const validateRequest = async (
         ...common,
         attempt_kind: "replay",
         freeze_manifest_path: input.freeze_manifest_path,
-        replay_trajectory_path: input.replay_trajectory_path
+        replay_trajectory_path: input.replay_trajectory_path,
+        ...(input.developer_instructions_sha256
+          ? {
+              developer_instructions_sha256: input.developer_instructions_sha256
+            }
+          : {})
       };
 };
 

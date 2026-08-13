@@ -21,7 +21,7 @@ Prompt files use simple Markdown plus frontmatter:
 ```markdown
 ---
 id: memory-answer-worker
-version: memory-answer-worker-v4
+version: memory-answer-worker-v5
 ---
 
 Prompt body with {{placeholder_name}} values.

@@ -1197,8 +1197,7 @@ def _strict_request(path: Path) -> dict[str, Any]:
         raise ContractError("SOURCE_REPLAY_TRAJECTORY_FORBIDDEN")
     developer_instructions_sha256 = request.get("developer_instructions_sha256")
     if developer_instructions_sha256 is not None and (
-        request["attempt_kind"] != "source"
-        or not isinstance(developer_instructions_sha256, str)
+        not isinstance(developer_instructions_sha256, str)
         or not re.fullmatch(r"[a-f0-9]{64}", developer_instructions_sha256)
     ):
         raise ContractError("INVALID_DEVELOPER_INSTRUCTIONS_DIGEST")
@@ -1320,7 +1319,8 @@ def _validate_codex_kwargs(
     product_path_instructions = (
         "This is a product-path validation run. Before making changes, call the available "
         "memory_answer tool exactly once with a concise project-scoped query asking for prior "
-        "experience relevant to the task. Use the answer if useful, then complete the task "
+        'experience relevant to the task. Explicitly set search_domain to "project" and '
+        'response_detail to "answer_only". Use the answer if useful, then complete the task '
         "normally. Do not call memory_answer again."
     )
     if developer_instructions is not None:

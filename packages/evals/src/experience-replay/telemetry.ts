@@ -188,6 +188,7 @@ const conditions = new Set<ReplayCondition>([
   "placebo",
   "relevant",
   "irrelevant",
+  "direct_guidance",
   "relevant_guidance",
   "relevant_trace",
   "relevant_full"
@@ -573,7 +574,8 @@ export const mergeReplayTelemetry = (
             "evidenceCount",
             "projectionMs",
             "lcmMs",
-            "queueMs"
+            "queueMs",
+            "memoryAnswerRequests"
           ],
           "Koed Recall metrics"
         );

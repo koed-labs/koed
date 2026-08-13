@@ -307,7 +307,11 @@ describe("experience replay MCP bridge", () => {
         expansions: 0,
         stages: 2,
         evidenceCount: 4,
-        workerPeakRssBytes: 12_288
+        workerPeakRssBytes: 12_288,
+        memoryAnswerRequests: [
+          { responseDetail: null, searchDomain: null },
+          { responseDetail: null, searchDomain: null }
+        ]
       });
       expect(collectBridgeTelemetry(bridge.url)).toEqual(bridge.telemetry());
     } finally {

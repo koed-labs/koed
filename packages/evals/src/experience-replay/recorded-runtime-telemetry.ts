@@ -7,6 +7,7 @@ import type {
 } from "./telemetry.js";
 import type { BridgeCallTelemetry } from "./bridge-telemetry.js";
 import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
+import { conditionUsesKoed } from "./core/index.js";
 
 type Collector = NonNullable<
   HarborExecutionAdapterOptions["collectReplayTelemetry"]
@@ -139,7 +140,7 @@ const databaseObservers = async (
   }
 > => {
   if (!observation.databaseUrl || !observation.ownerUserId) {
-    if (identity.condition !== "cold")
+    if (conditionUsesKoed(identity.condition))
       throw new Error("Recorded Koed attempt lacks its database observation");
     return {
       modelWorkflows: available(identity, {
@@ -282,13 +283,16 @@ export const createRecordedReplayTelemetryCollector = (
   return async ({ identity, captured }) => {
     const observation = observations.get(key(identity));
     if (!observation) {
-      if (identity.condition !== "cold")
+      if (conditionUsesKoed(identity.condition))
         throw new Error("Mandatory recorded attempt observation is absent");
     } else if (key(observation.identity) !== key(identity)) {
       throw new Error("Recorded attempt observation identity does not match");
     }
     const active = observation ?? { identity };
-    if (identity.condition !== "cold" && (!active.bridge || !active.embeddings))
+    if (
+      conditionUsesKoed(identity.condition) &&
+      (!active.bridge || !active.embeddings)
+    )
       throw new Error("Recorded Koed attempt lacks mandatory live observers");
     const bridge = active.bridge?.() ?? {
       mcpCalls: 0,
@@ -299,7 +303,8 @@ export const createRecordedReplayTelemetryCollector = (
       expansions: 0,
       stages: 0,
       evidenceCount: 0,
-      workerPeakRssBytes: null
+      workerPeakRssBytes: null,
+      memoryAnswerRequests: []
     };
     const database = await databaseObservers(identity, active, options);
     const interactions = reconcileMemoryAnswerInteractionCounts(
@@ -344,7 +349,8 @@ export const createRecordedReplayTelemetryCollector = (
         evidenceCount: bridge.evidenceCount,
         projectionMs: null,
         lcmMs: null,
-        queueMs: null
+        queueMs: null,
+        memoryAnswerRequests: bridge.memoryAnswerRequests
       }),
       modelWorkflows: database.modelWorkflows,
       embeddings: available(identity, embedding),

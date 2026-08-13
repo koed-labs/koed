@@ -72,13 +72,19 @@ export interface ExperienceReplayMachineReport extends ExperienceReplayReportInp
 
 const scopeFor = (
   executionKind: ExperienceReplayExecutionKind,
-  profile: ExperienceReplayProfile
+  profile: ExperienceReplayProfile,
+  attemptedReplayCount: number,
+  taskCount: number
 ): string => {
   if (executionKind === "product_path_proof") {
     return "Manual two-source, one-target Terminal-Bench 3.0 product-path integration proof; not a benchmark estimate.";
   }
   if (executionKind === "oracle_seeded_product_proof") {
     return "Manual one-task, six-arm oracle-seeded product-path smoke proof; not a benchmark estimate or efficacy claim.";
+  }
+  if (executionKind === "oracle_seeded_repeated_study") {
+    const repeats = attemptedReplayCount / (taskCount * 3);
+    return `One-task, three-arm, ${repeats}-repeat oracle-seeded calibration study; estimates stochastic behavior for this task only, not leaderboard or task-population performance.`;
   }
   switch (profile) {
     case "smoke":
@@ -166,15 +172,22 @@ export const createMachineReport = (
     ...input,
     report_version: 1,
     benchmark_kind:
-      input.executionKind === "oracle_seeded_product_proof"
+      input.executionKind === "oracle_seeded_product_proof" ||
+      input.executionKind === "oracle_seeded_repeated_study"
         ? "koed_oracle_seeded_experience_reuse"
         : "koed_experience_replay",
     standard_leaderboard_comparable: false,
     disclosure:
-      input.executionKind === "oracle_seeded_product_proof"
+      input.executionKind === "oracle_seeded_product_proof" ||
+      input.executionKind === "oracle_seeded_repeated_study"
         ? ORACLE_SCIENTIFIC_DISCLOSURE
         : SCIENTIFIC_DISCLOSURE,
-    scope: scopeFor(input.executionKind, input.profile)
+    scope: scopeFor(
+      input.executionKind,
+      input.profile,
+      input.attemptedReplayCount,
+      input.taskCount
+    )
   };
 };
 
@@ -343,7 +356,9 @@ const comparisonNames = [
   "relevant_full - cold",
   "relevant_full - relevant_guidance",
   "relevant_full - relevant_trace",
-  "irrelevant - empty"
+  "irrelevant - empty",
+  "direct_guidance - relevant_guidance",
+  "direct_guidance - empty"
 ] as const;
 
 const projectComparison = (value: unknown): JsonRecord => {
@@ -360,7 +375,12 @@ const projectComparison = (value: unknown): JsonRecord => {
       isRecord(delta)
         ? {
             ...select(delta, ["taskDigest"]),
-            ...selectNumbers(delta, ["leftMean", "rightMean", "delta"])
+            ...selectNumbers(delta, [
+              "repeat",
+              "leftMean",
+              "rightMean",
+              "delta"
+            ])
           }
         : {}
     );
@@ -546,7 +566,8 @@ const projectAttempt = (value: unknown): JsonRecord => {
       "irrelevant",
       "relevant_guidance",
       "relevant_trace",
-      "relevant_full"
+      "relevant_full",
+      "direct_guidance"
     ]),
     ...selectNumbers(value, [
       "repeat",
@@ -685,6 +706,7 @@ const projectTrajectoryJudgment = (value: unknown): JsonRecord => {
       "relevant_guidance",
       "relevant_trace",
       "relevant_full",
+      "direct_guidance",
       "tie"
     ]),
     ...selectNumbers(value, ["repeat", "confidence", "latencyMs", "costUsd"]),
@@ -704,7 +726,8 @@ const projectTrajectoryJudgment = (value: unknown): JsonRecord => {
         "irrelevant",
         "relevant_guidance",
         "relevant_trace",
-        "relevant_full"
+        "relevant_full",
+        "direct_guidance"
       ].flatMap((condition) =>
         isRecord(assessments[condition])
           ? [[condition, projectJudgeAssessment(assessments[condition])]]
@@ -734,7 +757,8 @@ const projectPublicationReport = (value: unknown): unknown => {
     ...selectEnum(value, "executionKind", [
       "benchmark_profile",
       "product_path_proof",
-      "oracle_seeded_product_proof"
+      "oracle_seeded_product_proof",
+      "oracle_seeded_repeated_study"
     ]),
     ...selectEnum(value, "profile", ["smoke", "quick", "standard", "full"]),
     ...selectEnum(value, "codexAuthMode", ["api_key", "subscription"]),

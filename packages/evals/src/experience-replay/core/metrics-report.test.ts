@@ -8,6 +8,7 @@ import {
   REQUIRED_COMPARISONS,
   missingOutcomeBounds,
   summarizeComparison,
+  summarizeRepeatedComparison,
   taskFirstResourceDeltas,
   taskFirstResourceDelta,
   type ReplayOutcome,
@@ -838,6 +839,36 @@ describe("report and disclosure", () => {
         ]
       })
     ).not.toThrow();
+  });
+
+  it("reports matched repeat outcomes for one-task oracle calibration", () => {
+    const repeated: ReplayOutcome[] = Array.from(
+      { length: 10 },
+      (_, repeat) => [
+        {
+          taskDigest: "task",
+          condition: "direct_guidance" as const,
+          repeat,
+          reward: repeat < 2 ? 1 : 0
+        },
+        {
+          taskDigest: "task",
+          condition: "relevant_guidance" as const,
+          repeat,
+          reward: repeat === 0 ? 1 : 0
+        },
+        { taskDigest: "task", condition: "empty" as const, repeat, reward: 0 }
+      ]
+    ).flat();
+    const summary = summarizeRepeatedComparison(
+      repeated,
+      [{ taskDigest: "task", rewardMin: 0, rewardMax: 1 }],
+      { left: "direct_guidance", right: "relevant_guidance" },
+      10
+    );
+    expect(summary.taskDeltas).toHaveLength(10);
+    expect(summary.taskDeltas[1]).toMatchObject({ repeat: 1, delta: 1 });
+    expect(summary).toMatchObject({ wins: 1, losses: 0, ties: 9 });
   });
 
   it.each([

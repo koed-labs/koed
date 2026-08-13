@@ -318,7 +318,7 @@ def test_source_request_forbids_replay_trajectory_output(tmp_path: Path) -> None
         runner._strict_request(path)
 
 
-def test_replay_request_forbids_source_developer_instruction_digest(
+def test_replay_request_accepts_attested_developer_instruction_digest(
     tmp_path: Path,
 ) -> None:
     request = {
@@ -339,10 +339,7 @@ def test_replay_request_forbids_source_developer_instruction_digest(
     path = tmp_path / "request.json"
     path.write_text(json.dumps(request))
 
-    with pytest.raises(
-        runner.ContractError, match="INVALID_DEVELOPER_INSTRUCTIONS_DIGEST"
-    ):
-        runner._strict_request(path)
+    assert runner._strict_request(path)["developer_instructions_sha256"] == "d" * 64
 
 
 def test_pinned_task_image_is_applied_only_during_trial_initialization() -> None:
@@ -688,7 +685,8 @@ def test_codex_accepts_only_the_exact_product_path_developer_instruction() -> No
     kwargs["config"]["developer_instructions"] = (
         "This is a product-path validation run. Before making changes, call the available "
         "memory_answer tool exactly once with a concise project-scoped query asking for prior "
-        "experience relevant to the task. Use the answer if useful, then complete the task "
+        'experience relevant to the task. Explicitly set search_domain to "project" and '
+        'response_detail to "answer_only". Use the answer if useful, then complete the task '
         "normally. Do not call memory_answer again."
     )
     runner._validate_codex_kwargs(kwargs)

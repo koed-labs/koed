@@ -169,6 +169,12 @@ export const ORACLE_REQUIRED_COMPARISONS: readonly Comparison[] = [
   { left: "irrelevant", right: "empty" },
   { left: "empty", right: "cold" }
 ];
+/** Prespecified one-task calibration contrasts; intervals are descriptive. */
+export const ORACLE_REPEATED_REQUIRED_COMPARISONS: readonly Comparison[] = [
+  { left: "direct_guidance", right: "relevant_guidance" },
+  { left: "relevant_guidance", right: "empty" },
+  { left: "direct_guidance", right: "empty" }
+];
 
 const mean = (values: readonly number[]): number =>
   values.reduce((total, value) => total + value, 0) / values.length;
@@ -256,6 +262,7 @@ const taskConditionValues = (
 
 export interface TaskDelta {
   taskDigest: string;
+  repeat?: number;
   leftMean: number;
   rightMean: number;
   delta: number;
@@ -557,6 +564,69 @@ export const summarizeComparison = (
     losses: values.filter((value) => value < 0).length,
     ties: values.filter((value) => value === 0).length,
     taskDeltas: deltas,
+    ...missingOutcomeBounds(outcomes, contracts, comparison, repeats)
+  };
+};
+
+export const summarizeRepeatedComparison = (
+  outcomes: readonly ReplayOutcome[],
+  contracts: readonly TaskRewardContract[],
+  comparison: Comparison,
+  repeats: number
+): ComparisonSummary => {
+  if (contracts.length !== 1)
+    throw new Error("Repeated calibration requires exactly one task contract");
+  // Reuse the strict cohort/range validation and missing-outcome bounds.
+  taskFirstDeltas(outcomes, contracts, comparison, repeats);
+  const contract = contracts[0]!;
+  const paired: TaskDelta[] = [];
+  for (let repeat = 0; repeat < repeats; repeat += 1) {
+    const left = outcomes.find(
+      (item) =>
+        item.taskDigest === contract.taskDigest &&
+        item.condition === comparison.left &&
+        item.repeat === repeat
+    );
+    const right = outcomes.find(
+      (item) =>
+        item.taskDigest === contract.taskDigest &&
+        item.condition === comparison.right &&
+        item.repeat === repeat
+    );
+    if (left?.reward === null || right?.reward === null) continue;
+    if (left?.reward === undefined || right?.reward === undefined) continue;
+    paired.push({
+      taskDigest: contract.taskDigest,
+      repeat,
+      leftMean: left.reward,
+      rightMean: right.reward,
+      delta: left.reward - right.reward
+    });
+  }
+  const values = paired.map((item) => item.delta);
+  const resourceDeltas = taskFirstResourceDeltas(outcomes, comparison, repeats);
+  return {
+    comparison: `${comparison.left} - ${comparison.right}`,
+    meanDelta: values.length ? mean(values) : null,
+    medianDelta: values.length ? median(values) : null,
+    resourceDeltas,
+    latencyMsDelta: resourceDeltas.durations.replayElapsedMs,
+    tokensDelta: taskFirstResourceDelta(
+      outcomes,
+      comparison,
+      "tokens",
+      repeats
+    ),
+    costUsdDelta: taskFirstResourceDelta(
+      outcomes,
+      comparison,
+      "costUsd",
+      repeats
+    ),
+    wins: values.filter((value) => value > 0).length,
+    losses: values.filter((value) => value < 0).length,
+    ties: values.filter((value) => value === 0).length,
+    taskDeltas: paired,
     ...missingOutcomeBounds(outcomes, contracts, comparison, repeats)
   };
 };

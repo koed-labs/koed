@@ -28,7 +28,7 @@ describe("isolated Codex replay configuration", () => {
     expect(config.inline.suppress_unstable_features_warning).toBe(true);
   });
 
-  it("adds the exact recall instruction only to a relevant product-path proof", () => {
+  it("adds the exact recall instruction to product-path memory arms", () => {
     const proof = createTrialCodexConfiguration({
       condition: "relevant",
       model: "gpt-5.6-luna",
@@ -40,16 +40,17 @@ describe("isolated Codex replay configuration", () => {
     expect(proof.inline.developer_instructions).toContain(
       "call the available memory_answer tool exactly once"
     );
-    expect(() =>
-      createTrialCodexConfiguration({
-        condition: "empty",
-        model: "gpt-5.6-luna",
-        reasoningEffort: "low",
-        bridgeUrl: "http://127.0.0.1:4567",
-        bridgeToken: "token",
-        requireMemoryAnswer: true
-      })
-    ).toThrow("relevant arm");
+    const empty = createTrialCodexConfiguration({
+      condition: "empty",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+      bridgeUrl: "http://127.0.0.1:4567",
+      bridgeToken: "token",
+      requireMemoryAnswer: true
+    });
+    expect(empty.inline.developer_instructions).toContain(
+      'response_detail to "answer_only"'
+    );
   });
 
   it("gives cold no Koed connection and proves the other arms differ only by MCP", () => {

@@ -10,6 +10,7 @@ import type {
   ReplayProductPathAttestation
 } from "./coordinator.js";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
+import { conditionUsesKoed } from "./core/index.js";
 import {
   HarborExecutionAdapter,
   type HarborExecutionAdapterOptions
@@ -431,9 +432,9 @@ export const createExperienceReplayCoordinatorDependencies = (
 
     async createReplay(input): Promise<ReplayExecutionHandle> {
       if (closed) throw new Error("Experience Replay dependencies are closed");
-      if (input.condition === "cold") {
+      if (!conditionUsesKoed(input.condition)) {
         if (input.template)
-          throw new Error("Cold replay cannot receive a template");
+          throw new Error("Non-Koed replay cannot receive a template");
         return {
           cloneId: null,
           productPathAttestation: null,
@@ -448,6 +449,12 @@ export const createExperienceReplayCoordinatorDependencies = (
               runRoot: input.runRoot,
               lifecycle,
               config: input.config,
+              ...(input.developerInstructions
+                ? { developerInstructions: input.developerInstructions }
+                : {}),
+              ...(input.requireMemoryAnswer
+                ? { requireMemoryAnswer: true }
+                : {}),
               signal
             });
             if (!result.replayTrajectoryArtifact)
@@ -558,6 +565,9 @@ export const createExperienceReplayCoordinatorDependencies = (
               config: input.config,
               bridgeUrl: runtime.bridge.containerUrl ?? runtime.bridge.url,
               bridgeToken: runtime.bridge.token,
+              ...(input.requireMemoryAnswer
+                ? { requireMemoryAnswer: true }
+                : {}),
               signal
             });
             if (!result.replayTrajectoryArtifact)

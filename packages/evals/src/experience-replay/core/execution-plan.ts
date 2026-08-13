@@ -4,7 +4,8 @@ import { deepFreeze, immutableHash } from "./hash.js";
 export type ExperienceReplayExecutionKind =
   | "benchmark_profile"
   | "product_path_proof"
-  | "oracle_seeded_product_proof";
+  | "oracle_seeded_product_proof"
+  | "oracle_seeded_repeated_study";
 
 export type ExperienceReplayCodexAuthMode = "api_key" | "subscription";
 
@@ -24,6 +25,7 @@ export interface ExperienceReplayRunPlan {
   codingAgentAttemptCount: number;
   terminalBenchEstimate: boolean;
   oracleBriefSha256?: string;
+  oracleCorpusManifestSha256?: string;
   planHash: string;
 }
 
@@ -153,6 +155,45 @@ export const createOracleSeededProductProofRunPlan = (
   });
 };
 
+export const createOracleSeededRepeatedStudyRunPlan = (
+  config: ResolvedExperienceReplayConfig,
+  taskDigest: string,
+  oracleCorpusManifestSha256: string,
+  repeats = 10,
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key"
+): Readonly<ExperienceReplayRunPlan> => {
+  if (config.profile !== "quick" && config.profile !== "full") {
+    throw new Error(
+      "Oracle repeated study requires the quick policy or an explicit full-profile model policy"
+    );
+  }
+  if (config.concurrency !== 1) {
+    throw new Error("Oracle repeated study requires concurrency 1");
+  }
+  if (config.profile === "quick") assertLunaLow(config);
+  if (!taskDigest) {
+    throw new Error("Oracle repeated study task digest must not be empty");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(oracleCorpusManifestSha256)) {
+    throw new Error("Oracle repeated study corpus digest is invalid");
+  }
+  if (!Number.isSafeInteger(repeats) || repeats < 1 || repeats > 100) {
+    throw new Error("Oracle repeated study requires 1 to 100 repeats");
+  }
+  return buildPlan({
+    version: 1,
+    kind: "oracle_seeded_repeated_study",
+    codexAuthMode,
+    profile: config.profile,
+    sourceTaskDigests: [taskDigest],
+    replayTargetTaskDigests: [taskDigest],
+    replayAttemptsPerCondition: repeats,
+    codingAgentAttemptCount: repeats * 3,
+    terminalBenchEstimate: false,
+    oracleCorpusManifestSha256
+  });
+};
+
 export const verifyExperienceReplayRunPlan = (
   plan: ExperienceReplayRunPlan
 ): void => {
@@ -165,7 +206,8 @@ export const verifyExperienceReplayRunPlan = (
   if (
     plan.kind !== "benchmark_profile" &&
     plan.kind !== "product_path_proof" &&
-    plan.kind !== "oracle_seeded_product_proof"
+    plan.kind !== "oracle_seeded_product_proof" &&
+    plan.kind !== "oracle_seeded_repeated_study"
   ) {
     throw new Error("Run-plan execution kind is invalid");
   }
@@ -176,9 +218,15 @@ export const verifyExperienceReplayRunPlan = (
     throw new Error("Run-plan replay target is not a source task");
   }
   const expectedAttempts =
-    plan.sourceTaskDigests.length +
+    (plan.kind === "oracle_seeded_repeated_study"
+      ? 0
+      : plan.sourceTaskDigests.length) +
     plan.replayTargetTaskDigests.length *
-      (plan.kind === "oracle_seeded_product_proof" ? 6 : 4) *
+      (plan.kind === "oracle_seeded_product_proof"
+        ? 6
+        : plan.kind === "oracle_seeded_repeated_study"
+          ? 3
+          : 4) *
       plan.replayAttemptsPerCondition;
   if (plan.codingAgentAttemptCount !== expectedAttempts) {
     throw new Error("Run-plan coding-attempt count is inconsistent");
@@ -203,5 +251,20 @@ export const verifyExperienceReplayRunPlan = (
       !/^[a-f0-9]{64}$/u.test(plan.oracleBriefSha256))
   ) {
     throw new Error("Oracle-seeded product proof run plan is invalid");
+  }
+  if (
+    plan.kind === "oracle_seeded_repeated_study" &&
+    (plan.sourceTaskDigests.length !== 1 ||
+      plan.replayTargetTaskDigests.length !== 1 ||
+      plan.sourceTaskDigests[0] !== plan.replayTargetTaskDigests[0] ||
+      !Number.isSafeInteger(plan.replayAttemptsPerCondition) ||
+      plan.replayAttemptsPerCondition < 1 ||
+      plan.replayAttemptsPerCondition > 100 ||
+      plan.terminalBenchEstimate ||
+      !plan.oracleCorpusManifestSha256 ||
+      !/^[a-f0-9]{64}$/u.test(plan.oracleCorpusManifestSha256) ||
+      plan.oracleBriefSha256 !== undefined)
+  ) {
+    throw new Error("Oracle repeated study run plan is invalid");
   }
 };

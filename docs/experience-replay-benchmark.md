@@ -66,18 +66,24 @@ profiles retain normal intention-to-treat behavior and do not force tool use.
 
 The oracle-seeded proof is a separate diagnostic for establishing whether a
 known useful prior solution can be retrieved and reused. It does not alter the
-natural four-condition benchmark. The proof runs one pinned task once with a
-private solution brief, requires that source to pass the unchanged
-Terminal-Bench verifier, and derives three provenance-separated Memory
-artifacts: guidance only, sanitized execution trace only, and both together.
+natural four-condition benchmark. The corpus builder runs one pinned task once
+with an operator-supplied solution brief, requires that source to pass the
+unchanged Terminal-Bench verifier, and derives three provenance-separated
+Memory artifacts: guidance only, sanitized execution trace only, and both
+together.
 
 The target is then replayed once under six conditions: cold, empty, an
 irrelevant distractor, guidance plus that distractor, trace plus that
 distractor, and full experience plus that distractor. Relevant conditions must
-retrieve evidence through the production Memory Answer path. The private brief
-and corpus payloads remain in the run's private artifacts and are excluded from
-publication reports. A single proof validates integration and provides only a
-stochastic smoke signal; it is not evidence of efficacy.
+retrieve evidence through the production Memory Answer path. The strictly
+sanitized, verifier-qualified source and corpus are stored as an immutable
+private artifact in an operator-selected directory outside the repository.
+Corpus artifacts, raw trajectories, credentials and provider artifacts must
+never be committed. The private corpus is canonical transcript input, not a
+prebuilt database. Every run constructs a fresh isolated Koed database and
+imports it through normal Conversation Item ingestion, Projection, embedding,
+and Memory Answer paths. A single proof validates integration and provides only
+a stochastic smoke signal; it is not evidence of efficacy.
 
 Use a concise brief that describes a viable approach without verifier output,
 hidden tests, or a literal reference patch:
@@ -85,11 +91,41 @@ hidden tests, or a literal reference patch:
 ```bash
 pnpm --filter @koed/evals eval:experience-replay -- \
   preflight --config <resolved-quick-config.json> --codex-subscription \
-  --oracle-seeded-proof --oracle-brief <private-brief.txt>
+  --oracle-seeded-proof --oracle-brief <brief.txt> \
+  --oracle-corpus <absolute-private-corpus-directory>
 pnpm --filter @koed/evals eval:experience-replay -- \
   run --config <resolved-quick-config.json> --codex-subscription \
-  --oracle-seeded-proof --oracle-brief <private-brief.txt>
+  --oracle-seeded-proof --oracle-brief <brief.txt> \
+  --oracle-corpus <absolute-private-corpus-directory>
 ```
+
+After the private corpus exists, the repeated calibration reuses it without
+another source attempt. It runs a runtime-selected 1 to 100 matched repeats of
+three arms: direct developer guidance without Koed, the same guidance delivered
+through Koed Memory, and an empty Koed baseline. The default and recommended
+calibration count is 10; smaller counts are functional or directional checks.
+The scheduler distributes attempts over all six arm orders as evenly as the
+selected count permits. Both Koed arms must make exactly one explicit
+project-scoped `memory_answer` call with `response_detail: "answer_only"`.
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  preflight --config <resolved-quick-config.json> --codex-subscription \
+  --oracle-repeated-study --oracle-corpus <absolute-private-corpus-directory> \
+  --oracle-repeats <1..100>
+pnpm --filter @koed/evals eval:experience-replay -- \
+  run --config <resolved-quick-config.json> --codex-subscription \
+  --oracle-repeated-study --oracle-corpus <absolute-private-corpus-directory> \
+  --oracle-repeats <1..100>
+```
+
+This is a one-task stochastic calibration, not a Terminal-Bench score or an
+estimate across tasks. The direct arm establishes whether the configured model
+can use the known guidance at all. With GPT-5.6 Luna low, zero or sparse direct
+success is plausible and limits what can be inferred about retrieval. A later
+run may use a stronger explicitly pinned coding-agent policy while reusing the
+same corpus identity; corpus generation must not be repeated merely to change
+the replay model.
 
 ## Deterministic Smoke
 

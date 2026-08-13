@@ -1,8 +1,8 @@
-import type { ReplayCondition } from "./core/index.js";
+import { conditionUsesKoed, type ReplayCondition } from "./core/index.js";
 
 export const BENCHMARK_MCP_TOKEN_ENV = "KOED_BENCHMARK_MCP_TOKEN";
 export const PRODUCT_PATH_MEMORY_INSTRUCTION =
-  "This is a product-path validation run. Before making changes, call the available memory_answer tool exactly once with a concise project-scoped query asking for prior experience relevant to the task. Use the answer if useful, then complete the task normally. Do not call memory_answer again.";
+  'This is a product-path validation run. Before making changes, call the available memory_answer tool exactly once with a concise project-scoped query asking for prior experience relevant to the task. Explicitly set search_domain to "project" and response_detail to "answer_only". Use the answer if useful, then complete the task normally. Do not call memory_answer again.';
 
 const tomlString = (value: string): string => JSON.stringify(value);
 
@@ -31,7 +31,7 @@ export const createTrialCodexConfiguration = ({
   requireMemoryAnswer?: boolean;
   developerInstructions?: string;
 }): TrialCodexConfiguration => {
-  const koedEnabled = condition !== "cold";
+  const koedEnabled = conditionUsesKoed(condition);
   if (koedEnabled !== Boolean(bridgeUrl && bridgeToken)) {
     throw new Error(
       koedEnabled
@@ -41,6 +41,7 @@ export const createTrialCodexConfiguration = ({
   }
   if (
     requireMemoryAnswer &&
+    condition !== "empty" &&
     condition !== "relevant" &&
     condition !== "relevant_guidance" &&
     condition !== "relevant_trace" &&

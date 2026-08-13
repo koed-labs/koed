@@ -9,6 +9,8 @@ import {
   CONDITIONS,
   NATURAL_CONDITIONS,
   ORACLE_CONDITIONS,
+  ORACLE_REPEATED_CONDITIONS,
+  ORACLE_REPEATED_ROWS,
   ORACLE_WILLIAMS_ROWS,
   WILLIAMS_ROWS,
   createReplaySchedule,
@@ -248,6 +250,39 @@ describe("canonical hashing and Williams schedule", () => {
     expect(
       createReplaySchedule(tasks, 1, "oracle-seed", ORACLE_CONDITIONS)
     ).toEqual(schedule);
+  });
+
+  it("balances ten repeated oracle units across all three-arm orders", () => {
+    const schedule = createReplaySchedule(
+      ["task"],
+      10,
+      "repeated-oracle",
+      ORACLE_REPEATED_CONDITIONS
+    );
+    verifyReplaySchedule(schedule, {
+      taskDigests: ["task"],
+      repeats: 10,
+      seed: "repeated-oracle",
+      conditions: ORACLE_REPEATED_CONDITIONS
+    });
+    expect(ORACLE_REPEATED_ROWS).toEqual([
+      "ABC",
+      "ACB",
+      "BAC",
+      "BCA",
+      "CAB",
+      "CBA"
+    ]);
+    const counts = ORACLE_REPEATED_ROWS.map(
+      (row) =>
+        schedule.entries.filter((entry) => entry.sequenceRow === row).length
+    );
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
+    for (const entry of schedule.entries) {
+      expect(new Set(entry.conditions)).toEqual(
+        new Set(ORACLE_REPEATED_CONDITIONS)
+      );
+    }
   });
 
   it("detects schedule changes on resume", () => {

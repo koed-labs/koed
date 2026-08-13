@@ -3,6 +3,7 @@ import { resolveExperienceReplayConfig } from "./config.js";
 import {
   createBenchmarkRunPlan,
   createOracleSeededProductProofRunPlan,
+  createOracleSeededRepeatedStudyRunPlan,
   createProductPathProofRunPlan,
   verifyExperienceReplayRunPlan
 } from "./execution-plan.js";
@@ -143,6 +144,52 @@ describe("Experience Replay immutable run plans", () => {
       oracleBriefSha256: "a".repeat(64)
     });
     expect(() => verifyExperienceReplayRunPlan(plan)).not.toThrow();
+  });
+
+  it("records a bounded runtime repeat count for the three-arm calibration", () => {
+    const digest = `sha256:${"d".repeat(64)}`;
+    const plan = createOracleSeededRepeatedStudyRunPlan(
+      config(),
+      digest,
+      "b".repeat(64),
+      10,
+      "subscription"
+    );
+    expect(plan).toMatchObject({
+      kind: "oracle_seeded_repeated_study",
+      sourceTaskDigests: [digest],
+      replayTargetTaskDigests: [digest],
+      replayAttemptsPerCondition: 10,
+      codingAgentAttemptCount: 30,
+      oracleCorpusManifestSha256: "b".repeat(64)
+    });
+    expect(() => verifyExperienceReplayRunPlan(plan)).not.toThrow();
+    const shortPlan = createOracleSeededRepeatedStudyRunPlan(
+      config(),
+      digest,
+      "b".repeat(64),
+      3
+    );
+    expect(shortPlan).toMatchObject({
+      replayAttemptsPerCondition: 3,
+      codingAgentAttemptCount: 9
+    });
+    expect(() =>
+      createOracleSeededRepeatedStudyRunPlan(
+        config(),
+        digest,
+        "b".repeat(64),
+        0
+      )
+    ).toThrow("1 to 100");
+    expect(() =>
+      createOracleSeededRepeatedStudyRunPlan(
+        config(),
+        digest,
+        "b".repeat(64),
+        101
+      )
+    ).toThrow("1 to 100");
   });
 
   it("rejects self-placebo, the wrong profile, non-Luna policy and mutation", () => {

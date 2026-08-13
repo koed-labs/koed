@@ -16,13 +16,28 @@ export const ORACLE_CONDITIONS = [
   "relevant_trace",
   "relevant_full"
 ] as const;
+export const ORACLE_REPEATED_CONDITIONS = [
+  "direct_guidance",
+  "empty",
+  "relevant_guidance"
+] as const;
 export type NaturalReplayCondition = (typeof NATURAL_CONDITIONS)[number];
 export type OracleReplayCondition = (typeof ORACLE_CONDITIONS)[number];
+export type OracleRepeatedReplayCondition =
+  (typeof ORACLE_REPEATED_CONDITIONS)[number];
 export type ExperienceReplayCondition =
   | NaturalReplayCondition
-  | OracleReplayCondition;
+  | OracleReplayCondition
+  | OracleRepeatedReplayCondition;
 export type ReplayCondition = ExperienceReplayCondition;
-export type MemoryReplayCondition = Exclude<ExperienceReplayCondition, "cold">;
+export type MemoryReplayCondition = Exclude<
+  ExperienceReplayCondition,
+  "cold" | "direct_guidance"
+>;
+export const conditionUsesKoed = (
+  condition: ExperienceReplayCondition
+): condition is MemoryReplayCondition =>
+  condition !== "cold" && condition !== "direct_guidance";
 export const WILLIAMS_ROWS = ["ABDC", "BCAD", "CDBA", "DACB"] as const;
 export const ORACLE_WILLIAMS_ROWS = [
   "ABFCED",
@@ -32,10 +47,19 @@ export const ORACLE_WILLIAMS_ROWS = [
   "EFDACB",
   "FAEBDC"
 ] as const;
+export const ORACLE_REPEATED_ROWS = [
+  "ABC",
+  "ACB",
+  "BAC",
+  "BCA",
+  "CAB",
+  "CBA"
+] as const;
 
 export type ReplayConditionSet =
   | readonly NaturalReplayCondition[]
-  | readonly OracleReplayCondition[];
+  | readonly OracleReplayCondition[]
+  | readonly OracleRepeatedReplayCondition[];
 
 export interface ScheduleEntry<
   Condition extends ExperienceReplayCondition = ReplayCondition
@@ -44,7 +68,8 @@ export interface ScheduleEntry<
   repeat: number;
   sequenceRow:
     | (typeof WILLIAMS_ROWS)[number]
-    | (typeof ORACLE_WILLIAMS_ROWS)[number];
+    | (typeof ORACLE_WILLIAMS_ROWS)[number]
+    | (typeof ORACLE_REPEATED_ROWS)[number];
   conditions: readonly Condition[];
 }
 
@@ -84,8 +109,14 @@ const designFor = (conditions: readonly ExperienceReplayCondition[]) => {
       rows: ORACLE_WILLIAMS_ROWS
     } as const;
   }
+  if (sameConditions(conditions, ORACLE_REPEATED_CONDITIONS)) {
+    return {
+      conditions: ORACLE_REPEATED_CONDITIONS,
+      rows: ORACLE_REPEATED_ROWS
+    } as const;
+  }
   throw new Error(
-    "Replay conditions must be the natural or oracle condition set"
+    "Replay conditions must be the natural, oracle proof, or oracle repeated condition set"
   );
 };
 
@@ -176,7 +207,11 @@ export const verifyReplaySchedule = <
   const assigned: readonly ExperienceReplayCondition[] = Object.values(
     schedule.letterAssignment
   );
-  const supportedConditions = [NATURAL_CONDITIONS, ORACLE_CONDITIONS].find(
+  const supportedConditions = [
+    NATURAL_CONDITIONS,
+    ORACLE_CONDITIONS,
+    ORACLE_REPEATED_CONDITIONS
+  ].find(
     (conditions) =>
       assigned.length === conditions.length &&
       conditions.every((condition) => assigned.includes(condition))
@@ -189,7 +224,9 @@ export const verifyReplaySchedule = <
   const validRows =
     supportedConditions === NATURAL_CONDITIONS
       ? WILLIAMS_ROWS
-      : ORACLE_WILLIAMS_ROWS;
+      : supportedConditions === ORACLE_CONDITIONS
+        ? ORACLE_WILLIAMS_ROWS
+        : ORACLE_REPEATED_ROWS;
   for (const entry of schedule.entries) {
     if (!(validRows as readonly string[]).includes(entry.sequenceRow))
       throw new Error(`Invalid Williams row ${entry.sequenceRow}`);

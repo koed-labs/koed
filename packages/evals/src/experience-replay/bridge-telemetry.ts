@@ -8,10 +8,16 @@ export interface BridgeCallTelemetry {
   stages: number | null;
   evidenceCount: number | null;
   workerPeakRssBytes: number | null;
+  memoryAnswerRequests: readonly {
+    responseDetail: string | null;
+    searchDomain: string | null;
+  }[];
 }
 
 interface BridgeCallDescriptor {
   memoryAnswer: boolean;
+  responseDetail: string | null;
+  searchDomain: string | null;
 }
 
 const readers = new Map<string, () => BridgeCallTelemetry>();
@@ -56,7 +62,8 @@ export class BridgeTelemetryCollector {
     expansions: null,
     stages: null,
     evidenceCount: null,
-    workerPeakRssBytes: null
+    workerPeakRssBytes: null,
+    memoryAnswerRequests: []
   };
   private collectionFailure: Error | undefined;
 
@@ -73,7 +80,18 @@ export class BridgeTelemetryCollector {
       }
       const message = record(calls[0]);
       const params = record(message?.params);
-      return { memoryAnswer: params?.name === "memory_answer" };
+      const arguments_ = record(params?.arguments);
+      return {
+        memoryAnswer: params?.name === "memory_answer",
+        responseDetail:
+          typeof arguments_?.response_detail === "string"
+            ? arguments_.response_detail
+            : null,
+        searchDomain:
+          typeof arguments_?.search_domain === "string"
+            ? arguments_.search_domain
+            : null
+      };
     } catch (error) {
       this.collectionFailure = new Error(
         "Bridge MCP request telemetry could not be parsed",
@@ -91,6 +109,15 @@ export class BridgeTelemetryCollector {
     if (!descriptor) return;
     this.metrics.mcpCalls += 1;
     if (descriptor.memoryAnswer) this.metrics.memoryAnswerCalls += 1;
+    if (descriptor.memoryAnswer) {
+      this.metrics.memoryAnswerRequests = [
+        ...this.metrics.memoryAnswerRequests,
+        {
+          responseDetail: descriptor.responseDetail,
+          searchDomain: descriptor.searchDomain
+        }
+      ];
+    }
     let failed = requestError;
     if (response) {
       failed ||= !response.ok;

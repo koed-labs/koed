@@ -6,8 +6,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createProductPathProofRunPlan,
   createOracleSeededProductProofRunPlan,
+  createOracleSeededRepeatedStudyRunPlan,
+  conditionUsesKoed,
   immutableHash,
-  resolveExperienceReplayConfig
+  resolveExperienceReplayConfig,
+  type ReplayCondition
 } from "./core/index.js";
 import type { HarborFreezeManifest } from "./atif/index.js";
 import {
@@ -20,6 +23,7 @@ import {
 import type { LocalProductTemplateAttestation } from "./local-product-adapter.js";
 import { preflightExperienceReplay } from "./preflight.js";
 import type { ReplayTelemetryMergeInput } from "./telemetry.js";
+import { inspectOracleCorpusArtifact } from "./oracle-corpus-artifact.js";
 
 const productAttestation = {
   schema: "koed-experience-replay-local-product-template-v1",
@@ -379,24 +383,26 @@ const fakeDependencies = (
     executionGeneration,
     template,
     sourceTaskDigest,
-    runRoot
+    runRoot,
+    developerInstructions,
+    requireMemoryAnswer
   }) {
     events.push(`replay:${task.name}:${condition}`);
-    if (condition === "cold") {
+    if (!conditionUsesKoed(condition)) {
       expect(template).toBeNull();
       expect(sourceTaskDigest).toBeNull();
+      if (condition === "direct_guidance")
+        expect(developerInstructions).toBeTruthy();
     } else expect(template).not.toBeNull();
     let active = false;
-    const cloneId =
-      condition === "cold"
-        ? null
-        : `clone:${task.taskDigest}:${condition}:${repeat}`;
+    const cloneId = !conditionUsesKoed(condition)
+      ? null
+      : `clone:${task.taskDigest}:${condition}:${repeat}`;
     return {
       cloneId,
-      productPathAttestation:
-        condition === "cold"
-          ? null
-          : replayAttestation(cloneId!, template!.templateId),
+      productPathAttestation: !conditionUsesKoed(condition)
+        ? null
+        : replayAttestation(cloneId!, template!.templateId),
       activateCredential() {
         active = true;
         events.push(`activate:${task.name}:${condition}`);
@@ -466,7 +472,9 @@ const fakeDependencies = (
               mcpCalls: 0,
               mcpFailures: 0,
               memoryAnswerCalls:
-                condition === "relevant" || condition.startsWith("relevant_")
+                requireMemoryAnswer ||
+                condition === "relevant" ||
+                condition.startsWith("relevant_")
                   ? 1
                   : 0,
               memoryAnswerFailures: 0
@@ -485,7 +493,10 @@ const fakeDependencies = (
                   : 0,
               projectionMs: 0,
               lcmMs: 0,
-              queueMs: 0
+              queueMs: 0,
+              memoryAnswerRequests: conditionUsesKoed(condition)
+                ? [{ responseDetail: "answer_only", searchDomain: "project" }]
+                : []
             }
           },
           modelWorkflows: {
@@ -494,7 +505,9 @@ const fakeDependencies = (
             metrics: {
               memoryAnswer: {
                 calls:
-                  condition === "relevant" || condition.startsWith("relevant_")
+                  requireMemoryAnswer ||
+                  condition === "relevant" ||
+                  condition.startsWith("relevant_")
                     ? 1
                     : 0,
                 failures: 0,
@@ -940,6 +953,155 @@ describe("unified experience replay coordinator", () => {
         dependencies: fakeDependencies([])
       })
     ).rejects.toThrow("brief differs from the run plan");
+  }, 30_000);
+
+  it("hydrates a private oracle corpus for the repeated three-arm study", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-oracle-repeat-"));
+    const task = {
+      name: "terminal-bench/synthetic-alpha",
+      task_digest: `sha256:${"a".repeat(64)}`,
+      harbor_task_checksum: `sha256:${"1".repeat(64)}`,
+      source_path: "tasks/synthetic-alpha",
+      category: "synthetic",
+      expert_time_quartile: 0,
+      expert_time_seconds: 1,
+      resource_class: "synthetic-cpu",
+      primary_reward: {
+        field: "reward",
+        minimum: 0,
+        maximum: 1,
+        success: { operator: "equals", value: 1 }
+      }
+    };
+    const brief =
+      "Use the task parser's existing selector and update the exact filtered nodes.";
+    const briefSha256 = createHash("sha256").update(brief).digest("hex");
+    const repositoryRoot = path.join(root, "repository");
+    await mkdir(repositoryRoot, { recursive: true });
+    const corpusLocation = {
+      corpusDirectory: path.join(root, "private-corpus", "synthetic-alpha"),
+      repositoryRoot
+    };
+    const corpusIdentity = {
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+      task: { name: task.name, digest: task.task_digest },
+      codex: { version: "0.0.0-test" },
+      taskImage: {
+        taskName: task.name,
+        taskDigest: task.task_digest,
+        immutableReference: `registry.invalid/task@sha256:${"2".repeat(64)}`,
+        imageId: `sha256:${"2".repeat(64)}`,
+        contentDigest: `sha256:${"2".repeat(64)}`,
+        resolvedBaseImageDigests: [`sha256:${"4".repeat(64)}`],
+        dockerfileSha256: `sha256:${"5".repeat(64)}`,
+        dockerVersion: "Docker test",
+        buildkitVersion: "BuildKit test",
+        provenanceSha256: `sha256:${"6".repeat(64)}`,
+        attestationHash: "3".repeat(64)
+      },
+      sanitizer: { name: "harbor-atif", version: "1.0.0" }
+    };
+    const proofConfig = productProofConfig(path.join(root, "proof-run"));
+    const base = await preflightExperienceReplay({
+      config: smokeConfig(path.join(root, "unused-smoke"))
+    });
+    await runExperienceReplay(proofConfig, {
+      preflight: {
+        ...base,
+        config: proofConfig,
+        runPlan: createOracleSeededProductProofRunPlan(
+          proofConfig,
+          task.task_digest,
+          briefSha256
+        ),
+        pins: { ...base.pins, selectedTasks: [task] }
+      },
+      dependencies: fakeDependencies([]),
+      oracleBrief: brief,
+      oracleCorpusArtifactTarget: {
+        location: corpusLocation,
+        identity: corpusIdentity
+      }
+    });
+    const corpusArtifact = await inspectOracleCorpusArtifact(corpusLocation);
+
+    const repeatedConfig = productProofConfig(path.join(root, "repeat-run"));
+    const repeatedPlan = createOracleSeededRepeatedStudyRunPlan(
+      repeatedConfig,
+      task.task_digest,
+      corpusArtifact.attestationSha256
+    );
+    const events: string[] = [];
+    const dependencies = fakeDependencies(events);
+    const createReplay = dependencies.createReplay;
+    const replayInputs: Array<{
+      condition: ReplayCondition;
+      developerInstructions?: string;
+      requireMemoryAnswer?: boolean;
+    }> = [];
+    dependencies.createReplay = async (input) => {
+      replayInputs.push({
+        condition: input.condition,
+        ...(input.developerInstructions
+          ? { developerInstructions: input.developerInstructions }
+          : {}),
+        ...(input.requireMemoryAnswer === undefined
+          ? {}
+          : { requireMemoryAnswer: input.requireMemoryAnswer })
+      });
+      return createReplay(input);
+    };
+    const prepareTemplate = dependencies.prepareTemplate;
+    dependencies.prepareTemplate = async (input) => {
+      if (input.condition === "relevant_guidance") {
+        expect(input.sanitizedSource?.canonicalJson).toBe(
+          corpusArtifact.corpus.guidanceOnly.sanitization.canonicalJson
+        );
+      }
+      return prepareTemplate(input);
+    };
+    const repeatedAdmitted = {
+      ...base,
+      config: repeatedConfig,
+      runPlan: repeatedPlan,
+      pins: { ...base.pins, selectedTasks: [task] }
+    };
+    const result = await runExperienceReplay(repeatedConfig, {
+      preflight: repeatedAdmitted,
+      dependencies,
+      oracleCorpusArtifactEntry: corpusArtifact
+    });
+
+    expect(result.replayAttemptCount).toBe(30);
+    expect(events.some((event) => event.startsWith("source:"))).toBe(false);
+    expect(
+      events.filter((event) => event.startsWith("template:"))
+    ).toHaveLength(2);
+    expect(
+      replayInputs.filter((input) => input.condition === "direct_guidance")
+    ).toEqual(
+      Array.from({ length: 10 }, () => ({
+        condition: "direct_guidance",
+        developerInstructions: brief
+      }))
+    );
+    expect(
+      replayInputs
+        .filter((input) => conditionUsesKoed(input.condition))
+        .every((input) => input.requireMemoryAnswer === true)
+    ).toBe(true);
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(
+            repeatedConfig.output_dir,
+            "oracle-private/oracle-corpus-artifact.json"
+          ),
+          "utf8"
+        )
+      )
+    ).toEqual(corpusArtifact);
   }, 30_000);
 
   it("rejects database clone reuse and revokes through the Harbor lifecycle", async () => {

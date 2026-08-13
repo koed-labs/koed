@@ -5,14 +5,18 @@ import {
   assignProductPathProofPlacebo,
   createMachineReport,
   createReplaySchedule,
+  conditionUsesKoed,
   immutableHash,
   redactPublicationReport,
   renderMarkdownReport,
   REQUIRED_COMPARISONS,
   ORACLE_CONDITIONS,
+  ORACLE_REPEATED_CONDITIONS,
   ORACLE_REQUIRED_COMPARISONS,
+  ORACLE_REPEATED_REQUIRED_COMPARISONS,
   SMOKE_TASK_DIGESTS,
   summarizeComparison,
+  summarizeRepeatedComparison,
   TRAJECTORY_JUDGE_SCHEMA_VERSION,
   verifyPlaceboAssignment,
   verifyExperienceReplayRunPlan,
@@ -27,6 +31,7 @@ import {
   type TaskRewardContract
 } from "./core/index.js";
 import {
+  materializeSanitizedAtifTrajectory,
   sanitizeAtifTrajectory,
   type AtifSanitizationResult,
   type HarborFreezeManifest
@@ -76,6 +81,13 @@ import type {
   TrajectoryJudgeInput,
   TrajectoryJudgeResult
 } from "./trajectory-judge.js";
+import {
+  persistOracleCorpusArtifact,
+  validateOracleCorpusArtifactEntry,
+  type OracleCorpusArtifactEntry,
+  type OracleCorpusArtifactIdentity,
+  type OracleCorpusArtifactLocation
+} from "./oracle-corpus-artifact.js";
 
 const SMOKE_TASKS: readonly CoordinatorTask[] = [
   {
@@ -193,6 +205,10 @@ export interface ExperienceReplayCoordinatorDependencies {
     sourceTaskDigest: string | null;
     runRoot: string;
     config: ResolvedExperienceReplayConfig;
+    /** Direct-guidance calibration only; never combined with Koed resources. */
+    developerInstructions?: string;
+    /** Forces the explicit memory_answer path for repeated-study Koed arms. */
+    requireMemoryAnswer?: boolean;
     signal?: AbortSignal;
   }): Promise<ReplayExecutionHandle>;
   judgeTrajectory(input: TrajectoryJudgeInput): Promise<TrajectoryJudgeResult>;
@@ -350,14 +366,23 @@ const reportFromOutcomes = async (
   const requiredComparisons =
     runPlan.kind === "oracle_seeded_product_proof"
       ? ORACLE_REQUIRED_COMPARISONS
-      : REQUIRED_COMPARISONS;
+      : runPlan.kind === "oracle_seeded_repeated_study"
+        ? ORACLE_REPEATED_REQUIRED_COMPARISONS
+        : REQUIRED_COMPARISONS;
   const comparisons = requiredComparisons.map((comparison) =>
-    summarizeComparison(
-      outcomes,
-      contracts,
-      comparison,
-      runPlan.replayAttemptsPerCondition
-    )
+    runPlan.kind === "oracle_seeded_repeated_study"
+      ? summarizeRepeatedComparison(
+          outcomes,
+          contracts,
+          comparison,
+          runPlan.replayAttemptsPerCondition
+        )
+      : summarizeComparison(
+          outcomes,
+          contracts,
+          comparison,
+          runPlan.replayAttemptsPerCondition
+        )
   );
   const report = createMachineReport({
     runId,
@@ -629,6 +654,11 @@ export const runExperienceReplay = async (
     dependencies?: ExperienceReplayCoordinatorDependencies;
     resumeRunDirectory?: string;
     oracleBrief?: string;
+    oracleCorpusArtifactEntry?: OracleCorpusArtifactEntry;
+    oracleCorpusArtifactTarget?: {
+      location: OracleCorpusArtifactLocation;
+      identity: OracleCorpusArtifactIdentity;
+    };
   } = {}
 ): Promise<ExperienceReplayRunResult> => {
   const dependencies = options.dependencies ?? defaultDependencies;
@@ -648,8 +678,23 @@ export const runExperienceReplay = async (
     );
   }
   const replayTasks = replayTargetTasks(admitted.runPlan, tasks);
-  const oracleSeeded = admitted.runPlan.kind === "oracle_seeded_product_proof";
+  const oracleProductProof =
+    admitted.runPlan.kind === "oracle_seeded_product_proof";
+  const oracleRepeated =
+    admitted.runPlan.kind === "oracle_seeded_repeated_study";
+  const oracleSeeded = oracleProductProof || oracleRepeated;
   let oracleBrief = options.oracleBrief;
+  const oracleCorpusArtifactEntry = options.oracleCorpusArtifactEntry;
+  if (!oracleProductProof && options.oracleCorpusArtifactTarget) {
+    throw new Error(
+      "Oracle corpus generation target is valid only for an oracle-seeded proof"
+    );
+  }
+  if (!oracleRepeated && oracleCorpusArtifactEntry) {
+    throw new Error(
+      "Oracle corpus entry is valid only for an oracle repeated study"
+    );
+  }
 
   const outputPath = options.resumeRunDirectory ?? config.output_dir;
   if (
@@ -664,20 +709,45 @@ export const runExperienceReplay = async (
     reserveBytes: admitted.capacity.reserveBytes
   });
   const directory = created.directory;
-  if (oracleSeeded && options.resumeRunDirectory) {
+  if (oracleProductProof && options.resumeRunDirectory) {
     oracleBrief = await readTextFileNoFollow(
       path.join(directory.root, "oracle-private/brief.txt"),
       1024 * 1024
     );
   }
-  if (oracleSeeded) {
+  if (oracleProductProof) {
     if (!oracleBrief) throw new Error("Oracle-seeded proof brief is required");
     const digest = createHash("sha256").update(oracleBrief).digest("hex");
     if (digest !== admitted.runPlan.oracleBriefSha256) {
       throw new Error("Oracle-seeded proof brief differs from the run plan");
     }
-  } else if (oracleBrief !== undefined) {
+  } else if (!oracleRepeated && oracleBrief !== undefined) {
     throw new Error("Oracle brief is valid only for an oracle-seeded proof");
+  }
+  if (oracleRepeated) {
+    if (!oracleCorpusArtifactEntry)
+      throw new Error("Oracle repeated study corpus entry is required");
+    validateOracleCorpusArtifactEntry(oracleCorpusArtifactEntry);
+    const plannedTaskDigest = admitted.runPlan.replayTargetTaskDigests[0];
+    if (
+      oracleCorpusArtifactEntry.identity.task.digest !== plannedTaskDigest ||
+      oracleCorpusArtifactEntry.source.taskDigest !== plannedTaskDigest ||
+      oracleCorpusArtifactEntry.corpus.provenance.taskDigest !==
+        plannedTaskDigest
+    ) {
+      throw new Error(
+        "Oracle repeated study fixture task differs from the run plan"
+      );
+    }
+    if (
+      oracleCorpusArtifactEntry.attestationSha256 !==
+      admitted.runPlan.oracleCorpusManifestSha256
+    ) {
+      throw new Error(
+        "Oracle repeated study fixture corpus differs from the run plan"
+      );
+    }
+    oracleBrief = oracleCorpusArtifactEntry.oracleBrief;
   }
   const priorEntries = options.resumeRunDirectory
     ? await readRunJournal(
@@ -794,11 +864,18 @@ export const runExperienceReplay = async (
     await phase(journal, "preflight", "started");
     await publishOrVerifyJson(directory.root, "config.resolved.json", config);
     await publishOrVerifyJson(directory.root, "manifest.json", manifest);
-    if (oracleSeeded) {
+    if (oracleProductProof) {
       await publishOrVerifyArtifact(
         directory.root,
         "oracle-private/brief.txt",
         oracleBrief!
+      );
+    }
+    if (oracleRepeated) {
+      await publishOrVerifyJson(
+        directory.root,
+        "oracle-private/oracle-corpus-artifact.json",
+        oracleCorpusArtifactEntry!
       );
     }
     if (!options.resumeRunDirectory)
@@ -817,7 +894,11 @@ export const runExperienceReplay = async (
       replayTasks.map((task) => task.taskDigest),
       admitted.runPlan.replayAttemptsPerCondition,
       config.seed,
-      oracleSeeded ? ORACLE_CONDITIONS : undefined
+      oracleProductProof
+        ? ORACLE_CONDITIONS
+        : oracleRepeated
+          ? ORACLE_REPEATED_CONDITIONS
+          : undefined
     );
     verifyReplaySchedule(schedule);
     await phase(journal, "replay_schedule", "started");
@@ -825,157 +906,176 @@ export const runExperienceReplay = async (
     await phase(journal, "replay_schedule", "completed");
 
     await phase(journal, "source_attempts", "started");
-    const sourceJobs: ReplaySchedulerJob<SourceRecord>[] = [];
-    const sourceDecisions = new Map(
-      planAttemptResume(
-        tasks.map((task) => `source:${task.taskDigest}`),
-        priorEntries
-      ).map((decision) => [decision.attemptId, decision])
-    );
-    for (const task of tasks) {
-      const id = `source:${task.taskDigest}`;
-      const decision = sourceDecisions.get(id)!;
-      if (decision.action === "skip_completed") {
-        const entry = completedEntry(priorEntries, id)!;
-        const source = await readAttestedResult<SourceAttemptExecution>(
-          directory.root,
-          entry
-        );
-        if (source.failureCategory === "other")
-          throw new Error(
-            `Source ${task.name} failed in Harbor runtime or environment setup`
+    if (oracleRepeated) {
+      const task = replayTasks[0];
+      if (!task) throw new Error("Oracle repeated study task is missing");
+      oracleCorpora.set(task.taskDigest, oracleCorpusArtifactEntry!.corpus);
+      await phase(
+        journal,
+        "source_attempts",
+        "skipped",
+        "using validated private oracle corpus artifact"
+      );
+    } else {
+      const sourceJobs: ReplaySchedulerJob<SourceRecord>[] = [];
+      const sourceDecisions = new Map(
+        planAttemptResume(
+          tasks.map((task) => `source:${task.taskDigest}`),
+          priorEntries
+        ).map((decision) => [decision.attemptId, decision])
+      );
+      for (const task of tasks) {
+        const id = `source:${task.taskDigest}`;
+        const decision = sourceDecisions.get(id)!;
+        if (decision.action === "skip_completed") {
+          const entry = completedEntry(priorEntries, id)!;
+          const source = await readAttestedResult<SourceAttemptExecution>(
+            directory.root,
+            entry
           );
-        sources.set(task.taskDigest, { ...source, task });
-        continue;
-      }
-      if (decision.action === "preserve_missing") {
-        const generation = decision.nextExecutionGeneration;
-        const resultPath = sourceResultPathFor(task, generation);
-        await publishAttemptResult(directory, journal, {
-          attemptId: id,
-          executionGeneration: generation,
-          resultPath,
-          artifact: {
-            reward: null,
-            passed: false,
-            costUsd:
-              config.profile === "smoke"
-                ? 0
-                : config.maximum_top_level_attempt_cost_usd,
-            failureCategory: "missing_outcome"
-          },
-          reward: null,
-          failureCategory: "missing_outcome"
-        });
-        throw new Error(
-          `Source ${task.name} crossed the irreversible agent boundary without a result; dependent preparation is forbidden`
-        );
-      }
-      const generation = decision.nextExecutionGeneration;
-      const taskRoot = `source/${safeTaskName(task.name)}/generation-${generation}`;
-      sourceJobs.push({
-        id,
-        maximumCostUsd: Math.max(
-          Number.EPSILON,
-          config.maximum_top_level_attempt_cost_usd
-        ),
-        async run({ signal }) {
-          await journal.append({
-            type: "attempt_state",
-            attemptId: id,
-            executionGeneration: generation,
-            state: "admitted"
-          });
-          const lifecycle = createCoordinatorHarborLifecycle({
-            attemptId: id,
-            executionGeneration: generation,
-            journal,
-            activateCredential: () => undefined,
-            revokeCredential: () => undefined
-          });
-          if (signal.aborted)
-            throw new Error("Source attempt was cancelled before Harbor start");
-          const source = await dependencies.runSource({
-            task,
-            attemptId: id,
-            executionGeneration: generation,
-            runRoot: directory.root,
-            freezeTrajectoryPath: `${taskRoot}/frozen-trajectory.json`,
-            freezeManifestPath: `${taskRoot}/freeze-manifest.json`,
-            lifecycle,
-            config,
-            ...(oracleSeeded ? { developerInstructions: oracleBrief! } : {}),
-            signal
-          });
           if (source.failureCategory === "other")
             throw new Error(
               `Source ${task.name} failed in Harbor runtime or environment setup`
             );
+          sources.set(task.taskDigest, { ...source, task });
+          continue;
+        }
+        if (decision.action === "preserve_missing") {
+          const generation = decision.nextExecutionGeneration;
           const resultPath = sourceResultPathFor(task, generation);
           await publishAttemptResult(directory, journal, {
             attemptId: id,
             executionGeneration: generation,
             resultPath,
-            artifact: { ...source },
-            reward: source.reward,
-            failureCategory: source.failureCategory
+            artifact: {
+              reward: null,
+              passed: false,
+              costUsd:
+                config.profile === "smoke"
+                  ? 0
+                  : config.maximum_top_level_attempt_cost_usd,
+              failureCategory: "missing_outcome"
+            },
+            reward: null,
+            failureCategory: "missing_outcome"
           });
-          return {
-            value: { ...source, task },
-            observedCostUsd: source.costUsd
-          };
+          throw new Error(
+            `Source ${task.name} crossed the irreversible agent boundary without a result; dependent preparation is forbidden`
+          );
         }
+        const generation = decision.nextExecutionGeneration;
+        const taskRoot = `source/${safeTaskName(task.name)}/generation-${generation}`;
+        sourceJobs.push({
+          id,
+          maximumCostUsd: Math.max(
+            Number.EPSILON,
+            config.maximum_top_level_attempt_cost_usd
+          ),
+          async run({ signal }) {
+            await journal.append({
+              type: "attempt_state",
+              attemptId: id,
+              executionGeneration: generation,
+              state: "admitted"
+            });
+            const lifecycle = createCoordinatorHarborLifecycle({
+              attemptId: id,
+              executionGeneration: generation,
+              journal,
+              activateCredential: () => undefined,
+              revokeCredential: () => undefined
+            });
+            if (signal.aborted)
+              throw new Error(
+                "Source attempt was cancelled before Harbor start"
+              );
+            const source = await dependencies.runSource({
+              task,
+              attemptId: id,
+              executionGeneration: generation,
+              runRoot: directory.root,
+              freezeTrajectoryPath: `${taskRoot}/frozen-trajectory.json`,
+              freezeManifestPath: `${taskRoot}/freeze-manifest.json`,
+              lifecycle,
+              config,
+              ...(oracleSeeded ? { developerInstructions: oracleBrief! } : {}),
+              signal
+            });
+            if (source.failureCategory === "other")
+              throw new Error(
+                `Source ${task.name} failed in Harbor runtime or environment setup`
+              );
+            const resultPath = sourceResultPathFor(task, generation);
+            await publishAttemptResult(directory, journal, {
+              attemptId: id,
+              executionGeneration: generation,
+              resultPath,
+              artifact: { ...source },
+              reward: source.reward,
+              failureCategory: source.failureCategory
+            });
+            return {
+              value: { ...source, task },
+              observedCostUsd: source.costUsd
+            };
+          }
+        });
+      }
+      const sourceSchedule = await scheduleReplayJobs({
+        jobs: sourceJobs,
+        concurrency: config.concurrency,
+        ...(config.profile === "smoke"
+          ? { mode: "smoke" as const }
+          : {
+              mode: "paid" as const,
+              paidCostStopUsd: config.paid_cost_stop_usd!,
+              providerSpendingLimitUsd:
+                config.admission.provider_spending_limit_usd!,
+              costAdmission
+            })
       });
+      for (const result of sourceSchedule.results) {
+        if (result.status === "completed")
+          sources.set(result.value.task.taskDigest, result.value);
+        else if (result.status === "failed" || result.status === "cancelled")
+          throw result.error;
+        else throw new Error("Paid stop prevented the complete source cohort");
+      }
+      await phase(journal, "source_attempts", "completed");
     }
-    const sourceSchedule = await scheduleReplayJobs({
-      jobs: sourceJobs,
-      concurrency: config.concurrency,
-      ...(config.profile === "smoke"
-        ? { mode: "smoke" as const }
-        : {
-            mode: "paid" as const,
-            paidCostStopUsd: config.paid_cost_stop_usd!,
-            providerSpendingLimitUsd:
-              config.admission.provider_spending_limit_usd!,
-            costAdmission
-          })
-    });
-    for (const result of sourceSchedule.results) {
-      if (result.status === "completed")
-        sources.set(result.value.task.taskDigest, result.value);
-      else if (result.status === "failed" || result.status === "cancelled")
-        throw result.error;
-      else throw new Error("Paid stop prevented the complete source cohort");
-    }
-    await phase(journal, "source_attempts", "completed");
 
     await phase(journal, "atif_sanitization", "started");
-    for (const task of tasks) {
-      const source = sources.get(task.taskDigest);
-      if (!source) throw new Error(`Missing source attempt for ${task.name}`);
-      const sanitization = sanitizeAtifTrajectory(source.frozenTrajectory, {
-        taskDigest: task.taskDigest,
-        sourceAttemptId: `source:${task.taskDigest}`,
-        countEmbeddingTokens: dependencies.countEmbeddingTokens,
-        freezeManifest: source.freezeManifest
-      });
-      source.sanitization = sanitization;
-      const taskRoot = `source/${safeTaskName(task.name)}`;
-      await publishOrVerifyJson(
-        directory.root,
-        `${taskRoot}/sanitization.json`,
-        sanitization.manifest
+    if (oracleRepeated) {
+      await phase(
+        journal,
+        "atif_sanitization",
+        "skipped",
+        "fixture transcript is already sanitized"
       );
-      await publishOrVerifyArtifact(
-        directory.root,
-        `${taskRoot}/sanitized-trajectory.json`,
-        `${sanitization.canonicalJson}\n`
-      );
-      if (oracleSeeded) {
-        const corpus = buildOracleCorpus({
-          oracleBrief: oracleBrief!,
-          oracleBriefSha256: admitted.runPlan.oracleBriefSha256!,
-          source: {
+    } else {
+      for (const task of tasks) {
+        const source = sources.get(task.taskDigest);
+        if (!source) throw new Error(`Missing source attempt for ${task.name}`);
+        const sanitization = sanitizeAtifTrajectory(source.frozenTrajectory, {
+          taskDigest: task.taskDigest,
+          sourceAttemptId: `source:${task.taskDigest}`,
+          countEmbeddingTokens: dependencies.countEmbeddingTokens,
+          freezeManifest: source.freezeManifest
+        });
+        source.sanitization = sanitization;
+        const taskRoot = `source/${safeTaskName(task.name)}`;
+        await publishOrVerifyJson(
+          directory.root,
+          `${taskRoot}/sanitization.json`,
+          sanitization.manifest
+        );
+        await publishOrVerifyArtifact(
+          directory.root,
+          `${taskRoot}/sanitized-trajectory.json`,
+          `${sanitization.canonicalJson}\n`
+        );
+        if (oracleProductProof) {
+          const successfulSource = {
             taskDigest: task.taskDigest,
             sourceAttemptId: `source:${task.taskDigest}`,
             passed: source.passed,
@@ -983,41 +1083,64 @@ export const runExperienceReplay = async (
             expectedSuccessValue: task.reward.successValue,
             failureCategory: source.failureCategory,
             sanitization
+          };
+          const corpus = buildOracleCorpus({
+            oracleBrief: oracleBrief!,
+            oracleBriefSha256: admitted.runPlan.oracleBriefSha256!,
+            source: successfulSource
+          });
+          oracleCorpora.set(task.taskDigest, corpus);
+          if (options.oracleCorpusArtifactTarget) {
+            const corpusArtifact = await persistOracleCorpusArtifact(
+              options.oracleCorpusArtifactTarget.location,
+              {
+                identity: options.oracleCorpusArtifactTarget.identity,
+                oracleBrief: oracleBrief!,
+                source: successfulSource,
+                corpus
+              }
+            );
+            await publishOrVerifyJson(
+              directory.root,
+              "oracle-private/oracle-corpus-artifact.json",
+              corpusArtifact
+            );
           }
-        });
-        oracleCorpora.set(task.taskDigest, corpus);
-        await publishOrVerifyJson(
-          directory.root,
-          `${taskRoot}/oracle-provenance.json`,
-          corpus.provenance
-        );
-        for (const [name, value] of [
-          ["guidance-only", corpus.guidanceOnly],
-          ["trace-only", corpus.traceOnly],
-          ["full-experience", corpus.fullExperience]
-        ] as const) {
-          await publishOrVerifyArtifact(
+          await publishOrVerifyJson(
             directory.root,
-            `oracle-private/${safeTaskName(task.name)}/${name}.json`,
-            `${value.sanitization.canonicalJson}\n`
+            `${taskRoot}/oracle-provenance.json`,
+            corpus.provenance
           );
+          for (const [name, value] of [
+            ["guidance-only", corpus.guidanceOnly],
+            ["trace-only", corpus.traceOnly],
+            ["full-experience", corpus.fullExperience]
+          ] as const) {
+            await publishOrVerifyArtifact(
+              directory.root,
+              `oracle-private/${safeTaskName(task.name)}/${name}.json`,
+              `${value.sanitization.canonicalJson}\n`
+            );
+          }
         }
       }
+      await phase(journal, "atif_sanitization", "completed");
     }
-    await phase(journal, "atif_sanitization", "completed");
 
     await phase(journal, "placebo_assignment", "started");
-    const placeboCandidates = tasks.map((task) => {
-      const source = sources.get(task.taskDigest)!;
-      return {
-        taskDigest: task.taskDigest,
-        category: task.category,
-        sourcePassed: source.passed,
-        sanitizedTokenQuartile: source.sanitizedTokenQuartile,
-        expertTimeSeconds: task.expertTimeSeconds,
-        resourceClass: task.resourceClass
-      };
-    });
+    const placeboCandidates = oracleRepeated
+      ? []
+      : tasks.map((task) => {
+          const source = sources.get(task.taskDigest)!;
+          return {
+            taskDigest: task.taskDigest,
+            category: task.category,
+            sourcePassed: source.passed,
+            sanitizedTokenQuartile: source.sanitizedTokenQuartile,
+            expertTimeSeconds: task.expertTimeSeconds,
+            resourceClass: task.resourceClass
+          };
+        });
     let assignment = null;
     if (oracleSeeded) {
       await phase(journal, "placebo_assignment", "skipped");
@@ -1058,7 +1181,7 @@ export const runExperienceReplay = async (
     for (const scheduleEntry of schedule.entries) {
       for (const condition of scheduleEntry.conditions) {
         if (
-          condition !== "cold" &&
+          conditionUsesKoed(condition) &&
           replayDecisions.get(
             attemptId(scheduleEntry.taskDigest, condition, scheduleEntry.repeat)
           )?.action === "rerun_before_agent"
@@ -1067,16 +1190,19 @@ export const runExperienceReplay = async (
       }
     }
     const templateJobs: ReplaySchedulerJob<PersistedTemplate>[] = [];
-    const memoryConditions: readonly MemoryReplayCondition[] = oracleSeeded
-      ? (ORACLE_CONDITIONS.filter(
-          (condition) => condition !== "cold"
-        ) as readonly MemoryReplayCondition[])
-      : ["empty", "placebo", "relevant"];
+    const memoryConditions: readonly MemoryReplayCondition[] =
+      oracleProductProof
+        ? (ORACLE_CONDITIONS.filter(
+            conditionUsesKoed
+          ) as readonly MemoryReplayCondition[])
+        : oracleRepeated
+          ? ["empty", "relevant_guidance"]
+          : ["empty", "placebo", "relevant"];
     for (const task of replayTasks) {
       for (const condition of memoryConditions) {
         let oracleSource: AtifSanitizationResult | null = null;
         let oracleSourceAttemptId: string | undefined;
-        if (oracleSeeded && condition !== "empty") {
+        if (oracleProductProof && condition !== "empty") {
           const corpus = oracleCorpora.get(task.taskDigest);
           if (!corpus)
             throw new Error(`Missing oracle corpus for ${task.name}`);
@@ -1101,6 +1227,21 @@ export const runExperienceReplay = async (
           oracleSourceAttemptId = relevant
             ? `oracle:${condition}:${task.taskDigest}`
             : `oracle:distractor:${task.taskDigest}`;
+        } else if (oracleRepeated && condition === "relevant_guidance") {
+          const corpus = oracleCorpora.get(task.taskDigest);
+          if (!corpus)
+            throw new Error(
+              `Missing oracle corpus artifact corpus for ${task.name}`
+            );
+          oracleSourceAttemptId = `oracle:relevant_guidance:${task.taskDigest}`;
+          oracleSource = materializeSanitizedAtifTrajectory(
+            corpus.guidanceOnly.sanitization.trajectory,
+            {
+              taskDigest: task.taskDigest,
+              sourceAttemptId: oracleSourceAttemptId,
+              sourceManifest: corpus.guidanceOnly.sanitization.manifest
+            }
+          );
         }
         const sourceDigest = oracleSeeded
           ? condition === "empty"
@@ -1169,7 +1310,8 @@ export const runExperienceReplay = async (
             const prepared = await dependencies.prepareTemplate({
               task,
               condition,
-              sourceTask: source?.task ?? null,
+              sourceTask:
+                oracleRepeated && sourceDigest ? task : (source?.task ?? null),
               ...(oracleSourceAttemptId
                 ? { sourceAttemptId: oracleSourceAttemptId }
                 : {}),
@@ -1340,14 +1482,15 @@ export const runExperienceReplay = async (
             config.maximum_top_level_attempt_cost_usd
           ),
           async run({ signal }) {
-            const template =
-              condition === "cold"
-                ? null
-                : (templates.get(`${task.taskDigest}:${condition}`) ?? null);
-            if (condition !== "cold" && !template)
+            const template = !conditionUsesKoed(condition)
+              ? null
+              : (templates.get(`${task.taskDigest}:${condition}`) ?? null);
+            if (conditionUsesKoed(condition) && !template)
               throw new Error(`Missing ${condition} template for ${task.name}`);
             const sourceTaskDigest =
-              oracleSeeded && condition !== "empty" && condition !== "cold"
+              oracleSeeded &&
+              conditionUsesKoed(condition) &&
+              condition !== "empty"
                 ? task.taskDigest
                 : condition === "relevant"
                   ? task.taskDigest
@@ -1371,15 +1514,21 @@ export const runExperienceReplay = async (
               sourceTaskDigest,
               runRoot: directory.root,
               config,
+              ...(oracleRepeated && condition === "direct_guidance"
+                ? { developerInstructions: oracleBrief! }
+                : {}),
+              ...(oracleRepeated && conditionUsesKoed(condition)
+                ? { requireMemoryAnswer: true }
+                : {}),
               signal
             });
-            if (condition === "cold") {
+            if (!conditionUsesKoed(condition)) {
               if (
                 replay.cloneId !== null ||
                 replay.productPathAttestation !== null
               )
                 throw new Error(
-                  "Cold replay must have no Koed product resources"
+                  "Non-Koed replay must have no Koed product resources"
                 );
             } else {
               if (!replay.cloneId)
@@ -1441,6 +1590,27 @@ export const runExperienceReplay = async (
                   entry.repeat
                 );
                 assertCompleteReplayTelemetry(telemetry);
+                if (oracleRepeated && conditionUsesKoed(condition)) {
+                  const requests = (
+                    telemetry.koedRecall?.metrics as
+                      | {
+                          memoryAnswerRequests?: readonly {
+                            responseDetail: string | null;
+                            searchDomain: string | null;
+                          }[];
+                        }
+                      | undefined
+                  )?.memoryAnswerRequests;
+                  if (
+                    requests?.length !== 1 ||
+                    requests[0]?.responseDetail !== "answer_only" ||
+                    requests[0]?.searchDomain !== "project"
+                  ) {
+                    throw new Error(
+                      "Oracle repeated study requires exactly one explicit project-scoped answer_only memory_answer call"
+                    );
+                  }
+                }
                 const merged = mergeReplayTelemetry(telemetry);
                 const frozenTrajectory = await readTextFileNoFollow(
                   path.join(
@@ -1709,7 +1879,7 @@ export const runExperienceReplay = async (
         );
       }
     }
-    if (oracleSeeded) {
+    if (oracleProductProof) {
       for (const condition of [
         "relevant_guidance",
         "relevant_trace",
@@ -1730,12 +1900,33 @@ export const runExperienceReplay = async (
         }
       }
     }
+    if (oracleRepeated) {
+      for (const outcome of outcomes.filter((item) =>
+        conditionUsesKoed(item.condition)
+      )) {
+        if (
+          outcome.reward === null ||
+          (outcome.interactions?.memoryAnswerCalls ?? 0) < 1 ||
+          (outcome.condition === "relevant_guidance" &&
+            ((outcome.interactions?.memoryAnswerFailures ?? 0) >=
+              (outcome.interactions?.memoryAnswerCalls ?? 0) ||
+              (outcome.recall?.evidenceCount ?? 0) < 1))
+        ) {
+          throw new Error(
+            `Oracle repeated study requires successful memory_answer in ${outcome.condition} repeat ${outcome.repeat}`
+          );
+        }
+      }
+    }
     await phase(journal, "metric_merge", "started");
     await phase(journal, "metric_merge", "completed");
     await phase(journal, "trajectory_judging", "started");
     for (const task of replayTasks) {
       const sourceTrajectory = oracleSeeded
-        ? oracleCorpora.get(task.taskDigest)?.traceOnly.sanitization.trajectory
+        ? oracleRepeated
+          ? oracleCorpusArtifactEntry?.source.sanitization.trajectory
+          : oracleCorpora.get(task.taskDigest)?.traceOnly.sanitization
+              .trajectory
         : sources.get(task.taskDigest)?.sanitization?.trajectory;
       for (
         let repeat = 0;
@@ -1743,7 +1934,9 @@ export const runExperienceReplay = async (
         repeat += 1
       ) {
         const requiredComparisons = oracleSeeded
-          ? ORACLE_REQUIRED_COMPARISONS
+          ? oracleRepeated
+            ? ORACLE_REPEATED_REQUIRED_COMPARISONS
+            : ORACLE_REQUIRED_COMPARISONS
           : REQUIRED_COMPARISONS;
         for (const comparison of requiredComparisons) {
           const resultPath = judgeResultPathFor(task, comparison, repeat);
@@ -2129,6 +2322,7 @@ export const resumeExperienceReplay = async (
   options: {
     dependencies?: ExperienceReplayCoordinatorDependencies;
     preflight?: PreflightResult;
+    oracleCorpusArtifactEntry?: OracleCorpusArtifactEntry;
   } = {}
 ): Promise<string> => {
   if (!options.dependencies) missingDependencies();
@@ -2144,6 +2338,9 @@ export const resumeExperienceReplay = async (
   const result = await runExperienceReplay(config, {
     dependencies: options.dependencies,
     ...(options.preflight ? { preflight: options.preflight } : {}),
+    ...(options.oracleCorpusArtifactEntry
+      ? { oracleCorpusArtifactEntry: options.oracleCorpusArtifactEntry }
+      : {}),
     resumeRunDirectory: runRoot
   });
   return result.reportPath;
