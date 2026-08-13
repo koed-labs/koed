@@ -538,6 +538,9 @@ const createFixture = () => {
     async searchAuthorizedSharedMemorySemanticItems() {
       return [];
     },
+    async scanAuthorizedSharedMemorySemanticItems() {
+      return [];
+    },
     async expandAuthorizedSharedMemorySemanticItem() {
       return null;
     },
