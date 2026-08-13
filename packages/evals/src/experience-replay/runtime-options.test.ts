@@ -29,6 +29,11 @@ const config = resolveExperienceReplayConfig({
     prompt_version: "v1",
     output_schema_version: "v1"
   },
+  trajectory_judge: {
+    model: { id: "deterministic-smoke", reasoning_effort: "low" },
+    prompt_version: "experience-replay-trajectory-judge-v1",
+    output_schema_version: "experience-replay-trajectory-judge-v1"
+  },
   embedding: {
     model: "qwen3-0.6b",
     artifact_sha256: "b".repeat(64),
@@ -42,6 +47,7 @@ const config = resolveExperienceReplayConfig({
     setup_seconds: 1,
     verifier_seconds: 1,
     preparation_seconds: 1,
+    judge_seconds: 1,
     teardown_seconds: 1
   },
   admission: {
@@ -73,5 +79,46 @@ describe("Experience Replay CLI runtime options", () => {
         KOED_EXPERIENCE_REPLAY_POSTGRES_PASSWORD: "secret"
       })
     ).toThrow("must not contain credentials");
+  });
+
+  it("runs deterministic smoke through the strict trajectory-judge protocol", async () => {
+    const dependencies = createCliExperienceReplayDependencies(config, {
+      KOED_EXPERIENCE_REPLAY_POSTGRES_ADMIN_URL:
+        "postgresql://127.0.0.1:5432/postgres",
+      KOED_EXPERIENCE_REPLAY_POSTGRES_USER: "user",
+      KOED_EXPERIENCE_REPLAY_POSTGRES_PASSWORD: "secret"
+    });
+    const trajectory = {
+      schema_version: "ATIF-v1.7" as const,
+      agent: { name: "codex" as const, version: "deterministic" },
+      steps: [{ step_id: 1, source: "user" as const, message: "Fix the task." }]
+    };
+    await expect(
+      dependencies.judgeTrajectory({
+        runSeed: "smoke",
+        taskDigest: "a".repeat(64),
+        repeat: 0,
+        comparison: { left: "relevant", right: "cold" },
+        sourceTrajectory: trajectory,
+        left: {
+          condition: "relevant",
+          reward: 0,
+          passed: false,
+          trajectory
+        },
+        right: {
+          condition: "cold",
+          reward: 0,
+          passed: false,
+          trajectory
+        }
+      })
+    ).resolves.toMatchObject({
+      status: "judged",
+      preferredCondition: "tie",
+      model: "deterministic-smoke",
+      costUsd: 0
+    });
+    await dependencies.teardown();
   });
 });

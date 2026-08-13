@@ -25,7 +25,7 @@ import type {
 } from "./telemetry.js";
 import { assertCompleteReplayTelemetry } from "./telemetry.js";
 
-const sha256 = (value: string): string =>
+const sha256 = (value: string | Buffer): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
@@ -73,6 +73,11 @@ export interface CapturedHarborExecutionResult {
 export interface HarborReplayExecution {
   telemetry: ReplayTelemetryMergeInput;
   result: CapturedHarborExecutionResult;
+  replayTrajectoryArtifact?: {
+    path: string;
+    sha256: string;
+    freezeManifest: HarborFreezeManifest;
+  };
 }
 
 export interface HarborExecutionAdapterOptions {
@@ -166,6 +171,13 @@ const extractCapturedResult = (
     throw new Error(
       "Harbor source result has an invalid freeze manifest digest"
     );
+  if (
+    attemptKind === "replay" &&
+    (!("replay_trajectory_sha256" in output) ||
+      typeof output.replay_trajectory_sha256 !== "string" ||
+      !SHA256.test(output.replay_trajectory_sha256))
+  )
+    throw new Error("Harbor replay result has an invalid trajectory digest");
 
   const result = exactRecord(
     output.result,
@@ -619,6 +631,8 @@ export class HarborExecutionAdapter {
       condition: input.condition,
       repeat: input.repeat
     };
+    const replayTrajectoryPath = `harbor-replay-trajectories/${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}.atif.json`;
+    const replayManifestPath = `harbor-replay-trajectories/${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}.freeze-manifest.json`;
     const request: HarborRunRequest = {
       schema_version: "koed-harbor-run-v1",
       attempt_kind: "replay",
@@ -636,6 +650,8 @@ export class HarborExecutionAdapter {
       ),
       corpus_manifest: this.options.corpusManifest,
       run_root: input.runRoot,
+      replay_trajectory_path: replayTrajectoryPath,
+      freeze_manifest_path: replayManifestPath,
       result_path:
         input.resultPath ??
         `harbor-results/replay-${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}.json`
@@ -658,6 +674,43 @@ export class HarborExecutionAdapter {
       "replay",
       sha256(codex.serialized)
     );
+    if (!("replay_trajectory_sha256" in output))
+      throw new Error("Harbor replay result has no trajectory digest");
+    const replayTrajectorySha256 = output.replay_trajectory_sha256;
+    let replayTrajectory: Buffer;
+    try {
+      replayTrajectory = await readFile(
+        path.join(input.runRoot, replayTrajectoryPath)
+      );
+    } catch (error) {
+      throw new HarborClientError(
+        "invalid-output",
+        "Harbor replay trajectory artifact is missing",
+        { cause: error }
+      );
+    }
+    if (sha256(replayTrajectory) !== replayTrajectorySha256)
+      throw new HarborClientError(
+        "invalid-output",
+        "Harbor replay trajectory artifact differs from its attested digest"
+      );
+    let replayFreezeManifest: HarborFreezeManifest;
+    try {
+      const rawManifest = await readFile(
+        path.join(input.runRoot, replayManifestPath)
+      );
+      if (sha256(rawManifest) !== output.freeze_manifest_sha256)
+        throw new Error("digest mismatch");
+      replayFreezeManifest = JSON.parse(
+        rawManifest.toString("utf8")
+      ) as HarborFreezeManifest;
+    } catch (error) {
+      throw new HarborClientError(
+        "invalid-output",
+        "Harbor replay freeze manifest is missing or invalid",
+        { cause: error }
+      );
+    }
     const observers =
       this.options.mode === "smoke"
         ? createDeterministicSmokeTelemetry(identity)
@@ -692,7 +745,12 @@ export class HarborExecutionAdapter {
     assertCompleteReplayTelemetry(telemetry);
     return {
       result: captured,
-      telemetry
+      telemetry,
+      replayTrajectoryArtifact: {
+        path: replayTrajectoryPath,
+        sha256: replayTrajectorySha256,
+        freezeManifest: replayFreezeManifest
+      }
     };
   }
 }

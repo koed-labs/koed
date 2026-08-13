@@ -75,7 +75,8 @@ export interface HarborSourceRunRequest extends HarborRunRequestBase {
 
 export interface HarborReplayRunRequest extends HarborRunRequestBase {
   attempt_kind: "replay";
-  freeze_manifest_path?: never;
+  replay_trajectory_path: string;
+  freeze_manifest_path: string;
   freeze_trajectory_to?: never;
 }
 
@@ -93,7 +94,8 @@ export interface HarborSourceRunResult extends HarborRunResultBase {
 }
 
 export interface HarborReplayRunResult extends HarborRunResultBase {
-  freeze_manifest_sha256?: never;
+  replay_trajectory_sha256: string;
+  freeze_manifest_sha256: string;
 }
 
 export type HarborRunResult = HarborSourceRunResult | HarborReplayRunResult;
@@ -316,6 +318,7 @@ const validateRequest = async (
     "codex_code_mode_host_sha256",
     "freeze_manifest_path",
     "freeze_trajectory_to",
+    "replay_trajectory_path",
     "result_path"
   ]);
   if (Object.keys(input).some((key) => !allowed.has(key))) {
@@ -381,11 +384,19 @@ const validateRequest = async (
       }
       validateArtifactRelativePath(input.freeze_manifest_path);
       validateArtifactRelativePath(input.freeze_trajectory_to);
-    } else if (
-      Object.hasOwn(input, "freeze_manifest_path") ||
-      Object.hasOwn(input, "freeze_trajectory_to")
-    ) {
-      throw new Error("replay freeze outputs are forbidden");
+      if (Object.hasOwn(input, "replay_trajectory_path")) {
+        throw new Error("source replay trajectory output is forbidden");
+      }
+    } else {
+      if (Object.hasOwn(input, "freeze_trajectory_to"))
+        throw new Error("replay source trajectory output is forbidden");
+      if (!input.freeze_manifest_path)
+        throw new Error("replay freeze manifest is required");
+      if (!input.replay_trajectory_path) {
+        throw new Error("replay trajectory output is required");
+      }
+      validateArtifactRelativePath(input.freeze_manifest_path);
+      validateArtifactRelativePath(input.replay_trajectory_path);
     }
     if (input.result_path !== undefined)
       validateArtifactRelativePath(input.result_path);
@@ -418,7 +429,12 @@ const validateRequest = async (
         freeze_manifest_path: input.freeze_manifest_path,
         freeze_trajectory_to: input.freeze_trajectory_to
       }
-    : { ...common, attempt_kind: "replay" };
+    : {
+        ...common,
+        attempt_kind: "replay",
+        freeze_manifest_path: input.freeze_manifest_path,
+        replay_trajectory_path: input.replay_trajectory_path
+      };
 };
 
 const parseResult = (
@@ -453,17 +469,20 @@ const parseResult = (
     typeof parsed !== "object" ||
     Array.isArray(parsed) ||
     (parsed as { schema_version?: unknown }).schema_version !== RESULT_SCHEMA ||
-    Object.keys(parsed).length !== (attemptKind === "source" ? 5 : 4) ||
+    Object.keys(parsed).length !== (attemptKind === "source" ? 5 : 6) ||
     !Object.hasOwn(parsed, "runtime") ||
     !Object.hasOwn(parsed, "job_lock_sha256") ||
-    (attemptKind === "source") !==
-      Object.hasOwn(parsed, "freeze_manifest_sha256") ||
+    !Object.hasOwn(parsed, "freeze_manifest_sha256") ||
+    (attemptKind === "replay") !==
+      Object.hasOwn(parsed, "replay_trajectory_sha256") ||
     !Object.hasOwn(parsed, "result") ||
     typeof (parsed as { job_lock_sha256?: unknown }).job_lock_sha256 !==
       "string" ||
-    (attemptKind === "source" &&
-      typeof (parsed as { freeze_manifest_sha256?: unknown })
-        .freeze_manifest_sha256 !== "string") ||
+    typeof (parsed as { freeze_manifest_sha256?: unknown })
+      .freeze_manifest_sha256 !== "string" ||
+    (attemptKind === "replay" &&
+      typeof (parsed as { replay_trajectory_sha256?: unknown })
+        .replay_trajectory_sha256 !== "string") ||
     !(parsed as { runtime?: unknown }).runtime ||
     typeof (parsed as { runtime?: unknown }).runtime !== "object" ||
     Array.isArray((parsed as { runtime?: unknown }).runtime) ||

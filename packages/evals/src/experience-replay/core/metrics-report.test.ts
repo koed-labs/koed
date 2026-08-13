@@ -8,6 +8,7 @@ import {
   REQUIRED_COMPARISONS,
   missingOutcomeBounds,
   summarizeComparison,
+  taskFirstResourceDeltas,
   taskFirstResourceDelta,
   type ReplayOutcome,
   type TaskRewardContract
@@ -172,6 +173,185 @@ describe("task-first analysis", () => {
     ]);
   });
 
+  it("preserves equal Terminal-Bench reward while exposing lower whole-system resource usage", () => {
+    const resourceOutcomes: ReplayOutcome[] = ["t1", "t2"].flatMap(
+      (taskDigest, taskIndex) =>
+        (["relevant", "placebo"] as const).flatMap((condition) =>
+          [0, 1].map((repeat) => {
+            const amount =
+              (condition === "relevant" ? 10 : 20) + taskIndex * 4 + repeat * 2;
+            const tokens = {
+              uncachedInput: amount,
+              cachedInput: amount + 1,
+              output: amount + 2,
+              reasoning: amount + 3
+            };
+            const costs = {
+              providerBilledUsd: amount / 100,
+              apiEquivalentUsd: amount / 50,
+              subscriptionUsd: amount / 25
+            };
+            return {
+              taskDigest,
+              condition,
+              repeat,
+              reward: 1,
+              latencyMs: amount * 10,
+              durations: {
+                agentMs: amount * 2,
+                setupMs: amount * 3,
+                verifierMs: amount * 4
+              },
+              tokenUsage: tokens,
+              costs,
+              interactions: {
+                turns: amount,
+                toolCalls: amount + 1,
+                toolFailures: amount + 2,
+                mcpCalls: amount + 3,
+                mcpFailures: amount + 4,
+                memoryAnswerCalls: amount + 5,
+                memoryAnswerFailures: amount + 6
+              },
+              workers: {
+                memoryAnswer: {
+                  calls: amount,
+                  failures: amount + 1,
+                  durationMs: amount * 5,
+                  tokens,
+                  costs
+                },
+                lcmSummary: {
+                  calls: null,
+                  failures: null,
+                  durationMs: null,
+                  tokens: {
+                    uncachedInput: null,
+                    cachedInput: null,
+                    output: null,
+                    reasoning: null
+                  },
+                  costs: {
+                    providerBilledUsd: null,
+                    apiEquivalentUsd: null,
+                    subscriptionUsd: null
+                  }
+                },
+                sessionTitle: {
+                  calls: null,
+                  failures: null,
+                  durationMs: null,
+                  tokens: {
+                    uncachedInput: null,
+                    cachedInput: null,
+                    output: null,
+                    reasoning: null
+                  },
+                  costs: {
+                    providerBilledUsd: null,
+                    apiEquivalentUsd: null,
+                    subscriptionUsd: null
+                  }
+                }
+              },
+              recall: {
+                searches: amount,
+                expansions: amount + 1,
+                stages: amount + 2,
+                evidenceCount: amount + 3
+              }
+            } satisfies ReplayOutcome;
+          })
+        )
+    );
+    const summary = summarizeComparison(
+      resourceOutcomes,
+      contracts,
+      PRIMARY_COMPARISON,
+      2
+    );
+
+    expect(summary.meanDelta).toBe(0);
+    expect(summary.ties).toBe(2);
+    expect(summary.resourceDeltas).toEqual({
+      durations: {
+        replayElapsedMs: -100,
+        trialElapsedMs: -90,
+        agentMs: -20,
+        setupMs: -30,
+        verifierMs: -40
+      },
+      tokenUsage: {
+        uncachedInput: -10,
+        cachedInput: -10,
+        output: -10,
+        reasoning: -10
+      },
+      costs: {
+        providerBilledUsd: -0.1,
+        apiEquivalentUsd: -0.2,
+        subscriptionUsd: -0.4
+      },
+      interactions: {
+        turns: -10,
+        toolCalls: -10,
+        toolFailures: -10,
+        mcpCalls: -10,
+        mcpFailures: -10,
+        memoryAnswerCalls: -10,
+        memoryAnswerFailures: -10
+      },
+      memoryAnswerWorker: {
+        calls: -10,
+        failures: -10,
+        durationMs: -50,
+        tokens: {
+          uncachedInput: -10,
+          cachedInput: -10,
+          output: -10,
+          reasoning: -10
+        },
+        costs: {
+          providerBilledUsd: -0.1,
+          apiEquivalentUsd: -0.2,
+          subscriptionUsd: -0.4
+        }
+      },
+      recall: {
+        searches: -10,
+        expansions: -10,
+        stages: -10,
+        evidenceCount: -10
+      }
+    });
+    expect(summary.latencyMsDelta).toBe(-100);
+  });
+
+  it("uses paired complete tasks per metric and returns null instead of zero for missing telemetry", () => {
+    const withPartialTokens = outcomes.map((outcome) => ({
+      ...outcome,
+      tokenUsage: {
+        uncachedInput:
+          outcome.taskDigest === "t2" ? null : (outcome.tokens ?? null),
+        cachedInput: null,
+        output: null,
+        reasoning: null
+      }
+    }));
+    const deltas = taskFirstResourceDeltas(
+      withPartialTokens,
+      PRIMARY_COMPARISON,
+      2
+    );
+
+    expect(deltas.tokenUsage.uncachedInput).toBeCloseTo(40);
+    expect(deltas.tokenUsage.cachedInput).toBeNull();
+    expect(deltas.durations.agentMs).toBeNull();
+    expect(deltas.interactions.toolCalls).toBeNull();
+    expect(deltas.memoryAnswerWorker.calls).toBeNull();
+    expect(deltas.recall.searches).toBeNull();
+  });
+
   it("keeps missing outcomes missing and reports complete-case plus best/worst bounds", () => {
     const incomplete = outcomes.map((outcome) =>
       outcome.taskDigest === "t2" &&
@@ -273,7 +453,43 @@ describe("report and disclosure", () => {
       attemptedReplayCount: 16,
       failureCount: 0,
       preparationCostUsd: 1.25,
+      judgeOverheadCostUsd: 0.001,
       comparisons: [comparison],
+      trajectoryJudgments: [
+        {
+          schemaVersion: "experience-replay-trajectory-judge-v1",
+          taskDigest: "t1",
+          repeat: 0,
+          comparison: "relevant - placebo",
+          status: "judged",
+          preferredCondition: "relevant",
+          confidence: 0.8,
+          assessments: {
+            relevant: {
+              progress_quality: 3,
+              efficiency: 3,
+              error_recognition: 2,
+              failed_approach_avoidance: 4,
+              informed_failure: 0,
+              retrieval_quality: 3,
+              correct_prior_experience_reuse: 4,
+              distraction_resistance: 3,
+              evidence_refs: ["A:step:2", "source:step:1"]
+            }
+          },
+          rationale: "The preferred attempt avoided a supported dead end.",
+          latencyMs: 12,
+          model: "gpt-5.6-luna",
+          tokenUsage: {
+            uncachedInput: 20,
+            cachedInput: 10,
+            output: 5,
+            reasoning: 2
+          },
+          costUsd: 0.001,
+          error: null
+        }
+      ],
       attempts: outcomes,
       exclusions: []
     });
@@ -320,7 +536,43 @@ describe("report and disclosure", () => {
       attemptedReplayCount: 16,
       failureCount: 1,
       preparationCostUsd: 1.25,
+      judgeOverheadCostUsd: 0.001,
       comparisons: [comparison],
+      trajectoryJudgments: [
+        {
+          schemaVersion: "experience-replay-trajectory-judge-v1",
+          taskDigest: "t1",
+          repeat: 0,
+          comparison: "relevant - placebo",
+          status: "judged",
+          preferredCondition: "relevant",
+          confidence: 0.8,
+          assessments: {
+            relevant: {
+              progress_quality: 3,
+              efficiency: 3,
+              error_recognition: 2,
+              failed_approach_avoidance: 4,
+              informed_failure: 0,
+              retrieval_quality: 3,
+              correct_prior_experience_reuse: 4,
+              distraction_resistance: 3,
+              evidence_refs: ["A:step:2", "source:step:1"]
+            }
+          },
+          rationale: "The preferred attempt avoided a supported dead end.",
+          latencyMs: 12,
+          model: "gpt-5.6-luna",
+          tokenUsage: {
+            uncachedInput: 20,
+            cachedInput: 10,
+            output: 5,
+            reasoning: 2
+          },
+          costUsd: 0.001,
+          error: null
+        }
+      ],
       intervals: { [comparison.comparison]: { repeat, task } },
       attempts: [detailedAttempt, ...outcomes.slice(1)],
       exclusions: [
@@ -365,6 +617,13 @@ describe("report and disclosure", () => {
           missingOutcomeCount: 0
         }
       ],
+      trajectoryJudgments: [
+        {
+          status: "judged",
+          preferredCondition: "relevant",
+          rationale: "The preferred attempt avoided a supported dead end."
+        }
+      ],
       intervals: {
         "relevant - placebo": {
           repeat: { method: "matched-repeat-block", resamples: 20 },
@@ -382,6 +641,11 @@ describe("report and disclosure", () => {
     expect(publishedComparison.costUsdDelta).toBeCloseTo(0.1);
     expect(publishedComparison.worstCaseEstimate).toBeCloseTo(0.1);
     expect(publishedComparison.bestCaseEstimate).toBeCloseTo(0.1);
+    expect(publishedComparison.resourceDeltas).toMatchObject({
+      durations: { replayElapsedMs: 100 },
+      tokenUsage: { uncachedInput: null },
+      costs: { apiEquivalentUsd: null }
+    });
     expect(
       (publication.attempts as Record<string, unknown>[])[0]
     ).toMatchObject({
@@ -490,12 +754,50 @@ describe("report and disclosure", () => {
       attemptedReplayCount: outcomes.length,
       failureCount: 0,
       preparationCostUsd: 0,
+      judgeOverheadCostUsd: 0,
       comparisons: [comparison],
+      trajectoryJudgments: [],
       exclusions: []
     };
     expect(() =>
       createMachineReport({ ...base, attempts: outcomes.slice(1) })
     ).toThrow("every replay attempt");
+    expect(() =>
+      createMachineReport({
+        ...base,
+        judgeOverheadCostUsd: 1,
+        attempts: outcomes
+      })
+    ).toThrow("overhead must match");
+    const duplicateJudgment = {
+      schemaVersion: "experience-replay-trajectory-judge-v1" as const,
+      taskDigest: "t1",
+      repeat: 0,
+      comparison: `${PRIMARY_COMPARISON.left} - ${PRIMARY_COMPARISON.right}`,
+      status: "error" as const,
+      preferredCondition: null,
+      confidence: null,
+      assessments: {},
+      rationale: null,
+      latencyMs: 0,
+      model: "test-model",
+      tokenUsage: {
+        uncachedInput: null,
+        cachedInput: null,
+        output: null,
+        reasoning: null
+      },
+      costUsd: null,
+      error: "judge unavailable"
+    };
+    expect(() =>
+      createMachineReport({
+        ...base,
+        judgeOverheadCostUsd: null,
+        trajectoryJudgments: [duplicateJudgment, duplicateJudgment],
+        attempts: outcomes
+      })
+    ).toThrow("duplicate result");
     expect(() =>
       createMachineReport({
         ...base,

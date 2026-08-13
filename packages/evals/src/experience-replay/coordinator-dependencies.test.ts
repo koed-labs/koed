@@ -108,6 +108,16 @@ const fixture = () => {
       };
       return {
         result: {} as HarborReplayExecution["result"],
+        replayTrajectoryArtifact: {
+          path: "harbor-replay-trajectories/replay.json",
+          sha256: `sha256:${"a".repeat(64)}`,
+          freezeManifest:
+            {} as HarborReplayExecution["replayTrajectoryArtifact"] extends {
+              freezeManifest: infer T;
+            }
+              ? T
+              : never
+        },
         telemetry: {
           identity,
           harbor: {

@@ -909,6 +909,8 @@ class LifecycleRecorder:
     manifest_path: Path | None = None
     freeze_destination: Path | None = None
     freeze_relative_path: str | None = None
+    replay_trajectory_destination: Path | None = None
+    replay_trajectory_sha256: str | None = None
     states: dict[str, str] = field(default_factory=dict)
     records: list[dict[str, Any]] = field(default_factory=list)
     manifest: dict[str, Any] | None = None
@@ -1005,8 +1007,44 @@ class LifecycleRecorder:
             raise ContractError("verification-started event occurred before agent-ended")
         self.verification_started_ns = self.clock_ns()
         if self.attempt_kind == "replay":
+            if (
+                self.replay_trajectory_destination is None
+                or self.freeze_relative_path is None
+                or self.manifest_path is None
+            ):
+                raise ContractError("REPLAY_TRAJECTORY_OUTPUT_MISSING")
+            frozen = _freeze_file(
+                _trial_dir(event) / "agent" / "trajectory.json",
+                self.replay_trajectory_destination,
+                relative_path=self.freeze_relative_path,
+            )
+            self.replay_trajectory_sha256 = frozen["sha256"]
+            self._record(event, "trajectory_materialized")
             self.states[key] = "verification-started"
             self._record(event, "verification_started")
+            step_identities, agent_native = _step_identities(
+                self.replay_trajectory_destination
+            )
+            self.manifest = {
+                "schema_version": FREEZE_MANIFEST_SCHEMA,
+                "adapter": {
+                    "name": "harbor-codex",
+                    "version": HARBOR_VERSION,
+                    "commit": HARBOR_COMMIT,
+                    "raw_reasoning_capture_disabled": True,
+                },
+                "source_attempt": {
+                    "trial_id": str(event.trial_id),
+                    "task_name": event.task_name,
+                },
+                "lifecycle": self.records,
+                "cutoff": {
+                    "agent_last_native_event_ordinal": agent_native,
+                    "step_identities": step_identities,
+                },
+                "frozen_artifact": frozen,
+            }
+            _atomic_json(self.manifest_path, self.manifest, no_overwrite=True)
             return
         if self.freeze_destination is None or self.freeze_relative_path is None or self.manifest_path is None:
             raise ContractError("SOURCE_FREEZE_OUTPUTS_MISSING")
@@ -1109,12 +1147,18 @@ def _strict_request(path: Path) -> dict[str, Any]:
         "codex_code_mode_host_sha256",
         "freeze_manifest_path",
         "freeze_trajectory_to",
+        "replay_trajectory_path",
         "result_path",
     }
     unknown = set(request) - allowed
     if unknown:
         raise ContractError("UNKNOWN_RUN_REQUEST_KEY")
-    required = allowed - {"result_path", "freeze_manifest_path", "freeze_trajectory_to"}
+    required = allowed - {
+        "result_path",
+        "freeze_manifest_path",
+        "freeze_trajectory_to",
+        "replay_trajectory_path",
+    }
     missing = required - set(request)
     if missing:
         raise ContractError("MISSING_RUN_REQUEST_KEY")
@@ -1147,8 +1191,14 @@ def _strict_request(path: Path) -> dict[str, Any]:
         "freeze_trajectory_to",
     }:
         raise ContractError("SOURCE_FREEZE_OUTPUTS_REQUIRED")
-    if request["attempt_kind"] == "replay" and freeze_fields:
-        raise ContractError("REPLAY_FREEZE_OUTPUTS_FORBIDDEN")
+    if request["attempt_kind"] == "source" and "replay_trajectory_path" in request:
+        raise ContractError("SOURCE_REPLAY_TRAJECTORY_FORBIDDEN")
+    if request["attempt_kind"] == "replay" and "replay_trajectory_path" not in request:
+        raise ContractError("REPLAY_TRAJECTORY_OUTPUT_REQUIRED")
+    if request["attempt_kind"] == "replay" and freeze_fields != {
+        "freeze_manifest_path"
+    }:
+        raise ContractError("REPLAY_FREEZE_MANIFEST_REQUIRED")
     return request
 
 
@@ -1754,9 +1804,15 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     request = _strict_request(request_path)
     run_root = _validated_run_root(request["run_root"])
     freeze_destination = freeze_relative = manifest_path = None
+    replay_trajectory_destination = replay_trajectory_relative = None
     if request["attempt_kind"] == "source":
         freeze_destination, freeze_relative = _output_beneath(
             run_root, request["freeze_trajectory_to"]
+        )
+        manifest_path, _ = _output_beneath(run_root, request["freeze_manifest_path"])
+    else:
+        replay_trajectory_destination, replay_trajectory_relative = _output_beneath(
+            run_root, request["replay_trajectory_path"]
         )
         manifest_path, _ = _output_beneath(run_root, request["freeze_manifest_path"])
     result_destination = None
@@ -1782,7 +1838,15 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     ):
         raise ContractError("INVALID_JOB_NAME")
     job_dir, _ = _output_beneath(run_root, f"harbor-jobs/{job_name}")
-    requested_outputs = [output for output in [freeze_destination, manifest_path] if output is not None]
+    requested_outputs = [
+        output
+        for output in [
+            freeze_destination,
+            manifest_path,
+            replay_trajectory_destination,
+        ]
+        if output is not None
+    ]
     if result_destination is not None:
         requested_outputs.append(result_destination)
     if any(output.is_relative_to(job_dir) for output in requested_outputs):
@@ -1824,7 +1888,8 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         attempt_kind=request["attempt_kind"],
         manifest_path=manifest_path,
         freeze_destination=freeze_destination,
-        freeze_relative_path=freeze_relative,
+        freeze_relative_path=freeze_relative or replay_trajectory_relative,
+        replay_trajectory_destination=replay_trajectory_destination,
     )
     job.on_trial_started(_trial_lock_validator(manifest_by_name[task_name]))
     job.on_agent_started(recorder.on_agent_started)
@@ -1898,6 +1963,18 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     }
     if request["attempt_kind"] == "source":
         assert manifest_path is not None
+        output["freeze_manifest_sha256"] = _sha256_file(manifest_path)
+    else:
+        assert replay_trajectory_destination is not None
+        assert manifest_path is not None
+        if recorder.replay_trajectory_sha256 is None:
+            raise ContractError("replay attempt ended without a pre-verifier trajectory")
+        if (
+            _sha256_file(replay_trajectory_destination)
+            != recorder.replay_trajectory_sha256
+        ):
+            raise ContractError("REPLAY_TRAJECTORY_CHANGED_AFTER_CAPTURE")
+        output["replay_trajectory_sha256"] = recorder.replay_trajectory_sha256
         output["freeze_manifest_sha256"] = _sha256_file(manifest_path)
     if result_destination is not None:
         _atomic_json(result_destination, output, no_overwrite=True)

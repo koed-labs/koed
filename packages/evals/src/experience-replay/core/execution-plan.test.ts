@@ -34,6 +34,14 @@ const config = (profile: "smoke" | "quick" = "quick") =>
       prompt_version: "test-v1",
       output_schema_version: "test-v1"
     },
+    trajectory_judge: {
+      model: {
+        id: profile === "smoke" ? "deterministic-smoke" : "gpt-5.6-luna",
+        reasoning_effort: profile === "smoke" ? "low" : "medium"
+      },
+      prompt_version: "experience-replay-trajectory-judge-v1",
+      output_schema_version: "experience-replay-trajectory-judge-v1"
+    },
     embedding: {
       model: "qwen3-0.6b",
       artifact_sha256: "c".repeat(64),
@@ -57,6 +65,7 @@ const config = (profile: "smoke" | "quick" = "quick") =>
       setup_seconds: 1,
       verifier_seconds: 1,
       preparation_seconds: 1,
+      judge_seconds: 1,
       teardown_seconds: 1
     },
     admission: {

@@ -416,6 +416,16 @@ const sumTokens = (
     right.reasoning
   ]);
 
+const sumTokenTelemetry = (
+  left: TokenTelemetry,
+  right: TokenTelemetry
+): TokenTelemetry => ({
+  uncachedInput: sumComplete([left.uncachedInput, right.uncachedInput]),
+  cachedInput: sumComplete([left.cachedInput, right.cachedInput]),
+  output: sumComplete([left.output, right.output]),
+  reasoning: sumComplete([left.reasoning, right.reasoning])
+});
+
 export const mergeReplayTelemetry = (
   input: ReplayTelemetryMergeInput
 ): ReplayTelemetryMergeResult => {
@@ -673,7 +683,7 @@ export const mergeReplayTelemetry = (
       agentMs: finite(harborMetrics.agentMs, "Harbor metrics.agentMs"),
       verifierMs: finite(harborMetrics.verifierMs, "Harbor metrics.verifierMs")
     },
-    tokenUsage: agentTokens,
+    tokenUsage: sumTokenTelemetry(agentTokens, workers.memoryAnswer.tokens),
     costs: replayCosts,
     interactions,
     workers,

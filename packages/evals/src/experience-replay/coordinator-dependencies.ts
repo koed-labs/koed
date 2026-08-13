@@ -34,6 +34,10 @@ import {
   createRecordedReplayTelemetryCollector,
   registerRecordedAttemptObservation
 } from "./recorded-runtime-telemetry.js";
+import type {
+  TrajectoryJudgeInput,
+  TrajectoryJudgeResult
+} from "./trajectory-judge.js";
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -82,6 +86,9 @@ export interface ExperienceReplayCoordinatorDependencyFactoryOptions {
   productRuntimeDependencies?: Partial<ProductRuntimeDependencies>;
   lcmSummaryConfig?: LocalProductAdapterOptions["lcmSummaryConfig"];
   runScheduledLcmJobs?: LocalProductAdapterOptions["runScheduledLcmJobs"];
+  judgeTrajectory?: (
+    input: TrajectoryJudgeInput
+  ) => Promise<TrajectoryJudgeResult>;
   preparationCostUsd?: (
     template: LocalProductTemplateHandle,
     config: ResolvedExperienceReplayConfig
@@ -429,19 +436,24 @@ export const createExperienceReplayCoordinatorDependencies = (
           productPathAttestation: null,
           activateCredential: () => undefined,
           revokeCredential: () => undefined,
-          run: async ({ lifecycle, signal }) =>
-            (
-              await harbor.runReplay({
-                task: input.task,
-                condition: input.condition,
-                repeat: input.repeat,
-                executionGeneration: input.executionGeneration,
-                runRoot: input.runRoot,
-                lifecycle,
-                config: input.config,
-                signal
-              })
-            ).telemetry,
+          run: async ({ lifecycle, signal }) => {
+            const result = await harbor.runReplay({
+              task: input.task,
+              condition: input.condition,
+              repeat: input.repeat,
+              executionGeneration: input.executionGeneration,
+              runRoot: input.runRoot,
+              lifecycle,
+              config: input.config,
+              signal
+            });
+            if (!result.replayTrajectoryArtifact)
+              throw new Error("Harbor replay omitted its frozen trajectory");
+            return {
+              telemetry: result.telemetry,
+              replayTrajectoryArtifact: result.replayTrajectoryArtifact
+            };
+          },
           close: () => Promise.resolve()
         };
       }
@@ -533,20 +545,24 @@ export const createExperienceReplayCoordinatorDependencies = (
                 })
               : () => undefined;
           try {
-            return (
-              await harbor.runReplay({
-                task: input.task,
-                condition: input.condition,
-                repeat: input.repeat,
-                executionGeneration: input.executionGeneration,
-                runRoot: input.runRoot,
-                lifecycle,
-                config: input.config,
-                bridgeUrl: runtime.bridge.containerUrl ?? runtime.bridge.url,
-                bridgeToken: runtime.bridge.token,
-                signal
-              })
-            ).telemetry;
+            const result = await harbor.runReplay({
+              task: input.task,
+              condition: input.condition,
+              repeat: input.repeat,
+              executionGeneration: input.executionGeneration,
+              runRoot: input.runRoot,
+              lifecycle,
+              config: input.config,
+              bridgeUrl: runtime.bridge.containerUrl ?? runtime.bridge.url,
+              bridgeToken: runtime.bridge.token,
+              signal
+            });
+            if (!result.replayTrajectoryArtifact)
+              throw new Error("Harbor replay omitted its frozen trajectory");
+            return {
+              telemetry: result.telemetry,
+              replayTrajectoryArtifact: result.replayTrajectoryArtifact
+            };
           } finally {
             unregister();
           }
@@ -554,6 +570,12 @@ export const createExperienceReplayCoordinatorDependencies = (
         close
       };
     },
+
+    judgeTrajectory:
+      options.judgeTrajectory ??
+      (() => {
+        throw new Error("Trajectory judge dependency is required");
+      }),
 
     async teardown({
       preserveTemplates = false

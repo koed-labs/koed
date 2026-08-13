@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -19,6 +19,7 @@ import {
 } from "./coordinator.js";
 import type { LocalProductTemplateAttestation } from "./local-product-adapter.js";
 import { preflightExperienceReplay } from "./preflight.js";
+import type { ReplayTelemetryMergeInput } from "./telemetry.js";
 
 const productAttestation = {
   schema: "koed-experience-replay-local-product-template-v1",
@@ -204,6 +205,11 @@ const smokeConfig = (output: string) =>
       prompt_version: "deterministic-v1",
       output_schema_version: "deterministic-v1"
     },
+    trajectory_judge: {
+      model: { id: "deterministic-smoke", reasoning_effort: "low" },
+      prompt_version: "experience-replay-trajectory-judge-v1",
+      output_schema_version: "experience-replay-trajectory-judge-v1"
+    },
     embedding: {
       model: "deterministic-local-v1",
       artifact_sha256: "b".repeat(64),
@@ -218,6 +224,7 @@ const smokeConfig = (output: string) =>
     },
     timeouts: {
       agent_seconds: 60,
+      judge_seconds: 60,
       setup_seconds: 30,
       verifier_seconds: 30,
       preparation_seconds: 30,
@@ -248,6 +255,10 @@ const productProofConfig = (output: string) => {
     memory_answer: {
       ...smoke.memory_answer,
       model: { id: "gpt-5.6-luna", reasoning_effort: "low" }
+    },
+    trajectory_judge: {
+      ...smoke.trajectory_judge,
+      model: { id: "gpt-5.6-luna", reasoning_effort: "medium" }
     },
     lcm_summary: {
       ...smoke.lcm_summary,
@@ -324,7 +335,15 @@ const fakeDependencies = (
       preparationCostUsd: 0
     };
   },
-  async createReplay({ task, condition, repeat, template, sourceTaskDigest }) {
+  async createReplay({
+    task,
+    condition,
+    repeat,
+    executionGeneration,
+    template,
+    sourceTaskDigest,
+    runRoot
+  }) {
     events.push(`replay:${task.name}:${condition}`);
     if (condition === "cold") {
       expect(template).toBeNull();
@@ -369,7 +388,7 @@ const fakeDependencies = (
           ...callbackEvent,
           event: "trial_ended"
         });
-        return {
+        const telemetry = {
           identity: { taskDigest: task.taskDigest, condition, repeat },
           harbor: {
             identity: { taskDigest: task.taskDigest, condition, repeat },
@@ -486,11 +505,52 @@ const fakeDependencies = (
             status: "available",
             metrics: { apiBytes: 0, runtimeBytes: 0, workerBytes: 0 }
           }
+        } satisfies ReplayTelemetryMergeInput;
+        const replayTrajectoryPath = `fake-replay-trajectories/${task.taskDigest}-${condition}-${repeat}-${executionGeneration}.json`;
+        const rawTrajectory = trajectory(`${task.name}-${condition}`);
+        await mkdir(path.dirname(path.join(runRoot, replayTrajectoryPath)), {
+          recursive: true
+        });
+        await writeFile(
+          path.join(runRoot, replayTrajectoryPath),
+          rawTrajectory,
+          "utf8"
+        );
+        return {
+          telemetry,
+          replayTrajectoryArtifact: {
+            path: replayTrajectoryPath,
+            sha256: `sha256:${createHash("sha256").update(rawTrajectory).digest("hex")}`,
+            freezeManifest: freezeManifest(task.name, rawTrajectory)
+          }
         };
       },
       async close() {
         events.push(`close:${task.name}:${condition}`);
       }
+    };
+  },
+  async judgeTrajectory(input) {
+    return {
+      schemaVersion: "experience-replay-trajectory-judge-v1",
+      taskDigest: input.taskDigest,
+      repeat: input.repeat,
+      comparison: `${input.comparison.left} - ${input.comparison.right}`,
+      status: "judged",
+      preferredCondition: "tie",
+      confidence: 1,
+      assessments: {},
+      rationale: "Deterministic smoke tie.",
+      latencyMs: 0,
+      model: "deterministic-smoke",
+      tokenUsage: {
+        uncachedInput: 0,
+        cachedInput: 0,
+        output: 0,
+        reasoning: 0
+      },
+      costUsd: 0,
+      error: null
     };
   },
   async teardown() {
@@ -582,6 +642,7 @@ describe("unified experience replay coordinator", () => {
       "template_creation",
       "replay_execution",
       "metric_merge",
+      "trajectory_judging",
       "report_generation",
       "teardown"
     ]);
@@ -597,6 +658,10 @@ describe("unified experience replay coordinator", () => {
     expect(
       new Set(events.filter((event) => event.startsWith("close:"))).size
     ).toBe(8);
+    const judgments = JSON.parse(
+      await readFile(path.join(output, "judge/results.json"), "utf8")
+    ) as unknown[];
+    expect(judgments).toHaveLength(10);
     const markdown = await readFile(
       path.join(output, "report/summary.md"),
       "utf8"
@@ -606,6 +671,7 @@ describe("unified experience replay coordinator", () => {
         "This is not a standard Terminal-Bench leaderboard evaluation."
       )
     ).toBe(true);
+    expect(markdown).toContain("## Blind trajectory judgments");
     await expect(reportExistingRun(output)).resolves.toContain("summary.md");
     const publication = await sanitizeRunReport(output);
     await expect(

@@ -12,6 +12,7 @@ import {
   REQUIRED_COMPARISONS,
   SMOKE_TASK_DIGESTS,
   summarizeComparison,
+  TRAJECTORY_JUDGE_SCHEMA_VERSION,
   verifyPlaceboAssignment,
   verifyExperienceReplayRunPlan,
   verifyReplaySchedule,
@@ -45,6 +46,7 @@ import {
 import {
   readJsonArtifact,
   readTextFileNoFollow,
+  validateArtifactRelativePath,
   validateExistingRunDirectory,
   writeTextArtifactAtomic
 } from "./artifacts.js";
@@ -61,6 +63,10 @@ import {
   type ReplayTelemetryMergeInput
 } from "./telemetry.js";
 import { acquireRunLease } from "./run-lease.js";
+import type {
+  TrajectoryJudgeInput,
+  TrajectoryJudgeResult
+} from "./trajectory-judge.js";
 
 const SMOKE_TASKS: readonly CoordinatorTask[] = [
   {
@@ -130,7 +136,14 @@ export interface ReplayExecutionHandle {
   run(input: {
     lifecycle: ReturnType<typeof createCoordinatorHarborLifecycle>;
     signal?: AbortSignal;
-  }): Promise<ReplayTelemetryMergeInput>;
+  }): Promise<{
+    telemetry: ReplayTelemetryMergeInput;
+    replayTrajectoryArtifact: {
+      path: string;
+      sha256: string;
+      freezeManifest: HarborFreezeManifest;
+    };
+  }>;
   close(): Promise<void>;
 }
 
@@ -170,6 +183,7 @@ export interface ExperienceReplayCoordinatorDependencies {
     config: ResolvedExperienceReplayConfig;
     signal?: AbortSignal;
   }): Promise<ReplayExecutionHandle>;
+  judgeTrajectory(input: TrajectoryJudgeInput): Promise<TrajectoryJudgeResult>;
   adoptTemplate?(template: PreparedTemplate): Promise<PreparedTemplate>;
   teardown(options?: { preserveTemplates?: boolean }): Promise<void>;
   /** Redacted cleanup proofs exposed by concrete product adapters. */
@@ -207,6 +221,7 @@ const defaultDependencies: ExperienceReplayCoordinatorDependencies = {
   runSource: () => Promise.resolve().then(() => missingDependencies()),
   prepareTemplate: () => Promise.resolve().then(() => missingDependencies()),
   createReplay: () => Promise.resolve().then(() => missingDependencies()),
+  judgeTrajectory: () => Promise.resolve().then(() => missingDependencies()),
   teardown: () => Promise.resolve()
 };
 
@@ -312,6 +327,7 @@ const reportFromOutcomes = async (
   runPlan: ExperienceReplayRunPlan,
   tasks: readonly CoordinatorTask[],
   outcomes: readonly ReplayOutcome[],
+  trajectoryJudgments: readonly TrajectoryJudgeResult[],
   preparationCostUsd = 0,
   runId = immutableHash({
     config: config.semantic_config_hash,
@@ -337,7 +353,16 @@ const reportFromOutcomes = async (
     attemptedReplayCount: outcomes.length,
     failureCount: outcomes.filter((outcome) => outcome.reward === null).length,
     preparationCostUsd,
+    judgeOverheadCostUsd: trajectoryJudgments.every(
+      (judgment) => judgment.costUsd !== null
+    )
+      ? trajectoryJudgments.reduce(
+          (total, judgment) => total + judgment.costUsd!,
+          0
+        )
+      : null,
     comparisons,
+    trajectoryJudgments,
     attempts: outcomes,
     exclusions: [],
     detailFiles: [
@@ -346,6 +371,7 @@ const reportFromOutcomes = async (
       "journal.jsonl",
       "preparation-telemetry.json",
       "cost-admission.json",
+      "judge/results.json",
       "attestations/preflight.json",
       "attestations/product-path.json",
       "attestations/cleanup.json"
@@ -460,6 +486,21 @@ const failureResultPathFor = (
 
 const sourceResultPathFor = (task: CoordinatorTask, generation: number) =>
   `source/${safeTaskName(task.name)}/generation-${generation}/result.json`;
+
+const replaySanitizedTrajectoryPathFor = (
+  task: CoordinatorTask,
+  condition: ReplayCondition,
+  repeat: number,
+  generation: number
+) =>
+  `attempts/${safeTaskName(task.name)}/${condition}/${repeat}/generation-${generation}/sanitized-trajectory.json`;
+
+const judgeResultPathFor = (
+  task: CoordinatorTask,
+  comparison: { left: ReplayCondition; right: ReplayCondition },
+  repeat: number
+) =>
+  `judge/${safeTaskName(task.name)}/${comparison.left}-versus-${comparison.right}/repeat-${repeat}.json`;
 
 const validateReplayIdentity = (
   telemetry: ReplayTelemetryMergeInput,
@@ -619,6 +660,11 @@ export const runExperienceReplay = async (
   const templates = new Map<string, PreparedTemplate>();
   const templateRecords: PersistedTemplate[] = [];
   const outcomes: ReplayOutcome[] = [];
+  const trajectoryJudgments: TrajectoryJudgeResult[] = [];
+  const replayTrajectories = new Map<
+    string,
+    AtifSanitizationResult["trajectory"]
+  >();
   const cloneIds = new Set<string>();
   const productPathAttestations: Array<{
     attemptId: string;
@@ -1118,6 +1164,18 @@ export const runExperienceReplay = async (
               await readAttestedResult<ReplayOutcome>(directory.root, prior)
             )
           );
+          const sanitizedPath = replaySanitizedTrajectoryPathFor(
+            task,
+            condition,
+            entry.repeat,
+            prior.executionGeneration
+          );
+          if (await artifactExists(directory.root, sanitizedPath)) {
+            const sanitized = await readJsonArtifact<
+              AtifSanitizationResult["trajectory"]
+            >(directory.root, sanitizedPath);
+            replayTrajectories.set(id, sanitized);
+          }
           continue;
         }
         if (decision.action === "preserve_missing") {
@@ -1241,7 +1299,8 @@ export const runExperienceReplay = async (
               if (signal.aborted)
                 throw new Error("Replay was cancelled before Harbor start");
               try {
-                const telemetry = await replay.run({ lifecycle, signal });
+                const execution = await replay.run({ lifecycle, signal });
+                const telemetry = execution.telemetry;
                 if (!lifecycleState.activated)
                   throw new Error(
                     "Harbor replay returned without an acknowledged agent start"
@@ -1258,6 +1317,37 @@ export const runExperienceReplay = async (
                 );
                 assertCompleteReplayTelemetry(telemetry);
                 const merged = mergeReplayTelemetry(telemetry);
+                const frozenTrajectory = await readTextFileNoFollow(
+                  path.join(
+                    directory.root,
+                    validateArtifactRelativePath(
+                      execution.replayTrajectoryArtifact.path
+                    )
+                  ),
+                  config.admission.maximum_trajectory_bytes
+                );
+                const sanitizedReplay = sanitizeAtifTrajectory(
+                  frozenTrajectory,
+                  {
+                    taskDigest: task.taskDigest,
+                    sourceAttemptId: id,
+                    freezeManifest:
+                      execution.replayTrajectoryArtifact.freezeManifest,
+                    countEmbeddingTokens: dependencies.countEmbeddingTokens
+                  }
+                );
+                const sanitizedPath = replaySanitizedTrajectoryPathFor(
+                  task,
+                  condition,
+                  entry.repeat,
+                  generation
+                );
+                await publishOrVerifyArtifact(
+                  directory.root,
+                  sanitizedPath,
+                  `${sanitizedReplay.canonicalJson}\n`
+                );
+                replayTrajectories.set(id, sanitizedReplay.trajectory);
                 if (
                   admitted.runPlan.kind === "product_path_proof" &&
                   condition === "relevant" &&
@@ -1496,6 +1586,166 @@ export const runExperienceReplay = async (
     }
     await phase(journal, "metric_merge", "started");
     await phase(journal, "metric_merge", "completed");
+    await phase(journal, "trajectory_judging", "started");
+    for (const task of replayTasks) {
+      const sourceTrajectory = sources.get(task.taskDigest)?.sanitization
+        ?.trajectory;
+      for (
+        let repeat = 0;
+        repeat < admitted.runPlan.replayAttemptsPerCondition;
+        repeat += 1
+      ) {
+        for (const comparison of REQUIRED_COMPARISONS) {
+          const resultPath = judgeResultPathFor(task, comparison, repeat);
+          if (
+            options.resumeRunDirectory &&
+            (await artifactExists(directory.root, resultPath))
+          ) {
+            trajectoryJudgments.push(
+              await readJsonArtifact<TrajectoryJudgeResult>(
+                directory.root,
+                resultPath
+              )
+            );
+            continue;
+          }
+          const leftOutcome = outcomes.find(
+            (outcome) =>
+              outcome.taskDigest === task.taskDigest &&
+              outcome.condition === comparison.left &&
+              outcome.repeat === repeat
+          );
+          const rightOutcome = outcomes.find(
+            (outcome) =>
+              outcome.taskDigest === task.taskDigest &&
+              outcome.condition === comparison.right &&
+              outcome.repeat === repeat
+          );
+          const leftTrajectory = replayTrajectories.get(
+            attemptId(task.taskDigest, comparison.left, repeat)
+          );
+          const rightTrajectory = replayTrajectories.get(
+            attemptId(task.taskDigest, comparison.right, repeat)
+          );
+          const judgeId = `judge:${task.taskDigest}:${comparison.left}:${comparison.right}:${repeat}`;
+          let judgment: TrajectoryJudgeResult;
+          if (
+            !sourceTrajectory ||
+            !leftOutcome ||
+            !rightOutcome ||
+            !leftTrajectory ||
+            !rightTrajectory
+          ) {
+            judgment = {
+              schemaVersion: TRAJECTORY_JUDGE_SCHEMA_VERSION,
+              taskDigest: task.taskDigest,
+              repeat,
+              comparison: `${comparison.left} - ${comparison.right}`,
+              status: "error",
+              preferredCondition: null,
+              confidence: null,
+              assessments: {},
+              rationale: null,
+              latencyMs: 0,
+              model: config.trajectory_judge.model.id,
+              tokenUsage: {
+                uncachedInput: null,
+                cachedInput: null,
+                output: null,
+                reasoning: null
+              },
+              costUsd: null,
+              error: "A sanitized pre-verifier trajectory is unavailable"
+            };
+          } else {
+            let admittedJudge = false;
+            try {
+              if (costAdmission) {
+                costAdmission.admit(
+                  judgeId,
+                  Math.max(Number.EPSILON, config.maximum_judge_call_cost_usd)
+                );
+                admittedJudge = true;
+              }
+              judgment = await dependencies.judgeTrajectory({
+                runSeed: config.seed,
+                taskDigest: task.taskDigest,
+                repeat,
+                comparison,
+                sourceTrajectory,
+                left: {
+                  condition: comparison.left,
+                  reward: leftOutcome.reward,
+                  passed: leftOutcome.passed ?? null,
+                  trajectory: leftTrajectory
+                },
+                right: {
+                  condition: comparison.right,
+                  reward: rightOutcome.reward,
+                  passed: rightOutcome.passed ?? null,
+                  trajectory: rightTrajectory
+                }
+              });
+              if (costAdmission && admittedJudge) {
+                admittedJudge = false;
+                costAdmission.settle(
+                  judgeId,
+                  judgment.costUsd ?? config.maximum_judge_call_cost_usd
+                );
+              }
+            } catch (error) {
+              if (costAdmission && admittedJudge) {
+                admittedJudge = false;
+                costAdmission.settle(
+                  judgeId,
+                  config.maximum_judge_call_cost_usd
+                );
+              }
+              judgment = {
+                schemaVersion: TRAJECTORY_JUDGE_SCHEMA_VERSION,
+                taskDigest: task.taskDigest,
+                repeat,
+                comparison: `${comparison.left} - ${comparison.right}`,
+                status: "error",
+                preferredCondition: null,
+                confidence: null,
+                assessments: {},
+                rationale: null,
+                latencyMs: 0,
+                model: config.trajectory_judge.model.id,
+                tokenUsage: {
+                  uncachedInput: null,
+                  cachedInput: null,
+                  output: null,
+                  reasoning: null
+                },
+                costUsd: null,
+                error: error instanceof Error ? error.message : String(error)
+              };
+            }
+          }
+          trajectoryJudgments.push(judgment);
+          await publishOrVerifyJson(directory.root, resultPath, judgment);
+        }
+      }
+    }
+    await publishOrVerifyJson(
+      directory.root,
+      "judge/results.json",
+      trajectoryJudgments
+    );
+    await publishOrVerifyJson(
+      directory.root,
+      "judge/cost-admission.json",
+      costAdmission?.snapshot() ?? {
+        observedCostUsd: 0,
+        reservedMaximumCostUsd: 0,
+        activeAttempts: 0,
+        stopped: false,
+        crossing: null
+      }
+    );
+    await phase(journal, "trajectory_judging", "completed");
     await phase(journal, "report_generation", "started");
     await reportFromOutcomes(
       directory.root,
@@ -1503,6 +1753,7 @@ export const runExperienceReplay = async (
       admitted.runPlan,
       replayTasks,
       outcomes,
+      trajectoryJudgments,
       preparationCostUsd,
       runId
     );
@@ -1704,6 +1955,10 @@ export const reportExistingRun = async (
     runRoot,
     "manifest.json"
   );
+  const trajectoryJudgments = await readJsonArtifact<TrajectoryJudgeResult[]>(
+    runRoot,
+    "judge/results.json"
+  );
   const tasks = await tasksFromManifest(runRoot, config);
   await reportFromOutcomes(
     runRoot,
@@ -1711,6 +1966,7 @@ export const reportExistingRun = async (
     tasks.runPlan,
     tasks.replayTasks,
     await outcomesFromRun(runRoot, schedule, entries),
+    trajectoryJudgments,
     preparationCostUsd,
     manifest.run_id
   );

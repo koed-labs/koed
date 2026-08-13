@@ -28,6 +28,11 @@
     "prompt_version": "smoke-v1",
     "output_schema_version": "smoke-v1"
   },
+  "trajectory_judge": {
+    "model": { "id": "deterministic-smoke", "reasoning_effort": "low" },
+    "prompt_version": "experience-replay-trajectory-judge-v1",
+    "output_schema_version": "experience-replay-trajectory-judge-v1"
+  },
   "embedding": {
     "model": "qwen3-0.6b",
     "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -45,6 +50,7 @@
     "setup_seconds": 30,
     "verifier_seconds": 30,
     "preparation_seconds": 60,
+    "judge_seconds": 60,
     "teardown_seconds": 30
   },
   "admission": {

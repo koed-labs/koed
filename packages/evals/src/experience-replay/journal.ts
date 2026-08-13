@@ -19,6 +19,7 @@ export const RUN_PHASES = [
   "replay_schedule",
   "replay_execution",
   "metric_merge",
+  "trajectory_judging",
   "report_generation",
   "teardown"
 ] as const;

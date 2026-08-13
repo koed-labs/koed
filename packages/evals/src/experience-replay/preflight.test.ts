@@ -41,6 +41,14 @@ const config = (profile: "smoke" | "quick") =>
       prompt_version: "title-v1",
       output_schema_version: "title-v1"
     },
+    trajectory_judge: {
+      model: {
+        id: profile === "smoke" ? "deterministic-smoke" : "gpt-5.6-luna",
+        reasoning_effort: profile === "smoke" ? "low" : "medium"
+      },
+      prompt_version: "experience-replay-trajectory-judge-v1",
+      output_schema_version: "experience-replay-trajectory-judge-v1"
+    },
     embedding: {
       model: "qwen3-0.6b",
       artifact_sha256: "b".repeat(64),
@@ -64,6 +72,7 @@ const config = (profile: "smoke" | "quick") =>
       setup_seconds: 30,
       verifier_seconds: 30,
       preparation_seconds: 30,
+      judge_seconds: 30,
       teardown_seconds: 10
     },
     admission: {
@@ -117,7 +126,7 @@ describe("experience replay strict preflight", () => {
     });
     expect(result.capacity).toMatchObject({
       requiredBytes: 8192,
-      estimatedDurationSeconds: { minimum: 6, maximum: 960 }
+      estimatedDurationSeconds: { minimum: 6, maximum: 1140 }
     });
   });
 

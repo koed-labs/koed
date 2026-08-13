@@ -18,6 +18,11 @@ const worker = {
   prompt_version: "prompt-v1",
   output_schema_version: "schema-v1"
 };
+const trajectoryJudge = {
+  model: { id: "gpt-5.6-luna", reasoning_effort: "medium" as const },
+  prompt_version: "experience-replay-trajectory-judge-v1" as const,
+  output_schema_version: "experience-replay-trajectory-judge-v1" as const
+};
 const config = {
   version: 1,
   profile: "quick",
@@ -33,6 +38,7 @@ const config = {
   memory_answer: worker,
   lcm_summary: worker,
   session_title: worker,
+  trajectory_judge: trajectoryJudge,
   embedding: {
     model: "qwen3-0.6b",
     artifact_sha256: hash,
@@ -56,6 +62,7 @@ const config = {
     setup_seconds: 300,
     verifier_seconds: 300,
     preparation_seconds: 300,
+    judge_seconds: 300,
     teardown_seconds: 60
   },
   admission: {
@@ -68,7 +75,7 @@ const config = {
     max_output_tokens_per_call: 1000,
     max_memory_answer_calls_per_attempt: 2,
     max_preparation_calls_per_source: 2,
-    provider_spending_limit_usd: 25.025
+    provider_spending_limit_usd: 25.03
   },
   paid_cost_stop_usd: 25
 } as const;

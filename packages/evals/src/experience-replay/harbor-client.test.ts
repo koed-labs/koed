@@ -20,7 +20,8 @@ const result = JSON.stringify({
 
 const notifyLifecycle = async (
   environment: NodeJS.ProcessEnv,
-  event: "agent_started" | "agent_ended" | "trial_ended"
+  event: "agent_started" | "agent_ended" | "trial_ended",
+  attemptKind: "source" | "replay" = "source"
 ): Promise<void> => {
   const socketPath = environment.KOED_HARBOR_LIFECYCLE_SOCKET;
   const token = environment.KOED_HARBOR_LIFECYCLE_TOKEN;
@@ -46,7 +47,7 @@ const notifyLifecycle = async (
         `${JSON.stringify({
           schema_version: "koed-harbor-lifecycle-v1",
           token,
-          attempt_kind: "source",
+          attempt_kind: attemptKind,
           event,
           trial_id: "trial-cad",
           task_name: "terminal-bench/cad-model",
@@ -94,6 +95,80 @@ const fixture = async (): Promise<{
 };
 
 describe("HarborClient", () => {
+  it("requires replay trajectory request and result fields exactly", async () => {
+    const { request } = await fixture();
+    const replayRequest = {
+      ...request,
+      attempt_kind: "replay" as const,
+      replay_trajectory_path: "sensitive/replay.atif.json"
+    } as Record<string, unknown>;
+    delete replayRequest.freeze_trajectory_to;
+
+    const missingManifest = { ...replayRequest };
+    delete missingManifest.freeze_manifest_path;
+    await expect(
+      new HarborClient({ executor: vi.fn() }).run(
+        missingManifest as unknown as HarborRunRequest
+      )
+    ).rejects.toMatchObject({ category: "invalid-request" });
+
+    const missingPath = { ...replayRequest };
+    delete missingPath.replay_trajectory_path;
+    await expect(
+      new HarborClient({ executor: vi.fn() }).run(
+        missingPath as unknown as HarborRunRequest
+      )
+    ).rejects.toMatchObject({ category: "invalid-request" });
+
+    const executor: SubprocessExecutor = async (invocation) => {
+      await notifyLifecycle(invocation.env, "agent_started", "replay");
+      await notifyLifecycle(invocation.env, "agent_ended", "replay");
+      await notifyLifecycle(invocation.env, "trial_ended", "replay");
+      return {
+        exitCode: 0,
+        signal: null,
+        stdout: `${JSON.stringify({
+          schema_version: "koed-harbor-result-v1",
+          runtime: {},
+          job_lock_sha256: `sha256:${"a".repeat(64)}`,
+          result: {}
+        })}\n`,
+        stderr: ""
+      };
+    };
+    await expect(
+      new HarborClient({ executor }).run(
+        replayRequest as unknown as HarborRunRequest
+      )
+    ).rejects.toMatchObject({ category: "invalid-output" });
+  });
+
+  it("forbids replay trajectory fields on source requests and results", async () => {
+    const { request } = await fixture();
+    await expect(
+      new HarborClient({ executor: vi.fn() }).run({
+        ...request,
+        replay_trajectory_path: "sensitive/replay.atif.json"
+      } as HarborRunRequest)
+    ).rejects.toMatchObject({ category: "invalid-request" });
+
+    const client = new HarborClient({
+      executor: async (invocation) => {
+        const completed = await successfulExecution(invocation);
+        return {
+          ...completed,
+          stdout: `${JSON.stringify({
+            ...JSON.parse(result),
+            replay_trajectory_sha256: `sha256:${"c".repeat(64)}`
+          })}\n`
+        };
+      }
+    });
+    await expect(client.run(request)).rejects.toMatchObject({
+      category: "invalid-output"
+    });
+  });
+
   it("invokes the locked runner without a shell and confines the request artifact", async () => {
     const { runRoot, request } = await fixture();
     let serialized = "";

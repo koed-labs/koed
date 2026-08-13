@@ -33,10 +33,17 @@ same task.
 - `full`: all 74 pinned tasks; three replays per condition.
 
 `quick` and `standard` require the exact configured GPT-5.6 Luna low-reasoning
-workflow. `full` requires explicit immutable model choices. Every model-driven
-profile requires an exact Codex binary identity, immutable task and image
-digests, a versioned price table, sufficient capacity, a paid-cost stop and an
-external provider spending limit. No profile silently falls back to smoke.
+workflow and GPT-5.6 Luna medium reasoning for trajectory judging. The
+deterministic `smoke` profile uses `deterministic-smoke` for its trajectory
+judge. `full` requires explicit immutable model choices. Every configuration
+must include the `trajectory_judge` worker and pin both its `prompt_version` and
+`output_schema_version` to `experience-replay-trajectory-judge-v1`; full may
+choose an explicit immutable judge model and reasoning effort. Every
+model-driven profile requires an exact Codex binary identity, immutable task
+and image digests, pricing for every configured model including the trajectory
+judge, an explicit positive `timeouts.judge_seconds`, sufficient capacity, a
+paid-cost stop and an external provider spending limit. No profile silently
+falls back to smoke.
 
 ## Product-Path Proof
 
@@ -167,11 +174,16 @@ For the subscription-backed proof, replace `--confirm-paid-run` with
 API-equivalent accounting bounds; subscription mode does not submit paid API
 requests.
 
-The configured paid stop prevents new admissions. In-flight work may consume
-at most the reported concurrency overshoot. The independent provider spending
-limit must be between the paid stop and that worst-case bound. Memory
-preparation and replay costs are reported separately. Do not run a paid profile
-without explicit operator confirmation and a verified provider limit.
+The configured paid stop prevents new admissions. In-flight replay work may
+consume at most `maximum_top_level_attempt_cost_usd` per concurrent attempt.
+Trajectory judgments run sequentially, so the reported
+`maximum_concurrent_overshoot_usd` adds one
+`maximum_judge_call_cost_usd` to the concurrent replay-attempt bound; judge
+cost is deliberately not folded into replay-attempt cost. The independent
+provider spending limit must be between the paid stop and that worst-case
+bound. Memory preparation, replay and trajectory-judge costs are reported
+separately. Do not run a paid profile without explicit operator confirmation
+and a verified provider limit.
 
 ## Resume And Evidence
 
@@ -193,6 +205,41 @@ teardown and missing-outcome failures. Telemetry is collected from Harbor,
 Codex, Koed Recall, Memory Answer, LCM, embeddings and runtime observers. A
 metric that cannot be observed is explicitly unavailable; it is never replaced
 with invented zeroes.
+
+## Blind Trajectory Judge
+
+Terminal-Bench reward is the sole task-performance result. After all replay
+attempts finish, a separate judge compares each required pair using only the
+public task instruction, the sanitized source experience, sanitized replay
+trajectories frozen before verification, and each attempt's public reward/pass
+state. Conditions are deterministically hidden behind opaque `A` and `B`
+labels. The judge never receives verifier logs, hidden tests, reference
+solutions, condition names, database identities or local paths.
+
+The secondary judgment measures progress quality, efficiency, error
+recognition, failed-approach avoidance and informed failure. Retrieval quality,
+correct prior-experience reuse and distraction resistance are nullable when the
+attempt did not visibly retrieve experience. Every non-zero assessment must
+cite an exact supplied event reference, and unknown or cross-candidate
+references are rejected. Equal Terminal-Bench scores can therefore expose
+useful behavior without being reclassified as a task win.
+
+Judge failures remain missing secondary observations and never retry or alter a
+replay. Judge latency, token usage and cost are reported as evaluation overhead
+and excluded from treatment comparisons. Quick and standard runs use the
+configured GPT-5.6 Luna medium-reasoning judge; smoke uses a deterministic tie.
+
+## Resource Comparisons
+
+Every required comparison reports paired task-first deltas for observed agent
+wall time, complete sequential trial time, setup/agent/verifier timings,
+uncached and cached input, output and
+reasoning tokens, provider/API-equivalent/subscription costs, turns, tool and
+MCP calls and failures, Memory Answer work, recall searches/expansions/stages,
+and evidence count. The top-level token classes include the coding agent and
+Memory Answer worker exactly once; the worker breakdown remains separate for
+diagnosis. Missing telemetry stays `null`, and parallel durations are never
+summed into invented elapsed time.
 
 ## Cleanup
 

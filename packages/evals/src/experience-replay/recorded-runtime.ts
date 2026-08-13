@@ -1,12 +1,19 @@
 import { countTokensForModel } from "@koed/core";
+import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
 import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
 import { resolveRecordedCodexAuthentication } from "./codex-auth.js";
 import { createExperienceReplayCoordinatorDependencies } from "./coordinator-dependencies.js";
 import type { LocalProductTemplateHandle } from "./local-product-adapter.js";
-import { ProductPathPrerequisiteError } from "./preflight.js";
+import {
+  EXPERIENCE_REPLAY_REPOSITORY_ROOT,
+  ProductPathPrerequisiteError
+} from "./preflight.js";
 import { createRecordedLcmJobRunner } from "./recorded-runtime-lcm.js";
 import { createRecordedReplayTelemetryCollector } from "./recorded-runtime-telemetry.js";
+import { runTrajectoryJudge } from "./trajectory-judge.js";
 
 const required = (
   environment: Readonly<NodeJS.ProcessEnv>,
@@ -93,6 +100,38 @@ export const createRecordedCliExperienceReplayDependencies = (
     config,
     environment: runtimeEnvironment
   });
+  const judgeTrajectory = async (
+    input: Parameters<typeof runTrajectoryJudge>[0]
+  ) => {
+    const judgeHome = await mkdtemp(
+      path.join(os.tmpdir(), "koed-experience-replay-judge-")
+    );
+    try {
+      if (authentication.mode === "subscription") {
+        const target = path.join(judgeHome, "auth.json");
+        await copyFile(authentication.authJsonPath, target);
+        await chmod(target, 0o600);
+      }
+      return await runTrajectoryJudge(input, {
+        config: {
+          appServerBinary,
+          model: config.trajectory_judge.model.id,
+          reasoningEffort: config.trajectory_judge.model.reasoning_effort,
+          timeoutMs: config.timeouts.judge_seconds * 1_000,
+          cwd: EXPERIENCE_REPLAY_REPOSITORY_ROOT,
+          env: {
+            ...(authentication.mode === "api_key"
+              ? { OPENAI_API_KEY: authentication.apiKey }
+              : {}),
+            CODEX_HOME: judgeHome
+          }
+        },
+        price: config.price_table.models[config.trajectory_judge.model.id]
+      });
+    } finally {
+      await rm(judgeHome, { recursive: true, force: true });
+    }
+  };
   return createExperienceReplayCoordinatorDependencies({
     mode: "recorded",
     runId: options.runId,
@@ -129,6 +168,7 @@ export const createRecordedCliExperienceReplayDependencies = (
       promptVersion: config.lcm_summary.prompt_version
     },
     runScheduledLcmJobs,
+    judgeTrajectory,
     preparationCostUsd: priceForPreparation
   });
 };

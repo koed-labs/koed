@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -60,6 +60,11 @@ const config = (runRoot: string) =>
       prompt_version: "v1",
       output_schema_version: "v1"
     },
+    trajectory_judge: {
+      model: { id: "deterministic-smoke", reasoning_effort: "low" },
+      prompt_version: "experience-replay-trajectory-judge-v1",
+      output_schema_version: "experience-replay-trajectory-judge-v1"
+    },
     embedding: {
       model: "deterministic",
       artifact_sha256: "b".repeat(64),
@@ -74,6 +79,7 @@ const config = (runRoot: string) =>
     },
     timeouts: {
       agent_seconds: 2,
+      judge_seconds: 2,
       setup_seconds: 3,
       verifier_seconds: 5,
       preparation_seconds: 7,
@@ -144,6 +150,7 @@ const successfulExecutor =
       reward?: number | null;
       passed?: boolean;
       failureCategory?: string | null;
+      replayArtifactFailure?: "missing" | "changed";
     } = {}
   ): SubprocessExecutor =>
   async (invocation) => {
@@ -156,13 +163,13 @@ const successfulExecutor =
 
     await lifecycleEvent(invocation, request, "agent_started");
     await lifecycleEvent(invocation, request, "agent_ended");
+    const trajectory = `${JSON.stringify({
+      schema_version: "ATIF-v1.7",
+      session_id: request.attempt_kind,
+      agent: { name: "codex", version: "deterministic" },
+      steps: []
+    })}\n`;
     if (request.attempt_kind === "source") {
-      const trajectory = `${JSON.stringify({
-        schema_version: "ATIF-v1.7",
-        session_id: "source",
-        agent: { name: "codex", version: "deterministic" },
-        steps: []
-      })}\n`;
       const trajectoryPath = path.join(
         request.run_root,
         request.freeze_trajectory_to
@@ -203,6 +210,71 @@ const successfulExecutor =
       (
         request as HarborRunRequest & { __manifestDigest?: string }
       ).__manifestDigest = digest(manifestText);
+    } else {
+      const trajectoryPath = path.join(
+        request.run_root,
+        request.replay_trajectory_path
+      );
+      await mkdir(path.dirname(trajectoryPath), { recursive: true });
+      await writeFile(trajectoryPath, trajectory, { flag: "wx" });
+      if (options.replayArtifactFailure === "missing") await rm(trajectoryPath);
+      if (options.replayArtifactFailure === "changed")
+        await writeFile(trajectoryPath, `${trajectory}verifier output`);
+      const replayManifest = {
+        schema_version: "koed-harbor-freeze-v1",
+        adapter: {
+          name: "harbor-codex",
+          version: "0.21.0",
+          commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
+          raw_reasoning_capture_disabled: true
+        },
+        source_attempt: {
+          trial_id: "trial-replay",
+          task_name: request.task_name
+        },
+        lifecycle: [
+          {
+            ordinal: 1,
+            event: "agent_started",
+            timestamp: "2026-08-12T00:00:00.000Z"
+          },
+          {
+            ordinal: 2,
+            event: "agent_ended",
+            timestamp: "2026-08-12T00:00:01.000Z"
+          },
+          {
+            ordinal: 3,
+            event: "trajectory_materialized",
+            timestamp: "2026-08-12T00:00:02.000Z"
+          },
+          {
+            ordinal: 4,
+            event: "verification_started",
+            timestamp: "2026-08-12T00:00:02.000Z"
+          }
+        ],
+        cutoff: {
+          agent_last_native_event_ordinal: null,
+          step_identities: []
+        },
+        frozen_artifact: {
+          relative_path: request.replay_trajectory_path,
+          sha256: digest(trajectory),
+          size_bytes: Buffer.byteLength(trajectory),
+          file_identity: { device: 1, inode: 1 }
+        }
+      };
+      const replayManifestText = `${JSON.stringify(replayManifest)}\n`;
+      const replayManifestPath = path.join(
+        request.run_root,
+        request.freeze_manifest_path
+      );
+      await mkdir(path.dirname(replayManifestPath), { recursive: true });
+      await writeFile(replayManifestPath, replayManifestText, { flag: "wx" });
+      (
+        request as HarborRunRequest & { __manifestDigest?: string }
+      ).__manifestDigest = digest(replayManifestText);
     }
     await lifecycleEvent(invocation, request, "trial_ended");
 
@@ -223,7 +295,12 @@ const successfulExecutor =
               request as HarborRunRequest & { __manifestDigest: string }
             ).__manifestDigest
           }
-        : {}),
+        : {
+            replay_trajectory_sha256: digest(trajectory),
+            freeze_manifest_sha256: (
+              request as HarborRunRequest & { __manifestDigest: string }
+            ).__manifestDigest
+          }),
       result: {
         job_id: `job-${request.attempt_kind}`,
         n_total_trials: 1,
@@ -337,7 +414,7 @@ describe("HarborExecutionAdapter", () => {
     });
   });
 
-  it("runs replay without freeze destinations and emits complete smoke telemetry", async () => {
+  it("captures an attested replay trajectory outside public telemetry", async () => {
     const { runRoot, corpusManifest } = await fixture();
     const capture: ExecutorCapture = { requests: [], invocations: [] };
     const token = "opaque-bridge-credential";
@@ -360,8 +437,13 @@ describe("HarborExecutionAdapter", () => {
 
     const request = capture.requests[0] as unknown as Record<string, unknown>;
     expect(request.attempt_kind).toBe("replay");
-    expect(request).not.toHaveProperty("freeze_manifest_path");
+    expect(request.freeze_manifest_path).toBe(
+      "harbor-replay-trajectories/cad-model-relevant-0-1.freeze-manifest.json"
+    );
     expect(request).not.toHaveProperty("freeze_trajectory_to");
+    expect(request.replay_trajectory_path).toBe(
+      "harbor-replay-trajectories/cad-model-relevant-0-1.atif.json"
+    );
     expect(JSON.stringify(request)).not.toContain(token);
     expect(request).toMatchObject({
       job_config: {
@@ -383,6 +465,23 @@ describe("HarborExecutionAdapter", () => {
     });
     expect(capture.invocations[0]?.env.KOED_BENCHMARK_MCP_TOKEN).toBe(token);
     expect(JSON.stringify(execution.result)).not.toContain(token);
+    expect(execution.replayTrajectoryArtifact).toMatchObject({
+      path: request.replay_trajectory_path,
+      sha256: digest(
+        `${JSON.stringify({
+          schema_version: "ATIF-v1.7",
+          session_id: "replay",
+          agent: { name: "codex", version: "deterministic" },
+          steps: []
+        })}\n`
+      )
+    });
+    expect(JSON.stringify(execution.telemetry)).not.toContain(
+      request.replay_trajectory_path
+    );
+    expect(JSON.stringify(execution.telemetry)).not.toContain(
+      execution.replayTrajectoryArtifact?.sha256
+    );
     expect(() =>
       assertCompleteReplayTelemetry(execution.telemetry)
     ).not.toThrow();
@@ -467,7 +566,35 @@ describe("HarborExecutionAdapter", () => {
       failureKind: "infrastructure",
       failurePhase: "verifier"
     });
+    expect(replay.replayTrajectoryArtifact?.sha256).toMatch(
+      /^sha256:[a-f0-9]{64}$/u
+    );
   });
+
+  it.each(["missing", "changed"] as const)(
+    "rejects a %s replay trajectory artifact",
+    async (replayArtifactFailure) => {
+      const { runRoot, corpusManifest } = await fixture();
+      const capture: ExecutorCapture = { requests: [], invocations: [] };
+      const adapter = new HarborExecutionAdapter({
+        mode: "smoke",
+        corpusManifest,
+        executor: successfulExecutor(capture, { replayArtifactFailure })
+      });
+
+      await expect(
+        adapter.runReplay({
+          task,
+          condition: "cold",
+          repeat: 0,
+          executionGeneration: 1,
+          runRoot,
+          lifecycle: acknowledgedLifecycle([]),
+          config: config(runRoot)
+        })
+      ).rejects.toMatchObject({ category: "invalid-output" });
+    }
+  );
 
   it("rejects rewards outside the task range or inconsistent success value", async () => {
     for (const invalid of [

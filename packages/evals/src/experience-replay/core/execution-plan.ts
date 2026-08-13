@@ -52,6 +52,14 @@ const assertLunaLow = (config: ResolvedExperienceReplayConfig): void => {
       "Product-path proof requires GPT-5.6 Luna with low reasoning for every AI Client workflow"
     );
   }
+  if (
+    config.trajectory_judge.model.id !== "gpt-5.6-luna" ||
+    config.trajectory_judge.model.reasoning_effort !== "medium"
+  ) {
+    throw new Error(
+      "Product-path proof requires GPT-5.6 Luna with medium reasoning for trajectory judging"
+    );
+  }
 };
 
 export const createBenchmarkRunPlan = (

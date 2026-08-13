@@ -2,6 +2,10 @@ import { z } from "zod";
 import { immutableHash } from "./hash.js";
 
 export const EXPERIENCE_REPLAY_CONFIG_VERSION = 1 as const;
+export const TRAJECTORY_JUDGE_PROMPT_VERSION =
+  "experience-replay-trajectory-judge-v1" as const;
+export const TRAJECTORY_JUDGE_SCHEMA_VERSION =
+  "experience-replay-trajectory-judge-v1" as const;
 export const PROFILES = ["smoke", "quick", "standard", "full"] as const;
 export type ExperienceReplayProfile = (typeof PROFILES)[number];
 
@@ -56,12 +60,20 @@ const workerSchema = z
     output_schema_version: immutableIdentifier
   })
   .strict();
+const trajectoryJudgeSchema = z
+  .object({
+    model: modelSchema,
+    prompt_version: z.literal(TRAJECTORY_JUDGE_PROMPT_VERSION),
+    output_schema_version: z.literal(TRAJECTORY_JUDGE_SCHEMA_VERSION)
+  })
+  .strict();
 const timeoutSchema = z
   .object({
     agent_seconds: z.number().int().positive(),
     setup_seconds: z.number().int().positive(),
     verifier_seconds: z.number().int().positive(),
     preparation_seconds: z.number().int().positive(),
+    judge_seconds: z.number().int().positive(),
     teardown_seconds: z.number().int().positive()
   })
   .strict();
@@ -105,6 +117,7 @@ const configSchema = z
     memory_answer: workerSchema,
     lcm_summary: workerSchema,
     session_title: workerSchema,
+    trajectory_judge: trajectoryJudgeSchema,
     embedding: z
       .object({
         model: immutableIdentifier,
@@ -187,12 +200,35 @@ const configSchema = z
           message: `${config.profile} requires the exact gpt-5.6-luna model with low reasoning for every AI Client workflow`
         });
       }
+      if (
+        config.trajectory_judge.model.id !== "gpt-5.6-luna" ||
+        config.trajectory_judge.model.reasoning_effort !== "medium"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["trajectory_judge", "model"],
+          message: `${config.profile} requires the exact gpt-5.6-luna model with medium reasoning for trajectory judging`
+        });
+      }
+    }
+    if (
+      config.profile === "smoke" &&
+      (config.trajectory_judge.model.id !== "deterministic-smoke" ||
+        config.trajectory_judge.model.reasoning_effort !== "low")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["trajectory_judge", "model"],
+        message:
+          "smoke requires the exact deterministic-smoke model with low reasoning for trajectory judging"
+      });
     }
     const selectedModels = new Set([
       config.coding_agent.id,
       config.memory_answer.model.id,
       config.lcm_summary.model.id,
-      config.session_title.model.id
+      config.session_title.model.id,
+      config.trajectory_judge.model.id
     ]);
     for (const model of selectedModels) {
       if (!(model in config.price_table.models) && config.profile !== "smoke") {
@@ -212,6 +248,7 @@ export type ResolvedExperienceReplayConfig = ExperienceReplayConfig & {
   coding_agent_attempt_count: number;
   concurrency: number;
   maximum_top_level_attempt_cost_usd: number;
+  maximum_judge_call_cost_usd: number;
   maximum_concurrent_overshoot_usd: number;
   semantic_config_hash: string;
 };
@@ -251,7 +288,12 @@ export const resolveExperienceReplayConfig = (
         callMaximumCost(config, config.lcm_summary.model.id),
         callMaximumCost(config, config.session_title.model.id)
       );
-  const maximumConcurrentOvershoot = maximumTopLevelAttemptCost * concurrency;
+  const maximumJudgeCallCost = callMaximumCost(
+    config,
+    config.trajectory_judge.model.id
+  );
+  const maximumConcurrentOvershoot =
+    maximumTopLevelAttemptCost * concurrency + maximumJudgeCallCost;
   if (config.profile !== "smoke") {
     const budget = config.paid_cost_stop_usd!;
     const providerLimit = config.admission.provider_spending_limit_usd!;
@@ -272,6 +314,7 @@ export const resolveExperienceReplayConfig = (
     replay_attempts_per_condition: policy.replayAttemptsPerCondition,
     coding_agent_attempt_count: policy.codingAgentAttempts,
     maximum_top_level_attempt_cost_usd: maximumTopLevelAttemptCost,
+    maximum_judge_call_cost_usd: maximumJudgeCallCost,
     maximum_concurrent_overshoot_usd: maximumConcurrentOvershoot
   };
   const semanticConfig = Object.fromEntries(

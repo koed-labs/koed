@@ -475,7 +475,8 @@ export const createRecordedRunPreflightAdapters = (
         [
           options.config.memory_answer.model.id,
           options.config.lcm_summary.model.id,
-          options.config.session_title.model.id
+          options.config.session_title.model.id,
+          options.config.trajectory_judge.model.id
         ]
       ),
     attestContainerCodex: () =>
@@ -537,7 +538,8 @@ const assertRecordedAttestation = (
   assertToolchain("host", attestation.hostCodex, config.codex_cli.host_sha256, [
     config.memory_answer.model.id,
     config.lcm_summary.model.id,
-    config.session_title.model.id
+    config.session_title.model.id,
+    config.trajectory_judge.model.id
   ]);
 };
 
@@ -616,6 +618,7 @@ export const preflightExperienceReplay = async ({
         config.timeouts.agent_seconds +
         config.timeouts.verifier_seconds +
         config.timeouts.preparation_seconds +
+        config.timeouts.judge_seconds +
         config.timeouts.teardown_seconds
     },
     concurrency: config.concurrency

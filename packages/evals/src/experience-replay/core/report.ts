@@ -7,6 +7,7 @@ import type {
   ReplayOutcome,
   SourceSplitIdentifiers
 } from "./metrics.js";
+import type { TrajectoryJudgeResult } from "../trajectory-judge.js";
 
 export const SCIENTIFIC_DISCLOSURE =
   "This is not a standard Terminal-Bench leaderboard evaluation. Relevant Koed conditions intentionally received the AI Client-visible trajectory of an earlier attempt on the same task. Every replay used a clean task environment and a fresh AI Client session. Verifier output, hidden tests and reference solutions were excluded from Memory. This experiment measures episodic experience reuse, not first-encounter generalisation.";
@@ -37,7 +38,10 @@ export interface ExperienceReplayReportInput {
   attemptedReplayCount: number;
   failureCount: number;
   preparationCostUsd: number | null;
+  /** Secondary evaluation overhead, excluded from replay treatment costs. */
+  judgeOverheadCostUsd: number | null;
   comparisons: readonly ComparisonSummary[];
+  trajectoryJudgments: readonly TrajectoryJudgeResult[];
   attempts: readonly ReplayOutcome[];
   exclusions: readonly ReplayExclusion[];
   intervals?: Readonly<
@@ -111,6 +115,32 @@ export const createMachineReport = (
   if (representedFailures !== input.failureCount) {
     throw new Error("Attempt ledger must represent every failure");
   }
+  const judgmentIdentities = new Set<string>();
+  for (const judgment of input.trajectoryJudgments) {
+    const identity = `${judgment.taskDigest}\0${judgment.comparison}\0${judgment.repeat}`;
+    if (judgmentIdentities.has(identity)) {
+      throw new Error("Trajectory judgment ledger contains a duplicate result");
+    }
+    judgmentIdentities.add(identity);
+  }
+  const knownJudgeCost = input.trajectoryJudgments.every(
+    (judgment) => judgment.costUsd !== null
+  )
+    ? input.trajectoryJudgments.reduce(
+        (total, judgment) => total + judgment.costUsd!,
+        0
+      )
+    : null;
+  if (
+    (knownJudgeCost === null && input.judgeOverheadCostUsd !== null) ||
+    (knownJudgeCost !== null &&
+      (input.judgeOverheadCostUsd === null ||
+        Math.abs(knownJudgeCost - input.judgeOverheadCostUsd) > 1e-9))
+  ) {
+    throw new Error(
+      "Trajectory judge overhead must match the judgment cost ledger"
+    );
+  }
   if (
     (input.profile === "smoke" || input.profile === "quick") &&
     input.intervals !== undefined
@@ -157,6 +187,7 @@ export const renderMarkdownReport = (
     `- Replay attempts: ${report.attemptedReplayCount}`,
     `- Failures and missing outcomes: ${report.failureCount}`,
     `- One-time Memory preparation cost (USD): ${display(report.preparationCostUsd)}`,
+    `- Trajectory judge overhead (USD, excluded from treatment costs): ${display(report.judgeOverheadCostUsd)}`,
     "",
     "## Paired task-first comparisons",
     ""
@@ -181,6 +212,24 @@ export const renderMarkdownReport = (
         ""
       );
     }
+  }
+  if (report.trajectoryJudgments.length) {
+    lines.push("## Blind trajectory judgments", "");
+    for (const comparison of comparisonNames) {
+      const judgments = report.trajectoryJudgments.filter(
+        (judgment) => judgment.comparison === comparison
+      );
+      if (!judgments.length) continue;
+      const errors = judgments.filter(
+        (judgment) => judgment.status === "error"
+      ).length;
+      const left = comparison.split(" - ")[0];
+      const right = comparison.split(" - ")[1];
+      lines.push(
+        `- ${comparison}: ${judgments.filter((judgment) => judgment.preferredCondition === left).length} preferred ${left}, ${judgments.filter((judgment) => judgment.preferredCondition === right).length} preferred ${right}, ${judgments.filter((judgment) => judgment.preferredCondition === "tie").length} ties, ${errors} missing/error.`
+      );
+    }
+    lines.push("");
   }
   if (report.attempts.length) {
     lines.push("## Attempt ledger", "");
@@ -292,6 +341,60 @@ const projectComparison = (value: unknown): JsonRecord => {
           }
         : {}
     );
+  }
+  if (isRecord(value.resourceDeltas)) {
+    const resources = value.resourceDeltas;
+    projected.resourceDeltas = {
+      ...(projectNested(resources.durations, [
+        "replayElapsedMs",
+        "trialElapsedMs",
+        "agentMs",
+        "setupMs",
+        "verifierMs"
+      ])
+        ? {
+            durations: projectNested(resources.durations, [
+              "replayElapsedMs",
+              "trialElapsedMs",
+              "agentMs",
+              "setupMs",
+              "verifierMs"
+            ])
+          }
+        : {}),
+      ...(projectNested(resources.tokenUsage, scalarTelemetryKeys.tokenUsage)
+        ? {
+            tokenUsage: projectNested(
+              resources.tokenUsage,
+              scalarTelemetryKeys.tokenUsage
+            )
+          }
+        : {}),
+      ...(projectNested(resources.costs, scalarTelemetryKeys.costs)
+        ? { costs: projectNested(resources.costs, scalarTelemetryKeys.costs) }
+        : {}),
+      ...(projectNested(
+        resources.interactions,
+        scalarTelemetryKeys.interactions
+      )
+        ? {
+            interactions: projectNested(
+              resources.interactions,
+              scalarTelemetryKeys.interactions
+            )
+          }
+        : {}),
+      ...(isRecord(resources.memoryAnswerWorker)
+        ? {
+            memoryAnswerWorker: projectWorkerUsage(resources.memoryAnswerWorker)
+          }
+        : {}),
+      ...(projectNested(resources.recall, scalarTelemetryKeys.recall)
+        ? {
+            recall: projectNested(resources.recall, scalarTelemetryKeys.recall)
+          }
+        : {})
+    };
   }
   return projected;
 };
@@ -508,6 +611,70 @@ const projectExclusion = (value: unknown): JsonRecord => {
   return projected;
 };
 
+const projectJudgeAssessment = (value: unknown): JsonRecord => {
+  if (!isRecord(value)) return {};
+  return {
+    ...selectNumbers(value, [
+      "progress_quality",
+      "efficiency",
+      "error_recognition",
+      "failed_approach_avoidance",
+      "informed_failure",
+      "retrieval_quality",
+      "correct_prior_experience_reuse",
+      "distraction_resistance"
+    ]),
+    evidence_refs: Array.isArray(value.evidence_refs)
+      ? value.evidence_refs.filter(
+          (reference): reference is string =>
+            typeof reference === "string" &&
+            /^(?:source|A|B):step:[0-9]+(?::(?:message|reasoning|tool-call:[0-9]+|tool-result:[0-9]+))?$/u.test(
+              reference
+            )
+        )
+      : []
+  };
+};
+
+const projectTrajectoryJudgment = (value: unknown): JsonRecord => {
+  if (!isRecord(value)) return {};
+  const projected: JsonRecord = {
+    ...(typeof value.taskDigest === "string"
+      ? { taskDigest: value.taskDigest }
+      : {}),
+    ...selectEnum(value, "comparison", comparisonNames),
+    ...selectEnum(value, "status", ["judged", "error"]),
+    ...selectEnum(value, "preferredCondition", [
+      "cold",
+      "empty",
+      "placebo",
+      "relevant",
+      "tie"
+    ]),
+    ...selectNumbers(value, ["repeat", "confidence", "latencyMs", "costUsd"]),
+    ...(typeof value.model === "string" ? { model: value.model } : {}),
+    ...(typeof value.rationale === "string"
+      ? { rationale: value.rationale }
+      : {})
+  };
+  if (isRecord(value.assessments)) {
+    const assessments = value.assessments;
+    projected.assessments = Object.fromEntries(
+      ["cold", "empty", "placebo", "relevant"].flatMap((condition) =>
+        isRecord(assessments[condition])
+          ? [[condition, projectJudgeAssessment(assessments[condition])]]
+          : []
+      )
+    );
+  }
+  const tokenUsage = projectNested(
+    value.tokenUsage,
+    scalarTelemetryKeys.tokenUsage
+  );
+  if (tokenUsage) projected.tokenUsage = tokenUsage;
+  return projected;
+};
+
 const projectPublicationReport = (value: unknown): unknown => {
   if (typeof value === "string") return value;
   if (!isRecord(value)) {
@@ -526,7 +693,8 @@ const projectPublicationReport = (value: unknown): unknown => {
       "taskCount",
       "attemptedReplayCount",
       "failureCount",
-      "preparationCostUsd"
+      "preparationCostUsd",
+      "judgeOverheadCostUsd"
     ]),
     ...(typeof value.standard_leaderboard_comparable === "boolean"
       ? {
@@ -542,6 +710,9 @@ const projectPublicationReport = (value: unknown): unknown => {
     : [];
   projected.exclusions = Array.isArray(value.exclusions)
     ? value.exclusions.map(projectExclusion)
+    : [];
+  projected.trajectoryJudgments = Array.isArray(value.trajectoryJudgments)
+    ? value.trajectoryJudgments.map(projectTrajectoryJudgment)
     : [];
   const intervals = projectIntervals(value.intervals);
   if (intervals !== undefined) projected.intervals = intervals;

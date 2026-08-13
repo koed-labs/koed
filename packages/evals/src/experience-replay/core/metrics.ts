@@ -353,6 +353,7 @@ export interface ComparisonSummary extends MissingOutcomeBounds {
   comparison: string;
   meanDelta: number | null;
   medianDelta: number | null;
+  resourceDeltas: TaskFirstResourceDeltas;
   latencyMsDelta: number | null;
   tokensDelta: number | null;
   costUsdDelta: number | null;
@@ -362,31 +363,154 @@ export interface ComparisonSummary extends MissingOutcomeBounds {
   taskDeltas: readonly TaskDelta[];
 }
 
-export const taskFirstResourceDelta = (
+export interface DurationResourceDeltas {
+  /** Observed replay elapsed time from latencyMs; never a sum of phase durations. */
+  replayElapsedMs: number | null;
+  /** Sequential Harbor setup + agent + verifier phases for the complete trial. */
+  trialElapsedMs: number | null;
+  agentMs: number | null;
+  setupMs: number | null;
+  verifierMs: number | null;
+}
+
+export interface WorkerUsageResourceDeltas {
+  calls: number | null;
+  failures: number | null;
+  durationMs: number | null;
+  tokens: TokenTelemetry;
+  costs: CostTelemetry;
+}
+
+export interface TaskFirstResourceDeltas {
+  durations: DurationResourceDeltas;
+  /** Coding agent plus Memory Answer worker, with each token class counted once. */
+  tokenUsage: TokenTelemetry;
+  costs: CostTelemetry;
+  interactions: InteractionTelemetry;
+  memoryAnswerWorker: WorkerUsageResourceDeltas;
+  recall: RecallTelemetry;
+}
+
+type ResourceValue = (outcome: ReplayOutcome) => number | null | undefined;
+
+export const taskFirstPairedResourceDelta = (
   outcomes: readonly ReplayOutcome[],
   comparison: Comparison,
-  field: "latencyMs" | "tokens" | "costUsd",
+  value: ResourceValue,
   repeats: number
 ): number | null => {
+  if (!Number.isInteger(repeats) || repeats < 1)
+    throw new Error("Repeats must be a positive integer");
   const tasks = [...new Set(outcomes.map((outcome) => outcome.taskDigest))];
   const deltas: number[] = [];
   for (const task of tasks) {
     const getValues = (condition: ReplayCondition) => {
       const records = taskConditionValues(outcomes, task, condition);
+      if (records.length !== repeats) return null;
+      const values = records.map(value);
       if (
-        records.length !== repeats ||
-        records.some(
-          (record) => record[field] === null || record[field] === undefined
+        values.some(
+          (metric): metric is null | undefined =>
+            metric === null || metric === undefined || !Number.isFinite(metric)
         )
       )
         return null;
-      return records.map((record) => record[field] as number);
+      return values as number[];
     };
     const left = getValues(comparison.left);
     const right = getValues(comparison.right);
     if (left && right) deltas.push(mean(left) - mean(right));
   }
   return deltas.length ? mean(deltas) : null;
+};
+
+export const taskFirstResourceDelta = (
+  outcomes: readonly ReplayOutcome[],
+  comparison: Comparison,
+  field: "latencyMs" | "tokens" | "costUsd",
+  repeats: number
+): number | null => {
+  return taskFirstPairedResourceDelta(
+    outcomes,
+    comparison,
+    (outcome) => outcome[field],
+    repeats
+  );
+};
+
+export const taskFirstResourceDeltas = (
+  outcomes: readonly ReplayOutcome[],
+  comparison: Comparison,
+  repeats: number
+): TaskFirstResourceDeltas => {
+  const delta = (value: ResourceValue): number | null =>
+    taskFirstPairedResourceDelta(outcomes, comparison, value, repeats);
+  const tokenDeltas = (
+    value: (outcome: ReplayOutcome) => TokenTelemetry | undefined
+  ): TokenTelemetry => ({
+    uncachedInput: delta((outcome) => value(outcome)?.uncachedInput),
+    cachedInput: delta((outcome) => value(outcome)?.cachedInput),
+    output: delta((outcome) => value(outcome)?.output),
+    reasoning: delta((outcome) => value(outcome)?.reasoning)
+  });
+  const costDeltas = (
+    value: (outcome: ReplayOutcome) => CostTelemetry | undefined
+  ): CostTelemetry => ({
+    providerBilledUsd: delta((outcome) => value(outcome)?.providerBilledUsd),
+    apiEquivalentUsd: delta((outcome) => value(outcome)?.apiEquivalentUsd),
+    subscriptionUsd: delta((outcome) => value(outcome)?.subscriptionUsd)
+  });
+  const trialElapsed = (outcome: ReplayOutcome): number | null => {
+    const values = [
+      outcome.durations?.setupMs,
+      outcome.durations?.agentMs,
+      outcome.durations?.verifierMs
+    ];
+    return values.some(
+      (value) =>
+        value === null || value === undefined || !Number.isFinite(value)
+    )
+      ? null
+      : values.reduce<number>((total, value) => total + value!, 0);
+  };
+
+  return {
+    durations: {
+      replayElapsedMs: delta((outcome) => outcome.latencyMs),
+      trialElapsedMs: delta(trialElapsed),
+      agentMs: delta((outcome) => outcome.durations?.agentMs),
+      setupMs: delta((outcome) => outcome.durations?.setupMs),
+      verifierMs: delta((outcome) => outcome.durations?.verifierMs)
+    },
+    tokenUsage: tokenDeltas((outcome) => outcome.tokenUsage),
+    costs: costDeltas((outcome) => outcome.costs),
+    interactions: {
+      turns: delta((outcome) => outcome.interactions?.turns),
+      toolCalls: delta((outcome) => outcome.interactions?.toolCalls),
+      toolFailures: delta((outcome) => outcome.interactions?.toolFailures),
+      mcpCalls: delta((outcome) => outcome.interactions?.mcpCalls),
+      mcpFailures: delta((outcome) => outcome.interactions?.mcpFailures),
+      memoryAnswerCalls: delta(
+        (outcome) => outcome.interactions?.memoryAnswerCalls
+      ),
+      memoryAnswerFailures: delta(
+        (outcome) => outcome.interactions?.memoryAnswerFailures
+      )
+    },
+    memoryAnswerWorker: {
+      calls: delta((outcome) => outcome.workers?.memoryAnswer.calls),
+      failures: delta((outcome) => outcome.workers?.memoryAnswer.failures),
+      durationMs: delta((outcome) => outcome.workers?.memoryAnswer.durationMs),
+      tokens: tokenDeltas((outcome) => outcome.workers?.memoryAnswer.tokens),
+      costs: costDeltas((outcome) => outcome.workers?.memoryAnswer.costs)
+    },
+    recall: {
+      searches: delta((outcome) => outcome.recall?.searches),
+      expansions: delta((outcome) => outcome.recall?.expansions),
+      stages: delta((outcome) => outcome.recall?.stages),
+      evidenceCount: delta((outcome) => outcome.recall?.evidenceCount)
+    }
+  };
 };
 
 export const summarizeComparison = (
@@ -397,16 +521,13 @@ export const summarizeComparison = (
 ): ComparisonSummary => {
   const deltas = taskFirstDeltas(outcomes, contracts, comparison, repeats);
   const values = deltas.map((item) => item.delta);
+  const resourceDeltas = taskFirstResourceDeltas(outcomes, comparison, repeats);
   return {
     comparison: `${comparison.left} - ${comparison.right}`,
     meanDelta: values.length ? mean(values) : null,
     medianDelta: values.length ? median(values) : null,
-    latencyMsDelta: taskFirstResourceDelta(
-      outcomes,
-      comparison,
-      "latencyMs",
-      repeats
-    ),
+    resourceDeltas,
+    latencyMsDelta: resourceDeltas.durations.replayElapsedMs,
     tokensDelta: taskFirstResourceDelta(
       outcomes,
       comparison,

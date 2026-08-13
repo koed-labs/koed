@@ -41,6 +41,11 @@ const config = resolveExperienceReplayConfig({
     prompt_version: "v1",
     output_schema_version: "v1"
   },
+  trajectory_judge: {
+    model: { id: "gpt-5.6-luna", reasoning_effort: "medium" },
+    prompt_version: "experience-replay-trajectory-judge-v1",
+    output_schema_version: "experience-replay-trajectory-judge-v1"
+  },
   embedding: {
     model: "embedding",
     artifact_sha256: "c".repeat(64),
@@ -64,6 +69,7 @@ const config = resolveExperienceReplayConfig({
     setup_seconds: 1,
     verifier_seconds: 1,
     preparation_seconds: 1,
+    judge_seconds: 1,
     teardown_seconds: 1
   },
   admission: {

@@ -86,13 +86,13 @@ def test_source_lifecycle_freezes_before_verification(
     ]
 
 
-def test_replay_lifecycle_never_freezes_trajectory(
+def test_replay_lifecycle_captures_trajectory_before_verifier_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "agent").mkdir()
-    (tmp_path / "agent" / "trajectory.json").write_text(
-        json.dumps({"schema_version": "ATIF-v1.7", "steps": []})
-    )
+    trajectory = tmp_path / "agent" / "trajectory.json"
+    original = json.dumps({"schema_version": "ATIF-v1.7", "steps": []})
+    trajectory.write_text(original)
     notifications: list[str] = []
     monkeypatch.setattr(
         runner,
@@ -101,7 +101,11 @@ def test_replay_lifecycle_never_freezes_trajectory(
     )
     ticks = iter([0, 10_000_000, 40_000_000, 50_000_000, 80_000_000])
     recorder = runner.LifecycleRecorder(
-        attempt_kind="replay", clock_ns=lambda: next(ticks)
+        attempt_kind="replay",
+        manifest_path=tmp_path / "captured.freeze-manifest.json",
+        freeze_relative_path="captured.atif.json",
+        replay_trajectory_destination=tmp_path / "captured.atif.json",
+        clock_ns=lambda: next(ticks),
     )
     event = lifecycle_event(tmp_path)
     async def exercise() -> None:
@@ -109,6 +113,9 @@ def test_replay_lifecycle_never_freezes_trajectory(
         await recorder.on_agent_started(event)
         await recorder.on_agent_ended(event)
         await recorder.on_verification_started(event)
+        trajectory.write_text(
+            json.dumps({"schema_version": "ATIF-v1.7", "steps": [], "verifier": "log"})
+        )
         await recorder.on_trial_ended(event)
 
     asyncio.run(exercise())
@@ -120,8 +127,34 @@ def test_replay_lifecycle_never_freezes_trajectory(
         "verifier_ms": 30.0,
     }
     assert recorder.interactions() == {"turns": 0, "tool_calls": 0}
-    assert recorder.manifest is None
-    assert not list(tmp_path.glob("**/frozen*"))
+    assert recorder.manifest is not None
+    assert (tmp_path / "captured.atif.json").read_text() == original
+    assert "verifier" not in (tmp_path / "captured.atif.json").read_text()
+    assert recorder.replay_trajectory_sha256 == (
+        f"sha256:{hashlib.sha256(original.encode()).hexdigest()}"
+    )
+
+
+def test_replay_lifecycle_fails_when_trajectory_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "_notify_lifecycle", lambda *_args: None)
+    recorder = runner.LifecycleRecorder(
+        attempt_kind="replay",
+        manifest_path=tmp_path / "captured.freeze-manifest.json",
+        freeze_relative_path="captured.atif.json",
+        replay_trajectory_destination=tmp_path / "captured.atif.json",
+    )
+    event = lifecycle_event(tmp_path)
+
+    async def exercise() -> None:
+        recorder.begin_run()
+        await recorder.on_agent_started(event)
+        await recorder.on_agent_ended(event)
+        await recorder.on_verification_started(event)
+
+    with pytest.raises(runner.ContractError, match="MISSING_OR_UNSAFE"):
+        asyncio.run(exercise())
 
 
 def test_cancelled_agent_attempt_acknowledges_without_freezing(
@@ -239,6 +272,49 @@ def test_run_request_requires_an_immutable_task_image(tmp_path: Path) -> None:
     path.write_text(json.dumps(request))
 
     with pytest.raises(runner.ContractError, match="INVALID_TASK_IMAGE"):
+        runner._strict_request(path)
+
+
+def test_replay_request_requires_trajectory_output(tmp_path: Path) -> None:
+    request = {
+        "schema_version": runner.RUN_REQUEST_SCHEMA,
+        "attempt_kind": "replay",
+        "task_name": "terminal-bench/cad-model",
+        "task_image": f"registry.example/cad-model@sha256:{'a' * 64}",
+        "job_config": {},
+        "corpus_manifest": "manifest.json",
+        "run_root": str(tmp_path),
+        "codex_version": "0.147.0",
+        "codex_binary_sha256": f"sha256:{'b' * 64}",
+        "codex_code_mode_host_sha256": f"sha256:{'c' * 64}",
+    }
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request))
+
+    with pytest.raises(runner.ContractError, match="REPLAY_TRAJECTORY_OUTPUT_REQUIRED"):
+        runner._strict_request(path)
+
+
+def test_source_request_forbids_replay_trajectory_output(tmp_path: Path) -> None:
+    request = {
+        "schema_version": runner.RUN_REQUEST_SCHEMA,
+        "attempt_kind": "source",
+        "task_name": "terminal-bench/cad-model",
+        "task_image": f"registry.example/cad-model@sha256:{'a' * 64}",
+        "job_config": {},
+        "corpus_manifest": "manifest.json",
+        "run_root": str(tmp_path),
+        "codex_version": "0.147.0",
+        "codex_binary_sha256": f"sha256:{'b' * 64}",
+        "codex_code_mode_host_sha256": f"sha256:{'c' * 64}",
+        "freeze_manifest_path": "source/manifest.json",
+        "freeze_trajectory_to": "source/trajectory.json",
+        "replay_trajectory_path": "replay/trajectory.json",
+    }
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request))
+
+    with pytest.raises(runner.ContractError, match="SOURCE_REPLAY_TRAJECTORY_FORBIDDEN"):
         runner._strict_request(path)
 
 
