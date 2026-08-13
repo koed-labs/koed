@@ -4,11 +4,13 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  Menu,
   nativeImage,
   nativeTheme,
   net,
   protocol,
-  shell
+  shell,
+  Tray
 } from "electron";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -56,8 +58,17 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
+import {
+  createDesktopWindowActivator,
+  shouldQuitAfterAllWindowsClosed
+} from "./window/lifecycle.js";
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
 import { createPersonalDevicePairingInbox } from "./personal-device-pairing-inbox.js";
+import {
+  createDesktopMenuBar,
+  menuBarIconFilename,
+  type DesktopMenuBar
+} from "./tray/menu-bar.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
@@ -73,6 +84,10 @@ const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   packagedResourcesPath: process.resourcesPath
 });
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
+const menuBarIconFile = menuBarIconFilename(process.platform);
+const menuBarIconPath = menuBarIconFile
+  ? resolve(appDir, "../assets", menuBarIconFile)
+  : null;
 const devServerUrl = resolveDevServerUrl({
   appIsPackaged: app.isPackaged,
   devServerUrl: process.env.VITE_DEV_SERVER_URL
@@ -88,18 +103,14 @@ let themePreference: DesktopThemePreference = "system";
 let pdsSecretBridge: PdsSecretBridge | null = null;
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
+let desktopMenuBar: DesktopMenuBar | null = null;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 
-const acceptPairingDeepLink = (value: string): void => {
+const acceptPairingDeepLink = (value: string): string | null => {
   const pairingLink = pairingLinkFromDeepLink(value);
-  if (!pairingLink) return;
+  if (!pairingLink) return null;
   pairingLinkInbox.accept(pairingLink);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    mainWindow.webContents.send(personalDevicePairingLinkChannel, pairingLink);
-  }
+  return pairingLink;
 };
 
 if (process.defaultApp && process.argv[1]) {
@@ -121,18 +132,15 @@ if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
       const deepLink = argv.find((argument) =>
         argument.startsWith("koed-pair://")
       );
-      if (deepLink) acceptPairingDeepLink(deepLink);
-      else {
-        mainWindow?.show();
-        mainWindow?.focus();
-      }
+      if (deepLink) void showPairingDeepLink(deepLink);
+      else void showDesktopWindow();
     });
   }
 }
 
 app.on("open-url", (event, url) => {
   event.preventDefault();
-  acceptPairingDeepLink(url);
+  void showPairingDeepLink(url);
 });
 
 protocol.registerSchemesAsPrivileged([
@@ -278,6 +286,23 @@ const createWindow = async () => {
     .catch(() => undefined);
 };
 
+const showDesktopWindow = createDesktopWindowActivator({
+  createWindow,
+  getWindow: () => mainWindow,
+  waitForBootstrap: async () => {
+    await bootstrapPromise;
+  }
+});
+
+async function showPairingDeepLink(value: string): Promise<void> {
+  const pairingLink = acceptPairingDeepLink(value);
+  if (!pairingLink) return;
+  await showDesktopWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(personalDevicePairingLinkChannel, pairingLink);
+  }
+}
+
 const bootstrap = async () => {
   await app.whenReady();
   const themePreferenceFile = desktopThemePreferencePath(
@@ -341,8 +366,38 @@ const bootstrap = async () => {
   });
   await startDesktopWindowAndRuntime({
     createWindow,
-    resumeRuntime: () => server.resume()
+    resumeRuntime: async () => {
+      const result = await server.resume();
+      void desktopMenuBar?.refresh();
+      return result;
+    }
   });
+  if (menuBarIconPath && existsSync(menuBarIconPath)) {
+    const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
+    if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
+    const tray = new Tray(menuBarIcon);
+    desktopMenuBar = createDesktopMenuBar<Menu>({
+      tray: {
+        destroy: () => tray.destroy(),
+        onClick: (listener) => {
+          tray.on("click", listener);
+        },
+        ...(process.platform === "darwin"
+          ? {
+              onRightClick: (listener: () => void) => {
+                tray.on("right-click", listener);
+              },
+              popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
+            }
+          : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
+        setToolTip: (tooltip) => tray.setToolTip(tooltip)
+      },
+      buildMenu: (template) => Menu.buildFromTemplate(template),
+      getStatus: () => server.handlers.status(),
+      openDesktop: showDesktopWindow,
+      quit: () => app.quit()
+    });
+  }
 };
 
 if (ownsDesktopInstance) {
@@ -352,17 +407,17 @@ if (ownsDesktopInstance) {
       break;
     }
   }
-  void bootstrap();
 }
+const bootstrapPromise = ownsDesktopInstance ? bootstrap() : Promise.resolve();
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+  if (shouldQuitAfterAllWindowsClosed(process.platform)) {
     app.quit();
   }
 });
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
-    void createWindow();
+    void showDesktopWindow();
   }
 });
 let koedServerStoppedForQuit = false;
@@ -375,6 +430,8 @@ app.on("before-quit", (event) => {
     await koedServer?.stop();
     await pdsSecretBridge?.close();
     pdsSecretBridge = null;
+    desktopMenuBar?.dispose();
+    desktopMenuBar = null;
     koedServerStoppedForQuit = true;
     app.quit();
   })();
