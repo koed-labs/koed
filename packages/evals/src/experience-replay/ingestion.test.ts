@@ -89,6 +89,31 @@ describe("normalized experience import", () => {
     );
   });
 
+  it("keeps identical payloads from different transcripts distinct", () => {
+    const first = normalizedImportPayload({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      externalThreadId: normalizedImportThreadId("sha256:task-a", "source-a"),
+      projectId: "/benchmark/task-a",
+      taskDigest: "sha256:task-a",
+      sourceAttemptId: "source-a",
+      sanitizationManifestHash: `sha256:${"c".repeat(64)}`,
+      item: { ...item, sourceIdentity: "normalized-item-a" }
+    });
+    const second = normalizedImportPayload({
+      sessionId: "00000000-0000-4000-8000-000000000002",
+      externalThreadId: normalizedImportThreadId("sha256:task-b", "source-b"),
+      projectId: "/benchmark/task-b",
+      taskDigest: "sha256:task-b",
+      sourceAttemptId: "source-b",
+      sanitizationManifestHash: `sha256:${"d".repeat(64)}`,
+      item: { ...item, sourceIdentity: "normalized-item-b" }
+    });
+
+    expect(first.rawJson).toEqual(second.rawJson);
+    expect(first.sourceHash).not.toBe(second.sourceHash);
+    expect(first.canonicalItemKey).not.toBe(second.canonicalItemKey);
+  });
+
   it("keeps a tool call identity distinct from a tool result parent link", () => {
     const toolCallId = "call-1";
     const payload = normalizedImportPayload({

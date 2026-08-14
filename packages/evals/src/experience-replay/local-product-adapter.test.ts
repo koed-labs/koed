@@ -446,6 +446,22 @@ const integrationUrl = process.env.KOED_EXPERIENCE_REPLAY_DATABASE_URL;
               timestamp: null,
               type: "user_message",
               content: `${marker} deployment checkpoint is the accepted approach`
+            },
+            {
+              adapterName: "harbor-atif",
+              adapterVersion: "1.0.0",
+              sourceIdentity: normalizedImportSourceIdentity({
+                taskDigest,
+                sourceAttemptId: `oracle:relevant_full:${taskDigest}`,
+                atifIdentity: `step:${marker}:1`,
+                sequence: 1
+              }),
+              atifIdentity: `step:${marker}:1`,
+              sequence: 1,
+              stepId: 2,
+              timestamp: null,
+              type: "user_message",
+              content: "The shared verification message is complete."
             }
           ],
           manifest: {

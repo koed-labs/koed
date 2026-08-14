@@ -1070,7 +1070,15 @@ const assertNormalizedImportAdmission = (
     !normalizedImportRawPayloadIsExact(item.rawJson, trustedTranscriptType) ||
     item.rawText !== expectedRawText ||
     item.sourceHash !==
-      `sha256:${createHash("sha256").update(JSON.stringify(item.rawJson)).digest("hex")}` ||
+      `sha256:${createHash("sha256")
+        .update(
+          JSON.stringify({
+            externalThreadId: trustedAttestation.externalThreadId,
+            stableItemId,
+            rawJson: item.rawJson
+          })
+        )
+        .digest("hex")}` ||
     item.idempotencyKey !==
       `normalized-import:${createHash("sha256")
         .update(stableItemId ?? "")

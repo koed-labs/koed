@@ -131,7 +131,9 @@ export const normalizedImportPayload = ({
     ...(item.timestamp ? { eventTime: item.timestamp } : {}),
     rawJson,
     ...(rawText !== undefined ? { rawText } : {}),
-    sourceHash: `sha256:${sha256(JSON.stringify(rawJson))}`,
+    sourceHash: `sha256:${sha256(
+      JSON.stringify({ externalThreadId, stableItemId, rawJson })
+    )}`,
     idempotencyKey: `normalized-import:${sha256(item.sourceIdentity)}`,
     ...(item.type === "tool_result" && item.sourceCallId
       ? { parentExternalItemId: item.sourceCallId }
