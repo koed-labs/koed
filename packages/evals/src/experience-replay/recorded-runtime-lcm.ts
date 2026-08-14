@@ -45,22 +45,25 @@ const createNodes = async (
   actor: ActorContext,
   scheduledEventIds: readonly string[]
 ): Promise<string[]> => {
-  const remaining = new Set(scheduledEventIds);
+  if (scheduledEventIds.length === 0) {
+    return [];
+  }
+  const observedPending = new Set<string>();
   const nodeIds: string[] = [];
-  while (remaining.size > 0) {
+  while (true) {
     const scopes = await repository.listPendingLcmDispatchScopes({
       ownerUserId: actor.userId
     });
     const pendingIds = scopes.flatMap((scope) => scope.pendingMemoryEventIds);
-    if (
-      pendingIds.length === 0 ||
-      pendingIds.some((eventId) => !remaining.has(eventId))
-    ) {
-      throw new Error(
-        "Recorded LCM dispatch scope differs from scheduled work"
-      );
+    if (pendingIds.length === 0) {
+      break;
     }
-    let createdInPass = 0;
+    if (pendingIds.some((eventId) => observedPending.has(eventId))) {
+      throw new Error("Recorded LCM dispatch repeated pending work");
+    }
+    for (const eventId of pendingIds) {
+      observedPending.add(eventId);
+    }
     for (const scope of scopes) {
       const created = await repository.createLcmNodes(actor, {
         visibility: scope.visibility,
@@ -75,13 +78,6 @@ const createNodes = async (
         throw new Error("Recorded LCM worker made no dispatch progress");
       }
       nodeIds.push(...createdNodeIds);
-      createdInPass += scope.pendingMemoryEventIds.length;
-      for (const eventId of scope.pendingMemoryEventIds) {
-        remaining.delete(eventId);
-      }
-    }
-    if (createdInPass === 0) {
-      throw new Error("Recorded LCM worker made no dispatch progress");
     }
   }
   return nodeIds;

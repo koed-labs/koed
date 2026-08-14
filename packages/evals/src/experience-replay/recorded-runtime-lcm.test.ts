@@ -81,13 +81,16 @@ describe("recorded LCM preparation", () => {
   it("runs the production prompt contract and persists measured output", async () => {
     const updateLcmNodeSummary = vi.fn().mockResolvedValue(undefined);
     const repository = {
-      listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([
-        {
-          visibility: "personal",
-          workClass: "historical_import_backfill",
-          pendingMemoryEventIds: ["event-1"]
-        }
-      ]),
+      listPendingLcmDispatchScopes: vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            visibility: "personal",
+            workClass: "historical_import_backfill",
+            pendingMemoryEventIds: ["event-1"]
+          }
+        ])
+        .mockResolvedValueOnce([]),
       createLcmNodes: vi.fn().mockResolvedValue({
         leafNodeIds: ["node-1"],
         rollupNodeId: null
@@ -180,7 +183,8 @@ describe("recorded LCM preparation", () => {
           workClass: "historical_import_backfill",
           pendingMemoryEventIds: ["event-2"]
         }
-      ]);
+      ])
+      .mockResolvedValueOnce([]);
     const repository = {
       listPendingLcmDispatchScopes,
       createLcmNodes: vi
@@ -240,19 +244,21 @@ describe("recorded LCM preparation", () => {
       inputTokens: 20,
       outputTokens: 10
     });
-    expect(listPendingLcmDispatchScopes).toHaveBeenCalledTimes(2);
+    expect(listPendingLcmDispatchScopes).toHaveBeenCalledTimes(3);
   });
 
-  it("rejects pending LCM work outside the admitted schedule", async () => {
+  it("rejects repeated pending LCM work instead of looping", async () => {
+    const scope = {
+      visibility: "personal" as const,
+      workClass: "historical_import_backfill" as const,
+      pendingMemoryEventIds: ["event-1"]
+    };
     const repository = {
-      listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([
-        {
-          visibility: "personal",
-          workClass: "historical_import_backfill",
-          pendingMemoryEventIds: ["different-event"]
-        }
-      ]),
-      createLcmNodes: vi.fn()
+      listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([scope]),
+      createLcmNodes: vi.fn().mockResolvedValue({
+        leafNodeIds: ["node-1"],
+        rollupNodeId: null
+      })
     } as unknown as MemorySourceRepository;
     const run = createRecordedLcmJobRunner({
       config,
@@ -266,19 +272,23 @@ describe("recorded LCM preparation", () => {
         actor: { userId: "user-1" },
         scheduledEventIds: ["event-1"]
       })
-    ).rejects.toThrow("differs from scheduled work");
+    ).rejects.toThrow("repeated pending work");
+    expect(repository.createLcmNodes).toHaveBeenCalledTimes(1);
   });
 
   it("uses the production repair path and accounts for both calls", async () => {
     const updateLcmNodeSummary = vi.fn().mockResolvedValue(undefined);
     const repository = {
-      listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([
-        {
-          visibility: "personal",
-          workClass: "historical_import_backfill",
-          pendingMemoryEventIds: ["event-1"]
-        }
-      ]),
+      listPendingLcmDispatchScopes: vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            visibility: "personal",
+            workClass: "historical_import_backfill",
+            pendingMemoryEventIds: ["event-1"]
+          }
+        ])
+        .mockResolvedValueOnce([]),
       createLcmNodes: vi.fn().mockResolvedValue({
         leafNodeIds: ["node-1"],
         rollupNodeId: null
