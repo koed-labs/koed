@@ -238,7 +238,8 @@ describe("HarborClient", () => {
         exitCode: 2,
         signal: null,
         stdout: "",
-        stderr: "experience-replay Harbor contract error\n"
+        stderr:
+          "experience-replay Harbor contract error (OUTPUT_ALREADY_EXISTS)\n"
       }),
       uvExecutable: "uv-test",
       harborProject: "/locked/harbor",
@@ -246,7 +247,8 @@ describe("HarborClient", () => {
     });
 
     await expect(client.run(request)).rejects.toMatchObject({
-      category: "process-exit"
+      category: "process-exit",
+      message: expect.stringContaining("OUTPUT_ALREADY_EXISTS")
     });
     const retained = await readFile(
       path.join(runRoot, ".harbor-requests/failed-id.json"),

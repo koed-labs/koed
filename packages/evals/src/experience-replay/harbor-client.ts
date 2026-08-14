@@ -724,9 +724,12 @@ export class HarborClient {
         );
       }
       if (execution.exitCode !== 0) {
+        const contractCode = execution.stderr.match(
+          /^experience-replay Harbor contract error \(([A-Z][A-Z0-9_]{0,127})\)\s*$/u
+        )?.[1];
         throw new HarborClientError(
           "process-exit",
-          `Harbor runner exited unsuccessfully (code ${execution.exitCode ?? "null"}, signal ${execution.signal ?? "none"})`
+          `Harbor runner exited unsuccessfully (code ${execution.exitCode ?? "null"}, signal ${execution.signal ?? "none"})${contractCode ? `: ${contractCode}` : ""}`
         );
       }
       try {

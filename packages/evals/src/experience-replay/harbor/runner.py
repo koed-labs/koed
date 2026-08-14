@@ -2059,8 +2059,17 @@ def main() -> int:
         else:
             load_and_verify_manifest(args.manifest)
             verify_runtime(Path(__file__).resolve().parent)
+    except ContractError as error:
+        code = str(error)
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code):
+            print(
+                f"experience-replay Harbor contract error ({code})",
+                file=sys.stderr,
+            )
+        else:
+            print("experience-replay Harbor contract error", file=sys.stderr)
+        return 2
     except (
-        ContractError,
         json.JSONDecodeError,
         OSError,
         subprocess.CalledProcessError,
