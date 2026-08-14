@@ -263,7 +263,18 @@ const databaseUrl = (
 const readJson = async (response: Response): Promise<unknown> => {
   const value: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(`Embedding Service returned HTTP ${response.status}`);
+    const detail =
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      typeof (value as { detail?: unknown }).detail === "string"
+        ? (value as { detail: string }).detail
+            .replace(/[\r\n\0]/gu, " ")
+            .slice(0, 512)
+        : null;
+    throw new Error(
+      `Embedding Service returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`
+    );
   }
   return value;
 };
