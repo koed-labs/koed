@@ -18,7 +18,7 @@ const protocol = () =>
     semanticConfigHash: hash("d"),
     memoryAnswerPromptVersion: "memory-answer-v9",
     mcpRecallPolicyVersion:
-      "mcp-server-instructions-v3+memory-answer-tool-description-v3",
+      "mcp-server-instructions-v4+memory-answer-tool-description-v4",
     concurrency: 4,
     pins: {
       harborCommit: hash("1"),

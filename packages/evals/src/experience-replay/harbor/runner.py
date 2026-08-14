@@ -33,8 +33,10 @@ from harbor.environments.factory import EnvironmentFactory
 from harbor.job import Job
 from harbor.models.job.config import DatasetConfig, JobConfig
 from harbor.models.task.config import VerifierEnvironmentMode
+from harbor.models.trial.config import TaskConfig
 from harbor.models.task.verifier_mode import resolve_effective_verifier_env_config
 from harbor.publisher.packager import Packager
+from harbor.tasks.client import TaskClient
 from harbor.trial.hooks import TrialHookEvent
 from harbor.trial.trial import Trial
 
@@ -49,6 +51,11 @@ MANIFEST_SCHEMA = "koed-terminal-bench-corpus-v1"
 RUN_REQUEST_SCHEMA = "koed-harbor-run-v1"
 TASK_IMAGE_SCHEMA = "koed-harbor-task-image-v1"
 FREEZE_MANIFEST_SCHEMA = "koed-harbor-freeze-v1"
+TASK_INSTRUCTION_POLICY = "koed-memory-eval-task-instruction-v1"
+TASK_ANTI_CHEAT_SENTENCE = (
+    "Do not cheat by using online solutions or hints specific to this task."
+)
+TASK_NETWORK_SENTENCE = "Do not use online solutions."
 MAX_TRAJECTORY_BYTES = 256 * 1024 * 1024
 MAX_LIFECYCLE_LINE_BYTES = 16 * 1024
 LIFECYCLE_SOCKET_ENV = "KOED_HARBOR_LIFECYCLE_SOCKET"
@@ -189,18 +196,21 @@ def _notify_lifecycle(event: TrialHookEvent, name: str, attempt_kind: str) -> No
         timeout = int(timeout_text) / 1000
     except ValueError as error:
         raise ContractError("INVALID_LIFECYCLE_TIMEOUT") from error
-    payload = json.dumps(
-        {
-            "schema_version": "koed-harbor-lifecycle-v1",
-            "token": token,
-            "attempt_kind": attempt_kind,
-            "event": name,
-            "trial_id": str(event.trial_id),
-            "task_name": event.task_name,
-            "timestamp": event.timestamp.isoformat(),
-        },
-        separators=(",", ":"),
-    ).encode() + b"\n"
+    payload = (
+        json.dumps(
+            {
+                "schema_version": "koed-harbor-lifecycle-v1",
+                "token": token,
+                "attempt_kind": attempt_kind,
+                "event": name,
+                "trial_id": str(event.trial_id),
+                "task_name": event.task_name,
+                "timestamp": event.timestamp.isoformat(),
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
     if len(payload) > MAX_LIFECYCLE_LINE_BYTES:
         raise ContractError("LIFECYCLE_EVENT_TOO_LARGE")
     received = bytearray()
@@ -236,6 +246,57 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _adapt_task_instruction(instruction: str) -> str:
+    occurrences = instruction.count(TASK_ANTI_CHEAT_SENTENCE)
+    if occurrences != 1:
+        raise ContractError(
+            "TASK_INSTRUCTION_POLICY_MISMATCH: expected exactly one anti-cheat sentence"
+        )
+    return instruction.replace(TASK_ANTI_CHEAT_SENTENCE, TASK_NETWORK_SENTENCE)
+
+
+def _prepare_adapted_task(
+    source: Path, run_root: Path, task_selector: str
+) -> tuple[Path, dict[str, str]]:
+    instruction_path = source / "instruction.md"
+    try:
+        original = instruction_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError("TASK_INSTRUCTION_UNREADABLE") from error
+    adapted = _adapt_task_instruction(original)
+    original_sha256 = f"sha256:{hashlib.sha256(original.encode()).hexdigest()}"
+    adapted_sha256 = f"sha256:{hashlib.sha256(adapted.encode()).hexdigest()}"
+    destination = (
+        run_root
+        / "harbor-adapted-tasks"
+        / (f"{task_selector}-{adapted_sha256.removeprefix('sha256:')[:16]}")
+    )
+    if destination.exists():
+        existing_instruction = destination / "instruction.md"
+        if (
+            not existing_instruction.is_file()
+            or _sha256_file(existing_instruction) != adapted_sha256
+        ):
+            raise ContractError("ADAPTED_TASK_COLLISION")
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{task_selector}-", dir=destination.parent)
+        )
+        try:
+            shutil.copytree(source, temporary, dirs_exist_ok=True)
+            (temporary / "instruction.md").write_text(adapted, encoding="utf-8")
+            temporary.rename(destination)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+    return destination, {
+        "policy": TASK_INSTRUCTION_POLICY,
+        "original_sha256": original_sha256,
+        "adapted_sha256": adapted_sha256,
+    }
 
 
 def _run_docker(
@@ -315,7 +376,9 @@ def _dockerfile_logical_lines(text: str) -> list[str]:
 
 
 def _resolve_from_value(value: str, arguments: dict[str, str]) -> str:
-    variable = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+    variable = re.compile(
+        r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
+    )
     resolved = value
     for _ in range(16):
         match = variable.search(resolved)
@@ -324,7 +387,9 @@ def _resolve_from_value(value: str, arguments: dict[str, str]) -> str:
         name = match.group(1) or match.group(2)
         if name not in arguments:
             raise ContractError("UNRESOLVED_DOCKERFILE_FROM_ARGUMENT")
-        resolved = f"{resolved[:match.start()]}{arguments[name]}{resolved[match.end():]}"
+        resolved = (
+            f"{resolved[: match.start()]}{arguments[name]}{resolved[match.end() :]}"
+        )
     raise ContractError("CYCLIC_DOCKERFILE_FROM_ARGUMENT")
 
 
@@ -359,7 +424,9 @@ def _dockerfile_base_references(dockerfile: Path) -> tuple[str, list[str]]:
         tokens = remainder.split()
         while tokens and tokens[0].startswith("--"):
             tokens.pop(0)
-        if len(tokens) not in (1, 3) or (len(tokens) == 3 and tokens[1].upper() != "AS"):
+        if len(tokens) not in (1, 3) or (
+            len(tokens) == 3 and tokens[1].upper() != "AS"
+        ):
             raise ContractError("INVALID_DOCKERFILE_FROM")
         reference = _resolve_from_value(tokens[0], arguments)
         if not reference or any(character.isspace() for character in reference):
@@ -371,7 +438,10 @@ def _dockerfile_base_references(dockerfile: Path) -> tuple[str, list[str]]:
             if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", alias):
                 raise ContractError("INVALID_DOCKERFILE_FROM")
             stages.add(alias)
-    if not any(line.split(maxsplit=1)[0].upper() == "FROM" for line in _dockerfile_logical_lines(text)):
+    if not any(
+        line.split(maxsplit=1)[0].upper() == "FROM"
+        for line in _dockerfile_logical_lines(text)
+    ):
         raise ContractError("DOCKERFILE_HAS_NO_FROM")
     return _sha256_file(dockerfile), bases
 
@@ -384,7 +454,8 @@ def _resolved_base_digests(docker: str, references: list[str]) -> list[str]:
         digests = {
             value.rsplit("@", 1)[1]
             for value in inspected["RepoDigests"]
-            if "@" in value and re.fullmatch(r"sha256:[a-f0-9]{64}", value.rsplit("@", 1)[1])
+            if "@" in value
+            and re.fullmatch(r"sha256:[a-f0-9]{64}", value.rsplit("@", 1)[1])
         }
         if len(digests) != 1:
             raise ContractError("BASE_IMAGE_IMMUTABLE_IDENTITY_UNAVAILABLE")
@@ -404,7 +475,10 @@ def _runtime_versions(docker: str) -> tuple[str, str]:
         server = parsed["Server"]["Version"]
     except (json.JSONDecodeError, KeyError, TypeError) as error:
         raise ContractError("INVALID_DOCKER_VERSION") from error
-    if not all(isinstance(value, str) and value and "\n" not in value for value in (client, server)):
+    if not all(
+        isinstance(value, str) and value and "\n" not in value
+        for value in (client, server)
+    ):
         raise ContractError("INVALID_DOCKER_VERSION")
     buildkit_output = _run_docker(
         docker,
@@ -535,9 +609,7 @@ def _validate_reward_contract(value: Any) -> dict[str, Any]:
     for metric_field, bounds in metrics.items():
         if (
             not isinstance(metric_field, str)
-            or not re.fullmatch(
-                r"[A-Za-z][A-Za-z0-9_.-]{0,127}", metric_field
-            )
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,127}", metric_field)
             or not isinstance(bounds, dict)
             or set(bounds) != {"minimum", "maximum"}
         ):
@@ -578,7 +650,9 @@ def _validate_reward_contract(value: Any) -> dict[str, Any]:
     }
 
 
-def _load_reward_contracts(path: Path = REWARD_CONTRACTS_PATH) -> dict[str, dict[str, Any]]:
+def _load_reward_contracts(
+    path: Path = REWARD_CONTRACTS_PATH,
+) -> dict[str, dict[str, Any]]:
     mapping = json.loads(path.read_text(), object_pairs_hook=_reject_duplicate_pairs)
     if not isinstance(mapping, dict) or set(mapping) != {
         "schema_version",
@@ -617,9 +691,7 @@ def _reward_contract(name: str) -> dict[str, Any]:
     return contract
 
 
-def _validate_reward_values(
-    rewards: Any, contract: dict[str, Any]
-) -> dict[str, Any]:
+def _validate_reward_values(rewards: Any, contract: dict[str, Any]) -> dict[str, Any]:
     normalized_contract = _validate_reward_contract(contract)
     if not isinstance(rewards, dict):
         raise ContractError("MISSING_REWARD_VALUES")
@@ -701,16 +773,24 @@ def build_manifest(source: Path) -> dict[str, Any]:
     _verify_source_checkout(source)
     tasks_dir = source / "tasks"
     records = sorted(
-        (_task_record(path) for path in tasks_dir.iterdir() if (path / "task.toml").is_file()),
+        (
+            _task_record(path)
+            for path in tasks_dir.iterdir()
+            if (path / "task.toml").is_file()
+        ),
         key=lambda record: record["name"],
     )
     if len(records) != CORPUS_TASK_COUNT:
-        raise ContractError(f"resolved {len(records)} tasks; expected {CORPUS_TASK_COUNT}")
+        raise ContractError(
+            f"resolved {len(records)} tasks; expected {CORPUS_TASK_COUNT}"
+        )
     names = [record["name"] for record in records]
     if len(names) != len(set(names)):
         raise ContractError("Terminal-Bench corpus contains duplicate task names")
 
-    ranked = sorted(records, key=lambda record: (record["expert_time_seconds"], record["name"]))
+    ranked = sorted(
+        records, key=lambda record: (record["expert_time_seconds"], record["name"])
+    )
     for index, record in enumerate(ranked):
         record["expert_time_quartile"] = min(4, (index * 4 // len(ranked)) + 1)
 
@@ -732,7 +812,9 @@ def build_manifest(source: Path) -> dict[str, Any]:
     }
 
 
-def _subset_manifest(corpus: dict[str, Any], names: tuple[str, ...], profile: str) -> dict[str, Any]:
+def _subset_manifest(
+    corpus: dict[str, Any], names: tuple[str, ...], profile: str
+) -> dict[str, Any]:
     by_name = {task["name"]: task for task in corpus["tasks"]}
     missing = sorted(set(names) - by_name.keys())
     if missing:
@@ -767,9 +849,13 @@ def _subset_manifest(corpus: dict[str, Any], names: tuple[str, ...], profile: st
 def write_manifests(source: Path, output_dir: Path) -> None:
     corpus = build_manifest(source)
     _atomic_json(output_dir / "tb3-v3.0.0.json", corpus)
-    _atomic_json(output_dir / "quick-12.json", _subset_manifest(corpus, QUICK_TASKS, "quick"))
+    _atomic_json(
+        output_dir / "quick-12.json", _subset_manifest(corpus, QUICK_TASKS, "quick")
+    )
     standard = QUICK_TASKS + STANDARD_EXTRA_TASKS
-    _atomic_json(output_dir / "standard-24.json", _subset_manifest(corpus, standard, "standard"))
+    _atomic_json(
+        output_dir / "standard-24.json", _subset_manifest(corpus, standard, "standard")
+    )
 
 
 def load_and_verify_manifest(path: Path) -> dict[str, Any]:
@@ -783,10 +869,14 @@ def load_and_verify_manifest(path: Path) -> dict[str, Any]:
     if harbor != {"version": HARBOR_VERSION, "commit": HARBOR_COMMIT}:
         raise ContractError("corpus manifest Harbor pin differs from the runner")
     if terminal_bench.get("commit") != TB_COMMIT:
-        raise ContractError("corpus manifest Terminal-Bench pin differs from the runner")
+        raise ContractError(
+            "corpus manifest Terminal-Bench pin differs from the runner"
+        )
     dataset = terminal_bench.get("dataset", {})
     if dataset != {"kind": "implicit_git", "repo": TB_REPO, "path": "tasks"}:
-        raise ContractError("corpus manifest does not use the pinned implicit Git dataset")
+        raise ContractError(
+            "corpus manifest does not use the pinned implicit Git dataset"
+        )
     tasks = manifest.get("tasks", [])
     names = [task.get("name") for task in tasks]
     if len(names) != CORPUS_TASK_COUNT or len(set(names)) != CORPUS_TASK_COUNT:
@@ -813,7 +903,10 @@ def load_and_verify_manifest(path: Path) -> dict[str, Any]:
         }
         if task.get("primary_reward") != expected_primary:
             raise ContractError("PRIMARY_REWARD_CONTRACT_MISMATCH")
-        if task.get("reward_contract") is not None and task["reward_contract"] != contract:
+        if (
+            task.get("reward_contract") is not None
+            and task["reward_contract"] != contract
+        ):
             raise ContractError("REWARD_CONTRACT_MISMATCH")
         task["reward_contract"] = copy.deepcopy(contract)
     return manifest
@@ -837,7 +930,11 @@ def verify_runtime(project_dir: Path) -> dict[str, str]:
     lock_text = lock_path.read_text()
     if HARBOR_COMMIT not in lock_text:
         raise ContractError("uv.lock does not contain the pinned Harbor commit")
-    return {"harbor_version": version, "harbor_commit": commit, "uv_lock_sha256": _sha256_file(lock_path)}
+    return {
+        "harbor_version": version,
+        "harbor_commit": commit,
+        "uv_lock_sha256": _sha256_file(lock_path),
+    }
 
 
 def _trial_dir(event: TrialHookEvent) -> Path:
@@ -860,7 +957,9 @@ def _freeze_file(
         os.close(source_fd)
         raise ContractError("source trajectory exceeds the 256 MiB raw limit")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
     temporary_path = Path(temporary)
     digest = hashlib.sha256()
     copied = 0
@@ -869,13 +968,20 @@ def _freeze_file(
             while chunk := src.read(1024 * 1024):
                 copied += len(chunk)
                 if copied > MAX_TRAJECTORY_BYTES:
-                    raise ContractError("source trajectory grew beyond the 256 MiB raw limit")
+                    raise ContractError(
+                        "source trajectory grew beyond the 256 MiB raw limit"
+                    )
                 digest.update(chunk)
                 dst.write(chunk)
             dst.flush()
             os.fsync(dst.fileno())
         after = os.stat(source, follow_symlinks=False)
-        identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
         identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
         if identity_before != identity_after or copied != after.st_size:
             raise ContractError("source trajectory changed while being frozen")
@@ -948,10 +1054,14 @@ class LifecycleRecorder:
             raise ContractError("successful trial has no observed trial directory")
         try:
             payload = json.loads(
-                (self.trial_dir / "agent" / "trajectory.json").read_text(encoding="utf-8")
+                (self.trial_dir / "agent" / "trajectory.json").read_text(
+                    encoding="utf-8"
+                )
             )
         except (OSError, json.JSONDecodeError) as error:
-            raise ContractError("successful trial trajectory is absent or corrupt") from error
+            raise ContractError(
+                "successful trial trajectory is absent or corrupt"
+            ) from error
         steps = payload.get("steps") if isinstance(payload, dict) else None
         if not isinstance(steps, list):
             raise ContractError("successful trial trajectory has no ATIF steps")
@@ -959,11 +1069,15 @@ class LifecycleRecorder:
         tool_calls = 0
         for step in steps:
             if not isinstance(step, dict):
-                raise ContractError("successful trial trajectory contains an invalid step")
+                raise ContractError(
+                    "successful trial trajectory contains an invalid step"
+                )
             turns += int(step.get("source") == "agent")
             calls = step.get("tool_calls", [])
             if calls is not None and not isinstance(calls, list):
-                raise ContractError("successful trial trajectory contains invalid tool calls")
+                raise ContractError(
+                    "successful trial trajectory contains invalid tool calls"
+                )
             tool_calls += len(calls or [])
         return {"turns": turns, "tool_calls": tool_calls}
 
@@ -985,7 +1099,9 @@ class LifecycleRecorder:
         self.agent_started_ns = self.clock_ns()
         self.trial_dir = _trial_dir(event)
         self.setup_ms = self._elapsed_ms(self.run_started_ns, self.agent_started_ns)
-        await asyncio.to_thread(_notify_lifecycle, event, "agent_started", self.attempt_kind)
+        await asyncio.to_thread(
+            _notify_lifecycle, event, "agent_started", self.attempt_kind
+        )
         self.states[key] = "agent-started"
         self._record(event, "agent_started")
 
@@ -997,14 +1113,18 @@ class LifecycleRecorder:
             raise ContractError("agent timing was not started")
         agent_ended_ns = self.clock_ns()
         self.agent_ms = self._elapsed_ms(self.agent_started_ns, agent_ended_ns)
-        await asyncio.to_thread(_notify_lifecycle, event, "agent_ended", self.attempt_kind)
+        await asyncio.to_thread(
+            _notify_lifecycle, event, "agent_ended", self.attempt_kind
+        )
         self.states[key] = "agent-ended"
         self._record(event, "agent_ended")
 
     async def on_verification_started(self, event: TrialHookEvent) -> None:
         key = str(event.trial_id)
         if self.states.get(key) != "agent-ended":
-            raise ContractError("verification-started event occurred before agent-ended")
+            raise ContractError(
+                "verification-started event occurred before agent-ended"
+            )
         self.verification_started_ns = self.clock_ns()
         if self.attempt_kind == "replay":
             if (
@@ -1046,7 +1166,11 @@ class LifecycleRecorder:
             }
             _atomic_json(self.manifest_path, self.manifest, no_overwrite=True)
             return
-        if self.freeze_destination is None or self.freeze_relative_path is None or self.manifest_path is None:
+        if (
+            self.freeze_destination is None
+            or self.freeze_relative_path is None
+            or self.manifest_path is None
+        ):
             raise ContractError("SOURCE_FREEZE_OUTPUTS_MISSING")
         frozen = _freeze_file(
             _trial_dir(event) / "agent" / "trajectory.json",
@@ -1081,16 +1205,22 @@ class LifecycleRecorder:
     async def on_trial_ended(self, event: TrialHookEvent) -> None:
         key = str(event.trial_id)
         if self.states.get(key) != "verification-started":
-            raise ContractError("trial-ended event occurred before verification-started")
+            raise ContractError(
+                "trial-ended event occurred before verification-started"
+            )
         if self.verification_started_ns is None:
             raise ContractError("verifier timing was not started")
         self.verifier_ms = self._elapsed_ms(
             self.verification_started_ns, self.clock_ns()
         )
-        await asyncio.to_thread(_notify_lifecycle, event, "trial_ended", self.attempt_kind)
+        await asyncio.to_thread(
+            _notify_lifecycle, event, "trial_ended", self.attempt_kind
+        )
 
     async def on_trial_cancelled(self, event: TrialHookEvent) -> None:
-        await asyncio.to_thread(_notify_lifecycle, event, "trial_cancelled", self.attempt_kind)
+        await asyncio.to_thread(
+            _notify_lifecycle, event, "trial_cancelled", self.attempt_kind
+        )
 
 
 def _step_identities(path: Path) -> tuple[list[dict[str, Any]], int | None]:
@@ -1262,9 +1392,7 @@ def _validate_codex_agent_env(value: Any) -> None:
     if value.get("OPENAI_API_KEY", "${OPENAI_API_KEY}") != "${OPENAI_API_KEY}":
         raise ContractError("INVALID_CODEX_PROVIDER_CREDENTIAL")
     if (
-        value.get(
-            "KOED_BENCHMARK_MCP_TOKEN", "${KOED_BENCHMARK_MCP_TOKEN}"
-        )
+        value.get("KOED_BENCHMARK_MCP_TOKEN", "${KOED_BENCHMARK_MCP_TOKEN}")
         != "${KOED_BENCHMARK_MCP_TOKEN}"
     ):
         raise ContractError("INVALID_BENCHMARK_MCP_TOKEN_REFERENCE")
@@ -1309,7 +1437,10 @@ def _validate_codex_kwargs(
     required = SAFE_CODEX_CONFIG_FIELDS - {"mcp_servers", "developer_instructions"}
     if not required.issubset(config):
         raise ContractError("INCOMPLETE_CODEX_CONFIG")
-    if config.get("approval_policy") != "never" or config.get("web_search") != "disabled":
+    if (
+        config.get("approval_policy") != "never"
+        or config.get("web_search") != "disabled"
+    ):
         raise ContractError("UNSAFE_CODEX_CONFIG")
     if config.get("features") != {"mcp_2026_07_28": True}:
         raise ContractError("MCP_2026_PROTOCOL_REQUIRED")
@@ -1365,9 +1496,7 @@ def _validate_codex_kwargs(
         "DISALLOWED_CODEX_MCP_CONFIG",
     )
     url_match = (
-        re.fullmatch(
-            r"http://(?P<host>[^/:]+):[1-9][0-9]{0,4}", koed.get("url", "")
-        )
+        re.fullmatch(r"http://(?P<host>[^/:]+):[1-9][0-9]{0,4}", koed.get("url", ""))
         if isinstance(koed.get("url"), str)
         else None
     )
@@ -1402,7 +1531,9 @@ def _validate_job_config_allowlist(
         raise ContractError("DISALLOWED_JOB_CONFIG_FIELD")
     if "retry" in job_fields:
         _strict_nested_config(
-            job_fields["retry"], SAFE_RETRY_CONFIG_FIELDS, "DISALLOWED_RETRY_CONFIG_FIELD"
+            job_fields["retry"],
+            SAFE_RETRY_CONFIG_FIELDS,
+            "DISALLOWED_RETRY_CONFIG_FIELD",
         )
     job_fields.setdefault("environment", {})
     if "environment" in job_fields:
@@ -1465,20 +1596,27 @@ def _validate_job_config_allowlist(
             )
             if private_hosts != expected_private_hosts:
                 raise ContractError("MCP_HOST_EGRESS_MISMATCH")
-            if mcp_host and mcp_host != "127.0.0.1" and mcp_host not in agent.get(
-                "extra_allowed_hosts", []
+            if (
+                mcp_host
+                and mcp_host != "127.0.0.1"
+                and mcp_host not in agent.get("extra_allowed_hosts", [])
             ):
                 raise ContractError("MCP_HOST_EGRESS_MISMATCH")
 
 
-def _verify_resolved_tasks(job: Job, manifest: dict[str, Any], task_name: str) -> None:
+def _verify_resolved_tasks(
+    configs: list[TaskConfig],
+    downloads: dict[Any, Any],
+    manifest: dict[str, Any],
+    task_name: str,
+) -> Path:
     expected = {task["name"]: task for task in manifest["tasks"]}
     if task_name not in expected:
         raise ContractError(f"task {task_name!r} is not in the pinned corpus manifest")
-    configs = job._task_configs  # Harbor has no public post-resolution task view in 0.21.
-    downloads = job._task_download_results
     if len(configs) != 1:
-        raise ContractError(f"Harbor resolved {len(configs)} tasks; a runner job must resolve one")
+        raise ContractError(
+            f"Harbor resolved {len(configs)} tasks; a runner job must resolve one"
+        )
     config = configs[0]
     task_id = config.get_task_id()
     download = downloads[task_id]
@@ -1496,9 +1634,14 @@ def _verify_resolved_tasks(job: Job, manifest: dict[str, Any], task_name: str) -
         "task_digest": (actual_digest, record["task_digest"]),
         "commit": (actual_commit, TB_COMMIT),
     }
-    failed = {key: values for key, values in mismatches.items() if values[0] != values[1]}
+    failed = {
+        key: values for key, values in mismatches.items() if values[0] != values[1]
+    }
     if failed:
-        raise ContractError(f"resolved Harbor task differs from corpus manifest: {failed}")
+        raise ContractError(
+            f"resolved Harbor task differs from corpus manifest: {failed}"
+        )
+    return download.path
 
 
 def _validate_pinned_task_image(task_image: str) -> None:
@@ -1596,9 +1739,7 @@ def _pinned_codex_binary(request: dict[str, Any]):
             raise ContractError("PINNED_CODEX_INSTALL_FAILED")
         output = result.stdout or ""
         expected = request["codex_binary_sha256"].removeprefix("sha256:")
-        helper_expected = request["codex_code_mode_host_sha256"].removeprefix(
-            "sha256:"
-        )
+        helper_expected = request["codex_code_mode_host_sha256"].removeprefix("sha256:")
         if (
             expected not in output
             or helper_expected not in output
@@ -1728,7 +1869,12 @@ async def provision_task_image(
         job = await Job.create(config)
         if len(job) != 1:
             raise ContractError("HARBOR_IMAGE_JOB_NOT_SINGLE_TASK")
-        _verify_resolved_tasks(job, manifest, task_name)
+        _verify_resolved_tasks(
+            job._task_configs,
+            job._task_download_results,
+            manifest,
+            task_name,
+        )
         trial_configs = job._trial_configs
         if len(trial_configs) != 1:
             raise ContractError("HARBOR_IMAGE_JOB_NOT_SINGLE_TASK")
@@ -1736,9 +1882,7 @@ async def provision_task_image(
         environment = trial.agent_environment
         dockerfile = trial.task.paths.environment_dir / "Dockerfile"
         dockerfile_sha256, base_references = _dockerfile_base_references(dockerfile)
-        base_digests_before_build = _resolved_base_digests(
-            docker, base_references
-        )
+        base_digests_before_build = _resolved_base_digests(docker, base_references)
         started = False
         try:
             await environment.start(force_build=True)
@@ -1815,10 +1959,12 @@ def _trial_lock_validator(record: dict[str, Any]):
         expected = {
             "digest": record["task_digest"],
             "source_path": record["source_path"],
-            "commit": TB_COMMIT,
+            "commit": record.get("commit", TB_COMMIT),
         }
         if actual != expected:
-            raise ContractError(f"Harbor trial lock differs from corpus manifest: {actual}")
+            raise ContractError(
+                f"Harbor trial lock differs from corpus manifest: {actual}"
+            )
 
     return validate
 
@@ -1876,15 +2022,47 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         requested_outputs.append(result_destination)
     if any(output.is_relative_to(job_dir) for output in requested_outputs):
         raise ContractError("OUTPUT_PATH_COLLIDES_WITH_JOB_DIR")
+    dataset = DatasetConfig(
+        repo=TB_REPO, path=Path("tasks"), task_names=[task_selector]
+    )
+    resolved_task_configs = await dataset.get_task_configs(disable_verification=False)
+    task_client = TaskClient()
+    task_ids = [task.get_task_id() for task in resolved_task_configs]
+    resolved_downloads = dict(
+        zip(
+            task_ids,
+            (
+                await task_client.download_tasks(
+                    task_ids=task_ids,
+                    overwrite=any(task.overwrite for task in resolved_task_configs),
+                    output_dir=next(
+                        (
+                            task.download_dir
+                            for task in resolved_task_configs
+                            if task.download_dir is not None
+                        ),
+                        None,
+                    ),
+                )
+            ).results,
+        )
+    )
+    resolved_task_path = _verify_resolved_tasks(
+        resolved_task_configs, resolved_downloads, manifest, task_name
+    )
+    adapted_task_path, instruction_adaptation = _prepare_adapted_task(
+        resolved_task_path, run_root, task_selector
+    )
+    adapted_task_digest = (
+        f"sha256:{Packager.compute_content_hash(adapted_task_path)[0]}"
+    )
     job_fields.update(
         {
             "jobs_dir": run_root / "harbor-jobs",
             "n_attempts": 1,
             "n_concurrent_trials": 1,
-            "datasets": [
-                DatasetConfig(repo=TB_REPO, path=Path("tasks"), task_names=[task_selector])
-            ],
-            "tasks": [],
+            "datasets": [],
+            "tasks": [TaskConfig(path=adapted_task_path, source=TB_REPO)],
             "source_jobs": [],
         }
     )
@@ -1900,8 +2078,9 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         raise ContractError("Harbor retries must remain disabled for scored attempts")
     job = await Job.create(config)
     if len(job) != 1:
-        raise ContractError(f"Harbor job contains {len(job)} trials; expected exactly one")
-    _verify_resolved_tasks(job, manifest, task_name)
+        raise ContractError(
+            f"Harbor job contains {len(job)} trials; expected exactly one"
+        )
     docker = shutil.which("docker")
     if not docker:
         raise ContractError("DOCKER_NOT_FOUND")
@@ -1916,7 +2095,15 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         freeze_relative_path=freeze_relative or replay_trajectory_relative,
         replay_trajectory_destination=replay_trajectory_destination,
     )
-    job.on_trial_started(_trial_lock_validator(manifest_by_name[task_name]))
+    job.on_trial_started(
+        _trial_lock_validator(
+            {
+                "task_digest": adapted_task_digest,
+                "source_path": str(adapted_task_path),
+                "commit": None,
+            }
+        )
+    )
     job.on_agent_started(recorder.on_agent_started)
     job.on_agent_ended(recorder.on_agent_ended)
     job.on_verification_started(recorder.on_verification_started)
@@ -1966,7 +2153,10 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         )
     output = {
         "schema_version": "koed-harbor-result-v1",
-        "runtime": runtime,
+        "runtime": {
+            **runtime,
+            "task_instruction_adaptation": instruction_adaptation,
+        },
         "job_lock_sha256": _sha256_file(job.job_dir / "lock.json"),
         "result": {
             "job_id": str(result.id),
@@ -1993,7 +2183,9 @@ async def run_request(request_path: Path) -> dict[str, Any]:
         assert replay_trajectory_destination is not None
         assert manifest_path is not None
         if recorder.replay_trajectory_sha256 is None:
-            raise ContractError("replay attempt ended without a pre-verifier trajectory")
+            raise ContractError(
+                "replay attempt ended without a pre-verifier trajectory"
+            )
         if (
             _sha256_file(replay_trajectory_destination)
             != recorder.replay_trajectory_sha256
@@ -2004,7 +2196,9 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     if result_destination is not None:
         _atomic_json(result_destination, output, no_overwrite=True)
     if request["attempt_kind"] == "source" and recorder.manifest is None:
-        raise ContractError("source attempt ended without a frozen pre-verifier trajectory")
+        raise ContractError(
+            "source attempt ended without a frozen pre-verifier trajectory"
+        )
     return output
 
 
@@ -2013,10 +2207,14 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run = subparsers.add_parser("run", help="run one locked Harbor trial")
     run.add_argument("--request", type=Path, required=True)
-    manifest = subparsers.add_parser("build-manifests", help="derive corpus fixtures from a pinned checkout")
+    manifest = subparsers.add_parser(
+        "build-manifests", help="derive corpus fixtures from a pinned checkout"
+    )
     manifest.add_argument("--source", type=Path, required=True)
     manifest.add_argument("--output-dir", type=Path, required=True)
-    verify = subparsers.add_parser("verify-manifest", help="validate a committed corpus manifest")
+    verify = subparsers.add_parser(
+        "verify-manifest", help="validate a committed corpus manifest"
+    )
     verify.add_argument("--manifest", type=Path, required=True)
     image = subparsers.add_parser(
         "provision-task-image",

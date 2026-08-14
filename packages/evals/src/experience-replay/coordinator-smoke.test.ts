@@ -1259,7 +1259,7 @@ describe("unified experience replay coordinator", () => {
       semanticConfigHash: campaign.semantic_config_hash,
       memoryAnswerPromptVersion: campaign.memory_answer.prompt_version,
       mcpRecallPolicyVersion:
-        "mcp-server-instructions-v3+memory-answer-tool-description-v3",
+        "mcp-server-instructions-v4+memory-answer-tool-description-v4",
       concurrency: campaign.concurrency,
       pins: {
         harborCommit: "64afbbcb62165950301e1a6407c729aa26d844ff",

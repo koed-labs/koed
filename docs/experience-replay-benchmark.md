@@ -15,6 +15,13 @@ same task.
   is not a valid benchmark path.
 - Recall uses the production MCP Server, `memory_answer`, Local AI Runtime and
   AI Client synthesis contracts.
+- The benchmark is a Koed-adapted Terminal-Bench evaluation, not an official
+  leaderboard submission. Every source and replay replaces the task corpus's
+  exact final prohibition on online solutions or task-specific hints with
+  `Do not use online solutions.` This keeps network cheating prohibited without
+  misclassifying the User's local Koed Memory as an external hint. The runner
+  fails closed when the expected sentence is absent or duplicated, leaves the
+  pinned task cache unchanged, and records both instruction digests.
 - Every source and replay is one isolated Harbor trial with a fresh AI Client
   home. The transcript watcher is disabled.
 - The runner consumes the exact digest-qualified task image approved by

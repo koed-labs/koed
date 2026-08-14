@@ -18,16 +18,80 @@ import runner
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
-def lifecycle_event(
-    trial_dir: Path, *, agent_exit: str = "normal"
-) -> SimpleNamespace:
+def test_task_instruction_policy_removes_only_task_specific_hint_prohibition(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    original = (
+        "Complete the task.\n\n"
+        "Do not cheat by using online solutions or hints specific to this task.\n"
+    )
+    (source / "instruction.md").write_text(original)
+    (source / "task.toml").write_text('[task]\nname = "terminal-bench/example"\n')
+
+    destination, provenance = runner._prepare_adapted_task(
+        source, tmp_path / "run", "example"
+    )
+
+    assert (source / "instruction.md").read_text() == original
+    assert (destination / "instruction.md").read_text() == (
+        "Complete the task.\n\nDo not use online solutions.\n"
+    )
+    assert provenance == {
+        "policy": "koed-memory-eval-task-instruction-v1",
+        "original_sha256": runner._sha256_file(source / "instruction.md"),
+        "adapted_sha256": runner._sha256_file(destination / "instruction.md"),
+    }
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Complete the task without online help.",
+        (
+            "Do not cheat by using online solutions or hints specific to this task.\n"
+            "Do not cheat by using online solutions or hints specific to this task."
+        ),
+    ],
+)
+def test_task_instruction_policy_fails_closed_for_unexpected_input(
+    instruction: str,
+) -> None:
+    with pytest.raises(runner.ContractError, match="TASK_INSTRUCTION_POLICY_MISMATCH"):
+        runner._adapt_task_instruction(instruction)
+
+
+def test_adapted_task_lock_accepts_local_copy_without_git_commit(
+    tmp_path: Path,
+) -> None:
+    digest = f"sha256:{'a' * 64}"
+    event = SimpleNamespace(
+        lock=SimpleNamespace(
+            task=SimpleNamespace(
+                digest=digest,
+                path=tmp_path,
+                git_commit_id=None,
+            )
+        )
+    )
+    validate = runner._trial_lock_validator(
+        {
+            "task_digest": digest,
+            "source_path": str(tmp_path),
+            "commit": None,
+        }
+    )
+
+    asyncio.run(validate(event))
+
+
+def lifecycle_event(trial_dir: Path, *, agent_exit: str = "normal") -> SimpleNamespace:
     return SimpleNamespace(
         trial_id="trial-one",
         task_name="terminal-bench/cad-model",
         timestamp=datetime(2026, 8, 12, tzinfo=UTC),
-        result=SimpleNamespace(
-            trial_uri=trial_dir.as_uri(), agent_exit=agent_exit
-        ),
+        result=SimpleNamespace(trial_uri=trial_dir.as_uri(), agent_exit=agent_exit),
     )
 
 
@@ -66,6 +130,7 @@ def test_source_lifecycle_freezes_before_verification(
         freeze_relative_path="source/frozen.json",
     )
     event = lifecycle_event(trial, agent_exit=agent_exit)
+
     async def exercise() -> None:
         recorder.begin_run()
         await recorder.on_agent_started(event)
@@ -108,6 +173,7 @@ def test_replay_lifecycle_captures_trajectory_before_verifier_changes(
         clock_ns=lambda: next(ticks),
     )
     event = lifecycle_event(tmp_path)
+
     async def exercise() -> None:
         recorder.begin_run()
         await recorder.on_agent_started(event)
@@ -173,6 +239,7 @@ def test_cancelled_agent_attempt_acknowledges_without_freezing(
         freeze_relative_path="source/frozen.json",
     )
     event = lifecycle_event(tmp_path)
+
     async def exercise() -> None:
         recorder.begin_run()
         await recorder.on_agent_started(event)
@@ -194,7 +261,9 @@ def test_committed_corpus_manifest_has_locked_pins_and_all_tasks() -> None:
         "repo": f"harbor-framework/terminal-bench@{runner.TB_COMMIT}",
         "path": "tasks",
     }
-    assert all(task["harbor_task_checksum"].startswith("sha256:") for task in manifest["tasks"])
+    assert all(
+        task["harbor_task_checksum"].startswith("sha256:") for task in manifest["tasks"]
+    )
     assert all(task["task_digest"].startswith("sha256:") for task in manifest["tasks"])
     assert all("reward_contract" in task for task in manifest["tasks"])
     assert manifest["reward_contracts"]["sha256"] == runner._sha256_file(
@@ -314,7 +383,9 @@ def test_source_request_forbids_replay_trajectory_output(tmp_path: Path) -> None
     path = tmp_path / "request.json"
     path.write_text(json.dumps(request))
 
-    with pytest.raises(runner.ContractError, match="SOURCE_REPLAY_TRAJECTORY_FORBIDDEN"):
+    with pytest.raises(
+        runner.ContractError, match="SOURCE_REPLAY_TRAJECTORY_FORBIDDEN"
+    ):
         runner._strict_request(path)
 
 
@@ -456,7 +527,9 @@ def test_separate_verifier_environment_is_prepared_during_preflight(
     assert events == ["started", "stopped"]
 
 
-def test_process_stdout_is_reserved_for_protocol_response(capfd: pytest.CaptureFixture[str]) -> None:
+def test_process_stdout_is_reserved_for_protocol_response(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
     with runner._suppress_process_stdout():
         print("Harbor diagnostic")
         os.write(1, b"subprocess diagnostic\n")
@@ -529,7 +602,9 @@ def test_native_step_identities_are_bound_and_all_or_none(tmp_path: Path) -> Non
         runner._step_identities(trajectory)
 
 
-@pytest.mark.parametrize("field", ["upload", "share", "publish", "jobs_dir", "extra_instruction_paths"])
+@pytest.mark.parametrize(
+    "field", ["upload", "share", "publish", "jobs_dir", "extra_instruction_paths"]
+)
 def test_job_config_allowlist_excludes_publish_and_path_surfaces(field: str) -> None:
     assert field not in runner.SAFE_JOB_CONFIG_FIELDS
 
@@ -538,7 +613,11 @@ def test_job_config_allowlist_excludes_publish_and_path_surfaces(field: str) -> 
     ("section", "value", "reason"),
     [
         ("agents", [{"name": "codex", "load_trajectory": "/tmp/raw.json"}], "AGENT"),
-        ("environment", {"mounts": [{"source": "/", "target": "/host"}]}, "ENVIRONMENT"),
+        (
+            "environment",
+            {"mounts": [{"source": "/", "target": "/host"}]},
+            "ENVIRONMENT",
+        ),
         ("verifier", {"import_path": "/tmp/verifier.py"}, "VERIFIER"),
     ],
 )
@@ -875,9 +954,7 @@ def test_provision_task_image_uses_harbor_materialization_and_emits_only_immutab
             lifecycle.append(("start", force_build))
 
         async def _run_docker_compose_command(self, _args: list[str]) -> object:
-            return SimpleNamespace(
-                stdout=json.dumps([{"ID": f"sha256:{'c' * 64}"}])
-            )
+            return SimpleNamespace(stdout=json.dumps([{"ID": f"sha256:{'c' * 64}"}]))
 
         async def stop(self, delete: bool) -> None:
             lifecycle.append(("stop", delete))
@@ -892,6 +969,8 @@ def test_provision_task_image_uses_harbor_materialization_and_emits_only_immutab
 
     class FakeJob:
         _trial_configs = [object()]
+        _task_configs: list[object] = []
+        _task_download_results: dict[object, object] = {}
 
         def __len__(self) -> int:
             return 1
@@ -913,11 +992,7 @@ def test_provision_task_image_uses_harbor_materialization_and_emits_only_immutab
         assert ("stop", True) not in lifecycle
         return {
             "Id": image_id,
-            "RepoDigests": (
-                [immutable_reference]
-                if reference != image_id
-                else []
-            ),
+            "RepoDigests": ([immutable_reference] if reference != image_id else []),
         }
 
     docker_commands: list[list[str]] = []
@@ -1002,15 +1077,15 @@ def test_provision_task_image_fails_when_push_has_no_immutable_repo_digest(
             pass
 
         async def _run_docker_compose_command(self, _args: list[str]) -> object:
-            return SimpleNamespace(
-                stdout=json.dumps([{"ID": f"sha256:{'a' * 64}"}])
-            )
+            return SimpleNamespace(stdout=json.dumps([{"ID": f"sha256:{'a' * 64}"}]))
 
         async def stop(self, delete: bool) -> None:
             pass
 
     class FakeJob:
         _trial_configs = [object()]
+        _task_configs: list[object] = []
+        _task_download_results: dict[object, object] = {}
 
         def __len__(self) -> int:
             return 1
@@ -1040,7 +1115,9 @@ def test_provision_task_image_fails_when_push_has_no_immutable_repo_digest(
         lambda *_args: {"Id": f"sha256:{'a' * 64}", "RepoDigests": []},
     )
 
-    with pytest.raises(runner.ContractError, match="OCI_IMMUTABLE_IDENTITY_UNAVAILABLE"):
+    with pytest.raises(
+        runner.ContractError, match="OCI_IMMUTABLE_IDENTITY_UNAVAILABLE"
+    ):
         asyncio.run(
             runner.provision_task_image(
                 FIXTURES / "tb3-v3.0.0.json",
@@ -1061,7 +1138,9 @@ def test_strict_request_does_not_echo_secret_unknown_keys(tmp_path: Path) -> Non
     assert secret not in str(raised.value)
 
 
-def test_non_binary_multi_metric_reward_contract_is_evaluated_from_primary_field() -> None:
+def test_non_binary_multi_metric_reward_contract_is_evaluated_from_primary_field() -> (
+    None
+):
     contract = {
         "metrics": {
             "quality": {"minimum": -2.0, "maximum": 3.0},
