@@ -164,6 +164,111 @@ describe("recorded LCM preparation", () => {
     ).resolves.toMatchObject({ inputTokens: 0, outputTokens: 0 });
   });
 
+  it("drains scheduled LCM work across bounded dispatch pages", async () => {
+    const listPendingLcmDispatchScopes = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          visibility: "personal",
+          workClass: "historical_import_backfill",
+          pendingMemoryEventIds: ["event-1"]
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          visibility: "personal",
+          workClass: "historical_import_backfill",
+          pendingMemoryEventIds: ["event-2"]
+        }
+      ]);
+    const repository = {
+      listPendingLcmDispatchScopes,
+      createLcmNodes: vi
+        .fn()
+        .mockResolvedValueOnce({
+          leafNodeIds: ["node-1"],
+          rollupNodeId: null
+        })
+        .mockResolvedValueOnce({
+          leafNodeIds: ["node-2"],
+          rollupNodeId: null
+        }),
+      getLcmNodeForSummarization: vi.fn().mockImplementation((nodeId) =>
+        Promise.resolve({
+          id: nodeId,
+          ownerUserId: "user-1",
+          visibility: "personal",
+          kind: "leaf",
+          depth: 0,
+          summaryText: "pending",
+          sourceItems: [{ kind: "memory_event", text: "exact source phrase" }],
+          sourceTokenEstimate: 3,
+          summaryTokenEstimate: null,
+          summaryModel: null,
+          summaryPromptVersion: null,
+          summaryStructuredJson: null,
+          summaryStructuredSchemaVersion: null,
+          lcmAlgorithmVersion: "v1"
+        })
+      ),
+      updateLcmNodeSummary: vi.fn().mockResolvedValue(undefined)
+    } as unknown as MemorySourceRepository;
+    const runner = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        title: "Recorded summary",
+        summary_text: "A grounded summary.",
+        lexical_anchors: ["exact source phrase"]
+      }),
+      model: "codex-app-server:gpt-5.6-luna:low",
+      tokenUsage: { total: { inputTokens: 10, outputTokens: 5 } }
+    });
+    const run = createRecordedLcmJobRunner({
+      config,
+      environment: { MEMORY_CODEX_APP_SERVER_BINARY: "/opt/codex" },
+      runner
+    });
+
+    await expect(
+      run({
+        repository,
+        actor: { userId: "user-1" },
+        scheduledEventIds: ["event-1", "event-2"]
+      })
+    ).resolves.toMatchObject({
+      nodeIds: ["node-1", "node-2"],
+      inputTokens: 20,
+      outputTokens: 10
+    });
+    expect(listPendingLcmDispatchScopes).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects pending LCM work outside the admitted schedule", async () => {
+    const repository = {
+      listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([
+        {
+          visibility: "personal",
+          workClass: "historical_import_backfill",
+          pendingMemoryEventIds: ["different-event"]
+        }
+      ]),
+      createLcmNodes: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const run = createRecordedLcmJobRunner({
+      config,
+      environment: { MEMORY_CODEX_APP_SERVER_BINARY: "/opt/codex" },
+      runner: vi.fn()
+    });
+
+    await expect(
+      run({
+        repository,
+        actor: { userId: "user-1" },
+        scheduledEventIds: ["event-1"]
+      })
+    ).rejects.toThrow("differs from scheduled work");
+  });
+
   it("uses the production repair path and accounts for both calls", async () => {
     const updateLcmNodeSummary = vi.fn().mockResolvedValue(undefined);
     const repository = {

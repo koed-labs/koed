@@ -45,29 +45,44 @@ const createNodes = async (
   actor: ActorContext,
   scheduledEventIds: readonly string[]
 ): Promise<string[]> => {
-  const scopes = await repository.listPendingLcmDispatchScopes({
-    ownerUserId: actor.userId
-  });
-  const pending = new Set(
-    scopes.flatMap((scope) => scope.pendingMemoryEventIds)
-  );
-  if (scheduledEventIds.some((eventId) => !pending.has(eventId))) {
-    throw new Error("Recorded LCM dispatch scope is incomplete");
-  }
+  const remaining = new Set(scheduledEventIds);
   const nodeIds: string[] = [];
-  for (const scope of scopes) {
-    const created = await repository.createLcmNodes(actor, {
-      visibility: scope.visibility,
-      workClass: scope.workClass,
-      force: true
+  while (remaining.size > 0) {
+    const scopes = await repository.listPendingLcmDispatchScopes({
+      ownerUserId: actor.userId
     });
-    nodeIds.push(
-      ...created.leafNodeIds,
-      ...(created.rollupNodeId ? [created.rollupNodeId] : [])
-    );
-  }
-  if (scheduledEventIds.length > 0 && nodeIds.length === 0) {
-    throw new Error("Recorded LCM worker created no nodes");
+    const pendingIds = scopes.flatMap((scope) => scope.pendingMemoryEventIds);
+    if (
+      pendingIds.length === 0 ||
+      pendingIds.some((eventId) => !remaining.has(eventId))
+    ) {
+      throw new Error(
+        "Recorded LCM dispatch scope differs from scheduled work"
+      );
+    }
+    let createdInPass = 0;
+    for (const scope of scopes) {
+      const created = await repository.createLcmNodes(actor, {
+        visibility: scope.visibility,
+        workClass: scope.workClass,
+        force: true
+      });
+      const createdNodeIds = [
+        ...created.leafNodeIds,
+        ...(created.rollupNodeId ? [created.rollupNodeId] : [])
+      ];
+      if (createdNodeIds.length === 0) {
+        throw new Error("Recorded LCM worker made no dispatch progress");
+      }
+      nodeIds.push(...createdNodeIds);
+      createdInPass += scope.pendingMemoryEventIds.length;
+      for (const eventId of scope.pendingMemoryEventIds) {
+        remaining.delete(eventId);
+      }
+    }
+    if (createdInPass === 0) {
+      throw new Error("Recorded LCM worker made no dispatch progress");
+    }
   }
   return nodeIds;
 };
