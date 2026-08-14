@@ -351,7 +351,11 @@ export const createRecordedEmbeddingRuntime = async (
         ...(body.byteLength ? { body } : {})
       });
       const payload = Buffer.from(await upstream.arrayBuffer());
-      if (request.method === "POST" && request.url === "/embed") {
+      if (
+        upstream.ok &&
+        request.method === "POST" &&
+        request.url === "/embed"
+      ) {
         let input: unknown;
         let output: unknown;
         try {
