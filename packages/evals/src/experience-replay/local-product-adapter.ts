@@ -43,7 +43,6 @@ import {
 
 const SMOKE_MODEL = "qwen3-0.6b";
 const SMOKE_DIMENSIONS = 1024;
-const BATCH_SIZE = 32;
 
 export interface RecordedEmbeddingServiceOptions {
   url: string;
@@ -124,6 +123,7 @@ export interface LocalProductEmbeddingAttestation {
     model: string;
     dimensions: number;
     modelArtifactHash: string;
+    batchLimit: number;
     authRequired: boolean | null;
     authValid: boolean | null;
   };
@@ -219,6 +219,7 @@ interface EmbeddingRuntime {
   model: string;
   dimensions: number;
   modelArtifactHash: string;
+  batchLimit: number;
   health: LocalProductEmbeddingAttestation["health"];
   close(): Promise<void>;
   metrics(): {
@@ -311,12 +312,15 @@ export const createRecordedEmbeddingRuntime = async (
         ? record.model
         : null;
   const dimensions = record.dimensions;
+  const batchLimit = record.batchLimit;
   const artifactHash =
     typeof record.artifactHash === "string" ? record.artifactHash : null;
   if (
     record.status !== "ok" ||
     !model ||
     !Number.isSafeInteger(dimensions) ||
+    !Number.isSafeInteger(batchLimit) ||
+    Number(batchLimit) < 1 ||
     (record.authRequired === true && record.authValid !== true)
   ) {
     throw new Error(
@@ -429,11 +433,13 @@ export const createRecordedEmbeddingRuntime = async (
     model,
     dimensions: Number(dimensions),
     modelArtifactHash: configured.modelArtifactHash,
+    batchLimit: Number(batchLimit),
     health: {
       status: "ok",
       model,
       dimensions: Number(dimensions),
       modelArtifactHash: configured.modelArtifactHash,
+      batchLimit: Number(batchLimit),
       authRequired:
         typeof record.authRequired === "boolean" ? record.authRequired : null,
       authValid: typeof record.authValid === "boolean" ? record.authValid : null
@@ -473,11 +479,13 @@ const smokeEmbeddingRuntime = async (): Promise<EmbeddingRuntime> => {
     model: service.model,
     dimensions: service.dimensions,
     modelArtifactHash,
+    batchLimit: 128,
     health: {
       status: "ok",
       model: service.model,
       dimensions: service.dimensions,
       modelArtifactHash,
+      batchLimit: 128,
       authRequired: null,
       authValid: null
     },
@@ -540,7 +548,9 @@ const embedPendingSources = async (
   runtime: EmbeddingRuntime
 ): Promise<void> => {
   for (;;) {
-    const sources = await repository.listSourcesNeedingEmbeddings(BATCH_SIZE);
+    const sources = await repository.listSourcesNeedingEmbeddings(
+      runtime.batchLimit
+    );
     if (sources.length === 0) return;
     const embedded = await embedThroughService(
       runtime,
