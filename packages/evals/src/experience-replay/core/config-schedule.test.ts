@@ -9,6 +9,7 @@ import {
   CONDITIONS,
   NATURAL_CONDITIONS,
   ORACLE_CONDITIONS,
+  ORACLE_CAMPAIGN_CONDITIONS,
   ORACLE_REPEATED_CONDITIONS,
   ORACLE_REPEATED_ROWS,
   ORACLE_WILLIAMS_ROWS,
@@ -283,6 +284,26 @@ describe("canonical hashing and Williams schedule", () => {
     const changed = structuredClone(schedule);
     (changed.entries[0] as { repeat: number }).repeat = 9;
     expect(() => verifyReplaySchedule(changed)).toThrow("hash mismatch");
+  });
+
+  it("keeps campaign task schedules identical across shard membership", () => {
+    const full = createReplaySchedule(
+      ["t1", "t2", "t3"],
+      1,
+      "campaign-seed",
+      ORACLE_CAMPAIGN_CONDITIONS
+    );
+    const shard = createReplaySchedule(
+      ["t1", "t3"],
+      1,
+      "campaign-seed",
+      ORACLE_CAMPAIGN_CONDITIONS
+    );
+    for (const taskDigest of ["t1", "t3"]) {
+      expect(
+        shard.entries.find((entry) => entry.taskDigest === taskDigest)
+      ).toEqual(full.entries.find((entry) => entry.taskDigest === taskDigest));
+    }
   });
 
   it("rejects schedule tampering even when its sibling hash is recomputed", () => {

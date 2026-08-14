@@ -22,8 +22,12 @@ describe("experience replay command parsing", () => {
       productPathProof: false,
       oracleSeededProof: false,
       oracleRepeatedStudy: false,
+      oracleCampaign: false,
+      oracleCorpusQualification: false,
       oracleBriefPath: null,
       oracleCorpusPath: null,
+      oracleCampaignManifestPath: null,
+      oracleQualificationManifestPath: null,
       oracleRepeats: null,
       codexSubscription: false
     });
@@ -42,8 +46,12 @@ describe("experience replay command parsing", () => {
       productPathProof: false,
       oracleSeededProof: false,
       oracleRepeatedStudy: false,
+      oracleCampaign: false,
+      oracleCorpusQualification: false,
       oracleBriefPath: null,
       oracleCorpusPath: null,
+      oracleCampaignManifestPath: null,
+      oracleQualificationManifestPath: null,
       oracleRepeats: null,
       codexSubscription: false
     });
@@ -63,8 +71,12 @@ describe("experience replay command parsing", () => {
       productPathProof: true,
       oracleSeededProof: false,
       oracleRepeatedStudy: false,
+      oracleCampaign: false,
+      oracleCorpusQualification: false,
       oracleBriefPath: null,
       oracleCorpusPath: null,
+      oracleCampaignManifestPath: null,
+      oracleQualificationManifestPath: null,
       oracleRepeats: null,
       codexSubscription: true
     });
@@ -114,6 +126,39 @@ describe("experience replay command parsing", () => {
       oracleRepeatedStudy: true,
       oracleCorpusPath: "/tmp/corpus",
       oracleRepeats: 3
+    });
+    expect(
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "campaign.json",
+        "--oracle-campaign",
+        "--oracle-campaign-manifest",
+        "/tmp/campaign.json",
+        "--oracle-corpus",
+        "/tmp/corpora"
+      ])
+    ).toMatchObject({
+      oracleCampaign: true,
+      oracleCampaignManifestPath: "/tmp/campaign.json",
+      oracleCorpusPath: "/tmp/corpora",
+      oracleRepeatedStudy: false
+    });
+    expect(
+      parseExperienceReplayCommand([
+        "run",
+        "--config",
+        "campaign.json",
+        "--oracle-qualify",
+        "--oracle-qualification-manifest",
+        "/tmp/qualification.json",
+        "--oracle-corpus",
+        "/tmp/corpora"
+      ])
+    ).toMatchObject({
+      oracleCorpusQualification: true,
+      oracleQualificationManifestPath: "/tmp/qualification.json",
+      oracleCorpusPath: "/tmp/corpora"
     });
     expect(() =>
       parseExperienceReplayCommand([

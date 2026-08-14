@@ -3,6 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createBenchmarkRunPlan,
+  createOracleCampaignProtocol,
+  createOracleCorpusQualificationRunPlan,
+  createOracleSeededCampaignRunPlan,
   createOracleSeededRepeatedStudyRunPlan,
   createOracleSeededProductProofRunPlan,
   createProductPathProofRunPlan,
@@ -14,6 +17,7 @@ import {
   type ExperienceReplayExecutionKind,
   type ExperienceReplayCodexAuthMode,
   type ExperienceReplayRunPlan,
+  type OracleCampaignProtocol,
   type ResolvedExperienceReplayConfig
 } from "./core/index.js";
 import {
@@ -139,7 +143,9 @@ export interface PinnedInputsAttestation {
 
 export const attestPinnedInputs = async (
   profile: ResolvedExperienceReplayConfig["profile"],
-  executionKind: ExperienceReplayExecutionKind = "benchmark_profile"
+  executionKind: ExperienceReplayExecutionKind = "benchmark_profile",
+  campaignTaskDigests?: readonly string[],
+  campaignTaskUniverseDigests?: readonly string[]
 ): Promise<PinnedInputsAttestation> => {
   const corpusPath = path.join(
     EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
@@ -187,6 +193,50 @@ export const attestPinnedInputs = async (
       subsetHash: null,
       uvLockHash: sha256(uvLock),
       selectedTasks: []
+    };
+  }
+  if (
+    executionKind === "oracle_seeded_campaign" ||
+    executionKind === "oracle_corpus_qualification"
+  ) {
+    if (profile !== "full")
+      throw new Error("Oracle campaign requires the full profile");
+    if (!campaignTaskDigests?.length)
+      throw new Error("Oracle campaign requires an explicit task shard");
+    if (
+      executionKind === "oracle_seeded_campaign" &&
+      !campaignTaskUniverseDigests?.length
+    )
+      throw new Error("Oracle campaign requires an explicit task universe");
+    const requested = new Set(campaignTaskDigests);
+    if (requested.size !== campaignTaskDigests.length)
+      throw new Error("Oracle campaign task shard must be unique");
+    const selectedTasks = corpus.tasks.filter((task) =>
+      requested.has(task.task_digest)
+    );
+    if (selectedTasks.length !== requested.size)
+      throw new Error("Oracle campaign task shard contains an unknown task");
+    if (executionKind === "oracle_seeded_campaign") {
+      const corpusDigests = new Set(
+        corpus.tasks.map((task) => task.task_digest)
+      );
+      const universe = new Set(campaignTaskUniverseDigests!);
+      if (universe.size !== campaignTaskUniverseDigests!.length)
+        throw new Error("Oracle campaign task universe must be unique");
+      if ([...universe].some((digest) => !corpusDigests.has(digest)))
+        throw new Error(
+          "Oracle campaign task universe contains an unknown task"
+        );
+      if ([...requested].some((digest) => !universe.has(digest)))
+        throw new Error(
+          "Oracle campaign shard contains a task outside the universe"
+        );
+    }
+    return {
+      corpusHash: sha256(corpusText),
+      subsetHash: immutableHash([...campaignTaskDigests].sort()),
+      uvLockHash: sha256(uvLock),
+      selectedTasks
     };
   }
   if (
@@ -290,6 +340,8 @@ export interface PreflightResult {
   recordedRunAttestation: RecordedRunAttestation | null;
   /** Immutable references execution must bind for every selected task. */
   frozenTaskImages: Readonly<Record<string, string>>;
+  campaignProtocol?: Readonly<OracleCampaignProtocol>;
+  campaignShardId?: string;
 }
 
 export interface RecordedRunAttestation {
@@ -570,7 +622,16 @@ export const preflightExperienceReplay = async ({
   codexAuthMode = "api_key",
   oracleBriefSha256,
   oracleCorpusManifestSha256,
-  oracleRepeats
+  oracleCorpusCollectionManifestSha256,
+  oracleCampaignDefinitionSha256,
+  oracleQualificationMaximumAttempts,
+  oracleRepeats,
+  campaignTaskDigests,
+  campaignTaskUniverseDigests,
+  campaignId,
+  campaignShardId,
+  campaignReferenceScore,
+  persistedCampaignProtocol
 }: {
   config: ResolvedExperienceReplayConfig;
   confirmPaidRun?: boolean;
@@ -581,7 +642,16 @@ export const preflightExperienceReplay = async ({
   codexAuthMode?: ExperienceReplayCodexAuthMode;
   oracleBriefSha256?: string;
   oracleCorpusManifestSha256?: string;
+  oracleCorpusCollectionManifestSha256?: string;
+  oracleCampaignDefinitionSha256?: string;
+  oracleQualificationMaximumAttempts?: number;
   oracleRepeats?: number;
+  campaignTaskDigests?: readonly string[];
+  campaignTaskUniverseDigests?: readonly string[];
+  campaignId?: string;
+  campaignShardId?: string;
+  campaignReferenceScore?: number;
+  persistedCampaignProtocol?: Readonly<OracleCampaignProtocol>;
 }): Promise<PreflightResult> => {
   const repositoryRoot = await realpath(EXPERIENCE_REPLAY_REPOSITORY_ROOT);
   if (executionKind !== "benchmark_profile" && config.profile === "smoke") {
@@ -589,11 +659,59 @@ export const preflightExperienceReplay = async ({
       "Product-path proof cannot use the deterministic smoke profile"
     );
   }
-  const pins = await attestPinnedInputs(config.profile, executionKind);
+  const pins = await attestPinnedInputs(
+    config.profile,
+    executionKind,
+    campaignTaskDigests,
+    campaignTaskUniverseDigests ??
+      persistedCampaignProtocol?.taskUniverseDigests
+  );
   const selectedTaskDigests =
     config.profile === "smoke"
       ? [...SMOKE_TASK_DIGESTS]
       : pins.selectedTasks.map((task) => task.task_digest);
+  const campaignProtocol =
+    executionKind === "oracle_seeded_campaign"
+      ? (persistedCampaignProtocol ??
+        createOracleCampaignProtocol({
+          campaignId: campaignId ?? "",
+          campaignSeed: config.seed,
+          taskUniverseDigests: campaignTaskUniverseDigests ?? [],
+          semanticConfigHash: config.semantic_config_hash,
+          memoryAnswerPromptVersion: config.memory_answer.prompt_version,
+          concurrency: config.concurrency,
+          pins: {
+            harborCommit: HARBOR_COMMIT,
+            terminalBenchCommit: TERMINAL_BENCH_COMMIT,
+            corpusHash: pins.corpusHash,
+            uvLockHash: pins.uvLockHash
+          },
+          referenceScore: campaignReferenceScore
+        }))
+      : undefined;
+  if (executionKind === "oracle_seeded_campaign") {
+    const expectedProtocol = createOracleCampaignProtocol({
+      campaignId: campaignProtocol!.campaignId,
+      campaignSeed: config.seed,
+      taskUniverseDigests: campaignProtocol!.taskUniverseDigests,
+      semanticConfigHash: config.semantic_config_hash,
+      memoryAnswerPromptVersion: config.memory_answer.prompt_version,
+      concurrency: config.concurrency,
+      pins: {
+        harborCommit: HARBOR_COMMIT,
+        terminalBenchCommit: TERMINAL_BENCH_COMMIT,
+        corpusHash: pins.corpusHash,
+        uvLockHash: pins.uvLockHash
+      },
+      referenceScore: campaignProtocol!.referenceScore
+    });
+    if (expectedProtocol.protocolHash !== campaignProtocol!.protocolHash)
+      throw new Error(
+        "Persisted campaign protocol differs from current execution"
+      );
+    if (!campaignShardId)
+      throw new Error("Oracle campaign shard identity is required");
+  }
   const runPlan =
     executionKind === "product_path_proof"
       ? createProductPathProofRunPlan(
@@ -619,7 +737,28 @@ export const preflightExperienceReplay = async ({
               oracleRepeats ?? 10,
               codexAuthMode
             )
-          : createBenchmarkRunPlan(config, selectedTaskDigests, codexAuthMode);
+          : executionKind === "oracle_seeded_campaign"
+            ? createOracleSeededCampaignRunPlan(
+                config,
+                selectedTaskDigests,
+                oracleCorpusCollectionManifestSha256 ?? "",
+                oracleCampaignDefinitionSha256 ?? "",
+                campaignProtocol?.protocolHash ?? "",
+                codexAuthMode
+              )
+            : executionKind === "oracle_corpus_qualification"
+              ? createOracleCorpusQualificationRunPlan(
+                  config,
+                  selectedTaskDigests,
+                  oracleCorpusManifestSha256 ?? "",
+                  oracleQualificationMaximumAttempts ?? 0,
+                  codexAuthMode
+                )
+              : createBenchmarkRunPlan(
+                  config,
+                  selectedTaskDigests,
+                  codexAuthMode
+                );
   verifyExperienceReplayRunPlan(runPlan);
   if (config.profile !== "smoke" && !confirmPaidRun) {
     throw new ProductPathPrerequisiteError([
@@ -628,16 +767,21 @@ export const preflightExperienceReplay = async ({
   }
   const estimatedCapacity = estimateRunCapacity({
     sourceAttempts:
-      executionKind === "oracle_seeded_repeated_study"
-        ? 0
-        : runPlan.sourceTaskDigests.length,
+      executionKind === "oracle_corpus_qualification"
+        ? runPlan.codingAgentAttemptCount
+        : executionKind === "oracle_seeded_repeated_study" ||
+            executionKind === "oracle_seeded_campaign"
+          ? 0
+          : runPlan.sourceTaskDigests.length,
     replayAttempts:
       runPlan.replayTargetTaskDigests.length *
       (executionKind === "oracle_seeded_product_proof"
         ? 6
         : executionKind === "oracle_seeded_repeated_study"
           ? 4
-          : 4) *
+          : executionKind === "oracle_seeded_campaign"
+            ? 1
+            : 4) *
       runPlan.replayAttemptsPerCondition,
     maximumTrajectoryBytes: config.admission.maximum_trajectory_bytes,
     estimatedAttemptArtifactBytes:
@@ -723,6 +867,8 @@ export const preflightExperienceReplay = async ({
       capacity,
       recordedModelPathReady: missing.length === 0,
       recordedRunAttestation,
+      ...(campaignProtocol ? { campaignProtocol } : {}),
+      ...(campaignShardId ? { campaignShardId } : {}),
       frozenTaskImages: Object.freeze(
         Object.fromEntries(
           (recordedRunAttestation?.taskImages ?? []).map((image) => [
@@ -741,6 +887,8 @@ export const preflightExperienceReplay = async ({
     capacity,
     recordedModelPathReady: true,
     recordedRunAttestation: null,
+    ...(campaignProtocol ? { campaignProtocol } : {}),
+    ...(campaignShardId ? { campaignShardId } : {}),
     frozenTaskImages: Object.freeze({})
   };
 };

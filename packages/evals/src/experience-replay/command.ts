@@ -6,15 +6,24 @@ export type ExperienceReplayCommand =
       productPathProof: boolean;
       oracleSeededProof: boolean;
       oracleRepeatedStudy: boolean;
+      oracleCampaign: boolean;
+      oracleCorpusQualification: boolean;
       oracleBriefPath: string | null;
       oracleCorpusPath: string | null;
+      oracleCampaignManifestPath: string | null;
+      oracleQualificationManifestPath: string | null;
       oracleRepeats: number | null;
       codexSubscription: boolean;
+    }
+  | {
+      name: "campaign-merge";
+      manifestPath: string;
+      outputDirectory: string;
     }
   | { name: "resume" | "report" | "sanitize"; runDirectory: string };
 
 const usage =
-  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] [--product-path-proof | --oracle-seeded-proof --oracle-brief <file> --oracle-corpus <absolute-dir> | --oracle-repeated-study --oracle-corpus <absolute-dir> [--oracle-repeats <1..100>]] [--codex-subscription] | <resume|report|sanitize> --run <dir>";
+  "Usage: experience-replay <preflight|run> --config <file> [--confirm-paid-run] [--product-path-proof | --oracle-seeded-proof --oracle-brief <file> --oracle-corpus <absolute-dir> | --oracle-repeated-study --oracle-corpus <absolute-dir> [--oracle-repeats <1..100>] | --oracle-qualify --oracle-qualification-manifest <absolute-file> --oracle-corpus <absolute-collection-dir> | --oracle-campaign --oracle-campaign-manifest <absolute-file> --oracle-corpus <absolute-collection-dir>] [--codex-subscription] | campaign-merge --merge-manifest <file> --output <dir> | <resume|report|sanitize> --run <dir>";
 
 export class CommandLineError extends Error {
   override readonly name = "CommandLineError";
@@ -27,7 +36,14 @@ export const parseExperienceReplayCommand = (
   const [name, ...arguments_] = normalized;
   if (
     !name ||
-    !["preflight", "run", "resume", "report", "sanitize"].includes(name)
+    ![
+      "preflight",
+      "run",
+      "campaign-merge",
+      "resume",
+      "report",
+      "sanitize"
+    ].includes(name)
   ) {
     throw new CommandLineError(usage);
   }
@@ -37,6 +53,8 @@ export const parseExperienceReplayCommand = (
   let productPathProof = false;
   let oracleSeededProof = false;
   let oracleRepeatedStudy = false;
+  let oracleCampaign = false;
+  let oracleCorpusQualification = false;
   let codexSubscription = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index] as string;
@@ -64,6 +82,18 @@ export const parseExperienceReplayCommand = (
       oracleRepeatedStudy = true;
       continue;
     }
+    if (argument === "--oracle-campaign") {
+      if (oracleCampaign)
+        throw new CommandLineError("Duplicate --oracle-campaign");
+      oracleCampaign = true;
+      continue;
+    }
+    if (argument === "--oracle-qualify") {
+      if (oracleCorpusQualification)
+        throw new CommandLineError("Duplicate --oracle-qualify");
+      oracleCorpusQualification = true;
+      continue;
+    }
     if (argument === "--codex-subscription") {
       if (codexSubscription)
         throw new CommandLineError("Duplicate --codex-subscription");
@@ -75,7 +105,11 @@ export const parseExperienceReplayCommand = (
       argument !== "--run" &&
       argument !== "--oracle-brief" &&
       argument !== "--oracle-corpus" &&
-      argument !== "--oracle-repeats"
+      argument !== "--oracle-campaign-manifest" &&
+      argument !== "--oracle-qualification-manifest" &&
+      argument !== "--oracle-repeats" &&
+      argument !== "--merge-manifest" &&
+      argument !== "--output"
     ) {
       throw new CommandLineError(`Unknown argument: ${argument}\n${usage}`);
     }
@@ -88,15 +122,55 @@ export const parseExperienceReplayCommand = (
     values.set(argument, value);
     index += 1;
   }
+  if (commandName === "campaign-merge") {
+    if (
+      values.has("--config") ||
+      values.has("--run") ||
+      values.has("--oracle-brief") ||
+      values.has("--oracle-corpus") ||
+      values.has("--oracle-campaign-manifest") ||
+      values.has("--oracle-qualification-manifest") ||
+      values.has("--oracle-repeats") ||
+      confirmPaidRun ||
+      productPathProof ||
+      oracleSeededProof ||
+      oracleRepeatedStudy ||
+      oracleCampaign ||
+      oracleCorpusQualification ||
+      codexSubscription
+    ) {
+      throw new CommandLineError(
+        "campaign-merge accepts only --merge-manifest <file> --output <dir>"
+      );
+    }
+    const manifestPath = values.get("--merge-manifest");
+    const outputDirectory = values.get("--output");
+    if (!manifestPath || !outputDirectory)
+      throw new CommandLineError(
+        "campaign-merge requires --merge-manifest <file> and --output <dir>"
+      );
+    return { name: "campaign-merge", manifestPath, outputDirectory };
+  }
   if (commandName === "preflight" || commandName === "run") {
-    if (values.has("--run"))
-      throw new CommandLineError(`${commandName} does not accept --run`);
+    if (
+      values.has("--run") ||
+      values.has("--merge-manifest") ||
+      values.has("--output")
+    )
+      throw new CommandLineError(
+        `${commandName} received incompatible arguments`
+      );
     const configPath = values.get("--config");
     if (!configPath)
       throw new CommandLineError(`${commandName} requires --config`);
     if (
-      [productPathProof, oracleSeededProof, oracleRepeatedStudy].filter(Boolean)
-        .length > 1
+      [
+        productPathProof,
+        oracleSeededProof,
+        oracleRepeatedStudy,
+        oracleCampaign,
+        oracleCorpusQualification
+      ].filter(Boolean).length > 1
     ) {
       throw new CommandLineError(
         "Product-path proof modes are mutually exclusive"
@@ -110,10 +184,29 @@ export const parseExperienceReplayCommand = (
     }
     const oracleCorpusPath = values.get("--oracle-corpus") ?? null;
     if (
-      (oracleSeededProof || oracleRepeatedStudy) !== Boolean(oracleCorpusPath)
+      (oracleSeededProof ||
+        oracleRepeatedStudy ||
+        oracleCampaign ||
+        oracleCorpusQualification) !== Boolean(oracleCorpusPath)
     ) {
       throw new CommandLineError(
-        "Oracle proof and repeated study modes require exactly one --oracle-corpus <absolute-dir>"
+        "Oracle modes require exactly one --oracle-corpus <absolute-dir>"
+      );
+    }
+    const oracleCampaignManifestPath =
+      values.get("--oracle-campaign-manifest") ?? null;
+    if (oracleCampaign !== Boolean(oracleCampaignManifestPath)) {
+      throw new CommandLineError(
+        "--oracle-campaign requires exactly one --oracle-campaign-manifest <absolute-file>"
+      );
+    }
+    const oracleQualificationManifestPath =
+      values.get("--oracle-qualification-manifest") ?? null;
+    if (
+      oracleCorpusQualification !== Boolean(oracleQualificationManifestPath)
+    ) {
+      throw new CommandLineError(
+        "--oracle-qualify requires exactly one --oracle-qualification-manifest <absolute-file>"
       );
     }
     const oracleRepeatsValue = values.get("--oracle-repeats") ?? null;
@@ -141,8 +234,12 @@ export const parseExperienceReplayCommand = (
       productPathProof,
       oracleSeededProof,
       oracleRepeatedStudy,
+      oracleCampaign,
+      oracleCorpusQualification,
       oracleBriefPath,
       oracleCorpusPath,
+      oracleCampaignManifestPath,
+      oracleQualificationManifestPath,
       oracleRepeats,
       codexSubscription
     };
@@ -153,9 +250,15 @@ export const parseExperienceReplayCommand = (
     productPathProof ||
     oracleSeededProof ||
     oracleRepeatedStudy ||
+    oracleCampaign ||
+    oracleCorpusQualification ||
     values.has("--oracle-brief") ||
     values.has("--oracle-corpus") ||
+    values.has("--oracle-campaign-manifest") ||
+    values.has("--oracle-qualification-manifest") ||
     values.has("--oracle-repeats") ||
+    values.has("--merge-manifest") ||
+    values.has("--output") ||
     codexSubscription
   ) {
     throw new CommandLineError(`${commandName} accepts only --run <dir>`);

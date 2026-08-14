@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseExperienceReplayCommand } from "./command.js";
+import { mergeOracleCampaignRuns } from "./campaign-merge.js";
 import {
   reportExistingRun,
   readExperienceReplayResumeIdentity,
@@ -24,6 +25,17 @@ import {
   type OracleCorpusArtifactIdentity,
   type OracleCorpusArtifactLocation
 } from "./oracle-corpus-artifact.js";
+import {
+  inspectOracleCorpusCollection,
+  loadPersistedOracleCorpusCollection
+} from "./oracle-corpus-collection.js";
+import { inspectOracleCampaignDefinition } from "./oracle-campaign-manifest.js";
+import { inspectOracleQualificationManifest } from "./oracle-qualification-manifest.js";
+import { qualifyOracleCorpusCollection } from "./oracle-corpus-qualifier.js";
+import type {
+  OracleCampaignProtocol,
+  OracleCampaignShardManifest
+} from "./core/index.js";
 
 const oracleArtifactLocation = (
   corpusDirectory: string,
@@ -32,10 +44,20 @@ const oracleArtifactLocation = (
 
 const oracleArtifactIdentity = (
   result: Awaited<ReturnType<typeof preflightExperienceReplay>>,
-  corpus?: OracleCorpusArtifactEntry
+  corpus?: OracleCorpusArtifactEntry,
+  taskDigest?: string
 ): OracleCorpusArtifactIdentity => {
-  const task = result.pins.selectedTasks[0];
-  const image = result.recordedRunAttestation?.taskImages[0];
+  const selectedDigest = taskDigest ?? corpus?.identity.task.digest;
+  const task = selectedDigest
+    ? result.pins.selectedTasks.find(
+        (candidate) => candidate.task_digest === selectedDigest
+      )
+    : result.pins.selectedTasks[0];
+  const image = selectedDigest
+    ? result.recordedRunAttestation?.taskImages.find(
+        (candidate) => candidate.taskDigest === selectedDigest
+      )
+    : result.recordedRunAttestation?.taskImages[0];
   if (!task || !image) {
     throw new Error(
       "Oracle corpus requires one recorded task-image attestation"
@@ -57,6 +79,7 @@ const oracleArtifactIdentity = (
 };
 
 export * from "./artifacts.js";
+export * from "./campaign-merge.js";
 export * from "./command.js";
 export * from "./coordinator.js";
 export * from "./cost-admission.js";
@@ -64,6 +87,10 @@ export * from "./journal.js";
 export * from "./local-product-adapter.js";
 export * from "./oracle-corpus.js";
 export * from "./oracle-corpus-artifact.js";
+export * from "./oracle-corpus-collection.js";
+export * from "./oracle-campaign-manifest.js";
+export * from "./oracle-qualification-manifest.js";
+export * from "./oracle-corpus-qualifier.js";
 export * from "./preflight.js";
 export * from "./recorded-preflight-runtime.js";
 export * from "./replay-scheduler.js";
@@ -74,6 +101,24 @@ export const runExperienceReplayCli = async (
 ): Promise<unknown> => {
   const command = parseExperienceReplayCommand(argv);
   switch (command.name) {
+    case "campaign-merge": {
+      const manifest = JSON.parse(
+        await readFile(command.manifestPath, "utf8")
+      ) as { run_directories?: unknown };
+      if (
+        !Array.isArray(manifest.run_directories) ||
+        manifest.run_directories.some((value) => typeof value !== "string")
+      ) {
+        throw new Error(
+          "Campaign merge manifest requires a run_directories string array"
+        );
+      }
+      return mergeOracleCampaignRuns({
+        runDirectories: manifest.run_directories as string[],
+        outputDirectory: command.outputDirectory,
+        repositoryRoot: EXPERIENCE_REPLAY_REPOSITORY_ROOT
+      });
+    }
     case "preflight": {
       const config = await loadExperienceReplayConfig(command.configPath);
       const oracleBrief = command.oracleBriefPath
@@ -93,6 +138,37 @@ export const runExperienceReplayCli = async (
             )
           )
         : undefined;
+      const inspectedCollection = command.oracleCampaign
+        ? await inspectOracleCorpusCollection({
+            corpusRoot: command.oracleCorpusPath!,
+            repositoryRoot: EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          })
+        : undefined;
+      const campaignDefinition = command.oracleCampaign
+        ? await inspectOracleCampaignDefinition({
+            manifestPath: command.oracleCampaignManifestPath!,
+            repositoryRoot: EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          })
+        : undefined;
+      const qualificationManifest = command.oracleCorpusQualification
+        ? await inspectOracleQualificationManifest({
+            manifestPath: command.oracleQualificationManifestPath!,
+            repositoryRoot: EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          })
+        : undefined;
+      if (
+        inspectedCollection &&
+        campaignDefinition &&
+        (inspectedCollection.entries.size !==
+          campaignDefinition.shardTaskDigests.length ||
+          campaignDefinition.shardTaskDigests.some(
+            (digest) => !inspectedCollection.entries.has(digest)
+          ))
+      ) {
+        throw new Error(
+          "Oracle campaign corpus collection must exactly cover the declared shard"
+        );
+      }
       const recorded =
         config.profile === "smoke"
           ? null
@@ -101,7 +177,13 @@ export const runExperienceReplayCli = async (
               process.env,
               {},
               codexAuthMode,
-              inspectedCorpus ? [inspectedCorpus.identity.taskImage] : undefined
+              inspectedCollection
+                ? [...inspectedCollection.entries.values()].map(
+                    (entry) => entry.identity.taskImage
+                  )
+                : inspectedCorpus
+                  ? [inspectedCorpus.identity.taskImage]
+                  : undefined
             );
       const result = await preflightExperienceReplay({
         config,
@@ -110,11 +192,38 @@ export const runExperienceReplayCli = async (
           ? "oracle_seeded_product_proof"
           : command.oracleRepeatedStudy
             ? "oracle_seeded_repeated_study"
-            : command.productPathProof
-              ? "product_path_proof"
-              : "benchmark_profile",
+            : command.oracleCampaign
+              ? "oracle_seeded_campaign"
+              : command.oracleCorpusQualification
+                ? "oracle_corpus_qualification"
+                : command.productPathProof
+                  ? "product_path_proof"
+                  : "benchmark_profile",
         oracleBriefSha256,
         oracleCorpusManifestSha256: inspectedCorpus?.attestationSha256,
+        ...(qualificationManifest
+          ? { oracleCorpusManifestSha256: qualificationManifest.manifestSha256 }
+          : {}),
+        oracleCorpusCollectionManifestSha256:
+          inspectedCollection?.manifest.manifestSha256,
+        oracleCampaignDefinitionSha256: campaignDefinition?.manifestSha256,
+        campaignTaskDigests: campaignDefinition?.shardTaskDigests,
+        ...(qualificationManifest
+          ? {
+              campaignTaskDigests: qualificationManifest.tasks.map(
+                (task) => task.taskDigest
+              ),
+              oracleQualificationMaximumAttempts:
+                qualificationManifest.tasks.reduce(
+                  (sum, task) => sum + task.maximumAttempts,
+                  0
+                )
+            }
+          : {}),
+        campaignTaskUniverseDigests: campaignDefinition?.taskUniverseDigests,
+        campaignId: campaignDefinition?.campaignId,
+        campaignShardId: campaignDefinition?.shardId,
+        campaignReferenceScore: campaignDefinition?.referenceScore,
         ...(command.oracleRepeats === null
           ? {}
           : { oracleRepeats: command.oracleRepeats }),
@@ -135,6 +244,17 @@ export const runExperienceReplayCli = async (
           ),
           oracleArtifactIdentity(result, inspectedCorpus)
         );
+      }
+      if (inspectedCollection) {
+        for (const entry of inspectedCollection.entries.values()) {
+          await loadOracleCorpusArtifact(
+            oracleArtifactLocation(
+              inspectedCollection.directories.get(entry.identity.task.digest)!,
+              EXPERIENCE_REPLAY_REPOSITORY_ROOT
+            ),
+            oracleArtifactIdentity(result, entry, entry.identity.task.digest)
+          );
+        }
       }
       return {
         executionKind: result.runPlan.kind,
@@ -170,6 +290,37 @@ export const runExperienceReplayCli = async (
       const inspectedCorpus = command.oracleRepeatedStudy
         ? await inspectOracleCorpusArtifact(artifactLocation!)
         : undefined;
+      const inspectedCollection = command.oracleCampaign
+        ? await inspectOracleCorpusCollection({
+            corpusRoot: command.oracleCorpusPath!,
+            repositoryRoot: EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          })
+        : undefined;
+      const campaignDefinition = command.oracleCampaign
+        ? await inspectOracleCampaignDefinition({
+            manifestPath: command.oracleCampaignManifestPath!,
+            repositoryRoot: EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          })
+        : undefined;
+      const qualificationManifest = command.oracleCorpusQualification
+        ? await inspectOracleQualificationManifest({
+            manifestPath: command.oracleQualificationManifestPath!,
+            repositoryRoot: EXPERIENCE_REPLAY_REPOSITORY_ROOT
+          })
+        : undefined;
+      if (
+        inspectedCollection &&
+        campaignDefinition &&
+        (inspectedCollection.entries.size !==
+          campaignDefinition.shardTaskDigests.length ||
+          campaignDefinition.shardTaskDigests.some(
+            (digest) => !inspectedCollection.entries.has(digest)
+          ))
+      ) {
+        throw new Error(
+          "Oracle campaign corpus collection must exactly cover the declared shard"
+        );
+      }
       const recorded =
         config.profile === "smoke"
           ? null
@@ -178,7 +329,13 @@ export const runExperienceReplayCli = async (
               process.env,
               {},
               codexAuthMode,
-              inspectedCorpus ? [inspectedCorpus.identity.taskImage] : undefined
+              inspectedCollection
+                ? [...inspectedCollection.entries.values()].map(
+                    (entry) => entry.identity.taskImage
+                  )
+                : inspectedCorpus
+                  ? [inspectedCorpus.identity.taskImage]
+                  : undefined
             );
       const result = await preflightExperienceReplay({
         config,
@@ -187,11 +344,38 @@ export const runExperienceReplayCli = async (
           ? "oracle_seeded_product_proof"
           : command.oracleRepeatedStudy
             ? "oracle_seeded_repeated_study"
-            : command.productPathProof
-              ? "product_path_proof"
-              : "benchmark_profile",
+            : command.oracleCampaign
+              ? "oracle_seeded_campaign"
+              : command.oracleCorpusQualification
+                ? "oracle_corpus_qualification"
+                : command.productPathProof
+                  ? "product_path_proof"
+                  : "benchmark_profile",
         oracleBriefSha256,
         oracleCorpusManifestSha256: inspectedCorpus?.attestationSha256,
+        ...(qualificationManifest
+          ? { oracleCorpusManifestSha256: qualificationManifest.manifestSha256 }
+          : {}),
+        oracleCorpusCollectionManifestSha256:
+          inspectedCollection?.manifest.manifestSha256,
+        oracleCampaignDefinitionSha256: campaignDefinition?.manifestSha256,
+        campaignTaskDigests: campaignDefinition?.shardTaskDigests,
+        ...(qualificationManifest
+          ? {
+              campaignTaskDigests: qualificationManifest.tasks.map(
+                (task) => task.taskDigest
+              ),
+              oracleQualificationMaximumAttempts:
+                qualificationManifest.tasks.reduce(
+                  (sum, task) => sum + task.maximumAttempts,
+                  0
+                )
+            }
+          : {}),
+        campaignTaskUniverseDigests: campaignDefinition?.taskUniverseDigests,
+        campaignId: campaignDefinition?.campaignId,
+        campaignShardId: campaignDefinition?.shardId,
+        campaignReferenceScore: campaignDefinition?.referenceScore,
         ...(command.oracleRepeats === null
           ? {}
           : { oracleRepeats: command.oracleRepeats }),
@@ -211,6 +395,31 @@ export const runExperienceReplayCli = async (
               oracleArtifactIdentity(result, inspectedCorpus)
             )
           : undefined;
+      const oracleCorpusCollection = inspectedCollection
+        ? new Map(
+            await Promise.all(
+              [...inspectedCollection.entries.values()].map(
+                async (entry) =>
+                  [
+                    entry.identity.task.digest,
+                    await loadOracleCorpusArtifact(
+                      oracleArtifactLocation(
+                        inspectedCollection.directories.get(
+                          entry.identity.task.digest
+                        )!,
+                        EXPERIENCE_REPLAY_REPOSITORY_ROOT
+                      ),
+                      oracleArtifactIdentity(
+                        result,
+                        entry,
+                        entry.identity.task.digest
+                      )
+                    )
+                  ] as const
+              )
+            )
+          )
+        : undefined;
       const dependencies = createCliExperienceReplayDependencies(
         config,
         process.env,
@@ -219,13 +428,26 @@ export const runExperienceReplayCli = async (
         codexAuthMode,
         result.runPlan.kind === "product_path_proof" ||
           result.runPlan.kind === "oracle_seeded_product_proof" ||
-          result.runPlan.kind === "oracle_seeded_repeated_study"
+          result.runPlan.kind === "oracle_seeded_repeated_study" ||
+          result.runPlan.kind === "oracle_seeded_campaign" ||
+          result.runPlan.kind === "oracle_corpus_qualification"
       );
+      if (qualificationManifest) {
+        return qualifyOracleCorpusCollection({
+          preflight: result,
+          dependencies,
+          manifest: qualificationManifest,
+          corpusDirectory: command.oracleCorpusPath!
+        });
+      }
       return runExperienceReplay(config, {
         preflight: result,
         dependencies,
         ...(oracleBrief ? { oracleBrief } : {}),
         ...(oracleCorpus ? { oracleCorpusArtifactEntry: oracleCorpus } : {}),
+        ...(oracleCorpusCollection
+          ? { oracleCorpusArtifactEntries: oracleCorpusCollection }
+          : {}),
         ...(command.oracleSeededProof && artifactLocation
           ? {
               oracleCorpusArtifactTarget: {
@@ -240,6 +462,24 @@ export const runExperienceReplayCli = async (
       const identity = await readExperienceReplayResumeIdentity(
         command.runDirectory
       );
+      const persistedCampaignProtocol =
+        identity.runPlan.kind === "oracle_seeded_campaign"
+          ? (JSON.parse(
+              await readFile(
+                path.join(identity.runRoot, "campaign/protocol.json"),
+                "utf8"
+              )
+            ) as OracleCampaignProtocol)
+          : undefined;
+      const persistedCampaignShard =
+        identity.runPlan.kind === "oracle_seeded_campaign"
+          ? (JSON.parse(
+              await readFile(
+                path.join(identity.runRoot, "campaign/shard.json"),
+                "utf8"
+              )
+            ) as OracleCampaignShardManifest)
+          : undefined;
       const recorded =
         identity.config.profile === "smoke"
           ? null
@@ -256,6 +496,16 @@ export const runExperienceReplayCli = async (
         executionKind: identity.runPlan.kind,
         oracleBriefSha256: identity.runPlan.oracleBriefSha256,
         oracleCorpusManifestSha256: identity.runPlan.oracleCorpusManifestSha256,
+        oracleCorpusCollectionManifestSha256:
+          identity.runPlan.oracleCorpusCollectionManifestSha256,
+        oracleCampaignDefinitionSha256:
+          identity.runPlan.oracleCampaignDefinitionSha256,
+        campaignTaskDigests:
+          identity.runPlan.kind === "oracle_seeded_campaign"
+            ? identity.runPlan.replayTargetTaskDigests
+            : undefined,
+        campaignShardId: persistedCampaignShard?.shardId,
+        persistedCampaignProtocol,
         codexAuthMode: identity.runPlan.codexAuthMode,
         requireRunnable: true,
         ...(recorded
@@ -273,7 +523,8 @@ export const runExperienceReplayCli = async (
         identity.runPlan.codexAuthMode,
         identity.runPlan.kind === "product_path_proof" ||
           identity.runPlan.kind === "oracle_seeded_product_proof" ||
-          identity.runPlan.kind === "oracle_seeded_repeated_study"
+          identity.runPlan.kind === "oracle_seeded_repeated_study" ||
+          identity.runPlan.kind === "oracle_seeded_campaign"
       );
       const resumedCorpusLocation = oracleArtifactLocation(
         path.join(identity.runRoot, "oracle-private"),
@@ -288,12 +539,19 @@ export const runExperienceReplayCli = async (
             oracleArtifactIdentity(result, inspectedResumedCorpus)
           )
         : undefined;
+      const resumedOracleCorpusCollection =
+        identity.runPlan.kind === "oracle_seeded_campaign"
+          ? await loadPersistedOracleCorpusCollection(identity.runRoot)
+          : undefined;
       return {
         reportPath: await resumeExperienceReplay(identity.runRoot, {
           preflight: result,
           dependencies,
           ...(resumedOracleCorpus
             ? { oracleCorpusArtifactEntry: resumedOracleCorpus }
+            : {}),
+          ...(resumedOracleCorpusCollection
+            ? { oracleCorpusArtifactEntries: resumedOracleCorpusCollection }
             : {})
         })
       };

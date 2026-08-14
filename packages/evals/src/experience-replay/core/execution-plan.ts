@@ -5,7 +5,9 @@ export type ExperienceReplayExecutionKind =
   | "benchmark_profile"
   | "product_path_proof"
   | "oracle_seeded_product_proof"
-  | "oracle_seeded_repeated_study";
+  | "oracle_seeded_repeated_study"
+  | "oracle_corpus_qualification"
+  | "oracle_seeded_campaign";
 
 export type ExperienceReplayCodexAuthMode = "api_key" | "subscription";
 
@@ -26,6 +28,9 @@ export interface ExperienceReplayRunPlan {
   terminalBenchEstimate: boolean;
   oracleBriefSha256?: string;
   oracleCorpusManifestSha256?: string;
+  oracleCorpusCollectionManifestSha256?: string;
+  oracleCampaignDefinitionSha256?: string;
+  campaignProtocolHash?: string;
   planHash: string;
 }
 
@@ -80,7 +85,7 @@ const assertLunaHigh = (config: ResolvedExperienceReplayConfig): void => {
     )
   ) {
     throw new Error(
-      "Full-profile oracle repeated study requires GPT-5.6 Luna with high reasoning for every AI Client workflow"
+      "Full-profile oracle execution requires GPT-5.6 Luna with high reasoning for every AI Client workflow"
     );
   }
   if (
@@ -88,9 +93,76 @@ const assertLunaHigh = (config: ResolvedExperienceReplayConfig): void => {
     config.trajectory_judge.model.reasoning_effort !== "medium"
   ) {
     throw new Error(
-      "Full-profile oracle repeated study requires GPT-5.6 Luna with medium reasoning for trajectory judging"
+      "Full-profile oracle execution requires GPT-5.6 Luna with medium reasoning for trajectory judging"
     );
   }
+};
+
+export const createOracleSeededCampaignRunPlan = (
+  config: ResolvedExperienceReplayConfig,
+  taskDigests: readonly string[],
+  oracleCorpusCollectionManifestSha256: string,
+  oracleCampaignDefinitionSha256: string,
+  campaignProtocolHash: string,
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key"
+): Readonly<ExperienceReplayRunPlan> => {
+  if (config.profile !== "full")
+    throw new Error("Oracle campaign requires the full profile");
+  assertLunaHigh(config);
+  assertUnique(taskDigests, "Oracle campaign task digests");
+  if (taskDigests.length < 1)
+    throw new Error("Oracle campaign requires at least one task");
+  if (!/^[a-f0-9]{64}$/u.test(oracleCorpusCollectionManifestSha256))
+    throw new Error("Oracle campaign corpus collection digest is invalid");
+  if (!/^[a-f0-9]{64}$/u.test(oracleCampaignDefinitionSha256))
+    throw new Error("Oracle campaign definition digest is invalid");
+  if (!/^[a-f0-9]{64}$/u.test(campaignProtocolHash))
+    throw new Error("Oracle campaign protocol digest is invalid");
+  return buildPlan({
+    version: 1,
+    kind: "oracle_seeded_campaign",
+    codexAuthMode,
+    profile: config.profile,
+    sourceTaskDigests: [...taskDigests],
+    replayTargetTaskDigests: [...taskDigests],
+    replayAttemptsPerCondition: 1,
+    codingAgentAttemptCount: taskDigests.length,
+    terminalBenchEstimate: false,
+    oracleCorpusCollectionManifestSha256,
+    oracleCampaignDefinitionSha256,
+    campaignProtocolHash
+  });
+};
+
+export const createOracleCorpusQualificationRunPlan = (
+  config: ResolvedExperienceReplayConfig,
+  taskDigests: readonly string[],
+  qualificationManifestSha256: string,
+  maximumAttempts: number,
+  codexAuthMode: ExperienceReplayCodexAuthMode = "api_key"
+): Readonly<ExperienceReplayRunPlan> => {
+  if (config.profile !== "full")
+    throw new Error("Oracle corpus qualification requires the full profile");
+  assertLunaHigh(config);
+  assertUnique(taskDigests, "Oracle corpus qualification task digests");
+  if (taskDigests.length < 1)
+    throw new Error("Oracle corpus qualification requires at least one task");
+  if (!/^[a-f0-9]{64}$/u.test(qualificationManifestSha256))
+    throw new Error("Oracle corpus qualification manifest digest is invalid");
+  if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1)
+    throw new Error("Oracle corpus qualification attempt count is invalid");
+  return buildPlan({
+    version: 1,
+    kind: "oracle_corpus_qualification",
+    codexAuthMode,
+    profile: config.profile,
+    sourceTaskDigests: [...taskDigests],
+    replayTargetTaskDigests: [],
+    replayAttemptsPerCondition: 0,
+    codingAgentAttemptCount: maximumAttempts,
+    terminalBenchEstimate: false,
+    oracleCorpusManifestSha256: qualificationManifestSha256
+  });
 };
 
 export const createBenchmarkRunPlan = (
@@ -235,7 +307,9 @@ export const verifyExperienceReplayRunPlan = (
     plan.kind !== "benchmark_profile" &&
     plan.kind !== "product_path_proof" &&
     plan.kind !== "oracle_seeded_product_proof" &&
-    plan.kind !== "oracle_seeded_repeated_study"
+    plan.kind !== "oracle_seeded_repeated_study" &&
+    plan.kind !== "oracle_corpus_qualification" &&
+    plan.kind !== "oracle_seeded_campaign"
   ) {
     throw new Error("Run-plan execution kind is invalid");
   }
@@ -246,7 +320,8 @@ export const verifyExperienceReplayRunPlan = (
     throw new Error("Run-plan replay target is not a source task");
   }
   const expectedAttempts =
-    (plan.kind === "oracle_seeded_repeated_study"
+    (plan.kind === "oracle_seeded_repeated_study" ||
+    plan.kind === "oracle_seeded_campaign"
       ? 0
       : plan.sourceTaskDigests.length) +
     plan.replayTargetTaskDigests.length *
@@ -254,10 +329,27 @@ export const verifyExperienceReplayRunPlan = (
         ? 6
         : plan.kind === "oracle_seeded_repeated_study"
           ? 4
-          : 4) *
+          : plan.kind === "oracle_seeded_campaign"
+            ? 1
+            : 4) *
       plan.replayAttemptsPerCondition;
-  if (plan.codingAgentAttemptCount !== expectedAttempts) {
+  if (
+    plan.kind !== "oracle_corpus_qualification" &&
+    plan.codingAgentAttemptCount !== expectedAttempts
+  ) {
     throw new Error("Run-plan coding-attempt count is inconsistent");
+  }
+  if (
+    plan.kind === "oracle_corpus_qualification" &&
+    (plan.sourceTaskDigests.length < 1 ||
+      plan.replayTargetTaskDigests.length !== 0 ||
+      plan.replayAttemptsPerCondition !== 0 ||
+      plan.codingAgentAttemptCount < plan.sourceTaskDigests.length ||
+      plan.terminalBenchEstimate ||
+      !plan.oracleCorpusManifestSha256 ||
+      !/^[a-f0-9]{64}$/u.test(plan.oracleCorpusManifestSha256))
+  ) {
+    throw new Error("Oracle corpus qualification run plan is invalid");
   }
   if (
     plan.kind === "product_path_proof" &&
@@ -294,5 +386,22 @@ export const verifyExperienceReplayRunPlan = (
       plan.oracleBriefSha256 !== undefined)
   ) {
     throw new Error("Oracle repeated study run plan is invalid");
+  }
+  if (
+    plan.kind === "oracle_seeded_campaign" &&
+    (plan.sourceTaskDigests.length < 1 ||
+      plan.replayTargetTaskDigests.length !== plan.sourceTaskDigests.length ||
+      plan.replayAttemptsPerCondition !== 1 ||
+      plan.terminalBenchEstimate ||
+      !plan.oracleCorpusCollectionManifestSha256 ||
+      !/^[a-f0-9]{64}$/u.test(plan.oracleCorpusCollectionManifestSha256) ||
+      !plan.oracleCampaignDefinitionSha256 ||
+      !/^[a-f0-9]{64}$/u.test(plan.oracleCampaignDefinitionSha256) ||
+      !plan.campaignProtocolHash ||
+      !/^[a-f0-9]{64}$/u.test(plan.campaignProtocolHash) ||
+      plan.oracleBriefSha256 !== undefined ||
+      plan.oracleCorpusManifestSha256 !== undefined)
+  ) {
+    throw new Error("Oracle campaign run plan is invalid");
   }
 };

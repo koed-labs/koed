@@ -7,6 +7,9 @@ import {
   createProductPathProofRunPlan,
   createOracleSeededProductProofRunPlan,
   createOracleSeededRepeatedStudyRunPlan,
+  createOracleSeededCampaignRunPlan,
+  createOracleCorpusQualificationRunPlan,
+  createOracleCampaignProtocol,
   conditionUsesKoed,
   immutableHash,
   resolveExperienceReplayConfig,
@@ -24,6 +27,10 @@ import type { LocalProductTemplateAttestation } from "./local-product-adapter.js
 import { preflightExperienceReplay } from "./preflight.js";
 import type { ReplayTelemetryMergeInput } from "./telemetry.js";
 import { inspectOracleCorpusArtifact } from "./oracle-corpus-artifact.js";
+import { createOracleCorpusCollectionManifest } from "./oracle-corpus-collection.js";
+import { mergeOracleCampaignRuns } from "./campaign-merge.js";
+import { qualifyOracleCorpusCollection } from "./oracle-corpus-qualifier.js";
+import { parseOracleQualificationManifest } from "./oracle-qualification-manifest.js";
 
 const productAttestation = {
   schema: "koed-experience-replay-local-product-template-v1",
@@ -303,6 +310,31 @@ const productProofConfig = (output: string) => {
     },
     paid_cost_stop_usd: 1,
     concurrency: 1
+  });
+};
+
+const campaignConfig = (output: string) => {
+  const quick = productProofConfig(output);
+  const {
+    task_count: _taskCount,
+    replay_attempts_per_condition: _replays,
+    coding_agent_attempt_count: _attempts,
+    maximum_top_level_attempt_cost_usd: _topLevelCost,
+    maximum_judge_call_cost_usd: _judgeCost,
+    maximum_concurrent_overshoot_usd: _overshoot,
+    semantic_config_hash: _semanticHash,
+    ...base
+  } = quick;
+  const high = { id: "gpt-5.6-luna", reasoning_effort: "high" as const };
+  return resolveExperienceReplayConfig({
+    ...base,
+    profile: "full",
+    output_dir: output,
+    coding_agent: high,
+    memory_answer: { ...quick.memory_answer, model: high },
+    lcm_summary: { ...quick.lcm_summary, model: high },
+    session_title: { ...quick.session_title, model: high },
+    concurrency: 2
   });
 };
 
@@ -1107,6 +1139,129 @@ describe("unified experience replay coordinator", () => {
         )
       )
     ).toEqual(corpusArtifact);
+
+    const campaign = campaignConfig(path.join(root, "campaign-run"));
+    const collectionManifest = createOracleCorpusCollectionManifest([
+      corpusArtifact
+    ]);
+    const campaignProtocol = createOracleCampaignProtocol({
+      campaignId: "coordinator-smoke",
+      campaignSeed: campaign.seed,
+      taskUniverseDigests: [task.task_digest],
+      semanticConfigHash: campaign.semantic_config_hash,
+      memoryAnswerPromptVersion: campaign.memory_answer.prompt_version,
+      concurrency: campaign.concurrency,
+      pins: {
+        harborCommit: "64afbbcb62165950301e1a6407c729aa26d844ff",
+        terminalBenchCommit: "2b0442c3c583b710ca8da14c8e601b99f2f1f244",
+        corpusHash: base.pins.corpusHash,
+        uvLockHash: base.pins.uvLockHash
+      }
+    });
+    const campaignPlan = createOracleSeededCampaignRunPlan(
+      campaign,
+      [task.task_digest],
+      collectionManifest.manifestSha256,
+      "d".repeat(64),
+      campaignProtocol.protocolHash
+    );
+    const campaignEvents: string[] = [];
+    const campaignResult = await runExperienceReplay(campaign, {
+      preflight: {
+        ...base,
+        config: campaign,
+        runPlan: campaignPlan,
+        campaignProtocol,
+        campaignShardId: "smoke-shard",
+        pins: { ...base.pins, selectedTasks: [task] }
+      },
+      dependencies: fakeDependencies(campaignEvents),
+      oracleCorpusArtifactEntries: new Map([[task.task_digest, corpusArtifact]])
+    });
+    expect(campaignResult.replayAttemptCount).toBe(1);
+    expect(
+      campaignEvents.filter((event) => event.startsWith("source:"))
+    ).toHaveLength(0);
+    expect(
+      campaignEvents.filter((event) => event.startsWith("template:"))
+    ).toHaveLength(1);
+    expect(
+      campaignEvents.filter((event) => event.startsWith("replay:"))
+    ).toHaveLength(1);
+    const progress = JSON.parse(
+      await readFile(
+        path.join(campaign.output_dir, "campaign/progress/0001.json"),
+        "utf8"
+      )
+    ) as { completedEvaluations: number; passedTasks: number; score: number };
+    expect(progress).toMatchObject({
+      completedEvaluations: 1,
+      passedTasks: 1,
+      score: 1
+    });
+    const merged = await mergeOracleCampaignRuns({
+      runDirectories: [campaign.output_dir],
+      outputDirectory: path.join(root, "campaign-merged"),
+      repositoryRoot,
+      generatedAt: "2026-08-14T12:00:00.000Z"
+    });
+    expect(merged.progress).toMatchObject({
+      selectedTasks: 1,
+      completedEvaluations: 1,
+      passedTasks: 1,
+      score: 1
+    });
+
+    const qualification = campaignConfig(path.join(root, "qualification-run"));
+    const qualificationManifest = parseOracleQualificationManifest({
+      schema_version: "koed-oracle-qualification-manifest-v1",
+      tasks: [
+        {
+          task_digest: task.task_digest,
+          oracle_brief: brief,
+          maximum_attempts: 2
+        }
+      ]
+    });
+    const qualificationPlan = createOracleCorpusQualificationRunPlan(
+      qualification,
+      [task.task_digest],
+      qualificationManifest.manifestSha256,
+      2
+    );
+    const qualificationCorpus = path.join(root, "qualified-corpora");
+    const qualified = await qualifyOracleCorpusCollection({
+      preflight: {
+        ...base,
+        config: qualification,
+        runPlan: qualificationPlan,
+        pins: { ...base.pins, selectedTasks: [task] },
+        recordedRunAttestation: {
+          taskImages: [corpusIdentity.taskImage],
+          hostCodex: base.recordedRunAttestation?.hostCodex as never,
+          containerCodex: base.recordedRunAttestation?.containerCodex as never
+        }
+      },
+      dependencies: fakeDependencies([]),
+      manifest: qualificationManifest,
+      corpusDirectory: qualificationCorpus
+    });
+    expect(qualified.results).toEqual([
+      expect.objectContaining({
+        taskDigest: task.task_digest,
+        status: "qualified",
+        attempts: 1
+      })
+    ]);
+    const qualifiedCollection =
+      await import("./oracle-corpus-collection.js").then(
+        ({ inspectOracleCorpusCollection }) =>
+          inspectOracleCorpusCollection({
+            corpusRoot: qualificationCorpus,
+            repositoryRoot
+          })
+      );
+    expect(qualifiedCollection.entries.has(task.task_digest)).toBe(true);
   }, 30_000);
 
   it("rejects database clone reuse and revokes through the Harbor lifecycle", async () => {

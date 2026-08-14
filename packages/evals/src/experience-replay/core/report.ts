@@ -86,6 +86,9 @@ const scopeFor = (
     const repeats = attemptedReplayCount / (taskCount * 4);
     return `One-task, four-arm, ${repeats}-repeat oracle-seeded calibration study; estimates stochastic behavior for this task only, not leaderboard or task-population performance.`;
   }
+  if (executionKind === "oracle_seeded_campaign") {
+    return `Treatment-only, one-attempt-per-task Luna-high experience-reuse challenge over ${taskCount} privately qualified Terminal-Bench 3.0 task corpora; not an official leaderboard submission or a causal no-Memory comparison.`;
+  }
   switch (profile) {
     case "smoke":
       return "Synthetic orchestration check; no Terminal-Bench estimate.";
@@ -175,13 +178,15 @@ export const createMachineReport = (
     report_version: 1,
     benchmark_kind:
       input.executionKind === "oracle_seeded_product_proof" ||
-      input.executionKind === "oracle_seeded_repeated_study"
+      input.executionKind === "oracle_seeded_repeated_study" ||
+      input.executionKind === "oracle_seeded_campaign"
         ? "koed_oracle_seeded_experience_reuse"
         : "koed_experience_replay",
     standard_leaderboard_comparable: false,
     disclosure:
       input.executionKind === "oracle_seeded_product_proof" ||
-      input.executionKind === "oracle_seeded_repeated_study"
+      input.executionKind === "oracle_seeded_repeated_study" ||
+      input.executionKind === "oracle_seeded_campaign"
         ? ORACLE_SCIENTIFIC_DISCLOSURE
         : SCIENTIFIC_DISCLOSURE,
     scope: scopeFor(

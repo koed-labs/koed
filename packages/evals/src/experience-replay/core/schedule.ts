@@ -22,6 +22,7 @@ export const ORACLE_REPEATED_CONDITIONS = [
   "relevant_guidance",
   "empty"
 ] as const;
+export const ORACLE_CAMPAIGN_CONDITIONS = ["relevant_full"] as const;
 export type NaturalReplayCondition = (typeof NATURAL_CONDITIONS)[number];
 export type OracleReplayCondition = (typeof ORACLE_CONDITIONS)[number];
 export type OracleRepeatedReplayCondition =
@@ -53,7 +54,8 @@ export const ORACLE_REPEATED_ROWS = ["ABDC", "BCAD", "CDBA", "DACB"] as const;
 export type ReplayConditionSet =
   | readonly NaturalReplayCondition[]
   | readonly OracleReplayCondition[]
-  | readonly OracleRepeatedReplayCondition[];
+  | readonly OracleRepeatedReplayCondition[]
+  | readonly (typeof ORACLE_CAMPAIGN_CONDITIONS)[number][];
 
 export interface ScheduleEntry<
   Condition extends ExperienceReplayCondition = ReplayCondition
@@ -63,7 +65,8 @@ export interface ScheduleEntry<
   sequenceRow:
     | (typeof WILLIAMS_ROWS)[number]
     | (typeof ORACLE_WILLIAMS_ROWS)[number]
-    | (typeof ORACLE_REPEATED_ROWS)[number];
+    | (typeof ORACLE_REPEATED_ROWS)[number]
+    | "A";
   conditions: readonly Condition[];
 }
 
@@ -109,8 +112,11 @@ const designFor = (conditions: readonly ExperienceReplayCondition[]) => {
       rows: ORACLE_REPEATED_ROWS
     } as const;
   }
+  if (sameConditions(conditions, ORACLE_CAMPAIGN_CONDITIONS)) {
+    return { conditions: ORACLE_CAMPAIGN_CONDITIONS, rows: ["A"] } as const;
+  }
   throw new Error(
-    "Replay conditions must be the natural, oracle proof, or oracle repeated condition set"
+    "Replay conditions must be the natural, oracle proof, oracle repeated, or oracle campaign condition set"
   );
 };
 
@@ -204,7 +210,8 @@ export const verifyReplaySchedule = <
   const supportedConditions = [
     NATURAL_CONDITIONS,
     ORACLE_CONDITIONS,
-    ORACLE_REPEATED_CONDITIONS
+    ORACLE_REPEATED_CONDITIONS,
+    ORACLE_CAMPAIGN_CONDITIONS
   ].find(
     (conditions) =>
       assigned.length === conditions.length &&
@@ -220,7 +227,9 @@ export const verifyReplaySchedule = <
       ? WILLIAMS_ROWS
       : supportedConditions === ORACLE_CONDITIONS
         ? ORACLE_WILLIAMS_ROWS
-        : ORACLE_REPEATED_ROWS;
+        : supportedConditions === ORACLE_REPEATED_CONDITIONS
+          ? ORACLE_REPEATED_ROWS
+          : (["A"] as const);
   for (const entry of schedule.entries) {
     if (!(validRows as readonly string[]).includes(entry.sequenceRow))
       throw new Error(`Invalid Williams row ${entry.sequenceRow}`);

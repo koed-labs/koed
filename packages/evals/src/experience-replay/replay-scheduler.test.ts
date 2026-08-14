@@ -78,6 +78,49 @@ describe("experience replay scheduler", () => {
     });
   });
 
+  it("runs different tasks concurrently but serializes jobs for one task", async () => {
+    const firstA = deferred<number>();
+    const secondA = deferred<number>();
+    const firstB = deferred<number>();
+    const starts: string[] = [];
+    const jobs: ReplaySchedulerJob<number>[] = [
+      { id: "a-1", exclusiveKey: "task-a", gate: firstA },
+      { id: "a-2", exclusiveKey: "task-a", gate: secondA },
+      { id: "b-1", exclusiveKey: "task-b", gate: firstB }
+    ].map(({ id, exclusiveKey, gate }) => ({
+      id,
+      exclusiveKey,
+      maximumCostUsd: 1,
+      run: async () => {
+        starts.push(id);
+        return { value: await gate.promise, observedCostUsd: 0 };
+      }
+    }));
+
+    const scheduled = scheduleReplayJobs({
+      mode: "smoke",
+      concurrency: 2,
+      jobs
+    });
+    await flush();
+    expect(starts).toEqual(["a-1", "b-1"]);
+
+    firstB.resolve(3);
+    await flush();
+    expect(starts).toEqual(["a-1", "b-1"]);
+    firstA.resolve(1);
+    await flush();
+    expect(starts).toEqual(["a-1", "b-1", "a-2"]);
+    secondA.resolve(2);
+
+    const result = await scheduled;
+    expect(result.results.map((item) => item.status)).toEqual([
+      "completed",
+      "completed",
+      "completed"
+    ]);
+  });
+
   it("finishes exactly the admitted cohort and starts nothing after paid-stop crossing", async () => {
     const first = deferred<number>();
     const second = deferred<number>();

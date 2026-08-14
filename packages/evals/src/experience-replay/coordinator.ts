@@ -4,6 +4,8 @@ import {
   assignMatchedPlacebos,
   assignProductPathProofPlacebo,
   createMachineReport,
+  createOracleCampaignProgress,
+  createOracleCampaignShard,
   createReplaySchedule,
   conditionUsesKoed,
   immutableHash,
@@ -11,6 +13,7 @@ import {
   renderMarkdownReport,
   REQUIRED_COMPARISONS,
   ORACLE_CONDITIONS,
+  ORACLE_CAMPAIGN_CONDITIONS,
   ORACLE_REPEATED_CONDITIONS,
   ORACLE_REQUIRED_COMPARISONS,
   ORACLE_REPEATED_REQUIRED_COMPARISONS,
@@ -27,6 +30,7 @@ import {
   type ReplaySchedule,
   type ExperienceReplayRunPlan,
   type ExperienceReplayMachineReport,
+  type OracleCampaignTaskResult,
   type ResolvedExperienceReplayConfig,
   type TaskRewardContract
 } from "./core/index.js";
@@ -88,6 +92,7 @@ import {
   type OracleCorpusArtifactIdentity,
   type OracleCorpusArtifactLocation
 } from "./oracle-corpus-artifact.js";
+import { createOracleCorpusCollectionManifest } from "./oracle-corpus-collection.js";
 
 const SMOKE_TASKS: readonly CoordinatorTask[] = [
   {
@@ -364,11 +369,13 @@ const reportFromOutcomes = async (
 ): Promise<void> => {
   const contracts = taskContracts(tasks);
   const requiredComparisons =
-    runPlan.kind === "oracle_seeded_product_proof"
-      ? ORACLE_REQUIRED_COMPARISONS
-      : runPlan.kind === "oracle_seeded_repeated_study"
-        ? ORACLE_REPEATED_REQUIRED_COMPARISONS
-        : REQUIRED_COMPARISONS;
+    runPlan.kind === "oracle_seeded_campaign"
+      ? []
+      : runPlan.kind === "oracle_seeded_product_proof"
+        ? ORACLE_REQUIRED_COMPARISONS
+        : runPlan.kind === "oracle_seeded_repeated_study"
+          ? ORACLE_REPEATED_REQUIRED_COMPARISONS
+          : REQUIRED_COMPARISONS;
   const comparisons = requiredComparisons.map((comparison) =>
     runPlan.kind === "oracle_seeded_repeated_study"
       ? summarizeRepeatedComparison(
@@ -655,6 +662,10 @@ export const runExperienceReplay = async (
     resumeRunDirectory?: string;
     oracleBrief?: string;
     oracleCorpusArtifactEntry?: OracleCorpusArtifactEntry;
+    oracleCorpusArtifactEntries?: ReadonlyMap<
+      string,
+      OracleCorpusArtifactEntry
+    >;
     oracleCorpusArtifactTarget?: {
       location: OracleCorpusArtifactLocation;
       identity: OracleCorpusArtifactIdentity;
@@ -682,9 +693,12 @@ export const runExperienceReplay = async (
     admitted.runPlan.kind === "oracle_seeded_product_proof";
   const oracleRepeated =
     admitted.runPlan.kind === "oracle_seeded_repeated_study";
-  const oracleSeeded = oracleProductProof || oracleRepeated;
+  const oracleCampaign = admitted.runPlan.kind === "oracle_seeded_campaign";
+  const oracleSeeded = oracleProductProof || oracleRepeated || oracleCampaign;
+  const oracleFromArtifacts = oracleRepeated || oracleCampaign;
   let oracleBrief = options.oracleBrief;
   const oracleCorpusArtifactEntry = options.oracleCorpusArtifactEntry;
+  const oracleCorpusArtifactEntries = options.oracleCorpusArtifactEntries;
   if (!oracleProductProof && options.oracleCorpusArtifactTarget) {
     throw new Error(
       "Oracle corpus generation target is valid only for an oracle-seeded proof"
@@ -694,6 +708,9 @@ export const runExperienceReplay = async (
     throw new Error(
       "Oracle corpus entry is valid only for an oracle repeated study"
     );
+  }
+  if (!oracleCampaign && oracleCorpusArtifactEntries) {
+    throw new Error("Oracle corpus collection is valid only for a campaign");
   }
 
   const outputPath = options.resumeRunDirectory ?? config.output_dir;
@@ -749,6 +766,40 @@ export const runExperienceReplay = async (
     }
     oracleBrief = oracleCorpusArtifactEntry.oracleBrief;
   }
+  if (oracleCampaign) {
+    if (!oracleCorpusArtifactEntries)
+      throw new Error("Oracle campaign corpus collection is required");
+    const planned = new Set(admitted.runPlan.replayTargetTaskDigests);
+    if (
+      oracleCorpusArtifactEntries.size !== planned.size ||
+      [...oracleCorpusArtifactEntries.keys()].some(
+        (digest) => !planned.has(digest)
+      )
+    ) {
+      throw new Error("Oracle campaign corpus tasks differ from the run plan");
+    }
+    for (const [taskDigest, entry] of oracleCorpusArtifactEntries) {
+      validateOracleCorpusArtifactEntry(entry);
+      if (
+        entry.identity.task.digest !== taskDigest ||
+        entry.source.taskDigest !== taskDigest ||
+        entry.corpus.provenance.taskDigest !== taskDigest
+      ) {
+        throw new Error("Oracle campaign corpus task provenance mismatch");
+      }
+    }
+    const collectionManifest = createOracleCorpusCollectionManifest(
+      oracleCorpusArtifactEntries.values()
+    );
+    if (
+      collectionManifest.manifestSha256 !==
+      admitted.runPlan.oracleCorpusCollectionManifestSha256
+    ) {
+      throw new Error(
+        "Oracle campaign corpus collection differs from the run plan"
+      );
+    }
+  }
   const priorEntries = options.resumeRunDirectory
     ? await readRunJournal(
         path.join(directory.root, "journal.jsonl"),
@@ -796,6 +847,7 @@ export const runExperienceReplay = async (
           task_digests: string[];
           replay_task_digests: string[];
           run_plan: ExperienceReplayRunPlan;
+          campaign_created_at?: string;
         } & Record<string, unknown>
       >(directory.root, "manifest.json")
     : undefined;
@@ -818,6 +870,78 @@ export const runExperienceReplay = async (
   if (dependencies.runId && dependencies.runId !== runId) {
     throw new Error("Runtime adapter run identity differs from persisted run");
   }
+  const campaignCreatedAt =
+    priorManifest?.campaign_created_at ?? new Date().toISOString();
+  const campaignShard = oracleCampaign
+    ? createOracleCampaignShard(admitted.campaignProtocol!, {
+        shardId: admitted.campaignShardId!,
+        selectedTaskDigests: replayTasks.map((task) => task.taskDigest),
+        createdAt: campaignCreatedAt
+      })
+    : undefined;
+  const campaignResults = new Map<string, OracleCampaignTaskResult>();
+  if (oracleCampaign) {
+    for (const task of replayTasks) {
+      campaignResults.set(task.taskDigest, {
+        taskDigest: task.taskDigest,
+        status: "pending",
+        corpusAttestationSha256: oracleCorpusArtifactEntries!.get(
+          task.taskDigest
+        )!.attestationSha256,
+        reward: null,
+        passed: null,
+        elapsedMs: null,
+        tokens: null,
+        apiEquivalentCostUsd: null,
+        completedAt: null
+      });
+    }
+  }
+  let campaignProgressWrite = Promise.resolve();
+  const writeCampaignProgress = (outcome?: ReplayOutcome): Promise<void> => {
+    if (!oracleCampaign) return Promise.resolve();
+    campaignProgressWrite = campaignProgressWrite.then(async () => {
+      if (outcome) {
+        const entry = oracleCorpusArtifactEntries!.get(outcome.taskDigest)!;
+        const completed =
+          outcome.reward !== null || outcome.failureKind === "agent";
+        const passed = outcome.passed === true;
+        campaignResults.set(outcome.taskDigest, {
+          taskDigest: outcome.taskDigest,
+          status: completed
+            ? passed
+              ? "passed"
+              : "failed"
+            : "infrastructure_failed",
+          corpusAttestationSha256: entry.attestationSha256,
+          reward: outcome.reward,
+          passed: outcome.passed ?? null,
+          elapsedMs: outcome.latencyMs ?? outcome.durations?.agentMs ?? null,
+          tokens: outcome.tokens ?? null,
+          apiEquivalentCostUsd:
+            outcome.costs?.apiEquivalentUsd ?? outcome.costUsd ?? null,
+          completedAt: new Date().toISOString()
+        });
+      }
+      const progress = createOracleCampaignProgress({
+        protocol: admitted.campaignProtocol!,
+        shards: [campaignShard!],
+        results: [...campaignResults.values()],
+        generatedAt: new Date().toISOString()
+      });
+      const sequence = String(
+        progress.completedEvaluations + progress.infrastructureFailures
+      ).padStart(4, "0");
+      const progressPath = `campaign/progress/${sequence}.json`;
+      if (!(await artifactExists(directory.root, progressPath))) {
+        await publishOrVerifyJson(directory.root, progressPath, progress);
+      }
+      process.stderr.write(
+        `[campaign] ${progress.completedEvaluations}/${progress.selectedTasks} evaluated; ${progress.passedTasks} passed; score ${progress.score === null ? "n/a" : `${(progress.score * 100).toFixed(1)}%`}; Wilson 95% ${progress.scoreWilson95 ? `${(progress.scoreWilson95.lower * 100).toFixed(1)}%-${(progress.scoreWilson95.upper * 100).toFixed(1)}%` : "n/a"}; corpus ${progress.qualifiedTasks} qualified/${progress.unqualifiedTasks} unqualified/${progress.pendingTasks} pending\n`
+      );
+    });
+    return campaignProgressWrite;
+  };
   const proposedManifest = {
     manifest_version: 1,
     benchmark_kind: oracleSeeded
@@ -831,6 +955,7 @@ export const runExperienceReplay = async (
     task_digests: tasks.map((task) => task.taskDigest),
     replay_task_digests: replayTasks.map((task) => task.taskDigest),
     run_plan: admitted.runPlan,
+    ...(oracleCampaign ? { campaign_created_at: campaignCreatedAt } : {}),
     pins: {
       harbor_commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
       terminal_bench_commit: "2b0442c3c583b710ca8da14c8e601b99f2f1f244",
@@ -878,6 +1003,29 @@ export const runExperienceReplay = async (
         oracleCorpusArtifactEntry!
       );
     }
+    if (oracleCampaign) {
+      await publishOrVerifyJson(
+        directory.root,
+        "oracle-private/oracle-corpus-collection.json",
+        {
+          manifest: createOracleCorpusCollectionManifest(
+            oracleCorpusArtifactEntries!.values()
+          ),
+          entries: [...oracleCorpusArtifactEntries!.values()]
+        }
+      );
+      await publishOrVerifyJson(
+        directory.root,
+        "campaign/protocol.json",
+        admitted.campaignProtocol!
+      );
+      await publishOrVerifyJson(
+        directory.root,
+        "campaign/shard.json",
+        campaignShard!
+      );
+      await writeCampaignProgress();
+    }
     if (!options.resumeRunDirectory)
       await publishOrVerifyJson(directory.root, "attestations/preflight.json", {
         schema: "koed-experience-replay-preflight-v1",
@@ -898,7 +1046,9 @@ export const runExperienceReplay = async (
         ? ORACLE_CONDITIONS
         : oracleRepeated
           ? ORACLE_REPEATED_CONDITIONS
-          : undefined
+          : oracleCampaign
+            ? ORACLE_CAMPAIGN_CONDITIONS
+            : undefined
     );
     verifyReplaySchedule(schedule);
     await phase(journal, "replay_schedule", "started");
@@ -906,10 +1056,19 @@ export const runExperienceReplay = async (
     await phase(journal, "replay_schedule", "completed");
 
     await phase(journal, "source_attempts", "started");
-    if (oracleRepeated) {
-      const task = replayTasks[0];
-      if (!task) throw new Error("Oracle repeated study task is missing");
-      oracleCorpora.set(task.taskDigest, oracleCorpusArtifactEntry!.corpus);
+    if (oracleFromArtifacts) {
+      if (oracleRepeated) {
+        const task = replayTasks[0];
+        if (!task) throw new Error("Oracle repeated study task is missing");
+        oracleCorpora.set(task.taskDigest, oracleCorpusArtifactEntry!.corpus);
+      } else {
+        for (const task of replayTasks) {
+          const entry = oracleCorpusArtifactEntries!.get(task.taskDigest);
+          if (!entry)
+            throw new Error(`Missing oracle campaign corpus for ${task.name}`);
+          oracleCorpora.set(task.taskDigest, entry.corpus);
+        }
+      }
       await phase(
         journal,
         "source_attempts",
@@ -967,6 +1126,7 @@ export const runExperienceReplay = async (
         const taskRoot = `source/${safeTaskName(task.name)}/generation-${generation}`;
         sourceJobs.push({
           id,
+          exclusiveKey: task.taskDigest,
           maximumCostUsd: Math.max(
             Number.EPSILON,
             config.maximum_top_level_attempt_cost_usd
@@ -1045,7 +1205,7 @@ export const runExperienceReplay = async (
     }
 
     await phase(journal, "atif_sanitization", "started");
-    if (oracleRepeated) {
+    if (oracleFromArtifacts) {
       await phase(
         journal,
         "atif_sanitization",
@@ -1128,7 +1288,7 @@ export const runExperienceReplay = async (
     }
 
     await phase(journal, "placebo_assignment", "started");
-    const placeboCandidates = oracleRepeated
+    const placeboCandidates = oracleFromArtifacts
       ? []
       : tasks.map((task) => {
           const source = sources.get(task.taskDigest)!;
@@ -1189,6 +1349,21 @@ export const runExperienceReplay = async (
           neededTemplateKeys.add(`${scheduleEntry.taskDigest}:${condition}`);
       }
     }
+    if (oracleCampaign) {
+      for (const outcome of outcomes) {
+        if (
+          outcome.reward !== null &&
+          ((outcome.interactions?.memoryAnswerCalls ?? 0) < 1 ||
+            (outcome.interactions?.memoryAnswerFailures ?? 0) >=
+              (outcome.interactions?.memoryAnswerCalls ?? 0) ||
+            (outcome.recall?.evidenceCount ?? 0) < 1)
+        ) {
+          throw new Error(
+            `Oracle campaign requires successful retrieved evidence for ${outcome.taskDigest}`
+          );
+        }
+      }
+    }
     const templateJobs: ReplaySchedulerJob<PersistedTemplate>[] = [];
     const memoryConditions: readonly MemoryReplayCondition[] =
       oracleProductProof
@@ -1197,7 +1372,9 @@ export const runExperienceReplay = async (
           ) as readonly MemoryReplayCondition[])
         : oracleRepeated
           ? ["empty", "relevant_guidance", "relevant_full"]
-          : ["empty", "placebo", "relevant"];
+          : oracleCampaign
+            ? ["relevant_full"]
+            : ["empty", "placebo", "relevant"];
     for (const task of replayTasks) {
       for (const condition of memoryConditions) {
         let oracleSource: AtifSanitizationResult | null = null;
@@ -1228,7 +1405,7 @@ export const runExperienceReplay = async (
             ? `oracle:${condition}:${task.taskDigest}`
             : `oracle:distractor:${task.taskDigest}`;
         } else if (
-          oracleRepeated &&
+          oracleFromArtifacts &&
           (condition === "relevant_guidance" || condition === "relevant_full")
         ) {
           const corpus = oracleCorpora.get(task.taskDigest);
@@ -1307,6 +1484,7 @@ export const runExperienceReplay = async (
         }
         templateJobs.push({
           id: `template:${task.taskDigest}:${condition}`,
+          exclusiveKey: task.taskDigest,
           maximumCostUsd: Math.max(
             Number.EPSILON,
             config.maximum_top_level_attempt_cost_usd
@@ -1318,7 +1496,9 @@ export const runExperienceReplay = async (
               task,
               condition,
               sourceTask:
-                oracleRepeated && sourceDigest ? task : (source?.task ?? null),
+                oracleFromArtifacts && sourceDigest
+                  ? task
+                  : (source?.task ?? null),
               ...(oracleSourceAttemptId
                 ? { sourceAttemptId: oracleSourceAttemptId }
                 : {}),
@@ -1431,11 +1611,11 @@ export const runExperienceReplay = async (
         const decision = replayDecisions.get(id)!;
         if (decision.action === "skip_completed") {
           const prior = completedEntry(priorEntries, id)!;
-          outcomes.push(
-            replayOutcomeFromArtifact(
-              await readAttestedResult<ReplayOutcome>(directory.root, prior)
-            )
+          const priorOutcome = replayOutcomeFromArtifact(
+            await readAttestedResult<ReplayOutcome>(directory.root, prior)
           );
+          outcomes.push(priorOutcome);
+          await writeCampaignProgress(priorOutcome);
           const sanitizedPath = replaySanitizedTrajectoryPathFor(
             task,
             condition,
@@ -1478,12 +1658,14 @@ export const runExperienceReplay = async (
             failureCategory: "missing_outcome"
           });
           outcomes.push(missing);
+          await writeCampaignProgress(missing);
           continue;
         }
         const generation = decision.nextExecutionGeneration;
         replayJobMetadata.push({ task, condition, repeat: entry.repeat });
         replayJobs.push({
           id,
+          exclusiveKey: task.taskDigest,
           maximumCostUsd: Math.max(
             Number.EPSILON,
             config.maximum_top_level_attempt_cost_usd
@@ -1524,7 +1706,7 @@ export const runExperienceReplay = async (
               ...(oracleRepeated && condition === "direct_guidance"
                 ? { developerInstructions: oracleBrief! }
                 : {}),
-              ...(oracleRepeated && conditionUsesKoed(condition)
+              ...(oracleFromArtifacts && conditionUsesKoed(condition)
                 ? { requireMemoryAnswer: true }
                 : {}),
               signal
@@ -1597,7 +1779,7 @@ export const runExperienceReplay = async (
                   entry.repeat
                 );
                 assertCompleteReplayTelemetry(telemetry);
-                if (oracleRepeated && conditionUsesKoed(condition)) {
+                if (oracleFromArtifacts && conditionUsesKoed(condition)) {
                   const requests = (
                     telemetry.koedRecall?.metrics as
                       | {
@@ -1746,6 +1928,7 @@ export const runExperienceReplay = async (
               reward: completedExecution.value.reward,
               failureCategory: completedExecution.value.failureCategory ?? null
             });
+            await writeCampaignProgress(completedExecution.value);
             return completedExecution;
           }
         });
@@ -1849,7 +2032,9 @@ export const runExperienceReplay = async (
         failureCategory: failure.failureCategory!
       });
       outcomes.push(failure);
+      await writeCampaignProgress(failure);
     }
+    await campaignProgressWrite;
     if (
       !options.resumeRunDirectory ||
       !(await artifactExists(directory.root, "cost-admission.json"))
@@ -1931,21 +2116,26 @@ export const runExperienceReplay = async (
     await phase(journal, "trajectory_judging", "started");
     for (const task of replayTasks) {
       const sourceTrajectory = oracleSeeded
-        ? oracleRepeated
-          ? oracleCorpusArtifactEntry?.source.sanitization.trajectory
-          : oracleCorpora.get(task.taskDigest)?.traceOnly.sanitization
-              .trajectory
+        ? oracleCampaign
+          ? oracleCorpusArtifactEntries?.get(task.taskDigest)?.source
+              .sanitization.trajectory
+          : oracleRepeated
+            ? oracleCorpusArtifactEntry?.source.sanitization.trajectory
+            : oracleCorpora.get(task.taskDigest)?.traceOnly.sanitization
+                .trajectory
         : sources.get(task.taskDigest)?.sanitization?.trajectory;
       for (
         let repeat = 0;
         repeat < admitted.runPlan.replayAttemptsPerCondition;
         repeat += 1
       ) {
-        const requiredComparisons = oracleSeeded
-          ? oracleRepeated
-            ? ORACLE_REPEATED_REQUIRED_COMPARISONS
-            : ORACLE_REQUIRED_COMPARISONS
-          : REQUIRED_COMPARISONS;
+        const requiredComparisons = oracleCampaign
+          ? []
+          : oracleSeeded
+            ? oracleRepeated
+              ? ORACLE_REPEATED_REQUIRED_COMPARISONS
+              : ORACLE_REQUIRED_COMPARISONS
+            : REQUIRED_COMPARISONS;
         for (const comparison of requiredComparisons) {
           const resultPath = judgeResultPathFor(task, comparison, repeat);
           if (
@@ -2256,6 +2446,12 @@ const tasksFromManifest = async (
     executionKind: manifest.run_plan.kind,
     oracleBriefSha256: manifest.run_plan.oracleBriefSha256,
     oracleCorpusManifestSha256: manifest.run_plan.oracleCorpusManifestSha256,
+    oracleCorpusCollectionManifestSha256:
+      manifest.run_plan.oracleCorpusCollectionManifestSha256,
+    campaignTaskDigests:
+      manifest.run_plan.kind === "oracle_seeded_campaign"
+        ? manifest.run_plan.replayTargetTaskDigests
+        : undefined,
     ...(manifest.run_plan.kind === "oracle_seeded_repeated_study"
       ? { oracleRepeats: manifest.run_plan.replayAttemptsPerCondition }
       : {}),
@@ -2335,6 +2531,10 @@ export const resumeExperienceReplay = async (
     dependencies?: ExperienceReplayCoordinatorDependencies;
     preflight?: PreflightResult;
     oracleCorpusArtifactEntry?: OracleCorpusArtifactEntry;
+    oracleCorpusArtifactEntries?: ReadonlyMap<
+      string,
+      OracleCorpusArtifactEntry
+    >;
   } = {}
 ): Promise<string> => {
   if (!options.dependencies) missingDependencies();
@@ -2352,6 +2552,9 @@ export const resumeExperienceReplay = async (
     ...(options.preflight ? { preflight: options.preflight } : {}),
     ...(options.oracleCorpusArtifactEntry
       ? { oracleCorpusArtifactEntry: options.oracleCorpusArtifactEntry }
+      : {}),
+    ...(options.oracleCorpusArtifactEntries
+      ? { oracleCorpusArtifactEntries: options.oracleCorpusArtifactEntries }
       : {}),
     resumeRunDirectory: runRoot
   });

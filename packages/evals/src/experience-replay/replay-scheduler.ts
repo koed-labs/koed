@@ -17,6 +17,8 @@ export interface ReplaySchedulerContext {
 
 export interface ReplaySchedulerJob<T> {
   id: string;
+  /** Jobs sharing this key never run concurrently. */
+  exclusiveKey?: string;
   maximumCostUsd: number;
   run(context: ReplaySchedulerContext): Promise<ReplaySchedulerExecution<T>>;
 }
@@ -103,6 +105,12 @@ const validateJobs = <T>(jobs: readonly ReplaySchedulerJob<T>[]): void => {
     if (!Number.isFinite(job.maximumCostUsd) || job.maximumCostUsd <= 0) {
       throw new Error("Maximum job cost must be a finite positive number");
     }
+    if (
+      job.exclusiveKey !== undefined &&
+      (!job.exclusiveKey || job.exclusiveKey.trim() !== job.exclusiveKey)
+    ) {
+      throw new Error("Exclusive key must be exact and non-empty");
+    }
     identities.add(job.id);
   }
 };
@@ -134,7 +142,8 @@ export const scheduleReplayJobs = async <T>(
         ))
       : null;
   const results = new Array<ReplaySchedulerJobResult<T>>(options.jobs.length);
-  let nextIndex = 0;
+  const pendingIndexes = options.jobs.map((_job, index) => index);
+  const activeExclusiveKeys = new Set<string>();
   let activeJobs = 0;
   let admittedJobs = 0;
   let stopReason: ReplaySchedulerStopReason = options.signal?.aborted
@@ -144,8 +153,8 @@ export const scheduleReplayJobs = async <T>(
   const markRemaining = (
     reason: Exclude<ReplaySchedulerStopReason, null>
   ): void => {
-    while (nextIndex < options.jobs.length) {
-      const index = nextIndex++;
+    while (pendingIndexes.length > 0) {
+      const index = pendingIndexes.shift()!;
       results[index] = {
         id: options.jobs[index]!.id,
         index,
@@ -160,7 +169,7 @@ export const scheduleReplayJobs = async <T>(
   await new Promise<void>((resolve) => {
     let settled = false;
     const finishIfDone = (): void => {
-      if (!settled && activeJobs === 0 && nextIndex >= options.jobs.length) {
+      if (!settled && activeJobs === 0 && pendingIndexes.length === 0) {
         settled = true;
         options.signal?.removeEventListener("abort", onAbort);
         resolve();
@@ -176,6 +185,7 @@ export const scheduleReplayJobs = async <T>(
     const runJob = (job: ReplaySchedulerJob<T>, index: number): void => {
       activeJobs += 1;
       admittedJobs += 1;
+      if (job.exclusiveKey) activeExclusiveKeys.add(job.exclusiveKey);
       let incrementallyObservedCostUsd = 0;
       let reservationSettled = false;
       let finalObservedCostUsd = 0;
@@ -251,6 +261,7 @@ export const scheduleReplayJobs = async <T>(
         })
         .finally(() => {
           activeJobs -= 1;
+          if (job.exclusiveKey) activeExclusiveKeys.delete(job.exclusiveKey);
           if (stopReason === null && gate?.snapshot().stopped) {
             stop("paid_cost_stop");
           } else {
@@ -268,10 +279,15 @@ export const scheduleReplayJobs = async <T>(
       }
       while (
         activeJobs < options.concurrency &&
-        nextIndex < options.jobs.length &&
+        pendingIndexes.length > 0 &&
         stopReason === null
       ) {
-        const index = nextIndex;
+        const pendingPosition = pendingIndexes.findIndex((index) => {
+          const key = options.jobs[index]!.exclusiveKey;
+          return key === undefined || !activeExclusiveKeys.has(key);
+        });
+        if (pendingPosition === -1) return;
+        const index = pendingIndexes[pendingPosition]!;
         const job = options.jobs[index]!;
         if (gate) {
           try {
@@ -290,7 +306,7 @@ export const scheduleReplayJobs = async <T>(
             return;
           }
         }
-        nextIndex += 1;
+        pendingIndexes.splice(pendingPosition, 1);
         runJob(job, index);
       }
       finishIfDone();

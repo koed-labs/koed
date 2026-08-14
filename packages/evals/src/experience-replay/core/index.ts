@@ -1,4 +1,5 @@
 export * from "./bootstrap.js";
+export * from "./campaign.js";
 export * from "./config.js";
 export * from "./execution-plan.js";
 export * from "./hash.js";

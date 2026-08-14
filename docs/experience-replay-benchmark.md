@@ -130,6 +130,108 @@ Luna medium retained for blind trajectory judging. Both policies reuse the same
 corpus identity; corpus generation must not be repeated merely to change the
 replay model.
 
+## Oracle-Seeded Campaign
+
+The campaign mode is a treatment-only challenge that asks how highly GPT-5.6
+Luna high can score when Koed exposes one genuine successful prior transcript
+for each task. It is separate from the four-condition causal benchmark and is
+not eligible for official Terminal-Bench leaderboard submission. The first
+campaign runs one `relevant_full` replay per task. Matched no-Memory controls
+and additional repeats are separate future protocols and cannot be pooled with
+that result.
+
+Every selected task must have one private corpus artifact that passed the
+unchanged task verifier. Corpus generation may give a preparation agent
+privileged solution guidance and iterative verifier feedback. The evaluated
+agent never receives that guidance directly: it receives only the answer
+synthesized through Koed's normal ingestion, Projection, Qwen embedding,
+semantic Recall and `memory_answer` path. Each corpus is generated once,
+attested, cached under a private `0700` collection directory and reused. Raw
+transcripts, guidance and corpus artifacts remain outside Git.
+
+Create corpora from a private `0600` qualification manifest. Attempts for one
+task are serial; different tasks may qualify concurrently. A failed verifier
+result becomes feedback for the next bounded attempt. Unqualified and
+infrastructure-failed tasks remain in the immutable private ledger and must not
+be silently removed from a declared campaign.
+
+```json
+{
+  "schema_version": "koed-oracle-qualification-manifest-v1",
+  "tasks": [
+    {
+      "task_digest": "sha256:<digest>",
+      "oracle_brief": "Private implementation guidance for the preparation agent.",
+      "maximum_attempts": 3
+    }
+  ]
+}
+```
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  run --config <resolved-full-config.json> --codex-subscription \
+  --oracle-qualify \
+  --oracle-qualification-manifest <absolute-private-0600-file> \
+  --oracle-corpus <absolute-private-collection-directory>
+```
+
+The campaign freezes GPT-5.6 Luna high for the coding agent and AI Client
+workers, Memory Answer prompt v9, the full resolved configuration, dataset and
+image pins, corpus policy, one-attempt treatment, seed and concurrency into a
+content-addressed protocol. Material changes create a new protocol whose
+results cannot be pooled. Different tasks may run concurrently, but work for
+one task is serialized.
+
+Each run also requires a private `0600` campaign definition. The complete task
+universe is identical across every shard. Only `shard_task_digests` and
+`shard_id` vary. The supplied corpus collection must exactly cover the shard.
+
+```json
+{
+  "schema_version": "koed-oracle-campaign-definition-v1",
+  "campaign_id": "luna-v9-tb3",
+  "task_universe_digests": ["sha256:<all pinned campaign tasks>"],
+  "shard_id": "day-1",
+  "shard_task_digests": ["sha256:<this run's tasks>"],
+  "reference_score": 0.208
+}
+```
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  preflight --config <resolved-full-config.json> --codex-subscription \
+  --oracle-campaign \
+  --oracle-campaign-manifest <absolute-private-0600-file> \
+  --oracle-corpus <absolute-private-collection-directory>
+pnpm --filter @koed/evals eval:experience-replay -- \
+  run --config <resolved-full-config.json> --codex-subscription \
+  --oracle-campaign \
+  --oracle-campaign-manifest <absolute-private-0600-file> \
+  --oracle-corpus <absolute-private-collection-directory>
+```
+
+Each completion creates an immutable cumulative progress snapshot containing
+pass rate, Wilson 95% interval, delta from the declared 20.8% reference,
+qualified/pending corpus counts, elapsed time, tokens and API-equivalent cost.
+Run separate task shards on different days with the exact same protocol. Merge
+them through an explicit private manifest:
+
+```json
+{ "run_directories": ["/absolute/run-a", "/absolute/run-b"] }
+```
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  campaign-merge --merge-manifest <manifest.json> \
+  --output <absolute-new-merged-directory>
+```
+
+Merge rejects changed protocols, duplicate run inputs, overlapping task units,
+inconsistent progress ledgers and modified corpus attestations. The pooled
+report retains each run/shard identity and date so execution blocks remain
+visible.
+
 ## Deterministic Smoke
 
 Prerequisites are Node/pnpm and a PostgreSQL 17 server with pgvector. Use a
