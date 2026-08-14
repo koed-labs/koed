@@ -26,6 +26,8 @@ describe("isolated Codex replay configuration", () => {
     expect(config.serialized).toContain('web_search = "disabled"');
     expect(config.inline.features).toEqual({ mcp_2026_07_28: true });
     expect(config.inline.suppress_unstable_features_warning).toBe(true);
+    expect(config.inline).not.toHaveProperty("developer_instructions");
+    expect(config.serialized).not.toContain("developer_instructions");
   });
 
   it("adds the exact recall instruction to product-path memory arms", () => {

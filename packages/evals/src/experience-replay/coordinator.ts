@@ -1870,7 +1870,7 @@ export const runExperienceReplay = async (
               ...(oracleRepeated && condition === "direct_guidance"
                 ? { developerInstructions: oracleBrief! }
                 : {}),
-              ...(oracleFromArtifacts && conditionUsesKoed(condition)
+              ...(oracleRepeated && conditionUsesKoed(condition)
                 ? { requireMemoryAnswer: true }
                 : {}),
               signal
@@ -1943,7 +1943,7 @@ export const runExperienceReplay = async (
                   entry.repeat
                 );
                 assertCompleteReplayTelemetry(telemetry);
-                if (oracleFromArtifacts && conditionUsesKoed(condition)) {
+                if (oracleRepeated && conditionUsesKoed(condition)) {
                   const requests = (
                     telemetry.koedRecall?.metrics as
                       | {

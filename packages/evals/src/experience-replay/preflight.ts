@@ -1,6 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mcpRecallPolicyVersion } from "@koed/mcp-server";
 import {
   createBenchmarkRunPlan,
   createOracleCampaignProtocol,
@@ -679,6 +680,7 @@ export const preflightExperienceReplay = async ({
           taskUniverseDigests: campaignTaskUniverseDigests ?? [],
           semanticConfigHash: config.semantic_config_hash,
           memoryAnswerPromptVersion: config.memory_answer.prompt_version,
+          mcpRecallPolicyVersion,
           concurrency: config.concurrency,
           pins: {
             harborCommit: HARBOR_COMMIT,
@@ -696,6 +698,7 @@ export const preflightExperienceReplay = async ({
       taskUniverseDigests: campaignProtocol!.taskUniverseDigests,
       semanticConfigHash: config.semantic_config_hash,
       memoryAnswerPromptVersion: config.memory_answer.prompt_version,
+      mcpRecallPolicyVersion,
       concurrency: config.concurrency,
       pins: {
         harborCommit: HARBOR_COMMIT,

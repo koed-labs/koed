@@ -246,15 +246,22 @@ describe("HarborClient", () => {
       requestId: () => "failed-id"
     });
 
-    await expect(client.run(request)).rejects.toMatchObject({
-      category: "process-exit",
-      message: expect.stringContaining("OUTPUT_ALREADY_EXISTS")
-    });
+    const failure = await client.run(request).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(failure).toBeInstanceOf(HarborClientError);
+    if (!(failure instanceof HarborClientError)) {
+      throw new Error("Expected HarborClientError");
+    }
+    expect(failure.category).toBe("process-exit");
+    expect(failure.message).toContain("OUTPUT_ALREADY_EXISTS");
     const retained = await readFile(
       path.join(runRoot, ".harbor-requests/failed-id.json"),
       "utf8"
     );
-    expect(JSON.parse(retained)).toEqual(request);
+    const retainedRequest = JSON.parse(retained) as unknown;
+    expect(retainedRequest).toEqual(request);
   });
 
   it("allows literal environment references without serializing values", async () => {

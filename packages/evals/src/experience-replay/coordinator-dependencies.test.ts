@@ -142,9 +142,13 @@ const fixture = () => {
   };
   const adoptTemplate = vi.fn(
     async (
-      _template: LocalProductTemplateHandle,
-      _cachedContentIdentity?: string
-    ) => localTemplateHandle
+      template: LocalProductTemplateHandle,
+      cachedContentIdentity?: string
+    ) => {
+      void template;
+      void cachedContentIdentity;
+      return localTemplateHandle;
+    }
   );
   const provisionClose = vi.fn(async () => ({
     api: {

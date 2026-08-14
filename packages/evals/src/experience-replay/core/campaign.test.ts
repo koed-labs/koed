@@ -17,6 +17,8 @@ const protocol = () =>
     taskUniverseDigests: [digest("c"), digest("a"), digest("b")],
     semanticConfigHash: hash("d"),
     memoryAnswerPromptVersion: "memory-answer-v9",
+    mcpRecallPolicyVersion:
+      "mcp-server-instructions-v2+memory-answer-tool-description-v2",
     concurrency: 4,
     pins: {
       harborCommit: hash("1"),
@@ -51,6 +53,7 @@ describe("oracle campaign protocol and shards", () => {
       taskUniverseDigests: [...first.taskUniverseDigests].reverse(),
       semanticConfigHash: first.semanticConfigHash,
       memoryAnswerPromptVersion: first.memoryAnswerPromptVersion,
+      mcpRecallPolicyVersion: first.mcpRecallPolicyVersion,
       concurrency: first.concurrency,
       pins: first.pins
     });

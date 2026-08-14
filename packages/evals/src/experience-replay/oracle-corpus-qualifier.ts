@@ -77,7 +77,10 @@ const safeInfrastructureFailure = (
           : null
       };
     }
-    if (candidate instanceof AggregateError) pending.push(...candidate.errors);
+    if (candidate instanceof AggregateError) {
+      const errors: unknown[] = candidate.errors;
+      pending.push(...errors);
+    }
     if (candidate instanceof Error && candidate.cause)
       pending.push(candidate.cause);
   }

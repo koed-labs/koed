@@ -318,13 +318,19 @@ export const defaultTools = ["memory_answer"] as const;
 
 export const capabilityGatedTools = ["memory_intake_propose"] as const;
 
-export const memoryServerInstructions = loadPrompt(
-  "mcp-server-instructions"
-).body;
-
-export const memoryAnswerToolDescription = loadPrompt(
+const memoryServerInstructionsPrompt = loadPrompt("mcp-server-instructions");
+const memoryAnswerToolDescriptionPrompt = loadPrompt(
   "memory-answer-tool-description"
-).body;
+);
+
+export const memoryServerInstructions = memoryServerInstructionsPrompt.body;
+export const memoryServerInstructionsVersion =
+  memoryServerInstructionsPrompt.version;
+export const memoryAnswerToolDescription =
+  memoryAnswerToolDescriptionPrompt.body;
+export const memoryAnswerToolDescriptionVersion =
+  memoryAnswerToolDescriptionPrompt.version;
+export const mcpRecallPolicyVersion = `${memoryServerInstructionsVersion}+${memoryAnswerToolDescriptionVersion}`;
 
 export const memoryIntakeProposeToolDescription =
   "Propose durable Curated Memory when the user provides stable personal or project information such as preferences, corrections, decisions, plans, relationships, or other reusable context. Submit a concise candidate and real source evidence. When source IDs or a backend Captured Session ID are unavailable, include the exact supporting User statement in evidence_exact_quote so Koed can bind the proposal without guessing across sessions. An asynchronous local review agent receives the complete evidence, decides whether it is supported and durable, rewrites accepted assertions clearly, and handles duplicates or corrections. The proposal call returns immediately. Do not propose public facts, transient task state, guesses, agent-authored claims, or information without source evidence.";

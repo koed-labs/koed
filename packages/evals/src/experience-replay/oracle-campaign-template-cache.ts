@@ -9,14 +9,7 @@ import {
   rename,
   unlink
 } from "node:fs/promises";
-import {
-  dirname,
-  isAbsolute,
-  join,
-  normalize,
-  relative,
-  resolve
-} from "node:path";
+import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { canonicalJson, sha256, type JsonValue } from "./core/hash.js";
 import { assertEvalDatabaseName } from "./database-templates.js";
 
@@ -74,7 +67,8 @@ const ensureDirectoryWithoutSymlinks = async (path: string): Promise<void> => {
       const stats = await lstat(current);
       if (stats.isSymbolicLink() || !stats.isDirectory()) {
         throw new Error(
-          `Template cache path component changed during creation: ${current}`
+          `Template cache path component changed during creation: ${current}`,
+          { cause: error }
         );
       }
     }
@@ -314,7 +308,9 @@ export class OracleCampaignTemplateCache {
         existing.databaseName !== entry.databaseName ||
         existing.entryHash !== entry.entryHash
       ) {
-        throw new Error("Campaign template cache publication collision");
+        throw new Error("Campaign template cache publication collision", {
+          cause: error
+        });
       }
       return existing;
     } finally {

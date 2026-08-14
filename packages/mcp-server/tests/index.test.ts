@@ -334,7 +334,14 @@ describe("MCP memory_answer schema wording", () => {
     expect(memoryServerInstructions).toContain("Use session scope");
     expect(memoryServerInstructions).toContain("Use global scope only");
     expect(memoryServerInstructions).toContain(
-      "Do not keep querying memory after a clear not-found result"
+      "do not keep querying after a clear not-found result"
+    );
+    expect(memoryServerInstructions).toContain("Memory recall is iterative");
+    expect(memoryServerInstructions).toContain(
+      "call memory_answer again with a narrower question"
+    );
+    expect(memoryServerInstructions).toContain(
+      "even when the user does not explicitly ask for recall"
     );
   });
 
@@ -352,7 +359,10 @@ describe("MCP memory_answer schema wording", () => {
     expect(memoryAnswerToolDescription).toContain("search_domain=session");
     expect(memoryAnswerToolDescription).toContain("search_domain=global only");
     expect(memoryAnswerToolDescription).toContain(
-      "do not repeat after a clear not-found answer"
+      "stop after a clear not-found answer"
+    );
+    expect(memoryAnswerToolDescription).toContain(
+      "call again with a narrower question"
     );
     expect(memoryAnswerToolDescription).not.toMatch(/dogfood/i);
     expect(memoryAnswerToolDescription.length).toBeLessThan(1_000);

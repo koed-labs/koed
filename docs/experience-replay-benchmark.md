@@ -143,11 +143,15 @@ that result.
 Every selected task must have one private corpus artifact that passed the
 unchanged task verifier. Corpus generation may give a preparation agent
 privileged solution guidance and iterative verifier feedback. The evaluated
-agent never receives that guidance directly: it receives only the answer
-synthesized through Koed's normal ingestion, Projection, Qwen embedding,
-semantic Recall and `memory_answer` path. Each corpus is generated once,
-attested, cached under a private `0700` collection directory and reused. Raw
-transcripts, guidance and corpus artifacts remain outside Git.
+agent never receives that guidance directly. It receives the original,
+unmodified Terminal-Bench task and normal access to Koed's production MCP
+Server. The agent is not told that prior Memory exists, that it is being
+benchmarked, or whether and how often to call `memory_answer`; it may solve the
+task however it chooses. Any answer it requests is synthesized through Koed's
+normal ingestion, Projection, Qwen embedding, semantic Recall and
+`memory_answer` path. Each corpus is generated once, attested, cached under a
+private `0700` collection directory and reused. Raw transcripts, guidance and
+corpus artifacts remain outside Git.
 
 Create corpora from a private `0600` qualification manifest. Attempts for one
 task are serial; different tasks may qualify concurrently. A failed verifier
@@ -181,11 +185,13 @@ pnpm --filter @koed/evals eval:experience-replay -- \
 ```
 
 The campaign freezes GPT-5.6 Luna high for the coding agent and AI Client
-workers, Memory Answer prompt v9, the full resolved configuration, dataset and
-image pins, corpus policy, one-attempt treatment, seed and concurrency into a
+workers, Memory Answer prompt v9, the production MCP server-instruction and
+tool-description versions, the full resolved configuration, dataset and image
+pins, corpus policy, one-attempt treatment, seed and concurrency into a
 content-addressed protocol. Material changes create a new protocol whose
-results cannot be pooled. Different tasks may run concurrently, but work for
-one task is serialized.
+results cannot be pooled. The campaign uses these production prompt owners
+directly and has no benchmark-specific copies. Different tasks may run
+concurrently, but work for one task is serialized.
 
 The complete qualified corpus is imported once under one synthetic User, with
 one Project per task. LCM and embedding preparation run once over that complete

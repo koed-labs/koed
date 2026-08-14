@@ -325,16 +325,18 @@ const productProofConfig = (output: string) => {
 
 const campaignConfig = (output: string) => {
   const quick = productProofConfig(output);
-  const {
-    task_count: _taskCount,
-    replay_attempts_per_condition: _replays,
-    coding_agent_attempt_count: _attempts,
-    maximum_top_level_attempt_cost_usd: _topLevelCost,
-    maximum_judge_call_cost_usd: _judgeCost,
-    maximum_concurrent_overshoot_usd: _overshoot,
-    semantic_config_hash: _semanticHash,
-    ...base
-  } = quick;
+  const excluded = new Set([
+    "task_count",
+    "replay_attempts_per_condition",
+    "coding_agent_attempt_count",
+    "maximum_top_level_attempt_cost_usd",
+    "maximum_judge_call_cost_usd",
+    "maximum_concurrent_overshoot_usd",
+    "semantic_config_hash"
+  ]);
+  const base = Object.fromEntries(
+    Object.entries(quick).filter(([key]) => !excluded.has(key))
+  );
   const high = { id: "gpt-5.6-luna", reasoning_effort: "high" as const };
   return resolveExperienceReplayConfig({
     ...base,
@@ -1241,6 +1243,8 @@ describe("unified experience replay coordinator", () => {
       taskUniverseDigests: [task.task_digest, secondTaskDigest],
       semanticConfigHash: campaign.semantic_config_hash,
       memoryAnswerPromptVersion: campaign.memory_answer.prompt_version,
+      mcpRecallPolicyVersion:
+        "mcp-server-instructions-v2+memory-answer-tool-description-v2",
       concurrency: campaign.concurrency,
       pins: {
         harborCommit: "64afbbcb62165950301e1a6407c729aa26d844ff",
@@ -1257,6 +1261,25 @@ describe("unified experience replay coordinator", () => {
       campaignProtocol.protocolHash
     );
     const campaignEvents: string[] = [];
+    const campaignReplayInputs: Array<{
+      condition: ReplayCondition;
+      developerInstructions?: string;
+      requireMemoryAnswer?: boolean;
+    }> = [];
+    const campaignDependencies = fakeDependencies(campaignEvents);
+    const createCampaignReplay = campaignDependencies.createReplay;
+    campaignDependencies.createReplay = async (input) => {
+      campaignReplayInputs.push({
+        condition: input.condition,
+        ...(input.developerInstructions
+          ? { developerInstructions: input.developerInstructions }
+          : {}),
+        ...(input.requireMemoryAnswer === undefined
+          ? {}
+          : { requireMemoryAnswer: input.requireMemoryAnswer })
+      });
+      return createCampaignReplay(input);
+    };
     const campaignResult = await runExperienceReplay(campaign, {
       preflight: {
         ...base,
@@ -1266,7 +1289,7 @@ describe("unified experience replay coordinator", () => {
         campaignShardId: "smoke-shard",
         pins: { ...base.pins, selectedTasks: [task] }
       },
-      dependencies: fakeDependencies(campaignEvents),
+      dependencies: campaignDependencies,
       oracleCorpusArtifactEntries: new Map([
         [task.task_digest, corpusArtifact],
         [secondTaskDigest, secondCorpusArtifact]
@@ -1285,6 +1308,7 @@ describe("unified experience replay coordinator", () => {
     expect(
       campaignEvents.filter((event) => event.startsWith("replay:"))
     ).toHaveLength(1);
+    expect(campaignReplayInputs).toEqual([{ condition: "relevant_full" }]);
     const progress = JSON.parse(
       await readFile(
         path.join(campaign.output_dir, "campaign/progress/0001.json"),

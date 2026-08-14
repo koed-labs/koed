@@ -17,6 +17,7 @@ export interface OracleCampaignProtocol {
   taskUniverseDigests: readonly string[];
   semanticConfigHash: string;
   memoryAnswerPromptVersion: string;
+  mcpRecallPolicyVersion: string;
   corpusPolicyVersion: typeof ORACLE_CAMPAIGN_CORPUS_POLICY_VERSION;
   concurrency: number;
   referenceScore: number;
@@ -108,6 +109,7 @@ export const createOracleCampaignProtocol = (input: {
   taskUniverseDigests: readonly string[];
   semanticConfigHash: string;
   memoryAnswerPromptVersion: string;
+  mcpRecallPolicyVersion: string;
   concurrency: number;
   pins: OracleCampaignProtocol["pins"];
   referenceScore?: number;
@@ -117,6 +119,8 @@ export const createOracleCampaignProtocol = (input: {
   if (!input.campaignSeed.trim()) throw new Error("Campaign seed is required");
   if (!input.memoryAnswerPromptVersion.trim())
     throw new Error("Memory Answer prompt version is required");
+  if (!input.mcpRecallPolicyVersion.trim())
+    throw new Error("MCP Recall policy version is required");
   if (!Number.isSafeInteger(input.concurrency) || input.concurrency < 1)
     throw new Error("Campaign concurrency must be a positive integer");
   assertHash(input.semanticConfigHash, "Semantic configuration hash");
@@ -140,6 +144,7 @@ export const createOracleCampaignProtocol = (input: {
     taskUniverseDigests,
     semanticConfigHash: input.semanticConfigHash,
     memoryAnswerPromptVersion: input.memoryAnswerPromptVersion,
+    mcpRecallPolicyVersion: input.mcpRecallPolicyVersion,
     corpusPolicyVersion: ORACLE_CAMPAIGN_CORPUS_POLICY_VERSION,
     concurrency: input.concurrency,
     referenceScore,
