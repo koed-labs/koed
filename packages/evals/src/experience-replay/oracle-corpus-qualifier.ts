@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createCoordinatorHarborLifecycle } from "./harbor-lifecycle.js";
 import { RunJournal } from "./journal.js";
@@ -12,10 +11,12 @@ import { CostAdmissionController } from "./cost-admission.js";
 import { sanitizeAtifTrajectory } from "./atif/index.js";
 import { buildOracleCorpus } from "./oracle-corpus.js";
 import {
+  admitOracleCorpusDirectory,
   persistOracleCorpusArtifact,
   type OracleCorpusArtifactEntry,
   type OracleCorpusArtifactIdentity
 } from "./oracle-corpus-artifact.js";
+import { HarborClientError } from "./harbor-client.js";
 import type {
   CoordinatorTask,
   ExperienceReplayCoordinatorDependencies
@@ -35,6 +36,8 @@ export interface OracleQualificationResult {
   corpusAttestationSha256: string | null;
   lastReward: number | null;
   lastFailureCategory: string | null;
+  infrastructureCategory: string | null;
+  infrastructureCode: string | null;
 }
 
 export interface OracleQualificationRunResult {
@@ -45,6 +48,33 @@ export interface OracleQualificationRunResult {
 
 const safeTaskName = (name: string): string =>
   name.replace(/^terminal-bench\//u, "").replace(/[^a-zA-Z0-9._-]/gu, "-");
+
+const safeInfrastructureFailure = (
+  error: unknown
+): {
+  category: string;
+  code: string | null;
+} => {
+  const pending = [error];
+  const visited = new Set<unknown>();
+  while (pending.length > 0) {
+    const candidate = pending.shift();
+    if (candidate === null || candidate === undefined || visited.has(candidate))
+      continue;
+    visited.add(candidate);
+    if (candidate instanceof HarborClientError) {
+      return {
+        category: candidate.category,
+        code:
+          candidate.message.match(/:\s([A-Z][A-Z0-9_]{0,127})$/u)?.[1] ?? null
+      };
+    }
+    if (candidate instanceof AggregateError) pending.push(...candidate.errors);
+    if (candidate instanceof Error && candidate.cause)
+      pending.push(candidate.cause);
+  }
+  return { category: "infrastructure", code: null };
+};
 
 const taskFromPreflight = (
   admitted: PreflightResult,
@@ -114,13 +144,20 @@ export const qualifyOracleCorpusCollection = async (input: {
     requiredBytes: input.preflight.capacity.requiredBytes,
     reserveBytes: input.preflight.capacity.reserveBytes
   });
-  await mkdir(input.corpusDirectory, { recursive: true, mode: 0o700 });
+  const corpusDirectory = await admitOracleCorpusDirectory(
+    {
+      corpusDirectory: input.corpusDirectory,
+      repositoryRoot: input.preflight.repositoryRoot
+    },
+    true
+  );
   const journal = new RunJournal(
     created.directory,
     input.preflight.config.semantic_config_hash,
     []
   );
   const results = new Map<string, OracleQualificationResult>();
+  const attemptsStarted = new Map<string, number>();
   let ledgerWrite = Promise.resolve();
   let ledgerSequence = 0;
   const writeLedger = (): Promise<void> => {
@@ -168,6 +205,7 @@ export const qualifyOracleCorpusCollection = async (input: {
             attempt += 1
           ) {
             const attemptIdentity = `qualify:${task.taskDigest}:${attempt}`;
+            attemptsStarted.set(task.taskDigest, attempt);
             await journal.append({
               type: "attempt_state",
               attemptId: attemptIdentity,
@@ -263,7 +301,7 @@ export const qualifyOracleCorpusCollection = async (input: {
                 await persistOracleCorpusArtifact(
                   {
                     corpusDirectory: path.join(
-                      input.corpusDirectory,
+                      corpusDirectory,
                       `${safeTaskName(task.name)}-${task.taskDigest.slice(-12)}`
                     ),
                     repositoryRoot: input.preflight.repositoryRoot
@@ -282,7 +320,9 @@ export const qualifyOracleCorpusCollection = async (input: {
                 attempts: attempt,
                 corpusAttestationSha256: artifact.attestationSha256,
                 lastReward: source.reward,
-                lastFailureCategory: source.failureCategory
+                lastFailureCategory: source.failureCategory,
+                infrastructureCategory: null,
+                infrastructureCode: null
               };
               results.set(task.taskDigest, result);
               await writeLedger();
@@ -301,7 +341,9 @@ export const qualifyOracleCorpusCollection = async (input: {
             attempts: specification.maximumAttempts,
             corpusAttestationSha256: null,
             lastReward: prior?.reward ?? null,
-            lastFailureCategory: prior?.failureCategory ?? null
+            lastFailureCategory: prior?.failureCategory ?? null,
+            infrastructureCategory: null,
+            infrastructureCode: null
           };
           results.set(task.taskDigest, result);
           await writeLedger();
@@ -329,21 +371,24 @@ export const qualifyOracleCorpusCollection = async (input: {
       if (outcome.status === "failed" || outcome.status === "cancelled") {
         const digest = outcome.id.split(":").slice(1).join(":");
         const task = taskFromPreflight(input.preflight, digest);
+        const failure = safeInfrastructureFailure(outcome.error);
         results.set(digest, {
           taskDigest: digest,
           taskName: task.name,
           status: "infrastructure_failed",
-          attempts: 0,
+          attempts: attemptsStarted.get(digest) ?? 0,
           corpusAttestationSha256: null,
           lastReward: null,
-          lastFailureCategory: "infrastructure"
+          lastFailureCategory: "infrastructure",
+          infrastructureCategory: failure.category,
+          infrastructureCode: failure.code
         });
       }
     }
     await writeLedger();
     return {
       runDirectory: created.directory.root,
-      corpusDirectory: input.corpusDirectory,
+      corpusDirectory,
       results: [...results.values()].sort((left, right) =>
         left.taskDigest.localeCompare(right.taskDigest)
       )

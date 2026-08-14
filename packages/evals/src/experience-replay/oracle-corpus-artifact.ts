@@ -271,7 +271,7 @@ const existingAncestor = async (candidate: string): Promise<string> => {
   }
 };
 
-const admitCorpusDirectory = async (
+export const admitOracleCorpusDirectory = async (
   location: OracleCorpusArtifactLocation,
   create: boolean
 ): Promise<string> => {
@@ -415,7 +415,7 @@ export const persistOracleCorpusArtifact = async (
     attestationSha256: attest(withoutAttestation)
   };
   validatePayload(entry, identity);
-  const root = await admitCorpusDirectory(location, true);
+  const root = await admitOracleCorpusDirectory(location, true);
   await writeTextArtifactAtomic(
     root,
     ORACLE_CORPUS_ARTIFACT_FILE,
@@ -430,7 +430,7 @@ export const loadOracleCorpusArtifact = async (
   location: OracleCorpusArtifactLocation,
   expectedIdentity: OracleCorpusArtifactIdentity
 ): Promise<OracleCorpusArtifactEntry> => {
-  const root = await admitCorpusDirectory(location, false);
+  const root = await admitOracleCorpusDirectory(location, false);
   const artifactPath = path.join(root, ORACLE_CORPUS_ARTIFACT_FILE);
   const metadata = await lstat(artifactPath);
   if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) {
@@ -451,7 +451,7 @@ export const loadOracleCorpusArtifact = async (
 export const inspectOracleCorpusArtifact = async (
   location: OracleCorpusArtifactLocation
 ): Promise<OracleCorpusArtifactEntry> => {
-  const root = await admitCorpusDirectory(location, false);
+  const root = await admitOracleCorpusDirectory(location, false);
   const artifactPath = path.join(root, ORACLE_CORPUS_ARTIFACT_FILE);
   const metadata = await lstat(artifactPath);
   if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) {

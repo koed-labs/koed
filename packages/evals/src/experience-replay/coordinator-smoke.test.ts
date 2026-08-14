@@ -31,6 +31,7 @@ import { createOracleCorpusCollectionManifest } from "./oracle-corpus-collection
 import { mergeOracleCampaignRuns } from "./campaign-merge.js";
 import { qualifyOracleCorpusCollection } from "./oracle-corpus-qualifier.js";
 import { parseOracleQualificationManifest } from "./oracle-qualification-manifest.js";
+import { HarborClientError } from "./harbor-client.js";
 
 const productAttestation = {
   schema: "koed-experience-replay-local-product-template-v1",
@@ -1262,6 +1263,46 @@ describe("unified experience replay coordinator", () => {
           })
       );
     expect(qualifiedCollection.entries.has(task.task_digest)).toBe(true);
+
+    const failedQualification = campaignConfig(
+      path.join(root, "qualification-failure-run")
+    );
+    const failedDependencies = fakeDependencies([]);
+    failedDependencies.runSource = async () => {
+      throw new HarborClientError(
+        "process-exit",
+        "Harbor runner exited unsuccessfully: OUTPUT_ALREADY_EXISTS"
+      );
+    };
+    const failed = await qualifyOracleCorpusCollection({
+      preflight: {
+        ...base,
+        config: failedQualification,
+        runPlan: createOracleCorpusQualificationRunPlan(
+          failedQualification,
+          [task.task_digest],
+          qualificationManifest.manifestSha256,
+          2
+        ),
+        pins: { ...base.pins, selectedTasks: [task] },
+        recordedRunAttestation: {
+          taskImages: [corpusIdentity.taskImage],
+          hostCodex: base.recordedRunAttestation?.hostCodex as never,
+          containerCodex: base.recordedRunAttestation?.containerCodex as never
+        }
+      },
+      dependencies: failedDependencies,
+      manifest: qualificationManifest,
+      corpusDirectory: path.join(root, "failed-qualified-corpora")
+    });
+    expect(failed.results).toEqual([
+      expect.objectContaining({
+        status: "infrastructure_failed",
+        attempts: 1,
+        infrastructureCategory: "process-exit",
+        infrastructureCode: "OUTPUT_ALREADY_EXISTS"
+      })
+    ]);
   }, 30_000);
 
   it("rejects database clone reuse and revokes through the Harbor lifecycle", async () => {
