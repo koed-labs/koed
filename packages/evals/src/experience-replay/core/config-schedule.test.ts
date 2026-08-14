@@ -252,7 +252,7 @@ describe("canonical hashing and Williams schedule", () => {
     ).toEqual(schedule);
   });
 
-  it("balances ten repeated oracle units across all three-arm orders", () => {
+  it("balances ten repeated oracle units across the four-arm Williams rows", () => {
     const schedule = createReplaySchedule(
       ["task"],
       10,
@@ -265,14 +265,7 @@ describe("canonical hashing and Williams schedule", () => {
       seed: "repeated-oracle",
       conditions: ORACLE_REPEATED_CONDITIONS
     });
-    expect(ORACLE_REPEATED_ROWS).toEqual([
-      "ABC",
-      "ACB",
-      "BAC",
-      "BCA",
-      "CAB",
-      "CBA"
-    ]);
+    expect(ORACLE_REPEATED_ROWS).toEqual(["ABDC", "BCAD", "CDBA", "DACB"]);
     const counts = ORACLE_REPEATED_ROWS.map(
       (row) =>
         schedule.entries.filter((entry) => entry.sequenceRow === row).length

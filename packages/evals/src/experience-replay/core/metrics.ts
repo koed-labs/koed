@@ -171,7 +171,10 @@ export const ORACLE_REQUIRED_COMPARISONS: readonly Comparison[] = [
 ];
 /** Prespecified one-task calibration contrasts; intervals are descriptive. */
 export const ORACLE_REPEATED_REQUIRED_COMPARISONS: readonly Comparison[] = [
+  { left: "direct_guidance", right: "relevant_full" },
   { left: "direct_guidance", right: "relevant_guidance" },
+  { left: "relevant_full", right: "relevant_guidance" },
+  { left: "relevant_full", right: "empty" },
   { left: "relevant_guidance", right: "empty" },
   { left: "direct_guidance", right: "empty" }
 ];

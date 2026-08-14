@@ -18,8 +18,9 @@ export const ORACLE_CONDITIONS = [
 ] as const;
 export const ORACLE_REPEATED_CONDITIONS = [
   "direct_guidance",
-  "empty",
-  "relevant_guidance"
+  "relevant_full",
+  "relevant_guidance",
+  "empty"
 ] as const;
 export type NaturalReplayCondition = (typeof NATURAL_CONDITIONS)[number];
 export type OracleReplayCondition = (typeof ORACLE_CONDITIONS)[number];
@@ -47,14 +48,7 @@ export const ORACLE_WILLIAMS_ROWS = [
   "EFDACB",
   "FAEBDC"
 ] as const;
-export const ORACLE_REPEATED_ROWS = [
-  "ABC",
-  "ACB",
-  "BAC",
-  "BCA",
-  "CAB",
-  "CBA"
-] as const;
+export const ORACLE_REPEATED_ROWS = ["ABDC", "BCAD", "CDBA", "DACB"] as const;
 
 export type ReplayConditionSet =
   | readonly NaturalReplayCondition[]

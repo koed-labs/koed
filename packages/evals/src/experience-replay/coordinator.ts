@@ -1196,7 +1196,7 @@ export const runExperienceReplay = async (
             conditionUsesKoed
           ) as readonly MemoryReplayCondition[])
         : oracleRepeated
-          ? ["empty", "relevant_guidance"]
+          ? ["empty", "relevant_guidance", "relevant_full"]
           : ["empty", "placebo", "relevant"];
     for (const task of replayTasks) {
       for (const condition of memoryConditions) {
@@ -1227,19 +1227,26 @@ export const runExperienceReplay = async (
           oracleSourceAttemptId = relevant
             ? `oracle:${condition}:${task.taskDigest}`
             : `oracle:distractor:${task.taskDigest}`;
-        } else if (oracleRepeated && condition === "relevant_guidance") {
+        } else if (
+          oracleRepeated &&
+          (condition === "relevant_guidance" || condition === "relevant_full")
+        ) {
           const corpus = oracleCorpora.get(task.taskDigest);
           if (!corpus)
             throw new Error(
               `Missing oracle corpus artifact corpus for ${task.name}`
             );
-          oracleSourceAttemptId = `oracle:relevant_guidance:${task.taskDigest}`;
+          oracleSourceAttemptId = `oracle:${condition}:${task.taskDigest}`;
+          const artifact =
+            condition === "relevant_full"
+              ? corpus.fullExperience
+              : corpus.guidanceOnly;
           oracleSource = materializeSanitizedAtifTrajectory(
-            corpus.guidanceOnly.sanitization.trajectory,
+            artifact.sanitization.trajectory,
             {
               taskDigest: task.taskDigest,
               sourceAttemptId: oracleSourceAttemptId,
-              sourceManifest: corpus.guidanceOnly.sanitization.manifest
+              sourceManifest: artifact.sanitization.manifest
             }
           );
         }
@@ -1907,7 +1914,8 @@ export const runExperienceReplay = async (
         if (
           outcome.reward === null ||
           (outcome.interactions?.memoryAnswerCalls ?? 0) < 1 ||
-          (outcome.condition === "relevant_guidance" &&
+          ((outcome.condition === "relevant_guidance" ||
+            outcome.condition === "relevant_full") &&
             ((outcome.interactions?.memoryAnswerFailures ?? 0) >=
               (outcome.interactions?.memoryAnswerCalls ?? 0) ||
               (outcome.recall?.evidenceCount ?? 0) < 1))

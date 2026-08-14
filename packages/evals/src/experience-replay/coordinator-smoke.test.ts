@@ -955,7 +955,7 @@ describe("unified experience replay coordinator", () => {
     ).rejects.toThrow("brief differs from the run plan");
   }, 30_000);
 
-  it("hydrates a private oracle corpus for the repeated three-arm study", async () => {
+  it("hydrates a private oracle corpus for the repeated four-arm study", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "koed-oracle-repeat-"));
     const task = {
       name: "terminal-bench/synthetic-alpha",
@@ -1059,6 +1059,11 @@ describe("unified experience replay coordinator", () => {
           corpusArtifact.corpus.guidanceOnly.sanitization.canonicalJson
         );
       }
+      if (input.condition === "relevant_full") {
+        expect(input.sanitizedSource?.canonicalJson).toBe(
+          corpusArtifact.corpus.fullExperience.sanitization.canonicalJson
+        );
+      }
       return prepareTemplate(input);
     };
     const repeatedAdmitted = {
@@ -1073,11 +1078,11 @@ describe("unified experience replay coordinator", () => {
       oracleCorpusArtifactEntry: corpusArtifact
     });
 
-    expect(result.replayAttemptCount).toBe(30);
+    expect(result.replayAttemptCount).toBe(40);
     expect(events.some((event) => event.startsWith("source:"))).toBe(false);
     expect(
       events.filter((event) => event.startsWith("template:"))
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(
       replayInputs.filter((input) => input.condition === "direct_guidance")
     ).toEqual(

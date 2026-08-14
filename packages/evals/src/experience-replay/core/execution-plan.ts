@@ -66,6 +66,33 @@ const assertLunaLow = (config: ResolvedExperienceReplayConfig): void => {
   }
 };
 
+const assertLunaHigh = (config: ResolvedExperienceReplayConfig): void => {
+  const models = [
+    config.coding_agent,
+    config.memory_answer.model,
+    config.lcm_summary.model,
+    config.session_title.model
+  ];
+  if (
+    models.some(
+      (model) =>
+        model.id !== "gpt-5.6-luna" || model.reasoning_effort !== "high"
+    )
+  ) {
+    throw new Error(
+      "Full-profile oracle repeated study requires GPT-5.6 Luna with high reasoning for every AI Client workflow"
+    );
+  }
+  if (
+    config.trajectory_judge.model.id !== "gpt-5.6-luna" ||
+    config.trajectory_judge.model.reasoning_effort !== "medium"
+  ) {
+    throw new Error(
+      "Full-profile oracle repeated study requires GPT-5.6 Luna with medium reasoning for trajectory judging"
+    );
+  }
+};
+
 export const createBenchmarkRunPlan = (
   config: ResolvedExperienceReplayConfig,
   taskDigests: readonly string[],
@@ -171,6 +198,7 @@ export const createOracleSeededRepeatedStudyRunPlan = (
     throw new Error("Oracle repeated study requires concurrency 1");
   }
   if (config.profile === "quick") assertLunaLow(config);
+  else assertLunaHigh(config);
   if (!taskDigest) {
     throw new Error("Oracle repeated study task digest must not be empty");
   }
@@ -188,7 +216,7 @@ export const createOracleSeededRepeatedStudyRunPlan = (
     sourceTaskDigests: [taskDigest],
     replayTargetTaskDigests: [taskDigest],
     replayAttemptsPerCondition: repeats,
-    codingAgentAttemptCount: repeats * 3,
+    codingAgentAttemptCount: repeats * 4,
     terminalBenchEstimate: false,
     oracleCorpusManifestSha256
   });
@@ -225,7 +253,7 @@ export const verifyExperienceReplayRunPlan = (
       (plan.kind === "oracle_seeded_product_proof"
         ? 6
         : plan.kind === "oracle_seeded_repeated_study"
-          ? 3
+          ? 4
           : 4) *
       plan.replayAttemptsPerCondition;
   if (plan.codingAgentAttemptCount !== expectedAttempts) {

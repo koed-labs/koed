@@ -8,7 +8,7 @@ import {
   verifyExperienceReplayRunPlan
 } from "./execution-plan.js";
 
-const config = (profile: "smoke" | "quick" = "quick") =>
+const config = (profile: "smoke" | "quick" | "full" = "quick") =>
   resolveExperienceReplayConfig({
     version: 1,
     profile,
@@ -20,19 +20,31 @@ const config = (profile: "smoke" | "quick" = "quick") =>
       container_sha256: "b".repeat(64),
       container_code_mode_host_sha256: "c".repeat(64)
     },
-    coding_agent: { id: "gpt-5.6-luna", reasoning_effort: "low" },
+    coding_agent: {
+      id: "gpt-5.6-luna",
+      reasoning_effort: profile === "full" ? "high" : "low"
+    },
     memory_answer: {
-      model: { id: "gpt-5.6-luna", reasoning_effort: "low" },
+      model: {
+        id: "gpt-5.6-luna",
+        reasoning_effort: profile === "full" ? "high" : "low"
+      },
       prompt_version: "test-v1",
       output_schema_version: "test-v1"
     },
     lcm_summary: {
-      model: { id: "gpt-5.6-luna", reasoning_effort: "low" },
+      model: {
+        id: "gpt-5.6-luna",
+        reasoning_effort: profile === "full" ? "high" : "low"
+      },
       prompt_version: "test-v1",
       output_schema_version: "test-v1"
     },
     session_title: {
-      model: { id: "gpt-5.6-luna", reasoning_effort: "low" },
+      model: {
+        id: "gpt-5.6-luna",
+        reasoning_effort: profile === "full" ? "high" : "low"
+      },
       prompt_version: "test-v1",
       output_schema_version: "test-v1"
     },
@@ -80,9 +92,9 @@ const config = (profile: "smoke" | "quick" = "quick") =>
       max_output_tokens_per_call: 1,
       max_memory_answer_calls_per_attempt: 1,
       max_preparation_calls_per_source: 1,
-      ...(profile === "quick" ? { provider_spending_limit_usd: 1 } : {})
+      ...(profile !== "smoke" ? { provider_spending_limit_usd: 1 } : {})
     },
-    ...(profile === "quick" ? { paid_cost_stop_usd: 1 } : {}),
+    ...(profile !== "smoke" ? { paid_cost_stop_usd: 1 } : {}),
     concurrency: 1
   });
 
@@ -146,7 +158,7 @@ describe("Experience Replay immutable run plans", () => {
     expect(() => verifyExperienceReplayRunPlan(plan)).not.toThrow();
   });
 
-  it("records a bounded runtime repeat count for the three-arm calibration", () => {
+  it("records a bounded runtime repeat count for the four-arm calibration", () => {
     const digest = `sha256:${"d".repeat(64)}`;
     const plan = createOracleSeededRepeatedStudyRunPlan(
       config(),
@@ -160,7 +172,7 @@ describe("Experience Replay immutable run plans", () => {
       sourceTaskDigests: [digest],
       replayTargetTaskDigests: [digest],
       replayAttemptsPerCondition: 10,
-      codingAgentAttemptCount: 30,
+      codingAgentAttemptCount: 40,
       oracleCorpusManifestSha256: "b".repeat(64)
     });
     expect(() => verifyExperienceReplayRunPlan(plan)).not.toThrow();
@@ -172,8 +184,35 @@ describe("Experience Replay immutable run plans", () => {
     );
     expect(shortPlan).toMatchObject({
       replayAttemptsPerCondition: 3,
-      codingAgentAttemptCount: 9
+      codingAgentAttemptCount: 12
     });
+    const highConfig = config("full");
+    const highPlan = createOracleSeededRepeatedStudyRunPlan(
+      highConfig,
+      digest,
+      "b".repeat(64),
+      3
+    );
+    expect(highPlan).toMatchObject({
+      profile: "full",
+      replayAttemptsPerCondition: 3,
+      codingAgentAttemptCount: 12
+    });
+    expect(() => verifyExperienceReplayRunPlan(highPlan)).not.toThrow();
+    expect(() =>
+      createOracleSeededRepeatedStudyRunPlan(
+        {
+          ...highConfig,
+          memory_answer: {
+            ...highConfig.memory_answer,
+            model: { id: "gpt-5.6-luna", reasoning_effort: "low" }
+          }
+        },
+        digest,
+        "b".repeat(64),
+        1
+      )
+    ).toThrow("high reasoning");
     expect(() =>
       createOracleSeededRepeatedStudyRunPlan(
         config(),

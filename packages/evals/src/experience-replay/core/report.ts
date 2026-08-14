@@ -83,8 +83,8 @@ const scopeFor = (
     return "Manual one-task, six-arm oracle-seeded product-path smoke proof; not a benchmark estimate or efficacy claim.";
   }
   if (executionKind === "oracle_seeded_repeated_study") {
-    const repeats = attemptedReplayCount / (taskCount * 3);
-    return `One-task, three-arm, ${repeats}-repeat oracle-seeded calibration study; estimates stochastic behavior for this task only, not leaderboard or task-population performance.`;
+    const repeats = attemptedReplayCount / (taskCount * 4);
+    return `One-task, four-arm, ${repeats}-repeat oracle-seeded calibration study; estimates stochastic behavior for this task only, not leaderboard or task-population performance.`;
   }
   switch (profile) {
     case "smoke":
@@ -357,6 +357,7 @@ const comparisonNames = [
   "relevant_full - relevant_guidance",
   "relevant_full - relevant_trace",
   "irrelevant - empty",
+  "direct_guidance - relevant_full",
   "direct_guidance - relevant_guidance",
   "direct_guidance - empty"
 ] as const;

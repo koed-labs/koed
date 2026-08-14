@@ -101,12 +101,13 @@ pnpm --filter @koed/evals eval:experience-replay -- \
 
 After the private corpus exists, the repeated calibration reuses it without
 another source attempt. It runs a runtime-selected 1 to 100 matched repeats of
-three arms: direct developer guidance without Koed, the same guidance delivered
-through Koed Memory, and an empty Koed baseline. The default and recommended
-calibration count is 10; smaller counts are functional or directional checks.
-The scheduler distributes attempts over all six arm orders as evenly as the
-selected count permits. Both Koed arms must make exactly one explicit
-project-scoped `memory_answer` call with `response_detail: "answer_only"`.
+four arms: direct developer guidance without Koed, full successful experience
+through Koed Memory, guidance-only Koed Memory, and an empty Koed baseline. The
+default and recommended calibration count is 10; smaller counts are functional
+or directional checks. The scheduler distributes attempts over a balanced
+four-arm Williams design as evenly as the selected count permits. Every Koed
+arm must make exactly one explicit project-scoped `memory_answer` call with
+`response_detail: "answer_only"`.
 
 ```bash
 pnpm --filter @koed/evals eval:experience-replay -- \
@@ -121,11 +122,13 @@ pnpm --filter @koed/evals eval:experience-replay -- \
 
 This is a one-task stochastic calibration, not a Terminal-Bench score or an
 estimate across tasks. The direct arm establishes whether the configured model
-can use the known guidance at all. With GPT-5.6 Luna low, zero or sparse direct
-success is plausible and limits what can be inferred about retrieval. A later
-run may use a stronger explicitly pinned coding-agent policy while reusing the
-same corpus identity; corpus generation must not be repeated merely to change
-the replay model.
+can use the known guidance at all. The full-experience arm separates retrieval
+fidelity from the coding agent's ability to act on guidance alone. The quick
+policy uses GPT-5.6 Luna low; an explicit full-profile calibration policy uses
+GPT-5.6 Luna high for the coding agent and AI Client memory workflows, with
+Luna medium retained for blind trajectory judging. Both policies reuse the same
+corpus identity; corpus generation must not be repeated merely to change the
+replay model.
 
 ## Deterministic Smoke
 

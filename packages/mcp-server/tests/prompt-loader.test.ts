@@ -45,7 +45,11 @@ describe("prompt loader", () => {
     const prompt = loadPrompt("memory-answer-worker");
 
     expect(prompt.id).toBe("memory-answer-worker");
-    expect(prompt.version).toBe("memory-answer-worker-v5");
+    expect(prompt.version).toBe("memory-answer-worker-v6");
+    expect(prompt.body).toContain(
+      "do not preemptively decide which directly useful details"
+    );
+    expect(prompt.body).toContain("working code or patches");
     expect(prompt.overridden).toBe(false);
     expect(prompt.body).toContain(
       "You are a private local memory/RAG answer worker"
@@ -67,7 +71,7 @@ describe("prompt loader", () => {
     );
     expect(prompt.body).toContain("concise but operationally complete");
     expect(prompt.body).toContain(
-      "Do not replace operationally necessary specifics with broad category labels"
+      "Do not reduce a concrete working record to broad advice merely for brevity"
     );
   });
 

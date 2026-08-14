@@ -636,7 +636,7 @@ export const preflightExperienceReplay = async ({
       (executionKind === "oracle_seeded_product_proof"
         ? 6
         : executionKind === "oracle_seeded_repeated_study"
-          ? 3
+          ? 4
           : 4) *
       runPlan.replayAttemptsPerCondition,
     maximumTrajectoryBytes: config.admission.maximum_trajectory_bytes,
