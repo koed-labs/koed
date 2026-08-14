@@ -175,6 +175,7 @@ export const createDeterministicSmokeHarborExecutor =
     ) as HarborRunRequest;
     await lifecycle(invocation, request, "agent_started");
     let freezeManifestSha256: string | undefined;
+    let replayTrajectorySha256: string | undefined;
     if (request.attempt_kind === "source") {
       const marker = `smoke evidence for ${request.task_name}`;
       const trajectory = `${JSON.stringify({
@@ -270,6 +271,89 @@ export const createDeterministicSmokeHarborExecutor =
           await callSmokeMemoryAnswer(url, token, request.task_name)
         );
       }
+      const trajectory = `${JSON.stringify({
+        schema_version: "ATIF-v1.7",
+        session_id: `replay-${request.task_name}`,
+        agent: { name: "codex", version: "deterministic-smoke" },
+        steps: [
+          {
+            step_id: 1,
+            timestamp: "2026-08-12T00:00:00.000Z",
+            source: "user",
+            message: `Complete ${request.task_name}`
+          },
+          {
+            step_id: 2,
+            timestamp: "2026-08-12T00:00:01.000Z",
+            source: "agent",
+            message: `Completed ${request.task_name}`
+          }
+        ]
+      })}\n`;
+      const trajectoryPath = path.join(
+        request.run_root,
+        request.replay_trajectory_path
+      );
+      await mkdir(path.dirname(trajectoryPath), { recursive: true });
+      await writeFile(trajectoryPath, trajectory, { flag: "wx", mode: 0o600 });
+      replayTrajectorySha256 = digest(trajectory);
+      const manifest = {
+        schema_version: "koed-harbor-freeze-v1",
+        adapter: {
+          name: "harbor-codex",
+          version: "0.21.0",
+          commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
+          raw_reasoning_capture_disabled: true
+        },
+        source_attempt: {
+          trial_id: `smoke-replay-${safeId(request.task_name)}`,
+          task_name: request.task_name
+        },
+        lifecycle: [
+          {
+            ordinal: 1,
+            event: "agent_started",
+            timestamp: "2026-08-12T00:00:00.000Z"
+          },
+          {
+            ordinal: 2,
+            event: "agent_ended",
+            timestamp: "2026-08-12T00:00:02.000Z"
+          },
+          {
+            ordinal: 3,
+            event: "trajectory_materialized",
+            timestamp: "2026-08-12T00:00:03.000Z"
+          },
+          {
+            ordinal: 4,
+            event: "verification_started",
+            timestamp: "2026-08-12T00:00:04.000Z"
+          }
+        ],
+        cutoff: {
+          agent_last_native_event_ordinal: null,
+          step_identities: [1, 2].map((stepId) => ({
+            step_id: stepId,
+            identity_sha256: digest(`${stepId}:none`),
+            last_native_event_ordinal: null
+          }))
+        },
+        frozen_artifact: {
+          relative_path: request.replay_trajectory_path,
+          sha256: replayTrajectorySha256,
+          size_bytes: Buffer.byteLength(trajectory),
+          file_identity: { device: 1, inode: 1 }
+        }
+      };
+      const manifestText = `${JSON.stringify(manifest)}\n`;
+      const manifestPath = path.join(
+        request.run_root,
+        request.freeze_manifest_path
+      );
+      await mkdir(path.dirname(manifestPath), { recursive: true });
+      await writeFile(manifestPath, manifestText, { flag: "wx", mode: 0o600 });
+      freezeManifestSha256 = digest(manifestText);
     }
     await lifecycle(invocation, request, "agent_ended");
     await lifecycle(invocation, request, "trial_ended");
@@ -283,6 +367,9 @@ export const createDeterministicSmokeHarborExecutor =
       job_lock_sha256: `sha256:${"3".repeat(64)}`,
       ...(freezeManifestSha256
         ? { freeze_manifest_sha256: freezeManifestSha256 }
+        : {}),
+      ...(replayTrajectorySha256
+        ? { replay_trajectory_sha256: replayTrajectorySha256 }
         : {}),
       result: {
         job_id: `smoke-${request.attempt_kind}-${safeId(request.task_name)}`,
