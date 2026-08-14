@@ -506,6 +506,14 @@ describe("report and disclosure", () => {
         intervals: undefined
       })
     ).toThrow("require");
+    expect(() =>
+      createMachineReport({
+        ...machine,
+        executionKind: "oracle_seeded_repeated_study",
+        profile: "full",
+        intervals: undefined
+      })
+    ).not.toThrow();
   });
 
   it("projects the publication schema while retaining statistical and resource metrics", () => {

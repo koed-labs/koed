@@ -2255,6 +2255,10 @@ const tasksFromManifest = async (
     confirmPaidRun: config.profile !== "smoke",
     executionKind: manifest.run_plan.kind,
     oracleBriefSha256: manifest.run_plan.oracleBriefSha256,
+    oracleCorpusManifestSha256: manifest.run_plan.oracleCorpusManifestSha256,
+    ...(manifest.run_plan.kind === "oracle_seeded_repeated_study"
+      ? { oracleRepeats: manifest.run_plan.replayAttemptsPerCondition }
+      : {}),
     codexAuthMode: manifest.run_plan.codexAuthMode
   });
   const tasks = selectedTasks(admitted);

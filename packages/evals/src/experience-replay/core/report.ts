@@ -155,12 +155,14 @@ export const createMachineReport = (
     );
   }
   if (
+    input.executionKind === "benchmark_profile" &&
     (input.profile === "smoke" || input.profile === "quick") &&
     input.intervals !== undefined
   ) {
     throw new Error(`${input.profile} reports must omit confidence intervals`);
   }
   if (
+    input.executionKind === "benchmark_profile" &&
     (input.profile === "standard" || input.profile === "full") &&
     input.intervals === undefined
   ) {
