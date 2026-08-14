@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -131,7 +131,21 @@ const fixture = () => {
     }
   );
   const prepareTemplate = vi.fn(async () => localTemplateHandle);
-  const adoptTemplate = vi.fn(async () => localTemplateHandle);
+  const prepareCampaignTemplate = vi.fn(async () => localTemplateHandle);
+  const campaignTemplateLockCalls: string[] = [];
+  const withCampaignTemplateLock = async <T>(
+    contentIdentity: string,
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    campaignTemplateLockCalls.push(contentIdentity);
+    return operation();
+  };
+  const adoptTemplate = vi.fn(
+    async (
+      _template: LocalProductTemplateHandle,
+      _cachedContentIdentity?: string
+    ) => localTemplateHandle
+  );
   const provisionClose = vi.fn(async () => ({
     api: {
       pid: 11,
@@ -147,12 +161,18 @@ const fixture = () => {
     close: vi.fn()
   };
   const cloneForReplay = vi.fn(
-    async (): Promise<LocalProductReplayProvision> => ({
+    async (
+      template: LocalProductTemplateHandle,
+      targetTaskDigest?: string
+    ): Promise<LocalProductReplayProvision> => ({
       cloneId: "koed_eval_clone_1",
       databaseUrl: "postgres://eval:secret@127.0.0.1/koed_eval_clone_1",
       actor: { userId: "user-1" },
       authorization: "Bearer api-token",
       api: api as LocalProductReplayProvision["api"],
+      taskDigest: targetTaskDigest ?? template.attestation.taskDigest,
+      projectId: template.attestation.project.id,
+      project: template.attestation.project,
       templateAttestationHash: `sha256:${"c".repeat(64)}`,
       close: provisionClose
     })
@@ -215,6 +235,8 @@ const fixture = () => {
     harbor: { runSource, runReplay },
     product: {
       prepareTemplate,
+      prepareCampaignTemplate,
+      withCampaignTemplateLock,
       adoptTemplate,
       cloneForReplay,
       close: productClose
@@ -227,6 +249,9 @@ const fixture = () => {
     runSource,
     runReplay,
     prepareTemplate,
+    prepareCampaignTemplate,
+    withCampaignTemplateLock,
+    campaignTemplateLockCalls,
     adoptTemplate,
     cloneForReplay,
     productClose,
@@ -292,6 +317,80 @@ describe("Experience Replay coordinator dependency factory", () => {
     });
     expect(prepared.preparationCostUsd).toBe(0);
     await dependencies.teardown();
+  });
+
+  it("builds one recorded campaign cache entry and re-adopts it on reuse", async () => {
+    const f = fixture();
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-campaign-cache-"));
+    const campaignConfig = {
+      ...config,
+      profile: "quick",
+      semantic_config_hash: `sha256:${"f".repeat(64)}`,
+      lcm_summary: {
+        model: { id: "gpt-5.6-luna", reasoning_effort: "low" },
+        prompt_version: "lcm-v1",
+        output_schema_version: "lcm-summary-v1"
+      },
+      memory_answer: {
+        model: { id: "gpt-5.6-luna", reasoning_effort: "low" },
+        prompt_version: "memory-answer-v9"
+      },
+      embedding: {
+        model: "qwen3-0.6b",
+        artifact_sha256: `sha256:${"e".repeat(64)}`,
+        tokenizer: "qwen3",
+        transform: "query-prefix-v1",
+        dimensions: 1024
+      }
+    } as unknown as ResolvedExperienceReplayConfig;
+    const dependencies = createExperienceReplayCoordinatorDependencies({
+      ...f.options,
+      mode: "recorded",
+      providerApiKey: "test-provider-key",
+      recordedEmbedding: {
+        url: "http://127.0.0.1:18000",
+        token: "embedding-token",
+        model: "qwen3-0.6b",
+        dimensions: 1024,
+        modelArtifactHash: `sha256:${"e".repeat(64)}`
+      },
+      preparationCostUsd: () => 1.25,
+      runScheduledLcmJobs: vi.fn(),
+      productRuntimeDependencies: { startAppServer: vi.fn() as never },
+      containerCodexBinary: "/fixture/codex",
+      campaignTemplateCacheDirectory: path.join(root, "cache"),
+      repositoryCommit: "a".repeat(40)
+    });
+    const input = {
+      tasks: [
+        {
+          task,
+          corpusAttestationSha256: `sha256:${"c".repeat(64)}`,
+          sourceAttemptId: `oracle:relevant_full:${task.taskDigest}`,
+          sanitizedSource: sanitized
+        }
+      ],
+      corpusCollectionManifestSha256: `sha256:${"d".repeat(64)}`,
+      runRoot: "/run",
+      config: campaignConfig
+    };
+    try {
+      const built = await dependencies.prepareCampaignTemplate!(input);
+      const reused = await dependencies.prepareCampaignTemplate!(input);
+
+      expect(built.preparationCostUsd).toBe(1.25);
+      expect(reused.preparationCostUsd).toBe(0);
+      expect(f.prepareCampaignTemplate).toHaveBeenCalledOnce();
+      expect(f.adoptTemplate).toHaveBeenCalledOnce();
+      expect(f.adoptTemplate.mock.calls[0]?.[1]).toMatch(
+        /^sha256:[a-f0-9]{64}$/u
+      );
+      expect(f.campaignTemplateLockCalls).toHaveLength(2);
+      expect(new Set(f.campaignTemplateLockCalls)).toHaveLength(1);
+    } finally {
+      await dependencies.teardown({ preserveTemplates: true });
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("re-attests persisted templates without reconstructing credentials", async () => {

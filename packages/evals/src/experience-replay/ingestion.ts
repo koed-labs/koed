@@ -173,6 +173,16 @@ export const normalizedImportPayload = ({
   };
 };
 
+export const normalizedImportSourceIdentity = (input: {
+  taskDigest: string;
+  sourceAttemptId: string;
+  atifIdentity: string;
+  sequence: number;
+}): string =>
+  `${NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapter}:${NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapterVersion}:${sha256(
+    canonicalize(input)
+  )}`;
+
 export const importNormalizedAttempt = async (
   input: ImportNormalizedAttemptInput
 ): Promise<{
@@ -194,14 +204,12 @@ export const importNormalizedAttempt = async (
     );
   }
   for (const [index, item] of input.items.entries()) {
-    const expectedSourceIdentity = `${NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapter}:${NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapterVersion}:${sha256(
-      canonicalize({
-        taskDigest: input.taskDigest,
-        sourceAttemptId: input.sourceAttemptId,
-        atifIdentity: item.atifIdentity,
-        sequence: item.sequence
-      })
-    )}`;
+    const expectedSourceIdentity = normalizedImportSourceIdentity({
+      taskDigest: input.taskDigest,
+      sourceAttemptId: input.sourceAttemptId,
+      atifIdentity: item.atifIdentity,
+      sequence: item.sequence
+    });
     if (
       item.sequence !== index ||
       item.adapterName !== NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapter ||

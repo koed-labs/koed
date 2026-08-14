@@ -240,6 +240,257 @@ describe("experience replay database template guards", () => {
     ).toContain('"kind":"template"');
   });
 
+  it("adopts cached templates only by exact identity and preserves them on close", async () => {
+    const template = "koed_eval_cached_template";
+    const identity = `sha256:${"a".repeat(64)}`;
+    const marker = JSON.stringify({
+      schema: "koed-experience-replay-database-owner-v1",
+      ownerId: "publisher-run",
+      kind: "cached-template",
+      contentIdentity: identity
+    });
+    const statements: string[] = [];
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      statements.push(statement);
+      if (statement.startsWith("SELECT shobj_description")) {
+        return { rows: [{ marker }], rowCount: 1 } as never;
+      }
+      if (statement.startsWith("SELECT datallowconn")) {
+        return {
+          rows: [{ datallowconn: false, datistemplate: true }],
+          rowCount: 1
+        } as never;
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark",
+      ownerId: "consumer-run"
+    });
+
+    await expect(
+      manager.adoptCachedTemplate({
+        templateName: template,
+        contentIdentity: identity
+      })
+    ).resolves.toEqual({
+      name: template,
+      allowConnections: false,
+      isTemplate: true
+    });
+    await expect(
+      manager.adoptCachedTemplate({
+        templateName: template,
+        contentIdentity: `sha256:${"b".repeat(64)}`
+      })
+    ).rejects.toThrow("content identity mismatch");
+    await expect(manager.drop(template)).rejects.toThrow("not owned");
+    await manager.close();
+
+    expect(
+      statements.some((statement) =>
+        statement.includes(`DROP DATABASE IF EXISTS "${template}"`)
+      )
+    ).toBe(false);
+  });
+
+  it("fails closed when a cached template is no longer frozen", async () => {
+    const template = "koed_eval_cached_unfrozen";
+    const identity = `sha256:${"c".repeat(64)}`;
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      if (statement.startsWith("SELECT shobj_description")) {
+        return {
+          rows: [
+            {
+              marker: JSON.stringify({
+                schema: "koed-experience-replay-database-owner-v1",
+                ownerId: "publisher",
+                kind: "cached-template",
+                contentIdentity: identity
+              })
+            }
+          ],
+          rowCount: 1
+        } as never;
+      }
+      if (statement.startsWith("SELECT datallowconn")) {
+        return {
+          rows: [{ datallowconn: true, datistemplate: true }],
+          rowCount: 1
+        } as never;
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark"
+    });
+    await expect(
+      manager.cloneCachedTemplate({
+        templateName: template,
+        cloneName: "koed_eval_cached_clone",
+        contentIdentity: identity
+      })
+    ).rejects.toThrow("not immutably frozen");
+    await manager.close();
+  });
+
+  it("removes only an orphaned cached template with the exact content identity", async () => {
+    const template = "koed_eval_campaign_orphan";
+    const identity = `sha256:${"e".repeat(64)}`;
+    const statements: string[] = [];
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      statements.push(statement);
+      if (statement.startsWith("SELECT EXISTS(")) {
+        return { rows: [{ exists: true }], rowCount: 1 } as never;
+      }
+      if (statement.startsWith("SELECT shobj_description")) {
+        return {
+          rows: [
+            {
+              marker: JSON.stringify({
+                schema: "koed-experience-replay-database-owner-v1",
+                ownerId: "interrupted-builder",
+                kind: "cached-template",
+                contentIdentity: identity
+              })
+            }
+          ],
+          rowCount: 1
+        } as never;
+      }
+      if (statement.startsWith("SELECT datallowconn")) {
+        return {
+          rows: [{ datallowconn: false, datistemplate: true }],
+          rowCount: 1
+        } as never;
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "connect").mockResolvedValue({
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      release: vi.fn()
+    } as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark"
+    });
+
+    await expect(
+      manager.evictCachedTemplateIfExists({
+        templateName: template,
+        contentIdentity: identity
+      })
+    ).resolves.toBe(true);
+    await manager.close();
+
+    expect(statements).toContain(
+      `DROP DATABASE IF EXISTS "${template}" WITH (FORCE)`
+    );
+  });
+
+  it("refuses to remove an orphan carrying another cache identity", async () => {
+    const template = "koed_eval_campaign_foreign";
+    const requestedIdentity = `sha256:${"f".repeat(64)}`;
+    const foreignIdentity = `sha256:${"0".repeat(64)}`;
+    const statements: string[] = [];
+    vi.spyOn(pg.Pool.prototype, "query").mockImplementation((async (
+      statement: string
+    ) => {
+      statements.push(statement);
+      if (statement.startsWith("SELECT EXISTS(")) {
+        return { rows: [{ exists: true }], rowCount: 1 } as never;
+      }
+      if (statement.startsWith("SELECT shobj_description")) {
+        return {
+          rows: [
+            {
+              marker: JSON.stringify({
+                schema: "koed-experience-replay-database-owner-v1",
+                ownerId: "another-builder",
+                kind: "cached-template",
+                contentIdentity: foreignIdentity
+              })
+            }
+          ],
+          rowCount: 1
+        } as never;
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }) as never);
+    vi.spyOn(pg.Pool.prototype, "connect").mockResolvedValue({
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      release: vi.fn()
+    } as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark"
+    });
+
+    await expect(
+      manager.evictCachedTemplateIfExists({
+        templateName: template,
+        contentIdentity: requestedIdentity
+      })
+    ).rejects.toThrow("content identity mismatch");
+    await manager.close();
+
+    expect(
+      statements.some((statement) => statement.startsWith("DROP DATABASE"))
+    ).toBe(false);
+  });
+
+  it("uses a reentrant session advisory lock keyed by the full content identity", async () => {
+    const identity = `sha256:${"d".repeat(64)}`;
+    const lockQueries: Array<{ statement: string; values?: unknown[] }> = [];
+    const release = vi.fn();
+    vi.spyOn(pg.Pool.prototype, "connect").mockResolvedValue({
+      query: vi.fn(async (statement: string, values?: unknown[]) => {
+        lockQueries.push({ statement, values });
+        return { rows: [], rowCount: 0 };
+      }),
+      release
+    } as never);
+    vi.spyOn(pg.Pool.prototype, "end").mockResolvedValue(undefined);
+    const manager = new ExperienceReplayDatabaseTemplates({
+      adminDatabaseUrl: "postgresql://127.0.0.1:5432/postgres",
+      user: "benchmark",
+      password: "benchmark"
+    });
+
+    await manager.withContentIdentityLock(identity, async () => {
+      await manager.withContentIdentityLock(identity, async () => undefined);
+    });
+    await manager.close();
+
+    expect(lockQueries).toEqual([
+      {
+        statement: "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+        values: [identity]
+      },
+      {
+        statement: "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+        values: [identity]
+      }
+    ]);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   const databaseUrl = process.env.DATABASE_URL;
   (databaseUrl ? it : it.skip)(
     "freezes and clones an isolated populated PostgreSQL template",

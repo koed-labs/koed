@@ -15,7 +15,10 @@ import {
   resolveExperienceReplayConfig,
   type ReplayCondition
 } from "./core/index.js";
-import type { HarborFreezeManifest } from "./atif/index.js";
+import {
+  materializeSanitizedAtifTrajectory,
+  type HarborFreezeManifest
+} from "./atif/index.js";
 import {
   resumeExperienceReplay,
   runExperienceReplay,
@@ -26,7 +29,11 @@ import {
 import type { LocalProductTemplateAttestation } from "./local-product-adapter.js";
 import { preflightExperienceReplay } from "./preflight.js";
 import type { ReplayTelemetryMergeInput } from "./telemetry.js";
-import { inspectOracleCorpusArtifact } from "./oracle-corpus-artifact.js";
+import {
+  inspectOracleCorpusArtifact,
+  persistOracleCorpusArtifact
+} from "./oracle-corpus-artifact.js";
+import { buildOracleCorpus } from "./oracle-corpus.js";
 import { createOracleCorpusCollectionManifest } from "./oracle-corpus-collection.js";
 import { mergeOracleCampaignRuns } from "./campaign-merge.js";
 import { qualifyOracleCorpusCollection } from "./oracle-corpus-qualifier.js";
@@ -111,6 +118,8 @@ const replayAttestation = (
   templateId,
   templateAttestationHash: immutableHash(productAttestation),
   databaseName: cloneId,
+  taskDigest: "sha256:task",
+  projectId: productAttestation.project.id,
   apiOrigin: "http://127.0.0.1:1001",
   redisEndpointHash: "d".repeat(64),
   mcpBridgeOrigin: "http://127.0.0.1:1002",
@@ -405,6 +414,25 @@ const fakeDependencies = (
     return {
       templateId: `template:${task.taskDigest}:${condition}`,
       sourceStateHash: `state:${sourceTask?.taskDigest ?? "empty"}`,
+      attestation: productAttestation,
+      preparationCostUsd: 0
+    };
+  },
+  async prepareCampaignTemplate({ tasks, corpusCollectionManifestSha256 }) {
+    events.push(
+      `template:campaign:${corpusCollectionManifestSha256}:${tasks.length}`
+    );
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(
+      tasks.every(
+        (entry) =>
+          entry.corpusAttestationSha256.length > 0 &&
+          entry.sanitizedSource.normalizedItems.length > 0
+      )
+    ).toBe(true);
+    return {
+      templateId: `template:campaign:${corpusCollectionManifestSha256}`,
+      sourceStateHash: `state:campaign:${corpusCollectionManifestSha256}`,
       attestation: productAttestation,
       preparationCostUsd: 0
     };
@@ -1160,13 +1188,57 @@ describe("unified experience replay coordinator", () => {
     ).toEqual(corpusArtifact);
 
     const campaign = campaignConfig(path.join(root, "campaign-run"));
+    const secondTaskDigest = `sha256:${"b".repeat(64)}`;
+    const secondSourceAttemptId = `oracle:qualified:${secondTaskDigest}`;
+    const secondSource = {
+      ...corpusArtifact.source,
+      taskDigest: secondTaskDigest,
+      sourceAttemptId: secondSourceAttemptId,
+      sanitization: materializeSanitizedAtifTrajectory(
+        corpusArtifact.source.sanitization.trajectory,
+        {
+          taskDigest: secondTaskDigest,
+          sourceAttemptId: secondSourceAttemptId,
+          sourceManifest: corpusArtifact.source.sanitization.manifest
+        }
+      )
+    };
+    const secondCorpus = buildOracleCorpus({
+      oracleBrief: brief,
+      oracleBriefSha256: briefSha256,
+      source: secondSource
+    });
+    const secondCorpusArtifact = await persistOracleCorpusArtifact(
+      {
+        corpusDirectory: path.join(root, "private-corpus", "synthetic-beta"),
+        repositoryRoot
+      },
+      {
+        identity: {
+          ...corpusIdentity,
+          task: {
+            name: "terminal-bench/synthetic-beta",
+            digest: secondTaskDigest
+          },
+          taskImage: {
+            ...corpusIdentity.taskImage,
+            taskName: "terminal-bench/synthetic-beta",
+            taskDigest: secondTaskDigest
+          }
+        },
+        oracleBrief: brief,
+        source: secondSource,
+        corpus: secondCorpus
+      }
+    );
     const collectionManifest = createOracleCorpusCollectionManifest([
-      corpusArtifact
+      corpusArtifact,
+      secondCorpusArtifact
     ]);
     const campaignProtocol = createOracleCampaignProtocol({
       campaignId: "coordinator-smoke",
       campaignSeed: campaign.seed,
-      taskUniverseDigests: [task.task_digest],
+      taskUniverseDigests: [task.task_digest, secondTaskDigest],
       semanticConfigHash: campaign.semantic_config_hash,
       memoryAnswerPromptVersion: campaign.memory_answer.prompt_version,
       concurrency: campaign.concurrency,
@@ -1195,7 +1267,10 @@ describe("unified experience replay coordinator", () => {
         pins: { ...base.pins, selectedTasks: [task] }
       },
       dependencies: fakeDependencies(campaignEvents),
-      oracleCorpusArtifactEntries: new Map([[task.task_digest, corpusArtifact]])
+      oracleCorpusArtifactEntries: new Map([
+        [task.task_digest, corpusArtifact],
+        [secondTaskDigest, secondCorpusArtifact]
+      ])
     });
     expect(campaignResult.replayAttemptCount).toBe(1);
     expect(
@@ -1204,6 +1279,9 @@ describe("unified experience replay coordinator", () => {
     expect(
       campaignEvents.filter((event) => event.startsWith("template:"))
     ).toHaveLength(1);
+    expect(
+      campaignEvents.find((event) => event.startsWith("template:campaign:"))
+    ).toMatch(/:2$/u);
     expect(
       campaignEvents.filter((event) => event.startsWith("replay:"))
     ).toHaveLength(1);

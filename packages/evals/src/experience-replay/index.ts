@@ -78,6 +78,36 @@ const oracleArtifactIdentity = (
   };
 };
 
+const campaignShardEntries = (
+  collection: Awaited<ReturnType<typeof inspectOracleCorpusCollection>>,
+  shardTaskDigests: readonly string[]
+): readonly OracleCorpusArtifactEntry[] =>
+  shardTaskDigests.map((taskDigest) => {
+    const entry = collection.entries.get(taskDigest);
+    if (!entry)
+      throw new Error(`Oracle campaign shard corpus is missing ${taskDigest}`);
+    return entry;
+  });
+
+const assertCampaignCorpusIdentity = (
+  entries: Iterable<OracleCorpusArtifactEntry>,
+  config: Awaited<ReturnType<typeof loadExperienceReplayConfig>>
+): void => {
+  for (const entry of entries) {
+    if (
+      entry.identity.model !== config.coding_agent.id ||
+      entry.identity.reasoningEffort !== config.coding_agent.reasoning_effort ||
+      entry.identity.codex.version !== config.codex_cli.version ||
+      entry.identity.sanitizer.name !== "koed-atif-sanitizer" ||
+      entry.identity.sanitizer.version !== "ATIF-v1.7"
+    ) {
+      throw new Error(
+        `Oracle campaign corpus identity differs from the frozen campaign policy for ${entry.identity.task.digest}`
+      );
+    }
+  }
+};
+
 export * from "./artifacts.js";
 export * from "./campaign-merge.js";
 export * from "./command.js";
@@ -160,15 +190,20 @@ export const runExperienceReplayCli = async (
         inspectedCollection &&
         campaignDefinition &&
         (inspectedCollection.entries.size !==
-          campaignDefinition.shardTaskDigests.length ||
-          campaignDefinition.shardTaskDigests.some(
+          campaignDefinition.taskUniverseDigests.length ||
+          campaignDefinition.taskUniverseDigests.some(
             (digest) => !inspectedCollection.entries.has(digest)
           ))
       ) {
         throw new Error(
-          "Oracle campaign corpus collection must exactly cover the declared shard"
+          "Oracle campaign corpus collection must exactly cover the declared task universe"
         );
       }
+      if (inspectedCollection)
+        assertCampaignCorpusIdentity(
+          inspectedCollection.entries.values(),
+          config
+        );
       const recorded =
         config.profile === "smoke"
           ? null
@@ -177,10 +212,11 @@ export const runExperienceReplayCli = async (
               process.env,
               {},
               codexAuthMode,
-              inspectedCollection
-                ? [...inspectedCollection.entries.values()].map(
-                    (entry) => entry.identity.taskImage
-                  )
+              inspectedCollection && campaignDefinition
+                ? campaignShardEntries(
+                    inspectedCollection,
+                    campaignDefinition.shardTaskDigests
+                  ).map((entry) => entry.identity.taskImage)
                 : inspectedCorpus
                   ? [inspectedCorpus.identity.taskImage]
                   : undefined
@@ -246,13 +282,20 @@ export const runExperienceReplayCli = async (
         );
       }
       if (inspectedCollection) {
+        const shardTaskDigests = new Set(campaignDefinition!.shardTaskDigests);
         for (const entry of inspectedCollection.entries.values()) {
           await loadOracleCorpusArtifact(
             oracleArtifactLocation(
               inspectedCollection.directories.get(entry.identity.task.digest)!,
               EXPERIENCE_REPLAY_REPOSITORY_ROOT
             ),
-            oracleArtifactIdentity(result, entry, entry.identity.task.digest)
+            shardTaskDigests.has(entry.identity.task.digest)
+              ? oracleArtifactIdentity(
+                  result,
+                  entry,
+                  entry.identity.task.digest
+                )
+              : entry.identity
           );
         }
       }
@@ -312,15 +355,20 @@ export const runExperienceReplayCli = async (
         inspectedCollection &&
         campaignDefinition &&
         (inspectedCollection.entries.size !==
-          campaignDefinition.shardTaskDigests.length ||
-          campaignDefinition.shardTaskDigests.some(
+          campaignDefinition.taskUniverseDigests.length ||
+          campaignDefinition.taskUniverseDigests.some(
             (digest) => !inspectedCollection.entries.has(digest)
           ))
       ) {
         throw new Error(
-          "Oracle campaign corpus collection must exactly cover the declared shard"
+          "Oracle campaign corpus collection must exactly cover the declared task universe"
         );
       }
+      if (inspectedCollection)
+        assertCampaignCorpusIdentity(
+          inspectedCollection.entries.values(),
+          config
+        );
       const recorded =
         config.profile === "smoke"
           ? null
@@ -329,10 +377,11 @@ export const runExperienceReplayCli = async (
               process.env,
               {},
               codexAuthMode,
-              inspectedCollection
-                ? [...inspectedCollection.entries.values()].map(
-                    (entry) => entry.identity.taskImage
-                  )
+              inspectedCollection && campaignDefinition
+                ? campaignShardEntries(
+                    inspectedCollection,
+                    campaignDefinition.shardTaskDigests
+                  ).map((entry) => entry.identity.taskImage)
                 : inspectedCorpus
                   ? [inspectedCorpus.identity.taskImage]
                   : undefined
@@ -409,11 +458,15 @@ export const runExperienceReplayCli = async (
                         )!,
                         EXPERIENCE_REPLAY_REPOSITORY_ROOT
                       ),
-                      oracleArtifactIdentity(
-                        result,
-                        entry,
+                      campaignDefinition!.shardTaskDigests.includes(
                         entry.identity.task.digest
                       )
+                        ? oracleArtifactIdentity(
+                            result,
+                            entry,
+                            entry.identity.task.digest
+                          )
+                        : entry.identity
                     )
                   ] as const
               )

@@ -2,6 +2,7 @@ import { countTokensForModel } from "@koed/core";
 import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
 import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
 import { resolveRecordedCodexAuthentication } from "./codex-auth.js";
@@ -30,7 +31,9 @@ const priceForPreparation = (
   template: LocalProductTemplateHandle,
   config: ResolvedExperienceReplayConfig
 ): number => {
-  const usage = template.attestation.scheduledLcmJobs;
+  const usage =
+    template.attestation.campaignScheduledLcmJobs ??
+    template.attestation.scheduledLcmJobs;
   if (!usage) return 0;
   const price = config.price_table.models[config.lcm_summary.model.id];
   if (!price) throw new Error("Recorded LCM model has no price entry");
@@ -73,6 +76,15 @@ export const createRecordedCliExperienceReplayDependencies = (
     environment,
     "KOED_EXPERIENCE_REPLAY_EMBEDDING_TOKEN"
   );
+  const koedHome =
+    environment.KOED_HOME?.trim() || path.join(os.homedir(), ".koed");
+  const campaignTemplateCacheDirectory =
+    environment.KOED_EXPERIENCE_REPLAY_CAMPAIGN_TEMPLATE_CACHE_DIR?.trim() ||
+    path.join(koedHome, "benchmark-cache", "campaign-templates");
+  const repositoryCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: EXPERIENCE_REPLAY_REPOSITORY_ROOT,
+    encoding: "utf8"
+  }).trim();
   const runtimeEnvironment: NodeJS.ProcessEnv = {
     ...(authentication.mode === "api_key"
       ? { OPENAI_API_KEY: authentication.apiKey }
@@ -169,6 +181,8 @@ export const createRecordedCliExperienceReplayDependencies = (
     },
     runScheduledLcmJobs,
     judgeTrajectory,
-    preparationCostUsd: priceForPreparation
+    preparationCostUsd: priceForPreparation,
+    campaignTemplateCacheDirectory,
+    repositoryCommit
   });
 };

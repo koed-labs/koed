@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { getLatestMigrationTimestamp } from "@koed/db";
 import type { AtifSanitizationResult } from "./atif/index.js";
 import type {
   ExperienceReplayCoordinatorDependencies,
@@ -39,6 +40,12 @@ import type {
   TrajectoryJudgeInput,
   TrajectoryJudgeResult
 } from "./trajectory-judge.js";
+import {
+  OracleCampaignTemplateCache,
+  oracleCampaignTemplateContentIdentity,
+  type OracleCampaignTemplateIdentity
+} from "./oracle-campaign-template-cache.js";
+import type { JsonValue } from "./core/hash.js";
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -46,9 +53,10 @@ const sha256 = (value: string): string =>
 type HarborPort = Pick<HarborExecutionAdapter, "runSource" | "runReplay">;
 type ProductPort = Pick<
   LocalExperienceReplayProductAdapter,
-  "prepareTemplate" | "cloneForReplay"
+  "prepareTemplate" | "prepareCampaignTemplate" | "cloneForReplay"
 > & {
   adoptTemplate?: LocalExperienceReplayProductAdapter["adoptTemplate"];
+  withCampaignTemplateLock?: LocalExperienceReplayProductAdapter["withCampaignTemplateLock"];
   close(options?: { preserveTemplates?: boolean }): Promise<void>;
 };
 
@@ -94,6 +102,8 @@ export interface ExperienceReplayCoordinatorDependencyFactoryOptions {
     template: LocalProductTemplateHandle,
     config: ResolvedExperienceReplayConfig
   ) => number;
+  campaignTemplateCacheDirectory?: string;
+  repositoryCommit?: string;
   readinessTimeoutMs?: number;
   readinessIntervalMs?: number;
   bridgeCredentialLifetimeMs?: number;
@@ -128,6 +138,19 @@ const normalizedProbe = (
     .replace(/\s+/gu, " ")
     .trim();
   return compact.slice(0, 512);
+};
+
+const cachedTemplateHandle = (value: JsonValue): LocalProductTemplateHandle => {
+  const candidate = value as unknown as Partial<LocalProductTemplateHandle>;
+  if (
+    typeof candidate.templateId !== "string" ||
+    typeof candidate.sourceStateHash !== "string" ||
+    !candidate.attestation ||
+    typeof candidate.attestation !== "object"
+  ) {
+    throw new Error("Campaign template cache handle is invalid");
+  }
+  return candidate as LocalProductTemplateHandle;
 };
 
 const tokenFromAuthorization = (authorization: string): string => {
@@ -294,6 +317,55 @@ export const createExperienceReplayCoordinatorDependencies = (
         ? { readinessIntervalMs: options.readinessIntervalMs }
         : {})
     });
+  let campaignCache: Promise<OracleCampaignTemplateCache> | undefined;
+  const getCampaignCache = (): Promise<OracleCampaignTemplateCache> => {
+    if (!options.campaignTemplateCacheDirectory) {
+      throw new Error(
+        "Recorded campaign requires a private template cache directory"
+      );
+    }
+    campaignCache ??= OracleCampaignTemplateCache.open({
+      cacheDirectory: options.campaignTemplateCacheDirectory,
+      repositoryRoot: process.cwd()
+    });
+    return campaignCache;
+  };
+  const campaignIdentity = async (input: {
+    corpusCollectionManifestSha256: string;
+    config: ResolvedExperienceReplayConfig;
+  }): Promise<OracleCampaignTemplateIdentity> => {
+    if (!options.repositoryCommit?.trim()) {
+      throw new Error(
+        "Recorded campaign requires the clean Koed source commit"
+      );
+    }
+    return {
+      schema: "koed-oracle-campaign-template-identity-v1",
+      corpusCollectionManifestSha256: input.corpusCollectionManifestSha256,
+      semanticConfigHash: input.config.semantic_config_hash,
+      koedSourceCommit: options.repositoryCommit,
+      latestMigrationTimestamp: await getLatestMigrationTimestamp(),
+      captureProjectionPolicy: "koed-source-commit",
+      lcm: {
+        model: input.config.lcm_summary.model.id,
+        reasoningEffort: input.config.lcm_summary.model.reasoning_effort,
+        promptVersion: input.config.lcm_summary.prompt_version,
+        outputSchemaVersion: input.config.lcm_summary.output_schema_version
+      },
+      embedding: {
+        model: input.config.embedding.model,
+        artifactSha256: input.config.embedding.artifact_sha256,
+        tokenizer: input.config.embedding.tokenizer,
+        transform: input.config.embedding.transform,
+        dimensions: input.config.embedding.dimensions
+      },
+      memoryAnswer: {
+        model: input.config.memory_answer.model.id,
+        reasoningEffort: input.config.memory_answer.model.reasoning_effort,
+        promptVersion: input.config.memory_answer.prompt_version
+      }
+    };
+  };
   const startRuntime =
     options.startProductRuntime ?? startExperienceReplayProductRuntime;
   const materialize = options.materializeProjectWorkspace ?? defaultWorkspace;
@@ -421,6 +493,70 @@ export const createExperienceReplayCoordinatorDependencies = (
       return { ...prepared, preparationCostUsd };
     },
 
+    async prepareCampaignTemplate(input): Promise<PreparedTemplate> {
+      if (closed) throw new Error("Experience Replay dependencies are closed");
+      const sources = input.tasks.map((source) => ({
+        taskDigest: source.task.taskDigest,
+        corpusAttestationSha256: source.corpusAttestationSha256,
+        sourceAttemptId: source.sourceAttemptId,
+        sanitizedSource: source.sanitizedSource,
+        recallQuery: normalizedProbe(source.task.name, source.sanitizedSource)
+      }));
+      if (options.mode === "smoke") {
+        const prepared = await product.prepareCampaignTemplate({
+          corpusCollectionManifestSha256: input.corpusCollectionManifestSha256,
+          sources,
+          signal: input.signal
+        });
+        return { ...prepared, preparationCostUsd: 0 };
+      }
+      const withCampaignTemplateLock = product.withCampaignTemplateLock;
+      const adoptTemplate = product.adoptTemplate;
+      if (!withCampaignTemplateLock || !adoptTemplate) {
+        throw new Error(
+          "Product adapter cannot safely cache campaign templates"
+        );
+      }
+      const identity = await campaignIdentity(input);
+      const contentIdentity = oracleCampaignTemplateContentIdentity(identity);
+      return withCampaignTemplateLock(contentIdentity, async () => {
+        const cache = await getCampaignCache();
+        const cached = await cache.lookup(identity);
+        if (cached) {
+          const template = cachedTemplateHandle(cached.template);
+          if (template.templateId !== cached.databaseName) {
+            throw new Error(
+              "Campaign template cache database and handle disagree"
+            );
+          }
+          const adopted = await adoptTemplate(template, contentIdentity);
+          return { ...adopted, preparationCostUsd: 0 };
+        }
+        const prepared = await product.prepareCampaignTemplate({
+          corpusCollectionManifestSha256: input.corpusCollectionManifestSha256,
+          sources,
+          cachedContentIdentity: contentIdentity,
+          replaceOrphanedCachedTemplate: true,
+          signal: input.signal
+        });
+        const preparationCostUsd = options.preparationCostUsd!(
+          prepared,
+          input.config
+        );
+        if (!Number.isFinite(preparationCostUsd) || preparationCostUsd < 0) {
+          throw new Error(
+            "Preparation cost collector returned an invalid cost"
+          );
+        }
+        await cache.publish({
+          identity,
+          databaseName: prepared.templateId,
+          template: JSON.parse(JSON.stringify(prepared)) as JsonValue
+        });
+        return { ...prepared, preparationCostUsd };
+      });
+    },
+
     async adoptTemplate(template): Promise<PreparedTemplate> {
       if (closed) throw new Error("Experience Replay dependencies are closed");
       if (!product.adoptTemplate) {
@@ -471,18 +607,21 @@ export const createExperienceReplayCoordinatorDependencies = (
       const template = input.template as LocalProductTemplateHandle;
       if (input.signal?.aborted)
         throw new Error("Replay was cancelled before clone provisioning");
-      const provision = await product.cloneForReplay(template);
+      const provision = await product.cloneForReplay(
+        template,
+        input.task.taskDigest
+      );
       let workspace:
         | { trialWorkspaceRoot: string; close(): Promise<void> }
         | undefined;
       let runtime: ExperienceReplayProductRuntimeHandle | undefined;
       try {
-        workspace = await acquireWorkspace(template.attestation.project.cwd);
+        workspace = await acquireWorkspace(provision.project.cwd);
         runtime = await startRuntime({
           scopeId: `experience-replay:${options.runId}:${provision.cloneId}`,
           databaseUrl: provision.databaseUrl,
           apiToken: tokenFromAuthorization(provision.authorization),
-          projectCwd: template.attestation.project.cwd,
+          projectCwd: provision.project.cwd,
           trialWorkspaceRoot: workspace.trialWorkspaceRoot,
           identity: {
             runId: options.runId,
@@ -521,6 +660,8 @@ export const createExperienceReplayCoordinatorDependencies = (
         templateId: template.templateId,
         templateAttestationHash: provision.templateAttestationHash,
         databaseName: provision.cloneId,
+        taskDigest: provision.taskDigest,
+        projectId: provision.projectId,
         apiOrigin: origin(runtime.api.url),
         redisEndpointHash: sha256(runtime.redis.url),
         mcpBridgeOrigin: origin(runtime.bridge.url),

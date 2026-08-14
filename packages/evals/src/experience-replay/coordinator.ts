@@ -30,6 +30,7 @@ import {
   type ReplaySchedule,
   type ExperienceReplayRunPlan,
   type ExperienceReplayMachineReport,
+  type OracleCampaignProtocol,
   type OracleCampaignTaskResult,
   type ResolvedExperienceReplayConfig,
   type TaskRewardContract
@@ -140,6 +141,8 @@ export interface ReplayProductPathAttestation {
   templateId: string;
   templateAttestationHash: string;
   databaseName: string;
+  taskDigest: string;
+  projectId: string;
   apiOrigin: string;
   redisEndpointHash: string;
   mcpBridgeOrigin: string;
@@ -201,6 +204,18 @@ export interface ExperienceReplayCoordinatorDependencies {
     config: ResolvedExperienceReplayConfig;
     signal?: AbortSignal;
   }): Promise<PreparedTemplate>;
+  prepareCampaignTemplate?(input: {
+    tasks: readonly {
+      task: Pick<CoordinatorTask, "name" | "taskDigest">;
+      corpusAttestationSha256: string;
+      sourceAttemptId: string;
+      sanitizedSource: AtifSanitizationResult;
+    }[];
+    corpusCollectionManifestSha256: string;
+    runRoot: string;
+    config: ResolvedExperienceReplayConfig;
+    signal?: AbortSignal;
+  }): Promise<PreparedTemplate>;
   createReplay(input: {
     task: CoordinatorTask;
     condition: ReplayCondition;
@@ -239,6 +254,7 @@ interface PersistedTemplate {
   taskDigest: string;
   condition: MemoryReplayCondition;
   sourceTaskDigest: string | null;
+  campaignTaskDigests?: readonly string[];
   template: PreparedTemplate;
 }
 
@@ -769,14 +785,16 @@ export const runExperienceReplay = async (
   if (oracleCampaign) {
     if (!oracleCorpusArtifactEntries)
       throw new Error("Oracle campaign corpus collection is required");
-    const planned = new Set(admitted.runPlan.replayTargetTaskDigests);
+    const planned = new Set(admitted.campaignProtocol!.taskUniverseDigests);
     if (
       oracleCorpusArtifactEntries.size !== planned.size ||
       [...oracleCorpusArtifactEntries.keys()].some(
         (digest) => !planned.has(digest)
       )
     ) {
-      throw new Error("Oracle campaign corpus tasks differ from the run plan");
+      throw new Error(
+        "Oracle campaign corpus tasks differ from the campaign universe"
+      );
     }
     for (const [taskDigest, entry] of oracleCorpusArtifactEntries) {
       validateOracleCorpusArtifactEntry(entry);
@@ -1375,154 +1393,125 @@ export const runExperienceReplay = async (
           : oracleCampaign
             ? ["relevant_full"]
             : ["empty", "placebo", "relevant"];
-    for (const task of replayTasks) {
-      for (const condition of memoryConditions) {
-        let oracleSource: AtifSanitizationResult | null = null;
-        let oracleSourceAttemptId: string | undefined;
-        if (oracleProductProof && condition !== "empty") {
-          const corpus = oracleCorpora.get(task.taskDigest);
-          if (!corpus)
-            throw new Error(`Missing oracle corpus for ${task.name}`);
-          const distractor = buildOracleDistractor(
-            task.taskDigest,
-            `oracle:distractor:${task.taskDigest}`
-          );
-          const relevant =
-            condition === "relevant_guidance"
-              ? corpus.guidanceOnly.sanitization
-              : condition === "relevant_trace"
-                ? corpus.traceOnly.sanitization
-                : condition === "relevant_full"
-                  ? corpus.fullExperience.sanitization
-                  : null;
-          oracleSource = relevant
-            ? combineOracleMemory(distractor, relevant, {
-                taskDigest: task.taskDigest,
-                sourceAttemptId: `oracle:${condition}:${task.taskDigest}`
-              })
-            : distractor;
-          oracleSourceAttemptId = relevant
-            ? `oracle:${condition}:${task.taskDigest}`
-            : `oracle:distractor:${task.taskDigest}`;
-        } else if (
-          oracleFromArtifacts &&
-          (condition === "relevant_guidance" || condition === "relevant_full")
+    if (oracleCampaign) {
+      if (!dependencies.prepareCampaignTemplate) {
+        throw new Error(
+          "Runtime adapter cannot prepare a full-corpus campaign template"
+        );
+      }
+      const campaignTaskDigests = [
+        ...admitted.campaignProtocol!.taskUniverseDigests
+      ].sort();
+      const campaignIdentity =
+        admitted.runPlan.oracleCorpusCollectionManifestSha256!;
+      const templatePath = "templates/campaign/relevant_full.json";
+      try {
+        const persisted = await readJsonArtifact<PersistedTemplate>(
+          directory.root,
+          templatePath
+        );
+        if (
+          persisted.taskDigest !== `campaign:${campaignIdentity}` ||
+          persisted.condition !== "relevant_full" ||
+          persisted.sourceTaskDigest !== null ||
+          immutableHash(persisted.campaignTaskDigests ?? []) !==
+            immutableHash(campaignTaskDigests)
         ) {
-          const corpus = oracleCorpora.get(task.taskDigest);
-          if (!corpus)
-            throw new Error(
-              `Missing oracle corpus artifact corpus for ${task.name}`
-            );
-          oracleSourceAttemptId = `oracle:${condition}:${task.taskDigest}`;
-          const artifact =
-            condition === "relevant_full"
-              ? corpus.fullExperience
-              : corpus.guidanceOnly;
-          oracleSource = materializeSanitizedAtifTrajectory(
-            artifact.sanitization.trajectory,
-            {
-              taskDigest: task.taskDigest,
-              sourceAttemptId: oracleSourceAttemptId,
-              sourceManifest: artifact.sanitization.manifest
-            }
+          throw new Error(
+            `Persisted campaign template identity changed: ${templatePath}`
           );
         }
-        const sourceDigest = oracleSeeded
-          ? condition === "empty"
-            ? null
-            : task.taskDigest
-          : condition === "empty"
-            ? null
-            : condition === "relevant"
-              ? task.taskDigest
-              : (assignment!.assignments.find(
-                  (item) => item.targetDigest === task.taskDigest
-                )?.sourceDigest ?? null);
-        if (condition !== "empty" && !sourceDigest)
-          throw new Error(`Missing ${condition} source for ${task.name}`);
-        const source = sourceDigest ? sources.get(sourceDigest) : undefined;
-        const templatePath = `templates/${task.taskDigest.slice(-64)}/${condition}.json`;
-        try {
-          const persisted = await readJsonArtifact<PersistedTemplate>(
-            directory.root,
-            templatePath
-          );
-          if (
-            persisted.taskDigest !== task.taskDigest ||
-            persisted.condition !== condition ||
-            persisted.sourceTaskDigest !== sourceDigest
+        assertTemplateAttestation(
+          persisted.template.attestation,
+          "persisted full-corpus campaign template"
+        );
+        let adopted = persisted.template;
+        if (
+          campaignTaskDigests.some((taskDigest) =>
+            neededTemplateKeys.has(`${taskDigest}:relevant_full`)
           )
+        ) {
+          if (!dependencies.adoptTemplate) {
             throw new Error(
-              `Persisted template identity changed: ${templatePath}`
+              "Runtime adapter cannot re-attest persisted templates"
             );
-          assertTemplateAttestation(
-            persisted.template.attestation,
-            `${task.name} ${condition} persisted template`
-          );
-          let adopted = persisted.template;
-          if (neededTemplateKeys.has(`${task.taskDigest}:${condition}`)) {
-            if (!dependencies.adoptTemplate)
-              throw new Error(
-                "Runtime adapter cannot re-attest persisted templates"
-              );
-            adopted = await dependencies.adoptTemplate(persisted.template);
-            assertTemplateAttestation(
-              adopted.attestation,
-              `${task.name} ${condition} adopted template`
-            );
-            if (immutableHash(adopted) !== immutableHash(persisted.template))
-              throw new Error(
-                `Adopted template identity changed: ${templatePath}`
-              );
           }
-          const record = { ...persisted, template: adopted };
-          templates.set(`${task.taskDigest}:${condition}`, adopted);
-          templateRecords.push(record);
-          continue;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          adopted = await dependencies.adoptTemplate(persisted.template);
+          assertTemplateAttestation(
+            adopted.attestation,
+            "adopted full-corpus campaign template"
+          );
+          if (immutableHash(adopted) !== immutableHash(persisted.template)) {
+            throw new Error(
+              `Adopted campaign template identity changed: ${templatePath}`
+            );
+          }
         }
+        const record = { ...persisted, template: adopted };
+        for (const taskDigest of campaignTaskDigests) {
+          templates.set(`${taskDigest}:relevant_full`, adopted);
+        }
+        templateRecords.push(record);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const campaignTasks = [...oracleCorpusArtifactEntries!.entries()]
+          .map(([taskDigest, entry]) => {
+            const corpus = entry.corpus;
+            const task = {
+              name: entry.identity.task.name,
+              taskDigest
+            };
+            const sourceAttemptId = `oracle:relevant_full:${taskDigest}`;
+            return {
+              task,
+              corpusAttestationSha256: entry.attestationSha256,
+              sourceAttemptId,
+              sanitizedSource: materializeSanitizedAtifTrajectory(
+                corpus.fullExperience.sanitization.trajectory,
+                {
+                  taskDigest,
+                  sourceAttemptId,
+                  sourceManifest: corpus.fullExperience.sanitization.manifest
+                }
+              )
+            };
+          })
+          .sort((left, right) =>
+            left.task.taskDigest.localeCompare(right.task.taskDigest)
+          );
         templateJobs.push({
-          id: `template:${task.taskDigest}:${condition}`,
-          exclusiveKey: task.taskDigest,
+          id: `template:campaign:${campaignIdentity}`,
+          exclusiveKey: `campaign:${campaignIdentity}`,
           maximumCostUsd: Math.max(
             Number.EPSILON,
             config.maximum_top_level_attempt_cost_usd
           ),
           async run({ signal }) {
-            if (signal.aborted)
-              throw new Error("Template preparation was cancelled");
-            const prepared = await dependencies.prepareTemplate({
-              task,
-              condition,
-              sourceTask:
-                oracleFromArtifacts && sourceDigest
-                  ? task
-                  : (source?.task ?? null),
-              ...(oracleSourceAttemptId
-                ? { sourceAttemptId: oracleSourceAttemptId }
-                : {}),
-              sanitizedSource: oracleSeeded
-                ? oracleSource
-                : (source?.sanitization ?? null),
+            if (signal.aborted) {
+              throw new Error("Campaign template preparation was cancelled");
+            }
+            const prepared = await dependencies.prepareCampaignTemplate!({
+              tasks: campaignTasks,
+              corpusCollectionManifestSha256: campaignIdentity,
               runRoot: directory.root,
               config,
               signal
             });
             assertTemplateAttestation(
               prepared.attestation,
-              `${task.name} ${condition} template`
+              "full-corpus campaign template"
             );
             if (
               !Number.isFinite(prepared.preparationCostUsd) ||
               prepared.preparationCostUsd < 0
             ) {
-              throw new Error("Template preparation cost is invalid");
+              throw new Error("Campaign template preparation cost is invalid");
             }
-            const record = {
-              taskDigest: task.taskDigest,
-              condition,
-              sourceTaskDigest: sourceDigest,
+            const record: PersistedTemplate = {
+              taskDigest: `campaign:${campaignIdentity}`,
+              condition: "relevant_full",
+              sourceTaskDigest: null,
+              campaignTaskDigests,
               template: prepared
             };
             await publishOrVerifyJson(directory.root, templatePath, record);
@@ -1532,6 +1521,166 @@ export const runExperienceReplay = async (
             };
           }
         });
+      }
+    } else {
+      for (const task of replayTasks) {
+        for (const condition of memoryConditions) {
+          let oracleSource: AtifSanitizationResult | null = null;
+          let oracleSourceAttemptId: string | undefined;
+          if (oracleProductProof && condition !== "empty") {
+            const corpus = oracleCorpora.get(task.taskDigest);
+            if (!corpus)
+              throw new Error(`Missing oracle corpus for ${task.name}`);
+            const distractor = buildOracleDistractor(
+              task.taskDigest,
+              `oracle:distractor:${task.taskDigest}`
+            );
+            const relevant =
+              condition === "relevant_guidance"
+                ? corpus.guidanceOnly.sanitization
+                : condition === "relevant_trace"
+                  ? corpus.traceOnly.sanitization
+                  : condition === "relevant_full"
+                    ? corpus.fullExperience.sanitization
+                    : null;
+            oracleSource = relevant
+              ? combineOracleMemory(distractor, relevant, {
+                  taskDigest: task.taskDigest,
+                  sourceAttemptId: `oracle:${condition}:${task.taskDigest}`
+                })
+              : distractor;
+            oracleSourceAttemptId = relevant
+              ? `oracle:${condition}:${task.taskDigest}`
+              : `oracle:distractor:${task.taskDigest}`;
+          } else if (
+            oracleFromArtifacts &&
+            (condition === "relevant_guidance" || condition === "relevant_full")
+          ) {
+            const corpus = oracleCorpora.get(task.taskDigest);
+            if (!corpus)
+              throw new Error(
+                `Missing oracle corpus artifact corpus for ${task.name}`
+              );
+            oracleSourceAttemptId = `oracle:${condition}:${task.taskDigest}`;
+            const artifact =
+              condition === "relevant_full"
+                ? corpus.fullExperience
+                : corpus.guidanceOnly;
+            oracleSource = materializeSanitizedAtifTrajectory(
+              artifact.sanitization.trajectory,
+              {
+                taskDigest: task.taskDigest,
+                sourceAttemptId: oracleSourceAttemptId,
+                sourceManifest: artifact.sanitization.manifest
+              }
+            );
+          }
+          const sourceDigest = oracleSeeded
+            ? condition === "empty"
+              ? null
+              : task.taskDigest
+            : condition === "empty"
+              ? null
+              : condition === "relevant"
+                ? task.taskDigest
+                : (assignment!.assignments.find(
+                    (item) => item.targetDigest === task.taskDigest
+                  )?.sourceDigest ?? null);
+          if (condition !== "empty" && !sourceDigest)
+            throw new Error(`Missing ${condition} source for ${task.name}`);
+          const source = sourceDigest ? sources.get(sourceDigest) : undefined;
+          const templatePath = `templates/${task.taskDigest.slice(-64)}/${condition}.json`;
+          try {
+            const persisted = await readJsonArtifact<PersistedTemplate>(
+              directory.root,
+              templatePath
+            );
+            if (
+              persisted.taskDigest !== task.taskDigest ||
+              persisted.condition !== condition ||
+              persisted.sourceTaskDigest !== sourceDigest
+            )
+              throw new Error(
+                `Persisted template identity changed: ${templatePath}`
+              );
+            assertTemplateAttestation(
+              persisted.template.attestation,
+              `${task.name} ${condition} persisted template`
+            );
+            let adopted = persisted.template;
+            if (neededTemplateKeys.has(`${task.taskDigest}:${condition}`)) {
+              if (!dependencies.adoptTemplate)
+                throw new Error(
+                  "Runtime adapter cannot re-attest persisted templates"
+                );
+              adopted = await dependencies.adoptTemplate(persisted.template);
+              assertTemplateAttestation(
+                adopted.attestation,
+                `${task.name} ${condition} adopted template`
+              );
+              if (immutableHash(adopted) !== immutableHash(persisted.template))
+                throw new Error(
+                  `Adopted template identity changed: ${templatePath}`
+                );
+            }
+            const record = { ...persisted, template: adopted };
+            templates.set(`${task.taskDigest}:${condition}`, adopted);
+            templateRecords.push(record);
+            continue;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+          templateJobs.push({
+            id: `template:${task.taskDigest}:${condition}`,
+            exclusiveKey: task.taskDigest,
+            maximumCostUsd: Math.max(
+              Number.EPSILON,
+              config.maximum_top_level_attempt_cost_usd
+            ),
+            async run({ signal }) {
+              if (signal.aborted)
+                throw new Error("Template preparation was cancelled");
+              const prepared = await dependencies.prepareTemplate({
+                task,
+                condition,
+                sourceTask:
+                  oracleFromArtifacts && sourceDigest
+                    ? task
+                    : (source?.task ?? null),
+                ...(oracleSourceAttemptId
+                  ? { sourceAttemptId: oracleSourceAttemptId }
+                  : {}),
+                sanitizedSource: oracleSeeded
+                  ? oracleSource
+                  : (source?.sanitization ?? null),
+                runRoot: directory.root,
+                config,
+                signal
+              });
+              assertTemplateAttestation(
+                prepared.attestation,
+                `${task.name} ${condition} template`
+              );
+              if (
+                !Number.isFinite(prepared.preparationCostUsd) ||
+                prepared.preparationCostUsd < 0
+              ) {
+                throw new Error("Template preparation cost is invalid");
+              }
+              const record = {
+                taskDigest: task.taskDigest,
+                condition,
+                sourceTaskDigest: sourceDigest,
+                template: prepared
+              };
+              await publishOrVerifyJson(directory.root, templatePath, record);
+              return {
+                value: record,
+                observedCostUsd: prepared.preparationCostUsd
+              };
+            }
+          });
+        }
       }
     }
     const templateSchedule = await scheduleReplayJobs({
@@ -1573,9 +1722,15 @@ export const runExperienceReplay = async (
       if (result.status !== "completed")
         throw new Error("Paid stop prevented the complete template cohort");
       const record = result.value;
-      const key = `${record.taskDigest}:${record.condition}`;
-      if (templates.has(key)) throw new Error(`Duplicate template ${key}`);
-      templates.set(key, record.template);
+      const keys = record.campaignTaskDigests?.length
+        ? record.campaignTaskDigests.map(
+            (taskDigest) => `${taskDigest}:${record.condition}`
+          )
+        : [`${record.taskDigest}:${record.condition}`];
+      for (const key of keys) {
+        if (templates.has(key)) throw new Error(`Duplicate template ${key}`);
+        templates.set(key, record.template);
+      }
       templateRecords.push(record);
     }
     await phase(journal, "canonical_koed_ingestion", "completed");
@@ -2441,6 +2596,20 @@ const tasksFromManifest = async (
     run_plan: ExperienceReplayRunPlan;
   }>(runRoot, "manifest.json");
   verifyExperienceReplayRunPlan(manifest.run_plan);
+  const persistedCampaignProtocol =
+    manifest.run_plan.kind === "oracle_seeded_campaign"
+      ? await readJsonArtifact<OracleCampaignProtocol>(
+          runRoot,
+          "campaign/protocol.json"
+        )
+      : undefined;
+  const persistedCampaignShard =
+    manifest.run_plan.kind === "oracle_seeded_campaign"
+      ? await readJsonArtifact<{ shardId: string }>(
+          runRoot,
+          "campaign/shard.json"
+        )
+      : undefined;
   const admitted = await preflightExperienceReplay({
     config,
     requireRunnable: false,
@@ -2454,6 +2623,8 @@ const tasksFromManifest = async (
       manifest.run_plan.kind === "oracle_seeded_campaign"
         ? manifest.run_plan.replayTargetTaskDigests
         : undefined,
+    campaignShardId: persistedCampaignShard?.shardId,
+    persistedCampaignProtocol,
     ...(manifest.run_plan.kind === "oracle_seeded_repeated_study"
       ? { oracleRepeats: manifest.run_plan.replayAttemptsPerCondition }
       : {}),

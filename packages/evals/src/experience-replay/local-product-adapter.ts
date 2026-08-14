@@ -131,6 +131,33 @@ export interface LocalProductEmbeddingAttestation {
   preparationTexts: number;
 }
 
+export interface LocalProductCampaignSource {
+  taskDigest: string;
+  corpusAttestationSha256: string;
+  sourceAttemptId: string;
+  sanitizedSource: AtifSanitizationResult;
+  recallQuery: string;
+}
+
+export interface LocalProductProjectAttestation {
+  taskDigest: string;
+  corpusAttestationSha256: string;
+  sourceAttemptId: string;
+  projectId: string;
+  project: {
+    id: string;
+    cwd: string;
+    anchorSessionId: string;
+    ownerUserId: string;
+    visibility: "personal";
+  };
+  normalizedImport: NonNullable<
+    LocalProductTemplateAttestation["normalizedImport"]
+  >;
+  readiness: ExperienceReplayProductStateAttestation;
+  scheduledLcmNodeIds: string[];
+}
+
 export interface LocalProductTemplateAttestation {
   schema: "koed-experience-replay-local-product-template-v1";
   condition: MemoryReplayCondition;
@@ -154,6 +181,10 @@ export interface LocalProductTemplateAttestation {
   } | null;
   readiness: ExperienceReplayProductStateAttestation;
   scheduledLcmJobs: ScheduledLcmJobAttestation | null;
+  campaignScheduledLcmJobs?: ScheduledLcmJobAttestation | null;
+  /** Present only for a multi-Project campaign template. Singular fields alias its first entry. */
+  campaignProjects?: LocalProductProjectAttestation[];
+  corpusCollectionManifestSha256?: string;
   frozenDatabase: FrozenDatabaseAttestation;
   frozenAt: string;
 }
@@ -170,6 +201,10 @@ export interface LocalProductReplayProvision {
   actor: ActorContext;
   authorization: string;
   api: ProductApiHandle;
+  /** Selected replay Project, including campaign target selection. */
+  taskDigest: string;
+  projectId: string;
+  project: LocalProductTemplateAttestation["project"];
   telemetry?(): {
     embeddings: { calls: number; tokens: number | null; durationMs: number };
   };
@@ -196,6 +231,7 @@ interface EmbeddingRuntime {
 
 interface RegisteredTemplate {
   attestationHash: string;
+  cachedContentIdentity?: string;
 }
 
 const hashSecret = (pepper: string, secret: string): string =>
@@ -640,19 +676,100 @@ export class LocalExperienceReplayProductAdapter {
     if (!input.recallQuery.trim())
       throw new Error("Semantic Recall probe is required");
 
+    return this.prepareTemplateSet({
+      ...input,
+      sources: [
+        {
+          taskDigest: input.sourceTaskDigest,
+          sourceAttemptId: input.sourceAttemptId,
+          sanitizedSource: input.sanitizedSource,
+          recallQuery: input.recallQuery
+        }
+      ]
+    });
+  }
+
+  async prepareCampaignTemplate(input: {
+    corpusCollectionManifestSha256: string;
+    sources: readonly LocalProductCampaignSource[];
+    cachedContentIdentity?: string;
+    replaceOrphanedCachedTemplate?: boolean;
+    signal?: AbortSignal;
+  }): Promise<LocalProductTemplateHandle> {
+    if (input.signal?.aborted)
+      throw new Error("Template preparation was cancelled");
+    if (this.closed) throw new Error("Local product adapter is closed");
+    if (!input.corpusCollectionManifestSha256.trim())
+      throw new Error("Campaign corpus collection manifest is required");
+    const { sources } = input;
+    if (sources.length < 1)
+      throw new Error("Campaign template requires at least one task source");
+    const taskDigests = new Set<string>();
+    for (const source of sources) {
+      if (
+        !source.taskDigest.trim() ||
+        !source.corpusAttestationSha256.trim() ||
+        !source.sourceAttemptId.trim() ||
+        !source.recallQuery.trim() ||
+        !source.sanitizedSource
+      ) {
+        throw new Error("Campaign task source is incomplete");
+      }
+      if (taskDigests.has(source.taskDigest))
+        throw new Error("Campaign task digests must be unique");
+      taskDigests.add(source.taskDigest);
+    }
+    if (input.cachedContentIdentity && input.replaceOrphanedCachedTemplate) {
+      await this.templates.evictCachedTemplateIfExists({
+        templateName: `koed_eval_campaign_${input.cachedContentIdentity
+          .slice("sha256:".length)
+          .slice(0, 32)}`,
+        contentIdentity: input.cachedContentIdentity
+      });
+    }
+    return this.prepareTemplateSet({
+      condition: "relevant_full",
+      taskDigest: `campaign:${input.corpusCollectionManifestSha256}`,
+      sourceTaskDigest: null,
+      sourceAttemptId: sources[0]!.sourceAttemptId,
+      sanitizedSource: sources[0]!.sanitizedSource,
+      recallQuery: sources[0]!.recallQuery,
+      signal: input.signal,
+      campaignCorpusCollectionManifestSha256:
+        input.corpusCollectionManifestSha256,
+      ...(input.cachedContentIdentity
+        ? { cachedContentIdentity: input.cachedContentIdentity }
+        : {}),
+      sources: sources.map((source) => ({ ...source }))
+    });
+  }
+
+  private async prepareTemplateSet(input: {
+    condition: MemoryReplayCondition;
+    taskDigest: string;
+    sourceTaskDigest: string | null;
+    sourceAttemptId?: string;
+    sanitizedSource: AtifSanitizationResult | null;
+    recallQuery: string;
+    signal?: AbortSignal;
+    campaignCorpusCollectionManifestSha256?: string;
+    cachedContentIdentity?: string;
+    sources: Array<{
+      taskDigest: string | null;
+      corpusAttestationSha256?: string;
+      sourceAttemptId?: string;
+      sanitizedSource: AtifSanitizationResult | null;
+      recallQuery: string;
+    }>;
+  }): Promise<LocalProductTemplateHandle> {
     const runtime = await this.embeddingRuntime();
     const stageName = this.nextName("stage");
-    const templateName = this.nextName("template");
-    const projectId = `eval://experience-replay/${this.runPart}/${safeRunPart(
-      input.taskDigest
-    )}/${input.condition}`;
-    const projectCwd = path.join(
-      os.tmpdir(),
-      "koed-eval",
-      this.runPart,
-      safeRunPart(input.taskDigest),
-      input.condition
-    );
+    const templateName = input.cachedContentIdentity
+      ? `koed_eval_campaign_${input.cachedContentIdentity
+          .slice("sha256:".length)
+          .slice(0, 32)}`
+      : this.nextName("template");
+    const isCampaign = Boolean(input.campaignCorpusCollectionManifestSha256);
     await this.templates.createRunDatabase(stageName);
     const url = databaseUrl(
       this.options.postgres.adminUrl,
@@ -707,64 +824,113 @@ export class LocalExperienceReplayProductAdapter {
         actor,
         authorization
       });
-      const projectAnchor = await importClient.createSession({
-        projectId,
-        externalSessionId: `project-anchor-${safeRunPart(projectId)}`,
-        sourceRuntime: "codex-cli",
-        captureMethod: "api",
-        cwd: projectCwd,
-        idempotencyKey: `experience-replay-project:${safeRunPart(projectId)}`,
-        sourceHash: `sha256:${createHash("sha256").update(projectId).digest("hex")}`,
-        metadata: { sourceKind: "benchmark_project_anchor" }
-      });
-      if (projectAnchor.skipped || !projectAnchor.session?.id) {
-        throw new Error("Dedicated benchmark Project was not admitted");
-      }
-      const authenticatedSessionResponse = (await api.request({
-        method: "GET",
-        path: `/v1/sessions/${projectAnchor.session.id}?project_id=${encodeURIComponent(
+      const preparedProjects: Array<{
+        source: (typeof input.sources)[number];
+        taskDigest: string;
+        projectId: string;
+        projectCwd: string;
+        anchorSessionId: string;
+        authenticatedSessionRead: LocalProductIdentityAttestation["authenticatedSessionRead"];
+        normalizedImport: LocalProductTemplateAttestation["normalizedImport"];
+      }> = [];
+      for (const source of input.sources) {
+        const taskDigest = source.taskDigest ?? input.taskDigest;
+        const projectId = `eval://experience-replay/${this.runPart}/${safeRunPart(
+          taskDigest
+        )}/${input.condition}`;
+        const projectCwd = path.join(
+          os.tmpdir(),
+          "koed-eval",
+          this.runPart,
+          safeRunPart(taskDigest),
+          input.condition
+        );
+        let normalizedImport: LocalProductTemplateAttestation["normalizedImport"] =
+          null;
+        let anchorSessionId: string;
+        if (isCampaign) {
+          normalizedImport = await importNormalizedAttempt({
+            client: importClient,
+            projectId,
+            projectCwd,
+            taskDigest: source.taskDigest!,
+            sourceAttemptId: source.sourceAttemptId!,
+            items: source.sanitizedSource!.normalizedItems,
+            sanitizationManifest: source.sanitizedSource!.manifest
+          });
+          anchorSessionId = normalizedImport.sessionId;
+        } else {
+          const projectAnchor = await importClient.createSession({
+            projectId,
+            externalSessionId: `project-anchor-${safeRunPart(projectId)}`,
+            sourceRuntime: "codex-cli",
+            captureMethod: "api",
+            cwd: projectCwd,
+            idempotencyKey: `experience-replay-project:${safeRunPart(projectId)}`,
+            sourceHash: `sha256:${createHash("sha256").update(projectId).digest("hex")}`,
+            metadata: { sourceKind: "benchmark_project_anchor" }
+          });
+          if (projectAnchor.skipped || !projectAnchor.session?.id) {
+            throw new Error("Dedicated benchmark Project was not admitted");
+          }
+          anchorSessionId = projectAnchor.session.id;
+        }
+        const authenticatedSessionResponse = (await api.request({
+          method: "GET",
+          path: `/v1/sessions/${anchorSessionId}?project_id=${encodeURIComponent(
+            projectId
+          )}`,
+          headers: { authorization }
+        })) as { session?: Record<string, unknown> };
+        const authenticatedSession = authenticatedSessionResponse.session;
+        const authenticatedProject = authenticatedSession?.project as
+          | Record<string, unknown>
+          | undefined;
+        if (
+          authenticatedSession?.id !== anchorSessionId ||
+          authenticatedSession.ownerUserId !== user.id ||
+          authenticatedSession.visibility !== "personal" ||
+          authenticatedProject?.id !== projectId
+        ) {
+          throw new Error("Authenticated Project identity proof did not match");
+        }
+        const authenticatedSessionRead = {
+          sessionId: anchorSessionId,
+          ownerUserId: user.id,
+          visibility: "personal" as const,
           projectId
-        )}`,
-        headers: { authorization }
-      })) as { session?: Record<string, unknown> };
-      const authenticatedSession = authenticatedSessionResponse.session;
-      const authenticatedProject = authenticatedSession?.project as
-        | Record<string, unknown>
-        | undefined;
-      if (
-        authenticatedSession?.id !== projectAnchor.session.id ||
-        authenticatedSession.ownerUserId !== user.id ||
-        authenticatedSession.visibility !== "personal" ||
-        authenticatedProject?.id !== projectId
-      ) {
-        throw new Error("Authenticated Project identity proof did not match");
-      }
-      const authenticatedSessionRead = {
-        sessionId: projectAnchor.session.id,
-        ownerUserId: user.id,
-        visibility: "personal" as const,
-        projectId
-      };
-
-      let normalizedImport: LocalProductTemplateAttestation["normalizedImport"] =
-        null;
-      if (input.sanitizedSource) {
-        normalizedImport = await importNormalizedAttempt({
-          client: importClient,
+        };
+        if (!isCampaign && source.sanitizedSource) {
+          normalizedImport = await importNormalizedAttempt({
+            client: importClient,
+            projectId,
+            projectCwd,
+            taskDigest: source.taskDigest!,
+            sourceAttemptId: source.sourceAttemptId!,
+            items: source.sanitizedSource.normalizedItems,
+            sanitizationManifest: source.sanitizedSource.manifest
+          });
+        }
+        preparedProjects.push({
+          source,
+          taskDigest,
           projectId,
           projectCwd,
-          taskDigest: input.sourceTaskDigest!,
-          sourceAttemptId: input.sourceAttemptId!,
-          items: input.sanitizedSource.normalizedItems,
-          sanitizationManifest: input.sanitizedSource.manifest
+          anchorSessionId,
+          authenticatedSessionRead,
+          normalizedImport
         });
       }
 
       await embedPendingSources(repository, runtime);
-      const scheduledLcmEventIds =
-        normalizedImport?.projection.scheduledLcmEventIds ?? [];
-      let scheduledLcmJobs: ScheduledLcmJobAttestation | null = null;
-      if (scheduledLcmEventIds.length > 0) {
+      const campaignScheduledLcmEventIds = isCampaign
+        ? preparedProjects.flatMap(
+            (prepared) =>
+              prepared.normalizedImport?.projection.scheduledLcmEventIds ?? []
+          )
+        : [];
+      let campaignScheduledLcmJobs: ScheduledLcmJobAttestation | null = null;
+      if (campaignScheduledLcmEventIds.length > 0) {
         if (
           !this.options.runScheduledLcmJobs ||
           !this.options.lcmSummaryConfig
@@ -773,20 +939,21 @@ export class LocalExperienceReplayProductAdapter {
             "Projection scheduled LCM work but no Local AI Runtime job runner was configured"
           );
         }
-        scheduledLcmJobs = await this.options.runScheduledLcmJobs({
+        campaignScheduledLcmJobs = await this.options.runScheduledLcmJobs({
           repository,
           actor,
-          scheduledEventIds: scheduledLcmEventIds
+          scheduledEventIds: campaignScheduledLcmEventIds
         });
         if (
-          scheduledLcmJobs.nodeIds.length === 0 ||
-          scheduledLcmJobs.model !== this.options.lcmSummaryConfig.model ||
-          scheduledLcmJobs.promptVersion !==
+          campaignScheduledLcmJobs.nodeIds.length === 0 ||
+          campaignScheduledLcmJobs.model !==
+            this.options.lcmSummaryConfig.model ||
+          campaignScheduledLcmJobs.promptVersion !==
             this.options.lcmSummaryConfig.promptVersion ||
-          !Number.isSafeInteger(scheduledLcmJobs.inputTokens) ||
-          !Number.isSafeInteger(scheduledLcmJobs.outputTokens) ||
-          scheduledLcmJobs.inputTokens < 0 ||
-          scheduledLcmJobs.outputTokens < 0
+          !Number.isSafeInteger(campaignScheduledLcmJobs.inputTokens) ||
+          !Number.isSafeInteger(campaignScheduledLcmJobs.outputTokens) ||
+          campaignScheduledLcmJobs.inputTokens < 0 ||
+          campaignScheduledLcmJobs.outputTokens < 0
         ) {
           throw new Error(
             "LCM job runner returned an invalid structured attestation"
@@ -794,61 +961,145 @@ export class LocalExperienceReplayProductAdapter {
         }
         await embedPendingSources(repository, runtime);
       }
-      const productReadiness = await awaitExperienceReplayProductState({
-        repository: apiBackedReadinessRepository(
-          repository,
-          api,
-          authorization
-        ),
-        expectation: {
-          condition: input.condition,
-          actor,
-          projectId,
-          ...(normalizedImport
-            ? {
-                sessionId: normalizedImport.sessionId,
-                conversationItems: input.sanitizedSource!.normalizedItems.map(
-                  (item, index) => ({
-                    id: normalizedImport!.conversationItemIds[index]!,
-                    canonicalStableItemId: item.sourceIdentity,
-                    sourceSequence: item.sequence,
-                    sourceEventType: item.type
-                  })
-                ),
-                projectionDispositions:
-                  normalizedImport.projection.dispositions.map((scope) => ({
-                    eventId: scope.eventId,
-                    includeInEmbedding: scope.includeInEmbedding,
-                    includeInLcm: scope.includeInLcm
-                  })),
-                scheduledLcmEventIds
-              }
-            : {}),
-          embedding: {
-            model: runtime.model,
-            dimensions: runtime.dimensions,
-            version: runtime.model
-          },
-          recall: {
-            query: input.recallQuery,
-            expectedSourceIds:
-              normalizedImport?.projection.dispositions
-                .filter((scope) => scope.includeInEmbedding)
-                .map((scope) => scope.eventId) ?? []
+      const campaignProjects: LocalProductProjectAttestation[] = [];
+      const projectResults: Array<{
+        readiness: ExperienceReplayProductStateAttestation;
+        scheduledLcmJobs: ScheduledLcmJobAttestation | null;
+      }> = [];
+      for (const prepared of preparedProjects) {
+        const scheduledLcmEventIds =
+          prepared.normalizedImport?.projection.scheduledLcmEventIds ?? [];
+        let scheduledLcmJobs: ScheduledLcmJobAttestation | null = null;
+        if (!isCampaign && scheduledLcmEventIds.length > 0) {
+          if (
+            !this.options.runScheduledLcmJobs ||
+            !this.options.lcmSummaryConfig
+          ) {
+            throw new Error(
+              "Projection scheduled LCM work but no Local AI Runtime job runner was configured"
+            );
           }
-        },
-        timeoutMs: this.options.readinessTimeoutMs,
-        intervalMs: this.options.readinessIntervalMs
-      });
-      if (
-        scheduledLcmJobs &&
-        immutableHash([...scheduledLcmJobs.nodeIds].sort()) !==
-          immutableHash([...productReadiness.summarizedLcmNodeIds].sort())
-      ) {
-        throw new Error(
-          "LCM job attestation does not match database-observed summarized nodes"
-        );
+          scheduledLcmJobs = await this.options.runScheduledLcmJobs({
+            repository,
+            actor,
+            scheduledEventIds: scheduledLcmEventIds
+          });
+          if (
+            scheduledLcmJobs.nodeIds.length === 0 ||
+            scheduledLcmJobs.model !== this.options.lcmSummaryConfig.model ||
+            scheduledLcmJobs.promptVersion !==
+              this.options.lcmSummaryConfig.promptVersion ||
+            !Number.isSafeInteger(scheduledLcmJobs.inputTokens) ||
+            !Number.isSafeInteger(scheduledLcmJobs.outputTokens) ||
+            scheduledLcmJobs.inputTokens < 0 ||
+            scheduledLcmJobs.outputTokens < 0
+          ) {
+            throw new Error(
+              "LCM job runner returned an invalid structured attestation"
+            );
+          }
+          await embedPendingSources(repository, runtime);
+        }
+        const normalizedImport = prepared.normalizedImport;
+        const productReadiness = await awaitExperienceReplayProductState({
+          repository: apiBackedReadinessRepository(
+            repository,
+            api,
+            authorization
+          ),
+          expectation: {
+            condition: input.condition,
+            actor,
+            projectId: prepared.projectId,
+            ...(normalizedImport
+              ? {
+                  sessionId: normalizedImport.sessionId,
+                  conversationItems:
+                    prepared.source.sanitizedSource!.normalizedItems.map(
+                      (item, index) => ({
+                        id: normalizedImport.conversationItemIds[index]!,
+                        canonicalStableItemId: item.sourceIdentity,
+                        sourceSequence: item.sequence,
+                        sourceEventType: item.type
+                      })
+                    ),
+                  projectionDispositions:
+                    normalizedImport.projection.dispositions.map((scope) => ({
+                      eventId: scope.eventId,
+                      includeInEmbedding: scope.includeInEmbedding,
+                      includeInLcm: scope.includeInLcm
+                    })),
+                  scheduledLcmEventIds
+                }
+              : {}),
+            embedding: {
+              model: runtime.model,
+              dimensions: runtime.dimensions,
+              version: runtime.model
+            },
+            recall: {
+              query: prepared.source.recallQuery,
+              expectedSourceIds:
+                normalizedImport?.projection.dispositions
+                  .filter((scope) => scope.includeInEmbedding)
+                  .map((scope) => scope.eventId) ?? []
+            }
+          },
+          timeoutMs: this.options.readinessTimeoutMs,
+          intervalMs: this.options.readinessIntervalMs
+        });
+        if (
+          scheduledLcmJobs &&
+          immutableHash([...scheduledLcmJobs.nodeIds].sort()) !==
+            immutableHash([...productReadiness.summarizedLcmNodeIds].sort())
+        ) {
+          throw new Error(
+            "LCM job attestation does not match database-observed summarized nodes"
+          );
+        }
+        projectResults.push({ readiness: productReadiness, scheduledLcmJobs });
+        if (normalizedImport) {
+          campaignProjects.push({
+            taskDigest: prepared.taskDigest,
+            corpusAttestationSha256: prepared.source.corpusAttestationSha256!,
+            sourceAttemptId: prepared.source.sourceAttemptId!,
+            projectId: prepared.projectId,
+            project: {
+              id: prepared.projectId,
+              cwd: prepared.projectCwd,
+              anchorSessionId: prepared.anchorSessionId,
+              ownerUserId: user.id,
+              visibility: "personal"
+            },
+            normalizedImport,
+            readiness: productReadiness,
+            scheduledLcmNodeIds: [...productReadiness.summarizedLcmNodeIds]
+          });
+        }
       }
+      if (campaignScheduledLcmJobs) {
+        const observedCampaignNodeIds = campaignProjects.flatMap(
+          (project) => project.scheduledLcmNodeIds
+        );
+        if (
+          immutableHash([...observedCampaignNodeIds].sort()) !==
+          immutableHash([...campaignScheduledLcmJobs.nodeIds].sort())
+        ) {
+          throw new Error(
+            "Campaign LCM attestation does not match Project-scoped summarized nodes"
+          );
+        }
+      }
+
+      const primary = preparedProjects[0]!;
+      const projectId = primary.projectId;
+      const projectCwd = primary.projectCwd;
+      const authenticatedSessionRead = primary.authenticatedSessionRead;
+      const normalizedImport = primary.normalizedImport;
+      const productReadiness = projectResults[0]!.readiness;
+      const scheduledLcmJobs = isCampaign
+        ? null
+        : projectResults[0]!.scheduledLcmJobs;
 
       const rows = {
         users: await count(pool, "users"),
@@ -874,7 +1125,15 @@ export class LocalExperienceReplayProductAdapter {
         projection: normalizedImport?.projection ?? null,
         projectAnchor: authenticatedSessionRead,
         scheduledLcmJobs,
-        readiness: productReadiness
+        readiness: productReadiness,
+        ...(isCampaign
+          ? {
+              campaignProjects,
+              campaignScheduledLcmJobs,
+              corpusCollectionManifestSha256:
+                input.campaignCorpusCollectionManifestSha256
+            }
+          : {})
       });
       const database: LocalProductDatabaseAttestation = {
         databaseName: stageName,
@@ -899,11 +1158,19 @@ export class LocalExperienceReplayProductAdapter {
       await api.close();
       api = undefined;
       await pool.end();
-      await this.templates.createTemplate({
-        templateName,
-        sourceDatabaseName: stageName
-      });
-      const frozenDatabase = await this.templates.attestFrozen(templateName);
+      const frozenDatabase = input.cachedContentIdentity
+        ? await this.templates.createCachedTemplate({
+            templateName,
+            sourceDatabaseName: stageName,
+            contentIdentity: input.cachedContentIdentity
+          })
+        : await (async () => {
+            await this.templates.createTemplate({
+              templateName,
+              sourceDatabaseName: stageName
+            });
+            return this.templates.attestFrozen(templateName);
+          })();
       await this.templates.drop(stageName);
       const attestation: LocalProductTemplateAttestation = {
         schema: "koed-experience-replay-local-product-template-v1",
@@ -914,7 +1181,7 @@ export class LocalExperienceReplayProductAdapter {
         project: {
           id: projectId,
           cwd: projectCwd,
-          anchorSessionId: projectAnchor.session.id,
+          anchorSessionId: primary.anchorSessionId,
           ownerUserId: user.id,
           visibility: "personal"
         },
@@ -934,11 +1201,24 @@ export class LocalExperienceReplayProductAdapter {
         normalizedImport,
         readiness: productReadiness,
         scheduledLcmJobs,
+        ...(isCampaign ? { campaignProjects } : {}),
+        ...(isCampaign ? { campaignScheduledLcmJobs } : {}),
+        ...(input.campaignCorpusCollectionManifestSha256
+          ? {
+              corpusCollectionManifestSha256:
+                input.campaignCorpusCollectionManifestSha256
+            }
+          : {}),
         frozenDatabase,
         frozenAt: new Date().toISOString()
       };
       const attestationHash = immutableHash(attestation);
-      this.registeredTemplates.set(templateName, { attestationHash });
+      this.registeredTemplates.set(templateName, {
+        attestationHash,
+        ...(input.cachedContentIdentity
+          ? { cachedContentIdentity: input.cachedContentIdentity }
+          : {})
+      });
       return {
         templateId: templateName,
         sourceStateHash: stateHash,
@@ -958,10 +1238,29 @@ export class LocalExperienceReplayProductAdapter {
    * frozen database. No preparation token or pepper crosses the restart.
    */
   async adoptTemplate(
-    template: LocalProductTemplateHandle
+    template: LocalProductTemplateHandle,
+    cachedContentIdentity?: string
   ): Promise<LocalProductTemplateHandle> {
     if (this.closed) throw new Error("Local product adapter is closed");
     const { attestation } = template;
+    const campaignProjects = attestation.campaignProjects;
+    const campaignIsConsistent =
+      !campaignProjects ||
+      (campaignProjects.length >= 1 &&
+        Boolean(attestation.corpusCollectionManifestSha256) &&
+        attestation.taskDigest ===
+          `campaign:${attestation.corpusCollectionManifestSha256}` &&
+        attestation.sourceTaskDigest === null &&
+        campaignProjects[0]!.projectId === attestation.projectId &&
+        campaignProjects[0]!.project.id === attestation.project.id &&
+        new Set(campaignProjects.map((project) => project.taskDigest)).size ===
+          campaignProjects.length &&
+        campaignProjects.every(
+          (project) =>
+            Boolean(project.corpusAttestationSha256) &&
+            project.projectId === project.project.id &&
+            project.project.ownerUserId === attestation.identity.user.id
+        ));
     if (
       attestation.schema !==
         "koed-experience-replay-local-product-template-v1" ||
@@ -975,15 +1274,19 @@ export class LocalExperienceReplayProductAdapter {
       attestation.identity.authenticatedSessionRead.ownerUserId !==
         attestation.identity.user.id ||
       attestation.identity.authenticatedSessionRead.projectId !==
-        attestation.projectId
+        attestation.projectId ||
+      !campaignIsConsistent
     ) {
       throw new Error(
         "Persisted template attestation is internally inconsistent"
       );
     }
-    const frozen = await this.templates.adoptFrozenTemplate(
-      template.templateId
-    );
+    const frozen = cachedContentIdentity
+      ? await this.templates.adoptCachedTemplate({
+          templateName: template.templateId,
+          contentIdentity: cachedContentIdentity
+        })
+      : await this.templates.adoptFrozenTemplate(template.templateId);
     if (
       frozen.name !== attestation.frozenDatabase.name ||
       frozen.allowConnections !== attestation.frozenDatabase.allowConnections ||
@@ -994,9 +1297,28 @@ export class LocalExperienceReplayProductAdapter {
       );
     }
     this.registeredTemplates.set(template.templateId, {
-      attestationHash: immutableHash(attestation)
+      attestationHash: immutableHash(attestation),
+      ...(cachedContentIdentity ? { cachedContentIdentity } : {})
     });
     return template;
+  }
+
+  withCampaignTemplateLock<T>(
+    contentIdentity: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    return this.templates.withContentIdentityLock(contentIdentity, operation);
+  }
+
+  async evictCachedCampaignTemplate(
+    template: LocalProductTemplateHandle,
+    contentIdentity: string
+  ): Promise<void> {
+    await this.templates.evictCachedTemplate({
+      templateName: template.templateId,
+      contentIdentity
+    });
+    this.registeredTemplates.delete(template.templateId);
   }
 
   private async attestCloneState(
@@ -1033,6 +1355,7 @@ export class LocalExperienceReplayProductAdapter {
            SELECT 1 FROM sessions
            WHERE id = $5 AND owner_user_id = $1
              AND visibility = 'personal' AND cwd = $6
+             AND automatic_project_id = $7
          ) AS anchor_exists`,
       [
         expected.identity.user.id,
@@ -1040,7 +1363,8 @@ export class LocalExperienceReplayProductAdapter {
         expected.identity.user.email,
         expected.identity.apiToken.tokenPrefix,
         expected.project.anchorSessionId,
-        expected.project.cwd
+        expected.project.cwd,
+        expected.project.id
       ]
     );
     if (
@@ -1050,10 +1374,30 @@ export class LocalExperienceReplayProductAdapter {
     ) {
       throw new Error("Adopted template database identity attestation changed");
     }
+    for (const campaignProject of expected.campaignProjects ?? []) {
+      const anchor = await pool.query<{ anchor_exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM sessions
+           WHERE id = $2 AND owner_user_id = $1
+             AND visibility = 'personal' AND cwd = $3
+             AND automatic_project_id = $4
+         ) AS anchor_exists`,
+        [
+          expected.identity.user.id,
+          campaignProject.project.anchorSessionId,
+          campaignProject.project.cwd,
+          campaignProject.project.id
+        ]
+      );
+      if (!anchor.rows[0]?.anchor_exists) {
+        throw new Error("Adopted campaign Project anchor attestation changed");
+      }
+    }
   }
 
   async cloneForReplay(
-    template: LocalProductTemplateHandle
+    template: LocalProductTemplateHandle,
+    targetTaskDigest?: string
   ): Promise<LocalProductReplayProvision> {
     if (this.closed) throw new Error("Local product adapter is closed");
     let registration = this.registeredTemplates.get(template.templateId);
@@ -1064,12 +1408,42 @@ export class LocalExperienceReplayProductAdapter {
     if (immutableHash(template.attestation) !== registration.attestationHash) {
       throw new Error("Template attestation changed after freezing");
     }
+    const campaignProjects = template.attestation.campaignProjects;
+    if (campaignProjects && !targetTaskDigest) {
+      throw new Error("Campaign replay requires a target task digest");
+    }
+    const selectedCampaignProject = campaignProjects?.find(
+      (project) => project.taskDigest === targetTaskDigest
+    );
+    if (campaignProjects && !selectedCampaignProject) {
+      throw new Error("Target task digest is not present in campaign template");
+    }
+    if (
+      !campaignProjects &&
+      targetTaskDigest &&
+      targetTaskDigest !== template.attestation.taskDigest &&
+      targetTaskDigest !== template.attestation.sourceTaskDigest
+    ) {
+      throw new Error("Target task digest does not match template");
+    }
+    const selectedProject =
+      selectedCampaignProject?.project ?? template.attestation.project;
+    const selectedTaskDigest =
+      selectedCampaignProject?.taskDigest ?? template.attestation.taskDigest;
     const runtime = await this.embeddingRuntime();
     const cloneId = this.nextName("clone");
-    await this.templates.cloneTemplate({
-      templateName: template.templateId,
-      cloneName: cloneId
-    });
+    if (registration.cachedContentIdentity) {
+      await this.templates.cloneCachedTemplate({
+        templateName: template.templateId,
+        cloneName: cloneId,
+        contentIdentity: registration.cachedContentIdentity
+      });
+    } else {
+      await this.templates.cloneTemplate({
+        templateName: template.templateId,
+        cloneName: cloneId
+      });
+    }
     const url = databaseUrl(
       this.options.postgres.adminUrl,
       this.options.postgres.user,
@@ -1115,6 +1489,9 @@ export class LocalExperienceReplayProductAdapter {
       actor,
       authorization: `Bearer ${token}`,
       api,
+      taskDigest: selectedTaskDigest,
+      projectId: selectedProject.id,
+      project: selectedProject,
       telemetry: () => {
         const current = runtime.metrics();
         return {
