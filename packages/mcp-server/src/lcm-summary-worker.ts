@@ -105,6 +105,14 @@ export interface LcmSummaryResult {
   error?: string;
 }
 
+export interface LcmSummaryNodeExecution {
+  result: VersionedLcmSummaryPromptResult;
+  promptResults: VersionedLcmSummaryPromptResult[];
+  promptTokenEstimate: number;
+  maxPromptTokenEstimate: number;
+  promptCallCount: number;
+}
+
 export type LcmSummaryPromptResult = {
   text: string;
   structuredSummary?: StructuredLcmSummary;
@@ -1028,6 +1036,64 @@ const reduceShardSummaries = async (
   );
 };
 
+export const executeLcmSummaryNode = async (
+  node: LcmSummaryNode,
+  config: LcmSummaryWorkerConfig,
+  runner: CodexLcmSummaryRunner,
+  stats: {
+    promptTokenSum: number;
+    maxPromptTokens: number;
+    promptCallCount: number;
+  } = {
+    promptTokenSum: 0,
+    maxPromptTokens: 0,
+    promptCallCount: 0
+  }
+): Promise<LcmSummaryNodeExecution> => {
+  const prompts = buildSummaryPrompts(node, config);
+  const promptResults: VersionedLcmSummaryPromptResult[] = [];
+  const shardSummaries: VersionedLcmSummaryPromptResult[] = [];
+  for (const entry of prompts) {
+    const tokens = promptTokens(entry.prompt, config);
+    stats.promptTokenSum += tokens;
+    stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
+    stats.promptCallCount += 1;
+    const result = await runLcmSummaryPromptWithRetries(
+      entry.prompt,
+      entry.promptVersion,
+      entry.exactSourcePayloads,
+      config,
+      runner,
+      promptResults,
+      (repairPrompt) => {
+        const tokens = promptTokens(repairPrompt, config);
+        stats.promptTokenSum += tokens;
+        stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
+        stats.promptCallCount += 1;
+      }
+    );
+    shardSummaries.push(result);
+  }
+  const result =
+    prompts.length === 1
+      ? shardSummaries[0]!
+      : await reduceShardSummaries(
+          node,
+          shardSummaries,
+          config,
+          runner,
+          promptResults,
+          stats
+        );
+  return {
+    result,
+    promptResults,
+    promptTokenEstimate: stats.promptTokenSum,
+    maxPromptTokenEstimate: stats.maxPromptTokens,
+    promptCallCount: stats.promptCallCount
+  };
+};
+
 const summarizeNode = async (
   client: MemoryApiClient,
   node: LcmSummaryNode,
@@ -1041,41 +1107,8 @@ const summarizeNode = async (
   };
 
   try {
-    const prompts = buildSummaryPrompts(node, config);
-    const promptResults: VersionedLcmSummaryPromptResult[] = [];
-    const shardSummaries: VersionedLcmSummaryPromptResult[] = [];
-    for (const entry of prompts) {
-      const tokens = promptTokens(entry.prompt, config);
-      stats.promptTokenSum += tokens;
-      stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
-      stats.promptCallCount += 1;
-      const result = await runLcmSummaryPromptWithRetries(
-        entry.prompt,
-        entry.promptVersion,
-        entry.exactSourcePayloads,
-        config,
-        runner,
-        promptResults,
-        (repairPrompt) => {
-          const tokens = promptTokens(repairPrompt, config);
-          stats.promptTokenSum += tokens;
-          stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
-          stats.promptCallCount += 1;
-        }
-      );
-      shardSummaries.push(result);
-    }
-    const result =
-      prompts.length === 1
-        ? shardSummaries[0]!
-        : await reduceShardSummaries(
-            node,
-            shardSummaries,
-            config,
-            runner,
-            promptResults,
-            stats
-          );
+    const execution = await executeLcmSummaryNode(node, config, runner, stats);
+    const { result, promptResults } = execution;
     const summaryText = result.text.trim();
     const summaryTokens = countTokensForModel(summaryText, {
       model: config.model

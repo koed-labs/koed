@@ -116,6 +116,7 @@ export type {
 export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   buildLcmSummaryPrompt,
+  executeLcmSummaryNode,
   parseStructuredLcmSummary,
   runLcmSummary,
   runLcmSummaryPromptWithRetries,
@@ -123,6 +124,7 @@ export {
 } from "./lcm-summary-worker.js";
 export type {
   LcmSummaryRunner,
+  LcmSummaryNodeExecution,
   LcmSummaryNode,
   LcmSummaryPromptResult,
   LcmSummaryWorkerConfig,

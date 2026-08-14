@@ -1,15 +1,11 @@
-import {
-  countTokensForModel,
-  lcmLexicalAnchorGroundingPayloads
-} from "@koed/core";
+import { countTokensForModel } from "@koed/core";
 import type { ActorContext, MemorySourceRepository } from "@koed/db";
 import {
-  buildLcmSummaryPrompt,
+  executeLcmSummaryNode,
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   loadPrompt,
   resolveLcmSummaryWorkerConfig,
   runLcmSummary,
-  runLcmSummaryPromptWithRetries,
   type LcmSummaryRunner,
   type LcmSummaryWorkerConfig
 } from "@koed/mcp-server";
@@ -140,31 +136,12 @@ export const createRecordedLcmJobRunner = ({
     for (const nodeId of nodeIds) {
       const node = await repository.getLcmNodeForSummarization(nodeId);
       if (!node) throw new Error(`Recorded LCM node disappeared: ${nodeId}`);
-      const prompt = buildLcmSummaryPrompt(node, "summary", workerConfig.env);
-      const promptTokens = countTokensForModel(prompt, {
-        model: workerConfig.model
-      }).tokens;
-      if (promptTokens > workerConfig.maxPromptTokens) {
-        throw new Error(
-          `Recorded LCM prompt exceeds configured input limit for ${nodeId}`
-        );
-      }
-      const promptResults: Array<
-        Awaited<ReturnType<LcmSummaryRunner>> & { promptVersion: string }
-      > = [];
-      const result = await runLcmSummaryPromptWithRetries(
-        prompt,
-        config.lcm_summary.prompt_version,
-        lcmLexicalAnchorGroundingPayloads(node.sourceItems),
-        workerConfig,
-        runner,
-        promptResults
-      );
-      const structured = result.structuredSummary;
+      const execution = await executeLcmSummaryNode(node, workerConfig, runner);
+      const structured = execution.result.structuredSummary;
       if (!structured) {
         throw new Error("Recorded LCM result lacks a structured summary");
       }
-      for (const promptResult of promptResults) {
+      for (const promptResult of execution.promptResults) {
         const measured = usage(promptResult);
         inputTokens += measured.inputTokens;
         outputTokens += measured.outputTokens;
@@ -172,7 +149,7 @@ export const createRecordedLcmJobRunner = ({
       await repository.updateLcmNodeSummary({
         nodeId,
         summaryText: structured.summary_text,
-        summaryModel: result.model,
+        summaryModel: execution.result.model,
         summaryPromptVersion: config.lcm_summary.prompt_version,
         summaryTokenEstimate: countTokensForModel(structured.summary_text, {
           model: workerConfig.model
