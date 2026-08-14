@@ -103,6 +103,7 @@ const api = (
   assignSessionProject: vi.fn(async () => ({ projectId: null })),
   listProjects: vi.fn(async () => []),
   loadEventPage: vi.fn(async () => []),
+  updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
   subscribe: vi.fn(() => () => undefined),
   ...overrides
 });
@@ -198,6 +199,15 @@ const changeTextarea = (textarea: HTMLTextAreaElement, value: string): void => {
   )?.set;
   setter?.call(textarea, value);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
+};
+
+const changeInput = (input: HTMLInputElement, value: string): void => {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value"
+  )?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 };
 
 describe("PersonalMemoryWorkspace", () => {
@@ -451,6 +461,71 @@ describe("PersonalMemoryWorkspace", () => {
       limit: 500,
       cursor: { sourceSequence: 1 }
     });
+  });
+
+  it("renames a Captured Session from the preview header", async () => {
+    const selected = thread(1);
+    const source = project([selected]);
+    const renamed = project([{ ...selected, name: "Release planning" }]);
+    const listProjects = vi
+      .fn<PersonalDesktopApi["listProjects"]>()
+      .mockResolvedValueOnce([source])
+      .mockResolvedValue([renamed]);
+    const updateSessionTitle = vi.fn<PersonalDesktopApi["updateSessionTitle"]>(
+      async ({ title }) => ({ title })
+    );
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects,
+        loadEventPage: vi.fn(async () => [event(1)]),
+        updateSessionTitle
+      })
+    );
+
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          route={{ kind: "session", projectId: source.id, sessionId }}
+          store={store}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Captured Session 1")
+    );
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Rename Captured Session"]'
+        )
+        ?.click();
+    });
+    const input = container.querySelector<HTMLInputElement>(
+      'input[aria-labelledby="personal-session-title-label"], #personal-session-title'
+    )!;
+    await act(async () => changeInput(input, "Release planning"));
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Save Captured Session name"]'
+        )
+        ?.click();
+    });
+
+    await vi.waitFor(() =>
+      expect(updateSessionTitle).toHaveBeenCalledWith({
+        sessionId,
+        title: "Release planning"
+      })
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Release planning")
+    );
+    expect(
+      container.querySelector('button[aria-label="Rename Captured Session"]')
+    ).not.toBeNull();
   });
 
   it("fences a stale Project move response after the selected session changes", async () => {

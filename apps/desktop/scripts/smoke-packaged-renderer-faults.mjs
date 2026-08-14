@@ -293,6 +293,77 @@ export const smokePackagedRendererFaults = async ({
       "redelivery after renderer restart"
     );
 
+    await evaluate(
+      `document.querySelector('[aria-label="Personal"]')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `[...document.querySelectorAll('.desktop-sidebar-nav-item')].some((item) => item.textContent?.trim() === 'Shares')`,
+      "Personal Shares navigation"
+    );
+    await evaluate(
+      `[...document.querySelectorAll('.desktop-sidebar-nav-item')].find((item) => item.textContent?.trim() === 'Shares')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `document.body.innerText.includes('Packaged asynchronous sharing') && document.body.innerText.includes('Packaged revocation fixture')`,
+      "owner-wide Shares surface"
+    );
+    await evaluate(
+      `(() => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Pause updates'); button?.focus(); button?.click(); })()`
+    );
+    await waitFor(
+      evaluate,
+      `document.activeElement?.textContent?.trim() === 'Resume updates' && document.querySelector('.collab-share-detail')?.textContent?.includes('Packaged asynchronous sharing')`,
+      "stable Shares focus"
+    );
+    await evaluate(
+      `(() => { const card = [...document.querySelectorAll('.collab-shares-list .collab-memory-card')].find((item) => item.textContent?.includes('Packaged revocation fixture')); card?.focus(); card?.click(); window.__koedCollaborationInteractions.emitPendingShareNeedsAttention(); })()`
+    );
+    await waitFor(
+      evaluate,
+      `document.activeElement?.textContent?.includes('Packaged revocation fixture') && document.querySelector('.collab-share-detail')?.textContent?.includes('Packaged revocation fixture') && [...document.querySelectorAll('[role="status"][aria-live="polite"]')].some((item) => item.textContent?.includes('Packaged asynchronous sharing: needs attention'))`,
+      "packaged Shares live announcement"
+    );
+    await cdp.call("Emulation.setEmulatedMedia", {
+      media: "screen",
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }]
+    });
+    await waitFor(
+      evaluate,
+      `matchMedia('(prefers-reduced-motion: reduce)').matches && Number.parseFloat(getComputedStyle(document.querySelector('.collab-memory-card')).transitionDuration) <= 0.001`,
+      "packaged Shares reduced motion"
+    );
+    await evaluate(
+      `window.__koedConfirmPrompts = []; window.confirm = (message) => { window.__koedConfirmPrompts.push(message); return false; }; true`
+    );
+    await evaluate(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Revoke Workspace access')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `window.__koedConfirmPrompts.at(-1)?.includes('Personal Memory will not be deleted') && !window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.revoke_shared_memory')`,
+      "packaged Shares canceled destructive confirmation"
+    );
+    await evaluate(`window.confirm = () => true; true`);
+    await evaluate(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Revoke Workspace access')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `![...document.querySelectorAll('.collab-shares-list .collab-memory-card')].some((item) => item.textContent?.includes('Packaged revocation fixture')) && window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.revoke_shared_memory')`,
+      "packaged Shares confirmed revocation"
+    );
+    await evaluate(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'History')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `document.body.innerText.includes('Packaged revocation fixture')`,
+      "packaged Shares history"
+    );
+    await openProductChannel(" after Shares validation");
+
     const accessibleText = `(() => {
       const attributes = ["aria-label", "aria-description", "title", "alt", "placeholder"];
       return [document.body.innerText, ...[...document.querySelectorAll("body *")].flatMap((node) =>
@@ -412,6 +483,7 @@ export const smokePackagedRendererFaults = async ({
     return {
       crashAfterApplyBeforeAcknowledgement: true,
       redeliveryAppliedOnceAfterRestart: true,
+      ownerWideSharesAccessibility: true,
       representativeUiFailuresRedacted: [
         "api",
         "broker",

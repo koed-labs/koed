@@ -1,5 +1,9 @@
 import { codexIdePromptUserText } from "@koed/core";
 import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
+import {
+  approvalConversationItemSql,
+  semanticMemoryEventEligibleSql
+} from "./approval-activity-sql.js";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import {
@@ -285,6 +289,7 @@ export const createCuratedMemoryRecordMethods = ({
           and ci.visibility = 'personal'
           and ci.personal_deleted_at is null
           and ci.memory_excluded_at is null
+          and not ${approvalConversationItemSql("ci")}
           and (ci.source_event_type in ('user_message', 'UserPromptSubmit')
             or ci.metadata ->> 'transcriptType' = 'user_message')
           and ($2::uuid is null or ci.session_id = $2)
@@ -375,6 +380,7 @@ export const createCuratedMemoryRecordMethods = ({
           and me.visibility = 'personal'
           and me.invalidated_at is null
           and me.personal_deleted_at is null
+          and ${semanticMemoryEventEligibleSql("me")}
           and ($2::uuid is null or me.session_id = $2)
           and (
             $3::text is null

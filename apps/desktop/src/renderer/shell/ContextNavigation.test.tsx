@@ -45,13 +45,16 @@ describe("context navigation", () => {
           onCreateChannel={vi.fn()}
           onOpenNotes={vi.fn()}
           onOpenProjects={vi.fn()}
+          onOpenShares={vi.fn()}
           onSelectChannel={vi.fn()}
           projectsSelected
+          sharesSelected={false}
         />
       )
     );
     expect(container.textContent).toContain("Private to you");
     expect(container.textContent).toContain("Ask Memory");
+    expect(container.textContent).toContain("Shares");
     expect(container.textContent).not.toContain("Unavailable");
     expect(container.textContent).toContain("Channels");
     expect(container.textContent).toContain("Archived");

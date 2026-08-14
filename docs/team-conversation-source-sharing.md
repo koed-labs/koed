@@ -75,4 +75,9 @@ mismatched resources return no source content.
   heartbeats, and event-driven authorization rechecks protect long-lived
   connections without polling.
 - Audits contain structural IDs, counts, digests, and action classes only.
-- No UI is required by this backend contract.
+- The owner Shares detail presents source access separately as `absent`,
+  `snapshot`, `continuous`, or `revoked`. Granting it uses Step-up and warns
+  that prompts, tool calls, tool results, Approval Activity, and other
+  non-Memory records can be exposed. Revocation uses Native review, closes
+  streams, and leaves semantic access unchanged. Parent Share Grant revocation
+  makes source access unavailable.

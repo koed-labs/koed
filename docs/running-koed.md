@@ -1,5 +1,28 @@
 # Running Koed
 
+## Approval Activity remediation
+
+After upgrading an existing database, an Operator can inventory legacy
+approval-derived semantic data without mutation:
+
+```bash
+pnpm --filter @koed/db approval-activity:inventory
+```
+
+The bounded report is stable across repeated runs and counts affected Memory
+Events, embeddings and queued work, LCM derivatives, semantic replicas, and
+snapshot or continuous shares. Ambiguous scopes stop correction and require
+Operator review. After reviewing the inventory, apply the idempotent correction:
+
+```bash
+pnpm --filter @koed/db approval-activity:correct
+```
+
+Correction removes semantic derivatives, schedules eligible rebuild/deletion
+work, and revokes only deterministically affected snapshot shares. It preserves
+the owner Approval Activity timeline and byte-exact Conversation Source
+Artifacts, access grants, exports, and Fork Snapshots.
+
 > [!IMPORTANT]  
 > Only Codex is supported for knowledge capture. More agents to follow!
 
@@ -28,9 +51,12 @@ For server/private VPS terminology and migration notes, see
 Codex bootstrap when needed, and keeps the startup screen visible until the
 system is ready.
 
-After a verified setup, Desktop resumes its managed local `koed-server` before
-loading the main window. A fresh or incomplete setup opens the guided setup
-without silently installing runtime or model assets. After explicit User
+Desktop creates and loads its main window before it resumes the managed local
+`koed-server`. Platform secret-provider initialization runs in the background
+startup path after the window exists and before the runtime resumes. A blocked
+or interactive operating-system credential provider therefore cannot leave the
+User with no application window. A fresh or incomplete setup opens the guided
+setup without silently installing runtime or model assets. After explicit User
 confirmation, Desktop checks and runs the package, native runtime, embedding
 model, local services, Codex integration, and final verification stages in
 order. Completed stages are skipped. Only the active stage is shown as running,

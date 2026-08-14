@@ -95,22 +95,24 @@ Conversation Source Access grant. Semantic expansion level and raw-source
 access are independent controls. See
 [Team Conversation Source Sharing](team-conversation-source-sharing.md).
 
-Codex approval-review prompts can contain a serialized transcript inside one
-authoritative `user_message`. The trusted transcript adapter recognizes only
-the explicit Codex approval-review envelope and records a bounded display
-projection of its message, tool-call, and tool-result segments. The enclosing
-User Memory Event remains the only canonical semantic item: nested segments do
-not receive independent identity, chronology, recall, embedding, or LCM
-authority. Approval-review guardians preserve their provider parent-thread
-relationship. The Transcript Watcher normalizes Codex's native snake-case
-subagent and parent-thread fields when it registers the Captured Session, while
-the graph projection also recognizes the native fields on existing records.
-Desktop can therefore suppress the duplicate guardian Captured Session when
-the canonical parent Conversation is present and use the bounded projection
-only as a hook-style display fallback for orphaned or legacy data. An incomplete
-approval envelope receives a bounded unavailable-history row instead of raw
-synthetic prompt text. The original outer message remains retained as raw
-provenance.
+Codex approval-specific provider records are **Approval Activity**, not Memory.
+The trusted adapter classifies approval requests, decisions, automatic
+decisions and rationales, approval-specific tool results, and helper
+Conversations from provider structure. Ordinary prose that discusses approval
+is unaffected. The owner can see a bounded, validated activity DTO in the
+Personal Conversation timeline, but Projection creates no Memory Event,
+embedding work, or LCM source from the approval-specific or duplicated review
+copy. The original main-Conversation activity remains eligible under the normal
+Projection rules.
+
+Approval helper Conversations retain their provider parent relationship so
+Desktop can suppress the duplicate helper when the parent timeline supplies
+the activity. Incomplete or unknown trusted records fail closed to a bounded
+unavailable activity row; raw synthetic prompt text is never reinterpreted as
+ordinary User or AI Client content. Replay, historical import, and managed
+Conversation reconciliation use the same classifier and exclusion reason.
+Exact Conversation Source Access remains byte-exact and does not apply this
+semantic filter.
 
 The Supported Capture Hook never supplies conversation content or provider item
 identity. It writes a private wake timestamp and, for Stop events, a matched

@@ -1,4 +1,7 @@
-import { COLLABORATION_SOURCE_PAGE_MAX_ITEMS } from "@koed/shared";
+import {
+  COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
+  collaborationNameSchema
+} from "@koed/shared";
 import { z } from "zod";
 import { SHARED_MEMORY_AUTHORITY } from "@koed/db";
 
@@ -70,6 +73,31 @@ export const listWorkspaceSharedMemoryQuerySchema = z
   })
   .strict();
 
+export const listOwnedSharesQuerySchema =
+  listWorkspaceSharedMemoryQuerySchema.extend({
+    history: z
+      .enum(["true", "false"])
+      .transform((value) => value === "true")
+      .default(false),
+    snapshotAt: z.iso.datetime().optional()
+  });
+
+export const ownedShareParamsSchema = z
+  .object({ kind: z.enum(["pending", "grant"]), id: uuidSchema })
+  .strict();
+
+export const renameOwnedShareSchema = z
+  .object({ title: collaborationNameSchema })
+  .strict();
+
+export const controlPendingShareSchema = z
+  .object({
+    mutationId: uuidSchema,
+    expectedOperationVersion: z.number().int().safe().positive(),
+    action: z.enum(["retry", "pause", "resume", "revoke"])
+  })
+  .strict();
+
 export const putSharedMemoryPolicySchema = z
   .object({
     mutationId: uuidSchema,
@@ -87,6 +115,32 @@ export const createSharedMemoryPreviewSchema = z
     teamWorkspaceId: uuidSchema,
     representation: sharedMemoryRepresentationSchema,
     allowedRepresentations: distinctRepresentationsSchema,
+    authority: sharedMemoryAuthoritySchema
+  })
+  .strict()
+  .refine(
+    (input) => input.allowedRepresentations.includes(input.representation),
+    { message: "Preview representation is outside the approved allowlist" }
+  );
+
+export const createSharedMemoryCandidatePreviewSchema = z
+  .object({
+    logicalMemoryId: uuidSchema,
+    candidateHash: sha256Schema,
+    sourceRevision: nonNegativeVersionSchema,
+    itemCount: z.number().int().safe().positive().max(100),
+    byteCount: z
+      .number()
+      .int()
+      .safe()
+      .positive()
+      .max(256 * 1_024),
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    representation: sharedMemoryRepresentationSchema,
+    allowedRepresentations: distinctRepresentationsSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
     authority: sharedMemoryAuthoritySchema
   })
   .strict()
@@ -147,6 +201,7 @@ export const createSharedMemoryShareBundleSchema = z
     allowedRepresentations: distinctRepresentationsSchema,
     selectedRepresentation: sharedMemoryRepresentationSchema,
     expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
+    title: collaborationNameSchema.optional(),
     authority: sharedMemoryAuthoritySchema
   })
   .strict()
@@ -155,6 +210,8 @@ export const createSharedMemoryShareBundleSchema = z
       input.allowedRepresentations.includes(input.selectedRepresentation),
     { message: "Selected representation is not owner-authorized" }
   );
+
+export const createPendingShareSchema = createSharedMemoryShareBundleSchema;
 
 export const changeSharedMemoryRepresentationBundleSchema = z
   .object({

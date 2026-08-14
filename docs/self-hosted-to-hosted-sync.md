@@ -88,6 +88,29 @@ Required V1.0 decisions:
   payloads, embeddings, package bytes, and provider credentials require the
   normal hosted support/break-glass policy before access.
 
+## Asynchronous semantic sharing
+
+Reviewing a semantic candidate does not start Cross-Identity Sync. The local
+source first builds a bounded candidate page (100 items and 256 KiB maximum).
+The Team Backend validates destination and policy and persists the exact
+candidate binding. Authenticated consent then creates a durable Pending Share
+and outbox entry with Workspace access set to `none`; Desktop can close.
+
+Only after acceptance does the source prepare the owner-private relationship.
+The Team worker resumes from durable state after restarts, requires the exact
+consented source revision, creates the authoritative encrypted preview, and
+materializes the selected Team representation. The Share Grant stays
+`unavailable` until representation finalization and activation commit together.
+Sync writes the encrypted placeholder for `raw_text` only when non-empty text
+has a matching owner-private encrypted payload. For rows written by the legacy
+empty-text bug, authoritative preview hydration treats the placeholder as an
+empty value only when the encrypted-column manifest excludes `raw_text`; a
+manifest that requires encrypted text still fails closed when its payload is
+missing.
+Retries reuse the original mutation and logical-grant identities. Continuous
+updates can be paused without removing the last authorized Workspace
+representation; revocation is a separate operation.
+
 ## Architecture Principles
 
 - Use an application-level sync package, not PostgreSQL replication as the

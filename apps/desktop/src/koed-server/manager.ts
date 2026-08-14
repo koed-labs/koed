@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  approvalActivityClassificationSchema,
   approvalReviewTranscriptDisplayFromText,
   approvalReviewTranscriptDisplaySchema,
   collaborationRendererCommandSchema,
@@ -15,6 +16,7 @@ import {
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectDataSchema,
+  personalDesktopSessionTitleDataSchema,
   type CollaborationRendererEvent,
   type PersonalDesktopChange,
   type PersonalDesktopRequest,
@@ -464,40 +466,48 @@ const personalEventsData = (payload: Record<string, unknown>) => {
     events: events.map((eventValue) => {
       const event = objectValue(eventValue) ?? {};
       const metadata = objectValue(event.metadata);
+      const approvalActivity = approvalActivityClassificationSchema.safeParse(
+        metadata?.approvalActivity
+      ).data;
       const toolDisplay = buildPersonalToolDisplay({
         actor: event.actor,
         content: event.content,
         contentPreview: event.contentPreview,
         metadata
       });
-      const approvalDecisionDisplay = buildPersonalApprovalDisplay({
-        actor: event.actor,
-        content: event.content,
-        metadata
-      });
+      const approvalDecisionDisplay =
+        approvalActivity?.display?.kind === "approval_decision"
+          ? approvalActivity.display.decision
+          : buildPersonalApprovalDisplay({
+              actor: event.actor,
+              content: event.content,
+              metadata
+            });
       const transcriptDisplay =
-        approvalReviewTranscriptDisplaySchema.safeParse(
-          metadata?.approvalReviewTranscriptDisplay
-        ).data ??
-        (typeof event.content === "string"
-          ? (approvalReviewTranscriptDisplayFromText(event.content) ??
-            (isApprovalReviewTranscriptEnvelopeText(event.content)
-              ? {
-                  kind: "approval_review" as const,
-                  version: 1 as const,
-                  truncated: true,
-                  segments: [
-                    {
-                      kind: "message" as const,
-                      sequence: 0,
-                      actor: "agent" as const,
-                      content:
-                        "This approval-review history is incomplete and cannot be displayed safely."
+        approvalActivity?.display?.kind === "approval_review"
+          ? approvalActivity.display.transcript
+          : (approvalReviewTranscriptDisplaySchema.safeParse(
+              metadata?.approvalReviewTranscriptDisplay
+            ).data ??
+            (typeof event.content === "string"
+              ? (approvalReviewTranscriptDisplayFromText(event.content) ??
+                (isApprovalReviewTranscriptEnvelopeText(event.content)
+                  ? {
+                      kind: "approval_review" as const,
+                      version: 1 as const,
+                      truncated: true,
+                      segments: [
+                        {
+                          kind: "message" as const,
+                          sequence: 0,
+                          actor: "agent" as const,
+                          content:
+                            "This approval-review history is incomplete and cannot be displayed safely."
+                        }
+                      ]
                     }
-                  ]
-                }
-              : undefined))
-          : undefined);
+                  : undefined))
+              : undefined));
       return {
         id: event.id,
         actor: event.actor,
@@ -513,6 +523,9 @@ const personalEventsData = (payload: Record<string, unknown>) => {
         ...(approvalDecisionDisplay ? { approvalDecisionDisplay } : {}),
         ...(transcriptDisplay ? { transcriptDisplay } : {}),
         ...(toolDisplay ? { toolDisplay } : {}),
+        ...(approvalActivity?.display
+          ? { activityDisplay: approvalActivity.display }
+          : {}),
         metadata: toolDisplay?.toolName
           ? { toolName: toolDisplay.toolName }
           : {}
@@ -2373,6 +2386,36 @@ export const createKoedServerManager = ({
     });
   };
 
+  const updatePersonalSessionTitle = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.sessions.update_title" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/graph/sessions/${encodeURIComponent(input.sessionId)}/title`,
+          apiOrigin
+        ),
+        init: {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: input.title })
+        }
+      }),
+      1 * 1_024 * 1_024
+    );
+    const session = objectValue(payload.session);
+    const metadata = objectValue(session?.metadata);
+    if (!metadata || typeof metadata.threadName !== "string") {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    return personalDesktopSessionTitleDataSchema.parse({
+      title: metadata.threadName
+    });
+  };
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
@@ -2381,7 +2424,9 @@ export const createKoedServerManager = ({
           ? await listPersonalProjects()
           : request.operation === "personal.events.load_page"
             ? await loadPersonalEventPage(request.input)
-            : await assignPersonalSessionProject(request.input);
+            : request.operation === "personal.sessions.assign_project"
+              ? await assignPersonalSessionProject(request.input)
+              : await updatePersonalSessionTitle(request.input);
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,

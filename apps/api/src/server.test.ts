@@ -13935,6 +13935,11 @@ describe("account and access flows", () => {
       }
     });
     const session = jsonBody<SessionResponse>(sessionResponse).session;
+    const initialThreads = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=false",
+      headers: browserSessionHeaders(cookie)
+    });
     const renamed = await app.inject({
       method: "PATCH",
       url: `/v1/memory/graph/sessions/${session.id}/title`,
@@ -13949,6 +13954,11 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(renamed.statusCode).toBe(200);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(initialThreads)
+        .projects.flatMap((project) => project.threads)
+        .find((thread) => thread.sessionId === session.id)
+    ).toMatchObject({ name: "thread-title-a" });
     expect(jsonBody<SessionResponse>(renamed).session).toMatchObject({
       id: session.id
     });

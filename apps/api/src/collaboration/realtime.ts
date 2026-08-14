@@ -161,10 +161,10 @@ export interface CollaborationRealtimeServiceOptions {
           | "getManagedConversationRuntimeBinding"
         >)
     | null;
-  sharedMemoryRepository: Pick<
-    SharedMemoryRepository,
-    "readGrantRepresentation"
-  > | null;
+  sharedMemoryRepository:
+    | (Pick<SharedMemoryRepository, "readGrantRepresentation"> &
+        Partial<Pick<SharedMemoryRepository, "getOwnerShare">>)
+    | null;
   teamPresenceRepository?: Pick<
     import("@koed/db").MemorySourceRepository,
     "getTeamRosterMember"
@@ -225,6 +225,7 @@ const requiredOperationFamiliesForEvent = (
     case "shared_session_discussion_activity":
       return ["team_workspace_read", "team_chat_read"];
     case "personal_memory_changed":
+    case "pending_share_lifecycle":
     case "managed_conversation_changed":
     case "access_revoked":
       return [];
@@ -367,6 +368,10 @@ type RendererUpdate = Extract<
   { type: "update" }
 >["update"];
 
+const sharedSessionCompanionUnavailable = Symbol(
+  "shared-session-companion-unavailable"
+);
+
 export type EventMaterialization =
   | { action: "deliver"; update: RendererUpdate }
   | { action: "skip" }
@@ -448,6 +453,49 @@ export type PersonalRealtimeMaterializationRepository =
       ManagedConversationRepository,
       "getManagedConversationExecution" | "getManagedConversationRuntimeBinding"
     >;
+
+export const materializePendingShareLifecycleEvent = async (
+  actor: ActorContext,
+  event: CollaborationOutboxEventRecord,
+  repository: Partial<Pick<SharedMemoryRepository, "getOwnerShare">> | null
+): Promise<EventMaterialization> => {
+  if (
+    !repository?.getOwnerShare ||
+    event.family !== "pending_share_lifecycle" ||
+    event.scope !== "personal" ||
+    event.personalOwnerUserId !== actor.userId ||
+    event.actorPrincipalId !== actor.userId ||
+    event.teamId !== null ||
+    event.teamWorkspaceId !== null ||
+    event.threadId !== null ||
+    event.messageId !== null ||
+    event.shareGrantId !== null ||
+    event.logicalMemoryId !== null ||
+    event.resourceType !== "pending_share_operations"
+  ) {
+    return { action: "requires_snapshot" };
+  }
+  const share = await repository.getOwnerShare(actor, {
+    kind: "pending",
+    id: event.resourceId
+  });
+  if (!share || share.kind !== "pending") {
+    return { action: "requires_snapshot" };
+  }
+  return {
+    action: "deliver",
+    update: {
+      type: "owned_share_status_changed",
+      pendingShareId: share.pendingShare.id,
+      sourceTitle: share.summary.sourceTitle,
+      state: share.pendingShare.state,
+      stage: share.pendingShare.stage,
+      workspaceAccessState: share.pendingShare.workspaceAccessState,
+      sourceUpdateState: share.pendingShare.sourceUpdateState,
+      redactedFailureCode: share.pendingShare.redactedFailureCode
+    }
+  };
+};
 
 export const materializeManagedConversationChangedEvent = async (
   actor: ActorContext,
@@ -693,7 +741,9 @@ const rendererSharedSessionFrom = async (
   event: CollaborationOutboxEventRecord,
   result: SharedMemoryReadResult,
   repository: CollaborationRepository
-): Promise<RendererUpdate | null> => {
+): Promise<
+  RendererUpdate | null | typeof sharedSessionCompanionUnavailable
+> => {
   const { grant, representation } = result;
   if (
     event.scope !== "team" ||
@@ -734,7 +784,7 @@ const rendererSharedSessionFrom = async (
     companion.sharedLogicalMemoryId !== grant.logicalMemoryId ||
     companion.shareGrantId !== grant.id
   ) {
-    return null;
+    return sharedSessionCompanionUnavailable;
   }
   const ownerId = grant.ownerUserId ?? grant.ownerPrincipalId;
   const owner = (
@@ -751,7 +801,7 @@ const rendererSharedSessionFrom = async (
       displayName: displayName(owner?.displayName, "Team member"),
       membershipState: "enabled"
     },
-    title: "Shared Memory",
+    title: grant.displayTitle ?? "Shared Memory",
     latestActivityAt: representation.updatedAt,
     representation: representation.representation,
     representationState: representation.state === "stale" ? "stale" : "current",
@@ -823,6 +873,12 @@ const materializeEvent = async (
         client.actor,
         event,
         materializationRepository
+      );
+    case "pending_share_lifecycle":
+      return materializePendingShareLifecycleEvent(
+        client.actor,
+        event,
+        options.sharedMemoryRepository
       );
     case "message_created": {
       if (
@@ -969,9 +1025,13 @@ const materializeEvent = async (
               client.actor,
               { shareGrantId: event.shareGrantId }
             );
-          update = result
+          const sharedSession = result
             ? await rendererSharedSessionFrom(client, event, result, repository)
             : null;
+          if (sharedSession === sharedSessionCompanionUnavailable) {
+            return { action: "skip" };
+          }
+          update = sharedSession;
         } else {
           update = thread
             ? rendererThreadFromRecord(thread, client.user)
@@ -999,28 +1059,25 @@ const materializeEvent = async (
           client.actor,
           { shareGrantId: event.shareGrantId }
         );
-      if (event.family === "share_grant_lifecycle") {
-        if (!result) return { action: "skip" };
-        update = await rendererSharedSessionFrom(
+      if (!result) {
+        if (event.family === "share_grant_lifecycle") {
+          return { action: "skip" };
+        }
+        update = {
+          type: "shared_session_removed",
+          sharedSessionId: event.shareGrantId
+        };
+      } else {
+        const sharedSession = await rendererSharedSessionFrom(
           client,
           event,
           result,
           repository
         );
-      } else if (event.family === "representation_changed") {
-        update = result
-          ? await rendererSharedSessionFrom(client, event, result, repository)
-          : {
-              type: "shared_session_removed",
-              sharedSessionId: event.shareGrantId
-            };
-      } else {
-        update = result
-          ? await rendererSharedSessionFrom(client, event, result, repository)
-          : {
-              type: "shared_session_removed",
-              sharedSessionId: event.shareGrantId
-            };
+        if (sharedSession === sharedSessionCompanionUnavailable) {
+          return { action: "skip" };
+        }
+        update = sharedSession;
       }
       break;
     }

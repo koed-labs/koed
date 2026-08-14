@@ -197,6 +197,13 @@
       "when": 1786536767218,
       "tag": "0027_redundant_dexter_bennett",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1786718925093,
+      "tag": "0028_rare_bulldozer",
+      "breakpoints": true
     }
   ]
 }

@@ -96,6 +96,7 @@ const commandRequiresTeamBackend = (
     case "collaboration.disconnect_backend":
     case "collaboration.create_notes_to_self":
     case "collaboration.create_personal_channel":
+    case "collaboration.preview_shared_memory_candidate":
       return false;
     case "collaboration.select":
       return isTeamCollaborationSelection(command.input.selection);

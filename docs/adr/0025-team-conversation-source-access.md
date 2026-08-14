@@ -67,4 +67,6 @@ Forking creates a separate future lineage outside this read-only relationship.
 
 The Source Journal remains the sole retained-byte implementation. No duplicate
 transcript store, Team plaintext cache, polling worker, or second ingestion path
-is introduced. UI work is independent and is not part of this decision.
+is introduced. The owner-wide Shares detail presents source access as a
+separate absent, snapshot, continuous, or revoked capability; semantic status
+and representation changes never alter it implicitly.

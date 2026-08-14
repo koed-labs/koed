@@ -40,6 +40,37 @@ unavailable; no lower- or higher-fidelity representation is substituted.
 | Queues, outbox, replay, and retry custody              | **Intentionally unavailable for plaintext Shared Memory.** Structural notifications and encrypted references are supported.                                                             | Durable outbox/retry data is limited to structural scope/resource IDs, event family, encrypted payload references where applicable, and bounded replay metadata. Plaintext source/chat bodies, summaries, credentials, keys, and decrypted metadata are prohibited. Work is re-authorized when materialized or replayed; loss of authority stops serialization.                                                                                                                                             | Queue/outbox entries signal invalidation or rematerialization and do not constitute a representation. They cannot be replayed as higher-fidelity content or bypass the active representation.                                                                                                                                                                      | `packages/db/src/shared-memory-repository.ts` collaboration outbox writes; `packages/db/tests/shared-memory-repository.test.ts` policy/outbox audit tests and encrypted-storage timeline test; `apps/api/src/collaboration/realtime.test.ts` content-safe replay, authorization-loss, listener-restart, and durable-outbox replay tests.                                                                                                                                                                                                                                                                                                          |
 | Broker, preload, IPC, and renderer caches              | **No persistent protected Shared Memory content is supported.** Bounded in-memory authorized view state is supported.                                                                   | The renderer receives schema-validated authorized DTOs, never reusable remote credentials or owner-private replica material. Protected in-memory state, stale responses, queued writes, selections, and IPC result custody are cleared or rejected on grant/policy/representation change, Workspace or membership loss, session/device revocation, disconnect, or remote identity change. `localStorage`, `sessionStorage`, service-worker storage, and persistent browser caches are not authority stores. | In-memory state contains only the selected active representation. A representation change purges old items before replacement; an unavailable replacement retains only a non-content shell and independently authorized companion discussion.                                                                                                                      | `apps/desktop/src/collaboration/renderer-client.test.ts` “purges an open higher-fidelity source before applying a representation downgrade”, “preserves the Shared Memory shell and companion while a representation is unavailable”, and stale/revocation selection tests; `apps/desktop/src/collaboration/renderer-surface.test.tsx` renderer boundary coverage; `apps/api/src/local-edge/collaboration-realtime-broker.test.ts` Share Grant revocation and envelope-binding tests.                                                                                                                                                             |
 
+## Owner and preparation surfaces
+
+- `Personal > Memory > Projects` counts only Memory Events.
+- `Personal > Memory > Shares` is owner-only and cursor-paginated. Its searchable
+  navigation combines Pending Shares, active Share Grants, and revoked retention
+  rows, groups them by lifecycle, and orders each result set by the most recent
+  update. Each row uses an owner-defined Share name. The initial name is set in
+  the review preview and can later be changed from Modify Share without renaming
+  the source Captured Session or another destination's Share. The selected name
+  is also the Shared Session title visible to that destination Workspace.
+  Wide layouts keep the Share navigation and selected preview visible together;
+  narrow layouts drill from the navigation into one selected Share and use
+  desktop navigation history to return. Initial loading feedback appears in the
+  pane that is visible at each layout width. After acceptance, the owner can
+  dismiss the completion state or open the exact Pending Share or Share Grant
+  created by that operation. Revoked rows restore no authority.
+- Owner Share detail requests the bounded, consent-bound authoritative preview
+  from the Team Backend after owner authorization. The local authority verifies
+  and retains that exact preview for paging. The preview remains bound to its
+  owner, destination, representation, hash, and source revision; a current
+  local candidate is labeled as a fallback only when no authoritative preview
+  is available.
+- Candidate preview is bounded to 100 items and 256 KiB and creates no sync,
+  replica, upload, consent, or Share Grant.
+- Approval Activity has an owner-only activity DTO but no semantic Shared
+  Memory representation. Conversation Source Access is the explicit byte-exact
+  tier.
+- Representation replacement materializes in the transaction that switches the
+  active grant binding. Readers see the prior active representation or the
+  completed replacement, never an intermediate gap.
+
 ## Representation Contract
 
 - `memory_events` exposes only independently permitted canonical source items

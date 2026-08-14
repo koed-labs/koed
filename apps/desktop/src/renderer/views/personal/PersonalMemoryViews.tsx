@@ -8,12 +8,15 @@ import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import {
   BookText,
   Brain,
+  Check,
   ChevronDown,
   CircleAlert,
   GitFork,
   LoaderCircle,
   MonitorSmartphone,
-  Send
+  Pencil,
+  Send,
+  X
 } from "lucide-react";
 import {
   useCallback,
@@ -1266,14 +1269,125 @@ function SessionDetail({
   thread: PersonalDesktopProjectThread;
   pendingCanonicalConversation: boolean;
 }) {
+  const title = thread.name || "Untitled session";
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(title);
+  const [titleBusy, setTitleBusy] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editingTitle) setTitleDraft(title);
+  }, [editingTitle, title]);
+
+  const cancelTitleEdit = () => {
+    setTitleDraft(title);
+    setTitleError(null);
+    setEditingTitle(false);
+  };
+
+  const saveTitle = async () => {
+    const nextTitle = titleDraft.trim();
+    if (!thread.sessionId || titleBusy) return;
+    if (!nextTitle) {
+      setTitleError("Enter a name for this Captured Session.");
+      return;
+    }
+    if (nextTitle === title) {
+      cancelTitleEdit();
+      return;
+    }
+    setTitleBusy(true);
+    setTitleError(null);
+    try {
+      await store.updateSessionTitle({
+        sessionId: thread.sessionId,
+        title: nextTitle
+      });
+      setEditingTitle(false);
+    } catch {
+      setTitleError("Koed could not rename this Captured Session.");
+    } finally {
+      setTitleBusy(false);
+    }
+  };
+
   return (
     <section className="personal-session-detail">
       <header>
         <div>
           <small>{project.name} · Private to you</small>
-          <h2 data-personal-route-focus="session" tabIndex={-1}>
-            {thread.name || "Untitled session"}
-          </h2>
+          {editingTitle ? (
+            <form
+              className="personal-session-title-editor"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveTitle();
+              }}
+            >
+              <label className="sr-only" htmlFor="personal-session-title">
+                Captured Session name
+              </label>
+              <input
+                autoFocus
+                disabled={titleBusy}
+                id="personal-session-title"
+                maxLength={120}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") cancelTitleEdit();
+                }}
+                value={titleDraft}
+              />
+              <button
+                aria-label="Save Captured Session name"
+                disabled={titleBusy}
+                type="submit"
+              >
+                {titleBusy ? (
+                  <LoaderCircle
+                    aria-hidden="true"
+                    className="personal-session-title-spinner"
+                  />
+                ) : (
+                  <Check aria-hidden="true" />
+                )}
+              </button>
+              <button
+                aria-label="Cancel Captured Session rename"
+                disabled={titleBusy}
+                onClick={cancelTitleEdit}
+                type="button"
+              >
+                <X aria-hidden="true" />
+              </button>
+            </form>
+          ) : (
+            <div className="personal-session-title-row">
+              <h2 data-personal-route-focus="session" tabIndex={-1}>
+                {title}
+              </h2>
+              {thread.sessionId ? (
+                <button
+                  aria-label="Rename Captured Session"
+                  className="personal-session-title-edit"
+                  onClick={() => {
+                    setTitleDraft(title);
+                    setTitleError(null);
+                    setEditingTitle(true);
+                  }}
+                  title="Rename Captured Session"
+                  type="button"
+                >
+                  <Pencil aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          )}
+          {titleError ? (
+            <p className="personal-session-title-error" role="alert">
+              {titleError}
+            </p>
+          ) : null}
           <p
             aria-label={countLabel(thread.eventCount, "Memory Event")}
             className="personal-memory-event-count"

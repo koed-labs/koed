@@ -171,7 +171,43 @@ const matrixCases: Array<{
   },
   {
     intent: {
+      action: "shared_memory.candidate_preview",
+      logicalMemoryId: uuid(3),
+      candidateHash: "a".repeat(64),
+      sourceRevision: 1,
+      itemCount: 1,
+      byteCount: 128,
+      teamId: uuid(1),
+      teamWorkspaceId: uuid(2),
+      representation: "lcm_rollups",
+      allowedRepresentations: ["lcm_rollups"],
+      mode: "snapshot",
+      expiresAt: null
+    },
+    expected: "direct"
+  },
+  {
+    intent: {
       action: "shared_memory.share",
+      mutationId: uuid(6),
+      logicalGrantId: uuid(7),
+      logicalMemoryId: uuid(3),
+      teamId: uuid(1),
+      teamWorkspaceId: uuid(2),
+      consentId: uuid(8),
+      previewId: uuid(9),
+      mode: "snapshot",
+      allowedRepresentations: ["lcm_rollups"],
+      selectedRepresentation: "lcm_rollups",
+      previewRevision: 1,
+      previewHash: "b".repeat(64),
+      expiresAt: null
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
+      action: "shared_memory.pending_share",
       mutationId: uuid(6),
       logicalGrantId: uuid(7),
       logicalMemoryId: uuid(3),

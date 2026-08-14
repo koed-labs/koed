@@ -225,6 +225,11 @@ stores PDS material in plaintext or asks a User to put it in an environment
 variable. Never set raw `PDS_AUTHORITY_*`, group keys, recovery material,
 private keys, passwords, or `env://` PDS secret values.
 
+Desktop loads its window before it accesses this provider. Provider setup still
+finishes before the managed runtime starts, so children never start with a
+partially initialized secret bridge. This order keeps the window available when
+the operating system pauses for credential-provider interaction.
+
 PDS relay capability additionally requires usable Authority state and migrated
 relay repository. Relay requests authenticate only with an unexpired
 Authority-signed `pds_relay` membership certificate plus a domain-separated

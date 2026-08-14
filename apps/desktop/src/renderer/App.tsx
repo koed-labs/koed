@@ -84,6 +84,10 @@ const PersonalMemoryWorkspace = lazy(async () => {
   const module = await import("./views/personal/index.js");
   return { default: module.PersonalMemoryWorkspace };
 });
+const PersonalMemorySharesView = lazy(async () => {
+  const module = await import("./collaboration/CollaborationRoutesImpl.js");
+  return { default: module.PersonalMemoryView };
+});
 
 const fallbackCollaborationClient = (): CollaborationRendererClient =>
   createCollaborationRendererClient({
@@ -689,15 +693,32 @@ export function App({
             route: { kind: "personal-memory-projects" }
           })
         }
+        onOpenShares={() =>
+          navigate({
+            authority: {
+              backendId: null,
+              principalId:
+                snapshot?.navigation.personalOwner.id ?? "local-personal"
+            },
+            route: { kind: "personal-memory-shares" }
+          })
+        }
         onSelectChannel={(threadId) =>
           choose({ kind: "personal_channel", threadId })
         }
-        projectsSelected={route.kind.startsWith("personal-memory")}
+        projectsSelected={
+          route.kind.startsWith("personal-memory") &&
+          route.kind !== "personal-memory-shares"
+        }
+        sharesSelected={route.kind === "personal-memory-shares"}
       />
     );
 
   const personalBreadcrumb = (() => {
     if (!route.kind.startsWith("personal-memory")) return null;
+    if (route.kind === "personal-memory-shares") {
+      return <StaticBreadcrumb labels={["Personal", "Shares"]} />;
+    }
     const selectedProject =
       "projectId" in route
         ? personalMemorySnapshot?.projectsById.get(route.projectId)
@@ -884,6 +905,50 @@ export function App({
         }}
         snapshot={snapshot}
       />
+    );
+  } else if (route.kind === "personal-memory-shares" && snapshot) {
+    content = (
+      <Suspense
+        fallback={
+          <EmptyRoute
+            description="Loading owner-authorized share activity."
+            icon={<LoaderCircle aria-hidden="true" />}
+            title="Opening Shares"
+          />
+        }
+      >
+        <PersonalMemorySharesView
+          client={client}
+          initialSection="shares"
+          initialShareKey={route.shareKey}
+          markdownAdapters={collaboration.markdownAdapters}
+          onOpenProjects={() =>
+            navigate({
+              authority: {
+                backendId: null,
+                principalId: snapshot.navigation.personalOwner.id
+              },
+              route: { kind: "personal-memory-projects" }
+            })
+          }
+          onShare={(sessionId) =>
+            collaboration.setModal({
+              kind: "share_personal_memory",
+              sessionId
+            })
+          }
+          onSelectShare={(shareKey) =>
+            navigate({
+              authority: {
+                backendId: null,
+                principalId: snapshot.navigation.personalOwner.id
+              },
+              route: { kind: "personal-memory-shares", shareKey }
+            })
+          }
+          snapshot={snapshot}
+        />
+      </Suspense>
     );
   } else if (route.kind.startsWith("personal-memory")) {
     content =
@@ -1182,6 +1247,16 @@ export function App({
             markdownAdapters={collaboration.markdownAdapters}
             modal={collaboration.modal}
             onModalChange={collaboration.setModal}
+            onViewShare={(shareKey) => {
+              collaboration.setModal(null);
+              navigate({
+                authority: {
+                  backendId: null,
+                  principalId: snapshot.navigation.personalOwner.id
+                },
+                route: { kind: "personal-memory-shares", shareKey }
+              });
+            }}
             snapshot={snapshot}
           />
         </Suspense>

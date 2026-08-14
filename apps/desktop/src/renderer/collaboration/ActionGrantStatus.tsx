@@ -89,6 +89,13 @@ export function ActionGrantStatus({
 
   useEffect(() => {
     for (const grant of actionGrants) {
+      if (grant.operation === "Preview Shared Memory") {
+        const previousToastId = toastIds.current.get(grant.id);
+        if (previousToastId !== undefined) dismiss(previousToastId, false);
+        displayedStates.current.set(grant.id, grant.state);
+        toastIds.current.delete(grant.id);
+        continue;
+      }
       if (displayedStates.current.get(grant.id) === grant.state) continue;
 
       const previousToastId = toastIds.current.get(grant.id);

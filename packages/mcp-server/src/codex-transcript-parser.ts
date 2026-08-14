@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { splitCodexIdePrompt } from "@koed/core";
+import { approvalActivityMetadata } from "@koed/shared";
 import { approvalReviewTranscriptDisplayFromText } from "@koed/shared/personal-desktop";
 import {
   adaptCodexTranscriptV1,
@@ -1785,47 +1786,53 @@ export const buildCodexTranscriptConversationItems = (
             ? "raw_only"
             : "pending",
         projectionVersion: "codex-transcript-v1",
-        metadata: {
-          ...(parsedItem.item?.metadata ?? {}),
-          ...(transcriptByteOffset === undefined
-            ? {}
-            : { transcriptByteOffset }),
-          transcriptSourceLineNumber: sourceLineNumber,
-          ...(canonicalItemKey
-            ? {
-                canonicalIdentityBasis: "provider_ids",
-                ...(input.preferStableResponseItems
-                  ? { managedConversationReconciliation: true }
-                  : {})
-              }
-            : {}),
-          ...(managedTurnComplete ? { semanticControl: "turn_completed" } : {}),
-          ...(ambiguousResponseUserObservation
-            ? {
-                managedConversationSourceRole:
-                  "ambiguous_user_context_provenance",
-                projectionPolicyKey: "managed_context_user",
-                projectionActor: "system"
-              }
-            : {}),
-          ...(duplicateEventMessageObservation &&
-          input.preferStableResponseItems
-            ? { managedConversationSourceRole: "duplicate_representation" }
-            : {}),
-          sourceEventTimeAccuracy: rawEventTimeAccuracy(record),
-          ...(assignedTurnId
-            ? { transcriptAssignedTurnId: assignedTurnId }
-            : {}),
-          threadKind: input.threadKind,
-          parentThreadId: input.parentThreadId,
-          ...(approvalReview ? { approvalReview: true } : {}),
-          ...(input.sourceTransport === "historical_import"
-            ? { observedViaHistoricalImport: true }
-            : { observedViaTranscript: true }),
-          ...(input.sourceFingerprint
-            ? { sourceFingerprint: input.sourceFingerprint }
-            : {})
-        }
+        metadata: approvalActivityMetadata({
+          actor: parsedItem.item?.actor,
+          content: parsedItem.item?.content,
+          metadata: {
+            ...(parsedItem.item?.metadata ?? {}),
+            ...(transcriptByteOffset === undefined
+              ? {}
+              : { transcriptByteOffset }),
+            transcriptSourceLineNumber: sourceLineNumber,
+            ...(canonicalItemKey
+              ? {
+                  canonicalIdentityBasis: "provider_ids",
+                  ...(input.preferStableResponseItems
+                    ? { managedConversationReconciliation: true }
+                    : {})
+                }
+              : {}),
+            ...(managedTurnComplete
+              ? { semanticControl: "turn_completed" }
+              : {}),
+            ...(ambiguousResponseUserObservation
+              ? {
+                  managedConversationSourceRole:
+                    "ambiguous_user_context_provenance",
+                  projectionPolicyKey: "managed_context_user",
+                  projectionActor: "system"
+                }
+              : {}),
+            ...(duplicateEventMessageObservation &&
+            input.preferStableResponseItems
+              ? { managedConversationSourceRole: "duplicate_representation" }
+              : {}),
+            sourceEventTimeAccuracy: rawEventTimeAccuracy(record),
+            ...(assignedTurnId
+              ? { transcriptAssignedTurnId: assignedTurnId }
+              : {}),
+            threadKind: input.threadKind,
+            parentThreadId: input.parentThreadId,
+            ...(approvalReview ? { approvalReview: true } : {}),
+            ...(input.sourceTransport === "historical_import"
+              ? { observedViaHistoricalImport: true }
+              : { observedViaTranscript: true }),
+            ...(input.sourceFingerprint
+              ? { sourceFingerprint: input.sourceFingerprint }
+              : {})
+          }
+        })
       });
     }
 

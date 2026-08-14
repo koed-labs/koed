@@ -1309,6 +1309,46 @@ sequenceDiagram
   MCP-->>Client: MCP tool result
 ```
 
+## Pending Share activation sequence
+
+1. Desktop reserves the captured session's semantic sync cursor and requests a
+   bounded local candidate at that revision; no sync relationship or upload
+   exists.
+2. The Team Backend validates destination and policy and persists an expiring
+   candidate binding.
+3. One reviewed operation persists Pending Share, audit, and outbox with
+   Workspace access `none`.
+4. The local authority persists source-preparation work before Desktop reports
+   acceptance. A restart-safe local worker starts or resumes synchronization
+   only after acceptance.
+5. The Team worker resumes durable work, waits for the exact source revision,
+   excludes Approval Activity from semantic content, and creates the
+   authoritative encrypted preview.
+6. Consent and an `unavailable` Share Grant are created idempotently.
+7. The Team worker materializes the representation, then immediately creates
+   or resolves the deterministic Shared Session companion before marking the
+   Pending Share activated. Realtime holds the early representation event until
+   the companion event can materialize the complete Shared Session, instead of
+   forcing a reconnecting snapshot cycle. The worker also repairs activated
+   Pending Shares that predate this ordering and are missing their companion.
+   The activation transaction appends an owner-only Pending Share lifecycle
+   event before Desktop announces completion.
+8. A deterministic activation failure stops automatic delivery and waits for
+   an explicit retry, which reuses the original identities. If the source moved
+   beyond the reviewed revision, Desktop requires a fresh preview and consent
+   instead. Pause preserves the last authorized representation. Revocation
+   remains separate.
+
+A detail-level replacement reuses this durable lifecycle while keeping the
+current Share Grant active. The worker creates the replacement authoritative
+preview and consent, then changes the grant and materialized representation in
+one transaction. A crash after that transaction reconciles through the stable
+replacement mutation; it does not create a second grant or an access gap.
+
+Approval Activity flows only to the owner activity timeline or separately
+authorized byte-exact Conversation Source Access. Projection, embeddings, LCM,
+Recall, semantic sync, and semantic Shared Memory each enforce the exclusion.
+
 ## Implementation Anchors
 
 - Capture Hook: `packages/mcp-server/src/capture-hook.ts`

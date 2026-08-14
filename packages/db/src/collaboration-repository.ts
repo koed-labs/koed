@@ -70,6 +70,7 @@ export type CollaborationEventFamily =
   | "lcm_rollup_available"
   | "shared_session_discussion_activity"
   | "personal_memory_changed"
+  | "pending_share_lifecycle"
   | "managed_conversation_changed"
   | "access_revoked";
 
@@ -2435,7 +2436,7 @@ const prepareThreadCreation = async (
           actor,
           input.teamId,
           input.teamWorkspaceId,
-          "write"
+          input.kind === "shared_session_discussion" ? "read" : "write"
         ))
       ) {
         return null;
@@ -2661,7 +2662,8 @@ const insertThread = async (
       );
     }
     const existing = await getAuthorizedThreadRow(client, actor, existingId, {
-      required: "write",
+      required:
+        prepared.kind === "shared_session_discussion" ? "read" : "write",
       includeArchived: true,
       forUpdate: true
     });
@@ -2708,7 +2710,7 @@ const insertThread = async (
     );
   }
   const row = await getAuthorizedThreadRow(client, actor, prepared.id, {
-    required: "write",
+    required: prepared.kind === "shared_session_discussion" ? "read" : "write",
     includeArchived: false,
     forUpdate: true
   });

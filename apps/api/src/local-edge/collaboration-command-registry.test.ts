@@ -142,6 +142,18 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     scope: "team",
     desktop: read
   },
+  "collaboration.list_owned_shares": { scope: "team", desktop: read },
+  "collaboration.get_owned_share": { scope: "team", desktop: read },
+  "collaboration.rename_owned_share": { scope: "team", desktop: write },
+  "collaboration.control_pending_share": { scope: "team", desktop: write },
+  "collaboration.share_conversation_source": {
+    scope: "team",
+    desktop: write
+  },
+  "collaboration.revoke_conversation_source": {
+    scope: "team",
+    desktop: write
+  },
   "collaboration.prepare_shared_memory_source": {
     scope: "team",
     desktop: write
@@ -153,6 +165,10 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.resume_shared_memory_sync": {
     scope: "team",
     desktop: write
+  },
+  "collaboration.preview_shared_memory_candidate": {
+    scope: "personal",
+    desktop: read
   },
   "collaboration.revoke_shared_memory_sync": {
     scope: "team",

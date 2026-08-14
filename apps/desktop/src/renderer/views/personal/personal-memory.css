@@ -52,8 +52,25 @@
   overflow-wrap: anywhere;
 }
 
+.personal-projects-pane h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.5rem;
+}
+
 .personal-project-search {
   padding: 0 0.75rem 0.75rem;
+  position: relative;
+}
+
+.personal-project-search::after {
+  border-bottom: 1px solid var(--border);
+  bottom: 0;
+  content: "";
+  left: 0.5rem;
+  position: absolute;
+  right: 0.5rem;
 }
 
 .personal-project-search input {
@@ -369,6 +386,77 @@
 .personal-session-detail > header .personal-memory-event-count {
   color: var(--muted-foreground);
   margin: 0.2rem 0 0;
+}
+
+.personal-session-title-row,
+.personal-session-title-editor {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+  min-width: 0;
+}
+
+.personal-session-title-row h2 {
+  min-width: 0;
+}
+
+.personal-session-title-edit,
+.personal-session-title-editor button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.35rem;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  min-height: 1.75rem;
+  min-width: 1.75rem;
+  padding: 0.3rem;
+}
+
+.personal-session-title-edit:hover,
+.personal-session-title-editor button:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.personal-session-title-edit:focus-visible,
+.personal-session-title-editor button:focus-visible,
+.personal-session-title-editor input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.personal-session-title-edit svg,
+.personal-session-title-editor button svg {
+  height: 0.9rem;
+  width: 0.9rem;
+}
+
+.personal-session-title-spinner {
+  animation: personal-managed-spin 900ms linear infinite;
+}
+
+.personal-session-title-editor input {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+  max-width: min(32rem, 60vw);
+  min-width: min(18rem, 50vw);
+  padding: 0.25rem 0.45rem;
+}
+
+.personal-session-title-error {
+  color: var(--destructive);
+  font-size: 0.75rem;
+  margin: 0.25rem 0 0;
 }
 
 .personal-share-button {

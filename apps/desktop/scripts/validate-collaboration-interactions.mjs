@@ -64,6 +64,17 @@ const setEmulatedViewport = async (window, width, height) => {
   await delay(100);
 };
 
+const setReducedMotion = async (window) => {
+  if (!window.webContents.debugger.isAttached()) {
+    window.webContents.debugger.attach("1.3");
+  }
+  await window.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {
+    media: "screen",
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }]
+  });
+  await delay(100);
+};
+
 const rectFor = async (window, locator) => {
   const rect = await evaluate(
     window,
@@ -649,6 +660,94 @@ const run = async () => {
       actionGrant: { id: ids.actionGrant }
     });
 
+    await trustedClick(
+      alice,
+      `document.querySelector('[aria-label="Personal"]')`
+    );
+    await trustedClick(
+      alice,
+      `${byText(".desktop-sidebar-nav-item", "Shares")}`
+    );
+    await waitFor(
+      alice,
+      bodyIncludes("Packaged asynchronous sharing"),
+      "owner-wide Shares route"
+    );
+    await trustedClick(alice, `${byText("button", "Modify")}`);
+    await trustedClick(alice, `${byText("button", "Pause updates")}`);
+    await waitFor(
+      alice,
+      `${byText("button", "Resume updates")} === document.activeElement && ${bodyIncludes("Packaged asynchronous sharing")}`,
+      "stable focus after pausing updates"
+    );
+    await trustedClick(alice, `${byText("button", "Done")}`);
+    await trustedClick(
+      alice,
+      `[...document.querySelectorAll('.collab-share-row')]
+        .find((item) => item.textContent?.includes('Packaged revocation fixture'))`
+    );
+    await evaluate(
+      alice,
+      `window.__koedCollaborationInteractions.emitPendingShareNeedsAttention()`
+    );
+    await waitFor(
+      alice,
+      `document.activeElement?.textContent?.includes('Packaged revocation fixture') &&
+        document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture') &&
+        [...document.querySelectorAll('[role="status"][aria-live="polite"]')]
+          .some((item) => item.textContent?.includes('Packaged asynchronous sharing: needs attention'))`,
+      "stable selection and live announcement after background update"
+    );
+    await setReducedMotion(alice);
+    const reducedMotion = await evaluate(
+      alice,
+      `(() => {
+        const card = document.querySelector('.collab-share-row');
+        return {
+          active: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          transitionDuration: card ? getComputedStyle(card).transitionDuration : null
+        };
+      })()`
+    );
+    assert.equal(reducedMotion.active, true);
+    assert.ok(
+      Number.parseFloat(reducedMotion.transitionDuration ?? "1") <= 0.001,
+      `Expected reduced transition duration, received ${reducedMotion.transitionDuration}`
+    );
+
+    await evaluate(
+      alice,
+      `(() => {
+        window.__koedConfirmPrompts = [];
+        window.confirm = (message) => {
+          window.__koedConfirmPrompts.push(message);
+          return false;
+        };
+      })()`
+    );
+    await trustedClick(alice, `${byText("button", "Modify")}`);
+    await trustedClick(alice, `${byText("button", "Revoke Workspace access")}`);
+    assert.match(
+      await evaluate(alice, `window.__koedConfirmPrompts.at(-1) ?? ''`),
+      /Personal Memory will not be deleted/
+    );
+    assert.equal(
+      (await commands(alice)).filter(
+        (command) => command.command === "collaboration.revoke_shared_memory"
+      ).length,
+      0,
+      "Canceling destructive confirmation must preserve access"
+    );
+    await evaluate(alice, `window.confirm = () => true; true`);
+    await trustedClick(alice, `${byText("button", "Revoke Workspace access")}`);
+    await waitFor(
+      alice,
+      `[...document.querySelectorAll('[aria-labelledby="collab-revoked-shares"] .collab-share-row')]
+        .some((item) => item.textContent?.includes('Packaged revocation fixture')) &&
+        document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture')`,
+      "confirmed Workspace revocation"
+    );
+
     await evaluate(
       bob,
       `window.__koedCollaborationInteractions.setReconnecting()`
@@ -722,7 +821,7 @@ const run = async () => {
     );
 
     process.stdout.write(
-      "Collaboration interaction validation passed: trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
+      "Collaboration interaction validation passed: owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
     );
   } finally {
     for (const window of windows) {

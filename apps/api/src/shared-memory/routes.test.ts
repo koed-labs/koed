@@ -136,6 +136,7 @@ const createFixture = () => {
     teamId: ids.teamA,
     teamWorkspaceId: ids.workspaceA,
     consentId: ids.consent,
+    displayTitle: "Shared Memory",
     sourceOwnerPolicyId: randomUUID(),
     sourceOwnerPolicyVersion: 1,
     teamPolicyId: randomUUID(),
@@ -331,10 +332,49 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async createSharedMemoryCandidatePreview() {
+      return null;
+    },
+    async createPendingShare() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async createPendingRepresentationChange() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async processPendingShares() {
+      return { claimed: 0, activated: 0, waiting: 0, failed: 0 };
+    },
+    async controlPendingShare() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async listOwnerShares(_actor, input) {
+      return {
+        entries: [],
+        limit: input.limit,
+        offset: input.offset,
+        hasMore: false,
+        snapshotAt: iso
+      };
+    },
+    async getOwnerShare() {
+      return null;
+    },
+    async renameOwnerShare() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async readOwnerSharePreview() {
+      return null;
+    },
+    async getSharedMemoryCandidatePreviewAdmission() {
+      return null;
+    },
     async getSharedMemoryPreviewAdmission() {
       return null;
     },
     async getSharedMemoryShareReview() {
+      return null;
+    },
+    async getSharedMemoryPendingShareReview() {
       return null;
     },
     async getSharedMemoryRepresentationChangeReview() {
@@ -499,6 +539,7 @@ const createFixture = () => {
       }
       const entry = {
         shareGrantId: ids.grant,
+        title: "Shared Memory",
         logicalMemoryId: ids.logicalMemory,
         ownerUserId: ids.alice,
         activeRepresentation: "memory_events" as const,
@@ -1612,6 +1653,7 @@ describe("Shared Memory HTTP routes", () => {
     expect(body.shareGrants).toHaveLength(1);
     expect(body.shareGrants[0]).toEqual({
       id: fixture.ids.grant,
+      title: "Shared Memory",
       logicalMemoryId: fixture.ids.logicalMemory,
       ownerUserId: fixture.ids.alice,
       activeRepresentation: "memory_events",

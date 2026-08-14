@@ -28,6 +28,8 @@
     "migrate:acceptance": "pnpm run build && node scripts/migration-smoke.mjs",
     "migrate:smoke": "pnpm run migrate:acceptance",
     "migrate:up": "pnpm run build && node dist/migrate-cli.js",
+    "approval-activity:inventory": "pnpm run build && node scripts/approval-activity-remediation.mjs inventory",
+    "approval-activity:correct": "pnpm run build && node scripts/approval-activity-remediation.mjs correct --apply",
     "test": "vitest run --passWithNoTests --no-file-parallelism",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
