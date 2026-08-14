@@ -10,6 +10,7 @@ import {
 const SHA256 = /^[a-f0-9]{64}$/;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_BYTES = 1024 * 1024;
+const CODEX_MODEL_LIST_TIMEOUT_MS = 30_000;
 
 export interface BoundedCommand {
   file: string;
@@ -224,13 +225,16 @@ export const attestExactModels = async ({
   if (!bootstrapModel) throw new Error("At least one exact model is required");
   if (required.some((id) => !id || id.trim() !== id))
     throw new Error("Required model IDs must be exact non-empty identities");
-  const models = await listModels({
-    appServerBinary: binary,
-    model: bootstrapModel,
-    cwd,
-    env: environment,
-    includeHidden: true
-  });
+  const models = await listModels(
+    {
+      appServerBinary: binary,
+      model: bootstrapModel,
+      cwd,
+      env: environment,
+      includeHidden: true
+    },
+    CODEX_MODEL_LIST_TIMEOUT_MS
+  );
   if (!Array.isArray(models))
     throw new Error("Codex model/list returned a malformed response");
   const byId = new Map<string, CodexAppServerModelOption>();

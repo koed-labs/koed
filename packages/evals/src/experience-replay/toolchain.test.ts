@@ -51,6 +51,10 @@ describe("toolchain attestations", () => {
         listModels
       })
     ).resolves.toHaveLength(1);
+    expect(listModels).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: "gpt-5.6-luna" }),
+      30_000
+    );
     await expect(
       attestExactModels({
         binary: "/pinned/codex",
