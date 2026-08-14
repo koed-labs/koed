@@ -77,6 +77,23 @@ const config = resolveExperienceReplayConfig({
   paid_cost_stop_usd: 1
 });
 
+const pendingNode = (id = "node-1") => ({
+  id,
+  ownerUserId: "user-1",
+  visibility: "personal",
+  kind: "leaf" as const,
+  depth: 0,
+  summaryText: "pending",
+  sourceItems: [{ kind: "memory_event", text: "exact source phrase" }],
+  sourceTokenEstimate: 3,
+  summaryTokenEstimate: null,
+  summaryModel: null,
+  summaryPromptVersion: null,
+  summaryStructuredJson: null,
+  summaryStructuredSchemaVersion: null,
+  lcmAlgorithmVersion: "v1"
+});
+
 describe("recorded LCM preparation", () => {
   it("runs the production prompt contract and persists measured output", async () => {
     const updateLcmNodeSummary = vi.fn().mockResolvedValue(undefined);
@@ -92,25 +109,13 @@ describe("recorded LCM preparation", () => {
         ])
         .mockResolvedValueOnce([]),
       createLcmNodes: vi.fn().mockResolvedValue({
-        leafNodeIds: ["node-1"],
+        leafNodeIds: ["node-created-by-drain"],
         rollupNodeId: null
       }),
-      getLcmNodeForSummarization: vi.fn().mockResolvedValue({
-        id: "node-1",
-        ownerUserId: "user-1",
-        visibility: "personal",
-        kind: "leaf",
-        depth: 0,
-        summaryText: "pending",
-        sourceItems: [{ kind: "memory_event", text: "exact source phrase" }],
-        sourceTokenEstimate: 3,
-        summaryTokenEstimate: null,
-        summaryModel: null,
-        summaryPromptVersion: null,
-        summaryStructuredJson: null,
-        summaryStructuredSchemaVersion: null,
-        lcmAlgorithmVersion: "v1"
-      }),
+      listLcmNodesNeedingSummaries: vi
+        .fn()
+        .mockResolvedValueOnce([pendingNode()])
+        .mockResolvedValueOnce([]),
       updateLcmNodeSummary
     } as unknown as MemorySourceRepository;
     const runner = vi.fn().mockResolvedValue({
@@ -197,24 +202,10 @@ describe("recorded LCM preparation", () => {
           leafNodeIds: ["node-2"],
           rollupNodeId: null
         }),
-      getLcmNodeForSummarization: vi.fn().mockImplementation((nodeId) =>
-        Promise.resolve({
-          id: nodeId,
-          ownerUserId: "user-1",
-          visibility: "personal",
-          kind: "leaf",
-          depth: 0,
-          summaryText: "pending",
-          sourceItems: [{ kind: "memory_event", text: "exact source phrase" }],
-          sourceTokenEstimate: 3,
-          summaryTokenEstimate: null,
-          summaryModel: null,
-          summaryPromptVersion: null,
-          summaryStructuredJson: null,
-          summaryStructuredSchemaVersion: null,
-          lcmAlgorithmVersion: "v1"
-        })
-      ),
+      listLcmNodesNeedingSummaries: vi
+        .fn()
+        .mockResolvedValueOnce([pendingNode("node-1"), pendingNode("node-2")])
+        .mockResolvedValueOnce([]),
       updateLcmNodeSummary: vi.fn().mockResolvedValue(undefined)
     } as unknown as MemorySourceRepository;
     const runner = vi.fn().mockResolvedValue({
@@ -293,22 +284,10 @@ describe("recorded LCM preparation", () => {
         leafNodeIds: ["node-1"],
         rollupNodeId: null
       }),
-      getLcmNodeForSummarization: vi.fn().mockResolvedValue({
-        id: "node-1",
-        ownerUserId: "user-1",
-        visibility: "personal",
-        kind: "leaf",
-        depth: 0,
-        summaryText: "pending",
-        sourceItems: [{ kind: "memory_event", text: "exact source phrase" }],
-        sourceTokenEstimate: 3,
-        summaryTokenEstimate: null,
-        summaryModel: null,
-        summaryPromptVersion: null,
-        summaryStructuredJson: null,
-        summaryStructuredSchemaVersion: null,
-        lcmAlgorithmVersion: "v1"
-      }),
+      listLcmNodesNeedingSummaries: vi
+        .fn()
+        .mockResolvedValueOnce([pendingNode()])
+        .mockResolvedValueOnce([]),
       updateLcmNodeSummary
     } as unknown as MemorySourceRepository;
     const runner = vi

@@ -130,33 +130,57 @@ export const createRecordedLcmJobRunner = ({
     actor: ActorContext;
     scheduledEventIds: readonly string[];
   }): Promise<ScheduledLcmJobAttestation> => {
-    const nodeIds = await createNodes(repository, actor, scheduledEventIds);
+    if (scheduledEventIds.length === 0) {
+      return {
+        nodeIds: [],
+        model: config.lcm_summary.model.id,
+        promptVersion: config.lcm_summary.prompt_version,
+        inputTokens: 0,
+        outputTokens: 0
+      };
+    }
+    await createNodes(repository, actor, scheduledEventIds);
+    const nodeIds: string[] = [];
+    const processedNodeIds = new Set<string>();
     let inputTokens = 0;
     let outputTokens = 0;
-    for (const nodeId of nodeIds) {
-      const node = await repository.getLcmNodeForSummarization(nodeId);
-      if (!node) throw new Error(`Recorded LCM node disappeared: ${nodeId}`);
-      const execution = await executeLcmSummaryNode(node, workerConfig, runner);
-      const structured = execution.result.structuredSummary;
-      if (!structured) {
-        throw new Error("Recorded LCM result lacks a structured summary");
-      }
-      for (const promptResult of execution.promptResults) {
-        const measured = usage(promptResult);
-        inputTokens += measured.inputTokens;
-        outputTokens += measured.outputTokens;
-      }
-      await repository.updateLcmNodeSummary({
-        nodeId,
-        summaryText: structured.summary_text,
-        summaryModel: execution.result.model,
-        summaryPromptVersion: config.lcm_summary.prompt_version,
-        summaryTokenEstimate: countTokensForModel(structured.summary_text, {
-          model: workerConfig.model
-        }).tokens,
-        summaryStructuredJson: structured,
-        summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+    while (true) {
+      const pending = await repository.listLcmNodesNeedingSummaries(actor, {
+        limit: 50
       });
+      if (pending.length === 0) break;
+      if (pending.some((node) => processedNodeIds.has(node.id))) {
+        throw new Error("Recorded LCM summary queue repeated pending work");
+      }
+      for (const node of pending) {
+        processedNodeIds.add(node.id);
+        const execution = await executeLcmSummaryNode(
+          node,
+          workerConfig,
+          runner
+        );
+        const structured = execution.result.structuredSummary;
+        if (!structured) {
+          throw new Error("Recorded LCM result lacks a structured summary");
+        }
+        for (const promptResult of execution.promptResults) {
+          const measured = usage(promptResult);
+          inputTokens += measured.inputTokens;
+          outputTokens += measured.outputTokens;
+        }
+        await repository.updateLcmNodeSummary({
+          nodeId: node.id,
+          summaryText: structured.summary_text,
+          summaryModel: execution.result.model,
+          summaryPromptVersion: config.lcm_summary.prompt_version,
+          summaryTokenEstimate: countTokensForModel(structured.summary_text, {
+            model: workerConfig.model
+          }).tokens,
+          summaryStructuredJson: structured,
+          summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+        });
+        nodeIds.push(node.id);
+      }
     }
     return {
       nodeIds,
