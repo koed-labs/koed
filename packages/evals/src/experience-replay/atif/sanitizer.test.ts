@@ -437,6 +437,13 @@ describe("strict ATIF-v1.7 sanitization", () => {
     }
   });
 
+  it("does not treat dot-separated CAD data as a JWT", () => {
+    const value = trajectory();
+    value.steps[2]!.message =
+      "STEP geometry identifiers 12345678.12345678.12345678 are not credentials.";
+    expect(() => sanitize(value)).not.toThrow();
+  });
+
   it("parses long numeric tokens with a linear scanner and rejects overflow", () => {
     const raw = `{"schema_version":"ATIF-v1.7","agent":{"name":"codex","version":"1"},"steps":[{"step_id":1,"source":"user","message":"x","extra":{"n":${"9".repeat(100_000)}}}]}`;
     expect(() => sanitizeAtifTrajectory(raw, options(raw, 1))).toThrowError(

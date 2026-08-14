@@ -569,6 +569,37 @@ const credentialKeyType = (key: string): CredentialType | null => {
   return null;
 };
 
+const isJwt = (value: string): boolean => {
+  const segments = value.split(".");
+  if (
+    segments.length !== 3 ||
+    segments.some((segment) => !/^[A-Za-z0-9_-]{8,8192}$/u.test(segment))
+  ) {
+    return false;
+  }
+  try {
+    const header = JSON.parse(
+      Buffer.from(segments[0]!, "base64url").toString("utf8")
+    ) as unknown;
+    return (
+      typeof header === "object" &&
+      header !== null &&
+      !Array.isArray(header) &&
+      (typeof (header as Record<string, unknown>).alg === "string" ||
+        (header as Record<string, unknown>).typ === "JWT")
+    );
+  } catch {
+    return false;
+  }
+};
+
+const containsJwt = (value: string): boolean =>
+  (
+    value.match(
+      /[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{8,8192}/gu
+    ) ?? []
+  ).some(isJwt);
+
 const exactCredentialType = (value: string): CredentialType | null => {
   if (/^Bearer\s+\S{8,}$/i.test(value)) return "BEARER_TOKEN";
   if (
@@ -577,7 +608,7 @@ const exactCredentialType = (value: string): CredentialType | null => {
     )
   )
     return "PRIVATE_KEY";
-  if (/^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(value)) {
+  if (isJwt(value)) {
     return "BEARER_TOKEN";
   }
   if (
@@ -591,9 +622,10 @@ const exactCredentialType = (value: string): CredentialType | null => {
 };
 
 const containsCredential = (value: string): boolean =>
-  /(?:Bearer\s+\S{8,}|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|(?:sk-(?:proj-)?|github_pat_|gh[pousr]_|AKIA|npm_|xox[baprs]-)[A-Za-z0-9_-]{8,}|koed_(?:live_)?[A-Za-z0-9][A-Za-z0-9_-]{7,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/i.test(
+  /(?:Bearer\s+\S{8,}|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|(?:sk-(?:proj-)?|github_pat_|gh[pousr]_|AKIA|npm_|xox[baprs]-)[A-Za-z0-9_-]{8,}|koed_(?:live_)?[A-Za-z0-9][A-Za-z0-9_-]{7,})/i.test(
     value
   ) ||
+  containsJwt(value) ||
   /(?:https?|socks5?|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s/@:]+:[^\s/@]+@/i.test(
     value
   ) ||
