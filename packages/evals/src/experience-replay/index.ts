@@ -573,10 +573,7 @@ export const runExperienceReplayCli = async (
         identity.runId,
         result.frozenTaskImages,
         identity.runPlan.codexAuthMode,
-        identity.runPlan.kind === "product_path_proof" ||
-          identity.runPlan.kind === "oracle_seeded_product_proof" ||
-          identity.runPlan.kind === "oracle_seeded_repeated_study" ||
-          identity.runPlan.kind === "oracle_seeded_campaign"
+        requiresForcedMemoryAnswerProof(identity.runPlan.kind)
       );
       const resumedCorpusLocation = oracleArtifactLocation(
         path.join(identity.runRoot, "oracle-private"),
