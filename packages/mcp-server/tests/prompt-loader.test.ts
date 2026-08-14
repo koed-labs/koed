@@ -45,10 +45,25 @@ describe("prompt loader", () => {
     const prompt = loadPrompt("memory-answer-worker");
 
     expect(prompt.id).toBe("memory-answer-worker");
-    expect(prompt.version).toBe("memory-answer-codex-worker-v3");
+    expect(prompt.version).toBe("memory-answer-codex-worker-v4");
     expect(prompt.overridden).toBe(false);
     expect(prompt.body).toContain(
       "You are a private local memory/RAG answer worker"
+    );
+    expect(prompt.body).toContain(
+      "answer that supported absence directly, select the minimum supporting evidence, and use memory_status=found"
+    );
+    expect(prompt.body).toContain(
+      "Use memory_status=not_found only when no inspected candidate is genuinely relevant"
+    );
+    expect(prompt.body).toContain(
+      "Read searchHistory, retrievalCoverage, and remainingBudgets before calling a tool"
+    );
+    expect(prompt.body).toContain(
+      "omit clearly superseded prototype, draft, or abandoned details"
+    );
+    expect(prompt.body).toContain(
+      "Do not repeat the old value even to say that it was superseded"
     );
   });
 

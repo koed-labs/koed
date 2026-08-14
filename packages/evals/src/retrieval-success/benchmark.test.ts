@@ -49,37 +49,16 @@ describe("retrieval-success benchmark cases", () => {
       )
     ).toBe(true);
 
-    const requiredStages = new Set(
-      retrievalSuccessCases.flatMap(
-        (benchmarkCase) => benchmarkCase.expected.requiredStages ?? []
-      )
-    );
-    expect(requiredStages).toEqual(
-      new Set([
-        "score_scan",
-        "rollup_search",
-        "scoped_leaf_search",
-        "leaf_search",
-        "fresh_pending_search",
-        "lexical_search"
-      ])
-    );
-
     expect(
       retrievalSuccessCases.some(
         (benchmarkCase) => benchmarkCase.expected.temporal?.recentDays === 30
       )
     ).toBe(true);
     expect(
-      retrievalSuccessCases.some(
+      retrievalSuccessCases.every(
         (benchmarkCase) =>
-          benchmarkCase.expected.lexical?.expectation === "forbidden"
-      )
-    ).toBe(true);
-    expect(
-      retrievalSuccessCases.some(
-        (benchmarkCase) =>
-          benchmarkCase.expected.lexical?.expectation === "required"
+          benchmarkCase.expected.requiredEvidenceIds !== undefined ||
+          benchmarkCase.expected.forbiddenEvidenceIds !== undefined
       )
     ).toBe(true);
   });
@@ -135,7 +114,7 @@ describe("retrieval-success benchmark scoring", () => {
     ).toMatchObject({ score: 0, reason: "irrelevant evidence leaked" });
   });
 
-  it("flags unjustified lexical fallback on semantic story recall", () => {
+  it("penalizes noisy echo evidence regardless of the internal route", () => {
     const benchmarkCase = mustCase(
       "semantic-question-avoid-lexical-repeated-terms"
     );
@@ -163,13 +142,14 @@ describe("retrieval-success benchmark scoring", () => {
     });
 
     expect(score.lexicalUsed).toBe(true);
-    expect(score.lexicalJustified).toBe(false);
     expect(
-      score.details.find((detail) => detail.name === "lexical_behavior")
-    ).toMatchObject({ score: 0 });
+      score.details.find(
+        (detail) => detail.name === "evidence_forbidden:event-recipe-echo"
+      )
+    ).toMatchObject({ score: 0, reason: "irrelevant evidence leaked" });
   });
 
-  it("rewards lexical lookup for exact filenames", () => {
+  it("rewards a grounded exact-filename answer without prescribing a route", () => {
     const benchmarkCase = mustCase("lexical-exact-filename");
     const score = scoreRetrievalSuccessRun(
       benchmarkCase,
@@ -177,7 +157,6 @@ describe("retrieval-success benchmark scoring", () => {
     );
 
     expect(score.lexicalUsed).toBe(true);
-    expect(score.lexicalJustified).toBe(true);
     expect(score.score).toBe(score.maxScore);
   });
 
@@ -249,10 +228,8 @@ describe("retrieval-success benchmark scoring", () => {
 
     expect(score.retrievalStagesUsed).toEqual(["score_scan", "rollup_search"]);
     expect(
-      score.details.find(
-        (detail) => detail.name === "stage_required:scoped_leaf_search"
-      )
-    ).toMatchObject({ score: 0, reason: "missing" });
+      score.details.some((detail) => detail.name.startsWith("stage_"))
+    ).toBe(false);
   });
 });
 

@@ -33,7 +33,10 @@ export interface WorkerJobWorkflowConfig {
 }
 
 const isEmbeddableSourceType = (value: string): value is EmbeddableSourceType =>
-  value === "memory_node" || value === "memory_event" || value === "message";
+  value === "memory_node" ||
+  value === "memory_event" ||
+  value === "message" ||
+  value === "curated_memory";
 
 const stringValue = (value: unknown, fallback = ""): string =>
   typeof value === "string" ||

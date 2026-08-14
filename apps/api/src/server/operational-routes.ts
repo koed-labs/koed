@@ -4,12 +4,16 @@ import {
   type Visibility
 } from "@koed/core";
 import {
+  CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
+  EMBEDDING_CAPACITY_CONTRACT_REVISION,
   createDbPool,
   getLatestMigrationTimestamp,
   inspectDatabaseReadiness,
   type DbPool,
+  type EmbeddingCapacityRepository,
   type MemorySourceRepository
 } from "@koed/db";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile, statfs } from "node:fs/promises";
 import {
   createHealth,
@@ -46,7 +50,9 @@ interface OperationalRouteOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   alertFetch?: typeof fetch;
   embeddingQueue: KoedJobQueue<unknown> | null;
+  lcmEmbeddingQueue: KoedJobQueue<unknown> | null;
   compactionQueue: KoedJobQueue<unknown> | null;
+  embeddingCapacityRepository: EmbeddingCapacityRepository | null;
   runCompactionInline(
     repo: MemorySourceRepository,
     requesterContext: { userId: string },
@@ -305,12 +311,10 @@ const collectQueueCounts = async (
     return { status: "not_configured" };
   }
   try {
-    const counts = await queue.getJobCounts(
-      "waiting",
-      "active",
-      "delayed",
-      "failed"
-    );
+    const [counts, oldestPendingAgeMs] = await Promise.all([
+      queue.getJobCounts("waiting", "active", "delayed", "failed"),
+      queue.getOldestPendingAgeMs?.() ?? Promise.resolve(null)
+    ]);
     const failed = counts.failed ?? 0;
     return {
       status: failed > 0 ? "error" : "ok",
@@ -318,7 +322,8 @@ const collectQueueCounts = async (
         waiting: counts.waiting ?? 0,
         active: counts.active ?? 0,
         delayed: counts.delayed ?? 0,
-        failed
+        failed,
+        oldestPendingAgeMs
       }
     };
   } catch {
@@ -350,6 +355,133 @@ const collectHistoricalImportStatus = async (
     };
   }
 };
+
+const collectEmbeddingCapacityStatus = async (
+  repository: EmbeddingCapacityRepository | null,
+  model: string | undefined
+): Promise<OpsComponent> => {
+  if (!repository) return { status: "not_configured" };
+  try {
+    const expected = resolveSupportedEmbeddingModelConfig(model);
+    const [profiles, backlog, rolling] = await Promise.all([
+      repository.listActiveUsableProfiles({
+        modelKey: expected.key,
+        embeddingDimensions: expected.dimensions,
+        capacityContractRevision: EMBEDDING_CAPACITY_CONTRACT_REVISION
+      }),
+      repository.getSemanticBacklog({
+        model: expected.key,
+        dimensions: expected.dimensions,
+        version: expected.key
+      }),
+      repository.getRollingTelemetry()
+    ]);
+    if (profiles.length === 0) {
+      const lowerSeconds = Math.ceil(
+        backlog.pendingEstimatedTokens /
+          CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND
+      );
+      return {
+        status: "degraded",
+        details: {
+          profile: null,
+          admission: "historical_closed",
+          backlog,
+          rolling,
+          drainEstimate: {
+            lowerSeconds,
+            upperSeconds: Math.ceil(lowerSeconds / 0.6),
+            confidence: "conservative",
+            source: "documented_fallback"
+          }
+        }
+      };
+    }
+    const profile = profiles.at(-1)!;
+    const backendClasses = [
+      ...new Set(profiles.map((item) => item.backendClass))
+    ].sort();
+    const calibratedRate = profiles.reduce(
+      (total, item) => total + item.measuredTokensPerSecond,
+      0
+    );
+    const observed = rolling.find((window) => window.windowMinutes === 15);
+    const observedRate = observed?.measuredTokensPerSecond ?? 0;
+    const optimisticRate = Math.max(calibratedRate, observedRate, 0.001);
+    const conservativeRate = Math.max(
+      Math.min(
+        calibratedRate * 0.6,
+        observedRate > 0 ? observedRate * 0.8 : Number.POSITIVE_INFINITY
+      ),
+      0.001
+    );
+    return {
+      status: "ok",
+      details: {
+        profile: {
+          version: profile.profileVersion,
+          capacityContractRevision: profile.capacityContractRevision,
+          poolCount: profiles.length,
+          mode: profile.calibrationMode,
+          model: profile.modelKey,
+          dimensions: profile.embeddingDimensions,
+          backendClasses,
+          testedConcurrency: profiles.reduce(
+            (total, item) => total + item.testedConcurrency,
+            0
+          ),
+          sampleCount: profiles.reduce(
+            (total, item) => total + item.sampleCount,
+            0
+          ),
+          measuredTokensPerSecond: calibratedRate,
+          p50LatencyMs: Math.max(...profiles.map((item) => item.p50LatencyMs)),
+          p95LatencyMs: Math.max(...profiles.map((item) => item.p95LatencyMs)),
+          calibratedAt: profiles
+            .map((item) => item.calibratedAt)
+            .sort()
+            .at(-1)
+        },
+        backlog,
+        rolling,
+        drainEstimate: {
+          lowerSeconds: Math.ceil(
+            backlog.pendingEstimatedTokens / optimisticRate
+          ),
+          upperSeconds: Math.ceil(
+            backlog.pendingEstimatedTokens / conservativeRate
+          ),
+          confidence: profiles.every(
+            (item) => item.calibrationMode === "refined"
+          )
+            ? "medium"
+            : "low"
+        }
+      }
+    };
+  } catch {
+    return {
+      status: "error",
+      details: { reason: "embedding_capacity_unavailable" }
+    };
+  }
+};
+
+const tokenMatches = (configured: string, supplied: string): boolean => {
+  const configuredHash = createHash("sha256").update(configured).digest();
+  const suppliedHash = createHash("sha256").update(supplied).digest();
+  return timingSafeEqual(configuredHash, suppliedHash);
+};
+
+const metricsBearer = (authorization: string | undefined): string | null => {
+  const match = /^Bearer ([^\s]+)$/.exec(authorization ?? "");
+  return match?.[1] ?? null;
+};
+
+const metricLabels = (input: Record<string, string>): string =>
+  `{${Object.entries(input)
+    .map(([key, value]) => `${key}="${value}"`)
+    .join(",")}}`;
 
 const envelopeProviderStatusToOpsStatus = (
   status: EnvelopeEncryptionProviderStatus["status"]
@@ -621,7 +753,9 @@ export const registerOperationalRoutes = (
     dbPool,
     repository,
     embeddingQueue,
+    lcmEmbeddingQueue,
     compactionQueue,
+    embeddingCapacityRepository,
     runCompactionInline,
     enqueueEmbedding
   } = options;
@@ -1073,7 +1207,12 @@ export const registerOperationalRoutes = (
     }
 
     components.memoryEmbedQueue = await collectQueueCounts(embeddingQueue);
+    components.lcmEmbedQueue = await collectQueueCounts(lcmEmbeddingQueue);
     components.lcmCompactQueue = await collectQueueCounts(compactionQueue);
+    components.embeddingCapacity = await collectEmbeddingCapacityStatus(
+      embeddingCapacityRepository,
+      config.embeddingModel
+    );
     components.historicalImport = await collectHistoricalImportStatus(repo);
     components.envelopeEncryption = await collectEnvelopeEncryptionStatus(
       options.envelopeEncryptionProvider
@@ -1133,6 +1272,138 @@ export const registerOperationalRoutes = (
       components,
       alerts: opsAlerts(components, config.ops.runbookBaseUrl)
     };
+  });
+
+  app.get("/internal/metrics", async (request, reply) => {
+    const configuredToken = config.ops.metricsToken;
+    if (!configuredToken) {
+      return reply.status(404).send({ error: "Not Found" });
+    }
+    const suppliedToken = metricsBearer(request.headers.authorization);
+    if (!suppliedToken || !tokenMatches(configuredToken, suppliedToken)) {
+      return reply
+        .header("www-authenticate", 'Bearer realm="koed-operations"')
+        .status(401)
+        .send({ error: "Unauthorized" });
+    }
+    if (!embeddingCapacityRepository) {
+      return reply.status(503).send({ error: "Metrics unavailable" });
+    }
+    const expected = resolveSupportedEmbeddingModelConfig(
+      config.embeddingModel
+    );
+    const [profiles, backlog, cumulative, memoryQueue, lcmQueue, compactQueue] =
+      await Promise.all([
+        embeddingCapacityRepository.listActiveUsableProfiles({
+          modelKey: expected.key,
+          embeddingDimensions: expected.dimensions,
+          capacityContractRevision: EMBEDDING_CAPACITY_CONTRACT_REVISION
+        }),
+        embeddingCapacityRepository.getSemanticBacklog({
+          model: expected.key,
+          dimensions: expected.dimensions,
+          version: expected.key
+        }),
+        embeddingCapacityRepository.getCumulativeTelemetry(),
+        collectQueueCounts(embeddingQueue),
+        collectQueueCounts(lcmEmbeddingQueue),
+        collectQueueCounts(compactionQueue)
+      ]);
+    const profile = profiles.at(-1);
+    const backendClasses = [
+      ...new Set(profiles.map((item) => item.backendClass))
+    ];
+    const calibratedRate = profiles.reduce(
+      (total, item) => total + item.measuredTokensPerSecond,
+      0
+    );
+    const lines = [
+      "# HELP koed_embedding_capacity_profile_info Active embedding capacity profile.",
+      "# TYPE koed_embedding_capacity_profile_info gauge",
+      `koed_embedding_capacity_profile_info${metricLabels({
+        model: expected.key,
+        backend:
+          backendClasses.length === 0
+            ? "unavailable"
+            : backendClasses.length === 1
+              ? backendClasses[0]!
+              : "mixed",
+        mode: profile?.calibrationMode ?? "unavailable"
+      })} ${profiles.length}`,
+      "# HELP koed_embedding_capacity_tokens_per_second Calibrated measured token throughput.",
+      "# TYPE koed_embedding_capacity_tokens_per_second gauge",
+      `koed_embedding_capacity_tokens_per_second ${calibratedRate}`,
+      "# HELP koed_embedding_backlog_sources Pending semantic sources.",
+      "# TYPE koed_embedding_backlog_sources gauge",
+      `koed_embedding_backlog_sources${metricLabels({ source: "memory_event" })} ${backlog.pendingMemoryEvents}`,
+      `koed_embedding_backlog_sources${metricLabels({ source: "memory_node" })} ${backlog.pendingMemoryNodes}`,
+      `koed_embedding_backlog_sources${metricLabels({ source: "message" })} ${backlog.pendingMessages}`,
+      "# HELP koed_embedding_backlog_estimated_tokens Pending estimated input tokens.",
+      "# TYPE koed_embedding_backlog_estimated_tokens gauge",
+      `koed_embedding_backlog_estimated_tokens ${backlog.pendingEstimatedTokens}`,
+      "# HELP koed_embedding_completed_measured_tokens Completed adapter-measured input tokens retained in the semantic store.",
+      "# TYPE koed_embedding_completed_measured_tokens gauge",
+      `koed_embedding_completed_measured_tokens ${backlog.completedMeasuredTokens}`,
+      "# HELP koed_work_queue_jobs Current work queue jobs by queue and state.",
+      "# TYPE koed_work_queue_jobs gauge",
+      "# HELP koed_work_queue_oldest_pending_age_milliseconds Age of the oldest pending job, or zero for an empty queue.",
+      "# TYPE koed_work_queue_oldest_pending_age_milliseconds gauge"
+    ];
+    for (const [queue, component] of [
+      ["memory-embed", memoryQueue],
+      ["lcm-embed", lcmQueue],
+      ["lcm-compact", compactQueue]
+    ] as const) {
+      for (const state of ["waiting", "active", "delayed", "failed"] as const) {
+        lines.push(
+          `koed_work_queue_jobs${metricLabels({ queue, state })} ${Number(component.details?.[state] ?? 0)}`
+        );
+      }
+      lines.push(
+        `koed_work_queue_oldest_pending_age_milliseconds${metricLabels({ queue })} ${Number(component.details?.oldestPendingAgeMs ?? 0)}`
+      );
+    }
+    lines.push(
+      "# HELP koed_embedding_events_total Semantic source outcomes.",
+      "# TYPE koed_embedding_events_total counter",
+      "# HELP koed_embedding_chunks_total Embedded chunk outcomes.",
+      "# TYPE koed_embedding_chunks_total counter",
+      "# HELP koed_embedding_measured_input_tokens_total Adapter-measured input tokens.",
+      "# TYPE koed_embedding_measured_input_tokens_total counter",
+      "# HELP koed_embedding_queue_wait_milliseconds Queue wait duration.",
+      "# TYPE koed_embedding_queue_wait_milliseconds summary",
+      "# HELP koed_embedding_execution_milliseconds Worker execution duration.",
+      "# TYPE koed_embedding_execution_milliseconds summary",
+      "# HELP koed_embedding_end_to_end_milliseconds End-to-end job duration.",
+      "# TYPE koed_embedding_end_to_end_milliseconds summary"
+    );
+    for (const item of cumulative) {
+      const labels = metricLabels({
+        queue: item.queueName,
+        source: item.sourceClass,
+        outcome: item.outcome
+      });
+      lines.push(`koed_embedding_events_total${labels} ${item.eventCount}`);
+      lines.push(`koed_embedding_chunks_total${labels} ${item.chunkCount}`);
+      lines.push(
+        `koed_embedding_measured_input_tokens_total${labels} ${item.measuredTokenCount}`
+      );
+      lines.push(
+        `koed_embedding_queue_wait_milliseconds_sum${labels} ${item.queueWaitMsTotal}`,
+        `koed_embedding_queue_wait_milliseconds_count${labels} ${item.queueWaitSampleCount}`,
+        `koed_embedding_execution_milliseconds_sum${labels} ${item.executionMsTotal}`,
+        `koed_embedding_execution_milliseconds_count${labels} ${item.executionSampleCount}`,
+        `koed_embedding_end_to_end_milliseconds_sum${labels} ${item.endToEndMsTotal}`,
+        `koed_embedding_end_to_end_milliseconds_count${labels} ${item.endToEndSampleCount}`
+      );
+    }
+    lines.push("# EOF", "");
+    return reply
+      .header(
+        "content-type",
+        "application/openmetrics-text; version=1.0.0; charset=utf-8"
+      )
+      .send(lines.join("\n"));
   });
 
   app.post("/ops/test-alert", async (request) => {

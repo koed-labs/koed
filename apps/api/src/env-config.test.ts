@@ -194,6 +194,13 @@ describe("resolveApiEnv", () => {
         "https://kms.koed.example",
       OWNER_PRIVATE_REPLICA_MANAGED_KMS_AUTH_TOKEN: "owner-secret-token"
     };
+    const teamMemoryKms = {
+      TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms",
+      TEAM_MEMORY_MANAGED_KMS_KEY_ID: "managed-kms:team-key",
+      TEAM_MEMORY_MANAGED_KMS_KEY_VERSION: "1",
+      TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example",
+      TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN: "team-secret-token"
+    };
 
     expect(() => resolveApiEnv(base)).toThrow(
       "A KMS-backed API_ENVELOPE_ENCRYPTION_PROVIDER"
@@ -215,6 +222,7 @@ describe("resolveApiEnv", () => {
         MANAGED_KMS_KEY_VERSION: "1",
         MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example",
         MANAGED_KMS_AUTH_TOKEN: "secret-token",
+        ...teamMemoryKms,
         ...ownerPrivateKms
       })
     ).not.toThrow();
@@ -226,6 +234,7 @@ describe("resolveApiEnv", () => {
         MANAGED_KMS_KEY_VERSION: "1",
         MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example",
         MANAGED_KMS_AUTH_TOKEN: "secret-token",
+        ...teamMemoryKms,
         ...ownerPrivateKms
       })
     ).not.toThrow();

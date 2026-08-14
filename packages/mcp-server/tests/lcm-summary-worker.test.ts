@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { countTokensForModel } from "@koed/core";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   acquireLocalSummaryLock,
@@ -10,6 +11,7 @@ import {
   parseStructuredLcmSummary,
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
+  validateLcmLexicalAnchors,
   type LcmSummaryNode
 } from "../src/lcm-summary-worker.js";
 import { CodexAppServerTurnError } from "../src/codex-app-server-runner.js";
@@ -29,11 +31,12 @@ const tempLockPath = async (): Promise<string> => {
   return path.join(directory, "lcm-summary.lock");
 };
 
-const summaryJson = (summary_text: string) =>
+const summaryJson = (summary_text: string, lexical_anchors: string[] = []) =>
   JSON.stringify({
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
     title: "Structured LCM Details",
-    summary_text
+    summary_text,
+    lexical_anchors
   });
 
 it("reclaims an LCM summary lock whose process no longer exists", async () => {
@@ -234,6 +237,7 @@ describe("LCM summary worker", () => {
       expect(prompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
       expect(prompt).toContain('"title"');
       expect(prompt).toContain('"summary_text"');
+      expect(prompt).toContain('"lexical_anchors"');
       expect(prompt).not.toContain('"decisions"');
       expect(prompt).not.toContain('"provenance_hints"');
       expect(prompt).toContain("Do not reproduce API tokens");
@@ -273,6 +277,215 @@ describe("LCM summary worker", () => {
     expect(reducePrompt).toContain(
       "When ordered source items or child summaries conflict, prefer the later item"
     );
+  });
+
+  it("validates lexical anchors only against exact supplied payload substrings", () => {
+    expect(
+      validateLcmLexicalAnchors(
+        [
+          "memory_answer",
+          "memory_answer",
+          "Memory_Answer",
+          "",
+          "x".repeat(121)
+        ],
+        ["Use memory_answer from packages/db/src/repository.ts."]
+      )
+    ).toEqual({
+      valid: ["memory_answer"],
+      rejected: [
+        { anchor: "Memory_Answer", reason: "unsupported" },
+        { anchor: "", reason: "empty" },
+        { anchor: "x".repeat(121), reason: "too_long" }
+      ]
+    });
+  });
+
+  it("enforces the anchor count boundary and exact adversarial Unicode grounding", () => {
+    const bounded = Array.from({ length: 13 }, (_, index) => `anchor-${index}`);
+    const unicodePayload =
+      "composed café; decomposed cafe\u0301; emoji 👩🏽‍💻; bidi abc\u202Edef; confusable Αlpha.";
+
+    expect(validateLcmLexicalAnchors(bounded, [bounded.join(" ")])).toEqual({
+      valid: bounded.slice(0, 12),
+      rejected: [{ anchor: "anchor-12", reason: "count_limit" }]
+    });
+    expect(
+      validateLcmLexicalAnchors(
+        ["café", "cafe\u0301", "👩🏽‍💻", "abc\u202Edef", "Αlpha", "café", "Alpha"],
+        [unicodePayload]
+      )
+    ).toEqual({
+      valid: ["café", "cafe\u0301", "👩🏽‍💻", "abc\u202Edef", "Αlpha"],
+      rejected: [{ anchor: "Alpha", reason: "unsupported" }]
+    });
+    expect(
+      validateLcmLexicalAnchors(
+        ["🧠".repeat(120), "🧠".repeat(121)],
+        ["🧠".repeat(121)]
+      )
+    ).toEqual({
+      valid: ["🧠".repeat(120)],
+      rejected: [{ anchor: "🧠".repeat(121), reason: "too_long" }]
+    });
+  });
+
+  it("repairs rejected anchors once and retains valid output after a partial repair", async () => {
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000071",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 20,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceId: "00000000-0000-4000-8000-000000000072",
+          text: "Use memory_answer in packages/db/src/repository.ts."
+        }
+      ]
+    };
+    const submissions: Record<string, unknown>[] = [];
+    let listed = false;
+    const client = {
+      async listPendingLcmSummaries() {
+        if (listed) {
+          return { nodes: [] };
+        }
+        listed = true;
+        return { nodes: [node] };
+      },
+      async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
+        submissions.push(input);
+        return {};
+      }
+    } as unknown as Parameters<typeof summarizePendingLcmNodes>[0];
+    const runner = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: summaryJson("Canonical summary.", [
+          "memory_answer",
+          "Memory_Answer",
+          "x".repeat(121)
+        ]),
+        model: "codex:test"
+      })
+      .mockImplementationOnce(async (prompt: string) => {
+        expect(prompt).toContain("Lexical anchor grounding repair");
+        expect(prompt).toContain("packages/db/src/repository.ts");
+        expect(prompt).toContain('"unsupported":1');
+        expect(prompt).toContain('"too_long":1');
+        return {
+          text: JSON.stringify({
+            lexical_anchors: ["packages/db/src/repository.ts"]
+          }),
+          model: "codex:test"
+        };
+      });
+
+    const result = await summarizePendingLcmNodes(client, {
+      limit: 1,
+      config: resolveLcmSummaryWorkerConfig(
+        { MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath() },
+        { maxAttempts: 1, retryDelayMs: 0, timeoutMs: 1_000 }
+      ),
+      runner
+    });
+
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(result.results[0]).toMatchObject({
+      submitted: true,
+      promptCallCount: 2
+    });
+    expect(submissions[0]).toMatchObject({
+      summaryText: "Canonical summary.",
+      summaryStructuredJson: {
+        summary_text: "Canonical summary.",
+        lexical_anchors: ["memory_answer", "packages/db/src/repository.ts"]
+      }
+    });
+  });
+
+  it("bounds one repair call near the primary prompt limit and preserves the primary summary when repair fails", async () => {
+    const sourceText = `Grounded replacement marker. ${"near limit source context ".repeat(300)}`;
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000073",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 2_000,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceId: "00000000-0000-4000-8000-000000000074",
+          text: sourceText
+        }
+      ]
+    };
+    const primaryPrompt = buildLcmSummaryPrompt(node);
+    const model = "gpt-5.1-codex-mini";
+    const maxPromptTokens = countTokensForModel(primaryPrompt, {
+      model
+    }).tokens;
+    const canonicalSummary = "Primary summary survives. ".repeat(1_000);
+    const submitted: Record<string, unknown>[] = [];
+    let listed = false;
+    const client = {
+      async listPendingLcmSummaries() {
+        if (listed) return { nodes: [] };
+        listed = true;
+        return { nodes: [node] };
+      },
+      async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
+        submitted.push(input);
+        return {};
+      }
+    } as unknown as Parameters<typeof summarizePendingLcmNodes>[0];
+    const prompts: string[] = [];
+    const runner = vi.fn(async (prompt: string) => {
+      prompts.push(prompt);
+      if (prompt.includes("Lexical anchor grounding repair")) {
+        return { text: "not json", model: "codex:test" };
+      }
+      return {
+        text: summaryJson(canonicalSummary, ["unsupported anchor"]),
+        model: "codex:test"
+      };
+    });
+
+    const result = await summarizePendingLcmNodes(client, {
+      limit: 1,
+      config: resolveLcmSummaryWorkerConfig(
+        { MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath() },
+        { maxAttempts: 1, maxPromptTokens, model, retryDelayMs: 0 }
+      ),
+      runner
+    });
+
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(prompts[1]).toContain("Lexical anchor grounding repair");
+    expect(
+      prompts.map((prompt) => countTokensForModel(prompt, { model }).tokens)
+    ).toEqual(expect.arrayContaining([maxPromptTokens]));
+    expect(
+      prompts.every(
+        (prompt) =>
+          countTokensForModel(prompt, { model }).tokens <= maxPromptTokens
+      )
+    ).toBe(true);
+    expect(result.results[0]).toMatchObject({
+      submitted: true,
+      promptCallCount: 2
+    });
+    expect(submitted[0]).toMatchObject({
+      summaryText: canonicalSummary.trim(),
+      summaryStructuredJson: {
+        summary_text: canonicalSummary.trim(),
+        lexical_anchors: []
+      }
+    });
   });
 
   it("keeps payload metadata out of LCM prompts while preserving source anchors", () => {
@@ -501,6 +714,74 @@ describe("LCM summary worker", () => {
       })
     ]);
     expect(operations).toEqual(["raw", "token", "project", "submit"]);
+  });
+
+  it("grounds rollup anchors against child text and validated child values before JSON escaping", async () => {
+    const quoteAnchor = 'flag "quoted"';
+    const backslashAnchor = "C:\\repo\\koed";
+    const newlineAnchor = "line one\nline two";
+    const childSummary = {
+      schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+      title: "Escaped child values",
+      summary_text: `The child retained ${quoteAnchor} and ${backslashAnchor}.`,
+      lexical_anchors: [quoteAnchor, backslashAnchor, newlineAnchor]
+    };
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000014",
+      visibility: "personal",
+      kind: "rollup",
+      depth: 1,
+      summaryText: "rollup placeholder",
+      sourceTokenEstimate: 100,
+      sourceItems: [
+        {
+          kind: "lcm_child",
+          nodeId: "00000000-0000-4000-8000-000000000015",
+          text: JSON.stringify(childSummary)
+        }
+      ]
+    };
+    const submitted: Record<string, unknown>[] = [];
+    let listed = false;
+    const client = {
+      async listPendingLcmSummaries() {
+        if (listed) return { nodes: [] };
+        listed = true;
+        return { nodes: [node] };
+      },
+      async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
+        submitted.push(input);
+        return { ok: true };
+      }
+    };
+    const runner = vi.fn(async (prompt: string) => {
+      expect(prompt).not.toContain("Lexical anchor grounding repair");
+      return {
+        text: summaryJson("Escaped anchors survive rollup.", [
+          quoteAnchor,
+          backslashAnchor,
+          newlineAnchor
+        ]),
+        model: "codex-app-server:test"
+      };
+    });
+
+    const result = await summarizePendingLcmNodes(client as never, {
+      limit: 1,
+      config: resolveLcmSummaryWorkerConfig(
+        { MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath() },
+        { maxAttempts: 1 }
+      ),
+      runner
+    });
+
+    expect(result.submittedCount).toBe(1);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(submitted[0]).toMatchObject({
+      summaryStructuredJson: {
+        lexical_anchors: [quoteAnchor, backslashAnchor, newlineAnchor]
+      }
+    });
   });
 
   it("persists usage-bearing failed LCM retry attempts separately", async () => {
@@ -738,12 +1019,12 @@ describe("LCM summary worker", () => {
         {
           kind: "memory_event",
           sourceId: "00000000-0000-4000-8000-000000000082",
-          text: `DECISION_MARKER ${"decision context ".repeat(900)}`
+          text: `DECISION_MARKER flag "quoted" C:\\repo\\koed ${"decision context ".repeat(900)}`
         },
         {
           kind: "memory_event",
           sourceId: "00000000-0000-4000-8000-000000000083",
-          text: `UNRESOLVED_MARKER ${"open question context ".repeat(900)}`
+          text: `UNRESOLVED_MARKER line one\nline two ${"open question context ".repeat(900)}`
         }
       ]
     };
@@ -771,6 +1052,7 @@ describe("LCM summary worker", () => {
         }
       ),
       runner: async (prompt) => {
+        expect(prompt).not.toContain("Lexical anchor grounding repair");
         if (prompt.includes("Combine these shard summaries")) {
           reduceCalls += 1;
           expect(prompt).toContain('"schema_version"');
@@ -780,7 +1062,8 @@ describe("LCM summary worker", () => {
           expect(prompt).toContain("Determine the revocation TTL");
           return {
             text: summaryJson(
-              "Use scoped device credentials; determine the revocation TTL."
+              "Use scoped device credentials; determine the revocation TTL.",
+              ['flag "quoted"', "C:\\repo\\koed", "line one\nline two"]
             ),
             model: "codex-app-server:test"
           };
@@ -791,7 +1074,14 @@ describe("LCM summary worker", () => {
             ? "Determine the revocation TTL."
             : "Supporting context only.";
         return {
-          text: summaryJson(summary),
+          text: summaryJson(
+            summary,
+            prompt.includes("DECISION_MARKER")
+              ? ['flag "quoted"', "C:\\repo\\koed"]
+              : prompt.includes("UNRESOLVED_MARKER")
+                ? ["line one\nline two"]
+                : []
+          ),
           model: "codex-app-server:test"
         };
       }
@@ -801,8 +1091,85 @@ describe("LCM summary worker", () => {
     expect(result.submittedCount).toBe(1);
     expect(submissions[0]).toMatchObject({
       summaryText:
-        "Use scoped device credentials; determine the revocation TTL."
+        "Use scoped device credentials; determine the revocation TTL.",
+      summaryStructuredJson: {
+        lexical_anchors: [
+          'flag "quoted"',
+          "C:\\repo\\koed",
+          "line one\nline two"
+        ]
+      }
     });
+  });
+
+  it("does not ground a shard anchor against source text outside that shard", async () => {
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000084",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 4_000,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceId: "00000000-0000-4000-8000-000000000085",
+          text: `FIRST_SHARD ${"bounded context ".repeat(1_000)} LAST_SHARD_ONLY`
+        }
+      ]
+    };
+    const submissions: Record<string, unknown>[] = [];
+    const client = {
+      async listPendingLcmSummaries() {
+        return submissions.length === 0 ? { nodes: [node] } : { nodes: [] };
+      },
+      async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
+        submissions.push(input);
+        return { ok: true };
+      }
+    };
+    let repairCalls = 0;
+
+    const result = await summarizePendingLcmNodes(client as never, {
+      limit: 1,
+      config: resolveLcmSummaryWorkerConfig(
+        {
+          MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+        },
+        { maxPromptTokens: 1_500, maxAttempts: 1 }
+      ),
+      runner: async (prompt) => {
+        if (prompt.includes("Lexical anchor grounding repair")) {
+          repairCalls += 1;
+          return {
+            text: summaryJson("First shard summary.", []),
+            model: "codex-app-server:test"
+          };
+        }
+        if (prompt.includes("Combine these shard summaries")) {
+          return {
+            text: summaryJson("Combined shard summary.", []),
+            model: "codex-app-server:test"
+          };
+        }
+        return {
+          text: summaryJson(
+            prompt.includes("FIRST_SHARD")
+              ? "First shard summary."
+              : "Later shard summary.",
+            prompt.includes("FIRST_SHARD") &&
+              !prompt.includes("LAST_SHARD_ONLY")
+              ? ["LAST_SHARD_ONLY"]
+              : []
+          ),
+          model: "codex-app-server:test"
+        };
+      }
+    });
+
+    expect(result.failedCount).toBe(0);
+    expect(repairCalls).toBe(1);
+    expect(submissions).toHaveLength(1);
   });
 
   it("does not submit invalid structured summary output", async () => {

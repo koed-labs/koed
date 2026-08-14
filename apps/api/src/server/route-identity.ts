@@ -2195,6 +2195,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/local-edge/team-memory/questions/final",
+    "local_edge_client_credential",
+    "future_remote",
+    "Persist a Team Memory Question on its authoritative upstream backend.",
+    "future_request_time",
+    "not_implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/local-edge/upstream-credential-operations",
     "upstream_credential",
     "future_remote",

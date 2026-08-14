@@ -383,7 +383,8 @@ const createAssertionWithClient = async (
 
 export const createCuratedMemoryProposalTransitionMethods = ({
   pool,
-  envelopeEncryptionProvider
+  envelopeEncryptionProvider,
+  onCuratedMemoryChanged
 }: CuratedMemoryRepositoryContext): Pick<
   CuratedMemoryRepository,
   "processCuratedMemoryProposal"
@@ -781,6 +782,9 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         envelopeEncryptionProvider,
         updated.rows[0]!
       );
+      if (assertionId) {
+        await onCuratedMemoryChanged?.(actor, client);
+      }
       await client.query("commit");
       return mapProposal(hydratedUpdated);
     } catch (error) {

@@ -153,6 +153,33 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     expect(callTool).toHaveBeenCalledTimes(1);
   });
 
+  it("validates and forwards bounded retrieval hints", async () => {
+    const { client, callTool } = await connect();
+
+    await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "Which exact migration was discussed?",
+        retrieval_hints: {
+          exact: ["0027_mute_ozymandias"],
+          semantic: ["database migration decision"]
+        }
+      }
+    });
+
+    expect(callTool).toHaveBeenCalledWith(
+      "memory_answer",
+      expect.objectContaining({
+        retrieval_hints: {
+          exact: ["0027_mute_ozymandias"],
+          semantic: ["database migration decision"]
+        }
+      }),
+      expect.any(Object),
+      expect.any(AbortSignal)
+    );
+  });
+
   it("keeps one adapter connection independent from another", async () => {
     const callTool = vi.fn(async (name: LocalRuntimeToolName) => ({
       ok: true,

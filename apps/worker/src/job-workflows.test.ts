@@ -19,6 +19,16 @@ describe("worker job workflows", () => {
       sourceId: "123",
       workClass: "normal_embedding_lcm"
     });
+    expect(
+      embeddingJobData({
+        sourceType: "curated_memory",
+        sourceId: "assertion-1"
+      })
+    ).toEqual({
+      sourceType: "curated_memory",
+      sourceId: "assertion-1",
+      workClass: "normal_embedding_lcm"
+    });
   });
 
   it("rejects invalid embedding job data", () => {
@@ -39,7 +49,11 @@ describe("worker job workflows", () => {
       .mockResolvedValue({ dimensions: 1024, inserted: true, chunks: 1 });
     const workflow = createWorkerJobWorkflow({
       embeddingDispatchKey: "test-model-1024",
-      embeddingWorkflow: { embedSource, embedSources: vi.fn() },
+      embeddingWorkflow: {
+        embedSource,
+        embedSources: vi.fn(),
+        reconcileSharedMemorySemanticItems: vi.fn()
+      },
       lcmEmbedQueue: {} as KoedJobQueue<EmbeddingQueueJobData>,
       repository: () => ({}) as MemorySourceRepository
     });
@@ -137,7 +151,8 @@ describe("worker job workflows", () => {
       embeddingDispatchKey: "embedding-v1",
       embeddingWorkflow: {
         embedSource: vi.fn(),
-        embedSources: vi.fn()
+        embedSources: vi.fn(),
+        reconcileSharedMemorySemanticItems: vi.fn()
       },
       lcmEmbedQueue: {
         add

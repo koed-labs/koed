@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   parseEnv,
@@ -17,20 +22,45 @@ const generatedValues = new Map([
     "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
     "generated-owner-private-data-key"
   ],
+  ["API_TEAM_MEMORY_DATA_ENCRYPTION_KEY", "generated-team-data-key"],
   ["API_TOKEN_PEPPER", "generated-token-pepper"],
   ["API_COLLABORATION_LOCAL_BROKER_SECRET", "generated-broker-secret"],
   ["API_COLLABORATION_REALTIME_CURSOR_SECRET", "generated-cursor-secret"],
-  ["EMBEDDING_SERVICE_TOKEN", "generated-embedding-token"]
+  ["EMBEDDING_SERVICE_TOKEN", "generated-embedding-token"],
+  ["KOED_OPS_METRICS_TOKEN", "generated-ops-metrics-token"]
 ]);
+
+test("fresh setup generates the root API Team Memory key", async () => {
+  const tempRoot = await mkdtemp(resolve(tmpdir(), "koed-setup-env-"));
+  const envPath = resolve(tempRoot, ".env");
+  try {
+    const result = spawnSync(process.execPath, ["scripts/setup-env.mjs"], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      encoding: "utf8",
+      env: { ...process.env, KOED_ENV_PATH: envPath }
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const rendered = parseEnv(await readFile(envPath, "utf8"));
+    const teamKey = rendered.get("API_TEAM_MEMORY_DATA_ENCRYPTION_KEY");
+    assert.ok(teamKey);
+    assert.equal(Buffer.from(teamKey, "base64").length, 32);
+    assert.equal(rendered.has("TEAM_MEMORY_DATA_ENCRYPTION_KEY"), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("retains compatibility-sensitive values from an existing env", () => {
   const example = [
     "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
     "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+    "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
     "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
     "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
     "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
     "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
+    "KOED_OPS_METRICS_TOKEN=replace_with_generated_ops_metrics_token",
     "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
     "DATABASE_URL=replace_with_generated_database_url",
     "MEMORY_API_TOKEN=replace_with_token_from_pnpm_api_token_create"
@@ -38,10 +68,12 @@ test("retains compatibility-sensitive values from an existing env", () => {
   const existing = [
     "API_DATA_ENCRYPTION_KEY=old-data-key",
     "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=old-owner-private-data-key",
+    "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY=old-team-data-key",
     "API_TOKEN_PEPPER=old-token-pepper",
     "API_COLLABORATION_LOCAL_BROKER_SECRET=old-broker-secret",
     "API_COLLABORATION_REALTIME_CURSOR_SECRET=old-cursor-secret",
     "EMBEDDING_SERVICE_TOKEN=old-embedding-token",
+    "KOED_OPS_METRICS_TOKEN=old-ops-metrics-token",
     "POSTGRES_PASSWORD=old-postgres-password",
     "DATABASE_URL=postgres://koed:old-postgres-password@localhost:15432/koed",
     "MEMORY_API_TOKEN=old-memory-api-token"
@@ -56,6 +88,10 @@ test("retains compatibility-sensitive values from an existing env", () => {
     rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
     "old-owner-private-data-key"
   );
+  assert.equal(
+    rendered.get("API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    "old-team-data-key"
+  );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "old-token-pepper");
   assert.equal(
     rendered.get("API_COLLABORATION_LOCAL_BROKER_SECRET"),
@@ -66,6 +102,7 @@ test("retains compatibility-sensitive values from an existing env", () => {
     "old-cursor-secret"
   );
   assert.equal(rendered.get("EMBEDDING_SERVICE_TOKEN"), "old-embedding-token");
+  assert.equal(rendered.get("KOED_OPS_METRICS_TOKEN"), "old-ops-metrics-token");
   assert.equal(rendered.get("POSTGRES_PASSWORD"), "old-postgres-password");
   assert.equal(
     rendered.get("DATABASE_URL"),
@@ -84,10 +121,12 @@ test("generates missing generated secrets while preserving non-generated values"
       example: [
         "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
         "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
         "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
+        "KOED_OPS_METRICS_TOKEN=replace_with_generated_ops_metrics_token",
         "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
         "DATABASE_URL=replace_with_generated_database_url",
         "MEMORY_API_TOKEN=replace_with_token_from_pnpm_api_token_create"
@@ -106,7 +145,23 @@ test("generates missing generated secrets while preserving non-generated values"
     rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
     rendered.get("API_DATA_ENCRYPTION_KEY")
   );
+  assert.equal(
+    rendered.get("API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    "generated-team-data-key"
+  );
+  assert.notEqual(
+    rendered.get("API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    rendered.get("API_DATA_ENCRYPTION_KEY")
+  );
+  assert.notEqual(
+    rendered.get("API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY")
+  );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "generated-token-pepper");
+  assert.equal(
+    rendered.get("KOED_OPS_METRICS_TOKEN"),
+    "generated-ops-metrics-token"
+  );
   assert.equal(
     rendered.get("API_COLLABORATION_LOCAL_BROKER_SECRET"),
     "generated-broker-secret"
@@ -167,6 +222,7 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
       example: [
         "API_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+        "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
         "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
         "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
         "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
@@ -192,6 +248,10 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
   assert.equal(
     rendered.get("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY"),
     "generated-owner-private-data-key"
+  );
+  assert.equal(
+    rendered.get("API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"),
+    "generated-team-data-key"
   );
   assert.equal(rendered.get("API_TOKEN_PEPPER"), "generated-token-pepper");
   assert.equal(

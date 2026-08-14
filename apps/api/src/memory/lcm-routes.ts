@@ -1,4 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import {
+  lcmLexicalAnchorGroundingPayloads,
+  validateLcmLexicalAnchors
+} from "@koed/core";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   lcmPendingSummariesQuerySchema,
@@ -120,6 +124,20 @@ export const registerLcmRoutes = (
           .send({ error: "LCM node not found or not visible" });
       }
 
+      const anchorValidation = validateLcmLexicalAnchors(
+        input.summaryStructuredJson.lexical_anchors,
+        lcmLexicalAnchorGroundingPayloads(node.sourceItems)
+      );
+      if (anchorValidation.rejected.length > 0) {
+        return reply.status(400).send({
+          error:
+            "Every lexical anchor must be an exact contiguous case-sensitive substring of an LCM source payload",
+          unsupportedLexicalAnchors: anchorValidation.rejected.map(
+            ({ anchor }) => anchor
+          )
+        });
+      }
+
       await repo.updateLcmNodeSummary({
         nodeId: params.nodeId,
         summaryText: input.summaryText,
@@ -129,7 +147,22 @@ export const registerLcmRoutes = (
         summaryStructuredJson: input.summaryStructuredJson,
         summaryStructuredSchemaVersion: input.summaryStructuredSchemaVersion
       });
-      const embedding = await enqueueEmbedding("memory_node", params.nodeId);
+      const embeddable = await repo.getEmbeddableSource(
+        "memory_node",
+        params.nodeId
+      );
+      if (!embeddable) {
+        throw new Error(
+          "Updated LCM summary is not available for revision-specific embedding"
+        );
+      }
+      const embedding = await enqueueEmbedding(
+        "memory_node",
+        params.nodeId,
+        "normal_embedding_lcm",
+        undefined,
+        embeddable.sourceHash
+      );
 
       return {
         nodeId: params.nodeId,

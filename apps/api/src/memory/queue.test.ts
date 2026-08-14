@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const bullQueue = vi.hoisted(() => ({
   add: vi.fn(),
   close: vi.fn(),
-  getJobCounts: vi.fn()
+  getJobCounts: vi.fn(),
+  getJobs: vi.fn()
 }));
 
 vi.mock("bullmq", () => ({
@@ -11,6 +12,7 @@ vi.mock("bullmq", () => ({
     add = bullQueue.add;
     close = bullQueue.close;
     getJobCounts = bullQueue.getJobCounts;
+    getJobs = bullQueue.getJobs;
   }
 }));
 
@@ -22,7 +24,8 @@ const createRepository = () => ({
   complete: vi.fn(),
   fail: vi.fn(),
   tryAcquireRuntimeLease: vi.fn(),
-  getJobCounts: vi.fn().mockResolvedValue({ pending: 1 })
+  getJobCounts: vi.fn().mockResolvedValue({ pending: 1 }),
+  getOldestPendingAgeMs: vi.fn().mockResolvedValue(300)
 });
 
 describe("createMemoryJobQueue", () => {
@@ -30,6 +33,7 @@ describe("createMemoryJobQueue", () => {
     bullQueue.add.mockReset();
     bullQueue.close.mockReset();
     bullQueue.getJobCounts.mockReset();
+    bullQueue.getJobs.mockReset().mockResolvedValue([]);
   });
 
   it("creates local durable queue producer when repository exists", async () => {
@@ -116,6 +120,56 @@ describe("createMemoryJobQueue", () => {
       { priority: 5 }
     );
     expect([20, 5].sort((left, right) => left - right)[0]).toBe(5);
+  });
+
+  it("reports oldest pending age for local and BullMQ queues", async () => {
+    const repository = createRepository();
+    const local = createMemoryJobQueue("memory-embed", {
+      backend: "local",
+      localQueueRepository: repository
+    });
+    const now = Date.now();
+    bullQueue.getJobs.mockResolvedValueOnce([{ timestamp: now - 600 }]);
+    const bullmq = createMemoryJobQueue("memory-embed", {
+      backend: "bullmq",
+      redisUrl: "redis://operator:6379"
+    });
+
+    await expect(local?.getOldestPendingAgeMs?.()).resolves.toBe(300);
+    await expect(
+      bullmq?.getOldestPendingAgeMs?.()
+    ).resolves.toBeGreaterThanOrEqual(600);
+    expect(repository.getOldestPendingAgeMs).toHaveBeenCalledWith(
+      "memory-embed"
+    );
+    expect(bullQueue.getJobs).toHaveBeenCalledWith(
+      ["wait", "paused", "prioritized", "delayed"],
+      0,
+      0,
+      true
+    );
+  });
+
+  it("reports prioritized BullMQ jobs as waiting", async () => {
+    bullQueue.getJobCounts.mockResolvedValueOnce({
+      waiting: 2,
+      prioritized: 3,
+      active: 1
+    });
+    const queue = createMemoryJobQueue("memory-embed", {
+      backend: "bullmq",
+      redisUrl: "redis://operator:6379"
+    });
+
+    await expect(queue?.getJobCounts("waiting", "active")).resolves.toEqual({
+      waiting: 5,
+      active: 1
+    });
+    expect(bullQueue.getJobCounts).toHaveBeenCalledWith(
+      "waiting",
+      "active",
+      "prioritized"
+    );
   });
 
   it("returns no queue when local backend lacks database", () => {

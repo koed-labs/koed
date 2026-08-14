@@ -173,6 +173,20 @@ describe("local work queue repository", () => {
       [["pending", "delayed"]]
     );
   });
+
+  it("reports the oldest pending age for one queue", async () => {
+    const pool = createPool();
+    pool.query.mockResolvedValueOnce({ rows: [{ age_ms: "1234.5" }] });
+    const repo = createLocalWorkQueueRepository(pool as never);
+
+    await expect(repo.getOldestPendingAgeMs("memory-embed")).resolves.toBe(
+      1234.5
+    );
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("now() - min(created_at)"),
+      ["memory-embed"]
+    );
+  });
 });
 
 const describeDb = process.env.DATABASE_URL ? describe : describe.skip;

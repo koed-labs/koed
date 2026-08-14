@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   createDeviceEnrollmentChallengeSchema,
   localEdgeOperationFamilySchema,
+  localEdgeTeamMemoryAnswerSchema,
+  localEdgeTeamMemoryExpandSchema,
+  localEdgeTeamMemoryQuestionSchema,
+  localEdgeTeamMemorySearchSchema,
   redeemDeviceEnrollmentChallengeSchema
 } from "./schemas.js";
 
@@ -54,6 +58,72 @@ describe("local edge enrollment schemas", () => {
         verifier_kind: "secret_hash",
         verifier_secret: "s".repeat(32),
         operation_families: []
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe("local edge Team semantic recall schemas", () => {
+  const teamWorkspaceId = "00000000-0000-4000-8000-000000000002";
+
+  it.each([localEdgeTeamMemorySearchSchema, localEdgeTeamMemoryAnswerSchema])(
+    "accepts Workspace-bound Team recall",
+    (schema) => {
+      expect(
+        schema.safeParse({
+          upstream_backend_id: "team-vps",
+          input: {
+            query: "retained decision",
+            team_workspace_id: teamWorkspaceId
+          }
+        }).success
+      ).toBe(true);
+      expect(
+        schema.safeParse({
+          upstream_backend_id: "team-vps",
+          input: { query: "retained decision" }
+        }).success
+      ).toBe(false);
+    }
+  );
+
+  it("accepts only Workspace-bound candidate expansion", () => {
+    expect(
+      localEdgeTeamMemoryExpandSchema.safeParse({
+        upstream_backend_id: "team-vps",
+        node_id: "00000000-0000-4000-8000-000000000003",
+        input: { team_workspace_id: teamWorkspaceId }
+      }).success
+    ).toBe(true);
+    expect(
+      localEdgeTeamMemoryExpandSchema.safeParse({
+        upstream_backend_id: "team-vps",
+        node_id: "00000000-0000-4000-8000-000000000003",
+        input: {}
+      }).success
+    ).toBe(false);
+  });
+
+  it("requires a Workspace-bound final Team Memory Question", () => {
+    const input = {
+      upstream_backend_id: "team-vps",
+      input: {
+        idempotency_key: "question-1",
+        query: "What did the Team decide?",
+        origin: "mcp_memory_answer",
+        retrieval_scope: "personal",
+        team_workspace_id: teamWorkspaceId,
+        status: "answered",
+        answer_markdown: "Use the shared decision."
+      }
+    };
+    expect(localEdgeTeamMemoryQuestionSchema.safeParse(input).success).toBe(
+      true
+    );
+    expect(
+      localEdgeTeamMemoryQuestionSchema.safeParse({
+        ...input,
+        input: { ...input.input, team_workspace_id: undefined }
       }).success
     ).toBe(false);
   });

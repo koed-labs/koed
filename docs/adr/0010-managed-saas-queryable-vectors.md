@@ -5,10 +5,10 @@ Status: Accepted for the Team SaaS launch plan.
 ## Context
 
 Commercial Memory encryption protects human-readable Memory and evidence
-fields, but recall still needs a searchable representation. Koed currently uses
-pgvector for semantic search and SQL lexical search over plaintext Memory
-columns. Once managed SaaS Memory text is encrypted, plaintext lexical fallback
-is no longer compatible with the security model.
+fields, but Recall still needs a searchable representation. Koed uses pgvector
+for production semantic retrieval. A global SQL lexical search over plaintext
+Memory is incompatible with the managed SaaS security model and is not part of
+the production Recall architecture in any deployment profile.
 
 Queryable vectors are also sensitive. They are not plaintext, but they are
 derived from customer Memory and can leak semantic information through nearest
@@ -35,11 +35,12 @@ later stores canonical embeddings for rebuild, export, support, or migration,
 that storage must move through the encrypted payload/package path and update
 `canonical_embedding_state` accordingly.
 
-Managed SaaS disables plaintext lexical search by default. Operators may enable
-`MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED=true` only after the deployment has a
-documented leakage posture or a separate encrypted/search-derived lexical index
-is implemented. Local personal, developer, private VPS, and Team Self-Hosted
-can keep plaintext lexical search unless their Operator disables it.
+Exact and lexical hints may seed focused semantic queries. Koed may then compare
+those hints with the small set of already-authorized retrieved candidates, such
+as validated LCM lexical anchors. It does not maintain a production lexical
+index or decrypt Memory globally for lexical matching. Eval-only BM25 and fixed
+hybrid indexes remain isolated Retrieval Arena baselines rather than product
+storage or policy.
 
 ## Implementation Rules
 
@@ -50,8 +51,8 @@ can keep plaintext lexical search unless their Operator disables it.
 - Personal-owned launch rows use the owner User plus dynamic Share Grant joins
   as the search boundary. Team-visible recall can admit a row only when the
   current Team Workspace authorization and source-session Share Grants match.
-- Plaintext `lexical_search` must fail closed in `koed_managed_cloud` unless
-  explicitly opted in.
+- Production candidate generation is semantic in every deployment profile;
+  there is no plaintext lexical-search stage or configuration escape hatch.
 - Reranking input must be built only from already-authorized candidates.
 - Diagnostics, logs, audit metadata, support status, and queue payloads must not
   include raw Memory text, raw embedding vectors, or decrypted canonical
@@ -64,8 +65,9 @@ can keep plaintext lexical search unless their Operator disables it.
 - Managed SaaS recall remains practical with encrypted Memory text.
 - Queryable vectors remain a trusted-boundary data asset that must be protected
   by tenant isolation, database roles, backups, support policy, and audit.
-- Exact lexical search quality in managed SaaS is intentionally reduced until a
-  leakage-documented derived lexical index exists.
+- Exact terminology is routed through focused semantic queries, grounded LCM
+  anchors, and checks over already-authorized candidates rather than a separate
+  lexical index.
 - High-assurance customers may still require tenant-side search, a customer
   data plane, BYOK/CMEK, or future private vector search instead of
   Koed-managed searchable vectors.

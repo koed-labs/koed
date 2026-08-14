@@ -9,7 +9,8 @@ export const SHARED_SOURCE_PREVIEW_SCHEMA_VERSION = 1 as const;
 export type SharedSourceArtifactRepresentation =
   | "memory_events"
   | "lcm_leaves"
-  | "lcm_rollups";
+  | "lcm_rollups"
+  | "curated_assertions";
 
 export type SharedSourceArtifactItemType =
   | "user_message"
@@ -18,7 +19,8 @@ export type SharedSourceArtifactItemType =
   | "tool_call"
   | "tool_result"
   | "lcm_leaf"
-  | "lcm_rollup";
+  | "lcm_rollup"
+  | "curated_assertion";
 
 export interface SharedSourceArtifactBindingV1 {
   sourceRevision: number;
@@ -55,7 +57,11 @@ export interface SharedSourceArtifactPolicyBindingV1 {
 
 export interface SharedSourceArtifactManifestEntryV1 {
   sourceId: string;
-  sourceTable: "memory_events" | "conversation_items" | "memory_nodes";
+  sourceTable:
+    | "memory_events"
+    | "conversation_items"
+    | "memory_nodes"
+    | "curated_memory_assertions";
   itemType: SharedSourceArtifactItemType;
   sourceCursor: number;
   revisionHash: string;

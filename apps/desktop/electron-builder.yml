@@ -8,6 +8,10 @@ afterPack: scripts/after-pack.mjs
 
 files:
   - dist-electron/**/*
+  - assets/koed-trayTemplate.png
+  - assets/koed-trayTemplate@2x.png
+  - assets/koed-tray-linux.png
+  - assets/koed-tray-linux@2x.png
   - package.json
   - "node_modules/@koed/koed-server/package.json"
   - "node_modules/@koed/koed-server/dist/**/*"

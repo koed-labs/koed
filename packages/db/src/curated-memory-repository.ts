@@ -20,7 +20,6 @@ import type {
   CuratedMemoryProposalUserEvidenceResult,
   CuratedMemoryReconciliationResult,
   CuratedMemoryResolvedEvidence,
-  CuratedMemoryRetrievalCandidate,
   CuratedMemorySearchInput
 } from "./types.js";
 
@@ -87,10 +86,6 @@ export interface CuratedMemoryRepository {
     actor: ActorContext,
     input: CuratedMemorySearchInput
   ): Promise<CuratedMemoryAssertionRecord[]>;
-  searchCuratedMemoryRetrievalCandidates(
-    actor: ActorContext,
-    input: CuratedMemorySearchInput
-  ): Promise<CuratedMemoryRetrievalCandidate[]>;
   expandCuratedMemoryRetrieval(
     actor: ActorContext,
     assertionId: string
@@ -114,6 +109,10 @@ export interface CuratedMemoryRepository {
 
 export interface CuratedMemoryRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  onCuratedMemoryChanged?: (
+    actor: ActorContext,
+    client: pg.PoolClient
+  ) => Promise<void>;
 }
 
 export const createCuratedMemoryRepository = (
@@ -122,7 +121,8 @@ export const createCuratedMemoryRepository = (
 ): CuratedMemoryRepository => {
   const context = {
     pool,
-    envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+    onCuratedMemoryChanged: options.onCuratedMemoryChanged
   };
   return {
     ...createCuratedMemoryRecordMethods(context),

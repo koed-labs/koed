@@ -5,6 +5,11 @@ deployments. It is not a substitute for production telemetry; it is the
 repeatable gate that tells us whether the current backend shape has obvious
 bottlenecks before hosted traffic is expanded.
 
+Production embedding capacity and semantic-readiness estimates follow
+[ADR 0027](adr/0027-embedding-capacity-telemetry.md). The capacity harness
+validates that contract under controlled load; it does not replace the durable
+capacity profile, `/ops/status`, or the private machine-metrics surface.
+
 Record dated local, staging, private VPS, or managed-cloud capacity proof with
 the relevant private launch record. Keep this document as the reusable harness
 and threshold reference.
@@ -179,5 +184,7 @@ relevant Linear issue. Include:
 - total requests, p95 latency, p99 latency, error rate, and status codes;
 - p95/error-rate headroom plus any bottlenecks or watch observations;
 - queue deltas and embedding deltas;
+- measured embedding tokens/second, Memory Events embedded/minute, backlog
+  slope, oldest waiting age, and estimated drain range;
 - database/storage deltas;
 - follow-up issues for any failed threshold.

@@ -16,6 +16,7 @@
     "src/pds-*.ts",
     "src/ipc/**/*.ts",
     "src/koed-server/**/*.ts",
+    "src/tray/**/*.ts",
     "src/window/**/*.ts"
   ],
   "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]

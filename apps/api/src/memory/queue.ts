@@ -22,6 +22,26 @@ const createBullmqConnection = (redisUrl: string) => ({
   maxRetriesPerRequest: null
 });
 
+const getBullmqJobCounts = async (
+  queue: Queue,
+  statuses: string[]
+): Promise<Record<string, number>> => {
+  const requested = statuses.includes("waiting")
+    ? [...new Set([...statuses, "prioritized"])]
+    : statuses;
+  const counts = await queue.getJobCounts(
+    ...(requested as Parameters<typeof queue.getJobCounts>)
+  );
+  return Object.fromEntries(
+    statuses.map((status) => [
+      status,
+      status === "waiting"
+        ? (counts.waiting ?? 0) + (counts.prioritized ?? 0)
+        : (counts[status] ?? 0)
+    ])
+  );
+};
+
 const getLocalJobCounts = async (
   repository: LocalWorkQueueRepository,
   statuses: string[]
@@ -66,6 +86,7 @@ export const createMemoryJobQueue = <TJobData>(
           backoffMs: jobOptions?.backoff?.delay
         }),
       getJobCounts: (...statuses) => getLocalJobCounts(repository, statuses),
+      getOldestPendingAgeMs: () => repository.getOldestPendingAgeMs(name),
       close: () => Promise.resolve()
     };
   }
@@ -85,10 +106,18 @@ export const createMemoryJobQueue = <TJobData>(
       });
       return { id: job.id };
     },
-    getJobCounts: (...statuses) =>
-      queue.getJobCounts(
-        ...(statuses as Parameters<typeof queue.getJobCounts>)
-      ),
+    getJobCounts: (...statuses) => getBullmqJobCounts(queue, statuses),
+    getOldestPendingAgeMs: async () => {
+      const jobs = await queue.getJobs(
+        ["wait", "paused", "prioritized", "delayed"],
+        0,
+        0,
+        true
+      );
+      return jobs[0]?.timestamp
+        ? Math.max(0, Date.now() - jobs[0].timestamp)
+        : null;
+    },
     close: () => queue.close()
   };
 };

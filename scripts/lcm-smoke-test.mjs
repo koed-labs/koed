@@ -339,8 +339,10 @@ const getDbState = () =>
           and summary_structured_json = jsonb_build_object(
             'schema_version', 'lcm-semantic-summary-v1',
             'title', summary_structured_json ->> 'title',
-            'summary_text', summary_text
+            'summary_text', summary_text,
+            'lexical_anchors', summary_structured_json -> 'lexical_anchors'
           )
+          and jsonb_typeof(summary_structured_json -> 'lexical_anchors') = 'array'
       ),
       'embeddedNodeCount', (
         select count(distinct me.memory_node_id)
@@ -523,6 +525,7 @@ const main = async () => {
   );
   console.log(`Smoke session: ${sessionId}`);
 
+  let queuedCompactionCount = 0;
   for (let index = 1; index <= eventCount; index += 1) {
     const content = [
       `LCM smoke prompt ${index}/${eventCount}.`,
@@ -545,12 +548,21 @@ const main = async () => {
         }
       })
     });
-    assert(
-      response.body.processing?.compaction?.queued === true,
-      "Compaction was not queued for captured event",
-      response.body
-    );
+    const compaction = response.body.processing?.compaction;
+    if (compaction?.queued === true) {
+      queuedCompactionCount += 1;
+    } else {
+      assert(
+        compaction?.reason === "no eligible LCM sources are pending",
+        "Compaction was neither queued nor explicitly deferred for an ineligible fresh tail",
+        response.body
+      );
+    }
   }
+  assert(
+    queuedCompactionCount > 0,
+    "Compaction never became eligible after the configured threshold was crossed"
+  );
   console.log(
     `Captured ${eventCount} prompt events; waiting for backend compaction and placeholder embeddings...`
   );

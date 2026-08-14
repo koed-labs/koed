@@ -42,7 +42,10 @@ export interface ApiRouteContext {
   jobs: {
     enqueueEmbedding(
       sourceType: EmbeddingSourceType,
-      sourceId: string
+      sourceId: string,
+      workClass?: KoedWorkClass,
+      jobId?: string,
+      sourceRevision?: string
     ): Promise<MemoryJobStatus>;
   };
   graph: {
@@ -112,6 +115,10 @@ export interface ApiRouteContext {
       deviceCredentialId: string;
       principalUserId: string;
     } | null;
+  };
+  internalServices: {
+    /** Trusted transport for Operator-configured internal service endpoints. */
+    fetch: typeof fetch;
   };
   workos: {
     client: WorkosAuthKitClient;

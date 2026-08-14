@@ -166,6 +166,7 @@ export interface HighRiskActionRepositoryOptions {
   freshAuthenticationMaxAgeMs?: number;
   pool?: pg.Pool;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
 }
 
@@ -421,6 +422,7 @@ const mapBindingRecord = (
 const buildScopedRepositories = (
   client: pg.PoolClient,
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider,
+  teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider,
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider
 ) => {
   const savepointPool = createSavepointPool(client, "high_risk");
@@ -450,13 +452,21 @@ const buildScopedRepositories = (
       }
     }),
     sharedMemory: createSharedMemoryRepository(savepointPool, {
-      resolveTeamEncryptionProvider: () => {
+      resolvePersonalEncryptionProvider: () => {
         if (!envelopeEncryptionProvider) {
           throw new Error(
-            "Envelope encryption is required for Shared Memory execution"
+            "Envelope encryption is required for Curated Memory execution"
           );
         }
         return Promise.resolve(envelopeEncryptionProvider);
+      },
+      resolveTeamEncryptionProvider: () => {
+        if (!teamEnvelopeEncryptionProvider) {
+          throw new Error(
+            "Team envelope encryption is required for Shared Memory execution"
+          );
+        }
+        return Promise.resolve(teamEnvelopeEncryptionProvider);
       },
       resolveOwnerPrivateReplicaEncryptionProvider: () => {
         if (!ownerPrivateReplicaEnvelopeEncryptionProvider) {
@@ -1338,6 +1348,7 @@ export const createHighRiskActionRepository = (
           buildScopedRepositories(
             client,
             options.envelopeEncryptionProvider,
+            options.teamEnvelopeEncryptionProvider,
             options.ownerPrivateReplicaEnvelopeEncryptionProvider
           )
         );

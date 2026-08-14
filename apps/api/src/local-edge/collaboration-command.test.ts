@@ -3387,6 +3387,7 @@ describe("local-edge collaboration command route", () => {
                     sequence: 1,
                     occurredAt: iso,
                     summaryText: "This representation was not selected.",
+                    lexicalAnchors: [],
                     sourceCount: 1,
                     sourceRevision: `ssr1.${"b".repeat(64)}`
                   }
@@ -3734,6 +3735,22 @@ describe("local-edge collaboration command route", () => {
       expect(harness.calls).toHaveLength(0);
     }
   );
+
+  it("rejects an API Token before parsing an invalid collaboration command", async () => {
+    const harness = createHarness();
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/v1/local-edge/collaboration/command",
+      headers: {
+        authorization: "Bearer personal-token",
+        host: "localhost:3300"
+      },
+      payload: { malformed: true }
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(harness.calls).toHaveLength(0);
+  });
 
   it("rejects a session cookie as a DLC substitute at the local boundary", async () => {
     const harness = createHarness();

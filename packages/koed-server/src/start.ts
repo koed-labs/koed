@@ -476,6 +476,11 @@ const localServiceEnv = (
     WORK_QUEUE_BACKEND: queueBackend,
     KOED_MODELS_DIR: modelsDir,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
+    KOED_EMBEDDING_POOL_KEY:
+      environment.WORKER_KOED_EMBEDDING_POOL_KEY ??
+      repoEnv.WORKER_KOED_EMBEDDING_POOL_KEY ??
+      environment.KOED_EMBEDDING_POOL_KEY ??
+      repoEnv.KOED_EMBEDDING_POOL_KEY,
     API_PORT: apiPort,
     DATABASE_URL:
       serverConfig.dependencyMode === "external"
@@ -576,6 +581,36 @@ const localServiceEnv = (
     OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:
       environment.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY ??
       repoEnv.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY,
+    TEAM_MEMORY_DATA_ENCRYPTION_KEY: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "TEAM_MEMORY_DATA_ENCRYPTION_KEY"
+    ),
+    TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER"
+    ),
+    TEAM_MEMORY_MANAGED_KMS_KEY_ID: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "TEAM_MEMORY_MANAGED_KMS_KEY_ID"
+    ),
+    TEAM_MEMORY_MANAGED_KMS_KEY_VERSION: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "TEAM_MEMORY_MANAGED_KMS_KEY_VERSION"
+    ),
+    TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL"
+    ),
+    TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN"
+    ),
     OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER:
       environment.OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER ??
       repoEnv.OWNER_PRIVATE_REPLICA_ENVELOPE_ENCRYPTION_PROVIDER,

@@ -81,7 +81,8 @@ const reviewed = (
 const representationRank: Record<SharedMemoryRepresentation, number> = {
   lcm_rollups: 0,
   lcm_leaves: 1,
-  memory_events: 2
+  curated_assertions: 2,
+  memory_events: 3
 };
 
 const representationLabel = (
@@ -94,6 +95,8 @@ const representationLabel = (
       return "LCM Leaves";
     case "lcm_rollups":
       return "LCM Rollups";
+    case "curated_assertions":
+      return "Curated Assertions";
   }
 };
 

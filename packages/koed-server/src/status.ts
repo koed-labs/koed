@@ -814,7 +814,7 @@ export const collectKoedServerStatus = async (
   );
   const localQueueRedisBypass = healthy(
     "Postgres-backed local queue does not require Redis.",
-    { backend: queueBackend }
+    { backend: queueBackend, required: false }
   );
   const localQueueStatus =
     apiReady.workerQueues.state === "healthy"

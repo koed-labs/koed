@@ -1,4 +1,5 @@
 import type { MemorySourceRepository } from "@koed/db";
+import { structuredLcmSummarySchema } from "@koed/core";
 import {
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid,
@@ -8,9 +9,9 @@ import {
   type SharedMemorySourceItem
 } from "@koed/shared";
 
-type LocalLcmRepresentation = Exclude<
+type LocalLcmRepresentation = Extract<
   SharedMemoryRepresentation,
-  "memory_events"
+  "lcm_leaves" | "lcm_rollups"
 >;
 
 export const prepareLocalLcmCandidateRepresentation = async (input: {
@@ -43,6 +44,7 @@ type CandidateRepository = Pick<
   MemorySourceRepository,
   | "createLcmNodes"
   | "getSharedMemoryLcmSyncState"
+  | "listCuratedMemoryAssertions"
   | "listLcmGraphEvents"
   | "listLcmGraphNodes"
   | "listLcmGraphThreads"
@@ -160,6 +162,36 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
           ]
         });
       }
+    } else if (input.representation === "curated_assertions") {
+      const assertions = await options.repository.listCuratedMemoryAssertions(
+        { userId: input.localOwnerUserId },
+        { status: "current", includeSources: true, limit: 500 }
+      );
+      for (const [index, assertion] of assertions.reverse().entries()) {
+        const sourceCount = assertion.sources.filter((source) =>
+          [
+            "primary_evidence",
+            "supporting_evidence",
+            "superseding_evidence",
+            "conflicting_evidence"
+          ].includes(source.sourceRole)
+        ).length;
+        if (sourceCount === 0) {
+          excludedItemCount += 1;
+          continue;
+        }
+        append({
+          id: assertion.id,
+          representation: input.representation,
+          sequence: index + 1,
+          occurredAt: assertion.observedAt,
+          assertionText: assertion.assertionText,
+          topicTitle: assertion.topicTitle,
+          tags: assertion.tags,
+          sourceCount,
+          sourceRevision: `candidate.${assertion.id}`
+        });
+      }
     } else {
       await prepareLocalLcmCandidateRepresentation({
         repository: options.repository,
@@ -182,6 +214,9 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
           sequence: index + 1,
           occurredAt: node.updatedAt,
           summaryText: node.summaryText,
+          lexicalAnchors:
+            structuredLcmSummarySchema.safeParse(node.summaryStructuredJson)
+              .data?.lexical_anchors ?? [],
           sourceCount: Math.max(node.sourceEventCount, 1),
           sourceRevision: `candidate.${node.id}`
         });

@@ -12,12 +12,15 @@ const normalizedOrigin = (value, label) => {
   return url.origin;
 };
 
-const authorizationHeaders = ({ desktopAuthorization, browserCookie }) => {
+const authorizationHeaders = (
+  { desktopAuthorization, browserCookie },
+  requestOrigin
+) => {
   if (desktopAuthorization) {
     return { authorization: desktopAuthorization };
   }
   if (browserCookie) {
-    return { cookie: browserCookie };
+    return { cookie: browserCookie, origin: requestOrigin };
   }
   throw new Error("Joining-device local authentication is required.");
 };
@@ -44,7 +47,7 @@ export const reconcileJoiningDeviceDatabase = async (input) => {
       "Two-database pairing validation requires distinct local API origins."
     );
   }
-  const auth = authorizationHeaders(input);
+  const auth = authorizationHeaders(input, joiningOrigin);
   const reconciliation = await jsonResponse(
     await input.fetch(
       `${joiningOrigin}/v1/personal-device-sync/local-group-reconciliation`,

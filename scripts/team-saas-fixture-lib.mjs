@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 
 export const FIXTURE_VERSION = "team-saas-fixture-v1";
 export const FIXTURE_SOURCE_HASH_PREFIX = `${FIXTURE_VERSION}:`;
@@ -43,8 +43,14 @@ const collaborationUuid = (value) => {
   )}-${hex.slice(20, 32)}`;
 };
 
-const ALL_REPRESENTATIONS = ["memory_events", "lcm_leaves", "lcm_rollups"];
+const ALL_REPRESENTATIONS = [
+  "memory_events",
+  "lcm_leaves",
+  "lcm_rollups",
+  "curated_assertions"
+];
 
+const FIXTURE_PERSONAL_ENCRYPTION_KEY = Buffer.alloc(32, 70).toString("base64");
 const FIXTURE_OWNER_ENCRYPTION_KEY = Buffer.alloc(32, 71).toString("base64");
 const FIXTURE_TEAM_ENCRYPTION_KEY = Buffer.alloc(32, 72).toString("base64");
 const FIXTURE_STATE_AT = "2026-01-01T08:00:00.000Z";
@@ -260,6 +266,20 @@ export const fixtureMemories = [
     expectedTeamVisible: true
   },
   {
+    key: "carol-cloud-curated-retrieval",
+    owner: "carol",
+    workspace: "cloud",
+    title: "Team Recall Provenance Contract",
+    content:
+      "Carol confirmed that practical Team semantic recall must preserve encrypted grant-scoped provenance from the source Memory Event through LCM leaf and rollup expansion.",
+    assertionText:
+      "Team semantic recall preserves grant-scoped source fidelity across Memory Events, LCM leaves, LCM rollups, and Curated Memory assertions.",
+    tags: ["team-recall", "provenance", "curated-memory"],
+    representation: "curated_assertions",
+    shareState: "active",
+    expectedTeamVisible: true
+  },
+  {
     key: "carol-cloud-retained-deletion",
     owner: "carol",
     workspace: "cloud",
@@ -346,6 +366,21 @@ export const fixtureMemoryRows = fixtureMemories.map((memory, index) => ({
   sessionId: idFor("4", index),
   eventId: idFor("5", index),
   nodeId: idFor("6", index),
+  leafNodeId:
+    memory.representation === "curated_assertions"
+      ? fixtureUuid(`memory:${memory.key}:leaf-node`)
+      : null,
+  curatedAssertionId:
+    memory.representation === "curated_assertions"
+      ? fixtureUuid(`memory:${memory.key}:curated-assertion`)
+      : null,
+  curatedTopicId:
+    memory.representation === "curated_assertions"
+      ? fixtureUuid(`memory:${memory.key}:curated-topic`)
+      : null,
+  summaryEmbeddingRevision: fixtureUuid(
+    `memory:${memory.key}:summary-embedding-revision`
+  ),
   conversationItemId: idFor("7", index),
   shareGrantId: idFor("8", index),
   messageId: idFor("9", index),
@@ -362,6 +397,78 @@ export const fixtureMemoryRows = fixtureMemories.map((memory, index) => ({
   sourceHash: `${FIXTURE_SOURCE_HASH_PREFIX}${memory.key}`,
   idempotencyKey: `${FIXTURE_VERSION}:${memory.key}`
 }));
+
+export const fixtureConversationSources = [
+  {
+    key: "timeline-continuous-source",
+    memoryKey: "bob-electron-timeline",
+    mode: "continuous",
+    lifecycle: "active",
+    maximumSegmentIndex: null,
+    segments: [
+      [
+        {
+          type: "response_item",
+          payload: { role: "user", content: "Show the Workspace timeline." }
+        }
+      ],
+      [{ type: "event_msg", payload: { type: "task_complete" } }]
+    ]
+  },
+  {
+    key: "agent-rooms-snapshot-source",
+    memoryKey: "david-electron-agent-rooms",
+    mode: "snapshot",
+    lifecycle: "active",
+    maximumSegmentIndex: 0,
+    segments: [
+      [{ type: "event_msg", payload: { type: "task_complete" } }],
+      [
+        {
+          type: "response_item",
+          payload: {
+            role: "user",
+            content: "This later source record is outside the snapshot grant."
+          }
+        }
+      ]
+    ]
+  },
+  {
+    key: "revoked-experiment-source",
+    memoryKey: "david-electron-revoked-experiment",
+    mode: "continuous",
+    lifecycle: "revoked",
+    maximumSegmentIndex: null,
+    segments: [[{ type: "event_msg", payload: { type: "task_complete" } }]]
+  }
+].map((source) => ({
+  ...source,
+  id: fixtureUuid(`conversation-source:${source.key}:grant`),
+  artifactId: fixtureUuid(`conversation-source:${source.key}:artifact`),
+  logicalSourceId: fixtureUuid(`conversation-source:${source.key}:logical`),
+  sourceGenerationId: fixtureUuid(
+    `conversation-source:${source.key}:generation`
+  ),
+  originKeyId: fixtureUuid(`conversation-source:${source.key}:origin-key`),
+  mutationId: fixtureUuid(`conversation-source:${source.key}:mutation`),
+  segmentIds: source.segments.map((_, index) =>
+    fixtureUuid(`conversation-source:${source.key}:segment:${index}`)
+  )
+}));
+
+const fixtureConversationSourcePrivateKey = () => {
+  const seed = Buffer.from(
+    fixtureHash("conversation-source:origin-key"),
+    "hex"
+  );
+  const prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  return createPrivateKey({
+    key: Buffer.concat([prefix, seed]),
+    format: "der",
+    type: "pkcs8"
+  });
+};
 
 export const fixtureThreads = [
   {
@@ -525,16 +632,31 @@ export const createFixtureRuntime = async (
     import("../packages/db/dist/encrypted-payload-repository.js")
   ]);
   const configuredTeamProvider =
-    shared.createEnvelopeEncryptionProviderFromEnvironment({ environment });
+    shared.createTeamMemoryEnvelopeEncryptionProviderFromEnvironment({
+      environment
+    });
   const configuredOwnerProvider =
     shared.createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment({
       environment
     });
-  if (Boolean(configuredTeamProvider) !== Boolean(configuredOwnerProvider)) {
+  const configuredPersonalProvider =
+    shared.createEnvelopeEncryptionProviderFromEnvironment({ environment });
+  if (
+    new Set([
+      Boolean(configuredTeamProvider),
+      Boolean(configuredOwnerProvider),
+      Boolean(configuredPersonalProvider)
+    ]).size !== 1
+  ) {
     throw new Error(
-      "Fixture seeding requires both Team/general and owner-private deployment encryption providers"
+      "Fixture seeding requires Personal, Team Memory, and owner-private deployment encryption providers together"
     );
   }
+  const personalProvider =
+    configuredPersonalProvider ??
+    shared.createLocalTestKeyEnvelopeEncryptionProvider(
+      FIXTURE_PERSONAL_ENCRYPTION_KEY
+    );
   const ownerProvider =
     configuredOwnerProvider ??
     shared.createLocalTestKeyEnvelopeEncryptionProvider(
@@ -545,21 +667,28 @@ export const createFixtureRuntime = async (
     shared.createLocalTestKeyEnvelopeEncryptionProvider(
       FIXTURE_TEAM_ENCRYPTION_KEY
     );
-  if (ownerProvider.keyId === teamProvider.keyId) {
+  if (
+    new Set([personalProvider.keyId, ownerProvider.keyId, teamProvider.keyId])
+      .size !== 3
+  ) {
     throw new Error(
-      "Fixture Team/general and owner-private encryption providers must use distinct keys"
+      "Fixture Personal, Team Memory, and owner-private encryption providers must use distinct keys"
     );
   }
   return {
     shared,
     upsertEncryptedFieldPayloadWithClient:
       encryptedPayloads.upsertEncryptedFieldPayloadWithClient,
+    personalProvider,
     ownerProvider,
     teamProvider,
     collaborationRepository: db.createCollaborationRepository(pool, {
       envelopeEncryptionProvider: teamProvider
     }),
+    teamConversationSourceRepository:
+      db.createTeamConversationSourceRepository(pool),
     sharedMemoryRepository: db.createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => personalProvider,
       resolveTeamEncryptionProvider: () => teamProvider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
     })
@@ -569,6 +698,182 @@ export const createFixtureRuntime = async (
 const json = (value) => JSON.stringify(value);
 const fixtureSessionHash = (secret, pepper) =>
   createHash("sha256").update(`${pepper}${secret}`).digest("hex");
+
+const seedCuratedPersonalMemory = async (client, runtime, memory) => {
+  if (memory.representation !== "curated_assertions") return;
+  const owner = fixtureUsers[memory.owner];
+  const actor = { userId: owner.id };
+  const encryptedText = "[koed encrypted curated memory]";
+  const encryptedJson = json({ contentEncrypted: true });
+  const normalizedAssertion = memory.assertionText.toLowerCase();
+  const normalizedTopic = memory.title.toLowerCase();
+
+  const personalSourceFields = [
+    {
+      sourceTable: "conversation_items",
+      sourceId: memory.conversationItemId,
+      sourceColumn: "raw_text",
+      plaintext: memory.content,
+      rowFamily: "conversation_item",
+      aad: { conversationItemId: memory.conversationItemId }
+    },
+    {
+      sourceTable: "memory_events",
+      sourceId: memory.eventId,
+      sourceColumn: "payload",
+      plaintext: {
+        actor: "user",
+        content: memory.content,
+        workspaceId: fixtureWorkspaces[memory.workspace].projectId,
+        metadata: { fixture: FIXTURE_VERSION, memoryKey: memory.key }
+      },
+      rowFamily: "memory_event",
+      aad: { memoryEventId: memory.eventId }
+    },
+    ...[memory.leafNodeId, memory.nodeId].map((nodeId) => ({
+      sourceTable: "memory_nodes",
+      sourceId: nodeId,
+      sourceColumn: "summary_text",
+      plaintext: memory.content,
+      rowFamily: "memory_node",
+      aad: { nodeId }
+    }))
+  ];
+  for (const sourceField of personalSourceFields) {
+    await runtime.upsertEncryptedFieldPayloadWithClient(
+      client,
+      actor,
+      runtime.personalProvider,
+      {
+        ...sourceField,
+        visibility: "personal",
+        scope: {
+          tenantId: owner.id,
+          objectClass: sourceField.rowFamily
+        }
+      }
+    );
+  }
+  await client.query(
+    `insert into curated_memory_topics (
+       id,owner_user_id,visibility,title,normalized_title
+     ) values ($1,$2,'personal',$3,$4)`,
+    [
+      memory.curatedTopicId,
+      owner.id,
+      encryptedText,
+      `encrypted:${fixtureHash(`memory:${memory.key}:curated-topic`)}`
+    ]
+  );
+  await client.query(
+    `insert into curated_memory_assertions (
+       id,owner_user_id,visibility,topic_id,assertion_text,
+       normalized_assertion,status,sensitivity,confidence,tags,metadata,
+       observed_at,reconciliation_status,last_reconciled_at
+     ) values (
+       $1,$2,'personal',$3,$4,$5,'current','normal',95,'{}',$6::jsonb,
+       $7,'reconciled',$7
+     )`,
+    [
+      memory.curatedAssertionId,
+      owner.id,
+      memory.curatedTopicId,
+      encryptedText,
+      `encrypted:${fixtureHash(`memory:${memory.key}:curated-assertion`)}`,
+      encryptedJson,
+      memory.capturedAt
+    ]
+  );
+
+  const sources = [
+    ["conversation_item", "primary_evidence", memory.conversationItemId],
+    ["memory_event", "supporting_evidence", memory.eventId],
+    ["lcm_summary", "supporting_evidence", memory.leafNodeId],
+    ["lcm_summary", "supporting_evidence", memory.nodeId]
+  ];
+  for (const [sourceType, sourceRole, sourceId] of sources) {
+    const curatedSourceId = fixtureUuid(
+      `memory:${memory.key}:curated-source:${sourceType}:${sourceId}`
+    );
+    await client.query(
+      `insert into curated_memory_sources (
+         id,assertion_id,source_type,source_role,conversation_item_id,
+         memory_event_id,lcm_node_id,metadata
+       ) values (
+         $1,$2,$3::curated_memory_source_type,$4::curated_memory_source_role,
+         case when $3::text='conversation_item' then $5::uuid else null end,
+         case when $3::text='memory_event' then $5::uuid else null end,
+         case when $3::text='lcm_summary' then $5::uuid else null end,
+         $6::jsonb
+       )`,
+      [
+        curatedSourceId,
+        memory.curatedAssertionId,
+        sourceType,
+        sourceRole,
+        sourceId,
+        encryptedJson
+      ]
+    );
+    await runtime.upsertEncryptedFieldPayloadWithClient(
+      client,
+      actor,
+      runtime.personalProvider,
+      {
+        sourceTable: "curated_memory_sources",
+        sourceId: curatedSourceId,
+        sourceColumn: "payload",
+        plaintext: {
+          metadata: {
+            fixture: FIXTURE_VERSION,
+            evidenceKind: sourceType,
+            exactSessionId: memory.sessionId
+          }
+        },
+        visibility: "personal",
+        rowFamily: "curated_memory",
+        scope: { tenantId: owner.id, objectClass: "curated_memory_sources" },
+        aad: { curatedMemoryId: curatedSourceId }
+      }
+    );
+  }
+
+  for (const payload of [
+    {
+      sourceTable: "curated_memory_topics",
+      sourceId: memory.curatedTopicId,
+      plaintext: { title: memory.title, normalizedTitle: normalizedTopic }
+    },
+    {
+      sourceTable: "curated_memory_assertions",
+      sourceId: memory.curatedAssertionId,
+      plaintext: {
+        assertionText: memory.assertionText,
+        normalizedAssertion,
+        tags: memory.tags,
+        metadata: {
+          fixture: FIXTURE_VERSION,
+          provenance: "exact_session_direct_sources"
+        },
+        suppressionReason: null
+      }
+    }
+  ]) {
+    await runtime.upsertEncryptedFieldPayloadWithClient(
+      client,
+      actor,
+      runtime.personalProvider,
+      {
+        ...payload,
+        sourceColumn: "payload",
+        visibility: "personal",
+        rowFamily: "curated_memory",
+        scope: { tenantId: owner.id, objectClass: payload.sourceTable },
+        aad: { curatedMemoryId: payload.sourceId }
+      }
+    );
+  }
+};
 
 const seedSharedMemoryTopology = async (client, runtime, memory) => {
   if (memory.shareState === "private") return;
@@ -612,13 +917,75 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     version: 1
   });
   const sourceId =
-    memory.representation === "memory_events" ? memory.eventId : memory.nodeId;
+    memory.representation === "memory_events"
+      ? memory.eventId
+      : memory.representation === "curated_assertions"
+        ? memory.curatedAssertionId
+        : memory.nodeId;
   const itemType =
     memory.representation === "memory_events"
       ? "user_message"
       : memory.representation === "lcm_leaves"
         ? "lcm_leaf"
-        : "lcm_rollup";
+        : memory.representation === "lcm_rollups"
+          ? "lcm_rollup"
+          : "curated_assertion";
+  const sourceMessage = {
+    itemType: "user_message",
+    schemaVersion: 1,
+    sourceId: memory.eventId,
+    sourceLogicalMemoryId: memory.logicalMemoryId,
+    sourceRevision: 1,
+    occurredAt: memory.capturedAt,
+    content: { text: memory.content }
+  };
+  const leafExpansion = {
+    itemType: "lcm_leaf",
+    schemaVersion: 1,
+    sourceId:
+      memory.representation === "lcm_leaves"
+        ? memory.nodeId
+        : fixtureUuid(`memory:${memory.key}:expansion-leaf`),
+    sourceLogicalMemoryId: memory.logicalMemoryId,
+    sourceRevision: 1,
+    occurredAt: memory.capturedAt,
+    content: {
+      title: memory.title,
+      summaryText: memory.content,
+      lexicalAnchors: [],
+      sourceIds: [memory.eventId],
+      expansionItems: [sourceMessage]
+    }
+  };
+  const curatedExpansionItems = [
+    {
+      ...sourceMessage,
+      sourceId: memory.conversationItemId
+    },
+    sourceMessage,
+    {
+      ...leafExpansion,
+      sourceId: memory.leafNodeId,
+      content: {
+        ...leafExpansion.content,
+        expansionItems: undefined
+      }
+    },
+    {
+      itemType: "lcm_rollup",
+      schemaVersion: 1,
+      sourceId: memory.nodeId,
+      sourceLogicalMemoryId: memory.logicalMemoryId,
+      sourceRevision: 1,
+      occurredAt: memory.capturedAt,
+      content: {
+        title: memory.title,
+        summaryText: memory.content,
+        lexicalAnchors: [],
+        sourceIds: [memory.eventId]
+      }
+    }
+  ];
   const item = {
     itemType,
     schemaVersion: 1,
@@ -629,11 +996,22 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     content:
       itemType === "user_message"
         ? { text: memory.content }
-        : {
-            title: memory.title,
-            summaryText: memory.content,
-            sourceIds: [memory.eventId]
-          }
+        : itemType === "curated_assertion"
+          ? {
+              assertionText: memory.assertionText,
+              topicTitle: memory.title,
+              tags: memory.tags,
+              sourceCount: curatedExpansionItems.length,
+              expansionItems: curatedExpansionItems
+            }
+          : {
+              title: memory.title,
+              summaryText: memory.content,
+              lexicalAnchors: [],
+              sourceIds: [memory.eventId],
+              expansionItems:
+                itemType === "lcm_leaf" ? [sourceMessage] : [leafExpansion]
+            }
   };
   const manifest = [
     {
@@ -641,14 +1019,20 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       sourceTable:
         memory.representation === "memory_events"
           ? "memory_events"
-          : "memory_nodes",
+          : memory.representation === "curated_assertions"
+            ? "curated_memory_assertions"
+            : "memory_nodes",
       itemType,
       sourceCursor: 1,
       revisionHash: fixtureHash(`memory:${memory.key}:revision`),
       occurredAt: memory.capturedAt,
-      sourceEventId: memory.eventId,
+      sourceEventId:
+        memory.representation === "curated_assertions" ? null : memory.eventId,
       sourceNodeId:
-        memory.representation === "memory_events" ? null : memory.nodeId
+        memory.representation === "lcm_leaves" ||
+        memory.representation === "lcm_rollups"
+          ? memory.nodeId
+          : null
     }
   ];
   const manifestHash = runtime.shared.crossIdentitySyncDigest(manifest);
@@ -1142,6 +1526,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     ciphertextLocation: "team_memory_representation_chunks",
     aad: chunkAad
   });
+  const encryptedChunkHash = createHash("sha256")
+    .update(Buffer.from(envelope.ciphertext, "base64"))
+    .digest("hex");
   await client.query(
     `insert into team_memory_representation_chunks (
        id, representation_id, share_grant_id, team_id, team_workspace_id,
@@ -1166,15 +1553,44 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       envelope.keyId,
       envelope.keyVersion,
       envelope.ciphertext,
-      createHash("sha256")
-        .update(Buffer.from(envelope.ciphertext, "base64"))
-        .digest("hex"),
+      encryptedChunkHash,
       envelope.nonce,
       envelope.tag,
       json(envelope.wrappedDek),
       json(envelope.aad),
       envelope.createdAt,
       envelope.reencryptedAt
+    ]
+  );
+  await client.query(
+    `insert into team_memory_semantic_items (
+       id, representation_id, share_grant_id, team_id, team_workspace_id,
+       logical_memory_id, pseudonymous_source_id, source_item_index,
+       encrypted_chunk_index, encrypted_chunk_item_index, item_type,
+       occurred_at, source_revision, representation_policy_revision,
+       content_policy_version, classifier_version, content_hash,
+       embedding_state
+     ) values ($1,$2,$3,$4,$5,$6,$7,0,0,0,$8,$9,1,1,1,1,$10,'pending')`,
+    [
+      fixtureUuid(`memory:${memory.key}:semantic-item:0`),
+      memory.representationId,
+      memory.shareGrantId,
+      fixtureTeam.id,
+      workspace.id,
+      memory.logicalMemoryId,
+      runtime.shared.sharedMemoryGrantScopedSourceId(
+        memory.shareGrantId,
+        sourceId
+      ),
+      itemType,
+      memory.capturedAt,
+      runtime.shared.crossIdentitySyncDigest({
+        representationId: memory.representationId,
+        ciphertextHash: encryptedChunkHash,
+        encryptedChunkIndex: 0,
+        encryptedChunkItemIndex: 0,
+        sourceRevision: 1
+      })
     ]
   );
 };
@@ -1276,6 +1692,228 @@ const seedCollaborationFixture = async (repository) => {
   }
 };
 
+const seedConversationSourceFixture = async (client, runtime) => {
+  const privateKey = fixtureConversationSourcePrivateKey();
+  const publicKey = runtime.shared.exportConversationSourceReplicationPublicKey(
+    createPublicKey(privateKey)
+  );
+  for (const source of fixtureConversationSources) {
+    const memory = fixtureMemoryRows.find(
+      (candidate) => candidate.key === source.memoryKey
+    );
+    if (!memory)
+      throw new Error(`Unknown source fixture memory: ${source.memoryKey}`);
+    const owner = fixtureUsers[memory.owner];
+    const originKeyId = source.originKeyId;
+    const sourceCreatedAt = memory.capturedAt;
+    const segmentRows = [];
+    let byteCursor = 0;
+    let itemCursor = 0;
+    let previousContentDigest = null;
+    for (const [segmentIndex, records] of source.segments.entries()) {
+      const bytes = Buffer.from(
+        `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+        "utf8"
+      );
+      const plaintextDigest = createHash("sha256").update(bytes).digest("hex");
+      const manifest = {
+        protocol: runtime.shared.CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+        logicalSourceId: source.logicalSourceId,
+        sourceGenerationId: source.sourceGenerationId,
+        originKeyId,
+        segmentIndex,
+        startByteCursor: byteCursor,
+        endByteCursor: byteCursor + bytes.byteLength,
+        startItemCursor: itemCursor,
+        endItemCursor: itemCursor + records.length,
+        previousContentDigest,
+        plaintextDigest,
+        sourceFormat: "jsonl",
+        adapterVersion: "codex-transcript-v1",
+        sourceCreatedAt,
+        priorGenerationClosure: null
+      };
+      const signedManifest =
+        runtime.shared.signConversationSourceReplicationManifest(
+          manifest,
+          privateKey
+        );
+      const contentDigest =
+        runtime.shared.calculateConversationSourceReplicationContentDigest(
+          signedManifest
+        );
+      const envelope = await runtime.teamProvider.encrypt({
+        plaintext: JSON.stringify({
+          signedManifest,
+          plaintextBytes: bytes.toString("base64url")
+        }),
+        scope: {
+          tenantId: owner.id,
+          objectClass: "conversation_source_segment"
+        },
+        provenance: {
+          rowFamily: "conversation_source_segments",
+          sourceId: `${source.artifactId}:${segmentIndex}`
+        },
+        ciphertextLocation: "conversation_source_segments.encryption_envelope",
+        aad: {
+          ownerUserId: owner.id,
+          logicalSourceId: source.logicalSourceId,
+          sourceGenerationId: source.sourceGenerationId,
+          segmentIndex,
+          contentDigest
+        }
+      });
+      segmentRows.push({
+        id: source.segmentIds[segmentIndex],
+        manifest,
+        signedManifest,
+        contentDigest,
+        envelope,
+        plaintextSize: bytes.byteLength,
+        storedSize: Buffer.byteLength(JSON.stringify(envelope), "utf8"),
+        ciphertextDigest: createHash("sha256")
+          .update(Buffer.from(envelope.ciphertext, "base64"))
+          .digest("hex")
+      });
+      byteCursor = manifest.endByteCursor;
+      itemCursor = manifest.endItemCursor;
+      previousContentDigest = contentDigest;
+    }
+    await client.query(
+      `insert into conversation_source_artifacts (
+         id, owner_user_id, session_id, logical_source_id,
+         source_generation_id, replica_role, source_kind, source_runtime,
+         external_session_id, source_fingerprint, artifact_format,
+         artifact_format_version, source_adapter_version, lifecycle,
+         journal_start_offset, journal_start_line, live_start_offset,
+         live_start_line, provider_cursor_offset, provider_cursor_line,
+         current_source_length, current_journal_sequence, source_created_at,
+         source_modified_at, storage_provider, storage_prefix,
+         origin_deployment_id, origin_device_id, origin_key_id,
+         origin_public_key, redacted_source_label
+       ) values (
+         $1,$2,$3,$4,$5,'origin_local','codex','codex',$6,$7,'jsonl',1,
+         'codex-transcript-v1','active',0,0,0,0,$8,$9,$8,$10,$11,$11,
+         'envelope_db',$12,$13,$14,$15,$16,'Fixture Codex session'
+       )`,
+      [
+        source.artifactId,
+        owner.id,
+        memory.sessionId,
+        source.logicalSourceId,
+        source.sourceGenerationId,
+        `${FIXTURE_VERSION}:${source.key}`,
+        fixtureHash(`conversation-source:${source.key}:fingerprint`),
+        byteCursor,
+        itemCursor,
+        segmentRows.length - 1,
+        sourceCreatedAt,
+        `${FIXTURE_VERSION}/${source.key}`,
+        fixtureInfrastructure.sourceDeploymentId,
+        fixtureUuid(`conversation-source:${source.key}:device`),
+        originKeyId,
+        publicKey
+      ]
+    );
+    for (const row of segmentRows) {
+      await client.query(
+        `insert into conversation_source_segments (
+           id, artifact_id, segment_index, source_start_offset,
+           source_end_offset, source_start_line, source_end_line,
+           plaintext_digest, ciphertext_digest, plaintext_size, stored_size,
+           storage_key, storage_provider, encryption_envelope, signed_manifest,
+           origin_signature, manifest_digest, previous_content_digest,
+           content_digest, sealed_at
+         ) values (
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'envelope_db',$13,$14,
+           $15,$16,$17,$18,$19
+         )`,
+        [
+          row.id,
+          source.artifactId,
+          row.manifest.segmentIndex,
+          row.manifest.startByteCursor,
+          row.manifest.endByteCursor,
+          row.manifest.startItemCursor,
+          row.manifest.endItemCursor,
+          row.manifest.plaintextDigest,
+          row.ciphertextDigest,
+          row.plaintextSize,
+          row.storedSize,
+          `${source.logicalSourceId}/${source.sourceGenerationId}/${row.manifest.segmentIndex}`,
+          json(row.envelope),
+          json(row.manifest),
+          row.signedManifest.signature,
+          runtime.shared.calculateConversationSourceReplicationManifestDigest(
+            row.manifest
+          ),
+          row.manifest.previousContentDigest,
+          row.contentDigest,
+          sourceCreatedAt
+        ]
+      );
+    }
+    const snapshotMaximumOffset =
+      source.mode === "snapshot"
+        ? segmentRows[source.maximumSegmentIndex].manifest.endByteCursor
+        : null;
+    await client.query(
+      `insert into team_conversation_source_grants (
+         id, share_grant_id, artifact_id, logical_source_id, owner_user_id,
+         session_id, team_id, team_workspace_id, mode,
+         maximum_segment_index, maximum_source_offset, version, lifecycle,
+         mutation_id, granted_by_user_id, creator_authority, created_at,
+         updated_at, revoked_at, revoked_by_user_id, revocation_reason
+       ) values (
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$5,
+         'fixture_seed',$14,$14,
+         case when $12='revoked' then $14::timestamptz else null end,
+         case when $12='revoked' then $5::uuid else null end,
+         case when $12='revoked' then 'fixture_revocation' else null end
+       )`,
+      [
+        source.id,
+        memory.shareGrantId,
+        source.artifactId,
+        source.logicalSourceId,
+        owner.id,
+        memory.sessionId,
+        fixtureTeam.id,
+        fixtureWorkspaces[memory.workspace].id,
+        source.mode,
+        source.maximumSegmentIndex,
+        snapshotMaximumOffset,
+        source.lifecycle,
+        source.mutationId,
+        sourceCreatedAt
+      ]
+    );
+    await client.query(
+      `insert into audit_events (
+         id, actor_user_id, owner_user_id, visibility, action, target_table,
+         target_id, metadata, created_at
+       ) values ($1,$2,$2,'personal',$3,'team_conversation_source_grants',$4,$5,$6)`,
+      [
+        fixtureUuid(`conversation-source:${source.key}:audit`),
+        owner.id,
+        source.lifecycle === "revoked"
+          ? "team_conversation_source.revoked"
+          : "team_conversation_source.granted",
+        source.id,
+        json({
+          fixture: FIXTURE_VERSION,
+          teamId: fixtureTeam.id,
+          teamWorkspaceId: fixtureWorkspaces[memory.workspace].id,
+          shareGrantId: memory.shareGrantId,
+          mode: source.mode
+        }),
+        sourceCreatedAt
+      ]
+    );
+  }
+};
+
 export const resetFixture = async (client) => {
   assertFixtureEnvironment();
   const fixtureLogicalMemoryIds = fixtureMemoryRows.map(
@@ -1283,6 +1921,15 @@ export const resetFixture = async (client) => {
   );
   const fixtureReplicaIds = fixtureMemoryRows.map(
     (memory) => memory.remoteReplicaId
+  );
+  const fixtureCuratedAssertionIds = fixtureMemoryRows
+    .map((memory) => memory.curatedAssertionId)
+    .filter(Boolean);
+  const fixtureCuratedTopicIds = fixtureMemoryRows
+    .map((memory) => memory.curatedTopicId)
+    .filter(Boolean);
+  const fixtureCuratedMemories = fixtureMemoryRows.filter(
+    (memory) => memory.representation === "curated_assertions"
   );
   const fixtureUserSessionIds = Object.values(fixtureSessionRows).map(
     (session) => session.id
@@ -1307,6 +1954,18 @@ export const resetFixture = async (client) => {
          from team_session_share_grants
         where team_id = $1 or id = any($2::uuid[])`,
       [fixtureTeam.id, fixtureShareGrantIds]
+    );
+    await client.query(
+      `delete from audit_events
+        where id = any($1::uuid[])
+           or (target_table = 'team_conversation_source_grants'
+             and target_id = any($2::uuid[]))`,
+      [
+        fixtureConversationSources.map((source) =>
+          fixtureUuid(`conversation-source:${source.key}:audit`)
+        ),
+        fixtureConversationSources.map((source) => source.id)
+      ]
     );
     await client.query(
       `create temporary table fixture_reset_shared_artifacts
@@ -1382,8 +2041,31 @@ export const resetFixture = async (client) => {
           ))
           or (source_table = 'shared_source_previews' and source_id in (
             select id from fixture_reset_shared_previews
-          ))`,
-      []
+          ))
+          or (source_table = 'curated_memory_assertions'
+              and source_id = any($1::uuid[]))
+          or (source_table = 'curated_memory_topics'
+              and source_id = any($2::uuid[]))
+          or (source_table = 'curated_memory_sources' and source_id in (
+            select id from curated_memory_sources
+             where assertion_id = any($1::uuid[])
+          ))
+          or (source_table = 'conversation_items'
+              and source_id = any($3::uuid[]))
+          or (source_table = 'memory_events'
+              and source_id = any($4::uuid[]))
+          or (source_table = 'memory_nodes'
+              and source_id = any($5::uuid[]))`,
+      [
+        fixtureCuratedAssertionIds,
+        fixtureCuratedTopicIds,
+        fixtureCuratedMemories.map((memory) => memory.conversationItemId),
+        fixtureCuratedMemories.map((memory) => memory.eventId),
+        fixtureCuratedMemories.flatMap((memory) => [
+          memory.leafNodeId,
+          memory.nodeId
+        ])
+      ]
     );
     await client.query(
       `delete from collaboration_messages
@@ -1540,6 +2222,14 @@ export const resetFixture = async (client) => {
       [fixtureMemoryRows.map((memory) => memory.representationId)]
     );
     await client.query(
+      "delete from curated_memory_assertions where id = any($1::uuid[])",
+      [fixtureCuratedAssertionIds]
+    );
+    await client.query(
+      "delete from curated_memory_topics where id = any($1::uuid[])",
+      [fixtureCuratedTopicIds]
+    );
+    await client.query(
       `
         delete from semantic_memory_rebuild_jobs
         where memory_event_id = any($1::uuid[])
@@ -1575,6 +2265,16 @@ export const resetFixture = async (client) => {
     await client.query(
       `delete from team_session_share_grants
         where id in (select id from fixture_reset_share_grants)`
+    );
+    await client.query(
+      `delete from conversation_source_segments
+       where artifact_id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.artifactId)]
+    );
+    await client.query(
+      `delete from conversation_source_artifacts
+       where id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.artifactId)]
     );
     await client.query(
       `delete from source_owner_representation_consents
@@ -1912,10 +2612,7 @@ export const seedFixture = async (client, runtime) => {
       ]
     );
 
-    const memoryOwnerKeys = [
-      ...new Set(fixtureMemoryRows.map((memory) => memory.owner))
-    ];
-    for (const userKey of memoryOwnerKeys) {
+    for (const userKey of Object.keys(fixtureUsers)) {
       const owner = fixtureUsers[userKey];
       const infrastructure = fixtureOwnerInfrastructure(userKey);
       await client.query(
@@ -2101,7 +2798,9 @@ export const seedFixture = async (client, runtime) => {
           `${FIXTURE_VERSION}:${memory.key}`,
           `${FIXTURE_VERSION}:${memory.key}:item`,
           json({ type: "message", role: "user", content: memory.content }),
-          memory.content,
+          memory.representation === "curated_assertions"
+            ? "[koed encrypted conversation item]"
+            : memory.content,
           memory.sourceHash,
           `${memory.idempotencyKey}:conversation-item`,
           json(metadata),
@@ -2184,7 +2883,9 @@ export const seedFixture = async (client, runtime) => {
           memory.sessionId,
           `${memory.idempotencyKey}:memory-event`,
           memory.sourceHash,
-          json(eventPayload),
+          memory.representation === "curated_assertions"
+            ? json({ contentEncrypted: true })
+            : json(eventPayload),
           Math.ceil(memory.content.length / 4),
           memory.capturedAt,
           fixtureMemoryRows.indexOf(memory) + 1,
@@ -2222,30 +2923,41 @@ export const seedFixture = async (client, runtime) => {
             capture_method,
             idempotency_key,
             source_hash,
+            summary_embedding_revision,
             source_items_json,
             source_event_count,
+            session_id,
             personal_deleted_at,
             personal_deleted_by_user_id,
             personal_deletion_reason
           )
           values (
             $1, $2, $2, 'personal', $3, $4, $5, $6, $7, 'codex', 'transcript',
-            $8, $9, $10, 1,
+            $8, $9, $10, $11, 1, $14,
             ${deletedColumns ? "now()" : "null"},
-            $11,
-            $12
+            $12,
+            $13
           )
         `,
         [
           memory.nodeId,
           owner.id,
-          memory.representation === "lcm_rollups" ? "rollup" : "leaf",
-          memory.representation === "lcm_rollups" ? 1 : 0,
+          memory.representation === "lcm_rollups" ||
+          memory.representation === "curated_assertions"
+            ? "rollup"
+            : "leaf",
+          memory.representation === "lcm_rollups" ||
+          memory.representation === "curated_assertions"
+            ? 1
+            : 0,
           memory.title,
-          memory.content,
+          memory.representation === "curated_assertions"
+            ? "[koed encrypted memory node summary]"
+            : memory.content,
           memory.content,
           `${memory.idempotencyKey}:memory-node`,
           memory.sourceHash,
+          memory.summaryEmbeddingRevision,
           json([
             {
               kind: "memory_event",
@@ -2275,7 +2987,8 @@ export const seedFixture = async (client, runtime) => {
             }
           ]),
           deletedColumns?.personalDeletedByUserId ?? null,
-          deletedColumns?.personalDeletionReason ?? null
+          deletedColumns?.personalDeletionReason ?? null,
+          memory.sessionId
         ]
       );
 
@@ -2293,8 +3006,65 @@ export const seedFixture = async (client, runtime) => {
         [memory.nodeId, memory.eventId, memory.messageId, memory.sourceHash]
       );
 
+      if (memory.representation === "curated_assertions") {
+        await client.query(
+          `insert into memory_nodes (
+             id,owner_user_id,created_by_user_id,visibility,kind,depth,
+             title,summary_text,body_text,source_runtime,capture_method,
+             idempotency_key,source_hash,summary_embedding_revision,
+             source_items_json,source_event_count,session_id
+           ) values (
+             $1,$2,$2,'personal','leaf',0,$3,$4,$4,'codex','transcript',
+             $5,$6,$7,$8::jsonb,1,$9
+           )`,
+          [
+            memory.leafNodeId,
+            owner.id,
+            `${memory.title} Source Leaf`,
+            "[koed encrypted memory node summary]",
+            `${memory.idempotencyKey}:curated-leaf-node`,
+            `${memory.sourceHash}:curated-leaf-node`,
+            fixtureUuid(`memory:${memory.key}:leaf-embedding-revision`),
+            json([
+              {
+                kind: "memory_event",
+                sourceTable: "memory_events",
+                sourceId: memory.eventId,
+                visibility: "personal",
+                actor: "user",
+                createdAt: memory.capturedAt,
+                text: memory.content,
+                payload: eventPayload,
+                position: 0
+              }
+            ]),
+            memory.sessionId
+          ]
+        );
+        await client.query(
+          `insert into memory_node_sources (
+             memory_node_id,memory_event_id,message_id,source_order,source_hash
+           ) values ($1,$2,$3,0,$4)`,
+          [
+            memory.leafNodeId,
+            memory.eventId,
+            memory.messageId,
+            `${memory.sourceHash}:curated-leaf-source`
+          ]
+        );
+        await client.query(
+          `insert into memory_node_children (
+             parent_memory_node_id,child_memory_node_id,child_order
+           ) values ($1,$2,0)`,
+          [memory.nodeId, memory.leafNodeId]
+        );
+        await seedCuratedPersonalMemory(client, runtime, memory);
+      }
+
       await seedSharedMemoryTopology(client, runtime, memory);
     }
+
+    await seedConversationSourceFixture(client, runtime);
 
     await client.query("commit");
   } catch (error) {
@@ -2485,10 +3255,14 @@ const normalizedRows = (table, rows) => {
   }[table];
   const randomized = new Set([
     "ciphertext",
+    "ciphertext_digest",
     "ciphertext_hash",
     "nonce",
     "tag",
-    "wrapped_dek"
+    "wrapped_dek",
+    ...(table === "team_memory_semantic_items"
+      ? ["content_hash", "embedding_input_hash"]
+      : [])
   ]);
   return rows
     .map((row) =>
@@ -2500,9 +3274,12 @@ const normalizedRows = (table, rows) => {
               key,
               table === "sessions" && key === "logical_session_id"
                 ? `<logical-session:${row.external_session_id}>`
-                : randomized.has(key)
+                : table === "conversation_source_segments" &&
+                    key === "encryption_envelope"
                   ? "<encrypted>"
-                  : value
+                  : randomized.has(key)
+                    ? "<encrypted>"
+                    : value
             ])
         )
       )
@@ -2623,8 +3400,40 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
     ],
     [
       "memory_node_sources",
-      "select * from memory_node_sources where memory_node_id = any($1::uuid[])",
-      [fixtureNodeIds]
+      `select source.* from memory_node_sources source
+        join memory_nodes node on node.id=source.memory_node_id
+       where node.source_hash like $1`,
+      [`${FIXTURE_SOURCE_HASH_PREFIX}%`]
+    ],
+    [
+      "memory_node_children",
+      `select child.* from memory_node_children child
+        join memory_nodes parent on parent.id=child.parent_memory_node_id
+       where parent.source_hash like $1`,
+      [`${FIXTURE_SOURCE_HASH_PREFIX}%`]
+    ],
+    [
+      "curated_memory_topics",
+      "select * from curated_memory_topics where id = any($1::uuid[])",
+      [fixtureMemoryRows.map((memory) => memory.curatedTopicId).filter(Boolean)]
+    ],
+    [
+      "curated_memory_assertions",
+      "select * from curated_memory_assertions where id = any($1::uuid[])",
+      [
+        fixtureMemoryRows
+          .map((memory) => memory.curatedAssertionId)
+          .filter(Boolean)
+      ]
+    ],
+    [
+      "curated_memory_sources",
+      "select * from curated_memory_sources where assertion_id = any($1::uuid[])",
+      [
+        fixtureMemoryRows
+          .map((memory) => memory.curatedAssertionId)
+          .filter(Boolean)
+      ]
     ],
     [
       "logical_memories",
@@ -2667,6 +3476,30 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       [fixtureShareGrantIds]
     ],
     [
+      "conversation_source_artifacts",
+      "select * from conversation_source_artifacts where id = any($1::uuid[])",
+      [fixtureConversationSources.map((source) => source.artifactId)]
+    ],
+    [
+      "conversation_source_segments",
+      "select * from conversation_source_segments where artifact_id = any($1::uuid[])",
+      [fixtureConversationSources.map((source) => source.artifactId)]
+    ],
+    [
+      "team_conversation_source_grants",
+      "select * from team_conversation_source_grants where id = any($1::uuid[])",
+      [fixtureConversationSources.map((source) => source.id)]
+    ],
+    [
+      "conversation_source_audit_events",
+      `select actor_user_id, owner_user_id, visibility, action, target_table,
+              target_id, metadata
+         from audit_events
+        where target_table = 'team_conversation_source_grants'
+          and target_id = any($1::uuid[])`,
+      [fixtureConversationSources.map((source) => source.id)]
+    ],
+    [
       "team_memory_representations",
       "select * from team_memory_representations where id = any($1::uuid[])",
       [representationIds]
@@ -2674,6 +3507,11 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
     [
       "team_memory_representation_chunks",
       "select * from team_memory_representation_chunks where representation_id = any($1::uuid[])",
+      [representationIds]
+    ],
+    [
+      "team_memory_semantic_items",
+      "select * from team_memory_semantic_items where representation_id = any($1::uuid[])",
       [representationIds]
     ],
     [
@@ -2722,8 +3560,37 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
             select id from shared_source_artifacts where logical_memory_id = any($2::uuid[])
             union all
             select id from shared_source_previews where logical_memory_id = any($2::uuid[])
-          ))`,
-      [fixtureThreadIds, logicalMemoryIds]
+          ))
+          or (source_table in ('curated_memory_assertions','curated_memory_topics')
+              and source_id = any($3::uuid[]))
+          or (source_table = 'curated_memory_sources' and source_id in (
+            select id from curated_memory_sources where assertion_id = any($4::uuid[])
+          ))
+          or (source_table = 'conversation_items' and source_id = any($5::uuid[]))
+          or (source_table = 'memory_events' and source_id = any($6::uuid[]))
+          or (source_table = 'memory_nodes' and source_id = any($7::uuid[]))`,
+      [
+        fixtureThreadIds,
+        logicalMemoryIds,
+        fixtureMemoryRows
+          .flatMap((memory) => [
+            memory.curatedAssertionId,
+            memory.curatedTopicId
+          ])
+          .filter(Boolean),
+        fixtureMemoryRows
+          .map((memory) => memory.curatedAssertionId)
+          .filter(Boolean),
+        fixtureMemoryRows
+          .filter((memory) => memory.representation === "curated_assertions")
+          .map((memory) => memory.conversationItemId),
+        fixtureMemoryRows
+          .filter((memory) => memory.representation === "curated_assertions")
+          .map((memory) => memory.eventId),
+        fixtureMemoryRows
+          .filter((memory) => memory.representation === "curated_assertions")
+          .flatMap((memory) => [memory.leafNodeId, memory.nodeId])
+      ]
     ]
   ];
   const snapshot = {};
@@ -2750,6 +3617,38 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
     );
   }
   snapshot.decryptedSharedMemory.sort((left, right) =>
+    left.key.localeCompare(right.key)
+  );
+  snapshot.decryptedConversationSources = [];
+  for (const source of fixtureConversationSources) {
+    const rows = await client.query(
+      `select segment_index, encryption_envelope
+         from conversation_source_segments
+        where artifact_id = $1
+        order by segment_index`,
+      [source.artifactId]
+    );
+    const records = [];
+    for (const row of rows.rows) {
+      const envelope =
+        runtime.shared.parseConversationSourceReplicationSegmentEnvelope(
+          JSON.parse(
+            await runtime.shared.decryptEnvelopeToUtf8(
+              runtime.teamProvider,
+              row.encryption_envelope
+            )
+          )
+        );
+      records.push({
+        segmentIndex: row.segment_index,
+        plaintext: Buffer.from(envelope.plaintextBytes, "base64url").toString(
+          "utf8"
+        )
+      });
+    }
+    snapshot.decryptedConversationSources.push({ key: source.key, records });
+  }
+  snapshot.decryptedConversationSources.sort((left, right) =>
     left.key.localeCompare(right.key)
   );
   return canonicalize(snapshot);
@@ -2818,6 +3717,196 @@ export const validateFixture = async (client, runtime) => {
     fixtureMemoryRows.filter((memory) => memory.shareState !== "private")
       .length,
     "Fixture encrypted Team representations"
+  );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from team_conversation_source_grants
+      where id = any($1::uuid[])`,
+    [fixtureConversationSources.map((source) => source.id)],
+    fixtureConversationSources.length,
+    "Fixture independent Conversation Source Access grants"
+  );
+  const curatedMemory = fixtureMemory("carol-cloud-curated-retrieval");
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from curated_memory_assertions assertion
+       join curated_memory_topics topic on topic.id=assertion.topic_id
+      where assertion.id=$1 and assertion.owner_user_id=$2
+        and assertion.visibility='personal' and assertion.status='current'
+        and assertion.suppressed_at is null and assertion.expires_at is null
+        and assertion.assertion_text='[koed encrypted curated memory]'
+        and topic.title='[koed encrypted curated memory]'`,
+    [curatedMemory.curatedAssertionId, fixtureUsers.carol.id],
+    1,
+    "Fixture protected Curated assertion"
+  );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from audit_events
+      where target_table = 'team_conversation_source_grants'
+        and target_id = any($1::uuid[])
+        and action in (
+          'team_conversation_source.granted',
+          'team_conversation_source.revoked'
+        )`,
+    [fixtureConversationSources.map((source) => source.id)],
+    fixtureConversationSources.length,
+    "Fixture Conversation Source audit events"
+  );
+
+  for (const source of fixtureConversationSources) {
+    const memory = fixtureMemoryRows.find(
+      (candidate) => candidate.key === source.memoryKey
+    );
+    const actor = { userId: fixtureUsers.carol.id };
+    const access =
+      await runtime.teamConversationSourceRepository.getTeamConversationSourceAccess(
+        actor,
+        { shareGrantId: memory.shareGrantId }
+      );
+    if (source.lifecycle === "revoked") {
+      if (access !== null) {
+        throw new Error(`${source.key}: revoked exact source was readable`);
+      }
+      continue;
+    }
+    if (!access || access.grant.mode !== source.mode) {
+      throw new Error(
+        `${source.key}: source grant mode or access is incorrect`
+      );
+    }
+    const manifest =
+      await runtime.teamConversationSourceRepository.getTeamConversationSourceManifest(
+        actor,
+        {
+          shareGrantId: memory.shareGrantId,
+          afterSegmentIndex: -1,
+          limit: 100,
+          recordAudit: false
+        }
+      );
+    const expectedSegmentCount =
+      source.mode === "snapshot"
+        ? source.maximumSegmentIndex + 1
+        : source.segments.length;
+    if (!manifest || manifest.segments.length !== expectedSegmentCount) {
+      throw new Error(
+        `${source.key}: snapshot/continuous boundary is incorrect`
+      );
+    }
+    for (const segment of manifest.segments) {
+      const restored =
+        runtime.shared.parseConversationSourceReplicationSegmentEnvelope(
+          JSON.parse(
+            await runtime.shared.decryptEnvelopeToUtf8(
+              runtime.teamProvider,
+              segment.encryptionEnvelope
+            )
+          )
+        );
+      const exact = Buffer.from(restored.plaintextBytes, "base64url").toString(
+        "utf8"
+      );
+      const expected = `${source.segments[segment.segmentIndex]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`;
+      if (exact !== expected) {
+        throw new Error(`${source.key}: encrypted exact source bytes drifted`);
+      }
+    }
+  }
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from curated_memory_sources source
+      where source.assertion_id=$1
+        and source.source_role in ('primary_evidence','supporting_evidence')
+        and (
+          (source.source_type='conversation_item' and source.conversation_item_id=$2)
+          or (source.source_type='memory_event' and source.memory_event_id=$3)
+          or (source.source_type='lcm_summary' and source.lcm_node_id=$4)
+          or (source.source_type='lcm_summary' and source.lcm_node_id=$5)
+        )`,
+    [
+      curatedMemory.curatedAssertionId,
+      curatedMemory.conversationItemId,
+      curatedMemory.eventId,
+      curatedMemory.leafNodeId,
+      curatedMemory.nodeId
+    ],
+    4,
+    "Fixture exact-session Curated direct-source provenance"
+  );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from memory_node_children child
+       join memory_nodes rollup on rollup.id=child.parent_memory_node_id
+       join memory_nodes leaf on leaf.id=child.child_memory_node_id
+      where rollup.id=$1 and leaf.id=$2
+        and rollup.session_id=$3 and leaf.session_id=$3
+        and rollup.kind='rollup' and leaf.kind='leaf'
+        and rollup.source_event_count=1 and leaf.source_event_count=1`,
+    [curatedMemory.nodeId, curatedMemory.leafNodeId, curatedMemory.sessionId],
+    1,
+    "Fixture Curated LCM descendant closure"
+  );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from encrypted_field_payloads
+      where invalidated_at is null and source_column='payload'
+        and (
+          (source_table='curated_memory_assertions' and source_id=$1)
+          or (source_table='curated_memory_topics' and source_id=$2)
+          or (source_table='curated_memory_sources' and source_id in (
+            select id from curated_memory_sources where assertion_id=$1
+          ))
+        )`,
+    [curatedMemory.curatedAssertionId, curatedMemory.curatedTopicId],
+    6,
+    "Fixture Curated Personal encrypted payload coverage"
+  );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from encrypted_field_payloads
+      where invalidated_at is null and visibility='personal'
+        and (
+          (source_table='conversation_items' and source_id=$1 and source_column='raw_text')
+          or (source_table='memory_events' and source_id=$2 and source_column='payload')
+          or (source_table='memory_nodes' and source_id=any($3::uuid[])
+              and source_column='summary_text')
+        )`,
+    [
+      curatedMemory.conversationItemId,
+      curatedMemory.eventId,
+      [curatedMemory.leafNodeId, curatedMemory.nodeId]
+    ],
+    4,
+    "Fixture Curated direct-source encrypted payload coverage"
+  );
+  await assertCount(
+    client,
+    `select count(*)::int as count
+       from conversation_items item
+       join memory_events event on event.id=$2 and event.session_id=item.session_id
+      where item.id=$1
+        and item.raw_text='[koed encrypted conversation item]'
+        and event.payload='{"contentEncrypted":true}'::jsonb
+        and (select count(*) from memory_nodes node
+              where node.id=any($3::uuid[])
+                and node.summary_text='[koed encrypted memory node summary]')=2`,
+    [
+      curatedMemory.conversationItemId,
+      curatedMemory.eventId,
+      [curatedMemory.leafNodeId, curatedMemory.nodeId]
+    ],
+    1,
+    "Fixture Curated direct-source plaintext markers"
   );
   if (process.env.API_TOKEN_PEPPER?.trim()) {
     await assertCount(
@@ -2961,6 +4050,11 @@ export const validateFixture = async (client, runtime) => {
   );
   assertIncludes(
     cloudForAlice,
+    fixtureMemory("carol-cloud-curated-retrieval").shareGrantId,
+    "Cloud Memory Platform for Alice"
+  );
+  assertIncludes(
+    cloudForAlice,
     fixtureMemory("carol-cloud-retained-deletion").shareGrantId,
     "Cloud Memory Platform for Alice"
   );
@@ -3028,7 +4122,8 @@ export const validateFixture = async (client, runtime) => {
   const expectedItemType = {
     memory_events: "user_message",
     lcm_leaves: "lcm_leaf",
-    lcm_rollups: "lcm_rollup"
+    lcm_rollups: "lcm_rollup",
+    curated_assertions: "curated_assertion"
   };
   for (const memory of fixtureMemoryRows.filter(
     (candidate) => candidate.shareState !== "private"
@@ -3057,7 +4152,9 @@ export const validateFixture = async (client, runtime) => {
     const sourceId =
       memory.representation === "memory_events"
         ? memory.eventId
-        : memory.nodeId;
+        : memory.representation === "curated_assertions"
+          ? memory.curatedAssertionId
+          : memory.nodeId;
     const expectedSourceId = runtime.shared.sharedMemoryGrantScopedSourceId(
       memory.shareGrantId,
       sourceId
@@ -3065,16 +4162,24 @@ export const validateFixture = async (client, runtime) => {
     const expectedContent =
       memory.representation === "memory_events"
         ? { text: memory.content }
-        : {
-            sourceIds: [
-              runtime.shared.sharedMemoryGrantScopedSourceId(
-                memory.shareGrantId,
-                memory.eventId
-              )
-            ],
-            summaryText: memory.content,
-            title: memory.title
-          };
+        : memory.representation === "curated_assertions"
+          ? {
+              assertionText: memory.assertionText,
+              sourceCount: 4,
+              tags: memory.tags,
+              topicTitle: memory.title
+            }
+          : {
+              sourceIds: [
+                runtime.shared.sharedMemoryGrantScopedSourceId(
+                  memory.shareGrantId,
+                  memory.eventId
+                )
+              ],
+              summaryText: memory.content,
+              lexicalAnchors: [],
+              title: memory.title
+            };
     assertDeepEqual(
       {
         content: read.items[0].content,
@@ -3094,6 +4199,42 @@ export const validateFixture = async (client, runtime) => {
       },
       `${memory.title} decrypted Shared Memory truth`
     );
+    if (memory.representation === "curated_assertions") {
+      const expanded =
+        await runtime.sharedMemoryRepository.readGrantRepresentation(
+          { userId: fixtureUsers.alice.id },
+          {
+            shareGrantId: memory.shareGrantId,
+            representation: memory.representation,
+            includeExpansionMaterial: true
+          }
+        );
+      const expansionItems = expanded?.items[0]?.content?.expansionItems;
+      assertDeepEqual(
+        Array.isArray(expansionItems)
+          ? expansionItems.map((entry) => entry.itemType)
+          : null,
+        ["user_message", "user_message", "lcm_leaf", "lcm_rollup"],
+        `${memory.title} exact-session Curated expansion types`
+      );
+      assertDeepEqual(
+        Array.isArray(expansionItems)
+          ? expansionItems.map((entry) => entry.sourceId)
+          : null,
+        [
+          memory.conversationItemId,
+          memory.eventId,
+          memory.leafNodeId,
+          memory.nodeId
+        ].map((id) =>
+          runtime.shared.sharedMemoryGrantScopedSourceId(
+            memory.shareGrantId,
+            id
+          )
+        ),
+        `${memory.title} grant-scoped Curated expansion provenance`
+      );
+    }
     assertDeepEqual(
       {
         activeRepresentation: read.grant.activeRepresentation,
@@ -3468,6 +4609,79 @@ export const validateFixture = async (client, runtime) => {
       `${memory.title} encrypted chunk binding`
     );
   }
+  const semanticItems = await client.query(
+    `select representation_id,share_grant_id,team_workspace_id,
+            pseudonymous_source_id,source_item_index,encrypted_chunk_index,
+            encrypted_chunk_item_index,item_type,content_hash,embedding_state,
+            embedding_model,embedding_dimensions,embedding_version,
+            embedding_input_hash,embedded_at,last_error_class
+       from team_memory_semantic_items
+      where representation_id = any($1::uuid[])
+      order by representation_id,source_item_index`,
+    [sharedMemories.map((memory) => memory.representationId)]
+  );
+  if (semanticItems.rows.length !== sharedMemories.length) {
+    throw new Error(
+      "Fixture Team semantic metadata is missing; reset/rematerialize the fixture before semantic recall"
+    );
+  }
+  for (const memory of sharedMemories) {
+    const semantic = semanticItems.rows.find(
+      (row) => row.representation_id === memory.representationId
+    );
+    const canonicalSourceId =
+      memory.representation === "memory_events"
+        ? memory.eventId
+        : memory.representation === "curated_assertions"
+          ? memory.curatedAssertionId
+          : memory.nodeId;
+    assertDeepEqual(
+      {
+        itemIndex: semantic?.source_item_index,
+        chunkIndex: semantic?.encrypted_chunk_index,
+        chunkItemIndex: semantic?.encrypted_chunk_item_index,
+        pseudonymousSourceId: semantic?.pseudonymous_source_id
+      },
+      {
+        itemIndex: 0,
+        chunkIndex: 0,
+        chunkItemIndex: 0,
+        pseudonymousSourceId: runtime.shared.sharedMemoryGrantScopedSourceId(
+          memory.shareGrantId,
+          canonicalSourceId
+        )
+      },
+      `${memory.title} semantic routing metadata`
+    );
+    if (
+      !["pending", "processing", "embedded"].includes(semantic?.embedding_state)
+    ) {
+      throw new Error(
+        `${memory.title} semantic embedding is ${semantic?.embedding_state ?? "missing"}${semantic?.last_error_class ? ` (${semantic.last_error_class})` : ""}`
+      );
+    }
+    if (
+      semantic.embedding_state === "embedded" &&
+      (semantic.embedding_model !== "qwen3-0.6b" ||
+        semantic.embedding_dimensions !== 1024 ||
+        typeof semantic.embedding_version !== "string" ||
+        !/^[a-f0-9]{64}$/.test(semantic.embedding_input_hash ?? "") ||
+        !semantic.embedded_at)
+    ) {
+      throw new Error(
+        `${memory.title} embedded semantic item has incomplete model provenance`
+      );
+    }
+    if (
+      semantic?.content_hash ===
+        runtime.shared.crossIdentitySyncDigest([memory.content]) ||
+      JSON.stringify(semantic).includes(canonicalSourceId)
+    ) {
+      throw new Error(
+        `${memory.title} semantic routing metadata exposes source-derived identity`
+      );
+    }
+  }
   const rawStorage = await client.query(
     `select concat_ws(E'\n',
        coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
@@ -3494,14 +4708,35 @@ export const validateFixture = async (client, runtime) => {
        coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
          from (select * from team_memory_representations where share_grant_id = any($5::uuid[])) row_data), ''),
        coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
-         from (select * from team_memory_representation_chunks where share_grant_id = any($5::uuid[])) row_data), '')
+         from (select * from team_memory_representation_chunks where share_grant_id = any($5::uuid[])) row_data), ''),
+       coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
+         from (select * from team_memory_semantic_items where share_grant_id = any($5::uuid[])) row_data), ''),
+       coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
+         from (select * from curated_memory_assertions where id = any($6::uuid[])) row_data), ''),
+       coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
+         from (select * from curated_memory_topics where id = any($7::uuid[])) row_data), ''),
+       coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
+         from (select * from curated_memory_sources where assertion_id = any($6::uuid[])) row_data), ''),
+       coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
+         from (select * from encrypted_field_payloads
+                where source_table like 'curated_memory_%'
+                  and (source_id = any($6::uuid[]) or source_id = any($7::uuid[])
+                       or source_id in (select id from curated_memory_sources
+                                        where assertion_id = any($6::uuid[])))) row_data), ''),
+       coalesce((select string_agg(row_to_json(row_data)::text, E'\n')
+         from (select * from conversation_source_segments where artifact_id = any($8::uuid[])) row_data), '')
      ) as raw`,
     [
       fixtureThreadIds,
       fixtureThreadIds,
       fixtureMessages.rows.map((row) => row.id),
       sharedMemories.map((memory) => memory.logicalMemoryId),
-      sharedMemories.map((memory) => memory.shareGrantId)
+      sharedMemories.map((memory) => memory.shareGrantId),
+      fixtureMemoryRows
+        .map((memory) => memory.curatedAssertionId)
+        .filter(Boolean),
+      fixtureMemoryRows.map((memory) => memory.curatedTopicId).filter(Boolean),
+      fixtureConversationSources.map((source) => source.artifactId)
     ]
   );
   const rawText = String(rawStorage.rows[0]?.raw ?? "");
@@ -3512,7 +4747,16 @@ export const validateFixture = async (client, runtime) => {
       thread.key,
       ...thread.messages.map(([, body]) => body)
     ]),
-    ...fixtureMemoryRows.flatMap((memory) => [memory.title, memory.content])
+    ...fixtureMemoryRows.flatMap((memory) => [
+      memory.title,
+      memory.content,
+      memory.assertionText
+    ]),
+    ...fixtureConversationSources.flatMap((source) =>
+      source.segments.flatMap((records) =>
+        records.map((record) => JSON.stringify(record))
+      )
+    )
   ].filter(Boolean);
   for (const value of sensitiveValues) {
     if (rawText.includes(value)) {
@@ -3563,6 +4807,7 @@ export const validateFixture = async (client, runtime) => {
       "Personal self-chat/channel and every Team thread kind are present",
       "DM, group-DM, and personal-thread direct reads enforce participant isolation",
       "Shared Memory representations decrypt through the authorized production path",
+      "Independent Conversation Source Access grants enforce encrypted exact-read, snapshot, continuous, revocation, and audit boundaries",
       "Companion discussion history and unread state are deterministic",
       "Collaboration names, topics, bodies, metadata, and provenance have exact encrypted payload coverage",
       "Shared source artifacts, previews, chunks, bindings, and outbox surfaces contain no sensitive plaintext"

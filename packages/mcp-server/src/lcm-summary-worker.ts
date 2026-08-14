@@ -5,8 +5,13 @@ import path from "node:path";
 import {
   chunkTextForModel,
   countTokensForModel,
+  LCM_LEXICAL_ANCHOR_MAX_COUNT,
+  LCM_LEXICAL_ANCHOR_MAX_LENGTH,
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-  parseStructuredLcmSummary,
+  lcmLexicalAnchorGroundingPayloads,
+  parseStructuredLcmSummaryCandidate,
+  validateLcmLexicalAnchors,
+  type RejectedLcmLexicalAnchor,
   type StructuredLcmSummary
 } from "@koed/core";
 import {
@@ -31,9 +36,11 @@ import {
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
+const lexicalAnchorGroundingPayloads = Symbol("lexicalAnchorGroundingPayloads");
 export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   parseStructuredLcmSummary,
+  validateLcmLexicalAnchors,
   type StructuredLcmSummary
 } from "@koed/core";
 
@@ -63,6 +70,7 @@ interface LcmSourceItem {
   text?: string;
   payload?: unknown;
   position?: number;
+  [lexicalAnchorGroundingPayloads]?: string[];
 }
 
 export interface LcmSummaryNode {
@@ -108,6 +116,7 @@ type VersionedLcmSummaryPromptResult = LcmSummaryPromptResult & {
 interface BuiltLcmSummaryPrompt {
   text: string;
   version: string;
+  exactSourcePayloads: string[];
 }
 
 export type CodexLcmSummaryRunner = (
@@ -295,9 +304,6 @@ export const acquireLocalSummaryLock = (
   }
 };
 
-const normalizeForPrompt = (text: string): string =>
-  text.replace(/\s+/g, " ").trim();
-
 const itemAnchor = (item: LcmSourceItem): string =>
   [
     item.kind,
@@ -319,17 +325,108 @@ const itemText = (item: LcmSourceItem): string => {
       : item.actor
         ? item.actor
         : (item.kind ?? "source");
-  return `- [${itemAnchor(item)}] ${label}: ${normalizeForPrompt(
-    item.text ?? ""
-  )}`;
+  return `- [${itemAnchor(item)}] ${label}: ${item.text ?? ""}`;
 };
 
 const lcmSummaryJsonShape = () => ({
   schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   title: "Short human-readable conversation title.",
   summary_text:
-    "Complete compact semantic summary for retrieval, parent summaries, and drill-down."
+    "Complete compact semantic summary for retrieval, parent summaries, and drill-down.",
+  lexical_anchors: [
+    "A small set of exact, high-value source substrings selected by the LLM."
+  ]
 });
+
+const objectPayload = (payload: unknown): Record<string, unknown> =>
+  payload && typeof payload === "object" && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
+
+const itemGroundingPayloads = (item: LcmSourceItem): string[] => {
+  const preserved = item[lexicalAnchorGroundingPayloads];
+  if (preserved) {
+    return preserved;
+  }
+  return lcmLexicalAnchorGroundingPayloads([item]);
+};
+
+const exactSourcePayloads = (node: LcmSummaryNode): string[] =>
+  node.sourceItems.flatMap(itemGroundingPayloads);
+
+const lexicalAnchorRepairPrompt = (
+  sourcePayloads: string[],
+  rejected: RejectedLcmLexicalAnchor[],
+  config: LcmSummaryWorkerConfig
+): string => {
+  const rejectedCounts = rejected.reduce<Record<string, number>>(
+    (counts, item) => ({
+      ...counts,
+      [item.reason]: (counts[item.reason] ?? 0) + 1
+    }),
+    {}
+  );
+  const base = [
+    "Lexical anchor grounding repair. Return JSON only.",
+    'Return exactly one object shaped as {"lexical_anchors":["..."]}.',
+    "The valid primary summary and its valid anchors are retained separately. Supply replacements only; an empty list is valid.",
+    `Choose replacements yourself. Each must be an exact contiguous case-sensitive substring of one SOURCE payload. Maximum ${LCM_LEXICAL_ANCHOR_MAX_COUNT} exact-deduplicated anchors of ${LCM_LEXICAL_ANCHOR_MAX_LENGTH} Unicode code points each.`,
+    `Rejected anchor counts by reason: ${JSON.stringify(rejectedCounts)}.`,
+    "Only choose from the exact complete SOURCE EXCERPTS below; do not join text across excerpt boundaries."
+  ];
+  const promptLines = [...base];
+  let excerptCount = 0;
+
+  for (const payload of sourcePayloads) {
+    const chunks = chunkTextForModel(payload, {
+      model: config.model,
+      maxTokens: Math.max(1, Math.floor(config.maxPromptTokens / 3))
+    });
+    for (const chunk of chunks) {
+      const candidate = [
+        ...promptLines,
+        `SOURCE EXCERPT ${excerptCount + 1}:`,
+        chunk,
+        `END SOURCE EXCERPT ${excerptCount + 1}`
+      ];
+      if (promptTokens(candidate.join("\n"), config) > config.maxPromptTokens) {
+        break;
+      }
+      promptLines.splice(
+        promptLines.length,
+        0,
+        ...candidate.slice(promptLines.length)
+      );
+      excerptCount += 1;
+    }
+  }
+
+  const prompt = promptLines.join("\n");
+  if (promptTokens(prompt, config) > config.maxPromptTokens) {
+    throw new Error(
+      `LCM lexical-anchor repair instructions cannot fit within ${config.maxPromptTokens} prompt tokens`
+    );
+  }
+  return prompt;
+};
+
+const parseLexicalAnchorRepair = (text: string): string[] => {
+  const parsed: unknown = JSON.parse(
+    text.trim().replace(/^```(?:json)?\s*|\s*```$/gi, "")
+  );
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("LCM lexical-anchor repair must be a JSON object");
+  }
+  const anchors = (parsed as Record<string, unknown>).lexical_anchors;
+  if (
+    !Array.isArray(anchors) ||
+    anchors.length > LCM_LEXICAL_ANCHOR_MAX_COUNT ||
+    anchors.some((anchor) => typeof anchor !== "string")
+  ) {
+    throw new Error("LCM lexical-anchor repair anchors are invalid");
+  }
+  return anchors as string[];
+};
 
 const buildVersionedLcmSummaryPrompt = (
   node: LcmSummaryNode,
@@ -360,6 +457,7 @@ const buildVersionedLcmSummaryPrompt = (
   const loadedPrompt = loadPrompt(promptId, { env });
   return {
     version: loadedPrompt.version,
+    exactSourcePayloads: exactSourcePayloads(node),
     text: [
       loadedPrompt.body,
       "",
@@ -388,11 +486,6 @@ export const buildLcmSummaryPrompt = (
 const promptTokens = (prompt: string, config: LcmSummaryWorkerConfig): number =>
   countTokensForModel(prompt, { model: config.model }).tokens;
 
-const objectPayload = (payload: unknown): Record<string, unknown> =>
-  payload && typeof payload === "object" && !Array.isArray(payload)
-    ? (payload as Record<string, unknown>)
-    : {};
-
 const chunkSourceItems = (
   node: LcmSummaryNode,
   config: LcmSummaryWorkerConfig,
@@ -400,6 +493,7 @@ const chunkSourceItems = (
 ): LcmSourceItem[] =>
   node.sourceItems.flatMap((item) => {
     const text = item.text ?? "";
+    const groundingPayloads = itemGroundingPayloads(item);
     const chunks = chunkTextForModel(text, {
       model: config.model,
       maxTokens: itemTextTokenBudget
@@ -410,6 +504,12 @@ const chunkSourceItems = (
     return chunks.map((chunk, index) => ({
       ...item,
       text: chunk,
+      [lexicalAnchorGroundingPayloads]:
+        item.kind === "lcm_child"
+          ? groundingPayloads.filter((payload) =>
+              chunk.includes(JSON.stringify(payload).slice(1, -1))
+            )
+          : [chunk],
       payload: {
         ...objectPayload(item.payload),
         sourceChunkIndex: index,
@@ -511,6 +611,7 @@ const buildSummaryPrompts = (
 ): Array<{
   prompt: string;
   promptVersion: string;
+  exactSourcePayloads: string[];
   mode: "summary" | "partial" | "reduce";
 }> => {
   const prompt = buildVersionedLcmSummaryPrompt(node, "summary", config.env);
@@ -519,6 +620,7 @@ const buildSummaryPrompts = (
       {
         prompt: prompt.text,
         promptVersion: prompt.version,
+        exactSourcePayloads: prompt.exactSourcePayloads,
         mode: "summary"
       }
     ];
@@ -526,6 +628,7 @@ const buildSummaryPrompts = (
   return buildTokenBoundedPrompts(node, config, "partial").map((bounded) => ({
     prompt: bounded.text,
     promptVersion: bounded.version,
+    exactSourcePayloads: bounded.exactSourcePayloads,
     mode: "partial"
   }));
 };
@@ -555,15 +658,82 @@ export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
 const runPromptWithRetries = async (
   prompt: string,
   promptVersion: string,
+  sourcePayloads: string[],
   config: LcmSummaryWorkerConfig,
   runner: CodexLcmSummaryRunner,
-  promptResults?: VersionedLcmSummaryPromptResult[]
+  promptResults?: VersionedLcmSummaryPromptResult[],
+  onRepairCall?: (prompt: string) => void
 ): Promise<VersionedLcmSummaryPromptResult> => {
   let lastError: unknown;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
       const result = await runner(prompt, config, config.timeoutMs * attempt);
-      const structuredSummary = parseStructuredLcmSummary(result.text);
+      const candidate = parseStructuredLcmSummaryCandidate(result.text);
+      const validation = validateLcmLexicalAnchors(
+        candidate.lexical_anchors,
+        sourcePayloads
+      );
+      let structuredSummary: StructuredLcmSummary = {
+        ...candidate,
+        lexical_anchors: validation.valid
+      };
+
+      if (validation.rejected.length > 0) {
+        const repairPrompt = lexicalAnchorRepairPrompt(
+          sourcePayloads,
+          validation.rejected,
+          config
+        );
+        onRepairCall?.(repairPrompt);
+        try {
+          const repairResult = await runner(
+            repairPrompt,
+            config,
+            config.timeoutMs
+          );
+          const repairedAnchors = parseLexicalAnchorRepair(repairResult.text);
+          const repairedValidation = validateLcmLexicalAnchors(
+            repairedAnchors,
+            sourcePayloads
+          );
+          structuredSummary = {
+            ...structuredSummary,
+            lexical_anchors: validateLcmLexicalAnchors(
+              [
+                ...structuredSummary.lexical_anchors,
+                ...repairedValidation.valid
+              ],
+              sourcePayloads
+            ).valid
+          };
+          promptResults?.push({
+            ...repairResult,
+            promptVersion,
+            text: structuredSummary.summary_text,
+            structuredSummary,
+            attemptIndex: 1,
+            status: "succeeded"
+          });
+        } catch (repairError) {
+          if (
+            repairError instanceof CodexAppServerTurnError &&
+            repairError.tokenUsage?.last
+          ) {
+            promptResults?.push({
+              text: "",
+              model: repairError.model,
+              promptVersion,
+              tokenUsage: repairError.tokenUsage,
+              threadId: repairError.threadId,
+              turnId: repairError.turnId,
+              rawEvents: repairError.rawEvents,
+              attemptIndex: 1,
+              status: "failed",
+              errorMessage: repairError.message
+            });
+          }
+        }
+      }
       const succeeded = {
         ...result,
         promptVersion,
@@ -780,9 +950,16 @@ const reduceShardSummaries = async (
     const result = await runPromptWithRetries(
       prompt.text,
       prompt.version,
+      prompt.exactSourcePayloads,
       config,
       runner,
-      promptResults
+      promptResults,
+      (repairPrompt) => {
+        const tokens = promptTokens(repairPrompt, config);
+        stats.promptTokenSum += tokens;
+        stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
+        stats.promptCallCount += 1;
+      }
     );
     nextSummaries.push(result);
   }
@@ -837,9 +1014,16 @@ const summarizeNode = async (
       const result = await runPromptWithRetries(
         entry.prompt,
         entry.promptVersion,
+        entry.exactSourcePayloads,
         config,
         runner,
-        promptResults
+        promptResults,
+        (repairPrompt) => {
+          const tokens = promptTokens(repairPrompt, config);
+          stats.promptTokenSum += tokens;
+          stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
+          stats.promptCallCount += 1;
+        }
       );
       shardSummaries.push(result);
     }

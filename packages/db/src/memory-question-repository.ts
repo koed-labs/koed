@@ -29,6 +29,7 @@ export interface MemoryQuestionRepository {
       query: string;
       origin?: MemoryQuestionOrigin;
       retrievalScope?: MemoryQuestionRetrievalScope;
+      teamWorkspaceId?: string;
       searchDomain: MemoryQuestionSearchDomain;
       projectId?: string;
       projectName?: string;
@@ -77,6 +78,7 @@ type MemoryQuestionShellRow = {
   visibility: Visibility;
   origin: MemoryQuestionOrigin;
   retrieval_scope: MemoryQuestionRetrievalScope;
+  team_workspace_id: string | null;
   search_domain: MemoryQuestionSearchDomain;
   project_id: string | null;
   project_name: string | null;
@@ -132,29 +134,7 @@ const isEncryptedMemoryQuestionArrayMarker = (value: unknown): boolean =>
   value.length === 1 &&
   isEncryptedMemoryQuestionJsonMarker(value[0]);
 
-const managedCloudPlaintextMemoryPayloadsDisabled = (): boolean => {
-  const profile =
-    process.env.KOED_DEPLOYMENT_PROFILE?.trim().toLowerCase() ?? "";
-  const releaseStage =
-    process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE?.trim().toLowerCase() ?? "";
-  if (
-    [
-      "koed_managed_cloud",
-      "koed-managed-cloud",
-      "cloud",
-      "team_self_hosted",
-      "team-self-hosted",
-      "private_vps",
-      "private-vps"
-    ].includes(profile)
-  ) {
-    return true;
-  }
-  return (
-    ["koed_managed_cloud", "koed-managed-cloud", "cloud"].includes(profile) &&
-    ["paid", "production"].includes(releaseStage)
-  );
-};
+const memoryQuestionSensitiveFieldsRequireEncryption = (): boolean => true;
 
 type MemoryQuestionEncryptedColumn =
   | "query"
@@ -177,6 +157,7 @@ const mapMemoryQuestionShell = (
   visibility: row.visibility,
   origin: row.origin,
   retrievalScope: row.retrieval_scope,
+  teamWorkspaceId: row.team_workspace_id,
   searchDomain: row.search_domain,
   projectId: row.project_id,
   projectName: row.project_name,
@@ -380,7 +361,7 @@ export const createMemoryQuestionRepository = (
   return {
     async createFinalMemoryQuestion(actor, input) {
       const suppressPlaintextPayload =
-        managedCloudPlaintextMemoryPayloadsDisabled();
+        memoryQuestionSensitiveFieldsRequireEncryption();
       if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
         throw new Error(
           "Envelope encryption provider is required when plaintext Memory Question storage is disabled"
@@ -396,6 +377,7 @@ export const createMemoryQuestionRepository = (
           visibility,
           origin,
           retrieval_scope,
+          team_workspace_id,
           search_domain,
           project_id,
           project_name,
@@ -417,13 +399,13 @@ export const createMemoryQuestionRepository = (
           attempt_count
         )
         values (
-          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-          $13::memory_question_status, $14, $15, $16::jsonb, $17::jsonb,
-          $18::jsonb, $19::jsonb, $20::jsonb, now(), $21
+          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+          $14::memory_question_status, $15, $16, $17::jsonb, $18::jsonb,
+          $19::jsonb, $20::jsonb, $21::jsonb, now(), $22
         )
         on conflict (owner_user_id, idempotency_key) do nothing
         returning
-          id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
+          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
@@ -434,6 +416,7 @@ export const createMemoryQuestionRepository = (
             actor.userId,
             input.origin ?? "mcp_memory_answer",
             input.retrievalScope ?? "personal",
+            input.teamWorkspaceId ?? null,
             input.searchDomain,
             input.projectId ?? null,
             input.projectName ?? null,
@@ -502,7 +485,7 @@ export const createMemoryQuestionRepository = (
               `
                 select
                   id, owner_user_id, visibility, origin, retrieval_scope,
-                  search_domain, project_id, project_name, project_path,
+                  team_workspace_id, search_domain, project_id, project_name, project_path,
                   session_id, thread_id, thread_name, query, answer_markdown,
                   error_message, evidence, citations, retrieval,
                   local_memory_worker, response, status, created_at,
@@ -552,7 +535,7 @@ export const createMemoryQuestionRepository = (
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
       const offset = Math.max(input.offset ?? 0, 0);
       const suppressPlaintextPayload =
-        managedCloudPlaintextMemoryPayloadsDisabled();
+        memoryQuestionSensitiveFieldsRequireEncryption();
       const searchText = input.query?.trim() || null;
       const targetMatchCount = offset + limit;
       const selectQuestions = async (
@@ -563,7 +546,7 @@ export const createMemoryQuestionRepository = (
         await pool.query<MemoryQuestionShellRow>(
           `
           select
-            id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
+            id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
             project_id, project_name, project_path, session_id, thread_id,
             thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
             error_message, status, created_at, updated_at, answered_at,
@@ -638,7 +621,7 @@ export const createMemoryQuestionRepository = (
       const result = await pool.query<MemoryQuestionShellRow>(
         `
         select
-          id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
+          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
           error_message, status, created_at, updated_at, answered_at,
@@ -684,7 +667,7 @@ export const createMemoryQuestionRepository = (
       const result = await pool.query<MemoryQuestionDetailRow>(
         `
         select
-          id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
+          id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,

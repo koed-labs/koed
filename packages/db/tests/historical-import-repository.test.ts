@@ -14,11 +14,13 @@ import {
 } from "@koed/shared";
 import {
   createDbPool,
+  createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   runDbMigrations,
   validateHistoricalImportTransition,
   type ConversationItemInput,
   type ConversationSourceArtifactRecord,
+  type EmbeddingCapacityProfileInput,
   type MemorySourceRepository
 } from "../src/index.js";
 
@@ -1153,6 +1155,357 @@ describeDb("journal-backed historical import repository", () => {
       discoveredRecordCount: 2,
       importedRecordCount: 1,
       scannedByteCount: fixture.frontier
+    });
+  });
+
+  it("reports historical pending cost and a capacity-derived ETA range", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const capacity = createEmbeddingCapacityRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-eta-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const run = await repo.createHistoricalImportRun({ userId: owner.id });
+    const source = await repo.createHistoricalImportSource(
+      { userId: owner.id },
+      { runId: run.id, artifactId: fixture.artifactId, aiClient: "codex" }
+    );
+    await repo.transitionHistoricalImportRun(
+      { userId: owner.id },
+      { runId: run.id, expectedState: "discovered", state: "eligible" }
+    );
+    await repo.transitionHistoricalImportRun(
+      { userId: owner.id },
+      { runId: run.id, expectedState: "eligible", state: "queued" }
+    );
+    await repo.transitionHistoricalImportSource(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        expectedState: "discovered",
+        state: "eligible"
+      }
+    );
+    await repo.transitionHistoricalImportSource(
+      { userId: owner.id },
+      { sourceId: source!.id, expectedState: "eligible", state: "queued" }
+    );
+    const profileKey = createHash("sha256").update(randomUUID()).digest("hex");
+    const capacityProfile: EmbeddingCapacityProfileInput = {
+      poolKey: "test-pool",
+      profileKey,
+      profileVersion: "koed-embedding-capacity-v1",
+      capacityContractRevision: "embedding-capacity-v1",
+      state: "usable",
+      calibrationMode: "refined",
+      modelKey: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      embeddingDimensions: 1024,
+      tokenizer: "qwen3",
+      inputTransform: "query-document-v1",
+      pooling: "last-token",
+      normalization: "l2",
+      runtimeKind: "llama-server",
+      runtimeVersion: "test",
+      backendClass: "cpu",
+      hardwareFingerprint: "b".repeat(64),
+      settingsFingerprint: "c".repeat(64),
+      runtimeSettings: {},
+      sampleMeasurements: [],
+      testedConcurrency: 1,
+      sampleCount: 1,
+      measuredTokenCount: 1_000,
+      durationMs: 1_000,
+      measuredTokensPerSecond: 1_000,
+      p50LatencyMs: 100,
+      p95LatencyMs: 100
+    };
+    await capacity.invalidateProfilesExcept(
+      "test-pool",
+      profileKey,
+      "test_identity"
+    );
+    await capacity.replaceActiveProfile(capacityProfile, "test_replaced");
+    const incompatibleProfileKey = createHash("sha256")
+      .update(randomUUID())
+      .digest("hex");
+    await capacity.replaceActiveProfile(
+      {
+        ...capacityProfile,
+        poolKey: "incompatible-pool",
+        profileKey: incompatibleProfileKey,
+        modelKey: "incompatible-model",
+        embeddingDimensions: 384,
+        measuredTokensPerSecond: 1_000_000
+      },
+      "incompatible_test_profile"
+    );
+
+    const imported = await repo.ingestHistoricalImportBatch(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        expectedSourceOffset: 0,
+        sourceOffset: fixture.frontier,
+        sourceLine: 3,
+        segmentIndex: fixture.segmentIndex,
+        lastVerifiedDigest: fixture.segmentDigest,
+        items: [
+          sourceItem({
+            externalSessionId: fixture.externalSessionId,
+            rawText: "Embedded historical event",
+            byteOffset: 64
+          }),
+          sourceItem({
+            externalSessionId: fixture.externalSessionId,
+            rawText: "Pending historical event ".repeat(500),
+            byteOffset: 96
+          })
+        ]
+      }
+    );
+    expect(imported.items).toHaveLength(2);
+    const itemRows = await pool.query<{ id: string }>(
+      `select item.id
+         from conversation_items item
+         join conversation_item_observations observation
+           on observation.conversation_item_id = item.id
+        where item.session_id = $1
+          and observation.source_transport = 'historical_import'
+        order by item.created_at asc, item.id asc`,
+      [fixture.sessionId]
+    );
+    expect(itemRows.rows).toHaveLength(2);
+    const embeddedEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        sessionId: fixture.sessionId,
+        projectId: "historical-capacity",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_turn",
+        visibility: "personal",
+        content: "Embedded historical event",
+        sourceEventTime: "2026-01-01T00:00:00.000Z",
+        sourceHash: digest(`historical-event:${fixture.externalSessionId}:1`),
+        metadata: { rawConversationItemId: itemRows.rows[0]!.id }
+      }
+    );
+    const pendingEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        sessionId: fixture.sessionId,
+        projectId: "historical-capacity",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_turn",
+        visibility: "personal",
+        content: "Pending historical event ".repeat(500),
+        sourceEventTime: "2026-01-02T00:00:00.000Z",
+        sourceHash: digest(`historical-event:${fixture.externalSessionId}:2`),
+        metadata: { rawConversationItemId: itemRows.rows[1]!.id }
+      }
+    );
+    const embeddable = await repo.getEmbeddableSource(
+      "memory_event",
+      embeddedEvent.id
+    );
+    expect(embeddable).not.toBeNull();
+    await repo.replaceSourceEmbeddings({
+      source: embeddable!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2",
+      chunks: [
+        {
+          vector: Array<number>(1024).fill(0.01),
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: 3_750,
+          sourceText: "Embedded historical event"
+        }
+      ]
+    });
+    if (embeddedEvent.tokenCount == null || pendingEvent.tokenCount == null) {
+      throw new Error("Expected historical Memory Event token estimates");
+    }
+    const eligibleEstimatedTokens =
+      embeddedEvent.tokenCount + pendingEvent.tokenCount;
+    const pendingEstimatedTokens = pendingEvent.tokenCount;
+
+    const initialStatus = await repo.getHistoricalImportSource(
+      { userId: owner.id },
+      source!.id
+    );
+    expect(initialStatus).toMatchObject({
+      embeddingEligibleEstimatedTokenCount: eligibleEstimatedTokens,
+      embeddedMeasuredTokenCount: 3_750,
+      pendingEmbeddingEstimatedTokenCount: pendingEstimatedTokens,
+      embeddingQueueAheadEstimatedTokenCount: 0,
+      embeddingEtaLowerSeconds: Math.ceil(pendingEstimatedTokens / 1_000),
+      embeddingEtaUpperSeconds: Math.ceil(
+        pendingEstimatedTokens / (1_000 * 0.6)
+      ),
+      embeddingEtaConfidence: "medium"
+    });
+
+    const liveFixture = await createJournalFixture(repo, {
+      ownerId: owner.id
+    });
+    const liveEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        sessionId: liveFixture.sessionId,
+        projectId: "live-capacity",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_turn",
+        visibility: "personal",
+        content: "Higher priority live event ".repeat(100),
+        sourceHash: digest(`live-event:${liveFixture.externalSessionId}`),
+        metadata: {}
+      }
+    );
+    if (liveEvent.tokenCount == null) {
+      throw new Error("Expected live Memory Event token estimate");
+    }
+    const liveEventTokenCount = liveEvent.tokenCount;
+    const queuedStatus = await repo.getHistoricalImportSource(
+      { userId: owner.id },
+      source!.id
+    );
+    expect(queuedStatus?.embeddingQueueAheadEstimatedTokenCount).toBe(
+      liveEventTokenCount
+    );
+    expect(queuedStatus?.embeddingEtaLowerSeconds).toBe(
+      Math.ceil((pendingEstimatedTokens + liveEventTokenCount) / 1_000)
+    );
+
+    const liveEmbeddable = await repo.getEmbeddableSource(
+      "memory_event",
+      liveEvent.id
+    );
+    await repo.replaceSourceEmbeddings({
+      source: liveEmbeddable!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2",
+      chunks: [
+        {
+          vector: Array<number>(1024).fill(0.01),
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: liveEventTokenCount,
+          sourceText: "Higher priority live event"
+        }
+      ]
+    });
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({
+      embeddingQueueAheadEstimatedTokenCount: 0,
+      embeddingEtaLowerSeconds: Math.ceil(pendingEstimatedTokens / 1_000)
+    });
+
+    await pool.query(
+      "delete from embedding_capacity_profiles where profile_key = $1",
+      [profileKey]
+    );
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({
+      embeddingQueueAheadEstimatedTokenCount: 0,
+      embeddingEtaConfidence: "conservative"
+    });
+
+    const futureLiveEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        sessionId: fixture.sessionId,
+        projectId: "historical-capacity",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_turn",
+        visibility: "personal",
+        content: "Later live event in the same captured session",
+        sourceEventTime: "2099-01-01T00:00:00.000Z",
+        sourceHash: digest(`future-live:${fixture.externalSessionId}`),
+        metadata: {}
+      }
+    );
+    const futureLiveEmbeddable = await repo.getEmbeddableSource(
+      "memory_event",
+      futureLiveEvent.id
+    );
+    await repo.replaceSourceEmbeddings({
+      source: futureLiveEmbeddable!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2",
+      chunks: [
+        {
+          vector: Array<number>(1024).fill(0.01),
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: 9,
+          sourceText: "Later live event in the same captured session"
+        }
+      ]
+    });
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({
+      oldestEmbeddedSourceTime: "2026-01-01T00:00:00.000Z",
+      newestEmbeddedSourceTime: "2026-01-01T00:00:00.000Z"
+    });
+
+    const pendingEmbeddable = await repo.getEmbeddableSource(
+      "memory_event",
+      pendingEvent.id
+    );
+    await repo.replaceSourceEmbeddings({
+      source: pendingEmbeddable!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2",
+      chunks: [
+        {
+          vector: Array<number>(1024).fill(0.01),
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: pendingEstimatedTokens,
+          sourceText: "Pending historical event"
+        }
+      ]
+    });
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({
+      pendingEmbeddingEstimatedTokenCount: 0,
+      embeddingEtaLowerSeconds: 0,
+      embeddingEtaUpperSeconds: 0,
+      fullyEmbedded: true,
+      newestEmbeddedSourceTime: "2026-01-02T00:00:00.000Z"
     });
   });
 

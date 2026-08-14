@@ -1,5 +1,5 @@
 {
-  "id": "db1ca8cb-445f-4075-9dfc-50dcac7547ba",
+  "id": "a7cfa348-1e70-4288-997e-00a5f9eeba4e",
   "prevId": "2bc8d282-bc9c-47c8-b2ca-c809d554af67",
   "version": "7",
   "dialect": "postgresql",
@@ -8522,6 +8522,467 @@
       },
       "isRLSEnabled": false
     },
+    "public.embedding_capacity_profiles": {
+      "name": "embedding_capacity_profiles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "pool_key": {
+          "name": "pool_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "profile_key": {
+          "name": "profile_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "profile_version": {
+          "name": "profile_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "capacity_contract_revision": {
+          "name": "capacity_contract_revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "calibration_mode": {
+          "name": "calibration_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_key": {
+          "name": "model_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_artifact_hash": {
+          "name": "model_artifact_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embedding_dimensions": {
+          "name": "embedding_dimensions",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tokenizer": {
+          "name": "tokenizer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_transform": {
+          "name": "input_transform",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pooling": {
+          "name": "pooling",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "normalization": {
+          "name": "normalization",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "runtime_kind": {
+          "name": "runtime_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "runtime_version": {
+          "name": "runtime_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "backend_class": {
+          "name": "backend_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hardware_fingerprint": {
+          "name": "hardware_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "settings_fingerprint": {
+          "name": "settings_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "runtime_settings": {
+          "name": "runtime_settings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "sample_measurements": {
+          "name": "sample_measurements",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "tested_concurrency": {
+          "name": "tested_concurrency",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sample_count": {
+          "name": "sample_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "measured_token_count": {
+          "name": "measured_token_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "measured_tokens_per_second": {
+          "name": "measured_tokens_per_second",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "p50_latency_ms": {
+          "name": "p50_latency_ms",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "p95_latency_ms": {
+          "name": "p95_latency_ms",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "calibrated_at": {
+          "name": "calibrated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "invalidated_at": {
+          "name": "invalidated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "invalidation_reason": {
+          "name": "invalidation_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "embedding_capacity_profiles_active_key_unique": {
+          "name": "embedding_capacity_profiles_active_key_unique",
+          "columns": [
+            {
+              "expression": "profile_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"embedding_capacity_profiles\".\"invalidated_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "embedding_capacity_profiles_active_model_idx": {
+          "name": "embedding_capacity_profiles_active_model_idx",
+          "columns": [
+            {
+              "expression": "pool_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "model_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "calibrated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"embedding_capacity_profiles\".\"invalidated_at\" is null and \"embedding_capacity_profiles\".\"state\" = 'usable'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "embedding_capacity_profiles_state_check": {
+          "name": "embedding_capacity_profiles_state_check",
+          "value": "\"embedding_capacity_profiles\".\"state\" in ('usable','failed')"
+        },
+        "embedding_capacity_profiles_mode_check": {
+          "name": "embedding_capacity_profiles_mode_check",
+          "value": "\"embedding_capacity_profiles\".\"calibration_mode\" in ('quick','refined')"
+        },
+        "embedding_capacity_profiles_backend_check": {
+          "name": "embedding_capacity_profiles_backend_check",
+          "value": "\"embedding_capacity_profiles\".\"backend_class\" in ('cpu','metal','cuda','unknown')"
+        },
+        "embedding_capacity_profiles_values_check": {
+          "name": "embedding_capacity_profiles_values_check",
+          "value": "\"embedding_capacity_profiles\".\"embedding_dimensions\" > 0\n        and \"embedding_capacity_profiles\".\"tested_concurrency\" > 0\n        and \"embedding_capacity_profiles\".\"sample_count\" > 0\n        and \"embedding_capacity_profiles\".\"measured_token_count\" >= 0\n        and \"embedding_capacity_profiles\".\"duration_ms\" >= 0\n        and \"embedding_capacity_profiles\".\"measured_tokens_per_second\" >= 0\n        and \"embedding_capacity_profiles\".\"p50_latency_ms\" >= 0\n        and \"embedding_capacity_profiles\".\"p95_latency_ms\" >= 0"
+        },
+        "embedding_capacity_profiles_fingerprints_check": {
+          "name": "embedding_capacity_profiles_fingerprints_check",
+          "value": "\"embedding_capacity_profiles\".\"profile_key\" ~ '^[0-9a-f]{64}$'\n        and \"embedding_capacity_profiles\".\"hardware_fingerprint\" ~ '^[0-9a-f]{64}$'\n        and \"embedding_capacity_profiles\".\"settings_fingerprint\" ~ '^[0-9a-f]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.embedding_telemetry_minute_buckets": {
+      "name": "embedding_telemetry_minute_buckets",
+      "schema": "",
+      "columns": {
+        "bucket_start": {
+          "name": "bucket_start",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "queue_name": {
+          "name": "queue_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_class": {
+          "name": "source_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_count": {
+          "name": "event_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "chunk_count": {
+          "name": "chunk_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "measured_token_count": {
+          "name": "measured_token_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "queue_wait_ms_total": {
+          "name": "queue_wait_ms_total",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "queue_wait_sample_count": {
+          "name": "queue_wait_sample_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "execution_ms_total": {
+          "name": "execution_ms_total",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "execution_sample_count": {
+          "name": "execution_sample_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "end_to_end_ms_total": {
+          "name": "end_to_end_ms_total",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "end_to_end_sample_count": {
+          "name": "end_to_end_sample_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "embedding_telemetry_minute_buckets_recent_idx": {
+          "name": "embedding_telemetry_minute_buckets_recent_idx",
+          "columns": [
+            {
+              "expression": "bucket_start",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "queue_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_class",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outcome",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "embedding_telemetry_minute_buckets_bucket_start_queue_name_source_class_outcome_pk": {
+          "name": "embedding_telemetry_minute_buckets_bucket_start_queue_name_source_class_outcome_pk",
+          "columns": ["bucket_start", "queue_name", "source_class", "outcome"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "embedding_telemetry_minute_buckets_queue_check": {
+          "name": "embedding_telemetry_minute_buckets_queue_check",
+          "value": "\"embedding_telemetry_minute_buckets\".\"queue_name\" in ('projection','memory-embed','lcm-embed','lcm-compact','direct')"
+        },
+        "embedding_telemetry_minute_buckets_source_check": {
+          "name": "embedding_telemetry_minute_buckets_source_check",
+          "value": "\"embedding_telemetry_minute_buckets\".\"source_class\" in ('memory_event','memory_node','message','lcm_compaction')"
+        },
+        "embedding_telemetry_minute_buckets_outcome_check": {
+          "name": "embedding_telemetry_minute_buckets_outcome_check",
+          "value": "\"embedding_telemetry_minute_buckets\".\"outcome\" in ('created','completed','skipped','retry','failed')"
+        },
+        "embedding_telemetry_minute_buckets_values_check": {
+          "name": "embedding_telemetry_minute_buckets_values_check",
+          "value": "\"embedding_telemetry_minute_buckets\".\"event_count\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"chunk_count\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"measured_token_count\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"queue_wait_ms_total\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"queue_wait_sample_count\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"execution_ms_total\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"execution_sample_count\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"end_to_end_ms_total\" >= 0\n        and \"embedding_telemetry_minute_buckets\".\"end_to_end_sample_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.encrypted_field_backfill_runs": {
       "name": "encrypted_field_backfill_runs",
       "schema": "",
@@ -10285,6 +10746,39 @@
           "notNull": true,
           "default": 0
         },
+        "embedding_eligible_estimated_token_count": {
+          "name": "embedding_eligible_estimated_token_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "embedded_measured_token_count": {
+          "name": "embedded_measured_token_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "pending_embedding_estimated_token_count": {
+          "name": "pending_embedding_estimated_token_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "oldest_embedded_source_time": {
+          "name": "oldest_embedded_source_time",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "newest_embedded_source_time": {
+          "name": "newest_embedded_source_time",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "lcm_eligible_event_count": {
           "name": "lcm_eligible_event_count",
           "type": "integer",
@@ -10489,7 +10983,7 @@
       "checkConstraints": {
         "historical_import_sources_counters_check": {
           "name": "historical_import_sources_counters_check",
-          "value": "\"historical_import_sources\".\"discovered_record_count\" >= 0 and \"historical_import_sources\".\"imported_record_count\" >= 0 and \"historical_import_sources\".\"skipped_record_count\" >= 0 and \"historical_import_sources\".\"malformed_record_count\" >= 0 and \"historical_import_sources\".\"raw_ingested_record_count\" >= 0 and \"historical_import_sources\".\"projected_record_count\" >= 0 and \"historical_import_sources\".\"embedding_eligible_event_count\" >= 0 and \"historical_import_sources\".\"embedded_event_count\" between 0 and \"historical_import_sources\".\"embedding_eligible_event_count\" and \"historical_import_sources\".\"lcm_eligible_event_count\" >= 0 and \"historical_import_sources\".\"lcm_completed_event_count\" between 0 and \"historical_import_sources\".\"lcm_eligible_event_count\" and \"historical_import_sources\".\"retry_count\" between 0 and 1000"
+          "value": "\"historical_import_sources\".\"discovered_record_count\" >= 0 and \"historical_import_sources\".\"imported_record_count\" >= 0 and \"historical_import_sources\".\"skipped_record_count\" >= 0 and \"historical_import_sources\".\"malformed_record_count\" >= 0 and \"historical_import_sources\".\"raw_ingested_record_count\" >= 0 and \"historical_import_sources\".\"projected_record_count\" >= 0 and \"historical_import_sources\".\"embedding_eligible_event_count\" >= 0 and \"historical_import_sources\".\"embedded_event_count\" between 0 and \"historical_import_sources\".\"embedding_eligible_event_count\" and \"historical_import_sources\".\"embedding_eligible_estimated_token_count\" >= 0 and \"historical_import_sources\".\"embedded_measured_token_count\" >= 0 and \"historical_import_sources\".\"pending_embedding_estimated_token_count\" between 0 and \"historical_import_sources\".\"embedding_eligible_estimated_token_count\" and \"historical_import_sources\".\"lcm_eligible_event_count\" >= 0 and \"historical_import_sources\".\"lcm_completed_event_count\" between 0 and \"historical_import_sources\".\"lcm_eligible_event_count\" and \"historical_import_sources\".\"retry_count\" between 0 and 1000"
         },
         "historical_import_sources_event_range_check": {
           "name": "historical_import_sources_event_range_check",
@@ -13448,6 +13942,12 @@
           "notNull": true,
           "default": 1
         },
+        "input_token_count": {
+          "name": "input_token_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "source_text": {
           "name": "source_text",
           "type": "text",
@@ -13747,6 +14247,10 @@
         "memory_embeddings_source_chunk_count_check": {
           "name": "memory_embeddings_source_chunk_count_check",
           "value": "\"memory_embeddings\".\"source_chunk_count\" >= 1 and \"memory_embeddings\".\"source_chunk_index\" < \"memory_embeddings\".\"source_chunk_count\""
+        },
+        "memory_embeddings_input_token_count_check": {
+          "name": "memory_embeddings_input_token_count_check",
+          "value": "\"memory_embeddings\".\"input_token_count\" is null or \"memory_embeddings\".\"input_token_count\" >= 0"
         },
         "memory_embeddings_personal_owner_check": {
           "name": "memory_embeddings_personal_owner_check",
@@ -25998,302 +26502,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.team_conversation_source_grants": {
-      "name": "team_conversation_source_grants",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "share_grant_id": {
-          "name": "share_grant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "artifact_id": {
-          "name": "artifact_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "logical_source_id": {
-          "name": "logical_source_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "team_workspace_id": {
-          "name": "team_workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "mode": {
-          "name": "mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "maximum_segment_index": {
-          "name": "maximum_segment_index",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "maximum_source_offset": {
-          "name": "maximum_source_offset",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "lifecycle": {
-          "name": "lifecycle",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "mutation_id": {
-          "name": "mutation_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "granted_by_user_id": {
-          "name": "granted_by_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "creator_authority": {
-          "name": "creator_authority",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "revoked_by_user_id": {
-          "name": "revoked_by_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "revocation_reason": {
-          "name": "revocation_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "team_conversation_source_grants_workspace_active_idx": {
-          "name": "team_conversation_source_grants_workspace_active_idx",
-          "columns": [
-            {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "team_workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"team_conversation_source_grants\".\"lifecycle\" = 'active'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "team_conversation_source_grants_artifact_active_idx": {
-          "name": "team_conversation_source_grants_artifact_active_idx",
-          "columns": [
-            {
-              "expression": "artifact_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"team_conversation_source_grants\".\"lifecycle\" = 'active'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "team_conversation_source_grants_logical_source_active_idx": {
-          "name": "team_conversation_source_grants_logical_source_active_idx",
-          "columns": [
-            {
-              "expression": "logical_source_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"team_conversation_source_grants\".\"lifecycle\" = 'active'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "team_conversation_source_grants_artifact_id_conversation_source_artifacts_id_fk": {
-          "name": "team_conversation_source_grants_artifact_id_conversation_source_artifacts_id_fk",
-          "tableFrom": "team_conversation_source_grants",
-          "tableTo": "conversation_source_artifacts",
-          "columnsFrom": ["artifact_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "team_conversation_source_grants_owner_user_id_users_id_fk": {
-          "name": "team_conversation_source_grants_owner_user_id_users_id_fk",
-          "tableFrom": "team_conversation_source_grants",
-          "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "team_conversation_source_grants_session_id_sessions_id_fk": {
-          "name": "team_conversation_source_grants_session_id_sessions_id_fk",
-          "tableFrom": "team_conversation_source_grants",
-          "tableTo": "sessions",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "team_conversation_source_grants_granted_by_user_id_users_id_fk": {
-          "name": "team_conversation_source_grants_granted_by_user_id_users_id_fk",
-          "tableFrom": "team_conversation_source_grants",
-          "tableTo": "users",
-          "columnsFrom": ["granted_by_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "team_conversation_source_grants_revoked_by_user_id_users_id_fk": {
-          "name": "team_conversation_source_grants_revoked_by_user_id_users_id_fk",
-          "tableFrom": "team_conversation_source_grants",
-          "tableTo": "users",
-          "columnsFrom": ["revoked_by_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "team_conversation_source_grants_share_scope_fk": {
-          "name": "team_conversation_source_grants_share_scope_fk",
-          "tableFrom": "team_conversation_source_grants",
-          "tableTo": "team_session_share_grants",
-          "columnsFrom": ["share_grant_id", "team_id", "team_workspace_id"],
-          "columnsTo": ["id", "team_id", "team_workspace_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "team_conversation_source_grants_share_unique": {
-          "name": "team_conversation_source_grants_share_unique",
-          "nullsNotDistinct": false,
-          "columns": ["share_grant_id"]
-        },
-        "team_conversation_source_grants_mutation_unique": {
-          "name": "team_conversation_source_grants_mutation_unique",
-          "nullsNotDistinct": false,
-          "columns": ["mutation_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "team_conversation_source_grants_mode_check": {
-          "name": "team_conversation_source_grants_mode_check",
-          "value": "(\"team_conversation_source_grants\".\"mode\" = 'continuous'\n          and \"team_conversation_source_grants\".\"maximum_segment_index\" is null\n          and \"team_conversation_source_grants\".\"maximum_source_offset\" is null)\n        or (\"team_conversation_source_grants\".\"mode\" = 'snapshot'\n          and \"team_conversation_source_grants\".\"maximum_segment_index\" >= 0\n          and \"team_conversation_source_grants\".\"maximum_source_offset\" >= 0)"
-        },
-        "team_conversation_source_grants_lifecycle_check": {
-          "name": "team_conversation_source_grants_lifecycle_check",
-          "value": "(\"team_conversation_source_grants\".\"lifecycle\" = 'active'\n          and \"team_conversation_source_grants\".\"revoked_at\" is null\n          and \"team_conversation_source_grants\".\"revoked_by_user_id\" is null\n          and \"team_conversation_source_grants\".\"revocation_reason\" is null)\n        or (\"team_conversation_source_grants\".\"lifecycle\" = 'revoked'\n          and \"team_conversation_source_grants\".\"revoked_at\" is not null\n          and \"team_conversation_source_grants\".\"revoked_by_user_id\" is not null\n          and length(trim(\"team_conversation_source_grants\".\"revocation_reason\")) between 1 and 120)"
-        },
-        "team_conversation_source_grants_version_check": {
-          "name": "team_conversation_source_grants_version_check",
-          "value": "\"team_conversation_source_grants\".\"version\" > 0 and length(trim(\"team_conversation_source_grants\".\"creator_authority\")) > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.team_invites": {
       "name": "team_invites",
       "schema": "",
@@ -28046,11 +28254,6 @@
           "name": "team_session_share_grants_scope_unique",
           "nullsNotDistinct": false,
           "columns": ["id", "team_id", "team_workspace_id", "logical_memory_id"]
-        },
-        "team_session_share_grants_source_scope_unique": {
-          "name": "team_session_share_grants_source_scope_unique",
-          "nullsNotDistinct": false,
-          "columns": ["id", "team_id", "team_workspace_id"]
         }
       },
       "policies": {},

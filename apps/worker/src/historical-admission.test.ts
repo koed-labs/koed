@@ -13,6 +13,7 @@ const input = {
   apiHealthy: true,
   queueHealthy: true,
   embeddingServiceHealthy: true,
+  capacityProfileHealthy: true,
   historicalImportRows: 10,
   liveProjectionRows: 0,
   activeHistoricalBatches: 0
@@ -41,6 +42,12 @@ describe("historical import admission", () => {
         config
       )
     ).toEqual({ admitted: false, reason: "embedding_service_degraded" });
+    expect(
+      decideHistoricalAdmission(
+        { ...input, capacityProfileHealthy: false },
+        config
+      )
+    ).toEqual({ admitted: false, reason: "capacity_profile_unavailable" });
   });
 
   it("caps historical concurrency and ignores an empty backlog", () => {

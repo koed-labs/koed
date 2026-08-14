@@ -39,12 +39,12 @@ CREATE TABLE "team_conversation_source_grants" (
 	CONSTRAINT "team_conversation_source_grants_version_check" CHECK ("team_conversation_source_grants"."version" > 0 and length(trim("team_conversation_source_grants"."creator_authority")) > 0)
 );
 --> statement-breakpoint
-ALTER TABLE "team_session_share_grants" ADD CONSTRAINT "team_session_share_grants_source_scope_unique" UNIQUE("id","team_id","team_workspace_id");--> statement-breakpoint
 ALTER TABLE "team_conversation_source_grants" ADD CONSTRAINT "team_conversation_source_grants_artifact_id_conversation_source_artifacts_id_fk" FOREIGN KEY ("artifact_id") REFERENCES "public"."conversation_source_artifacts"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_conversation_source_grants" ADD CONSTRAINT "team_conversation_source_grants_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_conversation_source_grants" ADD CONSTRAINT "team_conversation_source_grants_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_conversation_source_grants" ADD CONSTRAINT "team_conversation_source_grants_granted_by_user_id_users_id_fk" FOREIGN KEY ("granted_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_conversation_source_grants" ADD CONSTRAINT "team_conversation_source_grants_revoked_by_user_id_users_id_fk" FOREIGN KEY ("revoked_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "team_session_share_grants" ADD CONSTRAINT "team_session_share_grants_source_scope_unique" UNIQUE("id","team_id","team_workspace_id");--> statement-breakpoint
 ALTER TABLE "team_conversation_source_grants" ADD CONSTRAINT "team_conversation_source_grants_share_scope_fk" FOREIGN KEY ("share_grant_id","team_id","team_workspace_id") REFERENCES "public"."team_session_share_grants"("id","team_id","team_workspace_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "team_conversation_source_grants_workspace_active_idx" ON "team_conversation_source_grants" USING btree ("team_id","team_workspace_id","updated_at" DESC NULLS LAST) WHERE "team_conversation_source_grants"."lifecycle" = 'active';--> statement-breakpoint
 CREATE INDEX "team_conversation_source_grants_artifact_active_idx" ON "team_conversation_source_grants" USING btree ("artifact_id","updated_at" DESC NULLS LAST) WHERE "team_conversation_source_grants"."lifecycle" = 'active';--> statement-breakpoint

@@ -236,7 +236,8 @@ describe("portable Personal artifacts", () => {
       structuredSummary: {
         schema_version: "lcm-semantic-summary-v1",
         title: "Summary",
-        summary_text: "A concise semantic summary."
+        summary_text: "A concise semantic summary.",
+        lexical_anchors: ["semantic summary"]
       },
       correctedRevision: "0",
       sourceSpanStart: "2026-07-29T00:00:00.000Z",

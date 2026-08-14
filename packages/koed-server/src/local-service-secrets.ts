@@ -7,10 +7,12 @@ const secretNames = [
   "POSTGRES_PASSWORD",
   "API_DATA_ENCRYPTION_KEY",
   "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
+  "TEAM_MEMORY_DATA_ENCRYPTION_KEY",
   "API_TOKEN_PEPPER",
   "COLLABORATION_LOCAL_BROKER_SECRET",
   "COLLABORATION_REALTIME_CURSOR_SECRET",
-  "EMBEDDING_SERVICE_TOKEN"
+  "EMBEDDING_SERVICE_TOKEN",
+  "KOED_OPS_METRICS_TOKEN"
 ] as const;
 
 type LocalServiceSecretName = (typeof secretNames)[number];
@@ -84,6 +86,8 @@ const generatedSecrets = (
   OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:
     existing.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY ??
     random(32).toString("base64"),
+  TEAM_MEMORY_DATA_ENCRYPTION_KEY:
+    existing.TEAM_MEMORY_DATA_ENCRYPTION_KEY ?? random(32).toString("base64"),
   API_TOKEN_PEPPER:
     existing.API_TOKEN_PEPPER ?? random(48).toString("base64url"),
   COLLABORATION_LOCAL_BROKER_SECRET:
@@ -93,7 +97,9 @@ const generatedSecrets = (
     existing.COLLABORATION_REALTIME_CURSOR_SECRET ??
     random(48).toString("base64url"),
   EMBEDDING_SERVICE_TOKEN:
-    existing.EMBEDDING_SERVICE_TOKEN ?? random(32).toString("base64url")
+    existing.EMBEDDING_SERVICE_TOKEN ?? random(32).toString("base64url"),
+  KOED_OPS_METRICS_TOKEN:
+    existing.KOED_OPS_METRICS_TOKEN ?? random(32).toString("base64url")
 });
 
 export const ensurePackagedLocalServiceSecrets = (

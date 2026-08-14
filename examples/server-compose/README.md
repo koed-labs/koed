@@ -31,6 +31,20 @@ Team self-hosted deployment. This wrapper defaults API and collaboration
 rate-limit counters to the included Redis service so limits remain shared when
 the API process is restarted or replicated.
 
+The public gateway must reject `/internal/*`; the machine metrics listener is
+for the trusted deployment network only. The optional
+`public-gateway-test` Compose profile provides an Nginx validation boundary,
+not a production TLS proxy. It forwards normal API routes and returns `404` for
+all internal routes even when a valid monitoring credential is supplied:
+
+```bash
+docker compose --profile public-gateway-test --env-file .env \
+  -f examples/server-compose/docker-compose.yml up -d --build
+curl -fsS http://127.0.0.1:3400/ready
+curl -i -H "Authorization: Bearer $KOED_OPS_METRICS_TOKEN" \
+  http://127.0.0.1:3400/internal/metrics # 404
+```
+
 Every service uses Compose's `unless-stopped` restart policy. If an essential
 managed child (API or Worker) exits unexpectedly, the `koed-server`
 supervisor stops its remaining children and exits nonzero so Compose restarts

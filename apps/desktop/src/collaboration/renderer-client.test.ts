@@ -2691,6 +2691,7 @@ describe("collaboration renderer client", () => {
                 sequence: 1,
                 occurredAt: timestamp,
                 summaryText: "Only the authorized leaf summary remains.",
+                lexicalAnchors: ["authorized-leaf-summary"],
                 sourceCount: 4,
                 sourceRevision: downgradedSession.sourceRevision
               }

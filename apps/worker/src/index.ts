@@ -1,5 +1,6 @@
 import {
   createDbPool,
+  createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createRetentionLifecycleRepository,
   databaseErrorCode,
@@ -7,10 +8,12 @@ import {
   type MemorySourceRepository
 } from "@koed/db";
 import { createEmbeddingWorkflow } from "./embedding-workflow.js";
+import { createEmbeddingCapacityService } from "./embedding-capacity-service.js";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
+  createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
   embeddingDispatchKey,
   inspectDeviceIdentityAtKoedHome,
   lcmCompactQueueName,
@@ -45,6 +48,7 @@ import {
 import { createReloadablePdsWorkerRuntimeFromEnvironment } from "./personal-device-sync-runtime.js";
 import { createConversationSourceReplicationService } from "./conversation-source-replication-service.js";
 import { createManagedConversationRuntimeCoordinator } from "./managed-conversation-runtime-coordinator.js";
+import { createSharedMemoryEmbeddingService } from "./shared-memory-embedding-service.js";
 
 loadWorkerEnv();
 
@@ -80,9 +84,12 @@ const envelopeEncryptionProvider =
   createEnvelopeEncryptionProviderFromEnvironment();
 const ownerPrivateReplicaEnvelopeEncryptionProvider =
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment();
+const teamEnvelopeEncryptionProvider =
+  createTeamMemoryEnvelopeEncryptionProviderFromEnvironment();
 const repository = pool
   ? createMemorySourceRepository(pool, {
       envelopeEncryptionProvider,
+      teamEnvelopeEncryptionProvider,
       ownerPrivateReplicaEnvelopeEncryptionProvider
     })
   : null;
@@ -92,6 +99,17 @@ const requireRepository = (): MemorySourceRepository => {
   }
   return repository;
 };
+const embeddingCapacityRepository = pool
+  ? createEmbeddingCapacityRepository(pool)
+  : null;
+const embeddingCapacityService = embeddingCapacityRepository
+  ? createEmbeddingCapacityService({
+      env: workerEnv,
+      repository: embeddingCapacityRepository,
+      logger,
+      refinedDelayMs: workerEnv.embeddingCapacityRefinedDelayMs
+    })
+  : null;
 
 const isTransientError = (error: unknown): boolean =>
   error instanceof TypeError ||
@@ -104,6 +122,9 @@ const embeddingWorkflow = createEmbeddingWorkflow({
   env: workerEnv,
   repository: requireRepository
 });
+const sharedMemoryEmbeddingService = repository
+  ? createSharedMemoryEmbeddingService({ embeddingWorkflow, logger })
+  : null;
 
 const queueProducerOptions = {
   backend: workerEnv.queueBackend,
@@ -136,6 +157,59 @@ const handleJob = createWorkerJobWorkflow({
   repository: requireRepository
 });
 
+const recordJobTelemetry = embeddingCapacityRepository
+  ? async (input: {
+      queueName: (typeof workerQueueNames)[number];
+      data: unknown;
+      outcome: "completed" | "skipped" | "retry" | "failed";
+      result?: unknown;
+      createdAt: Date;
+      startedAt: Date;
+      finishedAt: Date;
+    }) => {
+      const data =
+        typeof input.data === "object" && input.data !== null
+          ? (input.data as Record<string, unknown>)
+          : {};
+      const result =
+        typeof input.result === "object" && input.result !== null
+          ? (input.result as Record<string, unknown>)
+          : {};
+      const sourceClass =
+        input.queueName === lcmCompactQueueName
+          ? "lcm_compaction"
+          : data.sourceType === "memory_node"
+            ? "memory_node"
+            : data.sourceType === "message"
+              ? "message"
+              : "memory_event";
+      await embeddingCapacityRepository.recordTelemetry({
+        queueName: input.queueName,
+        sourceClass,
+        outcome: input.outcome,
+        eventCount: 1,
+        chunkCount:
+          typeof result.chunks === "number" ? result.chunks : undefined,
+        measuredTokenCount:
+          typeof result.measuredTokens === "number"
+            ? result.measuredTokens
+            : undefined,
+        queueWaitMs: Math.max(
+          0,
+          input.startedAt.getTime() - input.createdAt.getTime()
+        ),
+        executionMs: Math.max(
+          0,
+          input.finishedAt.getTime() - input.startedAt.getTime()
+        ),
+        endToEndMs: Math.max(
+          0,
+          input.finishedAt.getTime() - input.createdAt.getTime()
+        )
+      });
+    }
+  : undefined;
+
 const queueRuntime = await createWorkerQueueRuntime({
   backend: workerEnv.queueBackend,
   redisUrl: workerEnv.redisUrl,
@@ -143,7 +217,8 @@ const queueRuntime = await createWorkerQueueRuntime({
   logger,
   lcmEmbedQueue,
   handleJob,
-  isTransientError
+  isTransientError,
+  recordTelemetry: recordJobTelemetry
 });
 
 logger.info(
@@ -211,7 +286,10 @@ const rawProjectionService =
           apiReadyUrl: workerEnv.historicalImportApiReadyUrl,
           apiReadyTimeoutMs: workerEnv.historicalImportApiReadyTimeoutMs,
           embeddingQueue: memoryEmbedQueue,
-          repository
+          repository,
+          capacityProfileAvailable: () =>
+            embeddingCapacityService?.hasUsableProfile() ??
+            Promise.resolve(false)
         }),
         recoverProjectedMemoryEventProcessing: projectionJobScheduler.recover,
         historicalImport: workerEnv.historicalImport,
@@ -317,8 +395,12 @@ const activeBackgroundServices = startWorkerBackgroundServices({
     conversationSourceReplicationService,
     managedConversationService
   ],
-  maintenance: [retentionPurgeService],
-  team: [crossIdentitySyncService, collaborationReplayPruneService]
+  maintenance: [embeddingCapacityService, retentionPurgeService],
+  team: [
+    crossIdentitySyncService,
+    collaborationReplayPruneService,
+    sharedMemoryEmbeddingService
+  ]
 });
 
 const pdsSecureRuntime =

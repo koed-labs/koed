@@ -9,6 +9,16 @@ For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
 operation, see [Running Koed](running-koed.md).
 
+On macOS and Linux, Koed Desktop also provides a menu-bar or system-tray
+indicator for its managed local services. Activating the Koed mark opens or
+focuses the Desktop window. The indicator's context menu shows the current
+running-service count and lists only services that are starting, stopped,
+unconfigured, unavailable, or need attention. Healthy services are omitted. It
+also provides explicit refresh, open, and quit actions. Setup and AI-client
+integration diagnostics remain in the full Desktop status surface. On Linux,
+the exact activation gesture and indicator location depend on the desktop
+environment and its StatusNotifierItem or legacy tray support.
+
 ## Information Model
 
 The left rail changes the current principal:

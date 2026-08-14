@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -10,10 +11,63 @@ import {
   loadEmbeddingServiceEnv,
   rerankerModel,
   resolveEnv,
-  strEnv
+  strEnv,
+  verifyEmbeddingModelArtifact,
+  verifyRerankerModelArtifact
 } from "./env-config.js";
 
 describe("Embedding Service env config", () => {
+  it("verifies the configured artifact checksum once at startup", async () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "koed-embedding-model-"));
+    const modelPath = resolve(directory, "model.gguf");
+    writeFileSync(modelPath, "small fixture model");
+    const modelArtifactSha256 = createHash("sha256")
+      .update("small fixture model")
+      .digest("hex");
+    try {
+      await expect(
+        verifyEmbeddingModelArtifact({
+          modelPath,
+          modelFile: "model.gguf",
+          modelArtifactSha256
+        })
+      ).resolves.toBeUndefined();
+      await expect(
+        verifyEmbeddingModelArtifact({
+          modelPath,
+          modelFile: "model.gguf",
+          modelArtifactSha256: "0".repeat(64)
+        })
+      ).rejects.toThrow("artifact SHA-256 mismatch");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("returns reranker provenance only after verifying the exact artifact", async () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "koed-reranker-model-"));
+    const modelPath = resolve(directory, "reranker.gguf");
+    writeFileSync(modelPath, "reranker fixture");
+    const rerankerArtifactSha256 = createHash("sha256")
+      .update("reranker fixture")
+      .digest("hex");
+    try {
+      await expect(
+        verifyRerankerModelArtifact({
+          rerankerModelPath: modelPath,
+          rerankerArtifactSha256
+        })
+      ).resolves.toBe(rerankerArtifactSha256);
+      await expect(
+        verifyRerankerModelArtifact({
+          rerankerModelPath: modelPath,
+          rerankerArtifactSha256: "0".repeat(64)
+        })
+      ).rejects.toThrow("reranker model artifact SHA-256 mismatch");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("uses positive integer, bool, and trimmed string helpers", () => {
     expect(intEnv({ COUNT: "12" }, "COUNT", 3)).toBe(12);
     expect(intEnv({ COUNT: "0" }, "COUNT", 3)).toBe(3);
@@ -63,6 +117,13 @@ describe("Embedding Service env config", () => {
     expect(config.modelKey).toBe("qwen3-0.6b");
     expect(config.modelRepo).toBe("Qwen/Qwen3-Embedding-0.6B-GGUF");
     expect(config.modelName).toBe("qwen3-0.6b");
+    expect(config.modelArtifactSha256).toBe(
+      "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
+    );
+    expect(config.modelTokenizer).toBe("qwen3-embedding-0.6b-gguf");
+    expect(config.modelAcceleration).toBe(
+      "cpu;runtime=llama.cpp;n-gpu-layers=0"
+    );
     expect(config.expectedDimensions).toBe(1024);
     expect(config.llamaNCtx).toBe(4096);
     expect(config.embeddingMaxTokens).toBe(4096);
@@ -81,6 +142,10 @@ describe("Embedding Service env config", () => {
     expect(config.rerankerNUbatch).toBe(8192);
     expect(config.rerankerParallel).toBe(4);
     expect(config.rerankerPromptCacheEnabled).toBe(true);
+    expect(config.rerankerKey).toBeNull();
+    expect(config.rerankerModelPath).toBeNull();
+    expect(config.rerankerArtifact).toBeNull();
+    expect(config.rerankerArtifactSha256).toBeNull();
   });
 
   it("uses MODEL_KEY app-local precedence and defaults blank keys", () => {
@@ -134,6 +199,7 @@ describe("Embedding Service env config", () => {
     const config = resolveEnv({
       EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
       EMBEDDING_RERANKER_MODEL_PATH: "/models/reranker.gguf",
+      KOED_RERANKER_MODEL_SHA256: "a".repeat(64),
       EMBEDDING_RERANKER_CONTEXT_PER_SLOT: "2048",
       EMBEDDING_RERANKER_PARALLEL: "3",
       EMBEDDING_RERANKER_LLAMA_N_THREADS: "7",
@@ -147,6 +213,10 @@ describe("Embedding Service env config", () => {
       "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp"
     );
     expect(config.rerankerFile).toBe("Qwen3-Reranker-0.6B-Q4_K_M.gguf");
+    expect(config.rerankerArtifact).toBe(
+      "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp:Qwen3-Reranker-0.6B-Q4_K_M.gguf"
+    );
+    expect(config.rerankerArtifactSha256).toBe("a".repeat(64));
     expect(rerankerModel(config)).toBe("/models/reranker.gguf");
     expect(config.rerankerContextPerSlot).toBe(2048);
     expect(config.rerankerNCtx).toBe(6144);
@@ -169,10 +239,19 @@ describe("Embedding Service env config", () => {
     ).toThrow("RERANKER_MODEL_PATH requires");
     expect(() =>
       resolveEnv({
+        RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_MODEL_PATH: "/models/reranker.gguf"
+      })
+    ).toThrow("requires KOED_RERANKER_MODEL_SHA256");
+    expect(() =>
+      resolveEnv({
         LLAMA_EMBEDDING_SERVER_PORT: "18080",
         LLAMA_RERANKER_SERVER_PORT: "18080"
       })
     ).toThrow("must differ");
+    expect(() =>
+      resolveEnv({ KOED_EMBEDDING_MODEL_SHA256: "not-a-sha" })
+    ).toThrow("artifact SHA-256");
   });
 
   it("keeps the app-local default llama-server path for direct runs", () => {

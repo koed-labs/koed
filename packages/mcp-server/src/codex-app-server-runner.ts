@@ -31,6 +31,14 @@ export interface CodexAppServerRawEvent {
   sequence: number;
 }
 
+export interface CodexAppServerProcessMetrics {
+  pid: number;
+  peakRssBytes: number;
+  measurement: "proc_status_tree" | "ps_rss" | "powershell_working_set";
+  sampleCount: number;
+  samplingIntervalMs: number;
+}
+
 export interface CodexAppServerThreadInfo {
   id: string;
   sessionId?: string;
@@ -102,6 +110,8 @@ export interface CodexAppServerRunConfig {
   clientName: string;
   baseInstructions: string;
   developerInstructions?: string;
+  /** Direct-call diagnostics only; ordinary product calls leave this disabled. */
+  captureProcessMetrics?: boolean;
   dynamicTools?: CodexAppServerDynamicToolSpec[];
   dynamicToolHandler?: (
     call: CodexAppServerDynamicToolCall
@@ -127,6 +137,7 @@ export interface CodexAppServerRunResult {
   turnId?: string;
   rawEvents?: CodexAppServerRawEvent[];
   primaryThreadId?: string;
+  processMetrics?: CodexAppServerProcessMetrics;
 }
 
 export class CodexAppServerTurnError extends Error {
@@ -135,6 +146,7 @@ export class CodexAppServerTurnError extends Error {
   readonly threadId?: string;
   readonly turnId?: string;
   readonly rawEvents?: CodexAppServerRawEvent[];
+  readonly processMetrics?: CodexAppServerProcessMetrics;
 
   constructor(
     message: string,
@@ -144,6 +156,7 @@ export class CodexAppServerTurnError extends Error {
       threadId?: string;
       turnId?: string;
       rawEvents?: CodexAppServerRawEvent[];
+      processMetrics?: CodexAppServerProcessMetrics;
     }
   ) {
     super(message);
@@ -153,6 +166,7 @@ export class CodexAppServerTurnError extends Error {
     this.threadId = options.threadId;
     this.turnId = options.turnId;
     this.rawEvents = options.rawEvents;
+    this.processMetrics = options.processMetrics;
   }
 }
 
@@ -181,6 +195,7 @@ export interface CodexAppServerClientOptions {
   maxTurnStates?: number;
   maxTurnBytes?: number;
   maxLineBytes?: number;
+  captureProcessMetrics?: boolean;
   onExit?: (exit: CodexAppServerExit) => void;
 }
 
@@ -756,6 +771,77 @@ export const codexAppServerRawEventByteLength = (
   event: CodexAppServerRawEvent
 ): number => Buffer.byteLength(JSON.stringify(event), "utf8");
 
+const APP_SERVER_RSS_SAMPLING_INTERVAL_MS = 50;
+
+const processRss = (
+  pid: number
+): Pick<
+  CodexAppServerProcessMetrics,
+  "peakRssBytes" | "measurement"
+> | null => {
+  try {
+    const pending = [pid];
+    const seen = new Set<number>();
+    let rssBytes = 0;
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      let status: string;
+      let children = "";
+      try {
+        status = fs.readFileSync(`/proc/${current}/status`, "utf8");
+        children = fs
+          .readFileSync(`/proc/${current}/task/${current}/children`, "utf8")
+          .trim();
+      } catch {
+        if (current === pid) throw new Error("root process is unavailable");
+        continue;
+      }
+      const match = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
+      if (match?.[1]) rssBytes += Number(match[1]) * 1024;
+      if (children) {
+        pending.push(
+          ...children
+            .split(/\s+/)
+            .map(Number)
+            .filter((child) => Number.isInteger(child) && child > 0)
+        );
+      }
+    }
+    if (rssBytes > 0)
+      return {
+        peakRssBytes: rssBytes,
+        measurement: "proc_status_tree"
+      };
+  } catch {
+    // Non-Linux platforms fall through to their native process query.
+  }
+  if (process.platform === "win32") {
+    const result = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${pid} -ErrorAction Stop).WorkingSet64`
+      ],
+      { encoding: "utf8", windowsHide: true }
+    );
+    const bytes = Number(result.stdout.trim());
+    return result.status === 0 && Number.isFinite(bytes) && bytes > 0
+      ? { peakRssBytes: bytes, measurement: "powershell_working_set" }
+      : null;
+  }
+  const result = spawnSync("ps", ["-o", "rss=", "-p", String(pid)], {
+    encoding: "utf8"
+  });
+  const kib = Number(result.stdout.trim());
+  return result.status === 0 && Number.isFinite(kib) && kib > 0
+    ? { peakRssBytes: kib * 1024, measurement: "ps_rss" }
+    : null;
+};
+
 export class CodexAppServerClient {
   private nextId = 1;
   private readonly pending = new Map<
@@ -786,6 +872,8 @@ export class CodexAppServerClient {
   private nextRawEventSequence = 0;
   private closed = false;
   private closeRequested = false;
+  private processMetricsValue: CodexAppServerProcessMetrics | undefined;
+  private processMetricsTimer: NodeJS.Timeout | undefined;
   private readonly requestTimeoutMs: number;
   private readonly interruptRequestTimeoutMs: number;
   private readonly serverRequestTimeoutMs: number;
@@ -880,6 +968,14 @@ export class CodexAppServerClient {
       shell: process.platform === "win32",
       windowsHide: true
     });
+    if (options.captureProcessMetrics === true) {
+      this.sampleProcessRss();
+      this.processMetricsTimer = setInterval(
+        () => this.sampleProcessRss(),
+        APP_SERVER_RSS_SAMPLING_INTERVAL_MS
+      );
+      this.processMetricsTimer.unref();
+    }
     let resolveChildClosed: () => void = () => undefined;
     this.childClosed = new Promise<void>((resolve) => {
       resolveChildClosed = resolve;
@@ -902,6 +998,10 @@ export class CodexAppServerClient {
     });
     this.child.once("error", (error) => this.failAll(error));
     this.child.once("close", (code, signal) => {
+      if (this.processMetricsTimer) {
+        clearInterval(this.processMetricsTimer);
+        this.processMetricsTimer = undefined;
+      }
       this.closed = true;
       if (this.pending.size > 0 || this.turnWaiter) {
         this.failAll(
@@ -1147,6 +1247,10 @@ export class CodexAppServerClient {
     return this.terminalError;
   }
 
+  processMetrics(): CodexAppServerProcessMetrics | undefined {
+    return this.processMetricsValue;
+  }
+
   getRawEvents(): CodexAppServerRawEvent[] {
     return [...this.rawEvents];
   }
@@ -1228,6 +1332,29 @@ export class CodexAppServerClient {
         }
       }
     });
+  }
+
+  private sampleProcessRss(): void {
+    const pid = this.child.pid;
+    if (!pid) return;
+    const sample = processRss(pid);
+    if (!sample) return;
+    if (!this.processMetricsValue) {
+      this.processMetricsValue = {
+        pid,
+        peakRssBytes: sample.peakRssBytes,
+        measurement: sample.measurement,
+        sampleCount: 1,
+        samplingIntervalMs: APP_SERVER_RSS_SAMPLING_INTERVAL_MS
+      };
+      return;
+    }
+    this.processMetricsValue.peakRssBytes = Math.max(
+      this.processMetricsValue.peakRssBytes,
+      sample.peakRssBytes
+    );
+    this.processMetricsValue.measurement = sample.measurement;
+    this.processMetricsValue.sampleCount += 1;
   }
 
   private notify(method: string, params?: unknown): void {
@@ -1833,7 +1960,9 @@ export class CodexAppServerThreadSession {
     this.client = new CodexAppServerClient(
       config.appServerBinary,
       config.cwd,
-      this.env
+      this.env,
+      undefined,
+      { captureProcessMetrics: config.captureProcessMetrics }
     );
   }
 
@@ -1900,7 +2029,8 @@ export class CodexAppServerThreadSession {
         threadId,
         turnId,
         primaryThreadId: threadId,
-        rawEvents: this.client.rawEventsSince(rawEventStartIndex)
+        rawEvents: this.client.rawEventsSince(rawEventStartIndex),
+        processMetrics: this.client.processMetrics()
       };
     } catch (error) {
       const rawEvents = this.client.rawEventsSince(rawEventStartIndex);
@@ -1915,7 +2045,8 @@ export class CodexAppServerThreadSession {
               : undefined,
             threadId,
             turnId: turnId ?? undefined,
-            rawEvents
+            rawEvents,
+            processMetrics: this.client.processMetrics()
           }
         );
       }
@@ -1929,7 +2060,8 @@ export class CodexAppServerThreadSession {
           tokenUsage: error.tokenUsage,
           threadId: error.threadId ?? threadId,
           turnId: error.turnId ?? turnId ?? undefined,
-          rawEvents
+          rawEvents,
+          processMetrics: this.client.processMetrics()
         });
       }
       throw error;
@@ -1947,6 +2079,19 @@ export class CodexAppServerThreadSession {
     this.closed = true;
     this.client.close();
     removeIsolatedCodexHome(this.isolatedHome);
+  }
+
+  async closeAndWait(): Promise<void> {
+    if (!this.closed) this.closed = true;
+    try {
+      await this.client.closeAndWait();
+    } finally {
+      removeIsolatedCodexHome(this.isolatedHome);
+    }
+  }
+
+  processMetrics(): CodexAppServerProcessMetrics | undefined {
+    return this.client.processMetrics();
   }
 
   private async ensureThread(): Promise<string> {
@@ -1972,11 +2117,27 @@ export const runCodexAppServerTurn = async (
 ): Promise<CodexAppServerRunResult> => {
   const session = new CodexAppServerThreadSession(config);
 
+  let result: CodexAppServerRunResult | undefined;
+  let failure: unknown;
   try {
-    return await session.runTurn(prompt, timeoutMs);
+    result = await session.runTurn(prompt, timeoutMs);
+  } catch (error) {
+    failure = error;
   } finally {
-    session.close();
+    await session.closeAndWait();
   }
+  const processMetrics = session.processMetrics();
+  if (failure instanceof CodexAppServerTurnError)
+    throw new CodexAppServerTurnError(failure.message, {
+      model: failure.model,
+      tokenUsage: failure.tokenUsage,
+      threadId: failure.threadId,
+      turnId: failure.turnId,
+      rawEvents: failure.rawEvents,
+      processMetrics
+    });
+  if (failure) throw failure;
+  return { ...result!, processMetrics };
 };
 
 export const runCodexAppServerJsonTask = (

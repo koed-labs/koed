@@ -263,13 +263,15 @@ export const verifyCuratedMemorySourcesWithClient = async (
 
 export const createCuratedMemoryPolicyMethods = ({
   pool,
-  envelopeEncryptionProvider
+  envelopeEncryptionProvider,
+  onCuratedMemoryChanged
 }: CuratedMemoryRepositoryContext): Pick<
   CuratedMemoryRepository,
   "suppressCuratedMemoryAssertion" | "reconcileCuratedMemoryLifecycle"
 > => ({
   async suppressCuratedMemoryAssertion(actor, assertionId, input) {
     const client = await pool.connect();
+    let hydrated: Awaited<ReturnType<typeof getAssertionByIdWithClient>> = null;
     try {
       await client.query("begin");
       const existing = await getAssertionByIdWithClient(
@@ -280,70 +282,74 @@ export const createCuratedMemoryPolicyMethods = ({
       );
       if (!existing) {
         await client.query("commit");
-        return null;
-      }
-      const protectPayload = protectedCuratedMemoryPayloadsRequired();
-      const result = await client.query<{ id: string }>(
-        `
-        update curated_memory_assertions
-        set status = $4::curated_memory_assertion_status,
-            suppressed_at = case when $4::curated_memory_assertion_status = 'suppressed' then now() else suppressed_at end,
-            suppressed_by_user_id = case when $4::curated_memory_assertion_status = 'suppressed' then $2 else suppressed_by_user_id end,
-            suppression_reason = $3,
-            updated_at = now()
-        where id = $1
-          and owner_user_id = $2
-          and visibility = 'personal'
-        returning id
-      `,
-        [
-          assertionId,
-          actor.userId,
-          protectPayload && input.reason
-            ? ENCRYPTED_CURATED_MEMORY_TEXT
-            : (input.reason ?? null),
-          input.status ?? "suppressed"
-        ]
-      );
-      const id = result.rows[0]?.id;
-      if (protectPayload && id) {
-        await persistCuratedMemoryPayload(
-          client,
-          actor,
-          envelopeEncryptionProvider,
-          {
-            sourceTable: "curated_memory_assertions",
-            sourceId: id,
-            plaintext: {
-              assertionText: existing.assertionText,
-              normalizedAssertion: existing.normalizedAssertion,
-              tags: existing.tags,
-              metadata: existing.metadata,
-              suppressionReason: input.reason ?? null
-            }
-          }
+      } else {
+        const protectPayload = protectedCuratedMemoryPayloadsRequired();
+        const result = await client.query<{ id: string }>(
+          `
+          update curated_memory_assertions
+          set status = $4::curated_memory_assertion_status,
+              suppressed_at = case when $4::curated_memory_assertion_status = 'suppressed' then now() else suppressed_at end,
+              suppressed_by_user_id = case when $4::curated_memory_assertion_status = 'suppressed' then $2 else suppressed_by_user_id end,
+              suppression_reason = $3,
+              updated_at = now()
+          where id = $1
+            and owner_user_id = $2
+            and visibility = 'personal'
+          returning id
+        `,
+          [
+            assertionId,
+            actor.userId,
+            protectPayload && input.reason
+              ? ENCRYPTED_CURATED_MEMORY_TEXT
+              : (input.reason ?? null),
+            input.status ?? "suppressed"
+          ]
         );
-      }
-      const hydrated = id
-        ? await getAssertionByIdWithClient(
+        const id = result.rows[0]?.id;
+        if (protectPayload && id) {
+          await persistCuratedMemoryPayload(
             client,
             actor,
             envelopeEncryptionProvider,
-            id
-          )
-        : null;
-      await client.query("commit");
-      return hydrated;
+            {
+              sourceTable: "curated_memory_assertions",
+              sourceId: id,
+              plaintext: {
+                assertionText: existing.assertionText,
+                normalizedAssertion: existing.normalizedAssertion,
+                tags: existing.tags,
+                metadata: existing.metadata,
+                suppressionReason: input.reason ?? null
+              }
+            }
+          );
+        }
+        hydrated = id
+          ? await getAssertionByIdWithClient(
+              client,
+              actor,
+              envelopeEncryptionProvider,
+              id
+            )
+          : null;
+        if (id) {
+          await onCuratedMemoryChanged?.(actor, client);
+        }
+        await client.query("commit");
+      }
     } catch (error) {
       await client.query("rollback");
       throw error;
     } finally {
       client.release();
     }
+    return hydrated;
   },
 
   async reconcileCuratedMemoryLifecycle(actor) {
     const client = await pool.connect();
+    let assertionsSuppressed: number;
     try {
       await client.query("begin");
       const suppressed =
@@ -352,13 +358,17 @@ export const createCuratedMemoryPolicyMethods = ({
           actor,
           envelopeEncryptionProvider
         );
+      if (suppressed.length > 0) {
+        await onCuratedMemoryChanged?.(actor, client);
+      }
       await client.query("commit");
-      return { assertionsSuppressed: suppressed.length };
+      assertionsSuppressed = suppressed.length;
     } catch (error) {
       await client.query("rollback");
       throw error;
     } finally {
       client.release();
     }
+    return { assertionsSuppressed };
   }
 });

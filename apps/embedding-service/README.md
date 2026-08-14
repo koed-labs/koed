@@ -35,6 +35,13 @@ Unknown non-empty keys fail service startup. Supported keys:
 
 When reranking is enabled, service startup and `/health` require the reranker
 llama-server process to be usable as well as the embedding process.
+`KOED_RERANKER_MODEL_SHA256` (or the app-local
+`RERANKER_ARTIFACT_SHA256`) is also required. Startup hashes the exact GGUF
+passed to llama-server and rejects a mismatch. `/health` and `/rerank` expose
+the measured digest as `artifactHash` and as the immutable
+`artifactRevision` (`sha256:<digest>`); `/rerank` also reports llama-server's
+measured prompt-token usage, model-call latency, and `costUsd: 0` for local
+execution.
 
 The reranker is configured separately from the embedding server. Use
 `RERANKER_CONTEXT_PER_SLOT`, `RERANKER_PARALLEL`,

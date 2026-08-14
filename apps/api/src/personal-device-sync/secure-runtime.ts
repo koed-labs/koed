@@ -32,6 +32,7 @@ type PdsRuntimeSecret = {
     kemPrivateSeed: string;
   };
   authority: { keyId: string; publicKey: string; head: string };
+  recovery: { signingKeyId: string; signingPublicKey: string };
   certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
@@ -59,14 +60,15 @@ const parseRuntimeSecret = (value: string): PdsRuntimeSecret | null => {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     const device = parsed.device as Record<string, unknown> | undefined;
     const authority = parsed.authority as Record<string, unknown> | undefined;
+    const recovery = parsed.recovery as Record<string, unknown> | undefined;
     const groupSecrets = parsed.groupSecrets as
       | Record<string, unknown>
       | undefined;
     if (
       (Object.keys(parsed).sort().join(",") !==
-        "authority,certificate,device,groupId,groupSecrets,historicalOriginCertificates,recipientCertificates,relayUrl,userId,version" &&
+        "authority,certificate,device,groupId,groupSecrets,historicalOriginCertificates,recipientCertificates,recovery,relayUrl,userId,version" &&
         Object.keys(parsed).sort().join(",") !==
-          "authority,certificate,device,groupId,groupSecrets,recipientCertificates,relayUrl,userId,version") ||
+          "authority,certificate,device,groupId,groupSecrets,recipientCertificates,recovery,relayUrl,userId,version") ||
       parsed.version !== 1 ||
       ![
         parsed.userId,
@@ -76,6 +78,7 @@ const parseRuntimeSecret = (value: string): PdsRuntimeSecret | null => {
       ].every(strictString) ||
       !device ||
       !authority ||
+      !recovery ||
       !groupSecrets ||
       ![
         "id",
@@ -87,6 +90,11 @@ const parseRuntimeSecret = (value: string): PdsRuntimeSecret | null => {
       ].every((key) => strictString(device[key])) ||
       !["keyId", "publicKey", "head"].every((key) =>
         strictString(authority[key])
+      ) ||
+      Object.keys(recovery).sort().join(",") !==
+        "signingKeyId,signingPublicKey" ||
+      !["signingKeyId", "signingPublicKey"].every((key) =>
+        strictString(recovery[key])
       ) ||
       ![
         "currentEpoch",

@@ -53,7 +53,8 @@ describe("worker JSON benchmark scoring", () => {
           schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
           title: "Docker UI regression",
           summary_text:
-            "The user requested a local Docker rebuild while a UI regression remained unresolved."
+            "The user requested a local Docker rebuild while a UI regression remained unresolved.",
+          lexical_anchors: []
         }
       }
     );
@@ -73,7 +74,8 @@ describe("worker JSON benchmark scoring", () => {
           schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
           title: "x".repeat(121),
           summary_text:
-            "The user requested a local Docker rebuild while a UI regression remained unresolved."
+            "The user requested a local Docker rebuild while a UI regression remained unresolved.",
+          lexical_anchors: []
         }
       }
     );

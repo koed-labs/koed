@@ -50,7 +50,6 @@ export interface RetrievalSuccessRunScore {
   evidenceRelevant: boolean;
   irrelevantEvidenceLeaked: boolean;
   lexicalUsed: boolean;
-  lexicalJustified: boolean;
   retrievalStagesUsed: RetrievalStage[];
   details: RetrievalSuccessScoreDetail[];
 }
@@ -66,7 +65,6 @@ export interface RetrievalSuccessBenchmarkSummary {
   evidenceRelevantRate: number;
   irrelevantEvidenceLeakRate: number;
   lexicalUseRate: number;
-  unjustifiedLexicalUseRate: number;
 }
 
 const stageOrder: RetrievalStage[] = [
@@ -282,64 +280,6 @@ const scoreEvidenceLimit = (
   ];
 };
 
-const scoreStages = (
-  benchmarkCase: RetrievalSuccessCase,
-  stages: RetrievalStage[]
-): RetrievalSuccessScoreDetail[] => {
-  const stageIds = new Set(stages);
-  const details: RetrievalSuccessScoreDetail[] = [];
-  for (const stage of benchmarkCase.expected.requiredStages ?? []) {
-    const ok = stageIds.has(stage);
-    details.push(
-      detail(
-        `stage_required:${stage}`,
-        ok ? 2 : 0,
-        2,
-        ok ? "used" : "missing",
-        stages
-      )
-    );
-  }
-  for (const stage of benchmarkCase.expected.forbiddenStages ?? []) {
-    const used = stageIds.has(stage);
-    details.push(
-      detail(
-        `stage_forbidden:${stage}`,
-        used ? 0 : 2,
-        2,
-        used ? "forbidden stage used" : "not used",
-        stages
-      )
-    );
-  }
-  return details;
-};
-
-const scoreLexical = (
-  benchmarkCase: RetrievalSuccessCase,
-  lexicalUsed: boolean
-): RetrievalSuccessScoreDetail[] => {
-  const lexical = benchmarkCase.expected.lexical;
-  if (!lexical) {
-    return [];
-  }
-  const ok =
-    lexical.expectation === "required"
-      ? lexicalUsed
-      : lexical.expectation === "forbidden"
-        ? !lexicalUsed
-        : true;
-  return [
-    detail(
-      "lexical_behavior",
-      ok ? 3 : 0,
-      3,
-      ok ? lexical.reason : `violates lexical expectation: ${lexical.reason}`,
-      { expected: lexical.expectation, lexicalUsed }
-    )
-  ];
-};
-
 const scoreTemporal = (
   benchmarkCase: RetrievalSuccessCase,
   run: RetrievalSuccessRunInput
@@ -385,8 +325,6 @@ export const scoreRetrievalSuccessRun = (
     ...scoreRequiredEvidence(benchmarkCase, run),
     ...scoreForbiddenEvidence(benchmarkCase, run),
     ...scoreEvidenceLimit(benchmarkCase, run),
-    ...scoreStages(benchmarkCase, stages),
-    ...scoreLexical(benchmarkCase, lexicalUsed),
     ...scoreTemporal(benchmarkCase, run)
   ];
   const score = details.reduce((sum, item) => sum + item.score, 0);
@@ -400,14 +338,6 @@ export const scoreRetrievalSuccessRun = (
   const evidenceRelevant =
     required.every((id) => ids.has(id)) &&
     forbidden.every((id) => !ids.has(id));
-  const lexicalExpectation = benchmarkCase.expected.lexical?.expectation;
-  const lexicalJustified =
-    lexicalExpectation === "required"
-      ? lexicalUsed
-      : lexicalExpectation === "forbidden"
-        ? !lexicalUsed
-        : true;
-
   return {
     caseId: benchmarkCase.id,
     runIndex: run.runIndex,
@@ -419,7 +349,6 @@ export const scoreRetrievalSuccessRun = (
     evidenceRelevant,
     irrelevantEvidenceLeaked: forbidden.some((id) => ids.has(id)),
     lexicalUsed,
-    lexicalJustified,
     retrievalStagesUsed: stages,
     details
   };
@@ -443,10 +372,7 @@ export const summarizeRetrievalSuccessBenchmark = (
       runs.filter((run) => run.evidenceRelevant).length / count,
     irrelevantEvidenceLeakRate:
       runs.filter((run) => run.irrelevantEvidenceLeaked).length / count,
-    lexicalUseRate: runs.filter((run) => run.lexicalUsed).length / count,
-    unjustifiedLexicalUseRate:
-      runs.filter((run) => run.lexicalUsed && !run.lexicalJustified).length /
-      count
+    lexicalUseRate: runs.filter((run) => run.lexicalUsed).length / count
   };
 };
 
@@ -456,7 +382,6 @@ export const idealRetrievalSuccessRun = (
 ): RetrievalSuccessRunInput => {
   const requiredIds = benchmarkCase.expected.requiredEvidenceIds ?? [];
   const requiredSet = new Set(requiredIds);
-  const stageSet = new Set(benchmarkCase.expected.requiredStages ?? []);
   const evidence = benchmarkCase.seed
     .filter((item) => requiredSet.has(item.id))
     .map(
@@ -481,20 +406,6 @@ export const idealRetrievalSuccessRun = (
       answerMarkdown
     },
     evidence,
-    searches: [...stageSet].map((stage) => ({
-      retrievalStage: stage,
-      query: benchmarkCase.prompt
-    })),
-    retrievals: [
-      {
-        stages: [...stageSet].map((stage) => ({
-          name: stage,
-          used: stage !== "score_scan",
-          countAboveThreshold: stage === "score_scan" ? 0 : evidence.length,
-          selectedCount: stage === "score_scan" ? 0 : evidence.length
-        }))
-      }
-    ],
     notes: "Deterministic ideal baseline generated from benchmark expectations."
   };
 };

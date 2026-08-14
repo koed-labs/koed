@@ -3,6 +3,7 @@ import { createEmbeddingLogger } from "./logging.js";
 import { EmbeddingRuntime } from "./runtime.js";
 import type { EmbedResponse, RerankResponse } from "./schemas.js";
 import {
+  capacityHardwareIdentity,
   createEmbeddingService,
   createNodeHttpServer,
   listenNodeHttpServer
@@ -32,6 +33,12 @@ class RouteRuntime extends EmbeddingRuntime {
   };
   rerankResult: RerankResponse = {
     model: "qwen3-reranker-0.6b",
+    artifact: "repo:reranker.gguf",
+    artifactRevision: `sha256:${"a".repeat(64)}`,
+    artifactHash: "a".repeat(64),
+    latencyMs: 12,
+    inputTokens: 29,
+    costUsd: 0,
     scores: [0.2, 0.9]
   };
 
@@ -41,6 +48,17 @@ class RouteRuntime extends EmbeddingRuntime {
 
   override isRerankerLoaded(): boolean {
     return this.healthRerankerLoaded;
+  }
+
+  override rerankerProvenance() {
+    return this.healthRerankerLoaded && this.config.rerankerKey
+      ? {
+          model: this.config.rerankerKey,
+          artifact: this.config.rerankerArtifact ?? "repo:reranker.gguf",
+          artifactRevision: `sha256:${this.config.rerankerArtifactSha256 ?? "a".repeat(64)}`,
+          artifactHash: this.config.rerankerArtifactSha256 ?? "a".repeat(64)
+        }
+      : null;
   }
 
   override healthQueueSnapshot() {
@@ -70,6 +88,35 @@ const json = async (response: Response) =>
 const logger = () => createEmbeddingLogger("critical", () => undefined);
 
 describe("Embedding Service routes", () => {
+  it("changes non-CPU hardware identity when the accelerator changes", async () => {
+    const config = testConfig({ backendClass: "cuda" });
+    const first = await capacityHardwareIdentity(
+      config,
+      async () => "CUDA0: device-a"
+    );
+    const second = await capacityHardwareIdentity(
+      config,
+      async () => "CUDA0: device-b"
+    );
+
+    expect(first.acceleratorFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(second.acceleratorFingerprint).not.toBe(
+      first.acceleratorFingerprint
+    );
+    expect(second.hardwareFingerprint).not.toBe(first.hardwareFingerprint);
+  });
+
+  it("fails non-CPU capacity identity closed without a device listing", async () => {
+    const config = testConfig({ backendClass: "metal" });
+
+    await expect(
+      capacityHardwareIdentity(config, async () => null)
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      detail: "embedding accelerator identity is unavailable"
+    });
+  });
+
   it("rejects HTTP bind failures through the awaited startup path", async () => {
     const service = {
       handle: async () => new Response(null, { status: 204 })
@@ -100,7 +147,9 @@ describe("Embedding Service routes", () => {
       rerankerKey: "qwen3-reranker-0.6b",
       rerankerRepo: "repo",
       rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf"
+      rerankerModelPath: "/models/reranker.gguf",
+      rerankerArtifact: "repo:reranker.gguf",
+      rerankerArtifactSha256: "a".repeat(64)
     });
     const runtime = new RouteRuntime(config, logger());
     runtime.healthRerankerLoaded = false;
@@ -134,7 +183,9 @@ describe("Embedding Service routes", () => {
       rerankerKey: "qwen3-reranker-0.6b",
       rerankerRepo: "repo",
       rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf"
+      rerankerModelPath: "/models/reranker.gguf",
+      rerankerArtifact: "repo:reranker.gguf",
+      rerankerArtifactSha256: "a".repeat(64)
     });
     const runtime = new RouteRuntime(config, logger());
     const service = createEmbeddingService(config, runtime, logger());
@@ -151,6 +202,72 @@ describe("Embedding Service routes", () => {
     expect(payload.status).toBe("ok");
     expect(payload.modelKey).toBe("qwen3-0.6b");
     expect(payload.normalized).toBe(true);
+    expect(payload).toMatchObject({
+      artifact: `sha256:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439`,
+      artifactRevision: "main",
+      artifactHash:
+        "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      tokenizerRevision:
+        "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
+    });
+    expect(payload.reranker).toMatchObject({
+      artifact: `sha256:${"a".repeat(64)}`,
+      artifactRevision: `sha256:${"a".repeat(64)}`,
+      artifactHash: "a".repeat(64)
+    });
+  });
+
+  it("protects the content-free capacity identity with the internal token", async () => {
+    const config = testConfig({
+      embeddingServiceToken: "secret",
+      backendClass: "cpu",
+      runtimeVersion: "llama-server-test"
+    });
+    const runtime = new RouteRuntime(config, logger());
+    const service = createEmbeddingService(config, runtime, logger());
+
+    const rejected = await service.handle(
+      new Request("http://127.0.0.1/capacity/identity")
+    );
+    const accepted = await service.handle(
+      new Request("http://127.0.0.1/capacity/identity", {
+        headers: { "x-koed-embedding-token": "secret" }
+      })
+    );
+    const payload = await json(accepted);
+
+    expect(rejected.status).toBe(401);
+    expect(accepted.status).toBe(200);
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      modelKey: "qwen3-0.6b",
+      dimensions: 3,
+      runtimeKind: "llama-server",
+      runtimeVersion: "llama-server-test",
+      backendClass: "cpu"
+    });
+    expect(payload.acceleratorFingerprint).toBeNull();
+    expect(payload.hardwareFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(payload.settingsFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(payload)).not.toContain("/models/embedding.gguf");
+    expect(JSON.stringify(payload)).not.toContain("secret");
+  });
+
+  it("exposes configured artifact provenance only to an authenticated health request", async () => {
+    const config = testConfig({ embeddingServiceToken: "secret" });
+    const runtime = new RouteRuntime(config, logger());
+    const service = createEmbeddingService(config, runtime, logger());
+
+    const response = await service.handle(
+      new Request("http://127.0.0.1/health", {
+        headers: { "x-koed-embedding-token": "secret" }
+      })
+    );
+    const payload = await json(response);
+
+    expect(payload.artifact).toBe(config.modelArtifact);
   });
 
   it("requires embed auth and returns chunk metadata", async () => {
@@ -222,7 +339,9 @@ describe("Embedding Service routes", () => {
       rerankerKey: "qwen3-reranker-0.6b",
       rerankerRepo: "repo",
       rerankerFile: "reranker.gguf",
-      rerankerModelPath: "/models/reranker.gguf"
+      rerankerModelPath: "/models/reranker.gguf",
+      rerankerArtifact: "repo:reranker.gguf",
+      rerankerArtifactSha256: "a".repeat(64)
     });
     const runtime = new RouteRuntime(config, logger());
     const service = createEmbeddingService(config, runtime, logger());
@@ -238,6 +357,12 @@ describe("Embedding Service routes", () => {
     expect(response.status).toBe(200);
     expect(payload).toEqual({
       model: "qwen3-reranker-0.6b",
+      artifact: "repo:reranker.gguf",
+      artifactRevision: `sha256:${"a".repeat(64)}`,
+      artifactHash: "a".repeat(64),
+      latencyMs: 12,
+      inputTokens: 29,
+      costUsd: 0,
       scores: [0.2, 0.9]
     });
     expect(runtime.rerankCalls).toEqual([
@@ -254,6 +379,40 @@ describe("Embedding Service routes", () => {
       })
     );
     expect(failed.status).toBe(500);
-    expect((await json(failed)).detail).toContain("model reranking failed");
+    expect(await json(failed)).toEqual({
+      detail: "reranking request failed",
+      code: "reranking_runtime_error"
+    });
+  });
+
+  it("redacts runtime and model details from embedding responses and logs", async () => {
+    const responseSentinel = "upstream-model-response-sentinel";
+    const querySentinel = "team-query-log-sentinel";
+    const lines: string[] = [];
+    const config = testConfig();
+    const redactingLogger = createEmbeddingLogger("debug", (line) =>
+      lines.push(line)
+    );
+    const runtime = new RouteRuntime(config, redactingLogger);
+    runtime.embedText = async () => {
+      throw new Error(`${responseSentinel} ${querySentinel}`);
+    };
+    const service = createEmbeddingService(config, runtime, redactingLogger);
+
+    const failed = await service.handle(
+      new Request("http://127.0.0.1/embed", {
+        method: "POST",
+        body: JSON.stringify({ texts: [querySentinel] })
+      })
+    );
+
+    expect(failed.status).toBe(500);
+    expect(await json(failed)).toEqual({
+      detail: "embedding request failed",
+      code: "embedding_runtime_error"
+    });
+    const logged = lines.join("\n");
+    expect(logged).not.toContain(responseSentinel);
+    expect(logged).not.toContain(querySentinel);
   });
 });

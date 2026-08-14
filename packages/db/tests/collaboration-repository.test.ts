@@ -184,6 +184,110 @@ describeDb("Collaboration repository", () => {
     ).resolves.toBeNull();
   });
 
+  it("keeps uncaptured collaboration activity out of every Memory pipeline table", async () => {
+    const fixture = await createTeamFixture();
+    const teamAccess = createTeamAccessRepository(pool);
+    const ownerIds = [fixture.ownerUserId, fixture.memberUserId];
+    const memoryCounts = async () => {
+      const result = await pool.query<Record<string, string>>(
+        `select
+           (select count(*)::text from conversation_items
+             where owner_user_id = any($1::uuid[])) as projection_sources,
+           (select count(*)::text from conversation_item_observations
+             where owner_user_id = any($1::uuid[])) as projection_observations,
+           (select count(*)::text from memory_events
+             where owner_user_id = any($1::uuid[])
+                or actor_user_id = any($1::uuid[])) as memory_events,
+           (select count(*)::text from conversation_projection_processing_outbox
+             where owner_user_id = any($1::uuid[])) as projection_jobs,
+           (select count(*)::text from memory_nodes
+             where owner_user_id = any($1::uuid[])
+                or created_by_user_id = any($1::uuid[])) as lcm_nodes,
+           (select count(*)::text
+              from memory_node_children child
+              join memory_nodes node on node.id = child.parent_memory_node_id
+             where node.owner_user_id = any($1::uuid[])) as lcm_edges,
+           (select count(*)::text from memory_embeddings
+             where owner_user_id = any($1::uuid[])) as personal_embeddings,
+           (select count(*)::text from team_memory_representations
+             where team_id = $2) as team_representations,
+           (select count(*)::text
+              from team_memory_semantic_items item
+              join team_memory_representations representation
+                on representation.id = item.representation_id
+             where representation.team_id = $2) as team_embeddings`,
+        [ownerIds, fixture.teamId]
+      );
+      return result.rows[0];
+    };
+
+    const before = await memoryCounts();
+    const personalChannel = await repository.createThread(
+      actor(fixture.ownerUserId),
+      {
+        kind: "personal_channel",
+        idempotencyKey: `memory-exclusion-personal:${randomUUID()}`,
+        name: `Uncaptured Personal channel ${randomUUID()}`
+      }
+    );
+    const directMessage = await repository.createThread(
+      actor(fixture.ownerUserId),
+      {
+        kind: "dm",
+        idempotencyKey: `memory-exclusion-dm:${randomUUID()}`,
+        teamId: fixture.teamId,
+        participantUserIds: [fixture.memberUserId]
+      }
+    );
+    if (!personalChannel || !directMessage) {
+      throw new Error("Expected authorized collaboration threads");
+    }
+
+    const personalMessage = await repository.sendMessage(
+      actor(fixture.ownerUserId),
+      {
+        threadId: personalChannel.id,
+        idempotencyKey: `memory-exclusion-personal-message:${randomUUID()}`,
+        bodyText: `Uncaptured Personal message ${randomUUID()}`
+      }
+    );
+    const dmMessage = await repository.sendMessage(actor(fixture.ownerUserId), {
+      threadId: directMessage.id,
+      idempotencyKey: `memory-exclusion-dm-message:${randomUUID()}`,
+      bodyText: `Uncaptured DM ${randomUUID()}`
+    });
+    if (!personalMessage || !dmMessage) {
+      throw new Error("Expected authorized collaboration messages");
+    }
+
+    await repository.advanceReadState(actor(fixture.memberUserId), {
+      threadId: directMessage.id,
+      messageId: dmMessage.id
+    });
+    await teamAccess.setTeamPresence(actor(fixture.ownerUserId), {
+      teamId: fixture.teamId,
+      mode: "manual",
+      manualPresenceStatus: "do_not_disturb",
+      expectedVersion: 1
+    });
+
+    expect(await memoryCounts()).toEqual(before);
+
+    const collaborationIds = [
+      personalChannel.id,
+      directMessage.id,
+      personalMessage.id,
+      dmMessage.id
+    ].map((id) => `%${id}%`);
+    const queued = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from local_work_queue
+        where data::text like any($1::text[])`,
+      [collaborationIds]
+    );
+    expect(queued.rows[0]!.count).toBe("0");
+  });
+
   it("converges two clients on channel-name and participant-set identities", async () => {
     const personalOwnerUserId = await createUser("Natural Personal Owner");
     const personalKeyA = `personal-name-a:${randomUUID()}`;

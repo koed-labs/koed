@@ -62,8 +62,10 @@ separate physical memory hierarchies.
 - Personal deletion removes the Captured Session from the owner's Personal
   Memory recall surface, but does not revoke active Team sharing in the first
   version.
-- Backend LLM synthesis remains out of scope. Koed returns Evidence Bundles and
-  the connected AI Client performs Answer Synthesis and LCM Summary synthesis.
+- Backend LLM synthesis remains out of scope. Koed's local MCP-side Memory
+  Answer worker uses the connected AI Client to return a standalone answer;
+  citations or selected evidence are explicit response-detail choices. The
+  connected AI Client also performs LCM Summary synthesis.
 - Memory Inbox is a future ingestion surface, not the V1.0 Team memory core.
   The Team architecture should still reserve room for Content Objects, Content
   Inventory, Knowledge Collections, ingestion jobs, provenance, quotas, and
@@ -73,10 +75,12 @@ separate physical memory hierarchies.
 ## Consequences
 
 Authorization and lifecycle gates must be enforced during retrieval candidate
-selection, not only as a final response filter. Vector search, lexical search,
-graph lookup, expansion, fallback retrieval, diagnostics, and reranking must
-constrain candidates to memory visible to the caller through Personal Memory and
-active Team / Workspace Share Grants. Archived Workspace data may be included
+selection, not only as a final response filter. Semantic vector search, narrowed
+exact checks over admitted candidates, graph lookup, expansion, fallback
+retrieval, diagnostics, and reranking must constrain candidates to Memory
+visible to the caller through Personal Memory and active Team / Workspace Share
+Grants. Production Recall has no global plaintext lexical index or decrypted
+lexical scan. Archived Workspace data may be included
 only by an explicit archived-search mode. Access-suspended Team data requires a
 separate admin, legal, or Operator mode and must not become searchable merely
 because archived search is enabled.

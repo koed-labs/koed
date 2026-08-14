@@ -4,6 +4,10 @@ import {
   type Server,
   type ServerResponse
 } from "node:http";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { arch, cpus, platform, release, totalmem } from "node:os";
+import { promisify } from "node:util";
 import {
   HttpError,
   embeddingTokenAuthStatus,
@@ -23,6 +27,7 @@ import {
 } from "./logging.js";
 import { normalizeEmbeddingPriority } from "./priority-scheduler.js";
 import type { EmbeddingRuntime } from "./runtime.js";
+import { llamaServerEnvironment } from "./llama-server.js";
 import { validateEmbedRequest, validateRerankRequest } from "./schemas.js";
 
 export interface EmbeddingService {
@@ -60,9 +65,6 @@ const parseJsonBody = async (request: Request): Promise<unknown> => {
   }
 };
 
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
 export const createEmbeddingService = (
   config: EmbeddingServiceEnv,
   runtime: EmbeddingRuntime,
@@ -86,6 +88,12 @@ export const createEmbeddingService = (
         try {
           if (request.method === "GET" && url.pathname === "/health") {
             return handleHealth(config, runtime, request, requestId);
+          }
+          if (
+            request.method === "GET" &&
+            url.pathname === "/capacity/identity"
+          ) {
+            return await handleCapacityIdentity(config, request, requestId);
           }
           if (request.method === "POST" && url.pathname === "/embed") {
             return await handleEmbed(
@@ -111,13 +119,19 @@ export const createEmbeddingService = (
         } catch (error) {
           if (error instanceof HttpError) {
             return jsonResponse(
-              { detail: error.detail },
+              {
+                detail: error.detail,
+                ...(error.code ? { code: error.code } : {})
+              },
               error.statusCode,
               requestId
             );
           }
           return jsonResponse(
-            { detail: `embedding service failed: ${errorMessage(error)}` },
+            {
+              detail: "embedding service request failed",
+              code: "embedding_service_error"
+            },
             500,
             requestId
           );
@@ -140,6 +154,101 @@ export const createEmbeddingService = (
   }
 });
 
+const stableHash = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const execFileAsync = promisify(execFile);
+
+const acceleratorListing = async (
+  config: EmbeddingServiceEnv
+): Promise<string | null> => {
+  if (config.backendClass === "cpu") return null;
+  let output: { stdout: string; stderr: string };
+  try {
+    output = await execFileAsync(config.llamaServerBinary, ["--list-devices"], {
+      encoding: "utf8",
+      env: llamaServerEnvironment(config.llamaServerBinary),
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024
+    });
+  } catch {
+    throw new HttpError(503, "embedding accelerator identity is unavailable");
+  }
+  const listing = `${output.stdout}\n${output.stderr}`
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!listing) {
+    throw new HttpError(503, "embedding accelerator identity is unavailable");
+  }
+  return listing;
+};
+
+export const capacityHardwareIdentity = async (
+  config: EmbeddingServiceEnv,
+  listAccelerators: (
+    config: EmbeddingServiceEnv
+  ) => Promise<string | null> = acceleratorListing
+): Promise<{
+  hardwareFingerprint: string;
+  acceleratorFingerprint: string | null;
+}> => {
+  const listing = await listAccelerators(config);
+  if (config.backendClass !== "cpu" && !listing) {
+    throw new HttpError(503, "embedding accelerator identity is unavailable");
+  }
+  const acceleratorFingerprint = listing
+    ? stableHash({ backendClass: config.backendClass, listing })
+    : null;
+  return {
+    acceleratorFingerprint,
+    hardwareFingerprint: stableHash({
+      platform: platform(),
+      release: release(),
+      arch: arch(),
+      cpuModels: cpus()
+        .map((cpu) => cpu.model)
+        .sort(),
+      cpuCount: cpus().length,
+      totalMemoryBytes: totalmem(),
+      backendClass: config.backendClass,
+      acceleratorFingerprint
+    })
+  };
+};
+
+const handleCapacityIdentity = async (
+  config: EmbeddingServiceEnv,
+  request: Request,
+  requestId: string
+): Promise<Response> => {
+  requireInternalToken(config, headerValue(request, "x-koed-embedding-token"));
+  const hardwareIdentity = await capacityHardwareIdentity(config);
+  const runtimeSettings = {
+    batchLimit: config.batchLimit,
+    embeddingMaxTokens: config.embeddingMaxTokens,
+    llamaNCtx: config.llamaNCtx,
+    llamaNThreads: config.llamaNThreads,
+    llamaNBatch: config.llamaNBatch,
+    llamaNUbatch: config.llamaNUbatch,
+    llamaParallel: config.llamaParallel
+  };
+  return jsonResponse(
+    {
+      schemaVersion: 1,
+      modelKey: config.modelKey,
+      dimensions: config.expectedDimensions,
+      runtimeKind: "llama-server",
+      runtimeVersion: config.runtimeVersion,
+      backendClass: config.backendClass,
+      ...hardwareIdentity,
+      settingsFingerprint: stableHash(runtimeSettings),
+      runtimeSettings
+    },
+    200,
+    requestId
+  );
+};
+
 const handleHealth = (
   config: EmbeddingServiceEnv,
   runtime: EmbeddingRuntime,
@@ -152,6 +261,8 @@ const handleHealth = (
   );
   const rerankerReady = !rerankerEnabled(config) || runtime.isRerankerLoaded();
   const status = runtime.isModelLoaded() && rerankerReady ? "ok" : "loading";
+  const rerankerProvenance = runtime.rerankerProvenance();
+  const exposeConfiguredArtifacts = auth.authRequired && auth.authValid;
   return jsonResponse(
     {
       status,
@@ -167,6 +278,14 @@ const handleHealth = (
       authValid: auth.authValid,
       modelRepo: config.modelRepo,
       modelFile: config.modelFile,
+      artifact: exposeConfiguredArtifacts
+        ? config.modelArtifact
+        : `sha256:${config.modelArtifactSha256}`,
+      artifactRevision: config.modelArtifactRevision,
+      artifactHash: config.modelArtifactSha256,
+      tokenizer: config.modelTokenizer,
+      tokenizerRevision: config.modelTokenizerRevision,
+      acceleration: config.modelAcceleration,
       nCtx: config.llamaNCtx,
       queue: runtime.healthQueueSnapshot(),
       reranker: {
@@ -174,6 +293,13 @@ const handleHealth = (
         loaded: runtime.isRerankerLoaded(),
         modelKey: config.rerankerKey,
         model: rerankerModel(config),
+        artifact: rerankerProvenance
+          ? exposeConfiguredArtifacts
+            ? rerankerProvenance.artifact
+            : `sha256:${rerankerProvenance.artifactHash}`
+          : null,
+        artifactRevision: rerankerProvenance?.artifactRevision ?? null,
+        artifactHash: rerankerProvenance?.artifactHash ?? null,
         batchLimit: config.rerankerBatchLimit
       }
     },
@@ -220,10 +346,15 @@ const handleEmbed = async (
       http: { status_code: statusCode, duration_ms: elapsedMs(started) },
       error: errorType(error)
     });
-    if (error instanceof HttpError) {
-      throw error;
-    }
-    throw new HttpError(500, `model embedding failed: ${errorMessage(error)}`);
+    throw new HttpError(
+      error instanceof HttpError && error.statusCode === 503 ? 503 : 500,
+      error instanceof HttpError && error.statusCode === 503
+        ? "embedding service is temporarily unavailable"
+        : "embedding request failed",
+      error instanceof HttpError && error.statusCode === 503
+        ? "embedding_unavailable"
+        : "embedding_runtime_error"
+    );
   }
 };
 
@@ -245,7 +376,10 @@ const handleRerank = async (
       reranker: {
         model: result.model,
         document_count: payload.documents.length,
-        score_count: result.scores.length
+        score_count: result.scores.length,
+        measured_tokens: result.inputTokens,
+        latency_ms: result.latencyMs,
+        cost_usd: result.costUsd
       }
     });
     return jsonResponse(result, 200, requestId);
@@ -256,10 +390,15 @@ const handleRerank = async (
       http: { status_code: statusCode, duration_ms: elapsedMs(started) },
       error: errorType(error)
     });
-    if (error instanceof HttpError) {
-      throw error;
-    }
-    throw new HttpError(500, `model reranking failed: ${errorMessage(error)}`);
+    throw new HttpError(
+      error instanceof HttpError && error.statusCode === 503 ? 503 : 500,
+      error instanceof HttpError && error.statusCode === 503
+        ? "reranking service is temporarily unavailable"
+        : "reranking request failed",
+      error instanceof HttpError && error.statusCode === 503
+        ? "reranking_unavailable"
+        : "reranking_runtime_error"
+    );
   }
 };
 
@@ -293,12 +432,13 @@ export const createNodeHttpServer = (service: EmbeddingService) =>
       response.headers.forEach((value, key) => outgoing.setHeader(key, value));
       const responseBody = Buffer.from(await response.arrayBuffer());
       outgoing.end(responseBody);
-    })().catch((error: unknown) => {
+    })().catch(() => {
       outgoing.statusCode = 500;
       outgoing.setHeader("content-type", "application/json");
       outgoing.end(
         JSON.stringify({
-          detail: `embedding service failed: ${errorMessage(error)}`
+          detail: "embedding service request failed",
+          code: "embedding_service_error"
         })
       );
     });

@@ -61,6 +61,9 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     getSharedMemoryLcmSyncState: vi.fn(
       async (): Promise<"pending" | "ready"> => "ready"
     ),
+    listCuratedMemoryAssertions: vi.fn(
+      async (): Promise<Array<Record<string, unknown>>> => []
+    ),
     listLcmGraphEvents: vi.fn(
       async (): Promise<Array<Record<string, unknown>>> => []
     ),
@@ -118,6 +121,80 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       items: [{ id: "event-1", sequence: 2 }]
     });
     expect(second?.candidateHash).toBe(first?.candidateHash);
+  });
+
+  it("maps current curated assertions with eligible evidence", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listCuratedMemoryAssertions.mockResolvedValue([
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        assertionText: "Projection excludes Approval Activity.",
+        topicTitle: "Projection",
+        tags: ["projection"],
+        observedAt: "2026-08-14T10:00:00.000Z",
+        sources: [
+          { sourceRole: "primary_evidence" },
+          { sourceRole: "provenance_only" }
+        ]
+      }
+    ]);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+
+    await expect(
+      preparation.loadCandidatePreview({
+        localOwnerUserId: "owner-1",
+        sessionId: "session-1",
+        representation: "curated_assertions"
+      })
+    ).resolves.toMatchObject({
+      itemCount: 1,
+      excludedItemCount: 0,
+      items: [
+        {
+          representation: "curated_assertions",
+          assertionText: "Projection excludes Approval Activity.",
+          sourceCount: 1
+        }
+      ]
+    });
+  });
+
+  it("preserves structured lexical anchors in LCM candidates", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listLcmGraphNodes.mockResolvedValue([
+      {
+        id: "00000000-0000-4000-8000-000000000002",
+        kind: "leaf",
+        updatedAt: "2026-08-14T10:00:00.000Z",
+        summaryText: "Projection excludes Approval Activity.",
+        sourceEventCount: 2,
+        summaryStructuredJson: {
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Projection",
+          summary_text: "Projection excludes Approval Activity.",
+          lexical_anchors: ["Approval Activity"]
+        }
+      }
+    ]);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+
+    await expect(
+      preparation.loadCandidatePreview({
+        localOwnerUserId: "owner-1",
+        sessionId: "session-1",
+        representation: "lcm_leaves"
+      })
+    ).resolves.toMatchObject({
+      items: [{ lexicalAnchors: ["Approval Activity"] }]
+    });
   });
 
   it("wakes LCM work only while the prepared representation is pending", async () => {

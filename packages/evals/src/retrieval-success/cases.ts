@@ -9,8 +9,6 @@ export type RetrievalStage =
 
 export type SeedSourceType = "memory_event" | "memory_node";
 
-export type LexicalExpectation = "required" | "allowed" | "forbidden";
-
 export interface RetrievalSeedItem {
   id: string;
   sourceType: SeedSourceType;
@@ -35,12 +33,6 @@ export interface RetrievalSuccessCase {
     answerSubstrings?: string[];
     requiredEvidenceIds?: string[];
     forbiddenEvidenceIds?: string[];
-    requiredStages?: RetrievalStage[];
-    forbiddenStages?: RetrievalStage[];
-    lexical?: {
-      expectation: LexicalExpectation;
-      reason: string;
-    };
     temporal?: {
       recentDays?: number;
       sourceAfter?: string;
@@ -90,13 +82,6 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
       answerSubstrings: ["Tamar"],
       requiredEvidenceIds: ["fresh-story-lamp-keeper"],
       forbiddenEvidenceIds: ["fresh-story-tool-echo"],
-      requiredStages: ["score_scan", "fresh_pending_search"],
-      forbiddenStages: ["lexical_search"],
-      lexical: {
-        expectation: "forbidden",
-        reason:
-          "Story/detail recall should use semantic fresh or raw evidence, not lexical fallback."
-      },
       maxEvidenceItems: 2
     },
     notes:
@@ -135,12 +120,6 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
       answerSubstrings: ["Postgres WAL", "fsync"],
       requiredEvidenceIds: ["leaf-postgres-wal"],
       forbiddenEvidenceIds: ["leaf-docker-cache-noise"],
-      requiredStages: ["score_scan", "leaf_search"],
-      lexical: {
-        expectation: "forbidden",
-        reason:
-          "A normal semantic operational-detail question should not need lexical fallback."
-      },
       maxEvidenceItems: 2
     },
     notes: "Covers direct LCM leaf retrieval."
@@ -190,12 +169,6 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
       answerSubstrings: ["Local AI Runtime", "not", "backend"],
       requiredEvidenceIds: ["leaf-local-runtime-ownership"],
       forbiddenEvidenceIds: ["leaf-unrelated-bridge"],
-      requiredStages: ["score_scan", "rollup_search", "scoped_leaf_search"],
-      lexical: {
-        expectation: "forbidden",
-        reason:
-          "The worker should use rollup-to-leaf semantic narrowing before lexical fallback."
-      },
       maxEvidenceItems: 3
     },
     notes: "Covers rollup discovery followed by scoped leaf retrieval."
@@ -229,12 +202,6 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
       answerSubstrings: ["REQUEST_BODY_LIMIT_BYTES", "transport guard"],
       requiredEvidenceIds: ["event-config-file-exact"],
       forbiddenEvidenceIds: ["event-config-generic-noise"],
-      requiredStages: ["score_scan", "lexical_search"],
-      lexical: {
-        expectation: "required",
-        reason:
-          "The prompt asks for an exact filename, so lexical fallback is justified."
-      },
       maxEvidenceItems: 2
     },
     notes:
@@ -269,16 +236,10 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
       answerSubstrings: ["1000", "60 seconds"],
       requiredEvidenceIds: ["event-rate-limit-recent"],
       forbiddenEvidenceIds: ["event-rate-limit-old"],
-      requiredStages: ["score_scan", "fresh_pending_search"],
       temporal: {
         recentDays: 30,
         requiredInWindowIds: ["event-rate-limit-recent"],
         forbiddenOutOfWindowIds: ["event-rate-limit-old"]
-      },
-      lexical: {
-        expectation: "forbidden",
-        reason:
-          "The key requirement is temporal filtering over source event dates, not exact text fallback."
       },
       maxEvidenceItems: 2
     },
@@ -305,12 +266,6 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
       memoryStatus: "not_found",
       answerSubstrings: ["No matching", "decision"],
       forbiddenEvidenceIds: ["event-noisy-echo"],
-      requiredStages: ["score_scan", "lexical_search"],
-      lexical: {
-        expectation: "allowed",
-        reason:
-          "Exact error text can justify lexical lookup, but echo-only hits must not become final evidence."
-      },
       maxEvidenceItems: 0
     },
     notes:
@@ -349,13 +304,6 @@ export const retrievalSuccessCases: RetrievalSuccessCase[] = [
       answerSubstrings: ["Celandine"],
       requiredEvidenceIds: ["event-recipe-apprentice"],
       forbiddenEvidenceIds: ["event-recipe-echo"],
-      requiredStages: ["score_scan", "fresh_pending_search"],
-      forbiddenStages: ["lexical_search"],
-      lexical: {
-        expectation: "forbidden",
-        reason:
-          "Repeated generic terms should not make lexical search the first-pass retrieval path."
-      },
       maxEvidenceItems: 2
     },
     notes:

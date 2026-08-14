@@ -17,6 +17,11 @@ export interface TokenPiece {
   text: string;
 }
 
+export interface LlamaRerankResult {
+  scores: number[];
+  measuredTokens: number | null;
+}
+
 export interface LlamaServerOptions {
   name: "embedding" | "reranker";
   modelPath: string;
@@ -404,7 +409,7 @@ export class LlamaServerClient {
     };
   }
 
-  async rerank(query: string, documents: string[]): Promise<number[]> {
+  async rerank(query: string, documents: string[]): Promise<LlamaRerankResult> {
     const response = await this.post(
       "/v1/rerank",
       {
@@ -418,7 +423,19 @@ export class LlamaServerClient {
       },
       600000
     );
-    return extractRerankScores(response, documents.length);
+    const usage =
+      typeof response.usage === "object" && response.usage !== null
+        ? (response.usage as Record<string, unknown>)
+        : null;
+    return {
+      scores: extractRerankScores(response, documents.length),
+      measuredTokens:
+        typeof usage?.prompt_tokens === "number" &&
+        Number.isFinite(usage.prompt_tokens) &&
+        usage.prompt_tokens >= 0
+          ? Math.trunc(usage.prompt_tokens)
+          : null
+    };
   }
 
   private async openJson(

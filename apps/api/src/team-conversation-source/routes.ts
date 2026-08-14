@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   ConversationSourceSegmentRecord,
+  DeviceCredentialAuthContext,
   TeamConversationSourceAccessRecord
 } from "@koed/db";
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
@@ -22,6 +23,8 @@ import {
 } from "./schemas.js";
 
 const STREAM_HEARTBEAT_MS = 15_000;
+// Leave processing headroom inside the five-second authorization-loss bound.
+const STREAM_MAX_AUTHORIZATION_RECHECK_MS = 4_000;
 const STREAM_MAX_CLIENTS = 1_000;
 const STREAM_MAX_CLIENTS_PER_PRINCIPAL = 6;
 const STREAM_MAX_EVENT_BYTES = 32 * 1024;
@@ -177,6 +180,13 @@ type AuthenticatedViewer = {
   displayName: string | null;
 };
 
+type StreamAuthentication = {
+  viewer: AuthenticatedViewer;
+  credentialKind: "session" | "device_credential";
+  credentialId: string;
+  expiresAt: number | null;
+};
+
 type StreamClient = {
   id: string;
   viewer: AuthenticatedViewer;
@@ -194,6 +204,10 @@ type StreamClient = {
   closed: boolean;
   flushing: boolean;
   pending: boolean;
+  reauthenticate: () => Promise<StreamAuthentication>;
+  authentication: StreamAuthentication;
+  authorizationTimer: ReturnType<typeof setInterval> | null;
+  expiryTimer: ReturnType<typeof setTimeout> | null;
   heartbeat: ReturnType<typeof setInterval>;
 };
 
@@ -237,6 +251,7 @@ export const createTeamConversationSourceService = (options: {
   app: FastifyInstance;
   context: ApiRouteContext;
   pool: ListenPool | null;
+  authorizationRecheckMs?: number;
 }) => {
   const { app, context, pool } = options;
   const storage = createFilesystemConversationSourceStorage(
@@ -248,6 +263,15 @@ export const createTeamConversationSourceService = (options: {
   let listenerConnection: Promise<void> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
+  const authorizationRecheckMs = Math.min(
+    Math.max(
+      Math.trunc(
+        options.authorizationRecheckMs ?? STREAM_MAX_AUTHORIZATION_RECHECK_MS
+      ),
+      1
+    ),
+    STREAM_MAX_AUTHORIZATION_RECHECK_MS
+  );
 
   const authenticateViewer = async (
     request: FastifyRequest
@@ -257,6 +281,57 @@ export const createTeamConversationSourceService = (options: {
       "team_workspace_read",
       { apiTokenError: "API Tokens cannot read Team-shared transcripts" }
     );
+
+  const authenticateStream = async (
+    request: FastifyRequest
+  ): Promise<StreamAuthentication> => {
+    const viewer = await authenticateViewer(request);
+    const scheme =
+      request.headers.authorization?.trim().split(/\s+/, 1)[0]?.toLowerCase() ??
+      "";
+    if (scheme === "koed-device") {
+      const auth: DeviceCredentialAuthContext | null =
+        await context.auth.resolveDeviceCredentialContext(request);
+      if (
+        !auth ||
+        auth.user.id !== viewer.id ||
+        !auth.credential.operationFamilies.includes("team_workspace_read")
+      ) {
+        throw forbidden();
+      }
+      return {
+        viewer: auth.user,
+        credentialKind: "device_credential",
+        credentialId: auth.credential.id,
+        expiresAt: auth.credential.expiresAt
+          ? new Date(auth.credential.expiresAt).getTime()
+          : null
+      };
+    }
+    const auth = await context.auth.authenticateSessionContext(request);
+    if (auth.user.id !== viewer.id) throw forbidden();
+    return {
+      viewer: auth.user,
+      credentialKind: "session",
+      credentialId: auth.sessionId,
+      expiresAt: auth.expiresAt.getTime()
+    };
+  };
+
+  const createStreamReauthenticator = (
+    request: FastifyRequest
+  ): (() => Promise<StreamAuthentication>) => {
+    const headers = { ...request.headers };
+    const cookies = { ...request.cookies };
+    return () => {
+      const freshRequest = Object.create(request) as FastifyRequest;
+      Object.defineProperties(freshRequest, {
+        headers: { value: headers, enumerable: true },
+        cookies: { value: cookies, enumerable: true }
+      });
+      return authenticateStream(freshRequest);
+    };
+  };
 
   const auditDenied = async (input: {
     viewerId: string;
@@ -296,6 +371,10 @@ export const createTeamConversationSourceService = (options: {
   ): void => {
     if (client.closed) return;
     client.closed = true;
+    if (client.authorizationTimer) clearInterval(client.authorizationTimer);
+    if (client.expiryTimer) clearTimeout(client.expiryTimer);
+    client.authorizationTimer = null;
+    client.expiryTimer = null;
     clearInterval(client.heartbeat);
     clients.delete(client.id);
     if (!client.reply.raw.destroyed) {
@@ -304,6 +383,14 @@ export const createTeamConversationSourceService = (options: {
       );
       client.reply.raw.end();
     }
+  };
+
+  const closeForAuthorizationLoss = async (
+    client: StreamClient
+  ): Promise<void> => {
+    if (client.closed) return;
+    await auditStreamAuthorizationLoss(client).catch(() => undefined);
+    closeClient(client, "access_revoked");
   };
 
   const flush = async (client: StreamClient): Promise<void> => {
@@ -316,6 +403,25 @@ export const createTeamConversationSourceService = (options: {
     try {
       do {
         client.pending = false;
+        let authentication: StreamAuthentication;
+        try {
+          authentication = await client.reauthenticate();
+        } catch {
+          await closeForAuthorizationLoss(client);
+          return;
+        }
+        if (
+          authentication.viewer.id !== client.viewer.id ||
+          authentication.credentialKind !==
+            client.authentication.credentialKind ||
+          authentication.credentialId !== client.authentication.credentialId ||
+          (authentication.expiresAt !== null &&
+            authentication.expiresAt <= Date.now())
+        ) {
+          await closeForAuthorizationLoss(client);
+          return;
+        }
+        client.authentication = authentication;
         const access = await context
           .requireRepository()
           .getTeamConversationSourceAccess(
@@ -323,8 +429,7 @@ export const createTeamConversationSourceService = (options: {
             { shareGrantId: client.shareGrantId }
           );
         if (!access) {
-          await auditStreamAuthorizationLoss(client);
-          closeClient(client, "access_revoked");
+          await closeForAuthorizationLoss(client);
           return;
         }
         if (access.artifact.id !== client.artifactId) {
@@ -350,8 +455,7 @@ export const createTeamConversationSourceService = (options: {
             }
           );
         if (!page || page.artifact.id !== client.artifactId) {
-          await auditStreamAuthorizationLoss(client);
-          closeClient(client, "access_revoked");
+          await closeForAuthorizationLoss(client);
           return;
         }
         for (const segment of page.segments) {
@@ -744,7 +848,8 @@ export const createTeamConversationSourceService = (options: {
           { statusCode: 503 }
         );
       }
-      const viewer = await authenticateViewer(request);
+      const authentication = await authenticateStream(request);
+      const viewer = authentication.viewer;
       const params = teamConversationSourceParamsSchema.parse(request.params);
       const query = teamConversationSourceStreamQuerySchema.parse(
         request.query
@@ -832,7 +937,7 @@ export const createTeamConversationSourceService = (options: {
         "x-accel-buffering": "no"
       });
       const id = `${viewer.id}:${params.shareGrantId}:${Date.now()}:${Math.random()}`;
-      const client = {
+      const client: StreamClient = {
         id,
         viewer,
         reply,
@@ -849,10 +954,14 @@ export const createTeamConversationSourceService = (options: {
         closed: false,
         flushing: false,
         pending: false,
+        reauthenticate: createStreamReauthenticator(request),
+        authentication,
+        authorizationTimer: null,
+        expiryTimer: null,
         heartbeat: setInterval(() => {
           if (!reply.raw.destroyed) reply.raw.write(": heartbeat\n\n");
         }, STREAM_HEARTBEAT_MS)
-      } satisfies StreamClient;
+      };
       clients.set(id, client);
       request.raw.once("close", () => closeClient(client, "server_shutdown"));
       await writeSse(client, "ready", {
@@ -861,6 +970,22 @@ export const createTeamConversationSourceService = (options: {
         afterSegmentIndex: segmentIndex
       });
       await flush(client);
+      if (!client.closed) {
+        client.authorizationTimer = setInterval(() => {
+          void flush(client);
+        }, authorizationRecheckMs);
+        client.authorizationTimer.unref?.();
+        if (authentication.expiresAt !== null) {
+          const delay = Math.min(
+            Math.max(authentication.expiresAt - Date.now(), 1),
+            2_147_483_647
+          );
+          client.expiryTimer = setTimeout(() => {
+            void flush(client);
+          }, delay);
+          client.expiryTimer.unref?.();
+        }
+      }
     }
   );
 

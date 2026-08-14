@@ -92,6 +92,7 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
+      authorizationBoundary?: string;
     } = {}
   ): Promise<Record<string, unknown>> {
     return await this.client.teamMemoryExpand(
@@ -104,7 +105,8 @@ class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
         team_workspace_id: input.teamWorkspaceId,
         recent_days: input.recentDays,
         source_after: input.sourceAfter,
-        source_before: input.sourceBefore
+        source_before: input.sourceBefore,
+        authorization_boundary: input.authorizationBoundary
       },
       this.authorization
     );
@@ -189,7 +191,12 @@ export class MemoryToolExecutor {
   ): Promise<Record<string, unknown>> {
     const requestedResponseDetail: MemoryAnswerResponseDetail =
       input.include_evidence ? "with_evidence" : input.response_detail;
-    const { include_evidence, response_detail, ...answerInput } = input;
+    const {
+      include_evidence,
+      response_detail,
+      retrieval_hints,
+      ...answerInput
+    } = input;
     void include_evidence;
     void response_detail;
     const retrievalScope = defaultAnswerScope(await this.client.accessCheck());
@@ -267,16 +274,28 @@ export class MemoryToolExecutor {
             localEdgeClientCredential!.authorization
           )
         : this.client;
-    const evidence = {
-      markdown: "",
-      evidenceBundle: {
-        query: answerInput.query,
-        instructions:
-          "Use Koed memory RAG tools to gather and judge evidence before answering.",
-        evidence: [],
-        retrieval: { mode: "app_server_dynamic_tools" }
-      }
-    };
+    const evidence =
+      teamWorkspaceId && upstreamBackendId
+        ? await this.client.teamMemoryAnswer(
+            upstreamBackendId,
+            {
+              ...answerInput,
+              team_workspace_id: teamWorkspaceId,
+              project_id: projectId,
+              retrieval_stage: "score_scan"
+            },
+            localEdgeClientCredential!.authorization
+          )
+        : {
+            markdown: "",
+            evidenceBundle: {
+              query: answerInput.query,
+              instructions:
+                "Use Koed memory RAG tools to gather and judge evidence before answering.",
+              evidence: [],
+              retrieval: { mode: "app_server_dynamic_tools" }
+            }
+          };
     const answer = await (
       this.services.answerWithMemoryWorker ?? answerWithMemoryWorker
     )(evidence, {
@@ -292,53 +311,55 @@ export class MemoryToolExecutor {
       sourceBefore: input.source_before,
       limit: input.limit,
       responseDetail: "with_evidence",
+      retrievalHints: retrieval_hints,
       signal
     });
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");
     let recordedQuestion: McpMemoryQuestion | null = null;
     try {
+      const finalQuestionInput = answer.localMemoryWorker.usedFallback
+        ? {
+            idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+            query: answerInput.query,
+            origin: "mcp_memory_answer",
+            retrieval_scope: retrievalScope,
+            search_domain: input.search_domain,
+            project_id: projectId,
+            team_workspace_id: teamWorkspaceId,
+            session_id: input.session_id,
+            status: "error",
+            error_message: errorMessageFromAnswer(answer),
+            attempt_count: 1,
+            response: persistedAnswerResponse(answer),
+            retrieval: retrievalFromAnswer(answer),
+            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+          }
+        : {
+            idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+            query: answerInput.query,
+            origin: "mcp_memory_answer",
+            retrieval_scope: retrievalScope,
+            search_domain: input.search_domain,
+            project_id: projectId,
+            team_workspace_id: teamWorkspaceId,
+            session_id: input.session_id,
+            status: "answered",
+            answer_markdown: answerMarkdownFromAnswer(answer),
+            attempt_count: 1,
+            response: persistedAnswerResponse(answer),
+            evidence: evidenceFromAnswer(answer),
+            citations: citationsFromAnswer(answer),
+            retrieval: retrievalFromAnswer(answer),
+            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+          };
       recordedQuestion = questionFromResponse(
-        await this.client.createFinalQuestion(
-          answer.localMemoryWorker.usedFallback
-            ? {
-                idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
-                query: answerInput.query,
-                origin: "mcp_memory_answer",
-                retrieval_scope: retrievalScope,
-                search_domain: input.search_domain,
-                project_id: projectId,
-                team_workspace_id: teamWorkspaceId,
-                session_id: input.session_id,
-                status: "error",
-                error_message: errorMessageFromAnswer(answer),
-                attempt_count: 1,
-                response: persistedAnswerResponse(answer),
-                retrieval: retrievalFromAnswer(answer),
-                local_memory_worker: stripAppServerEvents(
-                  answer.localMemoryWorker
-                )
-              }
-            : {
-                idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
-                query: answerInput.query,
-                origin: "mcp_memory_answer",
-                retrieval_scope: retrievalScope,
-                search_domain: input.search_domain,
-                project_id: projectId,
-                team_workspace_id: teamWorkspaceId,
-                session_id: input.session_id,
-                status: "answered",
-                answer_markdown: answerMarkdownFromAnswer(answer),
-                attempt_count: 1,
-                response: persistedAnswerResponse(answer),
-                evidence: evidenceFromAnswer(answer),
-                citations: citationsFromAnswer(answer),
-                retrieval: retrievalFromAnswer(answer),
-                local_memory_worker: stripAppServerEvents(
-                  answer.localMemoryWorker
-                )
-              }
-        )
+        teamWorkspaceId && upstreamBackendId
+          ? await this.client.createFinalTeamQuestion(
+              upstreamBackendId,
+              finalQuestionInput,
+              localEdgeClientCredential!.authorization
+            )
+          : await this.client.createFinalQuestion(finalQuestionInput)
       );
     } catch (error) {
       logger.warn(
@@ -346,7 +367,13 @@ export class MemoryToolExecutor {
         "koed memory_answer question history persistence skipped"
       );
     }
-    await this.recordTokenUsage(answer, input, projectId, recordedQuestion);
+    await this.recordTokenUsage(
+      answer,
+      input,
+      projectId,
+      recordedQuestion,
+      upstreamBackendId
+    );
     return toolAnswerResponse(answer, requestedResponseDetail);
   }
 
@@ -354,8 +381,15 @@ export class MemoryToolExecutor {
     answer: Awaited<ReturnType<typeof answerWithMemoryWorker>>,
     input: MemoryAnswerToolInput,
     projectId: string | undefined,
-    recordedQuestion: McpMemoryQuestion | null
+    recordedQuestion: McpMemoryQuestion | null,
+    upstreamBackendId: string | undefined
   ): Promise<void> {
+    const upstreamQuestionId = upstreamBackendId
+      ? recordedQuestion?.id
+      : undefined;
+    const localQuestionId = upstreamBackendId
+      ? undefined
+      : recordedQuestion?.id;
     const executions = answer.localMemoryWorker.appServerExecutions?.length
       ? answer.localMemoryWorker.appServerExecutions
       : [
@@ -374,7 +408,7 @@ export class MemoryToolExecutor {
           await this.client.recordTokenUsage({
             workflowType: "mcp_memory_answer",
             workflowId: answer.localMemoryWorker.jobId,
-            questionId: recordedQuestion?.id,
+            questionId: localQuestionId,
             answerJobId: answer.localMemoryWorker.jobId,
             sessionId: input.session_id,
             sourceRuntime: "codex",
@@ -397,7 +431,9 @@ export class MemoryToolExecutor {
               appServerThreadId:
                 execution.primaryThreadId ?? execution.threadId,
               appServerTurnId: execution.turnId,
-              questionId: recordedQuestion?.id,
+              questionId: localQuestionId,
+              upstreamQuestionId,
+              upstreamBackendId,
               answerJobId: answer.localMemoryWorker.jobId,
               primaryAppServerThreadId: execution.primaryThreadId,
               executionThreadId: execution.threadId,

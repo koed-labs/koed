@@ -9,7 +9,7 @@ import {
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExpandedMemoryNode,
   MemoryActor,
@@ -33,6 +33,7 @@ import type {
   CreateUserInput,
   DeviceCredentialRecord,
   DeviceEnrollmentChallengeRecord,
+  EmbeddingCapacityRepository,
   ExternalAuthIdentityRecord,
   ExternalAuthOrganizationRecord,
   HistoricalImportRunRecord,
@@ -176,7 +177,8 @@ afterEach(() => {
     "KOED_RUNBOOK_BASE_URL",
     "KOED_OPS_OPERATOR_EMAILS",
     "KOED_OPS_ALERT_WEBHOOK_URL",
-    "KOED_OPS_ALERT_WEBHOOK_TOKEN"
+    "KOED_OPS_ALERT_WEBHOOK_TOKEN",
+    "KOED_OPS_METRICS_TOKEN"
   ]) {
     delete process.env[name];
   }
@@ -3251,6 +3253,15 @@ const createFakeRepository = () => {
         projectedRecordCount: 0,
         embeddingEligibleEventCount: 0,
         embeddedEventCount: 0,
+        embeddingEligibleEstimatedTokenCount: 0,
+        embeddedMeasuredTokenCount: 0,
+        pendingEmbeddingEstimatedTokenCount: 0,
+        embeddingQueueAheadEstimatedTokenCount: 0,
+        embeddingEtaLowerSeconds: null,
+        embeddingEtaUpperSeconds: null,
+        embeddingEtaConfidence: "conservative",
+        oldestEmbeddedSourceTime: null,
+        newestEmbeddedSourceTime: null,
         lcmEligibleEventCount: 0,
         lcmCompletedEventCount: 0,
         rawIngested: artifact.liveStartOffset === artifact.journalStartOffset,
@@ -3889,6 +3900,7 @@ const createFakeRepository = () => {
         visibility: "personal",
         origin: input.origin ?? "mcp_memory_answer",
         retrievalScope: input.retrievalScope ?? "personal",
+        teamWorkspaceId: input.teamWorkspaceId ?? null,
         searchDomain: input.searchDomain,
         projectId: input.projectId ?? null,
         projectName: input.projectName ?? null,
@@ -4962,7 +4974,164 @@ const createFakeRepository = () => {
   return repositoryWithSourceRegistration as unknown as MemorySourceRepository;
 };
 
+const createFakeEmbeddingCapacityRepository =
+  (): EmbeddingCapacityRepository => ({
+    async tryAcquireCalibrationLease() {
+      return { async release() {} };
+    },
+    async getActiveProfile() {
+      return null;
+    },
+    async getLatestUsableProfile() {
+      return {
+        id: "capacity-profile-test",
+        poolKey: "default",
+        profileKey: "a".repeat(64),
+        profileVersion: "embedding-capacity-v1",
+        capacityContractRevision: "embedding-capacity-v1",
+        state: "usable",
+        calibrationMode: "refined",
+        modelKey: "qwen3-0.6b",
+        modelArtifactHash: "unknown",
+        embeddingDimensions: 1024,
+        tokenizer: "qwen3",
+        inputTransform: "query-document-v1",
+        pooling: "last-token",
+        normalization: "l2",
+        runtimeKind: "llama-server",
+        runtimeVersion: "test",
+        backendClass: "cpu",
+        hardwareFingerprint: "b".repeat(64),
+        settingsFingerprint: "c".repeat(64),
+        runtimeSettings: {
+          parallel: 1,
+          modelPath: "/private/operator/models/customer-model.gguf"
+        },
+        sampleMeasurements: [
+          {
+            targetTokenClass: 1024,
+            measuredTokenCount: 1_000,
+            durationMs: 500
+          }
+        ],
+        testedConcurrency: 1,
+        sampleCount: 12,
+        measuredTokenCount: 12_000,
+        durationMs: 6_000,
+        measuredTokensPerSecond: 2_000,
+        p50LatencyMs: 100,
+        p95LatencyMs: 150,
+        failureCode: null,
+        calibratedAt: "2026-07-31T00:00:00.000Z",
+        invalidatedAt: null,
+        invalidationReason: null
+      };
+    },
+    async listActiveUsableProfiles() {
+      const profile = await this.getLatestUsableProfile();
+      return profile ? [profile] : [];
+    },
+    async replaceActiveProfile(input) {
+      return {
+        id: "capacity-profile-test",
+        ...input,
+        failureCode: input.failureCode ?? null,
+        calibratedAt: "2026-07-31T00:00:00.000Z",
+        invalidatedAt: null,
+        invalidationReason: null
+      };
+    },
+    async invalidateProfilesExcept() {
+      return 0;
+    },
+    async heartbeatProfile() {
+      return true;
+    },
+    async recordTelemetry() {},
+    async getRollingTelemetry() {
+      return [1, 5, 15].map((windowMinutes) => ({
+        windowMinutes: windowMinutes as 1 | 5 | 15,
+        arrivalEventCount: 3,
+        eventCount: 2,
+        memoryEventCount: 2,
+        memoryNodeCount: 0,
+        messageCount: 0,
+        lcmCompactionCount: 1,
+        chunkCount: 3,
+        measuredTokenCount: 1_200,
+        retries: 0,
+        failures: 0,
+        arrivalsPerMinute: 3 / windowMinutes,
+        eventsPerMinute: 2 / windowMinutes,
+        memoryEventsPerMinute: 2 / windowMinutes,
+        memoryNodesPerMinute: 0,
+        messagesPerMinute: 0,
+        lcmCompactionsPerMinute: 1 / windowMinutes,
+        measuredTokensPerSecond: 20 / windowMinutes,
+        averageQueueWaitMs: 25,
+        averageExecutionMs: 75,
+        averageEndToEndMs: 100
+      }));
+    },
+    async getCumulativeTelemetry() {
+      return [
+        {
+          queueName: "memory-embed",
+          sourceClass: "memory_event",
+          outcome: "completed",
+          eventCount: 2,
+          chunkCount: 3,
+          measuredTokenCount: 1_200,
+          queueWaitMsTotal: 50,
+          queueWaitSampleCount: 2,
+          executionMsTotal: 150,
+          executionSampleCount: 2,
+          endToEndMsTotal: 200,
+          endToEndSampleCount: 2
+        }
+      ];
+    },
+    async getSemanticBacklog() {
+      return {
+        pendingMemoryEvents: 4,
+        pendingMemoryNodes: 2,
+        pendingMessages: 0,
+        pendingEstimatedTokens: 8_000,
+        completedMeasuredTokens: 1_200
+      };
+    }
+  });
+
 describe("api health", () => {
+  it("closes every memory job queue producer during shutdown", async () => {
+    const closeByQueue = new Map<string, ReturnType<typeof vi.fn>>();
+    const memoryJobQueueFactory = ((name: string) => {
+      const close = vi.fn().mockResolvedValue(undefined);
+      closeByQueue.set(name, close);
+      return {
+        add: vi.fn(),
+        getJobCounts: vi.fn().mockResolvedValue({}),
+        getOldestPendingAgeMs: vi.fn().mockResolvedValue(null),
+        close
+      };
+    }) as NonNullable<BuildServerOptions["memoryJobQueueFactory"]>;
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      memoryJobQueueFactory
+    });
+
+    await app.close();
+
+    expect([...closeByQueue.keys()]).toEqual([
+      "memory-embed",
+      "lcm-compact",
+      "lcm-embed"
+    ]);
+    for (const close of closeByQueue.values()) {
+      expect(close).toHaveBeenCalledOnce();
+    }
+  });
+
   it("invalidates graph cache for embedding updates without broadcasting them", () => {
     const embeddingPayload = {
       id: randomUUID(),
@@ -7708,6 +7877,13 @@ describe("account and access flows", () => {
       },
       payload: { teamId: randomUUID(), name: "Workspace" }
     });
+    const deniedDeviceOperations = await app.inject({
+      method: "GET",
+      url: "/ops/status",
+      headers: {
+        authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`
+      }
+    });
     const deniedApiTokenSelfRevoke = await app.inject({
       method: "DELETE",
       url: "/v1/local-edge/device-credentials/current",
@@ -7770,6 +7946,7 @@ describe("account and access flows", () => {
       "device_credential"
     );
     expect(deniedTeamRoute.statusCode).toBe(403);
+    expect(deniedDeviceOperations.statusCode).toBe(401);
     expect(jsonBody<{ error: string }>(deniedTeamRoute).error).toBe(
       "Device credential is not allowed for Team administration"
     );
@@ -8170,7 +8347,7 @@ describe("account and access flows", () => {
     expect(impossiblePendingScope.statusCode).toBe(400);
   });
 
-  it("keeps typed generic Team Memory unavailable after local-edge authorization", async () => {
+  it("proxies typed Team Memory after scoped local-edge authorization", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-team-memory-"));
     process.env.KOED_HOME = koedHome;
     const localClient = storeLocalEdgeClientCredential(koedHome, {
@@ -8370,14 +8547,14 @@ describe("account and access flows", () => {
       action: "deny_fail_closed",
       reason: "route_policy_disabled"
     });
-    expect(proxied.statusCode).toBe(400);
+    expect(proxied.statusCode).toBe(200);
     expect(proxiedWithApiToken.statusCode).toBe(401);
     expect(blockedGeneralProxy.statusCode).toBe(400);
     expect(blockedArbitraryPath.statusCode).toBe(400);
-    expect(upstreamCalls).toHaveLength(0);
+    expect(upstreamCalls).toHaveLength(1);
   });
 
-  it("rejects typed generic Team Memory with a scoped local-edge client credential", async () => {
+  it("accepts typed Team Memory with a scoped local-edge client credential", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-local-client-"));
     process.env.KOED_HOME = koedHome;
     const upstreamPath = writeUpstreamRegistryFixture({
@@ -8420,6 +8597,22 @@ describe("account and access flows", () => {
       payload: {
         upstream_backend_id: "team-vps",
         input: { query: "team", team_workspace_id: randomUUID() }
+      }
+    });
+    const allowedQuestion = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/team-memory/questions/final",
+      headers: { authorization },
+      payload: {
+        upstream_backend_id: "team-vps",
+        input: {
+          idempotency_key: `team-question-${randomUUID()}`,
+          query: "What did the Team decide?",
+          origin: "mcp_memory_answer",
+          team_workspace_id: randomUUID(),
+          status: "answered",
+          answer_markdown: "Use the Team evidence."
+        }
       }
     });
     const invalidCredential = await app.inject({
@@ -8474,14 +8667,18 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(allowed.statusCode).toBe(400);
+    expect(allowed.statusCode).toBe(200);
+    expect(allowedQuestion.statusCode).toBe(200);
     expect(invalidCredential.statusCode).toBe(401);
     expect(browserSessionOnly.statusCode).toBe(401);
     expect(
       malformedCredentialMatrix.map((response) => response.statusCode)
     ).toEqual(malformedCredentialMatrix.map(() => 401));
     expect(malformedAuthorized.statusCode).toBe(400);
-    expect(upstreamCalls).toEqual([]);
+    expect(upstreamCalls).toEqual([
+      "https://team.example.test/v1/memory/search",
+      "https://team.example.test/v1/memory/questions/final"
+    ]);
   });
 
   it("does not expose local-edge runtime proxy operations from non-local deployment profiles", async () => {
@@ -9488,6 +9685,200 @@ describe("account and access flows", () => {
     expect(status.body).not.toContain(secretSentinel);
   });
 
+  it("protects capacity metrics with a dedicated machine credential", async () => {
+    const metricsToken = "metrics-only-secret";
+    const rawMemorySentinel = "customer-memory-must-not-enter-metrics";
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_OPS_METRICS_TOKEN = metricsToken;
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      embeddingCapacityRepository: createFakeEmbeddingCapacityRepository()
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "metrics-user@example.com", password: "password123" }
+    });
+    const sessionCookie = cookieHeader(registered);
+
+    const [anonymous, wrongToken, browserSession, accepted] = await Promise.all(
+      [
+        app.inject({ method: "GET", url: "/internal/metrics" }),
+        app.inject({
+          method: "GET",
+          url: "/internal/metrics",
+          headers: { authorization: "Bearer wrong-secret" }
+        }),
+        app.inject({
+          method: "GET",
+          url: "/internal/metrics",
+          headers: browserSessionHeaders(sessionCookie)
+        }),
+        app.inject({
+          method: "GET",
+          url: "/internal/metrics",
+          headers: { authorization: `Bearer ${metricsToken}` }
+        })
+      ]
+    );
+    await app.close();
+
+    expect(anonymous.statusCode).toBe(401);
+    expect(wrongToken.statusCode).toBe(401);
+    expect(browserSession.statusCode).toBe(401);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.headers["content-type"]).toContain(
+      "application/openmetrics-text"
+    );
+    expect(accepted.body).toContain(
+      "koed_embedding_capacity_tokens_per_second 2000"
+    );
+    expect(accepted.body).toContain(
+      'koed_embedding_backlog_sources{source="memory_event"} 4'
+    );
+    expect(accepted.body).toContain(
+      'koed_embedding_events_total{queue="memory-embed",source="memory_event",outcome="completed"} 2'
+    );
+    expect(accepted.body.endsWith("# EOF\n")).toBe(true);
+    expect(accepted.body).not.toContain(metricsToken);
+    expect(accepted.body).not.toContain(rawMemorySentinel);
+    expect(accepted.body).not.toContain("hardwareFingerprint");
+    expect(accepted.body).not.toContain("runtimeSettings");
+  });
+
+  it("aggregates compatible hosted worker-pool capacity", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    const capacity = createFakeEmbeddingCapacityRepository();
+    const first = await capacity.getLatestUsableProfile();
+    capacity.listActiveUsableProfiles = async () => [
+      first!,
+      {
+        ...first!,
+        id: "capacity-profile-pool-b",
+        poolKey: "pool-b",
+        profileKey: "capacity-profile-key-pool-b",
+        backendClass: "cuda",
+        testedConcurrency: 4,
+        sampleCount: 16,
+        measuredTokensPerSecond: 3_000,
+        p50LatencyMs: 80,
+        p95LatencyMs: 120
+      }
+    ];
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      embeddingCapacityRepository: capacity
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "pool-ops@example.com", password: "password123" }
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/ops/status",
+      headers: browserSessionHeaders(cookieHeader(registered))
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(
+      jsonBody<{
+        components: { embeddingCapacity: { details: { profile: unknown } } };
+      }>(response).components.embeddingCapacity.details.profile
+    ).toMatchObject({
+      poolCount: 2,
+      backendClasses: ["cpu", "cuda"],
+      testedConcurrency: 5,
+      sampleCount: 28,
+      measuredTokensPerSecond: 5_000,
+      p50LatencyMs: 100,
+      p95LatencyMs: 150
+    });
+  });
+
+  it("does not expose a metrics route without a machine credential", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      embeddingCapacityRepository: createFakeEmbeddingCapacityRepository()
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/internal/metrics",
+      headers: { authorization: "Bearer any-token" }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("reports a conservative ETA without opening historical admission", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    const capacity = createFakeEmbeddingCapacityRepository();
+    capacity.listActiveUsableProfiles = async () => [];
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      embeddingCapacityRepository: capacity
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "fallback-eta@example.com", password: "password123" }
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/ops/status",
+      headers: browserSessionHeaders(cookieHeader(registered))
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(
+      jsonBody<{
+        components: {
+          embeddingCapacity: {
+            status: string;
+            details: Record<string, unknown>;
+          };
+        };
+      }>(response).components.embeddingCapacity
+    ).toMatchObject({
+      status: "degraded",
+      details: {
+        admission: "historical_closed",
+        drainEstimate: {
+          confidence: "conservative",
+          source: "documented_fallback"
+        }
+      }
+    });
+  });
+
+  it("keeps health and readiness independent from capacity queries", async () => {
+    const capacity = createFakeEmbeddingCapacityRepository();
+    capacity.listActiveUsableProfiles = vi.fn(
+      capacity.listActiveUsableProfiles
+    );
+    capacity.getSemanticBacklog = vi.fn(capacity.getSemanticBacklog);
+    capacity.getRollingTelemetry = vi.fn(capacity.getRollingTelemetry);
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      embeddingCapacityRepository: capacity
+    });
+
+    const [health, ready] = await Promise.all([
+      app.inject({ method: "GET", url: "/health" }),
+      app.inject({ method: "GET", url: "/ready" })
+    ]);
+    await app.close();
+
+    expect(health.statusCode).toBe(200);
+    expect([200, 503]).toContain(ready.statusCode);
+    expect(capacity.listActiveUsableProfiles).not.toHaveBeenCalled();
+    expect(capacity.getSemanticBacklog).not.toHaveBeenCalled();
+    expect(capacity.getRollingTelemetry).not.toHaveBeenCalled();
+  });
+
   it("keeps historical backlog out of readiness and diagnostic-only", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-history-status-"));
     process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
@@ -9671,18 +10062,27 @@ describe("account and access flows", () => {
 
   it("restricts hosted operations status to configured operator sessions", async () => {
     process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
-    process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
     process.env.KOED_OPS_OPERATOR_EMAILS = "ops@example.test";
-    const app = await buildServer({ repository: createFakeRepository() });
+    configureTestWorkos();
+    const repository = createFakeRepository();
+    const app = await buildServer({ repository });
     const operator = await app.inject({
       method: "POST",
       url: "/auth/register",
       payload: { email: "ops@example.test", password: "password123" }
     });
-    const user = await app.inject({
+    const userCookie = await createVerifiedWorkosSessionForTest(
+      repository,
+      "user@example.test"
+    );
+    const team = await app.inject({
       method: "POST",
-      url: "/auth/register",
-      payload: { email: "user@example.test", password: "password123" }
+      url: "/v1/teams",
+      headers: browserSessionHeaders(userCookie, {
+        "idempotency-key": randomUUID()
+      }),
+      payload: { name: "Team membership does not grant operations" }
     });
     const operatorStatus = await app.inject({
       method: "GET",
@@ -9692,7 +10092,7 @@ describe("account and access flows", () => {
     const userStatus = await app.inject({
       method: "GET",
       url: "/ops/status",
-      headers: browserSessionHeaders(cookieHeader(user))
+      headers: browserSessionHeaders(userCookie)
     });
     const operatorAlert = await app.inject({
       method: "POST",
@@ -9702,11 +10102,12 @@ describe("account and access flows", () => {
     const userAlert = await app.inject({
       method: "POST",
       url: "/ops/test-alert",
-      headers: browserSessionHeaders(cookieHeader(user))
+      headers: browserSessionHeaders(userCookie)
     });
     await app.close();
 
     expect(operatorStatus.statusCode).toBe(200);
+    expect(team.statusCode).toBe(200);
     expect(operatorAlert.statusCode).toBe(200);
     expect(userStatus.statusCode).toBe(403);
     expect(userAlert.statusCode).toBe(403);
@@ -11792,7 +12193,7 @@ describe("account and access flows", () => {
     ).toEqual(["managed-held-item"]);
   });
 
-  it("keeps Team Shared Memory evidence unavailable behind Team authentication", async () => {
+  it("serves Team Shared Memory evidence behind Team authentication", async () => {
     const repository = createFakeRepository();
     const recallInputs: Array<Record<string, unknown>> = [];
     const originalSearchMemoryNodes =
@@ -11801,7 +12202,73 @@ describe("account and access flows", () => {
       recallInputs.push(input as Record<string, unknown>);
       return originalSearchMemoryNodes(actor, input);
     };
-    const app = await buildServer({ repository });
+    const teamCandidateId = randomUUID();
+    repository.searchAuthorizedSharedMemorySemanticItems = async () => [
+      {
+        candidateId: teamCandidateId,
+        shareGrantId: randomUUID(),
+        representationId: randomUUID(),
+        representation: "lcm_rollups",
+        pseudonymousSourceId: "team-source",
+        sourceItemIndex: 0,
+        sourceRevision: 1,
+        provenanceHash: "a".repeat(64),
+        representationPolicyRevision: 1,
+        contentPolicyVersion: 1,
+        classifierVersion: 1,
+        embeddingModel: "qwen3-0.6b",
+        embeddingDimensions: 1024,
+        embeddingVersion: "1",
+        itemType: "lcm_rollup",
+        occurredAt: null,
+        text: "Team evidence must not be returned during score scan.",
+        lexicalAnchors: [],
+        score: 0.9,
+        freshness: "fresh"
+      }
+    ];
+    repository.scanAuthorizedSharedMemorySemanticItems = async () => [
+      {
+        representation: "lcm_rollups",
+        candidateCount: 1,
+        topScore: 0.9
+      },
+      {
+        representation: "memory_events",
+        candidateCount: 1,
+        topScore: 0.8
+      }
+    ];
+    repository.freezeSharedMemorySemanticRecallBoundary = async (
+      _actor,
+      input
+    ) => ({
+      teamId: randomUUID(),
+      teamVersion: 1,
+      teamWorkspaceId: input.teamWorkspaceId,
+      workspaceVersion: 1,
+      membershipVersion: 1,
+      workspaceAccessVersion: 1,
+      userRowVersion: "1",
+      shareGrantIds: []
+    });
+    const app = await buildServer({
+      repository,
+      fetch: async () => {
+        throw new Error(
+          "Local-edge upstream transport must not embed Team queries"
+        );
+      },
+      internalServiceFetch: async () =>
+        new Response(
+          JSON.stringify({
+            model: "qwen3-0.6b",
+            dimensions: 1024,
+            vectors: [Array.from({ length: 1024 }, () => 0)]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+    });
     const registered = await app.inject({
       method: "POST",
       url: "/auth/register",
@@ -11834,7 +12301,8 @@ describe("account and access flows", () => {
       payload: {
         query: "Seraphina",
         retrieval_scope: "personal",
-        retrieval_stage: "lexical_search",
+        retrieval_stage: "rollup_search",
+        exact_hints: ["Seraphina"],
         parent_node_ids: [parentNodeId],
         strict_limit: "false",
         limit: 2
@@ -11888,6 +12356,45 @@ describe("account and access flows", () => {
         limit: 1
       }
     });
+    const deviceScoreScan = await app.inject({
+      method: "POST",
+      url: "/v1/memory/search",
+      headers: { authorization: device.authorization },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        retrieval_stage: "score_scan",
+        team_workspace_id: teamWorkspaceId,
+        strict_limit: true,
+        limit: 1
+      }
+    });
+    const deviceTeamQuestion = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/final",
+      headers: { authorization: device.authorization },
+      payload: {
+        idempotency_key: `team-question-${randomUUID()}`,
+        query: "What did the Team decide?",
+        origin: "mcp_memory_answer",
+        team_workspace_id: teamWorkspaceId,
+        status: "answered",
+        answer_markdown: "Use the authorized Team evidence."
+      }
+    });
+    const rejectedApiTokenTeamQuestion = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/final",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        idempotency_key: `team-question-${randomUUID()}`,
+        query: "What did the Team decide?",
+        origin: "mcp_memory_answer",
+        team_workspace_id: teamWorkspaceId,
+        status: "answered",
+        answer_markdown: "This must not be accepted."
+      }
+    });
     const answer = await app.inject({
       method: "POST",
       url: "/v1/memory/answer",
@@ -11904,10 +12411,43 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(search.statusCode).toBe(200);
-    expect(answer.statusCode).toBe(404);
-    expect(deviceAnswer.statusCode).toBe(404);
+    expect(answer.statusCode).toBe(200);
+    expect(deviceAnswer.statusCode).toBe(200);
+    expect(deviceScoreScan.statusCode).toBe(200);
+    expect(deviceTeamQuestion.statusCode).toBe(200);
+    expect(rejectedApiTokenTeamQuestion.statusCode).toBe(403);
+    const scoreScan = jsonBody<{
+      hits: unknown[];
+      rawHitsCount: number;
+      retrieval: {
+        vectorCandidateCount: number;
+        stages: Array<Record<string, unknown>>;
+      };
+    }>(deviceScoreScan);
+    expect(scoreScan.hits).toEqual([]);
+    expect(scoreScan.rawHitsCount).toBe(0);
+    expect(scoreScan.retrieval.vectorCandidateCount).toBe(2);
+    expect(scoreScan.retrieval.stages).toContainEqual(
+      expect.objectContaining({
+        name: "rollup_search",
+        used: false,
+        selectedCount: 0,
+        countAboveThreshold: 1,
+        maxAllowed: 1
+      })
+    );
+    expect(scoreScan.retrieval.stages).toContainEqual(
+      expect.objectContaining({
+        name: "fresh_pending_search",
+        used: false,
+        selectedCount: 0,
+        countAboveThreshold: 1,
+        maxAllowed: 1
+      })
+    );
     expect(recallInputs[0]).toMatchObject({
-      retrievalStage: "lexical_search",
+      retrievalStage: "rollup_search",
+      exactHints: ["Seraphina"],
       parentNodeIds: [parentNodeId],
       strictLimit: false,
       limit: 2
@@ -11924,16 +12464,10 @@ describe("account and access flows", () => {
     expect(
       jsonBody<{ error: string }>(rejectedWrongScopeDeviceAnswer).error
     ).toBe("Device credential is not allowed for this operation");
-    expect(jsonBody<{ error: string }>(answer).error).toBe(
-      "Team Shared Memory evidence is not available"
-    );
-    expect(jsonBody<{ error: string }>(deviceAnswer).error).toBe(
-      "Team Shared Memory evidence is not available"
-    );
     expect(recallInputs).toHaveLength(1);
   });
 
-  it("keeps Team Shared Memory expansion unavailable behind Team authentication", async () => {
+  it("serves Team Shared Memory expansion behind Team authentication", async () => {
     const repository = createFakeRepository();
     const expandInputs: Array<Record<string, unknown>> = [];
     repository.expandMemoryNode = async (nodeId, _actor, input) => {
@@ -11944,6 +12478,37 @@ describe("account and access flows", () => {
         sourceItems: [],
         sources: []
       } satisfies ExpandedMemoryNode;
+    };
+    repository.expandAuthorizedSharedMemorySemanticItem = async (
+      _actor,
+      input
+    ) => {
+      expandInputs.push(input as unknown as Record<string, unknown>);
+      return {
+        parent: {
+          candidateId: input.candidateId,
+          shareGrantId: randomUUID(),
+          representationId: randomUUID(),
+          representation: "lcm_rollups" as const,
+          pseudonymousSourceId: randomUUID(),
+          sourceItemIndex: 0,
+          sourceRevision: 1,
+          provenanceHash: "a".repeat(64),
+          representationPolicyRevision: 1,
+          contentPolicyVersion: 1,
+          classifierVersion: 1,
+          embeddingModel: "qwen3-0.6b",
+          embeddingDimensions: 1024,
+          embeddingVersion: "team-semantic-v1:test",
+          itemType: "lcm_rollup" as const,
+          occurredAt: null,
+          text: "Authorized Team evidence.",
+          lexicalAnchors: [],
+          score: 1,
+          freshness: "fresh" as const
+        },
+        items: []
+      };
     };
     const app = await buildServer({ repository });
     const registered = await app.inject({
@@ -11988,15 +12553,12 @@ describe("account and access flows", () => {
     expect(jsonBody<{ error: string }>(rejectedTokenExpand).error).toBe(
       "Session cookie or scoped device credential required"
     );
-    expect(deviceExpand.statusCode).toBe(404);
-    expect(sessionExpand.statusCode).toBe(404);
-    expect(jsonBody<{ error: string }>(deviceExpand).error).toBe(
-      "Team Shared Memory expansion is not available"
-    );
-    expect(jsonBody<{ error: string }>(sessionExpand).error).toBe(
-      "Team Shared Memory expansion is not available"
-    );
-    expect(expandInputs).toEqual([]);
+    expect(deviceExpand.statusCode).toBe(200);
+    expect(sessionExpand.statusCode).toBe(200);
+    expect(expandInputs).toEqual([
+      { teamWorkspaceId, candidateId: nodeId, searchDomain: "global" },
+      { teamWorkspaceId, candidateId: nodeId, searchDomain: "global" }
+    ]);
   });
 
   it("keeps Team Shared Memory graph APIs unavailable behind Team authentication", async () => {
@@ -14454,6 +15016,18 @@ describe("account and access flows", () => {
       }
     });
     const questionId = jsonBody<MemoryQuestionResponse>(created).question.id;
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/final",
+      headers,
+      payload: {
+        idempotency_key: `final-question-${randomUUID()}`,
+        query: "What did we decide about an unrelated topic?",
+        origin: "mcp_memory_answer",
+        status: "answered",
+        answer_markdown: "An unrelated answer."
+      }
+    });
     const listed = await app.inject({
       method: "GET",
       url: "/v1/memory/questions?search_domain=project&project_id=project-1",
@@ -14462,6 +15036,11 @@ describe("account and access flows", () => {
     const detail = await app.inject({
       method: "GET",
       url: `/v1/memory/questions/${questionId}`,
+      headers
+    });
+    const searched = await app.inject({
+      method: "GET",
+      url: "/v1/memory/questions?query=rate%20limits",
       headers
     });
     await app.close();
@@ -14477,6 +15056,9 @@ describe("account and access flows", () => {
       jsonBody<MemoryQuestionResponse>(created).question.retrievalScope
     ).toBe("personal");
     expect(jsonBody<MemoryQuestionsResponse>(listed).questions).toHaveLength(1);
+    expect(jsonBody<MemoryQuestionsResponse>(searched).questions).toHaveLength(
+      1
+    );
     expect(jsonBody<MemoryQuestionResponse>(detail).question).toMatchObject({
       id: questionId,
       origin: "mcp_memory_answer",

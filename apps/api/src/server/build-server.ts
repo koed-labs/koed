@@ -7,11 +7,13 @@ import { type Visibility } from "@koed/core";
 import {
   createCollaborationRepository,
   createDbPool,
+  createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createRetentionLifecycleRepository,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRepository,
+  type EmbeddingCapacityRepository,
   type MemorySourceRepository,
   type RetentionLifecycleRepository
 } from "@koed/db";
@@ -73,6 +75,7 @@ import {
   createEnvelopeEncryptionProviderFromEnvironment,
   crossIdentitySyncDeterministicUuid,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
+  createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
   inspectDeviceIdentityAtKoedHome,
   reconcileDeviceIdentityDeployment,
   embeddingDispatchKey,
@@ -80,6 +83,7 @@ import {
   type DeviceIdentityInspection,
   type EnvelopeEncryptionProvider,
   lcmCompactQueueName,
+  lcmEmbedQueueName,
   memoryEmbedQueueName,
   requestKoedLocalWork,
   readLocalEdgeUpstreamEnrollmentBinding,
@@ -149,11 +153,16 @@ export interface BuildServerOptions {
   repository?: MemorySourceRepository;
   collaborationRepository?: CollaborationRepository;
   retentionRepository?: RetentionLifecycleRepository;
+  embeddingCapacityRepository?: EmbeddingCapacityRepository;
+  /** Test-only queue factory injection. Production uses createMemoryJobQueue. */
+  memoryJobQueueFactory?: typeof createMemoryJobQueue;
   runMemoryJobsInlineForTests?: boolean;
   rateLimitStore?: RateLimitStore;
   cacheProvider?: CacheProvider;
   upstreamBackendsPath?: string;
   upstreamEnrollmentsPath?: string;
+  /** Test/deployment injection for trusted internal service requests. */
+  internalServiceFetch?: typeof fetch;
   fetch?: typeof fetch;
   resolveUpstreamAuthorization?: ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"];
   resolveUpstreamEnrollmentBinding?: ApiRouteContext["localEdge"]["resolveUpstreamEnrollmentBinding"];
@@ -161,6 +170,7 @@ export interface BuildServerOptions {
   inspectDeploymentIdentity?: () => DeviceIdentityInspection;
   workosClient?: WorkosAuthKitClient;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   collaborationSharedMemoryControl?: CollaborationSharedMemoryControl;
   collaborationActionGrantControl?: CollaborationActionGrantControl;
@@ -293,6 +303,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     | undefined =
     options.ownerPrivateReplicaEnvelopeEncryptionProvider ??
     createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment();
+  const teamEnvelopeEncryptionProvider =
+    options.teamEnvelopeEncryptionProvider ??
+    createTeamMemoryEnvelopeEncryptionProviderFromEnvironment();
   if (
     envelopeEncryptionProvider &&
     ownerPrivateReplicaEnvelopeEncryptionProvider &&
@@ -303,11 +316,23 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       "Owner-private replica envelope encryption must use a distinct key from the Team/general provider"
     );
   }
+  if (
+    teamEnvelopeEncryptionProvider &&
+    (teamEnvelopeEncryptionProvider.keyId ===
+      envelopeEncryptionProvider?.keyId ||
+      teamEnvelopeEncryptionProvider.keyId ===
+        ownerPrivateReplicaEnvelopeEncryptionProvider?.keyId)
+  ) {
+    throw new Error(
+      "Team Memory envelope encryption must use a distinct key from Personal and owner-private providers"
+    );
+  }
   const repository =
     options.repository ??
     (pool
       ? createMemorySourceRepository(pool, {
           envelopeEncryptionProvider,
+          teamEnvelopeEncryptionProvider,
           ownerPrivateReplicaEnvelopeEncryptionProvider
         })
       : null);
@@ -349,8 +374,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       environment: process.env
     });
   }
+  const memoryJobQueueFactory =
+    options.memoryJobQueueFactory ?? createMemoryJobQueue;
   const createQueue = <TJobData>(name: string) =>
-    createMemoryJobQueue<TJobData>(name, {
+    memoryJobQueueFactory<TJobData>(name, {
       backend: config.queueBackend,
       redisUrl: config.redisUrl,
       pool
@@ -363,6 +390,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     userId: string;
     visibility: Visibility;
   }>(lcmCompactQueueName);
+  const lcmEmbeddingQueue = createQueue<{
+    sourceType: "memory_node";
+    sourceId: string;
+  }>(lcmEmbedQueueName);
   const rateLimitRedis =
     !options.rateLimitStore &&
     config.rateLimit.store === "redis" &&
@@ -517,6 +548,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     await Promise.all([
       embeddingQueue?.close(),
       compactionQueue?.close(),
+      lcmEmbeddingQueue?.close(),
       rateLimitStore.close?.(),
       cacheProvider.close?.(),
       localEdgeSecureFetch?.close()
@@ -875,6 +907,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       resolveUpstreamEnrollmentBinding:
         localEdgeResolveUpstreamEnrollmentBinding
     },
+    internalServices: {
+      fetch: options.internalServiceFetch ?? fetch
+    },
     workos: {
       client:
         options.workosClient ??
@@ -1043,7 +1078,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
     reply.status(statusCode).send({
       error: statusCode === 500 ? "Internal Server Error" : message,
-      ...(statusCode < 500 && errorCode ? { code: errorCode } : {})
+      ...(errorCode ? { code: errorCode } : {})
     });
   });
 
@@ -1051,7 +1086,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     dbPool: pool,
     repository,
     embeddingQueue,
+    lcmEmbeddingQueue,
     compactionQueue,
+    embeddingCapacityRepository:
+      options.embeddingCapacityRepository ??
+      (pool ? createEmbeddingCapacityRepository(pool) : null),
     envelopeEncryptionProvider,
     alertFetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     runCompactionInline,

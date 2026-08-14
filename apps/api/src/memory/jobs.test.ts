@@ -21,7 +21,7 @@ const createScheduler = () => {
       {
         ownerUserId: "user-1",
         visibility: "personal",
-        workClass: "live_capture_projection",
+        workClass: "normal_embedding_lcm",
         pendingMemoryEventIds: ["event-1"],
         dispatchKey: "lcm-dispatch-user-1",
         jobId: "compact-user-1-personal-live"
@@ -54,10 +54,10 @@ describe("memory job scheduler", () => {
       {
         sourceType: "memory_event",
         sourceId: "event-1",
-        workClass: "live_capture_projection"
+        workClass: "normal_embedding_lcm"
       },
       expect.objectContaining({
-        priority: 5,
+        priority: 10,
         jobId: "embed-qwen3-0-6b-1024-memory_event-event-1"
       })
     );
@@ -66,10 +66,10 @@ describe("memory job scheduler", () => {
       {
         userId: "user-1",
         visibility: "personal",
-        workClass: "live_capture_projection"
+        workClass: "normal_embedding_lcm"
       },
       expect.objectContaining({
-        priority: 5,
+        priority: 10,
         jobId: "compact-user-1-personal-live"
       })
     );
@@ -81,6 +81,30 @@ describe("memory job scheduler", () => {
     expect(queuedPayloads).not.toContain("payload");
     expect(queuedPayloads).not.toContain("query");
     expect(queuedPayloads).not.toContain("answer");
+  });
+
+  it("uses a distinct job identity for a revised mutable source", async () => {
+    const { scheduler, embeddingQueue } = createScheduler();
+
+    await scheduler.enqueueEmbedding(
+      "memory_node",
+      "node-1",
+      "normal_embedding_lcm",
+      undefined,
+      "revision-hash-2"
+    );
+
+    expect(embeddingQueue.add).toHaveBeenCalledWith(
+      "embed-source",
+      {
+        sourceType: "memory_node",
+        sourceId: "node-1",
+        workClass: "normal_embedding_lcm"
+      },
+      expect.objectContaining({
+        jobId: "embed-qwen3-0-6b-1024-memory_node-node-1-revision-hash-2"
+      })
+    );
   });
 
   it("queues projected Memory Event processing without source text", async () => {

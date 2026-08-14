@@ -26,7 +26,8 @@ export const mustCase = (id: string): LcmSummaryBenchmarkCase => {
 const emptySummary = (): StructuredLcmSummary => ({
   schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   title: "Benchmark Summary",
-  summary_text: ""
+  summary_text: "",
+  lexical_anchors: []
 });
 
 const addToSummary = (summary: StructuredLcmSummary, value: string): void => {

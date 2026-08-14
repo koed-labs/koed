@@ -1239,6 +1239,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
                     occurredAt: timestamp,
                     summaryText:
                       "Deterministic cloud memory rollup replacement.",
+                    lexicalAnchors: ["cloud-memory-rollup"],
                     sourceCount: 2,
                     sourceRevision: `${revision}-beta`
                   }

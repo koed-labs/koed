@@ -1,5 +1,6 @@
 import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
 import { z } from "zod";
+import { memoryAnswerRetrievalHintsSchema } from "./memory-answer-request.js";
 
 export const searchDomainSchema = z.enum(["global", "project", "session"]);
 export const memoryAnswerResponseDetailSchema = z.enum([
@@ -16,6 +17,7 @@ export const memoryAccessCheckInputSchema = z.object({
 export const memoryAnswerInputSchema = z
   .object({
     query: z.string().trim().min(1).max(32_000),
+    retrieval_hints: memoryAnswerRetrievalHintsSchema,
     response_detail: memoryAnswerResponseDetailSchema.default("answer_only"),
     search_domain: searchDomainSchema.default("project"),
     project_id: z.string().trim().min(1).max(4096).optional(),

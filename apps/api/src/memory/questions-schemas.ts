@@ -9,6 +9,7 @@ const finalMemoryQuestionBaseSchema = z.object({
   query: z.string().min(1),
   origin: z.literal("mcp_memory_answer"),
   retrieval_scope: memoryQuestionRetrievalScopeSchema.default("personal"),
+  team_workspace_id: z.string().uuid().optional(),
   search_domain: searchDomainSchema.default("global"),
   project_id: z.string().min(1).optional(),
   project_name: z.string().min(1).optional(),

@@ -213,6 +213,49 @@ describe("Shared Memory source-content policy", () => {
       expect.objectContaining({ reasonCode: "approval_activity_excluded" })
     );
 
+    const lcmSourceId = randomUUID();
+    expect(
+      redactEligibleSharedMemorySourceItem({
+        representation: "lcm_leaves",
+        logicalMemoryId,
+        sourceRevision,
+        item: {
+          itemType: "lcm_leaf",
+          schemaVersion: 1,
+          sourceId: lcmSourceId,
+          sourceLogicalMemoryId: logicalMemoryId,
+          sourceRevision,
+          content: {
+            title: "Bounded anchors",
+            summaryText: "The validated anchor is materialized.",
+            lexicalAnchors: ['flag "quoted"', "C:\\repo\\koed"],
+            sourceIds: [randomUUID()]
+          }
+        }
+      }).content
+    ).toMatchObject({
+      lexicalAnchors: ['flag "quoted"', "C:\\repo\\koed"]
+    });
+    expect(() =>
+      redactEligibleSharedMemorySourceItem({
+        representation: "lcm_leaves",
+        logicalMemoryId,
+        sourceRevision,
+        item: {
+          itemType: "lcm_leaf",
+          schemaVersion: 1,
+          sourceId: lcmSourceId,
+          sourceLogicalMemoryId: logicalMemoryId,
+          sourceRevision,
+          content: {
+            summaryText: "Invalid duplicate anchors.",
+            lexicalAnchors: ["duplicate", "duplicate"],
+            sourceIds: [randomUUID()]
+          }
+        }
+      })
+    ).toThrow(SharedMemorySourceItemRejectedError);
+
     const base: SharedMemorySourceItemInput = {
       itemType: "user_message",
       schemaVersion: 1,
@@ -851,7 +894,8 @@ describeDb("Shared Memory repository", () => {
       summaryStructuredJson: {
         schema_version: LCM_SUMMARY_SCHEMA_VERSION,
         title: `${label} leaf`,
-        summary_text: leafSummaryText
+        summary_text: leafSummaryText,
+        lexical_anchors: [label]
       },
       summaryStructuredSchemaVersion: LCM_SUMMARY_SCHEMA_VERSION,
       sourceOriginEventIds: [source.originEventId],
@@ -879,7 +923,8 @@ describeDb("Shared Memory repository", () => {
       summaryStructuredJson: {
         schema_version: LCM_SUMMARY_SCHEMA_VERSION,
         title: `${label} rollup`,
-        summary_text: rollupSummaryText
+        summary_text: rollupSummaryText,
+        lexical_anchors: [label]
       },
       summaryStructuredSchemaVersion: LCM_SUMMARY_SCHEMA_VERSION,
       sourceOriginEventIds: [source.originEventId],
@@ -1232,6 +1277,7 @@ describeDb("Shared Memory repository", () => {
       rewrap: ownerBase.rewrap?.bind(ownerBase)
     } satisfies EnvelopeEncryptionProvider;
     repository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => provider,
       resolveTeamEncryptionProvider: () => provider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
     });
@@ -2097,6 +2143,7 @@ describeDb("Shared Memory repository", () => {
 
     repository = createSharedMemoryRepository(pool, {
       resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => ownerProvider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
     });
     const activationRun = await repository.processPendingShares();
@@ -2360,6 +2407,7 @@ describeDb("Shared Memory repository", () => {
 
     repository = createSharedMemoryRepository(pool, {
       resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => ownerProvider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
     });
     const stalledRun = await repository.processPendingShares({
@@ -2418,6 +2466,7 @@ describeDb("Shared Memory repository", () => {
     );
     repository = createSharedMemoryRepository(pool, {
       resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => ownerProvider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
     });
     const resumedRun = await repository.processPendingShares();
@@ -2904,6 +2953,7 @@ describeDb("Shared Memory repository", () => {
     });
     let gateUsed = false;
     const snapshotRepository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => provider,
       resolveTeamEncryptionProvider: () => provider,
       resolveOwnerPrivateReplicaEncryptionProvider: async (input) => {
         if (input.purpose === "decrypt" && !gateUsed) {
@@ -3973,17 +4023,22 @@ describeDb("Shared Memory repository", () => {
 
   it("lists and reads active Memory Event, leaf, and rollup timelines from encrypted storage", async () => {
     const fixture = await createWorkspaceFixture();
+    const lexicalAnchorSentinel = "TEAM_PROTECTED_LEXICAL_ANCHOR_7f3c9d21";
+    const labelFor = (representation: SharedMemoryRepresentation) =>
+      representation === "lcm_rollups"
+        ? lexicalAnchorSentinel
+        : `timeline-${representation}`;
     const grants = await Promise.all(
       allRepresentations.map((representation) =>
         createGrant(fixture, {
           representation,
-          label: `timeline-${representation}`
+          label: labelFor(representation)
         })
       )
     );
     for (const grant of grants) {
       await materialize(fixture, grant, {
-        label: `timeline-${grant.representation}`
+        label: labelFor(grant.representation)
       });
     }
     const index = await repository.listWorkspaceGrants(
@@ -4031,6 +4086,11 @@ describeDb("Shared Memory repository", () => {
       expect(read?.items.map((item) => item.occurredAt)).toEqual(
         grant.preview.items.map((item) => item.occurredAt)
       );
+      if (grant.representation === "lcm_rollups") {
+        expect(read?.items[0]?.content.lexicalAnchors).toEqual([
+          lexicalAnchorSentinel
+        ]);
+      }
       expect(read?.sourcePage).toEqual({
         itemOffset: 0,
         itemCount: grant.preview.items.length
@@ -4068,10 +4128,375 @@ describeDb("Shared Memory repository", () => {
     expect(stored.rows).toHaveLength(3);
     for (const row of stored.rows) {
       expect(row.stored).not.toContain("timeline-");
+      expect(row.stored).not.toContain(lexicalAnchorSentinel);
       expect(row.ciphertext).not.toContain("source summary");
       expect(row.ciphertext).not.toContain("assistant source");
       expect(row.aad.chunkFormatVersion).toBe("1");
     }
+
+    const rollupGrant = grants.find(
+      (grant) => grant.representation === "lcm_rollups"
+    )!;
+    const decryptsBeforePendingClaim = decryptSpy.mock.calls.length;
+    const semanticItems = await repository.listPendingSharedMemorySemanticItems(
+      {
+        limit: 100
+      }
+    );
+    const claimedChunkCount = await pool.query<{ count: number }>(
+      `select count(distinct (representation_id,encrypted_chunk_index))::integer as count
+         from team_memory_semantic_items
+        where id=any($1::uuid[])`,
+      [semanticItems.map((item) => item.semanticItemId)]
+    );
+    expect(decryptSpy.mock.calls.length - decryptsBeforePendingClaim).toBe(
+      claimedChunkCount.rows[0]!.count
+    );
+    expect(
+      semanticItems.find(
+        (item) => item.shareGrantId === rollupGrant.shareGrantId
+      )?.text
+    ).toContain(lexicalAnchorSentinel);
+    const plaintextRoutingRows = await pool.query<{ payload: string }>(
+      `select row_to_json(smi)::text as payload
+         from team_memory_semantic_items smi
+        where smi.share_grant_id=$1
+       union all
+       select row_to_json(preview)::text
+         from shared_source_previews preview
+         join team_memory_representations representation
+           on representation.source_preview_id=preview.id
+        where representation.share_grant_id=$1
+       union all
+       select row_to_json(artifact)::text
+         from shared_source_artifacts artifact
+         join team_memory_representations representation
+           on representation.source_artifact_id=artifact.id
+        where representation.share_grant_id=$1
+       union all
+       select row_to_json(node)::text
+         from memory_nodes node
+        where node.id=$2
+       union all
+       select row_to_json(encrypted)::text
+         from encrypted_field_payloads encrypted
+        where encrypted.source_table='memory_nodes'
+          and encrypted.source_id=$2`,
+      [rollupGrant.shareGrantId, rollupGrant.rollup.nodeId]
+    );
+    expect(JSON.stringify(plaintextRoutingRows.rows)).not.toContain(
+      lexicalAnchorSentinel
+    );
+    const opaqueSemanticRows = await pool.query<{
+      content_hash: string;
+      pseudonymous_source_id: string;
+    }>(
+      `select content_hash,pseudonymous_source_id
+         from team_memory_semantic_items
+        where share_grant_id=$1
+        order by source_item_index`,
+      [rollupGrant.shareGrantId]
+    );
+    expect(opaqueSemanticRows.rows).toHaveLength(
+      rollupGrant.preview.items.length
+    );
+    for (const [index, row] of opaqueSemanticRows.rows.entries()) {
+      const canonicalItem = rollupGrant.preview.items[index]!;
+      expect(row.content_hash).not.toBe(crossIdentitySyncDigest(canonicalItem));
+      expect(row.pseudonymous_source_id).not.toBe(canonicalItem.sourceId);
+    }
+
+    const semanticModel = "scope-test-model";
+    const semanticVersion = "team-semantic-v1:scope-test";
+    const queryVector = [1, ...Array.from({ length: 383 }, () => 0)];
+    for (const item of semanticItems) {
+      await repository.storeSharedMemorySemanticEmbedding({
+        semanticItemId: item.semanticItemId,
+        contentHash: item.contentHash,
+        model: semanticModel,
+        dimensions: 384,
+        version: semanticVersion,
+        vector: queryVector
+      });
+    }
+    const decryptsBeforeScoreScan = decryptSpy.mock.calls.length;
+    const scoreScan = await repository.scanAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector,
+        model: semanticModel,
+        dimensions: 384,
+        version: semanticVersion,
+        limit: 1,
+        searchDomain: "global"
+      }
+    );
+    expect(decryptSpy.mock.calls.length).toBe(decryptsBeforeScoreScan);
+    expect(scoreScan.map((scan) => scan.representation).sort()).toEqual([
+      "lcm_leaves",
+      "lcm_rollups",
+      "memory_events"
+    ]);
+    expect(scoreScan.every((scan) => scan.candidateCount === 1)).toBe(true);
+    const baselineCandidates =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global"
+        }
+      );
+    const independentlyHinted =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global",
+          exactHints: [
+            lexicalAnchorSentinel,
+            "timeline-lcm_leaves synthesized source summary"
+          ]
+        }
+      );
+    expect(
+      independentlyHinted.map((candidate) => candidate.candidateId).sort()
+    ).toEqual(
+      baselineCandidates.map((candidate) => candidate.candidateId).sort()
+    );
+    expect(
+      independentlyHinted.find(
+        (candidate) => candidate.representation === "lcm_rollups"
+      )?.exactAnchorMatches
+    ).toEqual([lexicalAnchorSentinel]);
+    expect(
+      independentlyHinted.find(
+        (candidate) => candidate.representation === "lcm_leaves"
+      )?.exactAnchorMatches
+    ).toEqual(["timeline-lcm_leaves synthesized source summary"]);
+    expect(
+      independentlyHinted.find(
+        (candidate) => candidate.representation === "memory_events"
+      )?.exactAnchorMatches
+    ).toBeUndefined();
+    const rollupCandidate = independentlyHinted.find(
+      (candidate) => candidate.representation === "lcm_rollups"
+    )!;
+    const rollupExpansion =
+      await repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: rollupCandidate.candidateId,
+          searchDomain: "global"
+        }
+      );
+    expect(rollupExpansion?.parent.candidateId).toBe(
+      rollupCandidate.candidateId
+    );
+    expect(rollupExpansion?.items.map((item) => item.itemType)).toEqual([
+      "lcm_leaf"
+    ]);
+    expect(
+      rollupExpansion?.items.every(
+        (item) => item.candidateId !== rollupCandidate.candidateId
+      )
+    ).toBe(true);
+
+    const leafCandidate = independentlyHinted.find(
+      (candidate) => candidate.representation === "lcm_leaves"
+    )!;
+    const leafExpansion =
+      await repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: leafCandidate.candidateId,
+          searchDomain: "global"
+        }
+      );
+    expect(leafExpansion?.items.length).toBeGreaterThan(0);
+    expect(
+      leafExpansion?.items.every((item) =>
+        [
+          "user_message",
+          "assistant_message",
+          "thought",
+          "tool_call",
+          "tool_result"
+        ].includes(item.itemType)
+      )
+    ).toBe(true);
+    const leafGrant = grants.find(
+      (grant) => grant.representation === "lcm_leaves"
+    )!;
+    await pool.query(
+      `update sessions
+          set personal_deleted_at=now(),
+              personal_deleted_by_user_id=$2,
+              personal_deletion_reason='retained_team_semantic_test'
+        where id=$1`,
+      [leafGrant.sessionId, fixture.ownerUserId]
+    );
+    const retainedLeafCandidates =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global",
+          representations: ["lcm_leaves"]
+        }
+      );
+    expect(
+      retainedLeafCandidates.some(
+        (candidate) => candidate.shareGrantId === leafGrant.shareGrantId
+      )
+    ).toBe(true);
+    const retainedLeafExpansion =
+      await repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: retainedLeafCandidates[0]!.candidateId,
+          searchDomain: "global"
+        }
+      );
+    expect(retainedLeafExpansion?.parent.shareGrantId).toBe(
+      leafGrant.shareGrantId
+    );
+    expect(retainedLeafExpansion?.items.length).toBeGreaterThan(0);
+    const sessionScoped =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "session",
+          sessionId: rollupGrant.sessionId
+        }
+      );
+    expect(sessionScoped.length).toBeGreaterThan(0);
+    expect(new Set(sessionScoped.map((item) => item.shareGrantId))).toEqual(
+      new Set([rollupGrant.shareGrantId])
+    );
+
+    const projectId = `scope-project-${randomUUID()}`;
+    await pool.query(
+      `update sessions
+          set automatic_project_id=$2,
+              automatic_project_name='Scope test project',
+              automatic_project_detected_at=now()
+        where id=$1`,
+      [rollupGrant.sessionId, projectId]
+    );
+    const projectScoped =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "project",
+          projectId
+        }
+      );
+    expect(projectScoped.length).toBeGreaterThan(0);
+    expect(new Set(projectScoped.map((item) => item.shareGrantId))).toEqual(
+      new Set([rollupGrant.shareGrantId])
+    );
+    await expect(
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global",
+          recentDays: 1
+        }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global",
+          sourceAfter: "2026-02-01T00:00:00.000Z"
+        }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector,
+          model: semanticModel,
+          dimensions: 384,
+          version: semanticVersion,
+          limit: 50,
+          searchDomain: "global",
+          sourceBefore: "2025-12-01T00:00:00.000Z"
+        }
+      )
+    ).resolves.toEqual([]);
+    const anotherGrantCandidate = semanticItems.find(
+      (item) => item.shareGrantId !== rollupGrant.shareGrantId
+    )!;
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: anotherGrantCandidate.semanticItemId,
+          searchDomain: "session",
+          sessionId: rollupGrant.sessionId
+        }
+      )
+    ).resolves.toBeNull();
+    const decryptsBeforePrivateCandidate = decryptCount();
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: rollupGrant.rollup.nodeId,
+          searchDomain: "global"
+        }
+      )
+    ).resolves.toBeNull();
+    expect(decryptCount()).toBe(decryptsBeforePrivateCandidate);
 
     await pool.query(
       `update team_memory_representation_chunks
@@ -4084,6 +4509,232 @@ describeDb("Shared Memory repository", () => {
         shareGrantId: stored.rows[0]!.share_grant_id
       })
     ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+  });
+
+  it("reauthorizes an exact claimed semantic row after revocation and before Team key resolution", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, { label: "semantic-claim-race" });
+    await materialize(fixture, grant, { label: "semantic-claim-race" });
+    let boundaryCalls = 0;
+    let keyResolutionCalls = 0;
+    let embeddingHandoffCalls = 0;
+    const raceRepository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => provider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider,
+      resolveTeamEncryptionProvider: (input) => {
+        if (input.purpose === "decrypt") keyResolutionCalls += 1;
+        return provider;
+      },
+      afterSharedMemorySemanticClaimForTest: async () => {
+        boundaryCalls += 1;
+        await pool.query(
+          `update team_session_share_grants
+              set lifecycle='revoked',revoked_at=now(),
+                  revoked_by_user_id=$2,revocation_reason='semantic_claim_race'
+            where id=$1`,
+          [grant.shareGrantId, fixture.ownerUserId]
+        );
+      }
+    });
+    const decrypts = decryptSpy.mock.calls.length;
+
+    await expect(
+      raceRepository.listPendingSharedMemorySemanticItems({
+        limit: 100,
+        duringAuthorizedLease: async () => {
+          embeddingHandoffCalls += 1;
+        }
+      })
+    ).resolves.toEqual([]);
+
+    expect(boundaryCalls).toBe(1);
+    expect(keyResolutionCalls).toBe(0);
+    expect(embeddingHandoffCalls).toBe(0);
+    expect(decryptSpy.mock.calls.length).toBe(decrypts);
+  });
+
+  it("holds exact authorization through embedding handoff while revocation waits without deadlock", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, { label: "semantic-lease-race" });
+    await materialize(fixture, grant, { label: "semantic-lease-race" });
+    const revocationClient = await pool.connect();
+    const backend = await revocationClient.query<{ pid: number }>(
+      "select pg_backend_pid()::integer pid"
+    );
+    let revocationUpdate: Promise<pg.QueryResult> | null = null;
+    let handoffCalls = 0;
+    const raceRepository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => provider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider,
+      resolveTeamEncryptionProvider: () => provider,
+      afterSharedMemorySemanticDecryptForTest: async () => {
+        await revocationClient.query("begin");
+        revocationUpdate = revocationClient.query(
+          `update team_session_share_grants
+              set lifecycle='revoked',revoked_at=now(),
+                  revoked_by_user_id=$2,revocation_reason='semantic_lease_race'
+            where id=$1`,
+          [grant.shareGrantId, fixture.ownerUserId]
+        );
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const waiting = await pool.query<{ waiting: boolean }>(
+            `select coalesce(bool_or(wait_event_type='Lock'),false) waiting
+               from pg_stat_activity where pid=$1`,
+            [backend.rows[0]!.pid]
+          );
+          if (waiting.rows[0]?.waiting) return;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        throw new Error("revocation did not wait on the semantic lease");
+      }
+    });
+
+    try {
+      const leased = await raceRepository.listPendingSharedMemorySemanticItems({
+        limit: 100,
+        duringAuthorizedLease: async () => {
+          handoffCalls += 1;
+        }
+      });
+      const pendingRevocation =
+        revocationUpdate as Promise<pg.QueryResult> | null;
+      if (!pendingRevocation) {
+        throw new Error("revocation did not start during the semantic lease");
+      }
+      await pendingRevocation;
+      await revocationClient.query("commit");
+      expect(leased.length).toBeGreaterThan(0);
+      expect(handoffCalls).toBeGreaterThan(0);
+    } finally {
+      await revocationClient.query("rollback").catch(() => undefined);
+      revocationClient.release();
+    }
+  });
+
+  it("freezes a Memory Answer grant set while revocation and regrant fail closed", async () => {
+    const fixture = await createWorkspaceFixture();
+    const initialGrant = await createGrant(fixture, {
+      label: "answer-boundary-initial"
+    });
+    await materialize(fixture, initialGrant, {
+      label: "answer-boundary-initial"
+    });
+    const model = "answer-boundary-model";
+    const version = "answer-boundary-v1";
+    const vector = [1, ...Array.from({ length: 383 }, () => 0)];
+    const embedGrant = async (shareGrantId: string) => {
+      const items = (
+        await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+      ).filter((item) => item.shareGrantId === shareGrantId);
+      for (const item of items) {
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model,
+          dimensions: 384,
+          version,
+          vector
+        });
+      }
+    };
+    await embedGrant(initialGrant.shareGrantId);
+    await pool.query(
+      `update users
+          set updated_at='2026-08-11 01:02:03.123456+00'::timestamptz
+        where id=$1`,
+      [fixture.readerUserId]
+    );
+    const preciseUserTimestamp = await pool.query<{ updated_at: string }>(
+      `select updated_at::text as updated_at from users where id=$1`,
+      [fixture.readerUserId]
+    );
+    expect(preciseUserTimestamp.rows[0]?.updated_at).toContain(".123456");
+    const boundary = await repository.freezeSharedMemorySemanticRecallBoundary(
+      actor(fixture.readerUserId),
+      { teamWorkspaceId: fixture.teamWorkspaceId, maximumGrantCount: 128 }
+    );
+    expect(boundary.shareGrantIds).toContain(initialGrant.shareGrantId);
+    await expect(
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector: vector,
+          model,
+          dimensions: 384,
+          version,
+          limit: 50,
+          searchDomain: "global",
+          authorizationBoundary: boundary
+        }
+      )
+    ).resolves.not.toEqual([]);
+
+    const laterGrant = await createGrant(fixture, {
+      label: "answer-boundary-later"
+    });
+    await materialize(fixture, laterGrant, { label: "answer-boundary-later" });
+    await embedGrant(laterGrant.shareGrantId);
+    const search = (authorizationBoundary = boundary) =>
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector: vector,
+          model,
+          dimensions: 384,
+          version,
+          limit: 50,
+          searchDomain: "global",
+          authorizationBoundary
+        }
+      );
+    const frozen = await search();
+    expect(new Set(frozen.map((item) => item.shareGrantId))).toEqual(
+      new Set([initialGrant.shareGrantId])
+    );
+    const current = await repository.searchAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector: vector,
+        model,
+        dimensions: 384,
+        version,
+        limit: 50,
+        searchDomain: "global"
+      }
+    );
+    const laterCandidate = current.find(
+      (item) => item.shareGrantId === laterGrant.shareGrantId
+    );
+    expect(laterCandidate).toBeDefined();
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: laterCandidate!.candidateId,
+          searchDomain: "global",
+          authorizationBoundary: boundary
+        }
+      )
+    ).resolves.toBeNull();
+
+    await pool.query(
+      `update team_workspace_access_grants
+          set access='disabled',disabled_at=now(),version=version+1,updated_at=now()
+        where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.readerUserId]
+    );
+    await expect(search()).resolves.toEqual([]);
+    await pool.query(
+      `update team_workspace_access_grants
+          set access='read',disabled_at=null,version=version+1,updated_at=now()
+        where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.readerUserId]
+    );
+    await expect(search()).resolves.toEqual([]);
   });
 
   it("preserves exact rollup fidelity and policy provenance through owner-private sync and Team materialization", async () => {
@@ -4103,6 +4754,7 @@ describeDb("Shared Memory repository", () => {
         content: {
           title: "rollup-fidelity rollup",
           summaryText: "rollup-fidelity synthesized rollup summary",
+          lexicalAnchors: ["rollup-fidelity"],
           sourceIds: grant.rollup.sourceEventIds
         }
       }
@@ -4335,6 +4987,7 @@ describeDb("Shared Memory repository", () => {
       Buffer.alloc(32, 43).toString("base64")
     );
     repository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => provider,
       resolveTeamEncryptionProvider: ({ teamId }) =>
         teamId === secondTeamId ? secondTeamProvider : provider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
@@ -4534,6 +5187,7 @@ describeDb("Shared Memory repository", () => {
     const safeRepository = repository;
     const safeSyncRepository = syncRepository;
     repository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => provider,
       resolveTeamEncryptionProvider: () => provider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => provider
     });
@@ -4571,6 +5225,444 @@ describeDb("Shared Memory repository", () => {
       repository = safeRepository;
       syncRepository = safeSyncRepository;
     }
+  });
+
+  it("materializes exact-session Curated assertions through three distinct keys and purges them on source invalidation", async () => {
+    const personalBase = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 61).toString("base64")
+    );
+    const ownerBase = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 62).toString("base64")
+    );
+    const teamBase = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 63).toString("base64")
+    );
+    const personalDecrypt = vi.fn(personalBase.decrypt.bind(personalBase));
+    const ownerEncrypt = vi.fn(ownerBase.encrypt.bind(ownerBase));
+    const teamEncrypt = vi.fn(teamBase.encrypt.bind(teamBase));
+    const personal = { ...personalBase, decrypt: personalDecrypt };
+    const ownerPrivate = { ...ownerBase, encrypt: ownerEncrypt };
+    const team = { ...teamBase, encrypt: teamEncrypt };
+    repository = createSharedMemoryRepository(pool, {
+      resolvePersonalEncryptionProvider: () => personal,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerPrivate,
+      resolveTeamEncryptionProvider: () => team
+    });
+
+    const allowed: SharedMemoryRepresentation[] = [
+      ...allRepresentations,
+      "curated_assertions"
+    ];
+    const fixture = await createWorkspaceFixture({
+      teamAllowed: allowed,
+      workspaceAllowed: allowed
+    });
+    const source = await createSource(fixture, 1, "curated-three-key");
+    await putOwnerPolicy(fixture, source, allowed);
+
+    const assertionId = randomUUID();
+    const sourceId = source.seededEvents[0]!.contributorIds[0]!;
+    await upsertEncryptedFieldPayloadWithClient(
+      pool,
+      actor(fixture.ownerUserId),
+      personal,
+      {
+        sourceTable: "conversation_items",
+        sourceId,
+        sourceColumn: "raw_text",
+        plaintext: "Owner-approved exact-session evidence.",
+        visibility: "personal",
+        rowFamily: "conversation_item",
+        aad: { conversationItemId: sourceId }
+      }
+    );
+    await pool.query(
+      `insert into curated_memory_assertions (
+         id,owner_user_id,visibility,assertion_text,normalized_assertion,
+         sensitivity,confidence,tags,metadata,status,observed_at
+       ) values ($1,$2,'personal','[koed encrypted curated memory]',
+         $3,'normal',95,'{}','{}','current',now())`,
+      [assertionId, fixture.ownerUserId, `encrypted:${randomUUID()}`]
+    );
+    await upsertEncryptedFieldPayloadWithClient(
+      pool,
+      actor(fixture.ownerUserId),
+      personal,
+      {
+        sourceTable: "curated_memory_assertions",
+        sourceId: assertionId,
+        sourceColumn: "payload",
+        plaintext: {
+          assertionText: "The exact-session deployment decision is durable.",
+          normalizedAssertion:
+            "the exact-session deployment decision is durable.",
+          tags: ["decision"],
+          metadata: {},
+          suppressionReason: null
+        },
+        visibility: "personal",
+        rowFamily: "curated_memory",
+        aad: { curatedMemoryId: assertionId }
+      }
+    );
+    await pool.query(
+      `insert into curated_memory_sources (
+         assertion_id,source_type,source_role,conversation_item_id,metadata
+       ) values ($1,'conversation_item','primary_evidence',$2,'{}')`,
+      [assertionId, sourceId]
+    );
+
+    const addAssertion = async (
+      claim: string,
+      role:
+        | "supporting_evidence"
+        | "superseding_evidence"
+        | "conflicting_evidence",
+      evidenceId: string,
+      expiresAt: string | null = null
+    ) => {
+      const id = randomUUID();
+      await pool.query(
+        `insert into curated_memory_assertions (
+           id,owner_user_id,visibility,assertion_text,normalized_assertion,
+           sensitivity,confidence,tags,metadata,status,observed_at,expires_at
+         ) values ($1,$2,'personal','[koed encrypted curated memory]',
+           $3,'normal',90,'{}','{}','current',now(),$4)`,
+        [id, fixture.ownerUserId, `encrypted:${randomUUID()}`, expiresAt]
+      );
+      await upsertEncryptedFieldPayloadWithClient(
+        pool,
+        actor(fixture.ownerUserId),
+        personal,
+        {
+          sourceTable: "curated_memory_assertions",
+          sourceId: id,
+          sourceColumn: "payload",
+          plaintext: {
+            assertionText: claim,
+            normalizedAssertion: claim.toLowerCase(),
+            tags: [role],
+            metadata: {},
+            suppressionReason: null
+          },
+          visibility: "personal",
+          rowFamily: "curated_memory",
+          aad: { curatedMemoryId: id }
+        }
+      );
+      await pool.query(
+        `insert into curated_memory_sources (
+           assertion_id,source_type,source_role,conversation_item_id,metadata
+         ) values ($1,'conversation_item',$2,$3,'{}')`,
+        [id, role, evidenceId]
+      );
+    };
+    await addAssertion(
+      "Supporting exact-session assertion.",
+      "supporting_evidence",
+      sourceId,
+      "2099-01-02T03:04:05.000Z"
+    );
+    await addAssertion(
+      "Superseding exact-session assertion.",
+      "superseding_evidence",
+      sourceId
+    );
+    await addAssertion(
+      "Conflicting exact-session assertion.",
+      "conflicting_evidence",
+      sourceId
+    );
+    const otherSource = await createSource(fixture, 1, "curated-mixed-session");
+    await addAssertion(
+      "MIXED_SESSION_CURATED_SENTINEL",
+      "supporting_evidence",
+      otherSource.seededEvents[0]!.contributorIds[0]!
+    );
+
+    const created = await createConsent(fixture, source, {
+      representation: "curated_assertions",
+      mode: "continuous",
+      allowedRepresentations: allowed,
+      label: "curated-three-key"
+    });
+    const grant = await repository.createShareGrant(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: created.consentId,
+        authority: authority(fixture)
+      }
+    );
+    const materialized = await repository.materializeGrantRepresentation(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        shareGrantId: grant.id,
+        consentId: created.consentId,
+        expectedGrantVersion: grant.grantVersion,
+        preview: created.preview
+      }
+    );
+    expect(materialized.representation).toBe("curated_assertions");
+    const materializedExpiry = await pool.query<{ expires_at: Date | null }>(
+      `select curated_expires_at as expires_at
+         from team_memory_representations where id=$1`,
+      [materialized.id]
+    );
+    expect(materializedExpiry.rows[0]?.expires_at?.toISOString()).toBe(
+      "2099-01-02T03:04:05.000Z"
+    );
+    expect(personalDecrypt).toHaveBeenCalled();
+    expect(ownerEncrypt).toHaveBeenCalled();
+    expect(teamEncrypt).toHaveBeenCalled();
+    expect(new Set([personal.keyId, ownerPrivate.keyId, team.keyId]).size).toBe(
+      3
+    );
+    const read = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: grant.id }
+    );
+    expect(read?.items).toHaveLength(4);
+    expect(
+      read?.items.some(
+        (item) =>
+          item.content.assertionText === "MIXED_SESSION_CURATED_SENTINEL"
+      )
+    ).toBe(false);
+    expect(
+      read?.items.every((item) => item.content.expansionItems === undefined)
+    ).toBe(true);
+    const curatedSemanticItems = (
+      await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+    ).filter((item) => item.shareGrantId === grant.id);
+    const curatedVector = [1, ...Array.from({ length: 383 }, () => 0)];
+    for (const semanticItem of curatedSemanticItems) {
+      await repository.storeSharedMemorySemanticEmbedding({
+        semanticItemId: semanticItem.semanticItemId,
+        contentHash: semanticItem.contentHash,
+        model: "curated-expansion-model",
+        dimensions: 384,
+        version: "curated-expansion-v1",
+        vector: curatedVector
+      });
+    }
+    const [curatedCandidate] =
+      await repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          queryVector: curatedVector,
+          model: "curated-expansion-model",
+          dimensions: 384,
+          version: "curated-expansion-v1",
+          limit: 1,
+          searchDomain: "global",
+          representations: ["curated_assertions"]
+        }
+      );
+    const curatedExpansion =
+      await repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: curatedCandidate!.candidateId,
+          searchDomain: "global"
+        }
+      );
+    expect(curatedExpansion?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          itemType: "user_message",
+          text: "Owner-approved exact-session evidence."
+        })
+      ])
+    );
+    expect(
+      curatedExpansion?.items.every(
+        (item) => item.candidateId !== curatedCandidate!.candidateId
+      )
+    ).toBe(true);
+    const storage = await pool.query<{ storage: string }>(
+      `select concat_ws('|',
+         coalesce((select string_agg(row_to_json(row_data)::text,'|')
+           from (select * from curated_memory_assertions where owner_user_id=$1) row_data),''),
+         coalesce((select string_agg(row_to_json(row_data)::text,'|')
+           from (select * from curated_memory_sources where assertion_id=$2) row_data),''),
+         coalesce((select string_agg(row_to_json(row_data)::text,'|')
+           from (select * from shared_source_artifacts where logical_memory_id=$3) row_data),''),
+         coalesce((select string_agg(row_to_json(row_data)::text,'|')
+           from (select * from shared_source_previews where logical_memory_id=$3) row_data),''),
+         coalesce((select string_agg(row_to_json(row_data)::text,'|')
+           from (select * from team_memory_representation_chunks where representation_id=$4) row_data),''),
+         coalesce((select string_agg(row_to_json(row_data)::text,'|')
+           from (select * from team_memory_semantic_items where representation_id=$4) row_data),'')) as storage`,
+      [
+        fixture.ownerUserId,
+        assertionId,
+        source.logicalMemoryId,
+        materialized.id
+      ]
+    );
+    expect(storage.rows[0]!.storage).not.toContain(
+      "The exact-session deployment decision is durable."
+    );
+    expect(storage.rows[0]!.storage).not.toContain(
+      "MIXED_SESSION_CURATED_SENTINEL"
+    );
+
+    await pool.query(
+      `update team_memory_representations
+          set curated_expires_at=now()-interval '1 second'
+        where id=$1`,
+      [materialized.id]
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: curatedCandidate!.candidateId,
+          searchDomain: "global"
+        }
+      )
+    ).resolves.toBeNull();
+    await pool.query(
+      `update team_memory_representations
+          set curated_expires_at=$2
+        where id=$1`,
+      [materialized.id, "2099-01-02T03:04:05.000Z"]
+    );
+
+    const failureClient = await pool.connect();
+    try {
+      await failureClient.query(`
+        create function pg_temp.fail_curated_invalidation_test()
+        returns trigger language plpgsql as $$
+        begin
+          raise exception 'injected curated invalidation failure';
+        end $$
+      `);
+      await failureClient.query(`
+        create trigger zz_injected_curated_invalidation_failure
+        after update of confidence on curated_memory_assertions
+        for each row when (new.id = '${assertionId}'::uuid)
+        execute function pg_temp.fail_curated_invalidation_test()
+      `);
+      await expect(
+        failureClient.query(
+          "update curated_memory_assertions set confidence=94 where id=$1",
+          [assertionId]
+        )
+      ).rejects.toThrow("injected curated invalidation failure");
+      const rolledBackAssertion = await failureClient.query<{
+        confidence: number;
+        state: string;
+        semantic_count: string;
+      }>(
+        `select assertion.confidence,representation.state,
+                (select count(*)::text from team_memory_semantic_items item
+                  where item.representation_id=representation.id) semantic_count
+           from curated_memory_assertions assertion
+           join team_memory_representations representation on representation.id=$2
+          where assertion.id=$1`,
+        [assertionId, materialized.id]
+      );
+      expect(rolledBackAssertion.rows[0]).toEqual({
+        confidence: 95,
+        state: "available",
+        semantic_count: "4"
+      });
+      await failureClient.query(
+        "drop trigger zz_injected_curated_invalidation_failure on curated_memory_assertions"
+      );
+    } finally {
+      failureClient.release();
+    }
+
+    await pool.query(
+      "update curated_memory_assertions set confidence=94 where id=$1",
+      [assertionId]
+    );
+    await expect(
+      repository.reconcileCuratedGrantRepresentations(
+        actor(fixture.ownerUserId)
+      )
+    ).resolves.toMatchObject({ rematerialized: 1 });
+    const rematerialized = await pool.query<{ id: string; state: string }>(
+      `select id,state from team_memory_representations
+        where share_grant_id=$1 and representation='curated_assertions'
+        order by created_at desc,id desc limit 1`,
+      [grant.id]
+    );
+    expect(rematerialized.rows[0]?.state).toBe("available");
+
+    const sourceFailureClient = await pool.connect();
+    try {
+      await sourceFailureClient.query(`
+        create function pg_temp.fail_curated_source_invalidation_test()
+        returns trigger language plpgsql as $$
+        begin
+          raise exception 'injected curated source invalidation failure';
+        end $$
+      `);
+      await sourceFailureClient.query(`
+        create trigger zz_injected_curated_source_invalidation_failure
+        after update of memory_excluded_at on conversation_items
+        for each row when (new.id = '${sourceId}'::uuid)
+        execute function pg_temp.fail_curated_source_invalidation_test()
+      `);
+      await expect(
+        sourceFailureClient.query(
+          "update conversation_items set memory_excluded_at=now() where id=$1",
+          [sourceId]
+        )
+      ).rejects.toThrow("injected curated source invalidation failure");
+      const rolledBackSource = await sourceFailureClient.query<{
+        memory_excluded_at: Date | null;
+        state: string;
+      }>(
+        `select item.memory_excluded_at,representation.state
+           from conversation_items item
+           join team_memory_representations representation on representation.id=$2
+          where item.id=$1`,
+        [sourceId, rematerialized.rows[0]!.id]
+      );
+      expect(rolledBackSource.rows[0]).toEqual({
+        memory_excluded_at: null,
+        state: "available"
+      });
+      await sourceFailureClient.query(
+        "drop trigger zz_injected_curated_source_invalidation_failure on conversation_items"
+      );
+    } finally {
+      sourceFailureClient.release();
+    }
+
+    await pool.query(
+      "update conversation_items set memory_excluded_at=now() where id=$1",
+      [sourceId]
+    );
+    const invalidated = await pool.query<{
+      state: string;
+      semantic_count: string;
+    }>(
+      `select r.state,
+              (select count(*)::text from team_memory_semantic_items smi
+                where smi.representation_id=r.id) as semantic_count
+         from team_memory_representations r where r.id=$1`,
+      [rematerialized.rows[0]!.id]
+    );
+    expect(invalidated.rows[0]).toEqual({
+      state: "invalidated",
+      semantic_count: "0"
+    });
   });
 
   it("rewraps Team representation DEKs without decrypting or changing ciphertext", async () => {
@@ -4670,6 +5762,18 @@ describeDb("Shared Memory repository", () => {
         shareGrantId: grant.shareGrantId
       })
     ).not.toBeNull();
+    const [pendingSemanticItem] = (
+      await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    const authorizationVector = [1, ...Array.from({ length: 383 }, () => 0)];
+    await repository.storeSharedMemorySemanticEmbedding({
+      semanticItemId: pendingSemanticItem!.semanticItemId,
+      contentHash: pendingSemanticItem!.contentHash,
+      model: "authorization-expansion-model",
+      dimensions: 384,
+      version: "authorization-expansion-v1",
+      vector: authorizationVector
+    });
 
     const assertDeniedBeforeDecrypt = async (
       deny: () => Promise<unknown>,
@@ -4683,6 +5787,16 @@ describeDb("Shared Memory repository", () => {
           shareGrantId: grant.shareGrantId
         })
       ).toBeNull();
+      await expect(
+        repository.expandAuthorizedSharedMemorySemanticItem(
+          actor(fixture.readerUserId),
+          {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            candidateId: pendingSemanticItem!.semanticItemId,
+            searchDomain: "global"
+          }
+        )
+      ).resolves.toBeNull();
       if (listRejects) {
         await expect(
           repository.listWorkspaceGrants(actor(fixture.readerUserId), {

@@ -77,7 +77,7 @@ closed.
 | `team.workspace.restore`                   | Direct                                                                                                          |
 | `team.workspace.access_update`             | Step-up when access expands or becomes disabled; Native review when write decreases to read                     |
 | `shared_memory.candidate_preview`          | Direct; validates destination and policy for a bounded local candidate without starting sync                    |
-| `shared_memory.preview`                    | Direct; creates an authoritative owner-private preview but activates no Workspace access                        |
+| `shared_memory.preview`                    | Direct; persists an owner-private policy proposal and preview but activates no Workspace access                 |
 | `shared_memory.consent`                    | Bundled stage of the exact share or representation-change decision                                              |
 | `shared_memory.share`                      | Native review for derived representations; Step-up for raw `memory_events`; acceptance creates a Pending Share  |
 | `shared_memory.pending_share`              | Same reviewed tier as `shared_memory.share`; exact internal action used when acceptance creates a Pending Share |

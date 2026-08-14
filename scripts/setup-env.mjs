@@ -66,6 +66,7 @@ const generatedValues = new Map([
     "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
     randomBytes(32).toString("base64")
   ],
+  ["API_TEAM_MEMORY_DATA_ENCRYPTION_KEY", randomBytes(32).toString("base64")],
   ["API_TOKEN_PEPPER", randomBytes(48).toString("base64url")],
   [
     "API_COLLABORATION_LOCAL_BROKER_SECRET",
@@ -75,7 +76,8 @@ const generatedValues = new Map([
     "API_COLLABORATION_REALTIME_CURSOR_SECRET",
     randomBytes(48).toString("base64url")
   ],
-  ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")]
+  ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")],
+  ["KOED_OPS_METRICS_TOKEN", randomBytes(32).toString("base64url")]
 ]);
 
 const rendered = renderSetupEnv({ example, existing, generatedValues });

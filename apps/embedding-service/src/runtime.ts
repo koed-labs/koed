@@ -1,11 +1,14 @@
+import { performance } from "node:perf_hooks";
 import { HttpError } from "./auth.js";
 import {
   rerankerEnabled,
   rerankerModel,
+  verifyRerankerModelArtifact,
   type EmbeddingServiceEnv
 } from "./env-config.js";
 import {
   LlamaServerClient,
+  type LlamaRerankResult,
   type TokenPiece,
   type LlamaServerOptions
 } from "./llama-server.js";
@@ -38,7 +41,7 @@ export interface LlamaEmbeddingClient {
     vectors: number[][];
     measuredTokens: number | null;
   }>;
-  rerank(query: string, documents: string[]): Promise<number[]>;
+  rerank(query: string, documents: string[]): Promise<LlamaRerankResult>;
 }
 
 export class EmbeddingRuntime {
@@ -47,6 +50,7 @@ export class EmbeddingRuntime {
   rerankerServer: LlamaEmbeddingClient | null = null;
   private embeddingLoadPromise: Promise<void> | null = null;
   private rerankerLoadPromise: Promise<void> | null = null;
+  private loadedRerankerArtifactSha256: string | null = null;
 
   constructor(
     readonly config: EmbeddingServiceEnv,
@@ -94,6 +98,7 @@ export class EmbeddingRuntime {
   async shutdownRuntime(): Promise<void> {
     const rerankerServer = this.rerankerServer;
     this.rerankerServer = null;
+    this.loadedRerankerArtifactSha256 = null;
     const embeddingServer = this.embeddingServer;
     this.embeddingServer = null;
     await Promise.all([
@@ -108,6 +113,29 @@ export class EmbeddingRuntime {
 
   isRerankerLoaded(): boolean {
     return this.rerankerServer !== null && this.rerankerServer.isRunning();
+  }
+
+  rerankerProvenance(): {
+    model: string;
+    artifact: string;
+    artifactRevision: string;
+    artifactHash: string;
+  } | null {
+    const artifactHash = this.loadedRerankerArtifactSha256;
+    if (
+      !this.isRerankerLoaded() ||
+      !artifactHash ||
+      !this.config.rerankerKey ||
+      !this.config.rerankerArtifact
+    ) {
+      return null;
+    }
+    return {
+      model: this.config.rerankerKey,
+      artifact: this.config.rerankerArtifact,
+      artifactRevision: `sha256:${artifactHash}`,
+      artifactHash
+    };
   }
 
   healthQueueSnapshot() {
@@ -269,16 +297,30 @@ export class EmbeddingRuntime {
         document_count: documents.length
       }
     });
-    const scores = await localReranker.rerank(query, documents);
+    const started = performance.now();
+    const result = await localReranker.rerank(query, documents);
+    const latencyMs = Math.max(0, Math.round(performance.now() - started));
     this.logger.debug("reranker scoring completed", {
       event: event("embedding.reranker.scoring_completed"),
       reranker: {
         model_key: this.config.rerankerKey,
         document_count: documents.length,
-        score_count: scores.length
+        score_count: result.scores.length,
+        measured_tokens: result.measuredTokens,
+        latency_ms: latencyMs
       }
     });
-    return { model: this.config.rerankerKey ?? "", scores: scores.map(Number) };
+    const provenance = this.rerankerProvenance();
+    if (!provenance) {
+      throw new Error("loaded reranker provenance is unavailable");
+    }
+    return {
+      ...provenance,
+      latencyMs,
+      inputTokens: result.measuredTokens,
+      costUsd: 0,
+      scores: result.scores.map(Number)
+    };
   }
 
   private async scheduledTextChunks(
@@ -470,6 +512,9 @@ export class EmbeddingRuntime {
     });
     try {
       const modelPath = this.resolveRerankerModelPath();
+      this.loadedRerankerArtifactSha256 = await verifyRerankerModelArtifact(
+        this.config
+      );
       this.rerankerServer = this.createClient({
         name: "reranker",
         modelPath,
@@ -492,6 +537,7 @@ export class EmbeddingRuntime {
         error: errorType(error)
       });
       this.rerankerServer = null;
+      this.loadedRerankerArtifactSha256 = null;
       throw error;
     }
     this.logger.info("reranker load completed", {

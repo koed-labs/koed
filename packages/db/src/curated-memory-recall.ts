@@ -30,9 +30,7 @@ export const createCuratedMemoryRecallMethods = ({
   envelopeEncryptionProvider
 }: CuratedMemoryRepositoryContext): Pick<
   CuratedMemoryRepository,
-  | "searchCuratedMemoryAssertions"
-  | "searchCuratedMemoryRetrievalCandidates"
-  | "expandCuratedMemoryRetrieval"
+  "searchCuratedMemoryAssertions" | "expandCuratedMemoryRetrieval"
 > => ({
   async searchCuratedMemoryAssertions(actor, input) {
     const terms = input.query
@@ -227,53 +225,6 @@ export const createCuratedMemoryRecallMethods = ({
       result.rows.map((row) => row.id)
     );
     return result.rows.map((row) => mapAssertion(row, sourceMap.get(row.id)));
-  },
-
-  async searchCuratedMemoryRetrievalCandidates(actor, input) {
-    const assertions = await this.searchCuratedMemoryAssertions(actor, {
-      ...input,
-      currentOnly: true
-    });
-    const terms = input.query
-      .toLowerCase()
-      .split(/[^a-z0-9_'-]+/i)
-      .map((term) => term.trim())
-      .filter((term) => term.length >= 3)
-      .slice(0, 16);
-    return assertions.map((assertion) => {
-      const searchable = [
-        assertion.assertionText,
-        assertion.topicTitle ?? "",
-        ...assertion.tags
-      ].map((value) => value.toLowerCase());
-      const matchCount = terms.filter((term) =>
-        searchable.some((value) => value.includes(term))
-      ).length;
-      return {
-        assertionId: assertion.id,
-        ownerUserId: assertion.ownerUserId,
-        visibility: assertion.visibility,
-        summaryText: [
-          `Curated Memory: ${assertion.assertionText}`,
-          assertion.topicTitle ? `Topic: ${assertion.topicTitle}` : null,
-          assertion.tags.length > 0
-            ? `Tags: ${assertion.tags.join(", ")}`
-            : null
-        ]
-          .filter((value): value is string => Boolean(value))
-          .join("\n"),
-        rerankText: [
-          assertion.assertionText,
-          assertion.topicTitle ?? "",
-          assertion.tags.join(" ")
-        ].join("\n"),
-        score:
-          0.5 +
-          matchCount * 0.1 +
-          Math.min(Math.max(assertion.confidence, 0), 100) / 1000,
-        updatedAt: assertion.updatedAt
-      };
-    });
   },
 
   async expandCuratedMemoryRetrieval(actor, assertionId) {

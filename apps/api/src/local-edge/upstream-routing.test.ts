@@ -74,26 +74,24 @@ const credential = (
 });
 
 describe("local edge upstream routing", () => {
-  it("marks generic typed Team Memory evidence operations unavailable", () => {
+  it("accepts scoped Team Memory evidence operations for credentialed routing", () => {
     const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
     const nodeId = "22222222-2222-4222-8222-222222222222";
 
-    for (const [schema, input, operation] of [
+    for (const [schema, input] of [
       [
         localEdgeTeamMemorySearchSchema,
         {
           upstream_backend_id: "team-vps",
           input: { query: "search", team_workspace_id: teamWorkspaceId }
-        },
-        "search"
+        }
       ],
       [
         localEdgeTeamMemoryAnswerSchema,
         {
           upstream_backend_id: "team-vps",
           input: { query: "answer", team_workspace_id: teamWorkspaceId }
-        },
-        "answer"
+        }
       ],
       [
         localEdgeTeamMemoryExpandSchema,
@@ -101,17 +99,11 @@ describe("local edge upstream routing", () => {
           upstream_backend_id: "team-vps",
           node_id: nodeId,
           input: { team_workspace_id: teamWorkspaceId }
-        },
-        "expansion"
+        }
       ]
     ] as const) {
       const result = schema.safeParse(input);
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error.issues.map(({ message }) => message)).toContain(
-          `Generic Team Memory ${operation} is unavailable; use dedicated Shared Memory controls`
-        );
-      }
+      expect(result.success).toBe(true);
     }
   });
 

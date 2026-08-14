@@ -355,8 +355,11 @@ Workspace shared-source view and companion discussion
 
 ### Representation Authority
 
-The supported Team representations are `memory_events`, `lcm_leaves`, and
-`lcm_rollups`.
+The supported Team representations are `memory_events`, `lcm_leaves`,
+`lcm_rollups`, and consent-bound `curated_assertions`. A Curated Memory Share
+Grant is eligible only when its complete direct-source provenance is confined to
+the granted Captured Session; mixed-session or incomplete provenance fails
+closed.
 
 - A Share Grant stores immutable logical source identity, the source owner's
   allowed representation set, one selected active representation, policy
@@ -532,6 +535,93 @@ direct messages, and companion discussions are not Projection inputs.
   Event, Memory Node, embedding, and recall paths. Team visibility is applied
   through Cross-Identity Sync, Share Grants, authorized representations, and
   request-time retrieval predicates rather than chat storage.
+
+## Shared Memory Semantic Recall
+
+An available Team representation creates pending, plaintext-free semantic item
+metadata containing only grant-scoped pseudonyms, item/chunk positions,
+revision and policy versions, and content hashes. The normal Worker embedding
+reconciler first proves the Share Grant, consent, policies, representation,
+replica, sync relationship, Team, and Workspace are still current, then
+decrypts only the precise already-redacted representation item and submits it
+to the Embedding Service while the exact authorization rows remain protected
+by a shared transaction lock. Revocation takes conflicting locks: a completed
+revocation prevents decrypt and handoff, while an already-active embedding
+lease finishes its handoff before revocation can commit. Queryable vectors
+remain sensitive data inside the trusted backend search boundary; readable
+Team source remains encrypted.
+
+Search is always bound to the current User and requested Team Workspace. It
+applies Membership, active User, Team entitlement/lifecycle, Workspace Access,
+Share Grant, consent, all three policy versions, latest authorized
+representation revision, sync/replica freshness, and retention predicates
+before candidate decrypt. Exact hints are checked only after semantic search
+has selected that bounded authorized candidate set. They annotate and boost
+each matching candidate independently; they are not conjunctive admission
+requirements, and hints may match different evidence items. Expansion repeats
+the same authorization and stays within the candidate's grant, representation,
+revision, and encrypted materialized closure. Rollups expand to authorized
+child leaves, leaves to authorized source evidence, and Curated assertions to
+authorized direct evidence. API Tokens remain Personal-only; browser sessions and scoped
+device credentials can use Team search, answer evidence, and candidate
+expansion through the existing local-edge routes. The Team graph remains
+unavailable.
+
+At the start of a Team Memory Answer, the API freezes the exact admitted Share
+Grant IDs and the PostgreSQL row versions for the User, Team, Workspace,
+Membership, and Workspace Access records. A signed, short-lived token binds
+that boundary to the User and Workspace and is forwarded by trusted MCP code
+for every subsequent search and expansion. The model cannot supply or broaden
+it. New grants remain outside the run; revocation or authority-row replacement
+fails closed immediately and a later regrant does not reopen the old run. The
+boundary is capped at 128 grants so oversized scope fails explicitly rather
+than being truncated.
+
+The accepted Search Domain and time selectors are repository predicates, not
+advisory hints. Session scope matches the Shared Memory's Captured Session;
+Project scope matches that session's effective Project; `recent_days` uses the
+database clock over source occurrence time; and explicit source bounds apply to
+the same field. Expansion applies the identical predicates. Parent-candidate
+search is also Share-Grant-bound, so a candidate from another grant cannot
+broaden retrieval. Search and expansion preserve canonical grant-scoped source
+identity, allowing the answer worker to deduplicate repeated evidence while
+preserving genuinely distinct child sources. Expansion never emits the
+selected parent as its own child.
+
+Team staged recall follows the Personal retrieval contract: `score_scan`
+returns bounded grant-scoped candidate counts and top scores independently for
+each available representation, without hydrating or decrypting readable
+evidence;
+`rollup_search`, `scoped_leaf_search`/`leaf_search`, and
+`fresh_pending_search` select only rollups, leaves, and Memory Events,
+respectively, while `curated_memory_search` selects eligible consent-bound
+Curated Memory. Parent candidate IDs bound leaf search to the same logical
+Captured Session, and `strict_limit` is applied during vector candidate
+selection. Unsupported plaintext/raw stages return no Team candidates.
+
+The MCP Server obtains the signed Team authorization boundary from one initial
+Team Memory Answer request before starting its local answer worker. Every
+worker search and expansion reuses that same boundary. The API's embedding
+request uses the trusted internal-service transport; local-edge upstream fetch
+policy is reserved for user-configured remote backends.
+
+The embedding generation is more than a model label. It versions the trusted
+item composition (plain redacted event/tool text and LCM summary text followed
+by a separate `Lexical anchors` section), deterministic arithmetic-mean chunk
+pooling with L2 normalization, and the configured tokenizer, input transform,
+service pooling, and service normalization. A generation mismatch is not
+searchable and is reconciled as a new embedding.
+
+Alpha upgrades do not backfill pre-existing active encrypted representations.
+They must be reset or rematerialized. The Worker readiness check reports active
+representations with no semantic metadata instead of silently leaving them
+unsearchable.
+
+This recall path includes only materialized `memory_events`, `lcm_leaves`,
+`lcm_rollups`, and eligible `curated_assertions`. Live-view permission does not
+imply durable recall permission. Uncaptured DMs, Personal channels, Team Chat,
+presence, receipts, typing state, and transient collaboration events are
+excluded.
 
 ## UI Boundary
 

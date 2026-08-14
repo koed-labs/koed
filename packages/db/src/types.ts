@@ -745,6 +745,15 @@ export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
   projectedRecordCount: number;
   embeddingEligibleEventCount: number;
   embeddedEventCount: number;
+  embeddingEligibleEstimatedTokenCount: number;
+  embeddedMeasuredTokenCount: number;
+  pendingEmbeddingEstimatedTokenCount: number;
+  embeddingQueueAheadEstimatedTokenCount: number;
+  embeddingEtaLowerSeconds: number | null;
+  embeddingEtaUpperSeconds: number | null;
+  embeddingEtaConfidence: "conservative" | "low" | "medium";
+  oldestEmbeddedSourceTime: string | null;
+  newestEmbeddedSourceTime: string | null;
   lcmEligibleEventCount: number;
   lcmCompletedEventCount: number;
   rawIngested: boolean;
@@ -1200,7 +1209,11 @@ export interface LcmNodeForSummarization {
   lcmAlgorithmVersion: string | null;
 }
 
-export type EmbeddableSourceType = "memory_node" | "memory_event" | "message";
+export type EmbeddableSourceType =
+  | "memory_node"
+  | "memory_event"
+  | "message"
+  | "curated_memory";
 
 export interface EmbeddableSourceRecord {
   sourceType: EmbeddableSourceType;
@@ -1529,6 +1542,7 @@ export interface MemoryQuestionShellRecord {
   visibility: Visibility;
   origin: MemoryQuestionOrigin;
   retrievalScope: MemoryQuestionRetrievalScope;
+  teamWorkspaceId: string | null;
   searchDomain: MemoryQuestionSearchDomain;
   projectId: string | null;
   projectName: string | null;
@@ -1750,16 +1764,6 @@ export interface CuratedMemoryReconciliationResult {
   assertionsScanned: number;
   memoryEventLinksAdded: number;
   lcmSummaryLinksAdded: number;
-}
-
-export interface CuratedMemoryRetrievalCandidate {
-  assertionId: string;
-  ownerUserId: string;
-  visibility: Visibility;
-  summaryText: string;
-  rerankText: string;
-  score: number;
-  updatedAt: string;
 }
 
 export interface CuratedMemoryExportRecords {
@@ -2414,6 +2418,23 @@ export interface MemorySourceRepository
     dimensions: number;
     version: string;
   }): Promise<number | null>;
+  getRetrievalArenaIndexProof(input: {
+    ownerUserId: string;
+    sourceIds: string[];
+    model: string;
+    dimensions: number;
+    version: string;
+  }): Promise<{
+    databaseName: string;
+    schemaName: string;
+    documents: Array<{
+      sourceId: string;
+      embeddingId: string;
+      sourceHash: string;
+      embeddingInputSha256: string;
+      vectorSha256: string;
+    }>;
+  }>;
   getLcmNodeForSummarization(
     nodeId: string
   ): Promise<LcmNodeForSummarization | null>;
@@ -2447,6 +2468,7 @@ export interface MemorySourceRepository
     vector: number[];
     chunkIndex?: number;
     chunkCount?: number;
+    inputTokenCount?: number;
     sourceText?: string;
   }): Promise<{ id: string; inserted: boolean }>;
   replaceSourceEmbeddings(input: {
@@ -2463,6 +2485,7 @@ export interface MemorySourceRepository
       vector: number[];
       chunkIndex: number;
       chunkCount: number;
+      inputTokenCount: number;
       sourceText: string;
     }>;
   }): Promise<{ ids: string[]; inserted: boolean }>;

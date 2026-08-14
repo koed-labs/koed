@@ -1,6 +1,6 @@
 ---
 name: koed-team-fixture-testing
-description: Test Koed Team SaaS backend data, API authorization, lexical recall, graph, evidence, Agent workflow, staged remote/VPS dogfood readiness, or Electron behavior against the deterministic Team SaaS synthetic memory fixture. Use when validating Team Workspace authorization, shared memory visibility, revoked/private memory boundaries, retained Team knowledge, launch validation, or UI flows that should match the fixture truth sheet.
+description: Test Koed Team SaaS backend data, API authorization, semantic recall, candidate expansion, graph denial, evidence, Agent workflow, staged remote/VPS dogfood readiness, or Electron behavior against the deterministic Team SaaS synthetic memory fixture. Use when validating Team Workspace authorization, shared memory visibility, revoked/private memory boundaries, retained Team knowledge, launch validation, or UI flows that should match the fixture truth sheet.
 ---
 
 # Koed Team Fixture Testing
@@ -56,7 +56,7 @@ are automated, which require staged remote/VPS inputs, and which remain manual.
      process with the `developer`/omitted deployment profile. Do not bypass the
      guard for Private VPS, Team Self-Hosted, managed cloud, production, or shared
      staging.
-4. Use the truth sheet to build API, repository, lexical recall, graph,
+4. Use the truth sheet to build API, repository, semantic recall, graph,
    expansion, evidence, collaboration, Shared Memory representation, Agent, or
    Electron checks.
 5. Assert positive and negative outcomes. Do not only test happy paths.
@@ -99,8 +99,9 @@ The fixture contains:
   Session discussion, including deterministic companion history and unread
   state.
 - Active shared memories.
-- Active Shared Memory representations covering Memory Events, LCM Leaves, and
-  LCM Rollups through production-shaped encrypted artifacts and chunks.
+- Active Shared Memory representations covering Memory Events, LCM Leaves, LCM
+  Rollups, and Curated Memory through production-shaped encrypted artifacts and
+  chunks.
 - Private memories that must not leak to Team recall.
 - Revoked shares that must not appear to Team readers.
 - A removed Workspace member who must lose access while their prior
@@ -119,7 +120,7 @@ Prefer this order:
    history, and unread state match the truth sheet without plaintext leakage.
 4. Shared Memory: authorized production repository reads decrypt each
    representation; revocation and access removal deny the same operation.
-5. Team lexical recall/search: authorized users see only shared, active,
+5. Team semantic recall/search: authorized users see only shared, active,
    retained Workspace memory.
 6. Graph and expansion: sources, evidence, and supporting context respect the
    same Workspace boundary.
@@ -151,9 +152,13 @@ Prefer this order:
   use them against a shared environment.
 - The fixture does not precompute embeddings.
   Do not expect semantic vector search hits until the normal embedding service
-  or backfill path has embedded the relevant records. Use deterministic
-  fixture validation, lexical/data-level checks, graph, evidence, and
-  `/v1/memory/answer` where appropriate.
+  and Team-enabled Worker's Shared Memory embedding reconciler have embedded
+  the relevant records. The generic Personal/source embedding backfill does not
+  replace Team reconciliation. `team-fixture:validate` accepts the pre-worker
+  state, but `team-launch:validate` requires every active Team-visible fixture
+  item to be `embedded` with a dimension-matched stored vector and complete
+  model provenance. Use deterministic fixture validation, semantic/data-level
+  checks, graph denial, evidence, and `/v1/memory/answer` where appropriate.
 - For `--with-staged-remote`, provide the target API base URL, browser session
   cookie, scoped device credential, optional API Token, Team Workspace ID, and
   optional local-edge backend ID. When Explorer and API have different origins,

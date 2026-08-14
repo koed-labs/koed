@@ -66,6 +66,7 @@ const current0020Index = 20;
 const expectedPre0020Tag = "0019_tidy_rhino";
 const expectedCurrent0020Tag = "0020_zippy_apocalypse";
 const expectedLocalRuntimeCutoverTag = "0026_amused_zeigeist";
+const expectedLatestMigrationTag = "0030_fresh_kitty_pryde";
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -159,6 +160,11 @@ const assertAlphaMigrationContract = async () => {
   ) {
     throw new Error(
       `Expected exactly one ${expectedLocalRuntimeCutoverTag} migration with a predecessor`
+    );
+  }
+  if (journal.entries.at(-1)?.tag !== expectedLatestMigrationTag) {
+    throw new Error(
+      `Expected ${expectedLatestMigrationTag} to be the latest migration`
     );
   }
   return journal;
@@ -1083,6 +1089,11 @@ try {
   const localRuntimeCutoverIndex = journal.entries.findIndex(
     (entry) => entry.tag === expectedLocalRuntimeCutoverTag
   );
+  if (localRuntimeCutoverIndex < 1) {
+    throw new Error(
+      `Expected ${expectedLocalRuntimeCutoverTag} after an upgradeable baseline`
+    );
+  }
   const preLocalRuntimeCutoverIndex = localRuntimeCutoverIndex - 1;
   const preLocalRuntimeCutoverFolder = await createMigrationSlice(
     journal,

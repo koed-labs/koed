@@ -32,7 +32,32 @@ Diagnostics are redacted by design: they report whether secrets are configured, 
 The Embedding Service is an internal backend component. Keep it off public
 networks. Docker Compose passes `EMBEDDING_SERVICE_TOKEN` to the Embedding
 Service, API, and Worker so embedding and reranking requests require a shared
-internal header.
+internal header. API requests to that Operator-configured service use a
+separate trusted internal-service transport. They do not pass through the
+local-edge upstream transport or its user-configured remote URL policy.
+
+Team Shared Memory embedding keeps the exact Share Grant, representation,
+consent, policy, replica, source-artifact, semantic-item, and encrypted-chunk
+authorization rows under shared transaction locks from authorization through
+decrypt and Embedding Service handoff. Revocation uses conflicting locks, so
+revocation-first performs no plaintext handoff and an already-active lease
+finishes before revocation commits.
+
+A Team Memory Answer also freezes its admitted authority at run start. The API
+signs an opaque, short-lived contract containing the exact Share Grant set and
+Team, Workspace, Membership, Workspace Access, and User PostgreSQL row
+versions, bound to the requesting User and Workspace. Every later search and
+expansion verifies that contract and current revocation state. New grants
+cannot broaden an active run; revocation, disablement, row replacement, token
+tampering, expiry, or cross-User/Workspace replay fails closed. The contract is
+limited to 128 grants and is forwarded by trusted MCP code, not the synthesis
+model.
+
+Direct Team representation reads, semantic searches, score scans, and
+expansion all revalidate current representation, consent, policy, replica,
+source-artifact, and curated-expiry state before returning metadata or
+decrypting content. A mixed permanent/expiring Curated representation expires
+at its earliest contributing assertion expiry.
 
 ## Data At Rest
 
@@ -48,7 +73,11 @@ embedding source text in that mode store redacted operational payloads and keep
 the full human-readable content in encrypted field companions. Stored Memory
 Question query, answer, evidence, citation, retrieval, local memory-worker,
 response, and error payloads use the same redacted-row/encrypted-companion
-pattern. Projection hydrates raw conversation-item companions inside the
+pattern in every deployment profile. Caller retrieval hints and the bounded
+internal retrieval trace are part of the encrypted retrieval payload and are
+excluded from ordinary logs and diagnostics. Memory Question history filters
+only on metadata and decrypts a bounded authorized result page; it does not
+support server-side text filtering or broad decrypted scans. Projection hydrates raw conversation-item companions inside the
 trusted repository boundary before deriving semantic rows. Authorized graph,
 embedding, retrieval, LCM, and Memory Question paths decrypt companions only
 after repository-level visibility checks. Managed/encrypted memory exports and

@@ -938,6 +938,7 @@ describe("start supervisor", () => {
         "EMBEDDING_SERVICE_HOST_PORT=23800",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
         "EMBEDDING_LLAMA_RERANKER_SERVER_PORT=29080",
+        "WORKER_KOED_EMBEDDING_POOL_KEY=local-metal-pool",
         ""
       ].join("\n")
     );
@@ -1024,6 +1025,7 @@ describe("start supervisor", () => {
     expect(provisionedToken).toMatch(/^cmt_/);
     expect(worker?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
     expect(worker?.env?.MEMORY_API_URL).toBe("http://localhost:23300");
+    expect(worker?.env?.KOED_EMBEDDING_POOL_KEY).toBe("local-metal-pool");
     expect(
       JSON.parse(readFileSync(resolve(root, "config/local-ports.json"), "utf8"))
     ).toEqual({
@@ -1445,6 +1447,17 @@ describe("start supervisor", () => {
   it("starts packaged app services without workspace pnpm scripts", async () => {
     const root = tempDir();
     createPackagedAppRuntime(root);
+    writeFileSync(
+      resolve(root, ".env"),
+      [
+        "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY=root-team-data-key",
+        "API_TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER=local_test_key",
+        "API_TEAM_MEMORY_MANAGED_KMS_KEY_ID=root-team-kms-key",
+        "API_TEAM_MEMORY_MANAGED_KMS_KEY_VERSION=7",
+        "API_TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL=https://kms.koed.example",
+        "API_TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN=root-team-kms-token"
+      ].join("\n")
+    );
     const commands: Array<{ command: string; args: string[] }> = [];
     const spawned: Array<{
       command: string;
@@ -1500,6 +1513,22 @@ describe("start supervisor", () => {
     ).toBeDefined();
     expect(spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).not.toBe(
       spawned[0]?.env?.DATA_ENCRYPTION_KEY
+    );
+    expect(spawned[0]?.env?.TEAM_MEMORY_DATA_ENCRYPTION_KEY).toBe(
+      "root-team-data-key"
+    );
+    expect(spawned[0]?.env?.TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER).toBe(
+      "local_test_key"
+    );
+    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_ID).toBe(
+      "root-team-kms-key"
+    );
+    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_VERSION).toBe("7");
+    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL).toBe(
+      "https://kms.koed.example"
+    );
+    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN).toBe(
+      "root-team-kms-token"
     );
     expect(spawned[2]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
     expect(spawned).toHaveLength(3);

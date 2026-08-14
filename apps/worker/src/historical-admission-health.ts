@@ -6,6 +6,7 @@ export interface HistoricalAdmissionHealthConfig {
   apiReadyUrl?: string;
   embeddingQueue: KoedJobQueue<unknown>;
   repository: MemorySourceRepository;
+  capacityProfileAvailable?: () => Promise<boolean>;
   fetch?: typeof fetch;
 }
 
@@ -59,12 +60,22 @@ export const createHistoricalAdmissionHealth = (
 ) => {
   const fetcher = config.fetch ?? globalThis.fetch.bind(globalThis);
   return async () => {
-    const [apiHealthy, queueHealthy, embeddingServiceHealthy] =
-      await Promise.all([
-        apiIsReady(config.apiReadyUrl, config.apiReadyTimeoutMs, fetcher),
-        queueIsHealthy(config.embeddingQueue),
-        embeddingServiceIsHealthy(config.repository)
-      ]);
-    return { apiHealthy, queueHealthy, embeddingServiceHealthy };
+    const [
+      apiHealthy,
+      queueHealthy,
+      embeddingServiceHealthy,
+      capacityProfileHealthy
+    ] = await Promise.all([
+      apiIsReady(config.apiReadyUrl, config.apiReadyTimeoutMs, fetcher),
+      queueIsHealthy(config.embeddingQueue),
+      embeddingServiceIsHealthy(config.repository),
+      config.capacityProfileAvailable?.() ?? Promise.resolve(false)
+    ]);
+    return {
+      apiHealthy,
+      queueHealthy,
+      embeddingServiceHealthy,
+      capacityProfileHealthy
+    };
   };
 };

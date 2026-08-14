@@ -82,6 +82,7 @@ export interface ApiServerConfig {
     operatorEmails: string[];
     alertWebhookUrl?: string;
     alertWebhookToken?: string;
+    metricsToken?: string;
   };
 }
 
@@ -403,7 +404,8 @@ export const resolveApiServerConfig = (
         (email) => email.toLowerCase()
       ),
       alertWebhookUrl: optionalEnv(environment.KOED_OPS_ALERT_WEBHOOK_URL),
-      alertWebhookToken: optionalEnv(environment.KOED_OPS_ALERT_WEBHOOK_TOKEN)
+      alertWebhookToken: optionalEnv(environment.KOED_OPS_ALERT_WEBHOOK_TOKEN),
+      metricsToken: optionalEnv(environment.KOED_OPS_METRICS_TOKEN)
     }
   };
 };
