@@ -187,6 +187,11 @@ content-addressed protocol. Material changes create a new protocol whose
 results cannot be pooled. Different tasks may run concurrently, but work for
 one task is serialized.
 
+Template construction is serialized across tasks because it shares the
+Embedding Service and AI Client preparation plane. The configured campaign
+concurrency applies to the measured task replays after their immutable
+templates are ready.
+
 Each run also requires a private `0600` campaign definition. The complete task
 universe is identical across every shard. Only `shard_task_digests` and
 `shard_id` vary. The supplied corpus collection must exactly cover the shard.

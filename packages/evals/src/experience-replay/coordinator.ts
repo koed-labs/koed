@@ -1536,7 +1536,9 @@ export const runExperienceReplay = async (
     }
     const templateSchedule = await scheduleReplayJobs({
       jobs: templateJobs,
-      concurrency: config.concurrency,
+      // Template creation shares the embedding and AI-client preparation plane.
+      // Keep it serial; campaign concurrency applies to the measured replays.
+      concurrency: 1,
       ...(config.profile === "smoke"
         ? { mode: "smoke" as const }
         : {

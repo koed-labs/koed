@@ -672,14 +672,32 @@ describe("unified experience replay coordinator", () => {
     const config = smokeConfig(output);
     const admitted = await preflightExperienceReplay({ config });
     const events: string[] = [];
+    const dependencies = fakeDependencies(events);
+    const prepareTemplate = dependencies.prepareTemplate;
+    let activeTemplatePreparations = 0;
+    let maximumActiveTemplatePreparations = 0;
+    dependencies.prepareTemplate = async (input) => {
+      activeTemplatePreparations += 1;
+      maximumActiveTemplatePreparations = Math.max(
+        maximumActiveTemplatePreparations,
+        activeTemplatePreparations
+      );
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return await prepareTemplate(input);
+      } finally {
+        activeTemplatePreparations -= 1;
+      }
+    };
     const result = await runExperienceReplay(config, {
       preflight: admitted,
-      dependencies: fakeDependencies(events)
+      dependencies
     });
     expect(result).toMatchObject({
       replayAttemptCount: 8,
       productPathExercised: true
     });
+    expect(maximumActiveTemplatePreparations).toBe(1);
     const manifest = JSON.parse(
       await readFile(path.join(output, "manifest.json"), "utf8")
     ) as {
