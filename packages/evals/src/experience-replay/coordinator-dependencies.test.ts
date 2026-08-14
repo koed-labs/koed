@@ -222,6 +222,24 @@ const fixture = () => {
     trialWorkspaceRoot: "/fixture/workspace",
     close: workspaceClose
   }));
+  const product: NonNullable<
+    ExperienceReplayCoordinatorDependencyFactoryOptions["product"]
+  > = {
+    prepareTemplate,
+    prepareCampaignTemplate,
+    async withCampaignTemplateLock(contentIdentity, operation) {
+      expect(this).toBe(product);
+      return withCampaignTemplateLock(contentIdentity, operation);
+    },
+    async adoptTemplate(template, cachedContentIdentity) {
+      expect(this).toBe(product);
+      return cachedContentIdentity === undefined
+        ? adoptTemplate(template)
+        : adoptTemplate(template, cachedContentIdentity);
+    },
+    cloneForReplay,
+    close: productClose
+  };
   const options: ExperienceReplayCoordinatorDependencyFactoryOptions = {
     mode: "smoke",
     runId: "fixture-run",
@@ -233,14 +251,7 @@ const fixture = () => {
     },
     countEmbeddingTokens: (text: string) => text.split(/\s+/u).length,
     harbor: { runSource, runReplay },
-    product: {
-      prepareTemplate,
-      prepareCampaignTemplate,
-      withCampaignTemplateLock,
-      adoptTemplate,
-      cloneForReplay,
-      close: productClose
-    },
+    product,
     startProductRuntime,
     materializeProjectWorkspace
   };

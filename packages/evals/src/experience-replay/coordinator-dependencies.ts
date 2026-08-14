@@ -510,16 +510,14 @@ export const createExperienceReplayCoordinatorDependencies = (
         });
         return { ...prepared, preparationCostUsd: 0 };
       }
-      const withCampaignTemplateLock = product.withCampaignTemplateLock;
-      const adoptTemplate = product.adoptTemplate;
-      if (!withCampaignTemplateLock || !adoptTemplate) {
+      if (!product.withCampaignTemplateLock || !product.adoptTemplate) {
         throw new Error(
           "Product adapter cannot safely cache campaign templates"
         );
       }
       const identity = await campaignIdentity(input);
       const contentIdentity = oracleCampaignTemplateContentIdentity(identity);
-      return withCampaignTemplateLock(contentIdentity, async () => {
+      return product.withCampaignTemplateLock(contentIdentity, async () => {
         const cache = await getCampaignCache();
         const cached = await cache.lookup(identity);
         if (cached) {
@@ -529,7 +527,10 @@ export const createExperienceReplayCoordinatorDependencies = (
               "Campaign template cache database and handle disagree"
             );
           }
-          const adopted = await adoptTemplate(template, contentIdentity);
+          const adopted = await product.adoptTemplate!(
+            template,
+            contentIdentity
+          );
           return { ...adopted, preparationCostUsd: 0 };
         }
         const prepared = await product.prepareCampaignTemplate({
