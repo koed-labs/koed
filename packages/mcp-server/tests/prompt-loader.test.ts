@@ -45,15 +45,23 @@ describe("prompt loader", () => {
     const prompt = loadPrompt("memory-answer-worker");
 
     expect(prompt.id).toBe("memory-answer-worker");
-    expect(prompt.version).toBe("memory-answer-worker-v7");
+    expect(prompt.version).toBe("memory-answer-worker-v9");
     expect(prompt.body).toContain(
       "do not preemptively decide which directly useful details"
     );
     expect(prompt.body).toContain("working code or patches");
     expect(prompt.body).toContain(
-      "inspect the underlying implementation and tool records"
+      "must inspect the available underlying implementation and tool records"
     );
+    expect(prompt.body).toContain("summary-only answer");
+    expect(prompt.body).toContain("prefer `raw_fallback_search`");
     expect(prompt.body).toContain("Include complete working code or patches");
+    expect(prompt.body).toContain(
+      "a prose paraphrase alone is not an acceptable answer"
+    );
+    expect(prompt.body).toContain(
+      "It does not permit omitting directly useful operational detail"
+    );
     expect(prompt.overridden).toBe(false);
     expect(prompt.body).toContain(
       "You are a private local memory/RAG answer worker"
