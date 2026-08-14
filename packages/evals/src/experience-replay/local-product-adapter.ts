@@ -383,7 +383,12 @@ export const createRecordedEmbeddingRuntime = async (
         Object.fromEntries(upstream.headers.entries())
       );
       response.end(payload);
-    })().catch(() => {
+    })().catch((error: unknown) => {
+      const detail =
+        error instanceof Error
+          ? error.message.replace(/[\r\n\0]/gu, " ").slice(0, 512)
+          : "unknown embedding observation error";
+      process.stderr.write(`[embedding-observer] ${detail}\n`);
       if (!response.headersSent)
         response.writeHead(502, { "content-type": "application/json" });
       response.end(
