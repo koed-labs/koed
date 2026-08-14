@@ -249,7 +249,9 @@ const observe = async (
       event.visibility !== "personal"
     ) {
       failures.push(
-        `Memory Event ${event.id} owner/Project/session scope mismatch`
+        `Memory Event ${event.id} owner/Project/session scope mismatch ` +
+          `(expected session=${expectation.sessionId}, project=${expectation.projectId}, visibility=personal; ` +
+          `received session=${event.sessionId}, project=${event.projectId}, visibility=${event.visibility})`
       );
     }
     if (
