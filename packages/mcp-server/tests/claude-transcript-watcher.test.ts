@@ -50,12 +50,10 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
 }));
 
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
-import {
-  discoverClaudeTranscriptSignals,
-  processClaudeTranscriptSignal,
-  registerClaudeHistoricalTranscriptSources,
-  startClaudeTranscriptWatcher
-} from "../src/claude-transcript-watcher.js";
+import { processClaudeTranscriptSignal } from "../src/claude-transcript-capture.js";
+import { discoverClaudeTranscriptSignals } from "../src/claude-transcript-discovery.js";
+import { registerClaudeHistoricalTranscriptSources } from "../src/claude-transcript-source.js";
+import { startClaudeTranscriptWatcher } from "../src/claude-transcript-watcher.js";
 import {
   claudeWatcherSignalDirectory,
   signalClaudeTranscriptWatcher

@@ -20,6 +20,12 @@ Codex remains an independent local provider. Each local synthesis flow can
 select its provider and model independently; changing one flow does not imply a
 global provider switch.
 
+Managed Conversation coordination owns a single provider-tagged runtime session
+registry and a single lease-renewal and fencing path. Provider adapters retain
+their transport-specific start, resume, prompt, source-sealing, and fork
+mechanics, but they cannot independently redefine execution ownership or lease
+loss behavior.
+
 ## Consequences
 
 - Claude availability fails closed when the configured executable is missing,

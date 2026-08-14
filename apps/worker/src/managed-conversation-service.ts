@@ -60,6 +60,11 @@ import {
   type DevelopmentWorkspaceSnapshotPackage
 } from "./development-workspace-snapshot.js";
 import { discoverManagedConversationRuntime } from "./managed-conversation-runtime-discovery.js";
+import {
+  ManagedConversationRuntimeRegistry,
+  runWithManagedConversationLease,
+  type ManagedConversationProvider
+} from "./managed-conversation-provider-runtime.js";
 
 const commandLeaseMs = 180_000;
 const commandHeartbeatMs = 45_000;
@@ -115,16 +120,6 @@ const strictBase64 = (value: unknown): Buffer => {
     throw new Error("ManagedConversationSourceEncodingError");
   }
   return bytes;
-};
-
-type ManagedSession = {
-  executionGeneration: number;
-  session: CodexManagedConversationSession;
-};
-
-type ManagedClaudeSession = {
-  executionGeneration: number;
-  session: ClaudeManagedConversationSession;
 };
 
 type ForkSourceBoundary = {
@@ -337,8 +332,7 @@ export const createManagedConversationService = (options: {
   logger: Logger;
 }): ManagedConversationService => {
   const runnerId = randomUUID();
-  const sessions = new Map<string, ManagedSession>();
-  const claudeSessions = new Map<string, ManagedClaudeSession>();
+  const runtimeSessions = new ManagedConversationRuntimeRegistry();
   const claudeCaptureStatePath = resolve(
     options.koedHome,
     "state",
@@ -382,8 +376,7 @@ export const createManagedConversationService = (options: {
   };
 
   const renewOwnedRuntimes = async (): Promise<void> => {
-    const ownedSessions = [...sessions.entries(), ...claudeSessions.entries()];
-    for (const [executionId, managed] of ownedSessions) {
+    for (const [executionId, managed] of runtimeSessions.entries()) {
       let renewed: boolean;
       try {
         renewed =
@@ -397,8 +390,7 @@ export const createManagedConversationService = (options: {
         renewed = false;
       }
       if (!renewed) {
-        sessions.delete(executionId);
-        claudeSessions.delete(executionId);
+        runtimeSessions.deleteAny(executionId);
         await managed.session.closeAndWait().catch(() => undefined);
         options.logger.warn(
           {
@@ -856,7 +848,7 @@ export const createManagedConversationService = (options: {
               "ManagedConversationRuntimeRecoveryIdentityError"
             );
           }
-          claudeSessions.set(execution.id, {
+          runtimeSessions.set("claude", execution.id, {
             executionGeneration: execution.executionGeneration,
             session: recoveredSession
           });
@@ -924,7 +916,7 @@ export const createManagedConversationService = (options: {
           acquired = false;
           return;
         }
-        sessions.set(execution.id, {
+        runtimeSessions.set("codex", execution.id, {
           executionGeneration: execution.executionGeneration,
           session: recoveredSession
         });
@@ -1751,7 +1743,7 @@ export const createManagedConversationService = (options: {
       sealed = await withClaudeLease(command, () =>
         sealClaudePrimarySource(execution)
       );
-      claudeSessions.delete(execution.id);
+      runtimeSessions.delete("claude", execution.id);
     } else {
       const session = await sessionFor(execution);
       const sealedSources = await withLease(
@@ -1770,7 +1762,7 @@ export const createManagedConversationService = (options: {
         },
         session
       );
-      sessions.delete(execution.id);
+      runtimeSessions.delete("codex", execution.id);
       sealed = sealedSources.find(
         (candidate) =>
           candidate.threadId === execution.providerThreadId &&
@@ -2008,7 +2000,7 @@ export const createManagedConversationService = (options: {
   const sessionFor = async (
     execution: ManagedConversationExecutionRecord
   ): Promise<CodexManagedConversationSession> => {
-    const current = sessions.get(execution.id);
+    const current = runtimeSessions.get("codex", execution.id);
     if (
       current &&
       current.executionGeneration === execution.executionGeneration
@@ -2017,7 +2009,7 @@ export const createManagedConversationService = (options: {
     }
     if (current) {
       void current.session.closeAndWait().catch(() => undefined);
-      sessions.delete(execution.id);
+      runtimeSessions.delete("codex", execution.id);
     }
     let binding = await options.repository.getManagedConversationRuntimeBinding(
       { userId: execution.ownerUserId },
@@ -2034,7 +2026,7 @@ export const createManagedConversationService = (options: {
       throw new Error("ManagedConversationRuntimeRecoveryPendingError");
     }
     const session = createSession(execution, binding);
-    sessions.set(execution.id, {
+    runtimeSessions.set("codex", execution.id, {
       executionGeneration: execution.executionGeneration,
       session
     });
@@ -2044,7 +2036,7 @@ export const createManagedConversationService = (options: {
   const sessionForClaude = async (
     execution: ManagedConversationExecutionRecord
   ): Promise<ClaudeManagedConversationSession> => {
-    const current = claudeSessions.get(execution.id);
+    const current = runtimeSessions.get("claude", execution.id);
     if (
       current &&
       current.executionGeneration === execution.executionGeneration
@@ -2053,11 +2045,11 @@ export const createManagedConversationService = (options: {
     }
     if (current) {
       void current.session.closeAndWait().catch(() => undefined);
-      claudeSessions.delete(execution.id);
+      runtimeSessions.delete("claude", execution.id);
     }
     const binding = await runtimeBindingFor(execution, execution.ownerUserId);
     const session = createClaudeSession(execution, binding);
-    claudeSessions.set(execution.id, {
+    runtimeSessions.set("claude", execution.id, {
       executionGeneration: execution.executionGeneration,
       session
     });
@@ -2153,94 +2145,63 @@ export const createManagedConversationService = (options: {
     };
   };
 
+  const withProviderLease = async <
+    Session extends {
+      closeAndWait(): Promise<void>;
+    },
+    Result
+  >(
+    command: ClaimedManagedConversationCommand,
+    provider: ManagedConversationProvider,
+    session: Session,
+    operation: (session: Session) => Promise<Result>
+  ): Promise<Result> => {
+    if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
+    if (command.execution.provider !== provider) {
+      throw managedConversationError(
+        "ManagedConversationProviderMismatchError"
+      );
+    }
+    return runWithManagedConversationLease({
+      session,
+      heartbeatMs: commandHeartbeatMs,
+      renew: () =>
+        options.repository.renewManagedConversationCommandLease({
+          commandId: command.id,
+          leaseToken: command.leaseToken!,
+          runnerId,
+          executionId: command.executionId,
+          leaseMs: commandLeaseMs
+        }),
+      close: (ownedSession) => ownedSession.closeAndWait(),
+      operation,
+      leaseLostError: () => new ManagedConversationLeaseLostError()
+    });
+  };
+
   const withLease = async <T>(
     command: ClaimedManagedConversationCommand,
     operation: (session: CodexManagedConversationSession) => Promise<T>,
     sessionOverride?: CodexManagedConversationSession
-  ): Promise<T> => {
-    if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
-    const session = sessionOverride ?? (await sessionFor(command.execution));
-    let leaseLost = false;
-    let stoppedHeartbeat = false;
-    const heartbeat = async () => {
-      if (stoppedHeartbeat || leaseLost) return;
-      try {
-        const renewed =
-          await options.repository.renewManagedConversationCommandLease({
-            commandId: command.id,
-            leaseToken: command.leaseToken!,
-            runnerId,
-            executionId: command.executionId,
-            leaseMs: commandLeaseMs
-          });
-        if (!renewed) {
-          leaseLost = true;
-          await session.closeAndWait().catch(() => undefined);
-        }
-      } catch {
-        leaseLost = true;
-        await session.closeAndWait().catch(() => undefined);
-      }
-    };
-    const heartbeatTimer = setInterval(
-      () => void heartbeat(),
-      commandHeartbeatMs
+  ): Promise<T> =>
+    withProviderLease(
+      command,
+      "codex",
+      sessionOverride ?? (await sessionFor(command.execution)),
+      operation
     );
-    heartbeatTimer.unref?.();
-    try {
-      const result = await operation(session);
-      if (leaseLost) throw new ManagedConversationLeaseLostError();
-      return result;
-    } finally {
-      stoppedHeartbeat = true;
-      clearInterval(heartbeatTimer);
-    }
-  };
 
   const withClaudeLease = async <T>(
     command: ClaimedManagedConversationCommand,
     operation: (session: ClaudeManagedConversationSession) => Promise<T>,
     sessionOverride?: ClaudeManagedConversationSession
-  ): Promise<T> => {
-    if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
-    const session =
-      sessionOverride ?? (await sessionForClaude(command.execution));
-    let leaseLost = false;
-    let stoppedHeartbeat = false;
-    const heartbeat = async () => {
-      if (stoppedHeartbeat || leaseLost) return;
-      try {
-        const renewed =
-          await options.repository.renewManagedConversationCommandLease({
-            commandId: command.id,
-            leaseToken: command.leaseToken!,
-            runnerId,
-            executionId: command.executionId,
-            leaseMs: commandLeaseMs
-          });
-        if (!renewed) {
-          leaseLost = true;
-          await session.closeAndWait().catch(() => undefined);
-        }
-      } catch {
-        leaseLost = true;
-        await session.closeAndWait().catch(() => undefined);
-      }
-    };
-    const heartbeatTimer = setInterval(
-      () => void heartbeat(),
-      commandHeartbeatMs
+  ): Promise<T> =>
+    withProviderLease(
+      command,
+      "claude",
+      sessionOverride ?? (await sessionForClaude(command.execution)),
+      operation
     );
-    heartbeatTimer.unref?.();
-    try {
-      const result = await operation(session);
-      if (leaseLost) throw new ManagedConversationLeaseLostError();
-      return result;
-    } finally {
-      stoppedHeartbeat = true;
-      clearInterval(heartbeatTimer);
-    }
-  };
 
   const withCommandHeartbeat = async <T>(
     command: ClaimedManagedConversationCommand,
@@ -2455,7 +2416,7 @@ export const createManagedConversationService = (options: {
               }
             );
           retainManagedClaudeHome(managedHome, process.env);
-          claudeSessions.set(execution.id, {
+          runtimeSessions.set("claude", execution.id, {
             executionGeneration: execution.executionGeneration,
             session: resumed
           });
@@ -2530,7 +2491,7 @@ export const createManagedConversationService = (options: {
                 sourceGenerationId: fork.parentNextSourceGenerationId
               }
             );
-          sessions.set(execution.id, {
+          runtimeSessions.set("codex", execution.id, {
             executionGeneration: execution.executionGeneration,
             session: resumed
           });
@@ -2842,19 +2803,17 @@ export const createManagedConversationService = (options: {
       try {
         source = await finalizedForkSource(execution, binding);
       } catch (error) {
-        const managed =
-          execution.provider === "claude"
-            ? claudeSessions.get(execution.id)
-            : sessions.get(execution.id);
-        if (
-          execution.state !== "quiesce_requested" ||
-          !managed ||
-          managed.executionGeneration !== execution.executionGeneration
-        ) {
+        if (execution.state !== "quiesce_requested") {
           throw error;
         }
         if (execution.provider === "claude") {
-          const claudeManaged = managed as ManagedClaudeSession;
+          const claudeManaged = runtimeSessions.get("claude", execution.id);
+          if (
+            !claudeManaged ||
+            claudeManaged.executionGeneration !== execution.executionGeneration
+          ) {
+            throw error;
+          }
           const started = await withClaudeLease(
             command,
             () => claudeManaged.session.start(),
@@ -2866,7 +2825,13 @@ export const createManagedConversationService = (options: {
             });
           }
         } else {
-          const codexManaged = managed as ManagedSession;
+          const codexManaged = runtimeSessions.get("codex", execution.id);
+          if (
+            !codexManaged ||
+            codexManaged.executionGeneration !== execution.executionGeneration
+          ) {
+            throw error;
+          }
           const started = await withLease(
             command,
             () => codexManaged.session.start(),
@@ -3007,7 +2972,7 @@ export const createManagedConversationService = (options: {
           );
           retainManagedClaudeHome(managedHome, process.env);
           managedHomeRetained = true;
-          claudeSessions.set(bound.id, {
+          runtimeSessions.set("claude", bound.id, {
             executionGeneration: bound.executionGeneration,
             session
           });
@@ -3612,12 +3577,12 @@ export const createManagedConversationService = (options: {
           }
         );
         if (claudeSession) {
-          claudeSessions.set(command.executionId, {
+          runtimeSessions.set("claude", command.executionId, {
             executionGeneration: command.executionGeneration,
             session: claudeSession
           });
         } else if (codexSession) {
-          sessions.set(command.executionId, {
+          runtimeSessions.set("codex", command.executionId, {
             executionGeneration: command.executionGeneration,
             session: codexSession
           });
@@ -3932,12 +3897,12 @@ export const createManagedConversationService = (options: {
           retainManagedClaudeHome(managedHome, process.env);
         }
         if (claudeSession) {
-          claudeSessions.set(bound.id, {
+          runtimeSessions.set("claude", bound.id, {
             executionGeneration: bound.executionGeneration,
             session: claudeSession
           });
         } else if (codexSession) {
-          sessions.set(bound.id, {
+          runtimeSessions.set("codex", bound.id, {
             executionGeneration: bound.executionGeneration,
             session: codexSession
           });
@@ -3978,8 +3943,8 @@ export const createManagedConversationService = (options: {
           ?.closeAndWait()
           .catch(() => undefined);
         if (prepared?.childExecution.id) {
-          sessions.delete(prepared.childExecution.id);
-          claudeSessions.delete(prepared.childExecution.id);
+          runtimeSessions.delete("codex", prepared.childExecution.id);
+          runtimeSessions.delete("claude", prepared.childExecution.id);
         }
         await options.repository
           .failManagedConversationFork(
@@ -4069,7 +4034,7 @@ export const createManagedConversationService = (options: {
             }
           );
         }
-        claudeSessions.delete(command.executionId);
+        runtimeSessions.delete("claude", command.executionId);
         next = await options.repository.setManagedConversationExecutionState(
           { userId: command.ownerUserId },
           {
@@ -4084,7 +4049,7 @@ export const createManagedConversationService = (options: {
         sealedSources = await withLease(command, () =>
           session.quiesceAndSealSources()
         );
-        sessions.delete(command.executionId);
+        runtimeSessions.delete("codex", command.executionId);
         next = await options.repository.setManagedConversationExecutionState(
           { userId: command.ownerUserId },
           {
@@ -4220,13 +4185,13 @@ export const createManagedConversationService = (options: {
         },
         session
       );
-      claudeSessions.delete(command.executionId);
+      runtimeSessions.delete("claude", command.executionId);
     } else {
       const session = await sessionFor(command.execution);
       await withLease(command, async () => {
         await session.closeAndWait();
       });
-      sessions.delete(command.executionId);
+      runtimeSessions.delete("codex", command.executionId);
     }
     const next = await options.repository.setManagedConversationExecutionState(
       { userId: command.ownerUserId },
@@ -4374,7 +4339,10 @@ export const createManagedConversationService = (options: {
           promptWasReconciled = failure.reconciled;
         }
         if (promptWasReconciled) {
-          const managedClaude = claudeSessions.get(command.executionId);
+          const managedClaude = runtimeSessions.get(
+            "claude",
+            command.executionId
+          );
           if (managedClaude && command.execution.provider === "claude") {
             try {
               const started = await managedClaude.session.start();
@@ -4396,7 +4364,7 @@ export const createManagedConversationService = (options: {
               // The accepted prompt remains fenced if exact source reconciliation fails.
             }
           }
-          const managed = sessions.get(command.executionId);
+          const managed = runtimeSessions.get("codex", command.executionId);
           if (managed) {
             try {
               await managed.session.start();
@@ -4410,14 +4378,17 @@ export const createManagedConversationService = (options: {
         }
         failed += 1;
         if (terminal && !isCoordinationCommand) {
-          const managedClaude = claudeSessions.get(command.executionId);
+          const managedClaude = runtimeSessions.get(
+            "claude",
+            command.executionId
+          );
           if (managedClaude) {
-            claudeSessions.delete(command.executionId);
+            runtimeSessions.delete("claude", command.executionId);
             await managedClaude.session.closeAndWait().catch(() => undefined);
           }
-          const managed = sessions.get(command.executionId);
+          const managed = runtimeSessions.get("codex", command.executionId);
           if (managed) {
-            sessions.delete(command.executionId);
+            runtimeSessions.delete("codex", command.executionId);
             await managed.session.closeAndWait().catch(() => undefined);
           }
           const current =
@@ -4724,7 +4695,7 @@ export const createManagedConversationService = (options: {
         startupRecovery?.catch(() => undefined),
         drainPromise?.catch(() => undefined)
       ]);
-      const owned = [...sessions.entries(), ...claudeSessions.entries()];
+      const owned = [...runtimeSessions.entries()];
       await Promise.all(
         owned.map(([, { session }]) =>
           session.closeAndWait().catch(() => undefined)
@@ -4741,8 +4712,7 @@ export const createManagedConversationService = (options: {
             .catch(() => false)
         )
       );
-      sessions.clear();
-      claudeSessions.clear();
+      runtimeSessions.clear();
     }
   };
 };

@@ -94,6 +94,12 @@ the source of truth; Hook payloads are signals, not captured semantic content.
 Duplicate signals and replayed transcript items converge through stable
 idempotency keys.
 
+The Claude capture implementation keeps filesystem discovery, transcript-to-item
+adaptation, source journaling and generation transitions, one-signal capture,
+and daemon scheduling behind separate module contracts. The watcher owns only
+debounce, retry, and filesystem wake scheduling. This keeps changes to Claude's
+disk layout independent from Projection policy and source-set lifecycle rules.
+
 On first activation the watcher records an activation time and does not import
 older messages as live capture. Historical import is a separate concern.
 Capture creates Personal Memory only and grants no Team or Workspace authority.
