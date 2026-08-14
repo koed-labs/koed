@@ -8,7 +8,7 @@ import {
   type ReplaySchedulerJob
 } from "./replay-scheduler.js";
 import { CostAdmissionController } from "./cost-admission.js";
-import { sanitizeAtifTrajectory } from "./atif/index.js";
+import { AtifSanitizationError, sanitizeAtifTrajectory } from "./atif/index.js";
 import { buildOracleCorpus } from "./oracle-corpus.js";
 import {
   admitOracleCorpusDirectory,
@@ -67,6 +67,14 @@ const safeInfrastructureFailure = (
         category: candidate.category,
         code:
           candidate.message.match(/:\s([A-Z][A-Z0-9_]{0,127})$/u)?.[1] ?? null
+      };
+    }
+    if (candidate instanceof AtifSanitizationError) {
+      return {
+        category: "atif-sanitization",
+        code: /^[A-Z][A-Z0-9_]{0,127}$/u.test(candidate.reason)
+          ? candidate.reason
+          : null
       };
     }
     if (candidate instanceof AggregateError) pending.push(...candidate.errors);

@@ -155,6 +155,10 @@ result becomes feedback for the next bounded attempt. Unqualified and
 infrastructure-failed tasks remain in the immutable private ledger and must not
 be silently removed from a declared campaign.
 
+Oracle guidance must describe the solution without naming the private cache,
+reference-solution or verifier paths from which it was prepared. Those paths
+are rejected by the ATIF sanitizer and never become reusable Memory.
+
 ```json
 {
   "schema_version": "koed-oracle-qualification-manifest-v1",
