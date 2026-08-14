@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { resolveExperienceReplayConfig } from "./core/index.js";
-import { createCliExperienceReplayDependencies } from "./runtime-options.js";
+import {
+  createCliExperienceReplayDependencies,
+  requiresForcedMemoryAnswerProof
+} from "./runtime-options.js";
 
 const config = resolveExperienceReplayConfig({
   version: 1,
@@ -64,6 +67,23 @@ const config = resolveExperienceReplayConfig({
 });
 
 describe("Experience Replay CLI runtime options", () => {
+  it("forces recall only in explicit proof and calibration plans", () => {
+    expect(requiresForcedMemoryAnswerProof("product_path_proof")).toBe(true);
+    expect(requiresForcedMemoryAnswerProof("oracle_seeded_product_proof")).toBe(
+      true
+    );
+    expect(
+      requiresForcedMemoryAnswerProof("oracle_seeded_repeated_study")
+    ).toBe(true);
+    expect(requiresForcedMemoryAnswerProof("oracle_seeded_campaign")).toBe(
+      false
+    );
+    expect(requiresForcedMemoryAnswerProof("oracle_corpus_qualification")).toBe(
+      false
+    );
+    expect(requiresForcedMemoryAnswerProof("benchmark_profile")).toBe(false);
+  });
+
   it("fails closed when PostgreSQL credentials are absent", () => {
     expect(() => createCliExperienceReplayDependencies(config, {})).toThrow(
       "KOED_EXPERIENCE_REPLAY_POSTGRES_ADMIN_URL is required"

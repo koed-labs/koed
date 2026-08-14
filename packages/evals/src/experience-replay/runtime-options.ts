@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { ResolvedExperienceReplayConfig } from "./core/index.js";
-import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
+import type {
+  ExperienceReplayCodexAuthMode,
+  ExperienceReplayRunPlan,
+  ResolvedExperienceReplayConfig
+} from "./core/index.js";
 import { createExperienceReplayCoordinatorDependencies } from "./coordinator-dependencies.js";
 import {
   EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
@@ -21,6 +24,13 @@ const corpusManifest = path.join(
   EXPERIENCE_REPLAY_BENCHMARK_SOURCE_ROOT,
   "fixtures/tb3-v3.0.0.json"
 );
+
+export const requiresForcedMemoryAnswerProof = (
+  kind: ExperienceReplayRunPlan["kind"]
+): boolean =>
+  kind === "product_path_proof" ||
+  kind === "oracle_seeded_product_proof" ||
+  kind === "oracle_seeded_repeated_study";
 
 const required = (
   environment: Readonly<NodeJS.ProcessEnv>,

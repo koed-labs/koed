@@ -17,7 +17,10 @@ import {
   preflightExperienceReplay
 } from "./preflight.js";
 import { createRecordedPreflightRuntime } from "./recorded-preflight-runtime.js";
-import { createCliExperienceReplayDependencies } from "./runtime-options.js";
+import {
+  createCliExperienceReplayDependencies,
+  requiresForcedMemoryAnswerProof
+} from "./runtime-options.js";
 import {
   inspectOracleCorpusArtifact,
   loadOracleCorpusArtifact,
@@ -479,11 +482,7 @@ export const runExperienceReplayCli = async (
         undefined,
         result.frozenTaskImages,
         codexAuthMode,
-        result.runPlan.kind === "product_path_proof" ||
-          result.runPlan.kind === "oracle_seeded_product_proof" ||
-          result.runPlan.kind === "oracle_seeded_repeated_study" ||
-          result.runPlan.kind === "oracle_seeded_campaign" ||
-          result.runPlan.kind === "oracle_corpus_qualification"
+        requiresForcedMemoryAnswerProof(result.runPlan.kind)
       );
       if (qualificationManifest) {
         return qualifyOracleCorpusCollection({

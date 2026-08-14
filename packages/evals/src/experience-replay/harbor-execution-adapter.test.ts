@@ -445,6 +445,10 @@ describe("HarborExecutionAdapter", () => {
       "harbor-replay-trajectories/cad-model-relevant-0-1.atif.json"
     );
     expect(JSON.stringify(request)).not.toContain(token);
+    expect(request).not.toHaveProperty("developer_instructions_sha256");
+    expect(request).not.toHaveProperty(
+      "job_config.agents.0.kwargs.config.developer_instructions"
+    );
     expect(request).toMatchObject({
       job_config: {
         agents: [
