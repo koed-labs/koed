@@ -31,6 +31,7 @@
     "@koed/db": "workspace:*",
     "@koed/mcp-server": "workspace:*",
     "@koed/shared": "workspace:*",
+    "@koed/worker": "workspace:*",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "fastify": "^5.8.5",

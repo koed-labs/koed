@@ -2,7 +2,7 @@ import { countTokensForModel } from "@koed/core";
 import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
 import type { ExperienceReplayCodexAuthMode } from "./core/index.js";
 import { resolveRecordedCodexAuthentication } from "./codex-auth.js";
@@ -44,6 +44,38 @@ const priceForPreparation = (
   );
 };
 
+const cleanRepositoryCommit = (): string => {
+  for (const args of [
+    ["diff", "--quiet", "--"],
+    ["diff", "--cached", "--quiet", "--"]
+  ]) {
+    const result = spawnSync("git", args, {
+      cwd: EXPERIENCE_REPLAY_REPOSITORY_ROOT,
+      stdio: "ignore"
+    });
+    if (result.error || result.status === null || result.status > 1) {
+      throw new ProductPathPrerequisiteError([
+        "Git could not attest the tracked Koed source state"
+      ]);
+    }
+    if (result.status === 1) {
+      throw new ProductPathPrerequisiteError([
+        "Recorded runs require a clean tracked Koed source state"
+      ]);
+    }
+  }
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: EXPERIENCE_REPLAY_REPOSITORY_ROOT,
+    encoding: "utf8"
+  }).trim();
+  if (!/^[a-f0-9]{40}$/u.test(commit)) {
+    throw new ProductPathPrerequisiteError([
+      "Git returned an invalid Koed source revision"
+    ]);
+  }
+  return commit;
+};
+
 export const createRecordedCliExperienceReplayDependencies = (
   config: ResolvedExperienceReplayConfig,
   environment: Readonly<NodeJS.ProcessEnv>,
@@ -81,10 +113,7 @@ export const createRecordedCliExperienceReplayDependencies = (
   const campaignTemplateCacheDirectory =
     environment.KOED_EXPERIENCE_REPLAY_CAMPAIGN_TEMPLATE_CACHE_DIR?.trim() ||
     path.join(koedHome, "benchmark-cache", "campaign-templates");
-  const repositoryCommit = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: EXPERIENCE_REPLAY_REPOSITORY_ROOT,
-    encoding: "utf8"
-  }).trim();
+  const repositoryCommit = cleanRepositoryCommit();
   const runtimeEnvironment: NodeJS.ProcessEnv = {
     ...(authentication.mode === "api_key"
       ? { OPENAI_API_KEY: authentication.apiKey }

@@ -458,6 +458,9 @@ export const createExperienceReplayCoordinatorDependencies = (
 
   return {
     runId: options.runId,
+    ...(options.repositoryCommit
+      ? { repositoryCommit: options.repositoryCommit }
+      : {}),
     countEmbeddingTokens: options.countEmbeddingTokens,
 
     runSource: (input) =>

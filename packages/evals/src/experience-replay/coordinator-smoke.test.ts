@@ -1566,6 +1566,27 @@ describe("unified experience replay coordinator", () => {
     expect(after).toBe(before);
   });
 
+  it("rejects resume when the product-path source revision changes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    await runExperienceReplay(config, {
+      preflight: admitted,
+      dependencies: fakeDependencies([], {
+        repositoryCommit: "a".repeat(40)
+      })
+    });
+
+    await expect(
+      resumeExperienceReplay(config.output_dir, {
+        preflight: admitted,
+        dependencies: fakeDependencies([], {
+          repositoryCommit: "b".repeat(40)
+        })
+      })
+    ).rejects.toThrow("Persisted run manifest differs from resolved execution");
+  });
+
   it("reruns a pre-agent source interruption under the stable ID and a new generation", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
     const config = smokeConfig(path.join(root, "run"));

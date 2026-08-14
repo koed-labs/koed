@@ -179,6 +179,8 @@ export interface ReplayExecutionHandle {
 export interface ExperienceReplayCoordinatorDependencies {
   /** Random persisted identity for one physical run, separate from semantics. */
   readonly runId?: string;
+  /** Clean tracked source revision used by a recorded product-path runtime. */
+  readonly repositoryCommit?: string;
   countEmbeddingTokens(text: string): number;
   runSource(input: {
     task: CoordinatorTask;
@@ -865,6 +867,7 @@ export const runExperienceReplay = async (
           task_digests: string[];
           replay_task_digests: string[];
           run_plan: ExperienceReplayRunPlan;
+          repository_commit: string | null;
           campaign_created_at?: string;
         } & Record<string, unknown>
       >(directory.root, "manifest.json")
@@ -973,6 +976,7 @@ export const runExperienceReplay = async (
     task_digests: tasks.map((task) => task.taskDigest),
     replay_task_digests: replayTasks.map((task) => task.taskDigest),
     run_plan: admitted.runPlan,
+    repository_commit: dependencies.repositoryCommit ?? null,
     ...(oracleCampaign ? { campaign_created_at: campaignCreatedAt } : {}),
     pins: {
       harbor_commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
@@ -996,7 +1000,10 @@ export const runExperienceReplay = async (
         immutableHash(tasks.map((task) => task.taskDigest)) ||
       immutableHash(priorManifest.replay_task_digests) !==
         immutableHash(replayTasks.map((task) => task.taskDigest)) ||
-      immutableHash(priorManifest.run_plan) !== immutableHash(admitted.runPlan))
+      immutableHash(priorManifest.run_plan) !==
+        immutableHash(admitted.runPlan) ||
+      priorManifest.repository_commit !==
+        (dependencies.repositoryCommit ?? null))
   ) {
     throw new Error("Persisted run manifest differs from resolved execution");
   }

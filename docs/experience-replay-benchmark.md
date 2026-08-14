@@ -189,10 +189,13 @@ one task is serialized.
 
 The complete qualified corpus is imported once under one synthetic User, with
 one Project per task. LCM and embedding preparation run once over that complete
-state. The resulting immutable database is content-addressed in a private local
-cache outside the repository. Every measured attempt receives an exact clone;
-only the target task's Project is in Recall scope. The configured campaign
-concurrency applies after this single frozen template is ready.
+state. Embedding preparation uses the Worker's production chunk validation and
+replacement workflow, including the Embedding Service's advertised batch and
+request-size limits. The resulting immutable database is content-addressed in
+a private local cache outside the repository. Every measured attempt receives
+an exact clone; only the target task's Project is in Recall scope. The
+configured campaign concurrency applies after this single frozen template is
+ready.
 
 Each run also requires a private `0600` campaign definition. The complete task
 universe is identical across every shard. Only `shard_task_digests` and
@@ -378,6 +381,8 @@ attested terminal artifact per execution generation.
 - An interruption after agent start is retained as a missing outcome and is not
   silently repeated.
 - A source missing after agent start blocks dependent Memory preparation.
+- Recorded runs require a clean tracked Koed source tree, persist its exact Git
+  commit, and reject resume under a different source revision.
 - Recorded resume rejects changed runtime, Codex or task-image attestations.
 - A process-identity lease prevents concurrent run/resume writers and only
   reclaims a lease after proving its Linux owner stale.

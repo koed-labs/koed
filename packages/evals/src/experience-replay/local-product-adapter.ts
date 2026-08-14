@@ -13,6 +13,7 @@ import {
   type MemorySourceRepository
 } from "@koed/db";
 import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+import { createEmbeddingWorkflow } from "@koed/worker/embedding-workflow";
 import type { MemorySearchResult, RetrievalMetadata } from "@koed/core";
 import type { AtifSanitizationResult } from "./atif/index.js";
 import {
@@ -220,6 +221,8 @@ interface EmbeddingRuntime {
   dimensions: number;
   modelArtifactHash: string;
   batchLimit: number;
+  maxTextChars: number;
+  maxRequestChars: number;
   health: LocalProductEmbeddingAttestation["health"];
   close(): Promise<void>;
   metrics(): {
@@ -313,6 +316,8 @@ export const createRecordedEmbeddingRuntime = async (
         : null;
   const dimensions = record.dimensions;
   const batchLimit = record.batchLimit;
+  const maxTextChars = record.maxTextChars;
+  const maxRequestChars = record.maxRequestChars;
   const artifactHash =
     typeof record.artifactHash === "string" ? record.artifactHash : null;
   if (
@@ -321,6 +326,10 @@ export const createRecordedEmbeddingRuntime = async (
     !Number.isSafeInteger(dimensions) ||
     !Number.isSafeInteger(batchLimit) ||
     Number(batchLimit) < 1 ||
+    !Number.isSafeInteger(maxTextChars) ||
+    Number(maxTextChars) < 1 ||
+    !Number.isSafeInteger(maxRequestChars) ||
+    Number(maxRequestChars) < Number(maxTextChars) ||
     (record.authRequired === true && record.authValid !== true)
   ) {
     throw new Error(
@@ -434,6 +443,8 @@ export const createRecordedEmbeddingRuntime = async (
     dimensions: Number(dimensions),
     modelArtifactHash: configured.modelArtifactHash,
     batchLimit: Number(batchLimit),
+    maxTextChars: Number(maxTextChars),
+    maxRequestChars: Number(maxRequestChars),
     health: {
       status: "ok",
       model,
@@ -480,6 +491,8 @@ const smokeEmbeddingRuntime = async (): Promise<EmbeddingRuntime> => {
     dimensions: service.dimensions,
     modelArtifactHash,
     batchLimit: 128,
+    maxTextChars: 200_000,
+    maxRequestChars: 1_000_000,
     health: {
       status: "ok",
       model: service.model,
@@ -502,75 +515,40 @@ const smokeEmbeddingRuntime = async (): Promise<EmbeddingRuntime> => {
   };
 };
 
-const embedThroughService = async (
-  runtime: EmbeddingRuntime,
-  texts: string[]
-): Promise<{ model: string; dimensions: number; vectors: number[][] }> => {
-  const payload = (await readJson(
-    await fetch(`${runtime.url}/embed`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-koed-embedding-token": runtime.token
-      },
-      body: JSON.stringify({ texts })
-    })
-  )) as Record<string, unknown>;
-  if (
-    typeof payload.model !== "string" ||
-    !Number.isSafeInteger(payload.dimensions) ||
-    !Array.isArray(payload.vectors) ||
-    payload.vectors.length !== texts.length ||
-    !payload.vectors.every(
-      (vector) =>
-        Array.isArray(vector) &&
-        vector.length === runtime.dimensions &&
-        vector.every(
-          (number) => typeof number === "number" && Number.isFinite(number)
-        )
-    ) ||
-    payload.model !== runtime.model ||
-    payload.dimensions !== runtime.dimensions
-  ) {
-    throw new Error(
-      "Embedding Service returned vectors with wrong identity or shape"
-    );
-  }
-  return payload as unknown as {
-    model: string;
-    dimensions: number;
-    vectors: number[][];
-  };
-};
-
 const embedPendingSources = async (
   repository: MemorySourceRepository,
   runtime: EmbeddingRuntime
 ): Promise<void> => {
+  const model = resolveSupportedEmbeddingModelConfig(runtime.model);
+  const workflow = createEmbeddingWorkflow({
+    env: {
+      embeddingServiceUrl: runtime.url,
+      embeddingServiceToken: runtime.token,
+      embeddingDimensions: runtime.dimensions,
+      embeddingVersion: model.key,
+      embeddingModelArtifactHash: runtime.modelArtifactHash,
+      embeddingTokenizer: model.tokenizer,
+      embeddingInputTransform: model.inputTransform,
+      embeddingPooling: model.pooling,
+      embeddingNormalization: model.normalization,
+      embeddingBatchLimit: runtime.batchLimit,
+      embeddingMaxTextChars: runtime.maxTextChars,
+      embeddingMaxRequestChars: runtime.maxRequestChars,
+      embeddingRequestTimeoutMs: 900_000
+    },
+    repository: () => repository
+  });
   for (;;) {
     const sources = await repository.listSourcesNeedingEmbeddings(
       runtime.batchLimit
     );
     if (sources.length === 0) return;
-    const embedded = await embedThroughService(
-      runtime,
-      sources.map((source) => source.text)
+    await workflow.embedSources(
+      sources.map((source) => ({
+        sourceType: source.sourceType,
+        sourceId: source.sourceId
+      }))
     );
-    const model = resolveSupportedEmbeddingModelConfig(embedded.model);
-    for (const [index, source] of sources.entries()) {
-      await repository.upsertSourceEmbedding({
-        source,
-        model: model.key,
-        modelArtifactHash: runtime.modelArtifactHash,
-        dimensions: embedded.dimensions,
-        version: model.key,
-        tokenizer: model.tokenizer,
-        inputTransform: model.inputTransform,
-        pooling: model.pooling,
-        normalization: model.normalization,
-        vector: embedded.vectors[index]!
-      });
-    }
   }
 };
 

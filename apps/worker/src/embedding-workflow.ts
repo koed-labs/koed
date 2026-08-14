@@ -51,8 +51,25 @@ export interface EmbeddingWorkflow {
   }>;
 }
 
+export type EmbeddingWorkflowEnv = Pick<
+  WorkerEnvConfig,
+  | "embeddingServiceUrl"
+  | "embeddingServiceToken"
+  | "embeddingDimensions"
+  | "embeddingVersion"
+  | "embeddingModelArtifactHash"
+  | "embeddingTokenizer"
+  | "embeddingInputTransform"
+  | "embeddingPooling"
+  | "embeddingNormalization"
+  | "embeddingBatchLimit"
+  | "embeddingMaxTextChars"
+  | "embeddingMaxRequestChars"
+  | "embeddingRequestTimeoutMs"
+>;
+
 interface EmbeddingWorkflowConfig {
-  env: WorkerEnvConfig;
+  env: EmbeddingWorkflowEnv;
   fetchFn?: typeof fetch;
   repository: () => MemorySourceRepository;
 }
@@ -175,7 +192,7 @@ const parseEmbeddingResponse = (
 };
 
 const embeddingServiceHeaders = (
-  env: WorkerEnvConfig
+  env: EmbeddingWorkflowEnv
 ): Record<string, string> => ({
   ...(env.embeddingServiceToken
     ? { "x-koed-embedding-token": env.embeddingServiceToken }
@@ -235,7 +252,7 @@ const splitEmbeddingText = (
 export const embedTexts = async (
   texts: string[],
   config: {
-    env: WorkerEnvConfig;
+    env: EmbeddingWorkflowEnv;
     fetchFn: typeof fetch;
     dispatcher: Agent;
   }
