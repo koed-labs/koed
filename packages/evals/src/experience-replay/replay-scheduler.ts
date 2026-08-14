@@ -56,7 +56,7 @@ export type ReplaySchedulerJobResult<T> =
     };
 
 export interface ReplaySchedulerSnapshot {
-  mode: "paid" | "smoke";
+  mode: "paid" | "subscription" | "smoke";
   totalJobs: number;
   admittedJobs: number;
   completedJobs: number;
@@ -87,7 +87,7 @@ export type ReplaySchedulerOptions<T> = ReplaySchedulerBaseOptions<T> &
         providerSpendingLimitUsd: number;
         costAdmission?: CostAdmissionController;
       }
-    | { mode: "smoke" }
+    | { mode: "subscription" | "smoke" }
   );
 
 const assertConcurrency = (concurrency: number): void => {
@@ -123,8 +123,9 @@ const isProviderAdmissionError = (error: unknown): boolean =>
 
 /**
  * Run replay jobs with bounded concurrency and deterministic, input-aligned output.
- * Paid mode reserves every job's maximum cost before invoking it. Smoke mode uses
- * the same concurrency and cancellation semantics but deliberately has no paid gate.
+ * Paid mode reserves every job's maximum cost before invoking it. Subscription
+ * mode records API-equivalent job cost without treating it as provider spend.
+ * Smoke mode uses the same concurrency and cancellation semantics without a gate.
  */
 export const scheduleReplayJobs = async <T>(
   options: ReplaySchedulerOptions<T>

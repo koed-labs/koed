@@ -95,6 +95,19 @@ import {
 } from "./oracle-corpus-artifact.js";
 import { createOracleCorpusCollectionManifest } from "./oracle-corpus-collection.js";
 
+export const campaignTemplateMaximumCost = (
+  config: ResolvedExperienceReplayConfig,
+  taskCount: number
+): number => {
+  if (!Number.isSafeInteger(taskCount) || taskCount < 1) {
+    throw new Error("Campaign template task count must be a positive integer");
+  }
+  return Math.max(
+    Number.EPSILON,
+    config.maximum_top_level_attempt_cost_usd * taskCount
+  );
+};
+
 const SMOKE_TASKS: readonly CoordinatorTask[] = [
   {
     name: "terminal-bench/synthetic-alpha",
@@ -847,7 +860,8 @@ export const runExperienceReplay = async (
     attestation: ReplayProductPathAttestation;
   }> = [];
   const costAdmission =
-    config.profile === "smoke"
+    config.profile === "smoke" ||
+    admitted.runPlan.codexAuthMode === "subscription"
       ? undefined
       : new CostAdmissionController(
           config.paid_cost_stop_usd!,
@@ -1211,13 +1225,15 @@ export const runExperienceReplay = async (
         concurrency: config.concurrency,
         ...(config.profile === "smoke"
           ? { mode: "smoke" as const }
-          : {
-              mode: "paid" as const,
-              paidCostStopUsd: config.paid_cost_stop_usd!,
-              providerSpendingLimitUsd:
-                config.admission.provider_spending_limit_usd!,
-              costAdmission
-            })
+          : admitted.runPlan.codexAuthMode === "subscription"
+            ? { mode: "subscription" as const }
+            : {
+                mode: "paid" as const,
+                paidCostStopUsd: config.paid_cost_stop_usd!,
+                providerSpendingLimitUsd:
+                  config.admission.provider_spending_limit_usd!,
+                costAdmission
+              })
       });
       for (const result of sourceSchedule.results) {
         if (result.status === "completed")
@@ -1489,9 +1505,9 @@ export const runExperienceReplay = async (
         templateJobs.push({
           id: `template:campaign:${campaignIdentity}`,
           exclusiveKey: `campaign:${campaignIdentity}`,
-          maximumCostUsd: Math.max(
-            Number.EPSILON,
-            config.maximum_top_level_attempt_cost_usd
+          maximumCostUsd: campaignTemplateMaximumCost(
+            config,
+            campaignTasks.length
           ),
           async run({ signal }) {
             if (signal.aborted) {
@@ -1697,13 +1713,15 @@ export const runExperienceReplay = async (
       concurrency: 1,
       ...(config.profile === "smoke"
         ? { mode: "smoke" as const }
-        : {
-            mode: "paid" as const,
-            paidCostStopUsd: config.paid_cost_stop_usd!,
-            providerSpendingLimitUsd:
-              config.admission.provider_spending_limit_usd!,
-            costAdmission
-          })
+        : admitted.runPlan.codexAuthMode === "subscription"
+          ? { mode: "subscription" as const }
+          : {
+              mode: "paid" as const,
+              paidCostStopUsd: config.paid_cost_stop_usd!,
+              providerSpendingLimitUsd:
+                config.admission.provider_spending_limit_usd!,
+              costAdmission
+            })
     });
     if (
       !options.resumeRunDirectory ||
@@ -2103,13 +2121,15 @@ export const runExperienceReplay = async (
       concurrency: config.concurrency,
       ...(config.profile === "smoke"
         ? { mode: "smoke" as const }
-        : {
-            mode: "paid" as const,
-            paidCostStopUsd: config.paid_cost_stop_usd!,
-            providerSpendingLimitUsd:
-              config.admission.provider_spending_limit_usd!,
-            costAdmission
-          })
+        : admitted.runPlan.codexAuthMode === "subscription"
+          ? { mode: "subscription" as const }
+          : {
+              mode: "paid" as const,
+              paidCostStopUsd: config.paid_cost_stop_usd!,
+              providerSpendingLimitUsd:
+                config.admission.provider_spending_limit_usd!,
+              costAdmission
+            })
     });
     for (const result of scheduled.results) {
       if (result.status === "completed") {

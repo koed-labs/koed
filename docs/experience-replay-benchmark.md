@@ -361,12 +361,15 @@ pnpm --filter @koed/evals eval:experience-replay -- \
 ```
 
 For the subscription-backed proof, replace `--confirm-paid-run` with
-`--codex-subscription`. The configured monetary limits remain conservative
-API-equivalent accounting bounds; subscription mode does not submit paid API
-requests.
+`--codex-subscription`. Subscription mode does not submit paid API requests.
+It records API-equivalent cost for comparison but does not enforce that
+counterfactual amount as provider spend. Timeouts, concurrency, per-call token
+limits, call limits, disk admission and artifact-size bounds still apply.
 
-The configured paid stop prevents new admissions. In-flight replay work may
+For API-key runs, the configured paid stop prevents new admissions. In-flight replay work may
 consume at most `maximum_top_level_attempt_cost_usd` per concurrent attempt.
+Full-corpus template preparation receives that finite allowance once per
+selected corpus task because it prepares all selected tasks in one job.
 Trajectory judgments run sequentially, so the reported
 `maximum_concurrent_overshoot_usd` adds one
 `maximum_judge_call_cost_usd` to the concurrent replay-attempt bound; judge

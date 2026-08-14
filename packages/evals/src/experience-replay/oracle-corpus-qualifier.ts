@@ -362,20 +362,27 @@ export const qualifyOracleCorpusCollection = async (input: {
         }
       };
     });
-  const costAdmission = new CostAdmissionController(
-    input.preflight.config.paid_cost_stop_usd!,
-    input.preflight.config.admission.provider_spending_limit_usd!,
-    input.preflight.config.concurrency
-  );
+  const subscription = input.preflight.runPlan.codexAuthMode === "subscription";
+  const costAdmission = subscription
+    ? undefined
+    : new CostAdmissionController(
+        input.preflight.config.paid_cost_stop_usd!,
+        input.preflight.config.admission.provider_spending_limit_usd!,
+        input.preflight.config.concurrency
+      );
   try {
     const scheduled = await scheduleReplayJobs({
       jobs,
       concurrency: input.preflight.config.concurrency,
-      mode: "paid",
-      paidCostStopUsd: input.preflight.config.paid_cost_stop_usd!,
-      providerSpendingLimitUsd:
-        input.preflight.config.admission.provider_spending_limit_usd!,
-      costAdmission
+      ...(subscription
+        ? { mode: "subscription" as const }
+        : {
+            mode: "paid" as const,
+            paidCostStopUsd: input.preflight.config.paid_cost_stop_usd!,
+            providerSpendingLimitUsd:
+              input.preflight.config.admission.provider_spending_limit_usd!,
+            costAdmission
+          })
     });
     for (const outcome of scheduled.results) {
       if (outcome.status === "completed") continue;

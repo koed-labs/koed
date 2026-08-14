@@ -20,6 +20,7 @@ import {
   type HarborFreezeManifest
 } from "./atif/index.js";
 import {
+  campaignTemplateMaximumCost,
   resumeExperienceReplay,
   runExperienceReplay,
   sanitizeRunReport,
@@ -209,6 +210,20 @@ const freezeManifest = (
     }
   };
 };
+
+describe("campaign template cost admission", () => {
+  it("scales the finite preparation ceiling with the complete corpus", () => {
+    const config = {
+      ...campaignConfig("/tmp/koed-campaign-cost-test"),
+      maximum_top_level_attempt_cost_usd: 0.25
+    };
+
+    expect(campaignTemplateMaximumCost(config, 2)).toBeCloseTo(0.5);
+    expect(() => campaignTemplateMaximumCost(config, 0)).toThrow(
+      "Campaign template task count must be a positive integer"
+    );
+  });
+});
 
 const smokeConfig = (output: string) =>
   resolveExperienceReplayConfig({
@@ -1258,7 +1273,8 @@ describe("unified experience replay coordinator", () => {
       [task.task_digest],
       collectionManifest.manifestSha256,
       "d".repeat(64),
-      campaignProtocol.protocolHash
+      campaignProtocol.protocolHash,
+      "subscription"
     );
     const campaignEvents: string[] = [];
     const campaignReplayInputs: Array<{
@@ -1267,6 +1283,13 @@ describe("unified experience replay coordinator", () => {
       requireMemoryAnswer?: boolean;
     }> = [];
     const campaignDependencies = fakeDependencies(campaignEvents);
+    const prepareCampaignTemplate =
+      campaignDependencies.prepareCampaignTemplate!;
+    campaignDependencies.prepareCampaignTemplate = async (input) => ({
+      ...(await prepareCampaignTemplate(input)),
+      // Deliberately exceeds this zero-priced fixture's per-job estimate.
+      preparationCostUsd: 1
+    });
     const createCampaignReplay = campaignDependencies.createReplay;
     campaignDependencies.createReplay = async (input) => {
       campaignReplayInputs.push({

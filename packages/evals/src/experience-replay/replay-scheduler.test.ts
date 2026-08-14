@@ -121,6 +121,32 @@ describe("experience replay scheduler", () => {
     ]);
   });
 
+  it("records subscription cost without enforcing API-equivalent limits", async () => {
+    const result = await scheduleReplayJobs({
+      mode: "subscription",
+      concurrency: 1,
+      jobs: [
+        {
+          id: "subscription-job",
+          maximumCostUsd: 0.01,
+          run: async () => ({ value: 1, observedCostUsd: 25 })
+        }
+      ]
+    });
+
+    expect(result.results[0]).toMatchObject({
+      status: "completed",
+      observedCostUsd: 25,
+      value: 1
+    });
+    expect(result.snapshot).toMatchObject({
+      mode: "subscription",
+      completedJobs: 1,
+      stopReason: null,
+      costAdmission: null
+    });
+  });
+
   it("finishes exactly the admitted cohort and starts nothing after paid-stop crossing", async () => {
     const first = deferred<number>();
     const second = deferred<number>();
