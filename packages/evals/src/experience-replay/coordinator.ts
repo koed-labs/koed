@@ -1960,11 +1960,18 @@ export const runExperienceReplay = async (
               | undefined;
             let replayFailure: unknown;
             let replayFailed = false;
+            let postAgentStage:
+              | "harbor_execution"
+              | "telemetry_validation"
+              | "trajectory_sanitization"
+              | "product_path_validation"
+              | "cost_validation" = "harbor_execution";
             try {
               if (signal.aborted)
                 throw new Error("Replay was cancelled before Harbor start");
               try {
                 const execution = await replay.run({ lifecycle, signal });
+                postAgentStage = "telemetry_validation";
                 const telemetry = execution.telemetry;
                 if (!lifecycleState.activated)
                   throw new Error(
@@ -1982,6 +1989,7 @@ export const runExperienceReplay = async (
                 );
                 assertCompleteReplayTelemetry(telemetry);
                 const merged = mergeReplayTelemetry(telemetry);
+                postAgentStage = "trajectory_sanitization";
                 const frozenTrajectory = await readTextFileNoFollow(
                   path.join(
                     directory.root,
@@ -2013,6 +2021,7 @@ export const runExperienceReplay = async (
                   `${sanitizedReplay.canonicalJson}\n`
                 );
                 replayTrajectories.set(id, sanitizedReplay.trajectory);
+                postAgentStage = "product_path_validation";
                 if (
                   admitted.runPlan.kind === "product_path_proof" &&
                   condition === "relevant" &&
@@ -2024,6 +2033,7 @@ export const runExperienceReplay = async (
                     "Product-path proof relevant replay did not complete memory_answer successfully"
                   );
                 }
+                postAgentStage = "cost_validation";
                 const observedCostUsd = merged.outcome.costUsd;
                 if (observedCostUsd === null || observedCostUsd === undefined)
                   throw new Error("Replay cost telemetry is incomplete");
@@ -2058,7 +2068,10 @@ export const runExperienceReplay = async (
                   failureCategory: category,
                   failureKind:
                     category === "agent_timeout" ? "agent" : "infrastructure",
-                  failurePhase: postVerifierFailure ? "verifier" : "agent"
+                  failurePhase: postVerifierFailure ? "verifier" : "agent",
+                  infrastructureCode:
+                    harborFailure.contractCode ??
+                    `POST_AGENT_${postAgentStage.toUpperCase()}_FAILED`
                 };
                 completedExecution = {
                   value: missing,

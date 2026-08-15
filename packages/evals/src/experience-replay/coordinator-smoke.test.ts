@@ -1882,10 +1882,15 @@ describe("unified experience replay coordinator", () => {
         path.join(config.output_dir, failedResult?.resultPath as string),
         "utf8"
       )
-    ) as { failureKind: string; failurePhase: string };
+    ) as {
+      failureKind: string;
+      failurePhase: string;
+      infrastructureCode: string;
+    };
     expect(artifact).toMatchObject({
       failureKind: "infrastructure",
-      failurePhase: "verifier"
+      failurePhase: "verifier",
+      infrastructureCode: "HARBOR_POST_VERIFIER_FAILURE"
     });
   });
 

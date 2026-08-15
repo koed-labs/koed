@@ -131,6 +131,7 @@ export interface ReplayOutcome {
   failureCategory?: FailureCategory | null;
   failureKind?: FailureKind | null;
   failurePhase?: FailurePhase | null;
+  infrastructureCode?: string | null;
   source?: SourceSplitIdentifiers;
 }
 

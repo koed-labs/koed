@@ -268,7 +268,7 @@ export const renderMarkdownReport = (
     lines.push("## Attempt ledger", "");
     for (const attempt of report.attempts) {
       lines.push(
-        `- ${attempt.taskDigest}; ${attempt.condition}; repeat ${attempt.repeat}; reward ${display(attempt.reward)}; passed ${String(attempt.passed ?? "missing")}; failure ${attempt.failureCategory ?? "none"}.`
+        `- ${attempt.taskDigest}; ${attempt.condition}; repeat ${attempt.repeat}; reward ${display(attempt.reward)}; passed ${String(attempt.passed ?? "missing")}; failure ${attempt.failureCategory ?? "none"}${attempt.infrastructureCode ? ` (${attempt.infrastructureCode})` : ""}.`
       );
     }
     lines.push("");
@@ -608,7 +608,10 @@ const projectAttempt = (value: unknown): JsonRecord => {
       "memory",
       "verifier",
       "teardown"
-    ])
+    ]),
+    ...(typeof value.infrastructureCode === "string"
+      ? { infrastructureCode: value.infrastructureCode }
+      : {})
   };
   for (const [field, keys] of Object.entries(scalarTelemetryKeys)) {
     const nested =
