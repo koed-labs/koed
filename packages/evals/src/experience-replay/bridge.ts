@@ -1,7 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import http from "node:http";
-import { networkInterfaces, release } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -100,25 +99,7 @@ const privateIpv4 = (value: string): boolean => {
   );
 };
 
-export const resolveDockerBridgeHost = ({
-  osRelease = release(),
-  interfaces = networkInterfaces()
-}: {
-  osRelease?: string;
-  interfaces?: ReturnType<typeof networkInterfaces>;
-} = {}): string => {
-  if (!/microsoft|wsl/iu.test(osRelease)) return "host.docker.internal";
-  const candidate = interfaces.eth0?.find(
-    (address) =>
-      address.family === "IPv4" &&
-      !address.internal &&
-      privateIpv4(address.address)
-  )?.address;
-  if (!candidate) {
-    throw new Error("WSL benchmark bridge has no private eth0 address");
-  }
-  return candidate;
-};
+export const resolveDockerBridgeHost = (): string => "host.docker.internal";
 
 class TrialCredential {
   constructor(readonly identity: TrialBridgeIdentity) {}

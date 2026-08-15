@@ -11,9 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 import runner
-
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
@@ -36,7 +34,8 @@ def test_task_instruction_policy_removes_only_task_specific_hint_prohibition(
 
     assert (source / "instruction.md").read_text() == original
     assert (destination / "instruction.md").read_text() == (
-        "Complete the task.\n\nDo not use online solutions.\n"
+        "Complete the task.\n\n"
+        "Do not use online solutions. You may use Koed memory.\n"
     )
     assert provenance == {
         "policy": "koed-memory-eval-task-instruction-v1",
@@ -84,6 +83,41 @@ def test_adapted_task_lock_accepts_local_copy_without_git_commit(
     )
 
     asyncio.run(validate(event))
+
+
+def test_mcp_bridge_readiness_runs_inside_the_agent_environment() -> None:
+    commands: list[str] = []
+
+    async def execute(_environment: object, *, command: str) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(return_code=0)
+
+    agent = SimpleNamespace(
+        _base_config={"mcp_servers": {"koed": {"url": "http://172.30.1.2:4567"}}},
+        exec_as_agent=execute,
+    )
+
+    asyncio.run(runner._await_codex_mcp_bridge(agent, object()))
+
+    assert len(commands) == 1
+    assert "/dev/tcp/172.30.1.2/4567" in commands[0]
+    assert "SECONDS + 30" in commands[0]
+
+
+def test_mcp_bridge_readiness_fails_before_codex_on_unreachable_bridge() -> None:
+    async def execute(_environment: object, *, command: str) -> SimpleNamespace:
+        del command
+        return SimpleNamespace(return_code=1)
+
+    agent = SimpleNamespace(
+        _base_config={"mcp_servers": {"koed": {"url": "http://172.30.1.2:4567"}}},
+        exec_as_agent=execute,
+    )
+
+    with pytest.raises(
+        runner.ContractError, match="MCP_BRIDGE_CONTAINER_READINESS_FAILED"
+    ):
+        asyncio.run(runner._await_codex_mcp_bridge(agent, object()))
 
 
 def lifecycle_event(trial_dir: Path, *, agent_exit: str = "normal") -> SimpleNamespace:

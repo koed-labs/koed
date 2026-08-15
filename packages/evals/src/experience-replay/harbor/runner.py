@@ -5,15 +5,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import copy
 import contextlib
+import copy
 import hashlib
-import ipaddress
 import importlib.metadata
+import ipaddress
 import json
 import math
 import os
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -21,20 +22,20 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
+import tomllib
 from dirhash import dirhash
 from harbor.agents.installed.codex import Codex
 from harbor.environments.factory import EnvironmentFactory
 from harbor.job import Job
 from harbor.models.job.config import DatasetConfig, JobConfig
 from harbor.models.task.config import VerifierEnvironmentMode
-from harbor.models.trial.config import TaskConfig
 from harbor.models.task.verifier_mode import resolve_effective_verifier_env_config
+from harbor.models.trial.config import TaskConfig
 from harbor.publisher.packager import Packager
 from harbor.tasks.client import TaskClient
 from harbor.trial.hooks import TrialHookEvent
@@ -55,7 +56,7 @@ TASK_INSTRUCTION_POLICY = "koed-memory-eval-task-instruction-v1"
 TASK_ANTI_CHEAT_SENTENCE = (
     "Do not cheat by using online solutions or hints specific to this task."
 )
-TASK_NETWORK_SENTENCE = "Do not use online solutions."
+TASK_NETWORK_SENTENCE = "Do not use online solutions. You may use Koed memory."
 MAX_TRAJECTORY_BYTES = 256 * 1024 * 1024
 MAX_LIFECYCLE_LINE_BYTES = 16 * 1024
 LIFECYCLE_SOCKET_ENV = "KOED_HARBOR_LIFECYCLE_SOCKET"
@@ -1652,6 +1653,37 @@ def _validate_pinned_task_image(task_image: str) -> None:
         raise ContractError("INVALID_TASK_IMAGE")
 
 
+async def _await_codex_mcp_bridge(agent: Codex, environment: Any) -> None:
+    servers = agent._base_config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return
+    koed = servers.get("koed")
+    if not isinstance(koed, dict) or not isinstance(koed.get("url"), str):
+        return
+    parsed = urlparse(koed["url"])
+    if parsed.scheme != "http" or not parsed.hostname or parsed.port is None:
+        raise ContractError("INVALID_CODEX_MCP_BRIDGE_URL")
+    target = shlex.quote(f"exec 3<>/dev/tcp/{parsed.hostname}/{parsed.port}")
+    readiness = (
+        "deadline=$((SECONDS + 30)); "
+        f"while ! timeout 2 bash -c {target} 2>/dev/null; do "
+        "if [ \"$SECONDS\" -ge \"$deadline\" ]; then "
+        "echo 'benchmark bridge was not reachable from the task container' >&2; "
+        "exit 1; fi; "
+        "sleep 0.25; "
+        "done"
+    )
+    command = (
+        "command -v bash >/dev/null 2>&1 && "
+        "command -v timeout >/dev/null 2>&1 || "
+        "{ echo 'benchmark bridge readiness tools are unavailable' >&2; exit 1; }; "
+        f"bash -c {shlex.quote(readiness)}"
+    )
+    result = await agent.exec_as_agent(environment, command=command)
+    if result.return_code != 0:
+        raise ContractError("MCP_BRIDGE_CONTAINER_READINESS_FAILED")
+
+
 @contextlib.contextmanager
 def _pinned_task_image(task_image: str):
     """Bridge Harbor 0.21's missing public per-trial image override."""
@@ -1718,6 +1750,7 @@ def _pinned_codex_binary(request: dict[str, Any]):
         raise ContractError("CODE_MODE_HOST_DIGEST_MISMATCH")
 
     original = Codex.install
+    original_run = Codex.run
 
     async def install(agent: Codex, environment: Any) -> None:
         del agent
@@ -1747,11 +1780,19 @@ def _pinned_codex_binary(request: dict[str, Any]):
         ):
             raise ContractError("PINNED_CODEX_ATTESTATION_FAILED")
 
+    async def run(
+        agent: Codex, instruction: str, environment: Any, context: Any
+    ) -> None:
+        await _await_codex_mcp_bridge(agent, environment)
+        await original_run(agent, instruction, environment, context)
+
     Codex.install = install
+    Codex.run = run
     try:
         yield
     finally:
         Codex.install = original
+        Codex.run = original_run
 
 
 @contextlib.contextmanager

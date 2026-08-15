@@ -81,27 +81,8 @@ const rawStatus = async (
   });
 
 describe("experience replay MCP bridge", () => {
-  it("advertises WSL eth0 directly and keeps the standard Docker host elsewhere", () => {
-    expect(
-      resolveDockerBridgeHost({
-        osRelease: "6.6.87.2-microsoft-standard-WSL2",
-        interfaces: {
-          eth0: [
-            {
-              address: "172.30.104.30",
-              netmask: "255.255.240.0",
-              family: "IPv4",
-              mac: "00:00:00:00:00:00",
-              internal: false,
-              cidr: "172.30.104.30/20"
-            }
-          ]
-        }
-      })
-    ).toBe("172.30.104.30");
-    expect(
-      resolveDockerBridgeHost({ osRelease: "6.8.0-linux", interfaces: {} })
-    ).toBe("host.docker.internal");
+  it("advertises Docker's stable host gateway", () => {
+    expect(resolveDockerBridgeHost()).toBe("host.docker.internal");
   });
 
   it("accepts only the dedicated Docker private pool as container peers", () => {

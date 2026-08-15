@@ -18,10 +18,11 @@ same task.
 - The benchmark is a Koed-adapted Terminal-Bench evaluation, not an official
   leaderboard submission. Every source and replay replaces the task corpus's
   exact final prohibition on online solutions or task-specific hints with
-  `Do not use online solutions.` This keeps network cheating prohibited without
-  misclassifying the User's local Koed Memory as an external hint. The runner
-  fails closed when the expected sentence is absent or duplicated, leaves the
-  pinned task cache unchanged, and records both instruction digests.
+  `Do not use online solutions. You may use Koed memory.` This keeps network
+  cheating prohibited without misclassifying the User's local Koed Memory as
+  an external hint. The runner fails closed when the expected sentence is
+  absent or duplicated, leaves the pinned task cache unchanged, and records
+  both instruction digests.
 - Every source and replay is one isolated Harbor trial with a fresh AI Client
   home. The transcript watcher is disabled.
 - The runner consumes the exact digest-qualified task image approved by
@@ -332,11 +333,10 @@ home. Credentials are never serialized into benchmark requests or reports and
 are removed during trial teardown. Subscription mode is for trusted local
 execution of the pinned corpus; API-key mode remains the default.
 
-The benchmark bridge uses `host.docker.internal` on supported native Docker
-hosts. On WSL it advertises the current private WSL `eth0` address because
-Docker Desktop's host-gateway alias does not route back into the WSL namespace.
-The task runner accepts that private address only when it exactly matches the
-attested MCP URL host.
+The benchmark bridge uses Docker's `host.docker.internal` gateway on native
+Docker and Docker Desktop. Before Codex starts, the task container waits for
+that bridge to become reachable so transient host-gateway startup does not
+consume the MCP client's bounded initialization retries.
 
 Completed task failures are retained with a null reward and a stable failure
 classification. Their frozen source trajectories remain in the cohort;
