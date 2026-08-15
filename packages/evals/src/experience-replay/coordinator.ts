@@ -623,6 +623,7 @@ const failedReplayOutcome = (
     phase: "admission" | "setup" | "agent" | "teardown";
     costUsd: number;
     kind?: "agent" | "infrastructure";
+    infrastructureCode?: string;
   }
 ): ReplayOutcome => ({
   taskDigest: task.taskDigest,
@@ -633,7 +634,10 @@ const failedReplayOutcome = (
   costUsd: input.costUsd,
   failureCategory: input.category,
   failureKind: input.kind ?? "infrastructure",
-  failurePhase: input.phase
+  failurePhase: input.phase,
+  ...(input.infrastructureCode
+    ? { infrastructureCode: input.infrastructureCode }
+    : {})
 });
 
 const schedulerTelemetry = <T>(
@@ -2222,6 +2226,10 @@ export const runExperienceReplay = async (
         result.status === "not_started"
           ? undefined
           : (result.error as { category?: string }).category;
+      const contractCode =
+        result.status === "not_started"
+          ? undefined
+          : (result.error as { contractCode?: string }).contractCode;
       const timeout =
         result.status !== "not_started" && errorCategory === "timeout";
       const failure = {
@@ -2246,7 +2254,12 @@ export const runExperienceReplay = async (
               : {
                   category: timeout ? "setup_timeout" : "setup_failed",
                   phase: "setup",
-                  costUsd: result.observedCostUsd
+                  costUsd: result.observedCostUsd,
+                  infrastructureCode:
+                    contractCode ??
+                    (errorCategory
+                      ? `HARBOR_${errorCategory.toUpperCase().replaceAll("-", "_")}`
+                      : "REPLAY_SETUP_FAILED")
                 }
         )
       } satisfies ReplayOutcome;

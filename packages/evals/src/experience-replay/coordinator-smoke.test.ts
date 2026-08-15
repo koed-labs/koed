@@ -1549,6 +1549,20 @@ describe("unified experience replay coordinator", () => {
     const report = await readFile(result.reportPath, "utf8");
     expect(report).toContain("Failures and missing outcomes: 8");
     expect(report).toContain("failure setup_failed");
+    const summary = JSON.parse(
+      await readFile(
+        path.join(result.runDirectory, "report/summary.json"),
+        "utf8"
+      )
+    ) as { attempts: Array<{ infrastructureCode?: string }> };
+    expect(summary.attempts).toHaveLength(8);
+    expect(summary.attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          infrastructureCode: "REPLAY_SETUP_FAILED"
+        })
+      ])
+    );
   });
 
   it("reports replay cleanup failures", async () => {
