@@ -210,11 +210,17 @@ def _nested_contract_code(error: BaseException) -> str | None:
     return None
 
 
-def _remove_empty_harbor_metric_buckets(job: Job) -> None:
+def _guard_empty_harbor_progress_metrics(job: Job) -> None:
     """Avoid Harbor 0.21 indexing an absent metric in its progress callback."""
-    empty = [dataset for dataset, metrics in job._metrics.items() if not metrics]
-    for dataset in empty:
-        del job._metrics[dataset]
+    original = job._update_metric_display
+
+    def guarded(event: TrialHookEvent, loading_progress: Any, progress_task: Any) -> None:
+        dataset = event.config.task.source or "adhoc"
+        if not job._metrics.get(dataset):
+            return
+        original(event, loading_progress, progress_task)
+
+    job._update_metric_display = guarded
 
 
 def _notify_lifecycle(event: TrialHookEvent, name: str, attempt_kind: str) -> None:
@@ -2256,7 +2262,7 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     job.on_verification_started(recorder.on_verification_started)
     job.on_trial_ended(recorder.on_trial_ended)
     job.on_trial_cancelled(recorder.on_trial_cancelled)
-    _remove_empty_harbor_metric_buckets(job)
+    _guard_empty_harbor_progress_metrics(job)
     recorder.begin_run()
     try:
         with _pinned_task_image(task_image), _pinned_codex_binary(request):

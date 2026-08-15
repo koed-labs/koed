@@ -59,14 +59,24 @@ def test_nested_contract_code_finds_wrapped_exception_group() -> None:
     assert runner._nested_contract_code(nested) == "LIFECYCLE_EVENT_REJECTED"
 
 
-def test_remove_empty_harbor_metric_buckets_preserves_real_metrics() -> None:
+def test_guard_empty_harbor_progress_metrics_skips_only_empty_metrics() -> None:
+    calls: list[str] = []
     job = SimpleNamespace(
-        _metrics={"empty": [], "scored": [SimpleNamespace(name="reward")]}
+        _metrics={"empty": [], "scored": [SimpleNamespace(name="reward")]},
+        _update_metric_display=lambda event, *_args: calls.append(
+            event.config.task.source
+        ),
+    )
+    runner._guard_empty_harbor_progress_metrics(job)
+    empty = SimpleNamespace(config=SimpleNamespace(task=SimpleNamespace(source="empty")))
+    scored = SimpleNamespace(
+        config=SimpleNamespace(task=SimpleNamespace(source="scored"))
     )
 
-    runner._remove_empty_harbor_metric_buckets(job)
+    job._update_metric_display(empty, None, None)
+    job._update_metric_display(scored, None, None)
 
-    assert list(job._metrics) == ["scored"]
+    assert calls == ["scored"]
 
 
 @pytest.mark.parametrize(
