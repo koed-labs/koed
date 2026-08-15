@@ -758,10 +758,19 @@ export class HarborExecutionAdapter {
         { cause: error }
       );
     }
-    const observers =
-      this.options.mode === "smoke"
-        ? createDeterministicSmokeTelemetry(identity)
-        : await this.options.collectReplayTelemetry?.({ identity, captured });
+    let observers;
+    try {
+      observers =
+        this.options.mode === "smoke"
+          ? createDeterministicSmokeTelemetry(identity)
+          : await this.options.collectReplayTelemetry?.({ identity, captured });
+    } catch (error) {
+      throw new HarborClientError(
+        "invalid-output",
+        "Recorded replay telemetry collection failed",
+        { cause: error, contractCode: "REPLAY_TELEMETRY_COLLECTION_FAILED" }
+      );
+    }
     if (!observers)
       throw new HarborClientError(
         "invalid-output",

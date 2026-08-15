@@ -111,6 +111,8 @@ const rss = async (pid: number | undefined): Promise<number | null> => {
     if (!match) throw new Error("RSS field is absent");
     return Number(match[1]) * 1024;
   } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return null;
     throw new Error(`Live RSS observation failed for pid ${pid}`, {
       cause: error
     });

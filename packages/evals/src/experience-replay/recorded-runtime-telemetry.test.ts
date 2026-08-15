@@ -170,4 +170,24 @@ describe("recorded replay telemetry provisioning", () => {
       workerBytes: null
     });
   });
+
+  it("reports an exited observed process as explicitly unavailable", async () => {
+    const cold = { ...identity, condition: "cold" as const };
+    const unregister = registerRecordedAttemptObservation({
+      identity: cold,
+      apiPid: 2_147_483_647
+    });
+    try {
+      const result = await createRecordedReplayTelemetryCollector(
+        telemetryOptions
+      )({ identity: cold, captured });
+      expect(result.processRss?.metrics).toEqual({
+        apiBytes: null,
+        runtimeBytes: null,
+        workerBytes: null
+      });
+    } finally {
+      unregister();
+    }
+  });
 });
