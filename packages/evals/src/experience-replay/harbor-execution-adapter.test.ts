@@ -156,6 +156,7 @@ const successfulExecutor =
       replayArtifactFailure?: "missing" | "changed";
       invalidInstructionDigest?: boolean;
       instructionPolicy?: string;
+      usageUnavailable?: boolean;
     } = {}
   ): SubprocessExecutor =>
   async (invocation) => {
@@ -327,10 +328,10 @@ const successfulExecutor =
         },
         interactions: { turns: 1, tool_calls: 0 },
         usage: {
-          input_tokens: 0,
-          cached_input_tokens: 0,
-          output_tokens: 0,
-          cost_usd: 0
+          input_tokens: options.usageUnavailable ? null : 0,
+          cached_input_tokens: options.usageUnavailable ? null : 0,
+          output_tokens: options.usageUnavailable ? null : 0,
+          cost_usd: options.usageUnavailable ? null : 0
         },
         trials: [
           {
@@ -697,6 +698,41 @@ describe("HarborExecutionAdapter", () => {
     expect(replay.replayTrajectoryArtifact?.sha256).toMatch(
       /^sha256:[a-f0-9]{64}$/u
     );
+  });
+
+  it("classifies an agent failure before validating unavailable usage", async () => {
+    const { runRoot, corpusManifest } = await fixture();
+    const adapter = new HarborExecutionAdapter({
+      mode: "smoke",
+      corpusManifest,
+      executor: successfulExecutor(
+        { requests: [], invocations: [] },
+        {
+          reward: null,
+          passed: false,
+          failureCategory: "agent_failed",
+          usageUnavailable: true
+        }
+      )
+    });
+
+    await expect(
+      adapter.runSource({
+        task,
+        attemptId: `source:${task.taskDigest}`,
+        executionGeneration: 1,
+        runRoot,
+        freezeTrajectoryPath: "source/failed-agent/trajectory.json",
+        freezeManifestPath: "source/failed-agent/manifest.json",
+        sanitizedTokenQuartile: 2,
+        lifecycle: acknowledgedLifecycle([]),
+        config: config(runRoot)
+      })
+    ).rejects.toMatchObject({
+      name: "HarborClientError",
+      category: "process-exit",
+      contractCode: "AGENT_FAILED"
+    });
   });
 
   it.each(["missing", "changed"] as const)(

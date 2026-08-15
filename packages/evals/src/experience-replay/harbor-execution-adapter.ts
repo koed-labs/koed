@@ -229,11 +229,39 @@ const extractCapturedResult = (
     "Harbor primary reward"
   );
   const reward = primary.value;
+  const failureCategory = trial.failure_category;
+  const validFailureCategory = [
+    "agent_failed",
+    "agent_timeout",
+    "verifier_failed",
+    "verifier_timeout",
+    "other"
+  ].includes(failureCategory as string);
+  if (
+    primary.field !== "reward" ||
+    typeof primary.passed !== "boolean" ||
+    (trial.errored &&
+      (reward !== null || primary.passed || !validFailureCategory))
+  )
+    throw new Error(
+      "Harbor primary reward violates the CoordinatorTask contract"
+    );
   const usage = exactRecord(
     result.usage,
     ["input_tokens", "cached_input_tokens", "output_tokens", "cost_usd"],
     "Harbor usage"
   );
+  if (
+    trial.errored &&
+    Object.values(usage).some((value) => typeof value !== "number")
+  ) {
+    const contractCode = String(failureCategory).toUpperCase();
+    throw new HarborClientError(
+      "process-exit",
+      `Harbor trial failed before complete telemetry: ${contractCode}`,
+      { contractCode }
+    );
+  }
   const phaseTimings = exactRecord(
     result.phase_timings,
     ["setup_ms", "agent_ms", "verifier_ms"],
@@ -256,25 +284,14 @@ const extractCapturedResult = (
     if (!Number.isSafeInteger(value) || (value as number) < 0)
       throw new Error(`Harbor ATIF interaction ${key} is invalid`);
   }
-  const failureCategory = trial.failure_category;
-  const validFailureCategory = [
-    "agent_failed",
-    "agent_timeout",
-    "verifier_failed",
-    "verifier_timeout",
-    "other"
-  ].includes(failureCategory as string);
   if (
-    primary.field !== "reward" ||
-    typeof primary.passed !== "boolean" ||
-    (trial.errored
-      ? reward !== null || primary.passed || !validFailureCategory
-      : typeof reward !== "number" ||
-        !Number.isFinite(reward) ||
-        reward < task.reward.minimum ||
-        reward > task.reward.maximum ||
-        primary.passed !== (reward === task.reward.successValue) ||
-        failureCategory !== null)
+    !trial.errored &&
+    (typeof reward !== "number" ||
+      !Number.isFinite(reward) ||
+      reward < task.reward.minimum ||
+      reward > task.reward.maximum ||
+      primary.passed !== (reward === task.reward.successValue) ||
+      failureCategory !== null)
   )
     throw new Error(
       "Harbor primary reward violates the CoordinatorTask contract"
