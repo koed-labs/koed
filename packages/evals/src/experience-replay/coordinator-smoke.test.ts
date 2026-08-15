@@ -1888,4 +1888,39 @@ describe("unified experience replay coordinator", () => {
       failurePhase: "verifier"
     });
   });
+
+  it("retains stable infrastructure codes without raw runner output", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const dependencies = fakeDependencies([]);
+    const createReplay = dependencies.createReplay;
+    let injected = false;
+    dependencies.createReplay = async (input) => {
+      if (!injected) {
+        injected = true;
+        throw new HarborClientError(
+          "process-exit",
+          "Harbor runner exited unsuccessfully: HARBOR_PRE_AGENT_FAILURE",
+          { contractCode: "HARBOR_PRE_AGENT_FAILURE" }
+        );
+      }
+      return createReplay(input);
+    };
+
+    await runExperienceReplay(config, { preflight: admitted, dependencies });
+    const admission = JSON.parse(
+      await readFile(
+        path.join(config.output_dir, "cost-admission.json"),
+        "utf8"
+      )
+    ) as { jobs: Array<Record<string, unknown>> };
+    expect(admission.jobs).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        failureCategory: "process-exit",
+        infrastructureCode: "HARBOR_PRE_AGENT_FAILURE"
+      })
+    );
+  });
 });

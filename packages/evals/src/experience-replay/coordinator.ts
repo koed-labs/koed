@@ -639,13 +639,25 @@ const failedReplayOutcome = (
 const schedulerTelemetry = <T>(
   results: readonly import("./replay-scheduler.js").ReplaySchedulerJobResult<T>[]
 ) =>
-  results.map((result) => ({
-    id: result.id,
-    status: result.status,
-    admitted: result.admitted,
-    observedCostUsd: result.observedCostUsd,
-    ...(result.status === "not_started" ? { reason: result.reason } : {})
-  }));
+  results.map((result) => {
+    const failure =
+      result.status === "failed" || result.status === "cancelled"
+        ? (result.error as { category?: unknown; contractCode?: unknown })
+        : undefined;
+    return {
+      id: result.id,
+      status: result.status,
+      admitted: result.admitted,
+      observedCostUsd: result.observedCostUsd,
+      ...(result.status === "not_started" ? { reason: result.reason } : {}),
+      ...(typeof failure?.category === "string"
+        ? { failureCategory: failure.category }
+        : {}),
+      ...(typeof failure?.contractCode === "string"
+        ? { infrastructureCode: failure.contractCode }
+        : {})
+    };
+  });
 
 const readAttestedResult = async <T>(
   runRoot: string,
