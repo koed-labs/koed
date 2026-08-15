@@ -267,6 +267,14 @@ describe("strict ATIF-v1.7 sanitization", () => {
     );
   });
 
+  it("does not treat a credential-like suffix inside an identifier as a key", () => {
+    const value = trajectory();
+    value.steps[2]!.message =
+      "Apply the koed-memory-eval-task-instruction-v2 policy";
+
+    expect(() => sanitize(value)).not.toThrow();
+  });
+
   it("allows Koed tool identifiers while rejecting Koed API keys", () => {
     const identifier = trajectory();
     identifier.steps[1]!.tool_calls![0]!.arguments = {

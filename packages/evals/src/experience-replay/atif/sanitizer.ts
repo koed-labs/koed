@@ -622,7 +622,7 @@ const exactCredentialType = (value: string): CredentialType | null => {
 };
 
 const containsCredential = (value: string): boolean =>
-  /(?:Bearer\s+\S{8,}|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|(?:sk-(?:proj-)?|github_pat_|gh[pousr]_|AKIA|npm_|xox[baprs]-)[A-Za-z0-9_-]{8,}|koed_(?:live_)?[A-Za-z0-9][A-Za-z0-9_-]{7,})/i.test(
+  /(?:Bearer\s+\S{8,}|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|(?<![A-Za-z0-9])(?:(?:sk-(?:proj-)?|github_pat_|gh[pousr]_|AKIA|npm_|xox[baprs]-)[A-Za-z0-9_-]{8,}|koed_(?:live_)?[A-Za-z0-9][A-Za-z0-9_-]{7,}))/i.test(
     value
   ) ||
   containsJwt(value) ||
