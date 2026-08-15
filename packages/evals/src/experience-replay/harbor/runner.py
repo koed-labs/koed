@@ -930,8 +930,11 @@ def load_and_verify_manifest(path: Path) -> dict[str, Any]:
     contracts = _load_reward_contracts()
     for task in tasks:
         name = task["name"]
-        for field in ("agent_timeout_seconds", "verifier_timeout_seconds"):
-            value = task.get(field)
+        for timeout_field in (
+            "agent_timeout_seconds",
+            "verifier_timeout_seconds",
+        ):
+            value = task.get(timeout_field)
             if (
                 isinstance(value, bool)
                 or not isinstance(value, int)
@@ -1262,6 +1265,8 @@ class LifecycleRecorder:
         await asyncio.to_thread(
             _notify_lifecycle, event, "trial_ended", self.attempt_kind
         )
+        self.states[key] = "trial-ended"
+        self._record(event, "trial_ended")
 
     async def on_trial_cancelled(self, event: TrialHookEvent) -> None:
         await asyncio.to_thread(
@@ -2223,8 +2228,17 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     job.on_trial_ended(recorder.on_trial_ended)
     job.on_trial_cancelled(recorder.on_trial_cancelled)
     recorder.begin_run()
-    with _pinned_task_image(task_image), _pinned_codex_binary(request):
-        result = await job.run()
+    try:
+        with _pinned_task_image(task_image), _pinned_codex_binary(request):
+            result = await job.run()
+    except ContractError:
+        raise
+    except Exception as error:
+        if recorder.verification_started_ns is not None:
+            raise ContractError("HARBOR_POST_VERIFIER_FAILURE") from error
+        if recorder.agent_started_ns is not None:
+            raise ContractError("HARBOR_AGENT_PHASE_FAILURE") from error
+        raise ContractError("HARBOR_PRE_AGENT_FAILURE") from error
     trial_results = []
     reward_contract = manifest_by_name[task_name]["reward_contract"]
     for trial in result.trial_results:

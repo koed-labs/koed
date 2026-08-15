@@ -1824,4 +1824,68 @@ describe("unified experience replay coordinator", () => {
       );
     expect(results.map((entry) => entry.executionGeneration)).toEqual([2]);
   });
+
+  it("classifies a post-verifier runner exit as infrastructure", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const dependencies = fakeDependencies([]);
+    const createReplay = dependencies.createReplay;
+    let injected = false;
+    dependencies.createReplay = async (input) => {
+      const replay = await createReplay(input);
+      if (injected || input.condition === "cold") return replay;
+      injected = true;
+      return {
+        ...replay,
+        async run({ lifecycle }) {
+          const event = {
+            schema_version: "koed-harbor-lifecycle-v1" as const,
+            attempt_kind: "replay" as const,
+            event: "agent_started" as const,
+            trial_id: `post-verifier-${input.task.name}`,
+            task_name: input.task.name,
+            timestamp: new Date(0).toISOString()
+          };
+          await lifecycle.onAgentStarted?.(event);
+          await lifecycle.onAgentEnded?.({ ...event, event: "agent_ended" });
+          throw new HarborClientError(
+            "process-exit",
+            "Harbor runner exited unsuccessfully: HARBOR_POST_VERIFIER_FAILURE",
+            { contractCode: "HARBOR_POST_VERIFIER_FAILURE" }
+          );
+        }
+      };
+    };
+
+    await runExperienceReplay(config, { preflight: admitted, dependencies });
+    const results = (
+      await readFile(config.output_dir + "/journal.jsonl", "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(results).toContainEqual(
+      expect.objectContaining({
+        type: "attempt_result",
+        failureCategory: "missing_outcome"
+      })
+    );
+    const failedResult = results.find(
+      (entry) =>
+        entry.type === "attempt_result" &&
+        entry.failureCategory === "missing_outcome"
+    );
+    expect(failedResult).toBeDefined();
+    const artifact = JSON.parse(
+      await readFile(
+        path.join(config.output_dir, failedResult?.resultPath as string),
+        "utf8"
+      )
+    ) as { failureKind: string; failurePhase: string };
+    expect(artifact).toMatchObject({
+      failureKind: "infrastructure",
+      failurePhase: "verifier"
+    });
+  });
 });

@@ -179,6 +179,8 @@ def test_source_lifecycle_freezes_before_verification(
     asyncio.run(exercise())
 
     assert notifications == ["agent_started", "agent_ended", "trial_ended"]
+    assert recorder.states[str(event.trial_id)] == "trial-ended"
+    assert recorder.records[-1]["event"] == "trial_ended"
     assert (tmp_path / "frozen.json").read_text() == trajectory.read_text()
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert [entry["event"] for entry in manifest["lifecycle"]] == [

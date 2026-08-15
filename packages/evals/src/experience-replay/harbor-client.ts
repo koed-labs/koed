@@ -38,10 +38,13 @@ export class HarborClientError extends Error {
   constructor(
     readonly category: HarborFailureCategory,
     message: string,
-    options?: ErrorOptions
+    options?: ErrorOptions & { contractCode?: string }
   ) {
     super(message, options);
+    this.contractCode = options?.contractCode;
   }
+
+  readonly contractCode: string | undefined;
 }
 
 export type JsonValue =
@@ -729,7 +732,8 @@ export class HarborClient {
         )?.[1];
         throw new HarborClientError(
           "process-exit",
-          `Harbor runner exited unsuccessfully (code ${execution.exitCode ?? "null"}, signal ${execution.signal ?? "none"})${contractCode ? `: ${contractCode}` : ""}`
+          `Harbor runner exited unsuccessfully (code ${execution.exitCode ?? "null"}, signal ${execution.signal ?? "none"})${contractCode ? `: ${contractCode}` : ""}`,
+          contractCode ? { contractCode } : undefined
         );
       }
       try {

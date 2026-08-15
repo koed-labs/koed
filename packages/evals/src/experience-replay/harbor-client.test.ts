@@ -255,6 +255,7 @@ describe("HarborClient", () => {
       throw new Error("Expected HarborClientError");
     }
     expect(failure.category).toBe("process-exit");
+    expect(failure.contractCode).toBe("OUTPUT_ALREADY_EXISTS");
     expect(failure.message).toContain("OUTPUT_ALREADY_EXISTS");
     const retained = await readFile(
       path.join(runRoot, ".harbor-requests/failed-id.json"),

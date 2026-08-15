@@ -2043,13 +2043,16 @@ export const runExperienceReplay = async (
                 completedReplayTelemetry.set(id, completedExecution);
               } catch (error) {
                 if (!lifecycleState.activated) throw error;
+                const harborFailure = error as {
+                  category?: string;
+                  contractCode?: string;
+                };
+                const postVerifierFailure =
+                  harborFailure.contractCode === "HARBOR_POST_VERIFIER_FAILURE";
                 const category =
-                  (error as { category?: string }).category === "timeout"
+                  harborFailure.category === "timeout"
                     ? "agent_timeout"
-                    : (error as { category?: string }).category ===
-                        "process-exit"
-                      ? "agent_failed"
-                      : "missing_outcome";
+                    : "missing_outcome";
                 const conservativeCostUsd =
                   config.profile === "smoke"
                     ? 0
@@ -2063,10 +2066,8 @@ export const runExperienceReplay = async (
                   costUsd: conservativeCostUsd,
                   failureCategory: category,
                   failureKind:
-                    category === "agent_timeout" || category === "agent_failed"
-                      ? "agent"
-                      : "infrastructure",
-                  failurePhase: "agent"
+                    category === "agent_timeout" ? "agent" : "infrastructure",
+                  failurePhase: postVerifierFailure ? "verifier" : "agent"
                 };
                 completedExecution = {
                   value: missing,
