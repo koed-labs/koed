@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -778,8 +778,17 @@ describe("unified experience replay coordinator", () => {
     expect(cleanupAttestations).not.toContain("Bearer ");
     const preparationTelemetry = JSON.parse(
       await readFile(path.join(output, "preparation-telemetry.json"), "utf8")
-    ) as { jobs: unknown[] };
-    expect(preparationTelemetry.jobs).toHaveLength(6);
+    ) as {
+      complete: boolean;
+      templateCount: number;
+      attempts: Array<{ telemetry: { jobs: unknown[] } }>;
+    };
+    expect(preparationTelemetry).toMatchObject({
+      complete: true,
+      templateCount: 6
+    });
+    expect(preparationTelemetry.attempts).toHaveLength(1);
+    expect(preparationTelemetry.attempts[0]?.telemetry.jobs).toHaveLength(6);
     const journal = await readFile(path.join(output, "journal.jsonl"), "utf8");
     const completedPhases = journal
       .trim()
@@ -1581,6 +1590,76 @@ describe("unified experience replay coordinator", () => {
     await expect(runExperienceReplay(config)).rejects.toThrow(
       "an ExperienceReplayCoordinatorDependencies adapter is required"
     );
+  });
+
+  it("records failed preparation attempts and publishes a complete resume summary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "koed-smoke-test-"));
+    const config = smokeConfig(path.join(root, "run"));
+    const admitted = await preflightExperienceReplay({ config });
+    const interrupted = fakeDependencies([]);
+    const prepareTemplate = interrupted.prepareTemplate;
+    let failed = false;
+    interrupted.prepareTemplate = async (input) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("synthetic template preparation interruption");
+      }
+      return prepareTemplate(input);
+    };
+
+    await expect(
+      runExperienceReplay(config, {
+        preflight: admitted,
+        dependencies: interrupted
+      })
+    ).rejects.toThrow("synthetic template preparation interruption");
+    await expect(
+      readFile(path.join(config.output_dir, "preparation-telemetry.json"))
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      await readdir(path.join(config.output_dir, "preparation-telemetry"))
+    ).toHaveLength(1);
+
+    const resumed = fakeDependencies([], {
+      adoptTemplate: async (template) => template
+    });
+    await expect(
+      resumeExperienceReplay(config.output_dir, {
+        preflight: admitted,
+        dependencies: resumed
+      })
+    ).resolves.toContain("summary.md");
+
+    const telemetry = JSON.parse(
+      await readFile(
+        path.join(config.output_dir, "preparation-telemetry.json"),
+        "utf8"
+      )
+    ) as {
+      complete: boolean;
+      templateCount: number;
+      attempts: Array<{
+        path: string;
+        telemetry: {
+          scheduler: { completedJobs: number; failedJobs: number };
+        };
+      }>;
+    };
+    expect(telemetry).toMatchObject({ complete: true, templateCount: 6 });
+    expect(telemetry.attempts).toHaveLength(2);
+    expect(telemetry.attempts.map((attempt) => attempt.path)).toEqual(
+      [...telemetry.attempts]
+        .map((attempt) => attempt.path)
+        .sort((left, right) => left.localeCompare(right))
+    );
+    expect(telemetry.attempts[0]?.telemetry.scheduler).toMatchObject({
+      completedJobs: 5,
+      failedJobs: 1
+    });
+    expect(telemetry.attempts[1]?.telemetry.scheduler).toMatchObject({
+      completedJobs: 1,
+      failedJobs: 0
+    });
   });
 
   it("resumes a completed run without duplicating source or replay attempts", async () => {

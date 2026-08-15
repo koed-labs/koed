@@ -1392,7 +1392,11 @@ export const runExperienceReplay = async (
 
     await phase(journal, "canonical_koed_ingestion", "started");
     await phase(journal, "semantic_readiness", "started");
-    await phase(journal, "template_creation", "started");
+    const templateCreationStart = await phase(
+      journal,
+      "template_creation",
+      "started"
+    );
     const replayDecisions = new Map(
       planAttemptResume(expectedReplayAttempts(schedule), priorEntries).map(
         (decision) => [decision.attemptId, decision]
@@ -1743,15 +1747,20 @@ export const runExperienceReplay = async (
               costAdmission
             })
     });
-    if (
-      !options.resumeRunDirectory ||
-      !(await artifactExists(directory.root, "preparation-telemetry.json"))
-    )
-      await publishOrVerifyJson(directory.root, "preparation-telemetry.json", {
-        schema: "koed-experience-replay-preparation-telemetry-v1",
+    const preparationTelemetryComplete = await artifactExists(
+      directory.root,
+      "preparation-telemetry.json"
+    );
+    const preparationAttemptPath = `preparation-telemetry/attempt-${String(
+      templateCreationStart.sequence
+    ).padStart(6, "0")}.json`;
+    if (templateJobs.length > 0 || !preparationTelemetryComplete) {
+      await publishOrVerifyJson(directory.root, preparationAttemptPath, {
+        schema: "koed-experience-replay-preparation-attempt-v1",
         scheduler: templateSchedule.snapshot,
         jobs: schedulerTelemetry(templateSchedule.results)
       });
+    }
     preparationCostUsd =
       templateRecords.reduce(
         (sum, record) => sum + record.template.preparationCostUsd,
@@ -1777,6 +1786,40 @@ export const runExperienceReplay = async (
         templates.set(key, record.template);
       }
       templateRecords.push(record);
+    }
+    if (!preparationTelemetryComplete) {
+      const attemptPaths: string[] = [];
+      const attemptSequences = [
+        ...priorEntries
+          .filter(
+            (entry) =>
+              entry.type === "phase" &&
+              entry.phase === "template_creation" &&
+              entry.status === "started"
+          )
+          .map((entry) => entry.sequence),
+        templateCreationStart.sequence
+      ];
+      for (const sequence of attemptSequences) {
+        const attemptPath = `preparation-telemetry/attempt-${String(
+          sequence
+        ).padStart(6, "0")}.json`;
+        if (await artifactExists(directory.root, attemptPath)) {
+          attemptPaths.push(attemptPath);
+        }
+      }
+      await publishOrVerifyJson(directory.root, "preparation-telemetry.json", {
+        schema: "koed-experience-replay-preparation-telemetry-v2",
+        complete: true,
+        templateCount: templateRecords.length,
+        preparationCostUsd,
+        attempts: await Promise.all(
+          attemptPaths.map(async (attemptPath) => ({
+            path: attemptPath,
+            telemetry: await readJsonArtifact(directory.root, attemptPath)
+          }))
+        )
+      });
     }
     await phase(journal, "canonical_koed_ingestion", "completed");
     await phase(journal, "semantic_readiness", "completed");

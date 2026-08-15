@@ -466,6 +466,14 @@ Memory Answer worker exactly once; the worker breakdown remains separate for
 diagnosis. Missing telemetry stays `null`, and parallel durations are never
 summed into invented elapsed time.
 
+Preparation telemetry is resumable without rewriting history. Every
+preparation invocation publishes an immutable, sequence-addressed attempt
+artifact. A run publishes `preparation-telemetry.json` only after every
+required template is ready; that completion summary references the ordered
+attempt history, final template count and total preparation cost. An
+interrupted attempt therefore remains diagnosable without being mistaken for
+the final preparation state after a successful resume.
+
 ## Cleanup
 
 Each replay owns its database clone, private Redis Unix socket, API, Local AI
