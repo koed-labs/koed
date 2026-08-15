@@ -127,6 +127,10 @@ const assertReusableCorpus = (
     );
   }
   const identity = entry.identity;
+  const expectedBaseImages = [...expectedImage.resolvedBaseImageDigests].sort();
+  const corpusBaseImages = [
+    ...identity.taskImage.resolvedBaseImageDigests
+  ].sort();
   if (
     identity.task.digest !== task.taskDigest ||
     identity.task.name !== task.name ||
@@ -136,7 +140,11 @@ const assertReusableCorpus = (
     identity.codex.version !== preflight.config.codex_cli.version ||
     identity.sanitizer.name !== "koed-atif-sanitizer" ||
     identity.sanitizer.version !== "ATIF-v1.7" ||
-    identity.taskImage.attestationHash !== expectedImage.attestationHash
+    identity.taskImage.dockerfileSha256 !== expectedImage.dockerfileSha256 ||
+    corpusBaseImages.length !== expectedBaseImages.length ||
+    corpusBaseImages.some(
+      (digest, index) => digest !== expectedBaseImages[index]
+    )
   ) {
     throw new Error(
       `Existing oracle corpus identity differs from qualification policy for ${task.name}`

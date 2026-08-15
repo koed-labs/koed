@@ -1399,7 +1399,13 @@ describe("unified experience replay coordinator", () => {
         runPlan: qualificationPlan,
         pins: { ...base.pins, selectedTasks: [task] },
         recordedRunAttestation: {
-          taskImages: [corpusIdentity.taskImage],
+          taskImages: [
+            {
+              ...corpusIdentity.taskImage,
+              provenanceSha256: `sha256:${"7".repeat(64)}`,
+              attestationHash: "8".repeat(64)
+            }
+          ],
           hostCodex: base.recordedRunAttestation?.hostCodex as never,
           containerCodex: base.recordedRunAttestation?.containerCodex as never
         }
@@ -1444,7 +1450,14 @@ describe("unified experience replay coordinator", () => {
         ),
         pins: { ...base.pins, selectedTasks: [task] },
         recordedRunAttestation: {
-          taskImages: [corpusIdentity.taskImage],
+          taskImages: [
+            {
+              ...corpusIdentity.taskImage,
+              contentDigest: `sha256:${"9".repeat(64)}`,
+              imageId: `sha256:${"9".repeat(64)}`,
+              immutableReference: `registry.invalid/task@sha256:${"9".repeat(64)}`
+            }
+          ],
           hostCodex: base.recordedRunAttestation?.hostCodex as never,
           containerCodex: base.recordedRunAttestation?.containerCodex as never
         }
@@ -1463,6 +1476,40 @@ describe("unified experience replay coordinator", () => {
     expect(
       reuseEvents.filter((event) => event.startsWith("source:"))
     ).toHaveLength(0);
+
+    const changedImageConfig = campaignConfig(
+      path.join(root, "qualification-changed-image-run")
+    );
+    await expect(
+      qualifyOracleCorpusCollection({
+        preflight: {
+          ...base,
+          config: changedImageConfig,
+          runPlan: createOracleCorpusQualificationRunPlan(
+            changedImageConfig,
+            [task.task_digest],
+            qualificationManifest.manifestSha256,
+            2
+          ),
+          pins: { ...base.pins, selectedTasks: [task] },
+          recordedRunAttestation: {
+            taskImages: [
+              {
+                ...corpusIdentity.taskImage,
+                dockerfileSha256: `sha256:${"9".repeat(64)}`
+              }
+            ],
+            hostCodex: base.recordedRunAttestation?.hostCodex as never,
+            containerCodex: base.recordedRunAttestation?.containerCodex as never
+          }
+        },
+        dependencies: fakeDependencies([]),
+        manifest: qualificationManifest,
+        corpusDirectory: qualificationCorpus
+      })
+    ).rejects.toThrow(
+      "Existing oracle corpus identity differs from qualification policy"
+    );
 
     const failedQualification = campaignConfig(
       path.join(root, "qualification-failure-run")
