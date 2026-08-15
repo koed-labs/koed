@@ -793,6 +793,8 @@ def _trial_failure_category(exception_type: str | None) -> str | None:
         return None
     if exception_type == "AgentTimeoutError":
         return "agent_timeout"
+    if exception_type in {"ApiUsageLimitError", "NonZeroAgentExitCodeError"}:
+        return "agent_failed"
     if exception_type == "VerifierTimeoutError":
         return "verifier_timeout"
     if exception_type.startswith("Agent"):
@@ -800,6 +802,35 @@ def _trial_failure_category(exception_type: str | None) -> str | None:
     if exception_type.startswith("Verifier") or exception_type.startswith("Reward"):
         return "verifier_failed"
     return "other"
+
+
+def _trial_outcome(
+    validated_reward: dict[str, Any] | None,
+    exception_type: str | None,
+    reward_field: str,
+) -> dict[str, Any]:
+    if validated_reward is None and exception_type is None:
+        raise ContractError("MISSING_REWARD_VALUES")
+    errored = exception_type is not None or validated_reward is None
+    return {
+        "primary_reward": {
+            "field": reward_field,
+            "value": (
+                validated_reward["primary_value"]
+                if validated_reward is not None and not errored
+                else None
+            ),
+            "passed": (
+                validated_reward["passed"]
+                if validated_reward is not None and not errored
+                else False
+            ),
+        },
+        "errored": errored,
+        "failure_category": (
+            _trial_failure_category(exception_type) if errored else None
+        ),
+    }
 
 
 def _task_record(task_dir: Path) -> dict[str, Any]:
@@ -2291,30 +2322,16 @@ async def run_request(request_path: Path) -> dict[str, Any]:
             if trial.verifier_result is not None
             else None
         )
-        if validated_reward is None and exception_type is None:
-            raise ContractError("MISSING_REWARD_VALUES")
-        missing_outcome = validated_reward is None
+        outcome = _trial_outcome(
+            validated_reward,
+            exception_type,
+            reward_contract["primary_field"],
+        )
         trial_results.append(
             {
                 "trial_id": str(trial.id),
                 "task_name": trial.task_name,
-                "primary_reward": {
-                    "field": reward_contract["primary_field"],
-                    "value": (
-                        validated_reward["primary_value"]
-                        if validated_reward is not None
-                        else None
-                    ),
-                    "passed": (
-                        validated_reward["passed"]
-                        if validated_reward is not None
-                        else False
-                    ),
-                },
-                "errored": missing_outcome,
-                "failure_category": (
-                    _trial_failure_category(exception_type) if missing_outcome else None
-                ),
+                **outcome,
             }
         )
     output = {

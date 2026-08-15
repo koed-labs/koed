@@ -556,6 +556,8 @@ def test_pinned_task_image_is_applied_only_during_trial_initialization() -> None
         (None, None),
         ("AgentTimeoutError", "agent_timeout"),
         ("AgentAuthenticationError", "agent_failed"),
+        ("ApiUsageLimitError", "agent_failed"),
+        ("NonZeroAgentExitCodeError", "agent_failed"),
         ("VerifierTimeoutError", "verifier_timeout"),
         ("RewardFileNotFoundError", "verifier_failed"),
         ("UnexpectedError", "other"),
@@ -565,6 +567,34 @@ def test_trial_failure_categories_are_stable(
     exception_type: str | None, expected: str | None
 ) -> None:
     assert runner._trial_failure_category(exception_type) == expected
+
+
+def test_agent_failure_cannot_be_masked_by_a_verifier_reward() -> None:
+    outcome = runner._trial_outcome(
+        {"primary_value": 0.0, "passed": False},
+        "NonZeroAgentExitCodeError",
+        "reward",
+    )
+
+    assert outcome == {
+        "primary_reward": {"field": "reward", "value": None, "passed": False},
+        "errored": True,
+        "failure_category": "agent_failed",
+    }
+
+
+def test_successful_trial_preserves_its_verifier_reward() -> None:
+    outcome = runner._trial_outcome(
+        {"primary_value": 1.0, "passed": True},
+        None,
+        "reward",
+    )
+
+    assert outcome == {
+        "primary_reward": {"field": "reward", "value": 1.0, "passed": True},
+        "errored": False,
+        "failure_category": None,
+    }
 
 
 def test_separate_verifier_environment_is_prepared_during_preflight(
