@@ -573,7 +573,7 @@ const fakeDependencies = (
               lcmMs: 0,
               queueMs: 0,
               memoryAnswerRequests: conditionUsesKoed(condition)
-                ? [{ responseDetail: "answer_only", searchDomain: "project" }]
+                ? [{ responseDetail: "with_evidence", searchDomain: "global" }]
                 : []
             }
           },

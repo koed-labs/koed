@@ -114,8 +114,8 @@ through Koed Memory, guidance-only Koed Memory, and an empty Koed baseline. The
 default and recommended calibration count is 10; smaller counts are functional
 or directional checks. The scheduler distributes attempts over a balanced
 four-arm Williams design as evenly as the selected count permits. Every Koed
-arm must make exactly one explicit project-scoped `memory_answer` call with
-`response_detail: "answer_only"`.
+arm must use `memory_answer` successfully, but the tested agent chooses its
+query, scope, response detail, and whether follow-up recall is useful.
 
 ```bash
 pnpm --filter @koed/evals eval:experience-replay -- \

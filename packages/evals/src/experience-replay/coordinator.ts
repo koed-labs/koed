@@ -1981,27 +1981,6 @@ export const runExperienceReplay = async (
                   entry.repeat
                 );
                 assertCompleteReplayTelemetry(telemetry);
-                if (oracleRepeated && conditionUsesKoed(condition)) {
-                  const requests = (
-                    telemetry.koedRecall?.metrics as
-                      | {
-                          memoryAnswerRequests?: readonly {
-                            responseDetail: string | null;
-                            searchDomain: string | null;
-                          }[];
-                        }
-                      | undefined
-                  )?.memoryAnswerRequests;
-                  if (
-                    requests?.length !== 1 ||
-                    requests[0]?.responseDetail !== "answer_only" ||
-                    requests[0]?.searchDomain !== "project"
-                  ) {
-                    throw new Error(
-                      "Oracle repeated study requires exactly one explicit project-scoped answer_only memory_answer call"
-                    );
-                  }
-                }
                 const merged = mergeReplayTelemetry(telemetry);
                 const frozenTrajectory = await readTextFileNoFollow(
                   path.join(
