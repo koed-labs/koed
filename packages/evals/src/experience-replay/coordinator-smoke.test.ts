@@ -1392,6 +1392,16 @@ describe("unified experience replay coordinator", () => {
     );
     const qualificationCorpus = path.join(root, "qualified-corpora");
     const qualificationEvents: string[] = [];
+    const qualificationDependencies = fakeDependencies(qualificationEvents);
+    const runQualificationSource = qualificationDependencies.runSource;
+    let qualificationSourceCalls = 0;
+    qualificationDependencies.runSource = async (input) => {
+      qualificationSourceCalls += 1;
+      const source = await runQualificationSource(input);
+      return qualificationSourceCalls === 1
+        ? { ...source, reward: 0, passed: false }
+        : source;
+    };
     const qualified = await qualifyOracleCorpusCollection({
       preflight: {
         ...base,
@@ -1410,7 +1420,7 @@ describe("unified experience replay coordinator", () => {
           containerCodex: base.recordedRunAttestation?.containerCodex as never
         }
       },
-      dependencies: fakeDependencies(qualificationEvents),
+      dependencies: qualificationDependencies,
       manifest: qualificationManifest,
       corpusDirectory: qualificationCorpus
     });
@@ -1418,12 +1428,12 @@ describe("unified experience replay coordinator", () => {
       expect.objectContaining({
         taskDigest: task.task_digest,
         status: "qualified",
-        attempts: 1
+        attempts: 2
       })
     ]);
     expect(
       qualificationEvents.filter((event) => event.startsWith("source:"))
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     const qualifiedCollection =
       await import("./oracle-corpus-collection.js").then(
         ({ inspectOracleCorpusCollection }) =>

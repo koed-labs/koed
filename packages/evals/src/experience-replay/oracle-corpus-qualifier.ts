@@ -286,17 +286,17 @@ export const qualifyOracleCorpusCollection = async (input: {
             attempt <= specification.maximumAttempts;
             attempt += 1
           ) {
-            const attemptIdentity = `qualify:${task.taskDigest}:${attempt}`;
+            const sourceAttemptIdentity = `qualify:${task.taskDigest}:${attempt}`;
             attemptsStarted.set(task.taskDigest, attempt);
             await journal.append({
               type: "attempt_state",
-              attemptId: attemptIdentity,
-              executionGeneration: attempt,
+              attemptId: sourceAttemptIdentity,
+              executionGeneration: 1,
               state: "admitted"
             });
             const lifecycle = createCoordinatorHarborLifecycle({
-              attemptId: attemptIdentity,
-              executionGeneration: attempt,
+              attemptId: sourceAttemptIdentity,
+              executionGeneration: 1,
               journal,
               activateCredential: () => undefined,
               revokeCredential: () => undefined
@@ -308,7 +308,7 @@ export const qualifyOracleCorpusCollection = async (input: {
             );
             const source = await input.dependencies.runSource({
               task,
-              attemptId: attemptIdentity,
+              attemptId: sourceAttemptIdentity,
               executionGeneration: attempt,
               runRoot: created.directory.root,
               freezeTrajectoryPath: `${root}/frozen-trajectory.json`,
@@ -337,14 +337,14 @@ export const qualifyOracleCorpusCollection = async (input: {
                 source.frozenTrajectory,
                 {
                   taskDigest: task.taskDigest,
-                  sourceAttemptId: attemptIdentity,
+                  sourceAttemptId: sourceAttemptIdentity,
                   countEmbeddingTokens: input.dependencies.countEmbeddingTokens,
                   freezeManifest: source.freezeManifest
                 }
               );
               const successfulSource = {
                 taskDigest: task.taskDigest,
-                sourceAttemptId: attemptIdentity,
+                sourceAttemptId: sourceAttemptIdentity,
                 passed: true,
                 reward: source.reward,
                 expectedSuccessValue: task.reward.successValue,
