@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from builtins import BaseExceptionGroup
 import contextlib
 import copy
 import hashlib
@@ -207,6 +208,13 @@ def _nested_contract_code(error: BaseException) -> str | None:
         if current.__context__ is not None:
             pending.append(current.__context__)
     return None
+
+
+def _remove_empty_harbor_metric_buckets(job: Job) -> None:
+    """Avoid Harbor 0.21 indexing an absent metric in its progress callback."""
+    empty = [dataset for dataset, metrics in job._metrics.items() if not metrics]
+    for dataset in empty:
+        del job._metrics[dataset]
 
 
 def _notify_lifecycle(event: TrialHookEvent, name: str, attempt_kind: str) -> None:
@@ -2248,6 +2256,7 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     job.on_verification_started(recorder.on_verification_started)
     job.on_trial_ended(recorder.on_trial_ended)
     job.on_trial_cancelled(recorder.on_trial_cancelled)
+    _remove_empty_harbor_metric_buckets(job)
     recorder.begin_run()
     try:
         with _pinned_task_image(task_image), _pinned_codex_binary(request):

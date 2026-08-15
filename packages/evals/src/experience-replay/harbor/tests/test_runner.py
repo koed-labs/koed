@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from builtins import ExceptionGroup
 import contextlib
 import hashlib
 import json
@@ -56,6 +57,16 @@ def test_nested_contract_code_finds_wrapped_exception_group() -> None:
     )
 
     assert runner._nested_contract_code(nested) == "LIFECYCLE_EVENT_REJECTED"
+
+
+def test_remove_empty_harbor_metric_buckets_preserves_real_metrics() -> None:
+    job = SimpleNamespace(
+        _metrics={"empty": [], "scored": [SimpleNamespace(name="reward")]}
+    )
+
+    runner._remove_empty_harbor_metric_buckets(job)
+
+    assert list(job._metrics) == ["scored"]
 
 
 @pytest.mark.parametrize(
