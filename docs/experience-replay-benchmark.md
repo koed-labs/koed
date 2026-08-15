@@ -151,15 +151,21 @@ that result.
 Every selected task must have one private corpus artifact that passed the
 unchanged task verifier. Corpus generation may give a preparation agent
 privileged solution guidance and iterative verifier feedback. The evaluated
-agent never receives that guidance directly. It receives the original,
-unmodified Terminal-Bench task and normal access to Koed's production MCP
-Server. The agent is not told that prior Memory exists, that it is being
-benchmarked, or whether and how often to call `memory_answer`; it may solve the
-task however it chooses. Any answer it requests is synthesized through Koed's
-normal ingestion, Projection, Qwen embedding, semantic Recall and
-`memory_answer` path. Each corpus is generated once, attested, cached under a
-private `0700` collection directory and reused. Raw transcripts, guidance and
-corpus artifacts remain outside Git.
+agent never receives that guidance directly. Its Terminal-Bench instruction
+retains the prohibition on online solutions but removes the phrase prohibiting
+task-specific hints, which could reasonably prohibit the User's own Memory.
+No task text names Koed, requires a Memory call or prescribes how to call it.
+The original and adapted instruction hashes are recorded.
+
+The task workspace receives one canonical, hash-attested `AGENTS.md` with
+generic project guidance: use Koed early when prior work could plausibly help,
+ask focused follow-up questions when useful detail is missing, and skip Recall
+for genuinely self-contained work. The agent may still solve the task however
+it chooses. Any answer it requests is synthesized through Koed's normal
+ingestion, Projection, Qwen embedding, semantic Recall and `memory_answer`
+path. Each corpus is generated once, attested, cached under a private `0700`
+collection directory and reused. Raw transcripts, oracle guidance and corpus
+artifacts remain outside Git.
 
 Create corpora from a private `0600` qualification manifest. Attempts for one
 task are serial; different tasks may qualify concurrently. A failed verifier
@@ -210,6 +216,15 @@ a private local cache outside the repository. Every measured attempt receives
 an exact clone; only the target task's Project is in Recall scope. The
 configured campaign concurrency applies after this single frozen template is
 ready.
+
+Prepared-database identity covers the complete corpus collection, the tracked
+production sources that materialize Conversation Items, Projection, LCM and
+embeddings, the latest migration, LCM model/reasoning/prompt/schema/token
+budget, and embedding model artifact/tokenizer/transform/dimensions. Coding
+agent settings, task guidance, Memory Answer model and Memory Answer prompt do
+not alter already-materialized rows and therefore do not invalidate this
+cache. Full run provenance still records the exact Koed commit, and resume
+still rejects a source-revision change.
 
 Each run also requires a private `0600` campaign definition. The complete task
 universe is identical across every shard. Only `shard_task_digests` and

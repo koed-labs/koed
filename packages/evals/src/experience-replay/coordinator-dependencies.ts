@@ -104,6 +104,7 @@ export interface ExperienceReplayCoordinatorDependencyFactoryOptions {
   ) => number;
   campaignTemplateCacheDirectory?: string;
   repositoryCommit?: string;
+  campaignTemplateMaterializationSourceHash?: string;
   readinessTimeoutMs?: number;
   readinessIntervalMs?: number;
   bridgeCredentialLifetimeMs?: number;
@@ -339,18 +340,23 @@ export const createExperienceReplayCoordinatorDependencies = (
         "Recorded campaign requires the clean Koed source commit"
       );
     }
+    if (!options.campaignTemplateMaterializationSourceHash?.trim()) {
+      throw new Error(
+        "Recorded campaign requires the Koed materialization source hash"
+      );
+    }
     return {
-      schema: "koed-oracle-campaign-template-identity-v1",
+      schema: "koed-oracle-campaign-template-identity-v2",
       corpusCollectionManifestSha256: input.corpusCollectionManifestSha256,
-      semanticConfigHash: input.config.semantic_config_hash,
-      koedSourceCommit: options.repositoryCommit,
+      materializationSourceHash:
+        options.campaignTemplateMaterializationSourceHash,
       latestMigrationTimestamp: await getLatestMigrationTimestamp(),
-      captureProjectionPolicy: "koed-source-commit",
       lcm: {
         model: input.config.lcm_summary.model.id,
         reasoningEffort: input.config.lcm_summary.model.reasoning_effort,
         promptVersion: input.config.lcm_summary.prompt_version,
-        outputSchemaVersion: input.config.lcm_summary.output_schema_version
+        outputSchemaVersion: input.config.lcm_summary.output_schema_version,
+        maxPromptTokens: input.config.admission.max_input_tokens_per_call
       },
       embedding: {
         model: input.config.embedding.model,
@@ -358,11 +364,6 @@ export const createExperienceReplayCoordinatorDependencies = (
         tokenizer: input.config.embedding.tokenizer,
         transform: input.config.embedding.transform,
         dimensions: input.config.embedding.dimensions
-      },
-      memoryAnswer: {
-        model: input.config.memory_answer.model.id,
-        reasoningEffort: input.config.memory_answer.model.reasoning_effort,
-        promptVersion: input.config.memory_answer.prompt_version
       }
     };
   };

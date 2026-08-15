@@ -1,4 +1,5 @@
 import { countTokensForModel } from "@koed/core";
+import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -76,6 +77,46 @@ const cleanRepositoryCommit = (): string => {
   return commit;
 };
 
+const CAMPAIGN_TEMPLATE_MATERIALIZATION_PATHS = [
+  "apps/api",
+  "apps/worker",
+  "packages/core",
+  "packages/db",
+  "packages/shared",
+  "packages/evals/src/experience-replay/atif",
+  "packages/evals/src/experience-replay/ingestion.ts",
+  "packages/evals/src/experience-replay/local-product-adapter.ts",
+  "packages/evals/src/experience-replay/product-api-process.ts",
+  "packages/evals/src/experience-replay/product-state.ts",
+  "packages/evals/src/experience-replay/recorded-runtime-lcm.ts",
+  "packages/mcp-server/src/lcm-summary-service.ts",
+  "packages/mcp-server/src/lcm-summary-worker.ts",
+  "packages/mcp-server/src/prompt-loader.ts",
+  "prompts/app-server/lcm-summary-base.md",
+  "prompts/lcm-summary-leaf.md",
+  "prompts/lcm-summary-partial.md",
+  "prompts/lcm-summary-reduce.md",
+  "prompts/lcm-summary-rollup.md"
+] as const;
+
+const campaignTemplateMaterializationSourceHash = (): string => {
+  const entries = CAMPAIGN_TEMPLATE_MATERIALIZATION_PATHS.map((sourcePath) => {
+    const objectId = execFileSync("git", ["rev-parse", `HEAD:${sourcePath}`], {
+      cwd: EXPERIENCE_REPLAY_REPOSITORY_ROOT,
+      encoding: "utf8"
+    }).trim();
+    if (!/^[a-f0-9]{40,64}$/u.test(objectId)) {
+      throw new ProductPathPrerequisiteError([
+        `Git returned an invalid materialization source object for ${sourcePath}`
+      ]);
+    }
+    return [sourcePath, objectId] as const;
+  });
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(entries))
+    .digest("hex")}`;
+};
+
 export const createRecordedCliExperienceReplayDependencies = (
   config: ResolvedExperienceReplayConfig,
   environment: Readonly<NodeJS.ProcessEnv>,
@@ -114,6 +155,7 @@ export const createRecordedCliExperienceReplayDependencies = (
     environment.KOED_EXPERIENCE_REPLAY_CAMPAIGN_TEMPLATE_CACHE_DIR?.trim() ||
     path.join(koedHome, "benchmark-cache", "campaign-templates");
   const repositoryCommit = cleanRepositoryCommit();
+  const materializationSourceHash = campaignTemplateMaterializationSourceHash();
   const runtimeEnvironment: NodeJS.ProcessEnv = {
     ...(authentication.mode === "api_key"
       ? { OPENAI_API_KEY: authentication.apiKey }
@@ -212,6 +254,7 @@ export const createRecordedCliExperienceReplayDependencies = (
     judgeTrajectory,
     preparationCostUsd: priceForPreparation,
     campaignTemplateCacheDirectory,
-    repositoryCommit
+    repositoryCommit,
+    campaignTemplateMaterializationSourceHash: materializationSourceHash
   });
 };

@@ -350,6 +350,9 @@ describe("Experience Replay coordinator dependency factory", () => {
         model: { id: "gpt-5.6-luna", reasoning_effort: "low" },
         prompt_version: "memory-answer-v9"
       },
+      admission: {
+        max_input_tokens_per_call: 32_768
+      },
       embedding: {
         model: "qwen3-0.6b",
         artifact_sha256: `sha256:${"e".repeat(64)}`,
@@ -374,7 +377,8 @@ describe("Experience Replay coordinator dependency factory", () => {
       productRuntimeDependencies: { startAppServer: vi.fn() as never },
       containerCodexBinary: "/fixture/codex",
       campaignTemplateCacheDirectory: path.join(root, "cache"),
-      repositoryCommit: "a".repeat(40)
+      repositoryCommit: "a".repeat(40),
+      campaignTemplateMaterializationSourceHash: `sha256:${"b".repeat(64)}`
     });
     const input = {
       tasks: [
@@ -392,16 +396,46 @@ describe("Experience Replay coordinator dependency factory", () => {
     try {
       const built = await dependencies.prepareCampaignTemplate!(input);
       const reused = await dependencies.prepareCampaignTemplate!(input);
+      const reusedAfterReplayPromptChange =
+        await dependencies.prepareCampaignTemplate!({
+          ...input,
+          config: {
+            ...campaignConfig,
+            semantic_config_hash: `sha256:${"1".repeat(64)}`,
+            coding_agent: {
+              id: "another-coding-agent",
+              reasoning_effort: "high"
+            },
+            memory_answer: {
+              ...campaignConfig.memory_answer,
+              model: { id: "another-answer-model", reasoning_effort: "high" },
+              prompt_version: "memory-answer-v10"
+            }
+          }
+        });
+      const rebuiltAfterLcmPromptChange =
+        await dependencies.prepareCampaignTemplate!({
+          ...input,
+          config: {
+            ...campaignConfig,
+            lcm_summary: {
+              ...campaignConfig.lcm_summary,
+              prompt_version: "lcm-v2"
+            }
+          }
+        });
 
       expect(built.preparationCostUsd).toBe(1.25);
       expect(reused.preparationCostUsd).toBe(0);
-      expect(f.prepareCampaignTemplate).toHaveBeenCalledOnce();
-      expect(f.adoptTemplate).toHaveBeenCalledOnce();
+      expect(reusedAfterReplayPromptChange.preparationCostUsd).toBe(0);
+      expect(rebuiltAfterLcmPromptChange.preparationCostUsd).toBe(1.25);
+      expect(f.prepareCampaignTemplate).toHaveBeenCalledTimes(2);
+      expect(f.adoptTemplate).toHaveBeenCalledTimes(2);
       expect(f.adoptTemplate.mock.calls[0]?.[1]).toMatch(
         /^sha256:[a-f0-9]{64}$/u
       );
-      expect(f.campaignTemplateLockCalls).toHaveLength(2);
-      expect(new Set(f.campaignTemplateLockCalls)).toHaveLength(1);
+      expect(f.campaignTemplateLockCalls).toHaveLength(4);
+      expect(new Set(f.campaignTemplateLockCalls)).toHaveLength(2);
     } finally {
       await dependencies.teardown({ preserveTemplates: true });
       await rm(root, { recursive: true, force: true });
