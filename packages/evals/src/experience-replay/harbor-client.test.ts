@@ -239,7 +239,7 @@ describe("HarborClient", () => {
         signal: null,
         stdout: "",
         stderr:
-          "experience-replay Harbor contract error (OUTPUT_ALREADY_EXISTS)\n"
+          "harmless Harbor warning\nexperience-replay Harbor contract error (OUTPUT_ALREADY_EXISTS)\n"
       }),
       uvExecutable: "uv-test",
       harborProject: "/locked/harbor",

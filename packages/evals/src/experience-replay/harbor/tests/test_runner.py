@@ -48,6 +48,16 @@ def test_task_instruction_policy_removes_only_task_specific_hint_prohibition(
     }
 
 
+def test_nested_contract_code_finds_wrapped_exception_group() -> None:
+    nested = RuntimeError("outer")
+    nested.__cause__ = ExceptionGroup(
+        "Harbor callback failed",
+        [RuntimeError("noise"), runner.ContractError("LIFECYCLE_EVENT_REJECTED")],
+    )
+
+    assert runner._nested_contract_code(nested) == "LIFECYCLE_EVENT_REJECTED"
+
+
 @pytest.mark.parametrize(
     "instruction",
     [

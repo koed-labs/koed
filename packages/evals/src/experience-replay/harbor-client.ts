@@ -727,9 +727,15 @@ export class HarborClient {
         );
       }
       if (execution.exitCode !== 0) {
-        const contractCode = execution.stderr.match(
-          /^experience-replay Harbor contract error \(([A-Z][A-Z0-9_]{0,127})\)\s*$/u
-        )?.[1];
+        const contractCode = execution.stderr
+          .split(/\r?\n/u)
+          .map(
+            (line) =>
+              line.match(
+                /^experience-replay Harbor contract error \(([A-Z][A-Z0-9_]{0,127})\)$/u
+              )?.[1]
+          )
+          .find((value): value is string => value !== undefined);
         throw new HarborClientError(
           "process-exit",
           `Harbor runner exited unsuccessfully (code ${execution.exitCode ?? "null"}, signal ${execution.signal ?? "none"})${contractCode ? `: ${contractCode}` : ""}`,

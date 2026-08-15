@@ -188,6 +188,27 @@ class ContractError(RuntimeError):
     """An immutable benchmark input or lifecycle contract was violated."""
 
 
+def _nested_contract_code(error: BaseException) -> str | None:
+    pending: list[BaseException] = [error]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, ContractError):
+            code = str(current)
+            if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code):
+                return code
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+    return None
+
+
 def _notify_lifecycle(event: TrialHookEvent, name: str, attempt_kind: str) -> None:
     socket_path = os.environ.get(LIFECYCLE_SOCKET_ENV)
     token = os.environ.get(LIFECYCLE_TOKEN_ENV)
@@ -2234,6 +2255,9 @@ async def run_request(request_path: Path) -> dict[str, Any]:
     except ContractError:
         raise
     except Exception as error:
+        nested_contract_code = _nested_contract_code(error)
+        if nested_contract_code is not None:
+            raise ContractError(nested_contract_code) from error
         if recorder.verification_started_ns is not None:
             raise ContractError("HARBOR_POST_VERIFIER_FAILURE") from error
         if recorder.agent_started_ns is not None:
