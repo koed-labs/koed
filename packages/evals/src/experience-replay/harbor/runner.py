@@ -52,11 +52,12 @@ MANIFEST_SCHEMA = "koed-terminal-bench-corpus-v1"
 RUN_REQUEST_SCHEMA = "koed-harbor-run-v1"
 TASK_IMAGE_SCHEMA = "koed-harbor-task-image-v1"
 FREEZE_MANIFEST_SCHEMA = "koed-harbor-freeze-v1"
-TASK_INSTRUCTION_POLICY = "koed-memory-eval-task-instruction-v1"
+TASK_INSTRUCTION_POLICY = "koed-memory-eval-task-instruction-v2"
 TASK_ANTI_CHEAT_SENTENCE = (
     "Do not cheat by using online solutions or hints specific to this task."
 )
-TASK_NETWORK_SENTENCE = "Do not use online solutions. You may use Koed memory."
+TASK_NETWORK_SENTENCE = "Do not cheat by using online solutions."
+AGENT_GUIDANCE_PATH = Path(__file__).with_name("koed-agent-guidance.md")
 MAX_TRAJECTORY_BYTES = 256 * 1024 * 1024
 MAX_LIFECYCLE_LINE_BYTES = 16 * 1024
 LIFECYCLE_SOCKET_ENV = "KOED_HARBOR_LIFECYCLE_SOCKET"
@@ -267,18 +268,33 @@ def _prepare_adapted_task(
     except (OSError, UnicodeError) as error:
         raise ContractError("TASK_INSTRUCTION_UNREADABLE") from error
     adapted = _adapt_task_instruction(original)
+    if (source / "AGENTS.md").exists():
+        raise ContractError("TASK_AGENT_GUIDANCE_COLLISION")
+    try:
+        agent_guidance = AGENT_GUIDANCE_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError("AGENT_GUIDANCE_UNREADABLE") from error
     original_sha256 = f"sha256:{hashlib.sha256(original.encode()).hexdigest()}"
     adapted_sha256 = f"sha256:{hashlib.sha256(adapted.encode()).hexdigest()}"
+    agent_guidance_sha256 = (
+        f"sha256:{hashlib.sha256(agent_guidance.encode()).hexdigest()}"
+    )
+    adaptation_sha256 = hashlib.sha256(
+        f"{adapted_sha256}\n{agent_guidance_sha256}".encode()
+    ).hexdigest()
     destination = (
         run_root
         / "harbor-adapted-tasks"
-        / (f"{task_selector}-{adapted_sha256.removeprefix('sha256:')[:16]}")
+        / f"{task_selector}-{adaptation_sha256[:16]}"
     )
     if destination.exists():
         existing_instruction = destination / "instruction.md"
+        existing_agent_guidance = destination / "AGENTS.md"
         if (
             not existing_instruction.is_file()
             or _sha256_file(existing_instruction) != adapted_sha256
+            or not existing_agent_guidance.is_file()
+            or _sha256_file(existing_agent_guidance) != agent_guidance_sha256
         ):
             raise ContractError("ADAPTED_TASK_COLLISION")
     else:
@@ -289,6 +305,7 @@ def _prepare_adapted_task(
         try:
             shutil.copytree(source, temporary, dirs_exist_ok=True)
             (temporary / "instruction.md").write_text(adapted, encoding="utf-8")
+            (temporary / "AGENTS.md").write_text(agent_guidance, encoding="utf-8")
             temporary.rename(destination)
         finally:
             if temporary.exists():
@@ -297,6 +314,7 @@ def _prepare_adapted_task(
         "policy": TASK_INSTRUCTION_POLICY,
         "original_sha256": original_sha256,
         "adapted_sha256": adapted_sha256,
+        "agent_guidance_sha256": agent_guidance_sha256,
     }
 
 
@@ -1472,7 +1490,7 @@ def _validate_codex_kwargs(
     ):
         if config.get(key) is not False:
             raise ContractError("UNSAFE_CODEX_CONFIG")
-    if config.get("project_doc_max_bytes") != 0:
+    if config.get("project_doc_max_bytes") != 4096:
         raise ContractError("UNSAFE_CODEX_CONFIG")
     if config.get("agents") != {"enabled": False} or config.get("skills") != {
         "include_instructions": False
@@ -1748,6 +1766,16 @@ def _pinned_codex_binary(request: dict[str, Any]):
         raise ContractError("CODE_MODE_HOST_UNSAFE")
     if _sha256_file(helper_resolved) != request["codex_code_mode_host_sha256"]:
         raise ContractError("CODE_MODE_HOST_DIGEST_MISMATCH")
+    try:
+        guidance_info = AGENT_GUIDANCE_PATH.lstat()
+        guidance_resolved = AGENT_GUIDANCE_PATH.resolve(strict=True)
+    except OSError as error:
+        raise ContractError("AGENT_GUIDANCE_UNAVAILABLE") from error
+    if stat.S_ISLNK(guidance_info.st_mode) or not stat.S_ISREG(
+        guidance_info.st_mode
+    ):
+        raise ContractError("AGENT_GUIDANCE_UNSAFE")
+    guidance_sha256 = _sha256_file(guidance_resolved)
 
     original = Codex.install
     original_run = Codex.run
@@ -1756,14 +1784,18 @@ def _pinned_codex_binary(request: dict[str, Any]):
         del agent
         temporary = "/tmp/koed-pinned-codex"
         helper_temporary = "/tmp/koed-pinned-codex-code-mode-host"
+        guidance_temporary = "/tmp/koed-agent-guidance"
         await environment.upload_file(resolved, temporary)
         await environment.upload_file(helper_resolved, helper_temporary)
+        await environment.upload_file(guidance_resolved, guidance_temporary)
         result = await environment.exec(
             command=(
                 f"install -m 0755 {temporary} /usr/local/bin/codex && "
                 f"install -m 0755 {helper_temporary} /usr/local/bin/codex-code-mode-host && "
-                f"rm -f {temporary} {helper_temporary} && "
-                "sha256sum /usr/local/bin/codex /usr/local/bin/codex-code-mode-host && "
+                f"install -m 0644 {guidance_temporary} /app/AGENTS.md && "
+                f"rm -f {temporary} {helper_temporary} {guidance_temporary} && "
+                "sha256sum /usr/local/bin/codex /usr/local/bin/codex-code-mode-host "
+                "/app/AGENTS.md && "
                 "codex --version"
             ),
             user="root",
@@ -1776,6 +1808,7 @@ def _pinned_codex_binary(request: dict[str, Any]):
         if (
             expected not in output
             or helper_expected not in output
+            or guidance_sha256.removeprefix("sha256:") not in output
             or request["codex_version"] not in output
         ):
             raise ContractError("PINNED_CODEX_ATTESTATION_FAILED")

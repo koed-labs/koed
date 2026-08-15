@@ -1,0 +1,3 @@
+# Koed Memory
+
+Koed provides access to the user's prior work through `memory_answer` when that tool is available. At the start of substantive work, consider whether previous experience could help. If it plausibly could, use `memory_answer` before committing to a plan or implementation. Existing-project implementation, debugging, validation, configuration, design, and decision-making work normally qualify. Ask a focused question, and ask a narrower follow-up when an answer identifies relevant knowledge but lacks a necessary detail. Skip recall only when the task is clearly self-contained and prior work cannot affect the outcome.

@@ -35,12 +35,16 @@ def test_task_instruction_policy_removes_only_task_specific_hint_prohibition(
     assert (source / "instruction.md").read_text() == original
     assert (destination / "instruction.md").read_text() == (
         "Complete the task.\n\n"
-        "Do not use online solutions. You may use Koed memory.\n"
+        "Do not cheat by using online solutions.\n"
+    )
+    assert (destination / "AGENTS.md").read_text() == (
+        runner.AGENT_GUIDANCE_PATH.read_text()
     )
     assert provenance == {
-        "policy": "koed-memory-eval-task-instruction-v1",
+        "policy": "koed-memory-eval-task-instruction-v2",
         "original_sha256": runner._sha256_file(source / "instruction.md"),
         "adapted_sha256": runner._sha256_file(destination / "instruction.md"),
+        "agent_guidance_sha256": runner._sha256_file(destination / "AGENTS.md"),
     }
 
 
@@ -784,7 +788,7 @@ def _safe_codex_kwargs() -> dict[str, object]:
             "include_apps_instructions": False,
             "include_collaboration_mode_instructions": False,
             "include_environment_context": False,
-            "project_doc_max_bytes": 0,
+            "project_doc_max_bytes": 4096,
             "web_search": "disabled",
             "features": {"mcp_2026_07_28": True},
             "agents": {"enabled": False},
