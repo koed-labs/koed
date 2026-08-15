@@ -114,6 +114,8 @@ const SMOKE_TASKS: readonly CoordinatorTask[] = [
     taskDigest: SMOKE_TASK_DIGESTS[0],
     category: "synthetic",
     expertTimeSeconds: 1,
+    agentTimeoutSeconds: 60,
+    verifierTimeoutSeconds: 30,
     resourceClass: "synthetic-cpu",
     reward: { minimum: 0, maximum: 1, successValue: 1 }
   },
@@ -122,6 +124,8 @@ const SMOKE_TASKS: readonly CoordinatorTask[] = [
     taskDigest: SMOKE_TASK_DIGESTS[1],
     category: "synthetic",
     expertTimeSeconds: 2,
+    agentTimeoutSeconds: 60,
+    verifierTimeoutSeconds: 30,
     resourceClass: "synthetic-cpu",
     reward: { minimum: 0, maximum: 1, successValue: 1 }
   }
@@ -132,6 +136,8 @@ export interface CoordinatorTask {
   taskDigest: string;
   category: string;
   expertTimeSeconds: number;
+  agentTimeoutSeconds: number;
+  verifierTimeoutSeconds: number;
   resourceClass: string;
   reward: { minimum: number; maximum: number; successValue: number };
 }
@@ -475,6 +481,8 @@ const selectedTasks = (preflight: PreflightResult): CoordinatorTask[] => {
     taskDigest: task.task_digest,
     category: task.category,
     expertTimeSeconds: task.expert_time_seconds,
+    agentTimeoutSeconds: task.agent_timeout_seconds,
+    verifierTimeoutSeconds: task.verifier_timeout_seconds,
     resourceClass: task.resource_class,
     reward: {
       minimum: task.primary_reward.minimum,

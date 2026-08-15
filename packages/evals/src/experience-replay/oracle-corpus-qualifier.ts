@@ -100,6 +100,8 @@ const taskFromPreflight = (
     taskDigest: task.task_digest,
     category: task.category,
     expertTimeSeconds: task.expert_time_seconds,
+    agentTimeoutSeconds: task.agent_timeout_seconds,
+    verifierTimeoutSeconds: task.verifier_timeout_seconds,
     resourceClass: task.resource_class,
     reward: {
       minimum: task.primary_reward.minimum,

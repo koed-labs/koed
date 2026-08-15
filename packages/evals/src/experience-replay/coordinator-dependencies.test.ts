@@ -33,6 +33,8 @@ const task: CoordinatorTask = {
   taskDigest: `sha256:${"a".repeat(64)}`,
   category: "fixture",
   expertTimeSeconds: 10,
+  agentTimeoutSeconds: 60,
+  verifierTimeoutSeconds: 30,
   resourceClass: "cpu",
   reward: { minimum: 0, maximum: 1, successValue: 1 }
 };

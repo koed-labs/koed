@@ -3,10 +3,11 @@
     "commit": "64afbbcb62165950301e1a6407c729aa26d844ff",
     "version": "0.21.0"
   },
-  "schema_version": "koed-terminal-bench-corpus-v1",
+  "schema_version": "koed-terminal-bench-corpus-v2",
   "task_count": 74,
   "tasks": [
     {
+      "agent_timeout_seconds": 18000,
       "category": "Science",
       "expert_time_quartile": 3,
       "expert_time_seconds": 25200,
@@ -23,9 +24,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/atrx-vep-crispr",
-      "task_digest": "sha256:3b8eb57602814aa63af12439e3eacb7ad5bee09efb6c6af023768994bf9220b4"
+      "task_digest": "sha256:3b8eb57602814aa63af12439e3eacb7ad5bee09efb6c6af023768994bf9220b4",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "ML",
       "expert_time_quartile": 4,
       "expert_time_seconds": 86400,
@@ -42,9 +45,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/batched-eval-parity",
-      "task_digest": "sha256:7926394b6c448ba8debd1cdd5b0bae777a0e4cbe0f1af608b61a8707f5d957c5"
+      "task_digest": "sha256:7926394b6c448ba8debd1cdd5b0bae777a0e4cbe0f1af608b61a8707f5d957c5",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Science",
       "expert_time_quartile": 3,
       "expert_time_seconds": 18000,
@@ -61,9 +66,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/biped-contact-dynamics",
-      "task_digest": "sha256:ae2cc175efc37461de142d15b01a02718c7fb7a16f87b2720d0dd666e694cf0a"
+      "task_digest": "sha256:ae2cc175efc37461de142d15b01a02718c7fb7a16f87b2720d0dd666e694cf0a",
+      "verifier_timeout_seconds": 2640
     },
     {
+      "agent_timeout_seconds": 1800,
       "category": "Software",
       "expert_time_quartile": 1,
       "expert_time_seconds": 5400,
@@ -80,9 +87,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/bun-sourcemap-leak",
-      "task_digest": "sha256:ac0b0f77da4e8f6c3904133033ec6d8591eb0d3f18205ab28104ea3cf2a5a07f"
+      "task_digest": "sha256:ac0b0f77da4e8f6c3904133033ec6d8591eb0d3f18205ab28104ea3cf2a5a07f",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Hardware",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -99,9 +108,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/cad-model",
-      "task_digest": "sha256:55103abe25325dfa3717d08ef3d8e02dc8f8bc9adccaed92aab7e94a95b2049a"
+      "task_digest": "sha256:55103abe25325dfa3717d08ef3d8e02dc8f8bc9adccaed92aab7e94a95b2049a",
+      "verifier_timeout_seconds": 240
     },
     {
+      "agent_timeout_seconds": 3600,
       "category": "Operations",
       "expert_time_quartile": 2,
       "expert_time_seconds": 9000,
@@ -118,9 +129,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/cargo-flight-dispatch",
-      "task_digest": "sha256:2836dfe6eb2270fcbbfdb119c7cfae8495208a03a7fc691c2efff49bda5b3c61"
+      "task_digest": "sha256:2836dfe6eb2270fcbbfdb119c7cfae8495208a03a7fc691c2efff49bda5b3c61",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 2500,
       "category": "Software",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -137,9 +150,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/cli-2ph-simplex",
-      "task_digest": "sha256:9f41a82565950c380501beb7f8ae33732e4ad526dc4c6ba9b3f37d66a7742a36"
+      "task_digest": "sha256:9f41a82565950c380501beb7f8ae33732e4ad526dc4c6ba9b3f37d66a7742a36",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Science",
       "expert_time_quartile": 4,
       "expert_time_seconds": 57600,
@@ -156,9 +171,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/coq-block-bound",
-      "task_digest": "sha256:d2764883159edb22fa85c599dd47879f6e46c7d6c2982cfc448bbc439e5e817e"
+      "task_digest": "sha256:d2764883159edb22fa85c599dd47879f6e46c7d6c2982cfc448bbc439e5e817e",
+      "verifier_timeout_seconds": 1200
     },
     {
+      "agent_timeout_seconds": 18000,
       "category": "Operations",
       "expert_time_quartile": 3,
       "expert_time_seconds": 17280,
@@ -175,9 +192,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/ctr-optimization",
-      "task_digest": "sha256:9267570079b058061b7e6a87cdb30df4f04c5d5af3ce2c37c3da6be425e7c26d"
+      "task_digest": "sha256:9267570079b058061b7e6a87cdb30df4f04c5d5af3ce2c37c3da6be425e7c26d",
+      "verifier_timeout_seconds": 180
     },
     {
+      "agent_timeout_seconds": 10800,
       "category": "Software",
       "expert_time_quartile": 3,
       "expert_time_seconds": 21600,
@@ -194,9 +213,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/cumulative-layout-shift",
-      "task_digest": "sha256:834205d9965467c2ed6f4516032658b0393ea0cb29c2442cfa75decf7ce026ff"
+      "task_digest": "sha256:834205d9965467c2ed6f4516032658b0393ea0cb29c2442cfa75decf7ce026ff",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 3600,
       "category": "Software",
       "expert_time_quartile": 4,
       "expert_time_seconds": 86400,
@@ -213,9 +234,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/data-anonymization",
-      "task_digest": "sha256:2d463025deb8bcc4c860f8a8e90c799435306e566e6c36af4b0df6d18e10a290"
+      "task_digest": "sha256:2d463025deb8bcc4c860f8a8e90c799435306e566e6c36af4b0df6d18e10a290",
+      "verifier_timeout_seconds": 7200
     },
     {
+      "agent_timeout_seconds": 18000,
       "category": "Software",
       "expert_time_quartile": 4,
       "expert_time_seconds": 36000,
@@ -232,9 +255,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/distributed-dedup",
-      "task_digest": "sha256:f89d4536b2b884fe972215937f01397d9c6ebe5578499e4b192e67021c50310b"
+      "task_digest": "sha256:f89d4536b2b884fe972215937f01397d9c6ebe5578499e4b192e67021c50310b",
+      "verifier_timeout_seconds": 1800
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "ML",
       "expert_time_quartile": 3,
       "expert_time_seconds": 18000,
@@ -251,9 +276,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/embedding-drift-monitor",
-      "task_digest": "sha256:cc93452e15459e00dcd817867428f4c49cd5a8831213ba4590f1372929cb262e"
+      "task_digest": "sha256:cc93452e15459e00dcd817867428f4c49cd5a8831213ba4590f1372929cb262e",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 3600,
       "category": "Operations",
       "expert_time_quartile": 2,
       "expert_time_seconds": 14400,
@@ -270,9 +297,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/erp-procurement-planning",
-      "task_digest": "sha256:4be203d7f07954008fcca9869e2e6cc7b0fb6603bebc7e7d0ffe498e7fa2b843"
+      "task_digest": "sha256:4be203d7f07954008fcca9869e2e6cc7b0fb6603bebc7e7d0ffe498e7fa2b843",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "ML",
       "expert_time_quartile": 4,
       "expert_time_seconds": 50400,
@@ -289,9 +318,11 @@
       },
       "resource_class": "gpu",
       "source_path": "tasks/exam-pdf-eval",
-      "task_digest": "sha256:d4f58d8db8098e854bbd2d98b0bcfee6ac14a3a6c69b606db55a8eb1230ff7da"
+      "task_digest": "sha256:d4f58d8db8098e854bbd2d98b0bcfee6ac14a3a6c69b606db55a8eb1230ff7da",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Operations",
       "expert_time_quartile": 3,
       "expert_time_seconds": 28800,
@@ -308,9 +339,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/fin-saccr-rwa",
-      "task_digest": "sha256:5b2103ac785d4a915207a2535fabf3815fea2c75cf4de01c79747a679facc2ad"
+      "task_digest": "sha256:5b2103ac785d4a915207a2535fabf3815fea2c75cf4de01c79747a679facc2ad",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 2,
       "expert_time_seconds": 10800,
@@ -327,9 +360,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/fix-uautomizer-soundness",
-      "task_digest": "sha256:4a0ee1bf87f6d571214101881b0ac031c502fd20142bdf61f78755f58c4515e3"
+      "task_digest": "sha256:4a0ee1bf87f6d571214101881b0ac031c502fd20142bdf61f78755f58c4515e3",
+      "verifier_timeout_seconds": 4500
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Science",
       "expert_time_quartile": 1,
       "expert_time_seconds": 5400,
@@ -346,9 +381,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/foodstuff-beta-activity",
-      "task_digest": "sha256:62f4c9e1d2c27c3ed174be4691d7d6c2df69f6466a51b266808c63cd111a9787"
+      "task_digest": "sha256:62f4c9e1d2c27c3ed174be4691d7d6c2df69f6466a51b266808c63cd111a9787",
+      "verifier_timeout_seconds": 120
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Security",
       "expert_time_quartile": 2,
       "expert_time_seconds": 10800,
@@ -365,9 +402,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/formal-crypto",
-      "task_digest": "sha256:3d1bf9aadd4846379f4c2de10ffd21431444d7647ddbc302bd3cb2283051b4c4"
+      "task_digest": "sha256:3d1bf9aadd4846379f4c2de10ffd21431444d7647ddbc302bd3cb2283051b4c4",
+      "verifier_timeout_seconds": 5400
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "ML",
       "expert_time_quartile": 4,
       "expert_time_seconds": 43200,
@@ -384,9 +423,11 @@
       },
       "resource_class": "gpu",
       "source_path": "tasks/fp8-rmsnorm-gemm",
-      "task_digest": "sha256:b2578e66cf87dfa6b64517c69fc1590a1777fb19f7bdff287f4d985ceedec2bd"
+      "task_digest": "sha256:b2578e66cf87dfa6b64517c69fc1590a1777fb19f7bdff287f4d985ceedec2bd",
+      "verifier_timeout_seconds": 18000
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Hardware",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -403,9 +444,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/freecad-impeller",
-      "task_digest": "sha256:f1e641af087bf8feb3107355e207654021504cf53f6ec9b5d19f0dd5e54d7f86"
+      "task_digest": "sha256:f1e641af087bf8feb3107355e207654021504cf53f6ec9b5d19f0dd5e54d7f86",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Hardware",
       "expert_time_quartile": 1,
       "expert_time_seconds": 5400,
@@ -422,9 +465,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/freecad-platform-drawing",
-      "task_digest": "sha256:70603e9566138b4e63165ebc4badcff5a83cbff187c397b78b0ff60073b8ffb4"
+      "task_digest": "sha256:70603e9566138b4e63165ebc4badcff5a83cbff187c397b78b0ff60073b8ffb4",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Hardware",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -441,9 +486,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/freecad-spring-clip",
-      "task_digest": "sha256:4c823616ab5c8cccfc58d828a3d770122cb70b3dadc02a859bce53acf11a22b1"
+      "task_digest": "sha256:4c823616ab5c8cccfc58d828a3d770122cb70b3dadc02a859bce53acf11a22b1",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Operations",
       "expert_time_quartile": 2,
       "expert_time_seconds": 14400,
@@ -460,9 +507,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/freight-dispatch-shift",
-      "task_digest": "sha256:b1bb32ad88e1892f33f8beea162cf1de283b3f5f0c6b8de65ce7646e94dc2bcd"
+      "task_digest": "sha256:b1bb32ad88e1892f33f8beea162cf1de283b3f5f0c6b8de65ce7646e94dc2bcd",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Science",
       "expert_time_quartile": 3,
       "expert_time_seconds": 18000,
@@ -479,9 +528,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/glycan-ms2-elucidation",
-      "task_digest": "sha256:6d4e3b6d5cf99e84d59b4292cd06f9faf00a2521760b56e3f5e8b5531298c088"
+      "task_digest": "sha256:6d4e3b6d5cf99e84d59b4292cd06f9faf00a2521760b56e3f5e8b5531298c088",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 18000,
       "category": "ML",
       "expert_time_quartile": 4,
       "expert_time_seconds": 144000,
@@ -498,9 +549,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/gpt2-codegolf",
-      "task_digest": "sha256:ea4f8bc8a4672f0c122fd0462381dea7151921b8fc37358d5b3370549a319c1f"
+      "task_digest": "sha256:ea4f8bc8a4672f0c122fd0462381dea7151921b8fc37358d5b3370549a319c1f",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Science",
       "expert_time_quartile": 2,
       "expert_time_seconds": 14400,
@@ -517,9 +570,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/gsea-proteomics",
-      "task_digest": "sha256:5dfb0c258b674ee0fea20e16f9996771e082cd4db59ee9408272c31d9397cfa1"
+      "task_digest": "sha256:5dfb0c258b674ee0fea20e16f9996771e082cd4db59ee9408272c31d9397cfa1",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Operations",
       "expert_time_quartile": 2,
       "expert_time_seconds": 14400,
@@ -536,9 +591,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/heat-pump-warranty",
-      "task_digest": "sha256:195e39da0c97ea45552d216f04b204d438ec397e1003300be3edc064aa9859b6"
+      "task_digest": "sha256:195e39da0c97ea45552d216f04b204d438ec397e1003300be3edc064aa9859b6",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Science",
       "expert_time_quartile": 3,
       "expert_time_seconds": 28800,
@@ -555,9 +612,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/hof-topology-interpenetration",
-      "task_digest": "sha256:f8307547a260e56572e02e1d876c0b94af44be980aa7028ff1512c787d65e95a"
+      "task_digest": "sha256:f8307547a260e56572e02e1d876c0b94af44be980aa7028ff1512c787d65e95a",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 3600,
       "category": "Security",
       "expert_time_quartile": 1,
       "expert_time_seconds": 2700,
@@ -574,9 +633,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/html-js-filter",
-      "task_digest": "sha256:832a5b309edca4f1a7c728da5f1ca530c2712f20a0b7f1db6d1bb6e3171a8866"
+      "task_digest": "sha256:832a5b309edca4f1a7c728da5f1ca530c2712f20a0b7f1db6d1bb6e3171a8866",
+      "verifier_timeout_seconds": 1800
     },
     {
+      "agent_timeout_seconds": 5400,
       "category": "Security",
       "expert_time_quartile": 3,
       "expert_time_seconds": 28800,
@@ -593,9 +654,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/ico-path-patch",
-      "task_digest": "sha256:0115a4136189b48da79070f9b3004dc4e0dfc1a60725c5acebdd7f380d037d14"
+      "task_digest": "sha256:0115a4136189b48da79070f9b3004dc4e0dfc1a60725c5acebdd7f380d037d14",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Security",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -612,9 +675,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/interleaved-vigenere",
-      "task_digest": "sha256:83a4f0074137ab36629d33f3f4045d62b63b0feb83295ff7cb6636cbedd31bc0"
+      "task_digest": "sha256:83a4f0074137ab36629d33f3f4045d62b63b0feb83295ff7cb6636cbedd31bc0",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 10800,
       "category": "Operations",
       "expert_time_quartile": 2,
       "expert_time_seconds": 10800,
@@ -631,9 +696,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/intrastat-meldung",
-      "task_digest": "sha256:3385f3ea74661cc01464f0cb1155ec1553b755238a6f9b6293475e124c6edbc8"
+      "task_digest": "sha256:3385f3ea74661cc01464f0cb1155ec1553b755238a6f9b6293475e124c6edbc8",
+      "verifier_timeout_seconds": 180
     },
     {
+      "agent_timeout_seconds": 18000,
       "category": "ML",
       "expert_time_quartile": 4,
       "expert_time_seconds": 36000,
@@ -650,9 +717,11 @@
       },
       "resource_class": "gpu",
       "source_path": "tasks/jax-speedrun-gpu",
-      "task_digest": "sha256:c17111529f4eac64223dace5f734cbcb1f3ad542ec97e65cfdb6c0e7ffe9e98c"
+      "task_digest": "sha256:c17111529f4eac64223dace5f734cbcb1f3ad542ec97e65cfdb6c0e7ffe9e98c",
+      "verifier_timeout_seconds": 7200
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Science",
       "expert_time_quartile": 4,
       "expert_time_seconds": 36000,
@@ -669,9 +738,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/ks-solver-cpp",
-      "task_digest": "sha256:d6e025f4f5b4bfbfb8ea9c1e661f9f2039b68eadf3fefd44ed31017cfd090952"
+      "task_digest": "sha256:d6e025f4f5b4bfbfb8ea9c1e661f9f2039b68eadf3fefd44ed31017cfd090952",
+      "verifier_timeout_seconds": 180
     },
     {
+      "agent_timeout_seconds": 3600,
       "category": "Software",
       "expert_time_quartile": 2,
       "expert_time_seconds": 14400,
@@ -688,9 +759,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/kv-live-surgery",
-      "task_digest": "sha256:bb58097aee168627e1eea82a50feaf1e021d502fe18e0c24b4d88e5a88a6f53f"
+      "task_digest": "sha256:bb58097aee168627e1eea82a50feaf1e021d502fe18e0c24b4d88e5a88a6f53f",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 10800,
       "category": "Science",
       "expert_time_quartile": 3,
       "expert_time_seconds": 28800,
@@ -707,9 +780,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/lake-temp-glm",
-      "task_digest": "sha256:8ef0ba42c13ce6ed6454e40389907d8781a681605d07a1fdc48fb5913c46388d"
+      "task_digest": "sha256:8ef0ba42c13ce6ed6454e40389907d8781a681605d07a1fdc48fb5913c46388d",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 3600,
       "category": "Media",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -726,9 +801,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/layout-config-recreation",
-      "task_digest": "sha256:9beda5ee8b4e0f5605da4940f53525374e837346280e83852d3741df2eef26a8"
+      "task_digest": "sha256:9beda5ee8b4e0f5605da4940f53525374e837346280e83852d3741df2eef26a8",
+      "verifier_timeout_seconds": 180
     },
     {
+      "agent_timeout_seconds": 18000,
       "category": "Media",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -745,9 +822,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/layout-config-recreation2",
-      "task_digest": "sha256:7c2a2904969ad3a80b3199919c3c50bbf35001f70363e4f474153ceab6ce1d8e"
+      "task_digest": "sha256:7c2a2904969ad3a80b3199919c3c50bbf35001f70363e4f474153ceab6ce1d8e",
+      "verifier_timeout_seconds": 180
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Science",
       "expert_time_quartile": 4,
       "expert_time_seconds": 36000,
@@ -764,9 +843,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/lean-midpoint-proof",
-      "task_digest": "sha256:80fda7d0f87814d8d3f1e1f6ed485c2431614e3fb05ed2d6590c9061cf28ed19"
+      "task_digest": "sha256:80fda7d0f87814d8d3f1e1f6ed485c2431614e3fb05ed2d6590c9061cf28ed19",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 5400,
       "category": "Operations",
       "expert_time_quartile": 2,
       "expert_time_seconds": 12600,
@@ -783,9 +864,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/legacy-utility-triage",
-      "task_digest": "sha256:bd30b99dfa7121a0931866d177092482554ab9d3835495c15d960d735c097bcf"
+      "task_digest": "sha256:bd30b99dfa7121a0931866d177092482554ab9d3835495c15d960d735c097bcf",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 4,
       "expert_time_seconds": 28800,
@@ -802,9 +885,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/live-database-cutover",
-      "task_digest": "sha256:dc994181a5c0343a7e7f8ef4cda6b814dca3e48caef8ac00f066646b0132d2fd"
+      "task_digest": "sha256:dc994181a5c0343a7e7f8ef4cda6b814dca3e48caef8ac00f066646b0132d2fd",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "ML",
       "expert_time_quartile": 3,
       "expert_time_seconds": 21600,
@@ -821,9 +906,11 @@
       },
       "resource_class": "gpu",
       "source_path": "tasks/math-eval-grader",
-      "task_digest": "sha256:25d9a4d042a2e4f05e78c7d8372040a6bc2a1ea5f323dfe67542690f2241e345"
+      "task_digest": "sha256:25d9a4d042a2e4f05e78c7d8372040a6bc2a1ea5f323dfe67542690f2241e345",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 5400,
       "category": "Operations",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -840,9 +927,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/medical-claims-processing",
-      "task_digest": "sha256:21e9b716812f257927f94c1a5d53bd2565d035f7d538769affbae04fe5e4ba47"
+      "task_digest": "sha256:21e9b716812f257927f94c1a5d53bd2565d035f7d538769affbae04fe5e4ba47",
+      "verifier_timeout_seconds": 120
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Security",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -859,9 +948,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/memcached-backdoor",
-      "task_digest": "sha256:b5b87182c9ac70c63d7c6afdaf7334a0262a03295ee9752f15f7ace424a72f6c"
+      "task_digest": "sha256:b5b87182c9ac70c63d7c6afdaf7334a0262a03295ee9752f15f7ace424a72f6c",
+      "verifier_timeout_seconds": 120
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "ML",
       "expert_time_quartile": 3,
       "expert_time_seconds": 21600,
@@ -878,9 +969,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/mp-checkpoint-consolidation",
-      "task_digest": "sha256:e7710fddd852c1ae62e0d0c89acaee3d774a30c3c60658b1be2b0946dbd94d04"
+      "task_digest": "sha256:e7710fddd852c1ae62e0d0c89acaee3d774a30c3c60658b1be2b0946dbd94d04",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Media",
       "expert_time_quartile": 1,
       "expert_time_seconds": 3600,
@@ -897,9 +990,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/music-harmony",
-      "task_digest": "sha256:f5ba5ef9140c164e1c3654425caea7dc0f74423c9632f5e0c9a6dc9001d38f00"
+      "task_digest": "sha256:f5ba5ef9140c164e1c3654425caea7dc0f74423c9632f5e0c9a6dc9001d38f00",
+      "verifier_timeout_seconds": 60
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Software",
       "expert_time_quartile": 2,
       "expert_time_seconds": 14400,
@@ -916,9 +1011,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/mvcc-lsm-compaction",
-      "task_digest": "sha256:fdf29c5e7778739cefa3f7a85f4b06acbfdfba329f332512c731b5d879ed446d"
+      "task_digest": "sha256:fdf29c5e7778739cefa3f7a85f4b06acbfdfba329f332512c731b5d879ed446d",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 2,
       "expert_time_seconds": 10800,
@@ -935,9 +1032,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/nextjs-performance",
-      "task_digest": "sha256:8dd4222253b1cac21c139e5c11362ad748e3d7d1a1aa423839d18b7133d70db4"
+      "task_digest": "sha256:8dd4222253b1cac21c139e5c11362ad748e3d7d1a1aa423839d18b7133d70db4",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Software",
       "expert_time_quartile": 4,
       "expert_time_seconds": 72000,
@@ -954,9 +1053,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/ontology-kg-querying",
-      "task_digest": "sha256:75a12b63f861150a038f095fc2ea06b7cf45ee04b5042413d4c4f20d3da944ad"
+      "task_digest": "sha256:75a12b63f861150a038f095fc2ea06b7cf45ee04b5042413d4c4f20d3da944ad",
+      "verifier_timeout_seconds": 1500
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -973,9 +1074,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/payments-pipeline-fix",
-      "task_digest": "sha256:05cbd702e9efc41264e495e6afda5faa34f7672fa4f6faaeaf66106f03af8c6c"
+      "task_digest": "sha256:05cbd702e9efc41264e495e6afda5faa34f7672fa4f6faaeaf66106f03af8c6c",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 10800,
       "category": "Software",
       "expert_time_quartile": 1,
       "expert_time_seconds": 2700,
@@ -992,9 +1095,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/photonic-waveguide-routing",
-      "task_digest": "sha256:3fd44f4fbc5b862bc1a0b098d3c1295387134edd238ed6f12f2c98ec13e2dccc"
+      "task_digest": "sha256:3fd44f4fbc5b862bc1a0b098d3c1295387134edd238ed6f12f2c98ec13e2dccc",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "ML",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -1011,9 +1116,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/pretrain-shard-corruption",
-      "task_digest": "sha256:898642139464d351ccea81a5666dd1d572ed0501df2b40feb7a251841bbd0a4c"
+      "task_digest": "sha256:898642139464d351ccea81a5666dd1d572ed0501df2b40feb7a251841bbd0a4c",
+      "verifier_timeout_seconds": 600
     },
     {
+      "agent_timeout_seconds": 3600,
       "category": "Operations",
       "expert_time_quartile": 2,
       "expert_time_seconds": 14400,
@@ -1030,9 +1137,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/production-planning",
-      "task_digest": "sha256:3207b248738c9e6d497559b90a2a85d43dddde1caea12a5e17e4871e985fe7de"
+      "task_digest": "sha256:3207b248738c9e6d497559b90a2a85d43dddde1caea12a5e17e4871e985fe7de",
+      "verifier_timeout_seconds": 120
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Science",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -1049,9 +1158,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/protein-autointerp-disulfide",
-      "task_digest": "sha256:49ed2bef4e2e3f987740d8e5fd0d236078089517a0c3f0e39d59612821287916"
+      "task_digest": "sha256:49ed2bef4e2e3f987740d8e5fd0d236078089517a0c3f0e39d59612821287916",
+      "verifier_timeout_seconds": 180
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 3,
       "expert_time_seconds": 18000,
@@ -1068,9 +1179,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/react-lead-form",
-      "task_digest": "sha256:6164416e310fb06ba55f5a574f5c4128f36dc7f0ae54cef6d81b47fede74a09c"
+      "task_digest": "sha256:6164416e310fb06ba55f5a574f5c4128f36dc7f0ae54cef6d81b47fede74a09c",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Hardware",
       "expert_time_quartile": 4,
       "expert_time_seconds": 36000,
@@ -1087,9 +1200,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/retro-console-soc",
-      "task_digest": "sha256:5707df6b5c777e156896f1edd5137775f297a88c7f191545e83c7b7909889d96"
+      "task_digest": "sha256:5707df6b5c777e156896f1edd5137775f297a88c7f191545e83c7b7909889d96",
+      "verifier_timeout_seconds": 1200
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "ML",
       "expert_time_quartile": 3,
       "expert_time_seconds": 14400,
@@ -1106,9 +1221,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/risk-scorer-replay",
-      "task_digest": "sha256:81eda6d9247bd5642feaccabb8eaef055cca8c3e4dab00bceb89aee56645454f"
+      "task_digest": "sha256:81eda6d9247bd5642feaccabb8eaef055cca8c3e4dab00bceb89aee56645454f",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Science",
       "expert_time_quartile": 2,
       "expert_time_seconds": 10800,
@@ -1125,9 +1242,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/roy-polymorph-cn",
-      "task_digest": "sha256:b481c32720d39a7673a469b12cbea6e318fed750c8928bc5f5d7cbf9874610a1"
+      "task_digest": "sha256:b481c32720d39a7673a469b12cbea6e318fed750c8928bc5f5d7cbf9874610a1",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 14400,
       "category": "Software",
       "expert_time_quartile": 4,
       "expert_time_seconds": 57600,
@@ -1144,9 +1263,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/rs-archive-clone",
-      "task_digest": "sha256:54a2627f15e22ea58082d6d06cad9ab5c5e0e80c3a93ded915d76db3031384b4"
+      "task_digest": "sha256:54a2627f15e22ea58082d6d06cad9ab5c5e0e80c3a93ded915d76db3031384b4",
+      "verifier_timeout_seconds": 1200
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Media",
       "expert_time_quartile": 4,
       "expert_time_seconds": 28800,
@@ -1163,9 +1284,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/satb-audio-transcription",
-      "task_digest": "sha256:6c1491daac95ec0dc9e3968668933bef309ff2c5968b385636abf796afa7654d"
+      "task_digest": "sha256:6c1491daac95ec0dc9e3968668933bef309ff2c5968b385636abf796afa7654d",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 4,
       "expert_time_seconds": 28800,
@@ -1182,9 +1305,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/session-window-debug",
-      "task_digest": "sha256:638c00fd438a0289ba75f6bc536861831f4a8eab2b85064064038e1bcc91cfbb"
+      "task_digest": "sha256:638c00fd438a0289ba75f6bc536861831f4a8eab2b85064064038e1bcc91cfbb",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "ML",
       "expert_time_quartile": 1,
       "expert_time_seconds": 7200,
@@ -1201,9 +1326,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/sglang-qwen-burst",
-      "task_digest": "sha256:405b3837c4b9186e60351db3d376aabd355c5f0a8c60db494ee53ee8a49b7fc8"
+      "task_digest": "sha256:405b3837c4b9186e60351db3d376aabd355c5f0a8c60db494ee53ee8a49b7fc8",
+      "verifier_timeout_seconds": 420
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Security",
       "expert_time_quartile": 2,
       "expert_time_seconds": 10800,
@@ -1220,9 +1347,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/shadow-relay",
-      "task_digest": "sha256:a677da5665a8276811f95752ac917de653d970cf2293c8345322b6101768eca0"
+      "task_digest": "sha256:a677da5665a8276811f95752ac917de653d970cf2293c8345322b6101768eca0",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 18000,
       "category": "Science",
       "expert_time_quartile": 3,
       "expert_time_seconds": 14400,
@@ -1239,9 +1368,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/sound-change-cascade",
-      "task_digest": "sha256:0dbc8345e012bc341060bbd5ef896a3b90ecbb302d99d5a54b047f5e3a7ce8cd"
+      "task_digest": "sha256:0dbc8345e012bc341060bbd5ef896a3b90ecbb302d99d5a54b047f5e3a7ce8cd",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 28800,
       "category": "Science",
       "expert_time_quartile": 4,
       "expert_time_seconds": 216000,
@@ -1258,9 +1389,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/takens-embedding-lean",
-      "task_digest": "sha256:056774ee95c4d4b6ae1c2ede0a22aa30ecfbb56dcc8837b8d15c27f6f79d4b69"
+      "task_digest": "sha256:056774ee95c4d4b6ae1c2ede0a22aa30ecfbb56dcc8837b8d15c27f6f79d4b69",
+      "verifier_timeout_seconds": 1800
     },
     {
+      "agent_timeout_seconds": 9000,
       "category": "Software",
       "expert_time_quartile": 4,
       "expert_time_seconds": 57600,
@@ -1277,9 +1410,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/telecom-entity-resolution",
-      "task_digest": "sha256:4d15d983b4a44e15e933dd3b50b9116c27d5a66ff09ece221a7ea4554c24613a"
+      "task_digest": "sha256:4d15d983b4a44e15e933dd3b50b9116c27d5a66ff09ece221a7ea4554c24613a",
+      "verifier_timeout_seconds": 1500
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Security",
       "expert_time_quartile": 2,
       "expert_time_seconds": 7200,
@@ -1296,9 +1431,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/uefi-bootkit",
-      "task_digest": "sha256:97b0d08a63ee8e0115300ee797ae4eb89e9651d37ca93d2b39910c95bdbcddfc"
+      "task_digest": "sha256:97b0d08a63ee8e0115300ee797ae4eb89e9651d37ca93d2b39910c95bdbcddfc",
+      "verifier_timeout_seconds": 700
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 3,
       "expert_time_seconds": 14400,
@@ -1315,9 +1452,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/vba-userform-port",
-      "task_digest": "sha256:a75593b08997cf054b3a46163664051513e9c95fbb71249ab0c8512d7b7dc58d"
+      "task_digest": "sha256:a75593b08997cf054b3a46163664051513e9c95fbb71249ab0c8512d7b7dc58d",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 3,
       "expert_time_seconds": 14400,
@@ -1334,9 +1473,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/vf2-speedup-networkx",
-      "task_digest": "sha256:ac62ee7aef9d3bdd6b05ac109e145ea85ebde0eb36b85eccb80dc2128625912f"
+      "task_digest": "sha256:ac62ee7aef9d3bdd6b05ac109e145ea85ebde0eb36b85eccb80dc2128625912f",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "ML",
       "expert_time_quartile": 2,
       "expert_time_seconds": 7200,
@@ -1353,9 +1494,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/vllm-deepseek-streaming",
-      "task_digest": "sha256:0efffc771f0b2207b6c5193e780fab3d70b2a910b462903a698450ce7a02db5a"
+      "task_digest": "sha256:0efffc771f0b2207b6c5193e780fab3d70b2a910b462903a698450ce7a02db5a",
+      "verifier_timeout_seconds": 300
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "ML",
       "expert_time_quartile": 2,
       "expert_time_seconds": 7200,
@@ -1372,9 +1515,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/vpp-loss-divergence",
-      "task_digest": "sha256:8d020c581371bffe38aff2c0ff9816d0dd61e35a9baba4cbe1eb14c7e738ce78"
+      "task_digest": "sha256:8d020c581371bffe38aff2c0ff9816d0dd61e35a9baba4cbe1eb14c7e738ce78",
+      "verifier_timeout_seconds": 900
     },
     {
+      "agent_timeout_seconds": 7200,
       "category": "Software",
       "expert_time_quartile": 3,
       "expert_time_seconds": 21600,
@@ -1391,9 +1536,11 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/wal-recovery-ordering",
-      "task_digest": "sha256:7d8d20971c4db6fef99952aefbae0655b977c8ce55c3ac91ad656bd022c69543"
+      "task_digest": "sha256:7d8d20971c4db6fef99952aefbae0655b977c8ce55c3ac91ad656bd022c69543",
+      "verifier_timeout_seconds": 1800
     },
     {
+      "agent_timeout_seconds": 18000,
       "category": "Science",
       "expert_time_quartile": 3,
       "expert_time_seconds": 14400,
@@ -1410,7 +1557,8 @@
       },
       "resource_class": "cpu",
       "source_path": "tasks/wdm-design",
-      "task_digest": "sha256:fd47ed1d1740d05fb42161a9a58918c2619ee181f686c5a19537fb26ed805183"
+      "task_digest": "sha256:fd47ed1d1740d05fb42161a9a58918c2619ee181f686c5a19537fb26ed805183",
+      "verifier_timeout_seconds": 1200
     }
   ],
   "terminal_bench": {

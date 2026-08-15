@@ -303,6 +303,20 @@ def test_committed_corpus_manifest_has_locked_pins_and_all_tasks() -> None:
         task["harbor_task_checksum"].startswith("sha256:") for task in manifest["tasks"]
     )
     assert all(task["task_digest"].startswith("sha256:") for task in manifest["tasks"])
+    cad = next(task for task in manifest["tasks"] if task["name"] == "terminal-bench/cad-model")
+    photonics = next(
+        task
+        for task in manifest["tasks"]
+        if task["name"] == "terminal-bench/photonic-waveguide-routing"
+    )
+    assert (cad["agent_timeout_seconds"], cad["verifier_timeout_seconds"]) == (
+        7200,
+        240,
+    )
+    assert (
+        photonics["agent_timeout_seconds"],
+        photonics["verifier_timeout_seconds"],
+    ) == (10800, 300)
     assert all("reward_contract" in task for task in manifest["tasks"])
     assert manifest["reward_contracts"]["sha256"] == runner._sha256_file(
         runner.REWARD_CONTRACTS_PATH

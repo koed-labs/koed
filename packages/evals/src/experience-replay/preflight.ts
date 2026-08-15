@@ -63,6 +63,8 @@ interface CorpusTask {
   category: string;
   expert_time_quartile: number;
   expert_time_seconds: number;
+  agent_timeout_seconds: number;
+  verifier_timeout_seconds: number;
   resource_class: string;
   primary_reward: {
     field: string;
@@ -93,7 +95,7 @@ interface SubsetManifest {
 }
 
 interface ProductProofManifest {
-  schema_version: "koed-terminal-bench-product-proof-v1";
+  schema_version: "koed-terminal-bench-product-proof-v2";
   corpus_schema_version: string;
   target_task: string;
   donor_task: string;
@@ -126,6 +128,10 @@ const assertTaskManifest = (
     }
     if (
       !task.source_path.startsWith("tasks/") ||
+      !Number.isSafeInteger(task.agent_timeout_seconds) ||
+      task.agent_timeout_seconds <= 0 ||
+      !Number.isSafeInteger(task.verifier_timeout_seconds) ||
+      task.verifier_timeout_seconds <= 0 ||
       !Number.isFinite(task.primary_reward.minimum) ||
       !Number.isFinite(task.primary_reward.maximum) ||
       task.primary_reward.minimum > task.primary_reward.maximum
@@ -155,7 +161,7 @@ export const attestPinnedInputs = async (
   const corpusText = await readFile(corpusPath, "utf8");
   const corpus = JSON.parse(corpusText) as CorpusManifest;
   if (
-    corpus.schema_version !== "koed-terminal-bench-corpus-v1" ||
+    corpus.schema_version !== "koed-terminal-bench-corpus-v2" ||
     corpus.task_count !== 74 ||
     corpus.harbor.version !== HARBOR_VERSION ||
     corpus.harbor.commit !== HARBOR_COMMIT ||
@@ -252,7 +258,7 @@ export const attestPinnedInputs = async (
       )
     );
     if (
-      proof.schema_version !== "koed-terminal-bench-product-proof-v1" ||
+      proof.schema_version !== "koed-terminal-bench-product-proof-v2" ||
       proof.corpus_schema_version !== corpus.schema_version ||
       proof.task_count !== 2 ||
       proof.target_task === proof.donor_task ||
@@ -296,7 +302,7 @@ export const attestPinnedInputs = async (
     );
     const expectedCount = profile === "quick" ? 12 : 24;
     if (
-      subset.schema_version !== "koed-terminal-bench-subset-v1" ||
+      subset.schema_version !== "koed-terminal-bench-subset-v2" ||
       subset.corpus_schema_version !== corpus.schema_version ||
       subset.profile !== profile ||
       subset.task_count !== expectedCount
@@ -800,8 +806,14 @@ export const preflightExperienceReplay = async ({
       minimum: 1,
       maximum:
         config.timeouts.setup_seconds +
-        config.timeouts.agent_seconds +
-        config.timeouts.verifier_seconds +
+        (config.profile === "smoke"
+          ? config.timeouts.agent_seconds + config.timeouts.verifier_seconds
+          : Math.max(
+              ...pins.selectedTasks.map(
+                (task) =>
+                  task.agent_timeout_seconds + task.verifier_timeout_seconds
+              )
+            )) +
         config.timeouts.preparation_seconds +
         config.timeouts.judge_seconds +
         config.timeouts.teardown_seconds

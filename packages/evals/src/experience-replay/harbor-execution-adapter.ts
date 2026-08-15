@@ -343,12 +343,13 @@ export const recordedCodexAllowedHosts = (
     ? ["api.openai.com"]
     : ["chatgpt.com", "auth.openai.com"];
 
-const jobConfig = (
+export const createHarborJobConfig = (
   input: CommonExecutionInput,
   jobName: string,
   condition: ReplayCondition,
   codex: ReturnType<typeof createTrialCodexConfiguration>,
-  authentication: "api_key" | "subscription"
+  authentication: "api_key" | "subscription",
+  mode: "smoke" | "recorded"
 ): Record<string, JsonValue> => ({
   job_name: jobName,
   quiet: true,
@@ -356,14 +357,18 @@ const jobConfig = (
   environment: { delete: true },
   verifier: {
     disable: false,
-    override_timeout_sec: input.config.timeouts.verifier_seconds
+    ...(mode === "smoke"
+      ? { override_timeout_sec: input.config.timeouts.verifier_seconds }
+      : {})
   },
   agents: [
     {
       name: "codex",
       model_name: input.config.coding_agent.id,
       n_concurrent: 1,
-      override_timeout_sec: input.config.timeouts.agent_seconds,
+      ...(mode === "smoke"
+        ? { override_timeout_sec: input.config.timeouts.agent_seconds }
+        : {}),
       extra_allowed_hosts: [
         ...(!conditionUsesKoed(condition)
           ? []
@@ -506,12 +511,15 @@ export class HarborExecutionAdapter {
 
   private client(
     input: CommonExecutionInput,
+    task: CoordinatorTask,
     environment: NodeJS.ProcessEnv
   ): HarborClient {
     const timeoutMs =
       (input.config.timeouts.setup_seconds +
-        input.config.timeouts.agent_seconds +
-        input.config.timeouts.verifier_seconds +
+        (this.options.mode === "smoke"
+          ? input.config.timeouts.agent_seconds +
+            input.config.timeouts.verifier_seconds
+          : task.agentTimeoutSeconds + task.verifierTimeoutSeconds) +
         input.config.timeouts.teardown_seconds) *
       1_000;
     const clientOptions: HarborClientOptions = {
@@ -579,12 +587,13 @@ export class HarborExecutionAdapter {
       codex_version: input.config.codex_cli.version,
       codex_binary_sha256: `sha256:${input.config.codex_cli.container_sha256}`,
       codex_code_mode_host_sha256: `sha256:${input.config.codex_cli.container_code_mode_host_sha256}`,
-      job_config: jobConfig(
+      job_config: createHarborJobConfig(
         input,
         `source-${safeJobPart(input.task.name)}-${input.executionGeneration}`,
         "cold",
         codex,
-        this.options.codexAuthJsonPath ? "subscription" : "api_key"
+        this.options.codexAuthJsonPath ? "subscription" : "api_key",
+        this.options.mode
       ),
       corpus_manifest: this.options.corpusManifest,
       run_root: input.runRoot,
@@ -599,7 +608,7 @@ export class HarborExecutionAdapter {
           }
         : {})
     };
-    const output = await this.client(input, {
+    const output = await this.client(input, input.task, {
       ...(this.options.providerApiKey
         ? { OPENAI_API_KEY: this.options.providerApiKey }
         : {}),
@@ -671,12 +680,13 @@ export class HarborExecutionAdapter {
       codex_version: input.config.codex_cli.version,
       codex_binary_sha256: `sha256:${input.config.codex_cli.container_sha256}`,
       codex_code_mode_host_sha256: `sha256:${input.config.codex_cli.container_code_mode_host_sha256}`,
-      job_config: jobConfig(
+      job_config: createHarborJobConfig(
         input,
         `replay-${safeJobPart(input.task.name)}-${input.condition}-${input.repeat}-${input.executionGeneration}`,
         input.condition,
         codex,
-        this.options.codexAuthJsonPath ? "subscription" : "api_key"
+        this.options.codexAuthJsonPath ? "subscription" : "api_key",
+        this.options.mode
       ),
       corpus_manifest: this.options.corpusManifest,
       run_root: input.runRoot,
@@ -693,7 +703,7 @@ export class HarborExecutionAdapter {
           }
         : {})
     };
-    const output = await this.client(input, {
+    const output = await this.client(input, input.task, {
       ...(this.options.providerApiKey
         ? { OPENAI_API_KEY: this.options.providerApiKey }
         : {}),

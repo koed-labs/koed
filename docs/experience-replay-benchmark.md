@@ -310,6 +310,13 @@ separate `<run>.publication` directory.
 
 ## Recorded Runs
 
+Recorded attempts preserve each pinned Terminal Bench task's authored agent and
+verifier timeout. Koed does not replace those ceilings with campaign settings;
+its outer Harbor watchdog uses the same task metadata plus bounded setup and
+teardown allowances. The configured agent and verifier timeouts are explicit
+short ceilings for deterministic smoke runs, while the agent timeout also bounds
+the Memory Answer worker.
+
 Recorded preflight additionally requires:
 
 ```bash

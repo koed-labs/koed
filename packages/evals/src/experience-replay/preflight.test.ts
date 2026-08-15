@@ -126,7 +126,7 @@ describe("experience replay strict preflight", () => {
     });
     expect(result.capacity).toMatchObject({
       requiredBytes: 8192,
-      estimatedDurationSeconds: { minimum: 6, maximum: 1140 }
+      estimatedDurationSeconds: { minimum: 6, maximum: 67_200 }
     });
   });
 

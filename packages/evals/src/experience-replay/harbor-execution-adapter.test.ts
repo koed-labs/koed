@@ -8,6 +8,7 @@ import { resolveExperienceReplayConfig } from "./core/index.js";
 import type { CoordinatorTask } from "./coordinator.js";
 import {
   HarborExecutionAdapter,
+  createHarborJobConfig,
   createDeterministicSmokeTelemetry,
   recordedCodexAllowedHosts
 } from "./harbor-execution-adapter.js";
@@ -28,6 +29,8 @@ const task: CoordinatorTask = {
   taskDigest: `sha256:${"1".repeat(64)}`,
   category: "synthetic",
   expertTimeSeconds: 1,
+  agentTimeoutSeconds: 7_200,
+  verifierTimeoutSeconds: 240,
   resourceClass: "synthetic-cpu",
   reward: { minimum: 0, maximum: 1, successValue: 1 }
 };
@@ -357,6 +360,30 @@ const acknowledgedLifecycle = (events: string[]): HarborLifecycleCallbacks => ({
 });
 
 describe("HarborExecutionAdapter", () => {
+  it("preserves task-authored timeouts in recorded Harbor jobs", () => {
+    const recorded = createHarborJobConfig(
+      {
+        config: config("/tmp/recorded"),
+        task,
+        runRoot: "/tmp/recorded",
+        lifecycle: acknowledgedLifecycle([])
+      },
+      "recorded-timeout-contract",
+      "cold",
+      {
+        serialized: "",
+        inline: {},
+        agentEnvironment: null
+      },
+      "subscription",
+      "recorded"
+    );
+    expect(recorded.verifier).toEqual({ disable: false });
+    const agents = recorded.agents as Array<Record<string, unknown>>;
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).not.toHaveProperty("override_timeout_sec");
+  });
+
   it("runs a source as one pinned HarborClient trial and freezes only the source", async () => {
     const { runRoot, corpusManifest } = await fixture();
     const capture: ExecutorCapture = { requests: [], invocations: [] };

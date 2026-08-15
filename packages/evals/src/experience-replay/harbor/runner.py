@@ -48,7 +48,7 @@ TB_COMMIT = "2b0442c3c583b710ca8da14c8e601b99f2f1f244"
 TB_REPO = f"harbor-framework/terminal-bench@{TB_COMMIT}"
 TB_GIT_URL = "https://github.com/harbor-framework/terminal-bench.git"
 CORPUS_TASK_COUNT = 74
-MANIFEST_SCHEMA = "koed-terminal-bench-corpus-v1"
+MANIFEST_SCHEMA = "koed-terminal-bench-corpus-v2"
 RUN_REQUEST_SCHEMA = "koed-harbor-run-v1"
 TASK_IMAGE_SCHEMA = "koed-harbor-task-image-v1"
 FREEZE_MANIFEST_SCHEMA = "koed-harbor-freeze-v1"
@@ -604,6 +604,17 @@ def _expert_time_seconds(metadata: dict[str, Any]) -> int:
     raise ContractError("task metadata has no expert-time estimate")
 
 
+def _task_timeout_seconds(section: Any, label: str, task_name: str) -> int:
+    if not isinstance(section, dict):
+        raise ContractError(f"{label} timeout is missing for {task_name}")
+    value = section.get("timeout_sec")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractError(f"{label} timeout is missing for {task_name}")
+    if not math.isfinite(value) or value <= 0 or int(value) != value:
+        raise ContractError(f"{label} timeout is invalid for {task_name}")
+    return int(value)
+
+
 def _finite_number(value: Any, reason: str) -> float:
     if (
         not isinstance(value, (int, float))
@@ -761,6 +772,8 @@ def _task_record(task_dir: Path) -> dict[str, Any]:
     task = config.get("task", {})
     metadata = config.get("metadata", {})
     environment = config.get("environment", {})
+    agent = config.get("agent", {})
+    verifier = config.get("verifier", {})
     name = task.get("name")
     if not isinstance(name, str) or not name.startswith("terminal-bench/"):
         raise ContractError(f"invalid task name in {task_dir / 'task.toml'}")
@@ -783,6 +796,10 @@ def _task_record(task_dir: Path) -> dict[str, Any]:
         "reward_contract": reward_contract,
         "category": str(metadata.get("category", "uncategorized")),
         "expert_time_seconds": _expert_time_seconds(metadata),
+        "agent_timeout_seconds": _task_timeout_seconds(agent, "agent", name),
+        "verifier_timeout_seconds": _task_timeout_seconds(
+            verifier, "verifier", name
+        ),
         "resource_class": "gpu" if int(environment.get("gpus", 0)) > 0 else "cpu",
     }
 
@@ -845,13 +862,15 @@ def _subset_manifest(
         "task_digest",
         "category",
         "expert_time_seconds",
+        "agent_timeout_seconds",
+        "verifier_timeout_seconds",
         "expert_time_quartile",
         "resource_class",
         "primary_reward",
         "reward_contract",
     )
     return {
-        "schema_version": "koed-terminal-bench-subset-v1",
+        "schema_version": "koed-terminal-bench-subset-v2",
         "profile": profile,
         "corpus_schema_version": corpus["schema_version"],
         "terminal_bench_commit": TB_COMMIT,
@@ -911,6 +930,14 @@ def load_and_verify_manifest(path: Path) -> dict[str, Any]:
     contracts = _load_reward_contracts()
     for task in tasks:
         name = task["name"]
+        for field in ("agent_timeout_seconds", "verifier_timeout_seconds"):
+            value = task.get(field)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+            ):
+                raise ContractError("INVALID_TASK_TIMEOUT_CONTRACT")
         contract = contracts.get(name)
         if contract is None:
             raise ContractError("MISSING_TASK_REWARD_CONTRACT")
@@ -1652,6 +1679,18 @@ def _verify_resolved_tasks(
         "harbor_task_checksum": (actual_checksum, record["harbor_task_checksum"]),
         "task_digest": (actual_digest, record["task_digest"]),
         "commit": (actual_commit, TB_COMMIT),
+        "agent_timeout_seconds": (
+            _task_timeout_seconds(
+                resolved_config.get("agent"), "agent", task_name
+            ),
+            record["agent_timeout_seconds"],
+        ),
+        "verifier_timeout_seconds": (
+            _task_timeout_seconds(
+                resolved_config.get("verifier"), "verifier", task_name
+            ),
+            record["verifier_timeout_seconds"],
+        ),
     }
     failed = {
         key: values for key, values in mismatches.items() if values[0] != values[1]

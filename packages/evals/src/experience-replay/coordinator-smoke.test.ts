@@ -853,6 +853,8 @@ describe("unified experience replay coordinator", () => {
         category: "synthetic",
         expert_time_quartile: 0,
         expert_time_seconds: 1,
+        agent_timeout_seconds: 60,
+        verifier_timeout_seconds: 30,
         resource_class: "synthetic-cpu",
         primary_reward: {
           field: "reward",
@@ -869,6 +871,8 @@ describe("unified experience replay coordinator", () => {
         category: "synthetic",
         expert_time_quartile: 0,
         expert_time_seconds: 2,
+        agent_timeout_seconds: 60,
+        verifier_timeout_seconds: 30,
         resource_class: "synthetic-cpu",
         primary_reward: {
           field: "reward",
@@ -974,6 +978,8 @@ describe("unified experience replay coordinator", () => {
       category: "synthetic",
       expert_time_quartile: 0,
       expert_time_seconds: 1,
+      agent_timeout_seconds: 60,
+      verifier_timeout_seconds: 30,
       resource_class: "synthetic-cpu",
       primary_reward: {
         field: "reward",
@@ -1061,6 +1067,8 @@ describe("unified experience replay coordinator", () => {
       category: "synthetic",
       expert_time_quartile: 0,
       expert_time_seconds: 1,
+      agent_timeout_seconds: 60,
+      verifier_timeout_seconds: 30,
       resource_class: "synthetic-cpu",
       primary_reward: {
         field: "reward",
