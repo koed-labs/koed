@@ -2197,6 +2197,12 @@ export const runExperienceReplay = async (
         continue;
       }
       const metadata = replayJobMetadata[result.index]!;
+      if (
+        result.status !== "not_started" &&
+        process.env.KOED_EXPERIENCE_REPLAY_DEBUG_SETUP_ERRORS === "1"
+      ) {
+        console.error("[experience-replay setup diagnostic]", result.error);
+      }
       if (result.status !== "not_started") {
         const message =
           result.error instanceof Error
