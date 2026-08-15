@@ -1391,6 +1391,7 @@ describe("unified experience replay coordinator", () => {
       2
     );
     const qualificationCorpus = path.join(root, "qualified-corpora");
+    const qualificationEvents: string[] = [];
     const qualified = await qualifyOracleCorpusCollection({
       preflight: {
         ...base,
@@ -1403,7 +1404,7 @@ describe("unified experience replay coordinator", () => {
           containerCodex: base.recordedRunAttestation?.containerCodex as never
         }
       },
-      dependencies: fakeDependencies([]),
+      dependencies: fakeDependencies(qualificationEvents),
       manifest: qualificationManifest,
       corpusDirectory: qualificationCorpus
     });
@@ -1414,6 +1415,9 @@ describe("unified experience replay coordinator", () => {
         attempts: 1
       })
     ]);
+    expect(
+      qualificationEvents.filter((event) => event.startsWith("source:"))
+    ).toHaveLength(1);
     const qualifiedCollection =
       await import("./oracle-corpus-collection.js").then(
         ({ inspectOracleCorpusCollection }) =>
@@ -1423,6 +1427,42 @@ describe("unified experience replay coordinator", () => {
           })
       );
     expect(qualifiedCollection.entries.has(task.task_digest)).toBe(true);
+
+    const reuseConfig = campaignConfig(
+      path.join(root, "qualification-reuse-run")
+    );
+    const reuseEvents: string[] = [];
+    const reused = await qualifyOracleCorpusCollection({
+      preflight: {
+        ...base,
+        config: reuseConfig,
+        runPlan: createOracleCorpusQualificationRunPlan(
+          reuseConfig,
+          [task.task_digest],
+          qualificationManifest.manifestSha256,
+          2
+        ),
+        pins: { ...base.pins, selectedTasks: [task] },
+        recordedRunAttestation: {
+          taskImages: [corpusIdentity.taskImage],
+          hostCodex: base.recordedRunAttestation?.hostCodex as never,
+          containerCodex: base.recordedRunAttestation?.containerCodex as never
+        }
+      },
+      dependencies: fakeDependencies(reuseEvents),
+      manifest: qualificationManifest,
+      corpusDirectory: qualificationCorpus
+    });
+    expect(reused.results).toEqual([
+      expect.objectContaining({
+        taskDigest: task.task_digest,
+        status: "qualified",
+        attempts: 0
+      })
+    ]);
+    expect(
+      reuseEvents.filter((event) => event.startsWith("source:"))
+    ).toHaveLength(0);
 
     const failedQualification = campaignConfig(
       path.join(root, "qualification-failure-run")

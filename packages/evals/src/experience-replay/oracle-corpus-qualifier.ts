@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { createCoordinatorHarborLifecycle } from "./harbor-lifecycle.js";
 import { RunJournal } from "./journal.js";
@@ -16,6 +17,7 @@ import {
   type OracleCorpusArtifactEntry,
   type OracleCorpusArtifactIdentity
 } from "./oracle-corpus-artifact.js";
+import { inspectOracleCorpusCollection } from "./oracle-corpus-collection.js";
 import { HarborClientError } from "./harbor-client.js";
 import type {
   CoordinatorTask,
@@ -111,6 +113,37 @@ const taskFromPreflight = (
   };
 };
 
+const assertReusableCorpus = (
+  entry: OracleCorpusArtifactEntry,
+  task: CoordinatorTask,
+  preflight: PreflightResult
+): void => {
+  const expectedImage = preflight.recordedRunAttestation?.taskImages.find(
+    (candidate) => candidate.taskDigest === task.taskDigest
+  );
+  if (!expectedImage) {
+    throw new Error(
+      `Qualification image attestation is missing for ${task.name}`
+    );
+  }
+  const identity = entry.identity;
+  if (
+    identity.task.digest !== task.taskDigest ||
+    identity.task.name !== task.name ||
+    identity.model !== preflight.config.coding_agent.id ||
+    identity.reasoningEffort !==
+      preflight.config.coding_agent.reasoning_effort ||
+    identity.codex.version !== preflight.config.codex_cli.version ||
+    identity.sanitizer.name !== "koed-atif-sanitizer" ||
+    identity.sanitizer.version !== "ATIF-v1.7" ||
+    identity.taskImage.attestationHash !== expectedImage.attestationHash
+  ) {
+    throw new Error(
+      `Existing oracle corpus identity differs from qualification policy for ${task.name}`
+    );
+  }
+};
+
 const feedbackInstructions = (
   specification: OracleQualificationTask,
   prior: {
@@ -194,8 +227,36 @@ export const qualifyOracleCorpusCollection = async (input: {
     });
     return ledgerWrite;
   };
+  const corpusChildren = await readdir(corpusDirectory);
+  if (corpusChildren.length > 0) {
+    const existing = await inspectOracleCorpusCollection({
+      corpusRoot: corpusDirectory,
+      repositoryRoot: input.preflight.repositoryRoot
+    });
+    for (const specification of input.manifest.tasks) {
+      const entry = existing.entries.get(specification.taskDigest);
+      if (!entry) continue;
+      const task = taskFromPreflight(input.preflight, specification.taskDigest);
+      assertReusableCorpus(entry, task, input.preflight);
+      results.set(task.taskDigest, {
+        taskDigest: task.taskDigest,
+        taskName: task.name,
+        status: "qualified",
+        attempts: 0,
+        corpusAttestationSha256: entry.attestationSha256,
+        lastReward: entry.source.reward,
+        lastFailureCategory: null,
+        infrastructureCategory: null,
+        infrastructureCode: null
+      });
+    }
+    if (results.size > 0) await writeLedger();
+  }
+  const pendingSpecifications = input.manifest.tasks.filter(
+    (specification) => !results.has(specification.taskDigest)
+  );
   const jobs: ReplaySchedulerJob<OracleQualificationResult>[] =
-    input.manifest.tasks.map((specification) => {
+    pendingSpecifications.map((specification) => {
       const task = taskFromPreflight(input.preflight, specification.taskDigest);
       return {
         id: `qualify:${task.taskDigest}`,
@@ -308,7 +369,10 @@ export const qualifyOracleCorpusCollection = async (input: {
                   ...image,
                   resolvedBaseImageDigests: [...image.resolvedBaseImageDigests]
                 },
-                sanitizer: { name: "koed-atif-sanitizer", version: "ATIF-v1.7" }
+                sanitizer: {
+                  name: "koed-atif-sanitizer",
+                  version: "ATIF-v1.7"
+                }
               };
               const artifact: OracleCorpusArtifactEntry =
                 await persistOracleCorpusArtifact(
@@ -389,6 +453,12 @@ export const qualifyOracleCorpusCollection = async (input: {
     for (const outcome of scheduled.results) {
       if (outcome.status === "completed") continue;
       if (outcome.status === "failed" || outcome.status === "cancelled") {
+        if (process.env.KOED_EXPERIENCE_REPLAY_DEBUG_SETUP_ERRORS === "1") {
+          console.error(
+            "[experience-replay qualification diagnostic]",
+            outcome.error
+          );
+        }
         const digest = outcome.id.split(":").slice(1).join(":");
         const task = taskFromPreflight(input.preflight, digest);
         const failure = safeInfrastructureFailure(outcome.error);
