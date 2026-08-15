@@ -154,6 +154,8 @@ const successfulExecutor =
       passed?: boolean;
       failureCategory?: string | null;
       replayArtifactFailure?: "missing" | "changed";
+      invalidInstructionDigest?: boolean;
+      instructionPolicy?: string;
     } = {}
   ): SubprocessExecutor =>
   async (invocation) => {
@@ -289,7 +291,16 @@ const successfulExecutor =
       runtime: {
         harbor_version: "0.21.0",
         harbor_commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
-        uv_lock_sha256: `sha256:${"2".repeat(64)}`
+        uv_lock_sha256: `sha256:${"2".repeat(64)}`,
+        task_instruction_adaptation: {
+          policy:
+            options.instructionPolicy ?? "koed-memory-eval-task-instruction-v2",
+          original_sha256: options.invalidInstructionDigest
+            ? "not-a-digest"
+            : `sha256:${"4".repeat(64)}`,
+          adapted_sha256: `sha256:${"5".repeat(64)}`,
+          agent_guidance_sha256: `sha256:${"6".repeat(64)}`
+        }
       },
       job_lock_sha256: `sha256:${"3".repeat(64)}`,
       ...(request.attempt_kind === "source"
@@ -496,6 +507,12 @@ describe("HarborExecutionAdapter", () => {
     });
     expect(capture.invocations[0]?.env.KOED_BENCHMARK_MCP_TOKEN).toBe(token);
     expect(JSON.stringify(execution.result)).not.toContain(token);
+    expect(execution.result.runtime.taskInstructionAdaptation).toEqual({
+      policy: "koed-memory-eval-task-instruction-v2",
+      originalSha256: `sha256:${"4".repeat(64)}`,
+      adaptedSha256: `sha256:${"5".repeat(64)}`,
+      agentGuidanceSha256: `sha256:${"6".repeat(64)}`
+    });
     expect(execution.replayTrajectoryArtifact).toMatchObject({
       path: request.replay_trajectory_path,
       sha256: digest(
@@ -523,6 +540,58 @@ describe("HarborExecutionAdapter", () => {
       agentMs: 34.25,
       verifierMs: 5.75
     });
+  });
+
+  it("rejects a malformed task-instruction adaptation attestation", async () => {
+    const { runRoot, corpusManifest } = await fixture();
+    const capture: ExecutorCapture = { requests: [], invocations: [] };
+    const adapter = new HarborExecutionAdapter({
+      mode: "smoke",
+      corpusManifest,
+      executor: successfulExecutor(capture, {
+        invalidInstructionDigest: true
+      })
+    });
+
+    await expect(
+      adapter.runReplay({
+        task,
+        condition: "cold",
+        repeat: 0,
+        executionGeneration: 1,
+        runRoot,
+        lifecycle: acknowledgedLifecycle([]),
+        config: config(runRoot)
+      })
+    ).rejects.toThrow(
+      "Harbor task instruction adaptation original_sha256 is invalid"
+    );
+  });
+
+  it("rejects an unsupported task-instruction adaptation policy", async () => {
+    const { runRoot, corpusManifest } = await fixture();
+    const capture: ExecutorCapture = { requests: [], invocations: [] };
+    const adapter = new HarborExecutionAdapter({
+      mode: "smoke",
+      corpusManifest,
+      executor: successfulExecutor(capture, {
+        instructionPolicy: "unknown-policy-v1"
+      })
+    });
+
+    await expect(
+      adapter.runReplay({
+        task,
+        condition: "cold",
+        repeat: 0,
+        executionGeneration: 1,
+        runRoot,
+        lifecycle: acknowledgedLifecycle([]),
+        config: config(runRoot)
+      })
+    ).rejects.toThrow(
+      "Harbor task instruction adaptation policy is unsupported"
+    );
   });
 
   it("authorizes private developer instructions on replay attempts", async () => {

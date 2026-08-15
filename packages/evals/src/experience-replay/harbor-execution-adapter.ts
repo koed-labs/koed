@@ -31,6 +31,7 @@ const sha256 = (value: string | Buffer): string =>
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const TASK_INSTRUCTION_POLICY = "koed-memory-eval-task-instruction-v2";
 
 type NonHarborTelemetry = Omit<
   ReplayTelemetryMergeInput,
@@ -46,6 +47,12 @@ export interface CapturedHarborExecutionResult {
     harborVersion: string | null;
     harborCommit: string | null;
     uvLockSha256: string | null;
+    taskInstructionAdaptation: {
+      policy: string;
+      originalSha256: string;
+      adaptedSha256: string;
+      agentGuidanceSha256: string;
+    };
   };
   trial: {
     jobId: string;
@@ -275,7 +282,12 @@ const extractCapturedResult = (
 
   const runtime = exactRecord(
     output.runtime,
-    ["harbor_version", "harbor_commit", "uv_lock_sha256"],
+    [
+      "harbor_version",
+      "harbor_commit",
+      "uv_lock_sha256",
+      "task_instruction_adaptation"
+    ],
     "Harbor runtime attestation"
   );
   const nullableRuntimeString = (key: string): string | null => {
@@ -292,6 +304,23 @@ const extractCapturedResult = (
   const uvLockSha256 = nullableRuntimeString("uv_lock_sha256");
   if (uvLockSha256 !== null && !SHA256.test(uvLockSha256))
     throw new Error("Harbor runtime uv lock digest is invalid");
+  const taskInstructionAdaptation = exactRecord(
+    runtime.task_instruction_adaptation,
+    ["policy", "original_sha256", "adapted_sha256", "agent_guidance_sha256"],
+    "Harbor task instruction adaptation"
+  );
+  const instructionPolicy = safeString(
+    taskInstructionAdaptation.policy,
+    "Harbor task instruction adaptation policy"
+  );
+  if (instructionPolicy !== TASK_INSTRUCTION_POLICY)
+    throw new Error("Harbor task instruction adaptation policy is unsupported");
+  const instructionDigest = (key: string): string => {
+    const value = taskInstructionAdaptation[key];
+    if (typeof value !== "string" || !SHA256.test(value))
+      throw new Error(`Harbor task instruction adaptation ${key} is invalid`);
+    return value;
+  };
 
   return {
     schemaVersion: "koed-harbor-execution-capture-v1",
@@ -303,7 +332,13 @@ const extractCapturedResult = (
     runtime: {
       harborVersion: nullableRuntimeString("harbor_version"),
       harborCommit: nullableRuntimeString("harbor_commit"),
-      uvLockSha256
+      uvLockSha256,
+      taskInstructionAdaptation: {
+        policy: instructionPolicy,
+        originalSha256: instructionDigest("original_sha256"),
+        adaptedSha256: instructionDigest("adapted_sha256"),
+        agentGuidanceSha256: instructionDigest("agent_guidance_sha256")
+      }
     },
     trial: {
       jobId: safeString(result.job_id, "Harbor job id"),

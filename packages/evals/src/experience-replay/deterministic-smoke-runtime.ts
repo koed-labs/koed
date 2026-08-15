@@ -362,7 +362,13 @@ export const createDeterministicSmokeHarborExecutor =
       runtime: {
         harbor_version: "0.21.0",
         harbor_commit: "64afbbcb62165950301e1a6407c729aa26d844ff",
-        uv_lock_sha256: `sha256:${"2".repeat(64)}`
+        uv_lock_sha256: `sha256:${"2".repeat(64)}`,
+        task_instruction_adaptation: {
+          policy: "koed-memory-eval-task-instruction-v2",
+          original_sha256: `sha256:${"4".repeat(64)}`,
+          adapted_sha256: `sha256:${"5".repeat(64)}`,
+          agent_guidance_sha256: `sha256:${"6".repeat(64)}`
+        }
       },
       job_lock_sha256: `sha256:${"3".repeat(64)}`,
       ...(freezeManifestSha256
