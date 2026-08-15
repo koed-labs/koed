@@ -229,6 +229,9 @@ provide supported automatic capture.
 `memory_answer` is the normal recall tool exposed by default. It is described
 to Codex as recall for prior conversations, remembered preferences,
 user-provided facts, project history, decisions, and cross-session context. It
+instructs Codex to consult the relevant available Personal or authorized Team
+Memory before substantive work in a new chat or on a sufficiently new topic,
+unless the task is simple and Memory certainly cannot materially help. It
 defaults to project search, uses session search only for a known captured
 conversation, and uses global search only for broad cross-project or
 personal-history recall. It returns a compact answer by default so normal Codex

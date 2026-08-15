@@ -118,7 +118,7 @@ describe("prompt loader", () => {
     });
 
     expect(prompt.overridden).toBe(false);
-    expect(prompt.body).toContain("Your user installed Koed");
+    expect(prompt.body).toContain("substantive work in a new chat");
   });
 
   it("fails when KOED_PROMPT_DIR does not exist", async () => {

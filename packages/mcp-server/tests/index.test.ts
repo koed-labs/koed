@@ -343,6 +343,14 @@ describe("MCP memory_answer schema wording", () => {
     expect(memoryServerInstructions).toContain(
       "even when the user does not explicitly ask for recall"
     );
+    expect(memoryServerInstructions).toContain(
+      "substantive work in a new chat"
+    );
+    expect(memoryServerInstructions).toContain("sufficiently new topic");
+    expect(memoryServerInstructions).toContain("relevant Team Memory");
+    expect(memoryServerInstructions).toContain(
+      "certain that memory cannot materially help"
+    );
   });
 
   it("keeps the memory_answer tool description concise and scope-explicit", () => {
@@ -363,6 +371,12 @@ describe("MCP memory_answer schema wording", () => {
     );
     expect(memoryAnswerToolDescription).toContain(
       "call again with a narrower question"
+    );
+    expect(memoryAnswerToolDescription).toContain(
+      "substantive work in a new chat"
+    );
+    expect(memoryAnswerToolDescription).toContain(
+      "authorized Team Workspace scope"
     );
     expect(memoryAnswerToolDescription).not.toMatch(/dogfood/i);
     expect(memoryAnswerToolDescription.length).toBeLessThan(1_000);
