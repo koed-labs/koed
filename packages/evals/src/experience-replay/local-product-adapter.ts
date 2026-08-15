@@ -73,6 +73,7 @@ export interface LocalProductAdapterOptions {
   recordedEmbedding?: RecordedEmbeddingServiceOptions;
   readinessTimeoutMs?: number;
   readinessIntervalMs?: number;
+  preparationRequestTimeoutMs?: number;
   productApiEnvironment?: NodeJS.ProcessEnv;
   lcmSummaryConfig?: { model: string; promptVersion: string };
   runScheduledLcmJobs?: (input: {
@@ -613,6 +614,13 @@ export class LocalExperienceReplayProductAdapter {
         "Smoke runs must use the deterministic HTTP Embedding Service"
       );
     }
+    if (
+      options.preparationRequestTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.preparationRequestTimeoutMs) ||
+        options.preparationRequestTimeoutMs <= 0)
+    ) {
+      throw new Error("Preparation API request timeout must be positive");
+    }
     this.runPart = safeRunPart(options.runId);
     this.ownershipId = createHash("sha256").update(options.runId).digest("hex");
     this.templates = new ExperienceReplayDatabaseTemplates({
@@ -823,7 +831,10 @@ export class LocalExperienceReplayProductAdapter {
       });
       const actor = { userId: user.id };
       api = await startProductApiProcess({
-        environment: this.apiEnvironment(url, runtime, pepper)
+        environment: this.apiEnvironment(url, runtime, pepper),
+        ...(this.options.preparationRequestTimeoutMs
+          ? { requestTimeoutMs: this.options.preparationRequestTimeoutMs }
+          : {})
       });
       const authorization = `Bearer ${token}`;
       const importClient = createProductionNormalizedImportClient({

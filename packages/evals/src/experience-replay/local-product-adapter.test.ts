@@ -57,6 +57,16 @@ describe("local Experience Replay product adapter guards", () => {
     ).toThrow("must use the deterministic HTTP Embedding Service");
   });
 
+  it("requires a positive preparation API request timeout", () => {
+    expect(() =>
+      createLocalExperienceReplayProductAdapter({
+        ...base,
+        mode: "smoke",
+        preparationRequestTimeoutMs: 0
+      })
+    ).toThrow("Preparation API request timeout must be positive");
+  });
+
   it("rejects source/condition mismatches before provisioning PostgreSQL", async () => {
     const adapter = createLocalExperienceReplayProductAdapter({
       ...base,

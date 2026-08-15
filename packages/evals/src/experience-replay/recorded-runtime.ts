@@ -255,6 +255,7 @@ export const createRecordedCliExperienceReplayDependencies = (
     preparationCostUsd: priceForPreparation,
     campaignTemplateCacheDirectory,
     repositoryCommit,
-    campaignTemplateMaterializationSourceHash: materializationSourceHash
+    campaignTemplateMaterializationSourceHash: materializationSourceHash,
+    preparationRequestTimeoutMs: config.timeouts.preparation_seconds * 1_000
   });
 };

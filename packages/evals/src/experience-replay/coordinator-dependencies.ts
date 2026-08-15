@@ -107,6 +107,7 @@ export interface ExperienceReplayCoordinatorDependencyFactoryOptions {
   campaignTemplateMaterializationSourceHash?: string;
   readinessTimeoutMs?: number;
   readinessIntervalMs?: number;
+  preparationRequestTimeoutMs?: number;
   bridgeCredentialLifetimeMs?: number;
   harbor?: HarborPort;
   product?: ProductPort;
@@ -316,6 +317,9 @@ export const createExperienceReplayCoordinatorDependencies = (
         : {}),
       ...(options.readinessIntervalMs
         ? { readinessIntervalMs: options.readinessIntervalMs }
+        : {}),
+      ...(options.preparationRequestTimeoutMs
+        ? { preparationRequestTimeoutMs: options.preparationRequestTimeoutMs }
         : {})
     });
   let campaignCache: Promise<OracleCampaignTemplateCache> | undefined;
