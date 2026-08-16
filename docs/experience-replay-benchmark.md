@@ -75,10 +75,13 @@ profiles retain normal intention-to-treat behavior and do not force tool use.
 The oracle-seeded proof is a separate diagnostic for establishing whether a
 known useful prior solution can be retrieved and reused. It does not alter the
 natural four-condition benchmark. The corpus builder runs one pinned task once
-with an operator-supplied solution brief, requires that source to pass the
+with operator-supplied oracle material, requires that source to pass the
 unchanged Terminal-Bench verifier, and derives three provenance-separated
 Memory artifacts: guidance only, sanitized execution trace only, and both
-together.
+together. Oracle material is normally a concise implementation brief. When a
+known-success experience cannot otherwise be qualified, it may instead be the
+exact implementation from a pinned public reference source. It must never
+contain hidden tests or verifier output.
 
 The target is then replayed once under six conditions: cold, empty, an
 irrelevant distractor, guidance plus that distractor, trace plus that
@@ -93,8 +96,9 @@ imports it through normal Conversation Item ingestion, Projection, embedding,
 and Memory Answer paths. A single proof validates integration and provides only
 a stochastic smoke signal; it is not evidence of efficacy.
 
-Use a concise brief that describes a viable approach without verifier output,
-hidden tests, or a literal reference patch:
+Use a private oracle file containing either the concise implementation brief or
+the explicitly pinned public reference implementation. Do not include hidden
+tests or verifier output:
 
 ```bash
 pnpm --filter @koed/evals eval:experience-replay -- \
@@ -173,9 +177,16 @@ result becomes feedback for the next bounded attempt. Unqualified and
 infrastructure-failed tasks remain in the immutable private ledger and must not
 be silently removed from a declared campaign.
 
-Oracle guidance must describe the solution without naming the private cache,
-reference-solution or verifier paths from which it was prepared. Those paths
-are rejected by the ATIF sanitizer and never become reusable Memory.
+Qualification normally uses GPT-5.6 Luna with high reasoning. A task that
+remains unqualified after its bounded Luna attempts may be retried with the
+explicitly pinned GPT-5.6 Sol `xhigh` fallback. The corpus attestation records
+the qualification model and trajectory; measured campaign agents and AI Client
+workers remain frozen to the campaign's Luna policy.
+
+Oracle material must not name private cache or verifier paths from which it was
+prepared. Those paths are rejected by the ATIF sanitizer and never become
+reusable Memory. An exact implementation must identify its pinned public source
+in the private corpus provenance.
 
 ```json
 {

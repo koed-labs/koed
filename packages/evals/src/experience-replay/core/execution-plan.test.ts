@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveExperienceReplayConfig } from "./config.js";
 import {
   createBenchmarkRunPlan,
+  createOracleCorpusQualificationRunPlan,
   createOracleSeededProductProofRunPlan,
   createOracleSeededRepeatedStudyRunPlan,
   createProductPathProofRunPlan,
@@ -229,6 +230,55 @@ describe("Experience Replay immutable run plans", () => {
         101
       )
     ).toThrow("1 to 100");
+  });
+
+  it("allows a pinned Sol fallback only while qualifying hard corpus tasks", () => {
+    const digest = `sha256:${"e".repeat(64)}`;
+    const fullConfig = config("full");
+    const solQualificationConfig = {
+      ...fullConfig,
+      coding_agent: {
+        id: "gpt-5.6-sol",
+        reasoning_effort: "xhigh" as const
+      }
+    };
+
+    expect(
+      createOracleCorpusQualificationRunPlan(
+        solQualificationConfig,
+        [digest],
+        "f".repeat(64),
+        2,
+        "subscription"
+      )
+    ).toMatchObject({
+      kind: "oracle_corpus_qualification",
+      codexAuthMode: "subscription",
+      sourceTaskDigests: [digest],
+      codingAgentAttemptCount: 2
+    });
+    expect(() =>
+      createOracleCorpusQualificationRunPlan(
+        {
+          ...solQualificationConfig,
+          coding_agent: {
+            id: "gpt-5.6-sol",
+            reasoning_effort: "high"
+          }
+        },
+        [digest],
+        "f".repeat(64),
+        1
+      )
+    ).toThrow("Sol with xhigh reasoning");
+    expect(() =>
+      createOracleSeededRepeatedStudyRunPlan(
+        solQualificationConfig,
+        digest,
+        "f".repeat(64),
+        1
+      )
+    ).toThrow("high reasoning");
   });
 
   it("rejects self-placebo, the wrong profile, non-Luna policy and mutation", () => {

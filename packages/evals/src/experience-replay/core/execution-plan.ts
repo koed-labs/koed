@@ -98,6 +98,44 @@ const assertLunaHigh = (config: ResolvedExperienceReplayConfig): void => {
   }
 };
 
+const assertQualificationModels = (
+  config: ResolvedExperienceReplayConfig
+): void => {
+  const codingAgentIsAllowed =
+    (config.coding_agent.id === "gpt-5.6-luna" &&
+      config.coding_agent.reasoning_effort === "high") ||
+    (config.coding_agent.id === "gpt-5.6-sol" &&
+      config.coding_agent.reasoning_effort === "xhigh");
+  if (!codingAgentIsAllowed) {
+    throw new Error(
+      "Oracle corpus qualification requires GPT-5.6 Luna with high reasoning or GPT-5.6 Sol with xhigh reasoning for the coding agent"
+    );
+  }
+  const workers = [
+    config.memory_answer.model,
+    config.lcm_summary.model,
+    config.session_title.model
+  ];
+  if (
+    workers.some(
+      (model) =>
+        model.id !== "gpt-5.6-luna" || model.reasoning_effort !== "high"
+    )
+  ) {
+    throw new Error(
+      "Oracle corpus qualification requires GPT-5.6 Luna with high reasoning for AI Client workers"
+    );
+  }
+  if (
+    config.trajectory_judge.model.id !== "gpt-5.6-luna" ||
+    config.trajectory_judge.model.reasoning_effort !== "medium"
+  ) {
+    throw new Error(
+      "Oracle corpus qualification requires GPT-5.6 Luna with medium reasoning for trajectory judging"
+    );
+  }
+};
+
 export const createOracleSeededCampaignRunPlan = (
   config: ResolvedExperienceReplayConfig,
   taskDigests: readonly string[],
@@ -143,7 +181,7 @@ export const createOracleCorpusQualificationRunPlan = (
 ): Readonly<ExperienceReplayRunPlan> => {
   if (config.profile !== "full")
     throw new Error("Oracle corpus qualification requires the full profile");
-  assertLunaHigh(config);
+  assertQualificationModels(config);
   assertUnique(taskDigests, "Oracle corpus qualification task digests");
   if (taskDigests.length < 1)
     throw new Error("Oracle corpus qualification requires at least one task");
