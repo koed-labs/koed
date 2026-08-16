@@ -1731,6 +1731,22 @@ describe("unified experience replay coordinator", () => {
       await readdir(path.join(config.output_dir, "preparation-telemetry"))
     ).toHaveLength(1);
 
+    const journalBeforeWrongCommand = await readFile(
+      path.join(config.output_dir, "journal.jsonl"),
+      "utf8"
+    );
+    await expect(
+      runExperienceReplay(config, {
+        preflight: admitted,
+        dependencies: fakeDependencies([])
+      })
+    ).rejects.toThrow(
+      "Benchmark output already contains a run; use the resume command"
+    );
+    expect(
+      await readFile(path.join(config.output_dir, "journal.jsonl"), "utf8")
+    ).toBe(journalBeforeWrongCommand);
+
     const resumed = fakeDependencies([], {
       adoptTemplate: async (template) => template
     });

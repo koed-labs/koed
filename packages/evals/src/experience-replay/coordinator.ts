@@ -781,6 +781,23 @@ export const runExperienceReplay = async (
     reserveBytes: admitted.capacity.reserveBytes
   });
   const directory = created.directory;
+  if (
+    !options.resumeRunDirectory &&
+    (
+      await Promise.all(
+        [
+          "journal.jsonl",
+          "manifest.json",
+          "config.resolved.json",
+          ".experience-replay.lease"
+        ].map((relativePath) => artifactExists(directory.root, relativePath))
+      )
+    ).some(Boolean)
+  ) {
+    throw new Error(
+      "Benchmark output already contains a run; use the resume command"
+    );
+  }
   if (oracleProductProof && options.resumeRunDirectory) {
     oracleBrief = await readTextFileNoFollow(
       path.join(directory.root, "oracle-private/brief.txt"),
