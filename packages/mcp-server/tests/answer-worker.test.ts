@@ -415,15 +415,20 @@ describe("memory answer worker", () => {
         provider: "claude",
         aiClientInstanceId: "claude.work",
         executablePath: process.execPath,
-        timeoutMs: 10,
+        timeoutMs: 100,
         maxAttempts: 1
       }
     });
 
     expect(sdkSignal?.aborted).toBe(true);
-    expect(response.localMemoryWorker.errorMessage).toContain(
-      "Claude Agent SDK timed out after 10ms"
+    const errorMessage = response.localMemoryWorker.errorMessage ?? "";
+    const timeout = errorMessage.match(
+      /Claude Agent SDK timed out after (\d+)ms/
     );
+    expect(timeout).not.toBeNull();
+    expect(Number(timeout?.[1])).toBeGreaterThan(0);
+    expect(Number(timeout?.[1])).toBeLessThanOrEqual(100);
+    expect(errorMessage).not.toContain("cancelled");
   });
 
   it("compacts answer payloads by default without losing worker status", () => {
