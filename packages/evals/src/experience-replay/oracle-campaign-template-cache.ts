@@ -14,7 +14,7 @@ import { canonicalJson, sha256, type JsonValue } from "./core/hash.js";
 import { assertEvalDatabaseName } from "./database-templates.js";
 
 const ENTRY_SCHEMA = "koed-oracle-campaign-template-cache-v1";
-const MAX_ENTRY_BYTES = 1024 * 1024;
+const MAX_ENTRY_BYTES = 16 * 1024 * 1024;
 const noFollow = constants.O_NOFOLLOW ?? 0;
 
 export type OracleCampaignTemplateIdentity = Readonly<
@@ -279,6 +279,10 @@ export class OracleCampaignTemplateCache {
   }): Promise<OracleCampaignTemplateCacheEntry> {
     await this.assertRoot();
     const entry = makeEntry(input);
+    const serializedEntry = `${canonicalJson(entry)}\n`;
+    if (Buffer.byteLength(serializedEntry) > MAX_ENTRY_BYTES) {
+      throw new Error("Campaign template cache entry exceeds the size limit");
+    }
     const destination = this.entryPath(input.identity);
     const temp = join(this.directory, `.${randomUUID()}.tmp`);
     const handle = await open(
@@ -287,7 +291,7 @@ export class OracleCampaignTemplateCache {
       0o600
     );
     try {
-      await handle.writeFile(`${canonicalJson(entry)}\n`, "utf8");
+      await handle.writeFile(serializedEntry, "utf8");
       await handle.sync();
     } finally {
       await handle.close();

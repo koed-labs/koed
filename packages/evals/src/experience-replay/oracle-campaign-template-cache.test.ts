@@ -92,6 +92,33 @@ describe("oracle campaign template cache", () => {
     ).rejects.toThrow("publication collision");
   });
 
+  it("round-trips multi-task metadata and rejects entries above the cache limit", async () => {
+    const { cache } = await fixture();
+    const largeTemplate = {
+      ...template,
+      metadata: "x".repeat(2 * 1024 * 1024)
+    };
+    const entry = await cache.publish({
+      identity,
+      databaseName: "koed_eval_campaign_cached",
+      template: largeTemplate
+    });
+    await expect(cache.lookup(identity)).resolves.toEqual(entry);
+
+    const oversizedIdentity = {
+      ...identity,
+      campaignHash: `sha256:${"d".repeat(64)}`
+    };
+    await expect(
+      cache.publish({
+        identity: oversizedIdentity,
+        databaseName: "koed_eval_campaign_oversized",
+        template: { ...template, metadata: "x".repeat(17 * 1024 * 1024) }
+      })
+    ).rejects.toThrow("exceeds the size limit");
+    await expect(cache.lookup(oversizedIdentity)).resolves.toBeNull();
+  });
+
   it("rejects noncanonical or permission-weakened entries", async () => {
     const { cache } = await fixture();
     const entry = await cache.publish({
