@@ -84,7 +84,11 @@ export const parseClaudeTranscriptJournalBytes = (input: {
       : message.content === undefined
         ? []
         : [message.content];
+    const isProviderInternal =
+      type === "queue-operation" ||
+      record(entry.origin).kind === "task-notification";
     const isHumanUser =
+      !isProviderInternal &&
       type === "user" &&
       content.some((block) => record(block).type !== "tool_result");
     if (isHumanUser) currentTurnId = uuid;
@@ -118,7 +122,11 @@ export const parseClaudeTranscriptJournalBytes = (input: {
               ? "subagent_message"
               : "unknown";
       let rawText = text(block);
-      if (blockType === "tool_use") {
+      if (isProviderInternal) {
+        actor = "system";
+        transcriptType = "unknown";
+        rawText = "";
+      } else if (blockType === "tool_use") {
         actor = "tool";
         transcriptType = "tool_call";
         const toolName =

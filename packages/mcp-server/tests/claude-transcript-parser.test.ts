@@ -76,6 +76,59 @@ describe("Claude transcript parser", () => {
     expect(first.checkpoint).toEqual({ offset: bytes.length, lineCount: 3 });
   });
 
+  it("retains task notifications as raw-only provider records without exposing transport metadata", () => {
+    const sessionId = randomUUID();
+    const taskNotification = [
+      "<task-notification>",
+      "<task-id>task-1</task-id>",
+      "<tool-use-id>tool-1</tool-use-id>",
+      "<output-file>/private/tmp/claude/tasks/task-1.output</output-file>",
+      "<status>completed</status>",
+      "<summary>Checked the repository</summary>",
+      "</task-notification>"
+    ].join(" ");
+    const bytes = Buffer.from(
+      `${JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        timestamp: "2026-08-11T12:00:00.000Z",
+        userType: "external",
+        promptSource: "sdk",
+        origin: { kind: "task-notification" },
+        message: { role: "user", content: taskNotification }
+      })}\n`
+    );
+
+    const result = parseClaudeTranscriptJournalBytes({
+      bytes,
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0,
+      sessionId,
+      externalSessionId: sessionId,
+      sourceFingerprint: "a".repeat(64)
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      sourceEventType: "unknown",
+      observationComponent: "unknown",
+      metadata: {
+        actor: "system",
+        transcriptType: "unknown"
+      }
+    });
+    expect(result.items[0]?.rawText).toBeUndefined();
+    expect(result.items[0]?.rawJson).toMatchObject({
+      sourceRecord: {
+        origin: { kind: "task-notification" },
+        message: { content: taskNotification }
+      }
+    });
+    expect(result.parserState.currentTurnId).toBe(
+      `session:${sessionId}:preamble`
+    );
+  });
+
   it("holds incomplete trailing source records", () => {
     expect(() =>
       parseClaudeTranscriptJournalBytes({
