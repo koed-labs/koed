@@ -24,22 +24,22 @@ const boundedBase64 = z
 const encryptedPackageObjectClass = z.literal("sync_package");
 const sourceKinds = [
   ...new Set(aiClientSourceAdapterRegistry.map(({ sourceKind }) => sourceKind))
-] as ["codex" | "claude-code", ...("codex" | "claude-code")[]];
+] as ["codex" | "claude-code" | "pi", ...("codex" | "claude-code" | "pi")[]];
 const sourceRuntimes = [
   ...new Set(
     aiClientSourceAdapterRegistry.map(({ sourceRuntime }) => sourceRuntime)
   )
 ] as [
-  "codex" | "codex-cli" | "claude-code",
-  ...("codex" | "codex-cli" | "claude-code")[]
+  "codex" | "codex-cli" | "claude-code" | "pi",
+  ...("codex" | "codex-cli" | "claude-code" | "pi")[]
 ];
 const artifactFormats = [
   ...new Set(
     aiClientSourceAdapterRegistry.map(({ artifactFormat }) => artifactFormat)
   )
 ] as [
-  "codex_rollout_jsonl" | "claude_session_jsonl",
-  ...("codex_rollout_jsonl" | "claude_session_jsonl")[]
+  "codex_rollout_jsonl" | "claude_session_jsonl" | "pi_session_jsonl",
+  ...("codex_rollout_jsonl" | "claude_session_jsonl" | "pi_session_jsonl")[]
 ];
 const artifactFormatVersions = [
   ...new Set(
@@ -55,8 +55,8 @@ const sourceAdapterVersions = [
     )
   )
 ] as [
-  "codex-transcript-v1" | "claude-code-transcript-v1",
-  ...("codex-transcript-v1" | "claude-code-transcript-v1")[]
+  "codex-transcript-v1" | "claude-code-transcript-v1" | "pi-session-v1",
+  ...("codex-transcript-v1" | "claude-code-transcript-v1" | "pi-session-v1")[]
 ];
 
 export const sourceReplicationRecipientKeySchema = z

@@ -188,7 +188,7 @@ export interface ConversationSourceOriginKeyRegistration extends ConversationSou
 }
 
 export type ConversationSourceReplicationSourceDescriptor = {
-  sourceKind: "codex" | "claude-code";
+  sourceKind: "codex" | "claude-code" | "pi";
   sourceRuntime: AiClientSourceRuntime;
   artifactFormat: string;
   artifactFormatVersion: number;
@@ -1382,7 +1382,10 @@ export const parseConversationSourceReplicationSourceDescriptor = (
       descriptor.sourceAdapterVersion === "codex-transcript-v1") ||
       (descriptor.sourceKind === "claude-code" &&
         descriptor.sourceRuntime === "claude-code" &&
-        descriptor.sourceAdapterVersion === "claude-code-transcript-v1"));
+        descriptor.sourceAdapterVersion === "claude-code-transcript-v1") ||
+      (descriptor.sourceKind === "pi" &&
+        descriptor.sourceRuntime === "pi" &&
+        descriptor.sourceAdapterVersion === "pi-session-v1"));
   if (!sourceAdapter && !immutableBlobAdapterValid) {
     throw new TypeError("Conversation source descriptor format is invalid");
   }
@@ -1446,7 +1449,7 @@ export const parseConversationSourceReplicationSourceDescriptor = (
   }
   return {
     ...componentIdentity,
-    sourceKind: descriptor.sourceKind as "codex" | "claude-code",
+    sourceKind: descriptor.sourceKind as "codex" | "claude-code" | "pi",
     logicalSessionId: requireUuid(
       descriptor.logicalSessionId,
       "Descriptor logicalSessionId"

@@ -343,7 +343,9 @@ export const registerConversationSourceJournalRoutes = (
         sourceAdapterVersion:
           input.sourceKind === "claude-code"
             ? "claude-code-transcript-v1"
-            : "codex-transcript-v1",
+            : input.sourceKind === "pi"
+              ? "pi-session-v1"
+              : "codex-transcript-v1",
         storageProvider: storage.provider,
         storagePrefix: artifactIdPrefix,
         originDeploymentId: signer.deploymentId,

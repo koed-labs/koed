@@ -3,9 +3,9 @@ export const aiClientIdentifierPattern =
 
 export type AiClientDriverId = string;
 export type AiClientInstanceId = string;
-export type SupportedAiClientDriverId = "codex" | "claude";
+export type SupportedAiClientDriverId = "codex" | "claude" | "pi";
 
-export const supportedAiClientDriverIds = ["codex", "claude"] as const;
+export const supportedAiClientDriverIds = ["codex", "claude", "pi"] as const;
 
 export const assertAiClientDriverId = (value: string): AiClientDriverId => {
   if (!aiClientIdentifierPattern.test(value) || value.length > 96) {

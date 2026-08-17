@@ -23,6 +23,7 @@ import {
 import {
   aiClientExecutionIdentity,
   resolveClaudeCodeExecutable,
+  resolvePiExecutable,
   runAiClientJsonTask,
   type AiClientProvider
 } from "./ai-client-runner.js";
@@ -177,8 +178,17 @@ export const resolveLcmSummaryWorkerConfig = (
     overrides.provider ??
     resolveEnvValue(env, "MEMORY_LCM_SUMMARY_PROVIDER")?.toLowerCase() ??
     CODEX_SUMMARY_PROVIDER;
-  if (provider !== "codex" && provider !== "claude") {
+  if (provider !== "codex" && provider !== "claude" && provider !== "pi") {
     throw new Error(`Unsupported LCM summary provider: ${provider}`);
+  }
+  if (
+    provider === "pi" &&
+    !overrides.model &&
+    !resolveEnvValue(env, "MEMORY_LCM_SUMMARY_MODEL")
+  ) {
+    throw new Error(
+      "Pi LCM summary provider requires a full provider/model ID"
+    );
   }
   const aiClientInstanceId =
     overrides.aiClientInstanceId ??
@@ -241,9 +251,11 @@ export const resolveLcmSummaryWorkerConfig = (
       instance?.executablePath ??
       (provider === "claude"
         ? resolveClaudeCodeExecutable(instanceEnv)
-        : resolveCodexAppServerBinary(instanceEnv, [
-            "MEMORY_LCM_CODEX_BINARY"
-          ])),
+        : provider === "pi"
+          ? resolvePiExecutable(instanceEnv)
+          : resolveCodexAppServerBinary(instanceEnv, [
+              "MEMORY_LCM_CODEX_BINARY"
+            ])),
     cwd: overrides.cwd ?? process.cwd(),
     env: instanceEnv
   };

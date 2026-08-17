@@ -8,8 +8,8 @@ AI Runtime.
 
 ## Services In Scope
 
-- **AI Client**: Codex is the supported AI Client in this build.
-- **Transcript Watcher**: the local background service that owns correctness for externally managed Codex transcript growth.
+- **AI Client**: Codex, Claude Code, and Pi are supported AI Clients in this build.
+- **Transcript Watcher**: local background service that owns correctness for externally managed Codex, Claude, or Pi Conversation source growth.
 - **Capture Hook**: the TypeScript hook that provides content-free, low-latency wake signals.
 - **MCP Server**: a thin local MCP `2026-07-28` adapter that exposes Koed tools
   and forwards typed requests to the Local AI Runtime.
@@ -938,8 +938,9 @@ sequenceDiagram
    reported to the LLM for one repair attempt. A partial repair retains the
    valid summary and valid grounded anchors and drops anything still invalid.
    Other unsupported worker output fails at the worker boundary.
-6. The LCM worker runs the selected local AI Client. Codex uses app-server mode;
-   Claude uses the pinned Agent SDK and confirmed local Claude Code executable.
+6. LCM worker runs selected local AI Client. Codex uses app-server mode; Claude
+   uses pinned Agent SDK and confirmed local Claude Code executable; Pi uses
+   isolated strict-LF RPC with no persistent session or user/project resources.
    The worker parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
    and provider token usage is recorded for attribution.
@@ -1275,8 +1276,9 @@ grant-based visibility model.
    authority-row versions. The MCP Server forwards it on every later search and
    expansion; the model cannot alter it.
 3. The Local AI Runtime starts a memory-answer worker through the selected AI
-   Client. Codex uses app-server mode; Claude uses the pinned Agent SDK and
-   confirmed local Claude Code executable. The worker receives the original
+   Client. Codex uses app-server mode; Claude uses pinned Agent SDK and
+   confirmed local Claude Code executable; Pi uses isolated strict-LF RPC and
+   schema-constrained terminating tool. Worker receives original
    question, fixed effective boundary, caller hints, first-pass
    diagnostics, and initial evidence. The worker is given only Koed dynamic RAG
    tools: `scan`, `search`, and `expand`. Personal Project search uses Captured

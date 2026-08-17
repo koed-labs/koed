@@ -1,7 +1,7 @@
 # Running Koed
 
 > [!IMPORTANT]  
-> Only Codex is supported for knowledge capture. More agents to follow!
+> Codex, Claude Code, and Pi are supported AI Client integrations. See client-specific integration guides for setup and limitations.
 
 Koed's server deployment unit is `koed-server` plus dependencies. Internally,
 `koed-server` supervises API, Worker, and the local Transcript Watcher, and connects
@@ -487,7 +487,7 @@ docker compose --env-file .env -f examples/server-compose/docker-compose.yml exe
 Do not point normal AI Client integrations directly at this remote/server API.
 Each User's AI Client MCP adapter and Supported Capture Hook should normally use
 that User's local `koed-server`. That server supervises an authenticated Local
-AI Runtime, which hosts the Codex and Claude Transcript Watchers. External runtime mode does not
+AI Runtime, which hosts Codex, Claude, and Pi Transcript Watchers. External runtime mode does not
 run either user-local component. Transcript roots default to
 `CODEX_HOME/sessions` and may be replaced with explicit local roots. Each
 Supported Capture Hook wake completes one bounded, paginated discovery sweep,
@@ -499,7 +499,9 @@ backoff until it consumes terminal evidence. A one-second catch-up tick checks
 only a bounded rotation of known sources and the newest discovery page,
 covering missed Hook and filesystem delivery without continuous full scans.
 Claude capture uses content-free lifecycle signals and reads provider-native
-Conversation Sources from the configured Claude home. The
+Conversation Sources from configured Claude home. Pi capture uses content-free
+extension wake signals plus periodic discovery of persistent Pi JSONL sessions;
+see [Pi integration](pi-integration.md). The
 local `koed-server` then registers this server as an upstream and routes
 approved Team Workspace recall, Share
 Grant, sync/offload, or remote capture-bearing operations through local-edge

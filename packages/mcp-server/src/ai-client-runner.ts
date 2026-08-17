@@ -10,13 +10,19 @@ import {
   type SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  checkPiAvailability,
+  listPiModels,
+  resolvePiExecutable,
+  runPiRpcTask
+} from "./pi-rpc-runner.js";
+import {
   koedAiClientWorkerDeveloperInstructions,
   runCodexAppServerJsonTask,
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
 
-export type AiClientProvider = "codex" | "claude";
+export type AiClientProvider = "codex" | "claude" | "pi";
 
 export interface AiClientRunConfig {
   provider: AiClientProvider;
@@ -30,6 +36,7 @@ export interface AiClientRunConfig {
   systemPrompt: string;
   developerInstructions?: string;
   outputSchema?: Record<string, unknown>;
+  signal?: AbortSignal;
 }
 
 export interface AiClientRunResult {
@@ -38,7 +45,7 @@ export interface AiClientRunResult {
   tokenUsage?: CodexThreadTokenUsage;
   provider?: AiClientProvider;
   aiClientInstanceId?: string;
-  transport?: "app_server" | "agent_sdk";
+  transport?: "app_server" | "agent_sdk" | "pi_rpc";
   threadId?: string;
   turnId?: string;
   rawEvents?: CodexAppServerRawEvent[];
@@ -48,39 +55,53 @@ export interface AiClientRunResult {
 export interface AiClientExecutionIdentity {
   provider: AiClientProvider;
   aiClientInstanceId: string;
-  transport: "app_server" | "agent_sdk";
-  sourceRuntime: "codex" | "claude-code";
-  sourceKind: "codex" | "claude-code";
-  sourceAdapterVersion: "codex-app-server-v1" | "claude-agent-sdk-v1";
+  transport: "app_server" | "agent_sdk" | "pi_rpc";
+  sourceRuntime: "codex" | "claude-code" | "pi";
+  sourceKind: "codex" | "claude-code" | "pi";
+  sourceAdapterVersion:
+    | "codex-app-server-v1"
+    | "claude-agent-sdk-v1"
+    | "pi-rpc-v1";
   usageSource: "app_server" | "connector_native";
-  connectorClient: "codex" | "claude";
+  connectorClient: "codex" | "claude" | "pi";
 }
 
 export const aiClientExecutionIdentity = (
   provider: AiClientProvider,
   aiClientInstanceId = `${provider}.default`
 ): AiClientExecutionIdentity =>
-  provider === "claude"
+  provider === "pi"
     ? {
         provider,
         aiClientInstanceId,
-        transport: "agent_sdk",
-        sourceRuntime: "claude-code",
-        sourceKind: "claude-code",
-        sourceAdapterVersion: "claude-agent-sdk-v1",
+        transport: "pi_rpc",
+        sourceRuntime: "pi",
+        sourceKind: "pi",
+        sourceAdapterVersion: "pi-rpc-v1",
         usageSource: "connector_native",
-        connectorClient: "claude"
+        connectorClient: "pi"
       }
-    : {
-        provider,
-        aiClientInstanceId,
-        transport: "app_server",
-        sourceRuntime: "codex",
-        sourceKind: "codex",
-        sourceAdapterVersion: "codex-app-server-v1",
-        usageSource: "app_server",
-        connectorClient: "codex"
-      };
+    : provider === "claude"
+      ? {
+          provider,
+          aiClientInstanceId,
+          transport: "agent_sdk",
+          sourceRuntime: "claude-code",
+          sourceKind: "claude-code",
+          sourceAdapterVersion: "claude-agent-sdk-v1",
+          usageSource: "connector_native",
+          connectorClient: "claude"
+        }
+      : {
+          provider,
+          aiClientInstanceId,
+          transport: "app_server",
+          sourceRuntime: "codex",
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          usageSource: "app_server",
+          connectorClient: "codex"
+        };
 
 export interface AiClientTaskDriver {
   id: string;
@@ -671,9 +692,19 @@ const claudeTaskDriver: AiClientTaskDriver = {
   runJsonTask: runClaudeAgentSdkTask
 };
 
+const piTaskDriver: AiClientTaskDriver = {
+  id: "pi",
+  runJsonTask: runPiRpcTask
+};
+
 const taskDrivers = new Map<string, AiClientTaskDriver>(
-  [codexTaskDriver, claudeTaskDriver].map((driver) => [driver.id, driver])
+  [codexTaskDriver, claudeTaskDriver, piTaskDriver].map((driver) => [
+    driver.id,
+    driver
+  ])
 );
+
+export { checkPiAvailability, listPiModels, resolvePiExecutable };
 
 export const aiClientTaskDriverFor = (driverId: string): AiClientTaskDriver => {
   const driver = taskDrivers.get(driverId);

@@ -19,6 +19,13 @@ export const aiClientSourceAdapterRegistry = Object.freeze([
     artifactFormat: "claude_session_jsonl",
     artifactFormatVersion: 1,
     sourceAdapterVersion: "claude-code-transcript-v1"
+  }),
+  Object.freeze({
+    sourceKind: "pi",
+    sourceRuntime: "pi",
+    artifactFormat: "pi_session_jsonl",
+    artifactFormatVersion: 1,
+    sourceAdapterVersion: "pi-session-v1"
   })
 ] as const);
 

@@ -15,7 +15,7 @@ need them.
 ## Quickstart
 
 > [!IMPORTANT]
-> Codex and Claude Code are independently installed supported AI Client
+> Codex, Claude Code, and Pi are independently installed supported AI Client
 > integrations. Install and sign in to the client or clients you use; Koed does
 > not bundle either runtime or provider credentials.
 
@@ -27,9 +27,10 @@ need them.
   Desktop can use packaged native runtime assets; external dependency mode does
   not require Homebrew.
 - At least one supported AI Client installed and signed in: Codex CLI `0.144.0`
-  or newer, Claude Code, or both. The Codex default `gpt-5.6-luna` model is
-  unavailable in older Codex releases. Claude synthesis reuses the local Claude
-  Code subscription sign-in through Koed's pinned Claude Agent SDK transport.
+  or newer, Claude Code, or Pi `0.84.2` or newer. Codex default
+  `gpt-5.6-luna` model is unavailable in older Codex releases. Claude synthesis
+  reuses local Claude Code subscription through pinned Agent SDK. Pi synthesis
+  reuses Pi-managed local authentication through isolated RPC.
 
 If you are on Windows, run Koed inside WSL as Linux tooling. Keep `KOED_HOME`
 and checkout paths on Linux filesystem paths inside WSL; native Windows
@@ -48,7 +49,7 @@ KOED_DEPENDENCY_MODE=bundled-local KOED_AUTO_PORTS=1 pnpm desktop:start
 `pnpm local:setup` prepares `.env`, builds the workspace, links the Homebrew-backed bundled-local runtime, and installs the default embedding model.
 
 Koed Desktop opens when setup is complete and configures Codex automatically.
-Claude Code is configured independently; see the integration guide below.
+Claude Code and Pi are configured independently; see integration guides below.
 Packaged Desktop follows the same local-personal bundled-local flow, but it
 starts its managed `koed-server` from the app bundle, prefers packaged native
 runtime assets, and keeps `KOED_HOME` state outside the source checkout. See
@@ -84,6 +85,8 @@ The README keeps to one basic local path. For other options, see:
   recovery.
 - [Claude Code integration](docs/claude-code-integration.md) for capture, recall,
   and local Claude synthesis setup.
+- [Pi integration](docs/pi-integration.md) for global package setup, persistent
+  session capture, Recall tools, and isolated local Pi RPC synthesis.
 - [Curated Memory](docs/curated-memory.md) for source-linked durable facts and
   recall behavior.
 - [Personal Device Sync controls](docs/running-koed.md#personal-sync-control-commands)

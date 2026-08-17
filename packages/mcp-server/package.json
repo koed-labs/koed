@@ -27,6 +27,7 @@
   },
   "files": [
     "dist/**/*",
+    "integrations/pi/**/*",
     "package.json"
   ],
   "scripts": {

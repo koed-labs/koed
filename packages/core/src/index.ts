@@ -462,7 +462,7 @@ export interface PersonalEventInput {
   content: string;
   metadata?: Record<string, unknown>;
   visibility?: Visibility;
-  sourceRuntime?: "codex" | "codex-cli" | "claude-code";
+  sourceRuntime?: "codex" | "codex-cli" | "claude-code" | "pi";
   captureMethod?: "transcript" | "mcp" | "web" | "api";
   idempotencyKey?: string;
   sourceHash?: string;
@@ -648,7 +648,7 @@ export interface MemoryEngineRepository {
       content: string;
       metadata?: Record<string, unknown>;
       visibility: Visibility;
-      sourceRuntime?: "codex" | "codex-cli" | "claude-code";
+      sourceRuntime?: "codex" | "codex-cli" | "claude-code" | "pi";
       captureMethod?: "transcript" | "mcp" | "web" | "api";
       idempotencyKey?: string;
       sourceHash?: string;

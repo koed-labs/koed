@@ -3,7 +3,7 @@ import { z } from "zod";
 const boundedOffset = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const boundedLine = z.number().int().min(0).max(2_147_483_647);
 const digest = z.string().regex(/^[0-9a-f]{64}$/);
-const sourceKind = z.enum(["codex", "claude-code"]);
+const sourceKind = z.enum(["codex", "claude-code", "pi"]);
 const sourceComponentId = z
   .string()
   .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/);
@@ -15,7 +15,7 @@ export const conversationSourceArtifactSchema = z
     sourceSession: z
       .object({
         externalSessionId: z.string().min(1).max(1024),
-        sourceRuntime: z.enum(["codex", "codex-cli", "claude-code"]),
+        sourceRuntime: z.enum(["codex", "codex-cli", "claude-code", "pi"]),
         captureMethod: z.literal("api"),
         model: z.string().min(1).max(512).optional(),
         cwd: z.string().min(1).max(4096).optional(),
@@ -77,7 +77,10 @@ export const conversationSourceArtifactSchema = z
         ["codex", "codex-cli"].includes(value.sourceSession.sourceRuntime)) ||
       (value.sourceKind === "claude-code" &&
         value.artifactFormat === "claude_session_jsonl" &&
-        value.sourceSession.sourceRuntime === "claude-code");
+        value.sourceSession.sourceRuntime === "claude-code") ||
+      (value.sourceKind === "pi" &&
+        value.artifactFormat === "pi_session_jsonl" &&
+        value.sourceSession.sourceRuntime === "pi");
     if (!validSourceTuple) {
       context.addIssue({
         code: "custom",

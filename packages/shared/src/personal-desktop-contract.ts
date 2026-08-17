@@ -203,7 +203,9 @@ export const personalDesktopProjectThreadSchema = z
     id: identifierSchema,
     name: z.string().max(512),
     sessionId: z.uuid().nullable(),
-    sourceAiClient: z.enum(["codex", "codex-cli", "claude-code"]).nullable(),
+    sourceAiClient: z
+      .enum(["codex", "codex-cli", "claude-code", "pi"])
+      .nullable(),
     projectId: identifierSchema,
     projectName: projectNameSchema,
     projectPath: localProjectPathSchema.nullable(),

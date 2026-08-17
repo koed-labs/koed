@@ -6,6 +6,7 @@ import {
 } from "./codex-app-server-runner.js";
 import {
   resolveClaudeCodeExecutable,
+  resolvePiExecutable,
   runAiClientJsonTask,
   type AiClientProvider
 } from "./ai-client-runner.js";
@@ -162,8 +163,17 @@ export const resolveCuratedMemoryReviewConfig = (
     overrides.provider ??
     envValue(env, "MEMORY_CURATED_REVIEW_PROVIDER")?.toLowerCase() ??
     PROVIDER;
-  if (provider !== "codex" && provider !== "claude") {
+  if (provider !== "codex" && provider !== "claude" && provider !== "pi") {
     throw new Error(`Unsupported Curated Memory review provider: ${provider}`);
+  }
+  if (
+    provider === "pi" &&
+    !overrides.model &&
+    !envValue(env, "MEMORY_CURATED_REVIEW_MODEL")
+  ) {
+    throw new Error(
+      "Pi Curated Memory review provider requires a full provider/model ID"
+    );
   }
   const aiClientInstanceId =
     overrides.aiClientInstanceId ??
@@ -219,7 +229,9 @@ export const resolveCuratedMemoryReviewConfig = (
       instance?.executablePath ??
       (provider === "claude"
         ? resolveClaudeCodeExecutable(instanceEnv)
-        : resolveCodexAppServerBinary(instanceEnv)),
+        : provider === "pi"
+          ? resolvePiExecutable(instanceEnv)
+          : resolveCodexAppServerBinary(instanceEnv)),
     cwd: overrides.cwd ?? process.cwd(),
     env: instanceEnv
   };

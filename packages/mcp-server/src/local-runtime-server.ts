@@ -13,6 +13,7 @@ import { watchKoedLocalWork } from "@koed/shared";
 import { z } from "zod";
 import { startCodexTranscriptWatcher } from "./codex-transcript-watcher.js";
 import { startClaudeTranscriptWatcher } from "./claude-transcript-watcher.js";
+import { startPiTranscriptWatcher } from "./pi-transcript-watcher.js";
 import { startCuratedMemoryReviewService } from "./curated-memory-review-service.js";
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 import {
@@ -258,6 +259,7 @@ export interface LocalAiRuntimeServiceDependencies {
   startCuratedMemoryReviewService: typeof startCuratedMemoryReviewService;
   startCodexTranscriptWatcher: typeof startCodexTranscriptWatcher;
   startClaudeTranscriptWatcher: typeof startClaudeTranscriptWatcher;
+  startPiTranscriptWatcher?: typeof startPiTranscriptWatcher;
   createExecutor(
     apiClient: MemoryApiClient,
     environment: NodeJS.ProcessEnv,
@@ -276,6 +278,7 @@ const defaultServiceDependencies: LocalAiRuntimeServiceDependencies = {
   startCuratedMemoryReviewService,
   startCodexTranscriptWatcher,
   startClaudeTranscriptWatcher,
+  startPiTranscriptWatcher,
   createExecutor: (apiClient, environment, services) =>
     new MemoryToolExecutor(apiClient, environment, services)
 };
@@ -303,6 +306,8 @@ export const startDefaultLocalAiRuntimeServices = async (
   let claudeTranscriptWatcher: ReturnType<
     typeof startClaudeTranscriptWatcher
   > | null = null;
+  let piTranscriptWatcher: ReturnType<typeof startPiTranscriptWatcher> | null =
+    null;
   try {
     lcmWorkWatcher = lcmSummaryService
       ? await dependencies.watchKoedLocalWork(
@@ -328,6 +333,11 @@ export const startDefaultLocalAiRuntimeServices = async (
       "false"
         ? null
         : dependencies.startClaudeTranscriptWatcher(apiClient, environment);
+    piTranscriptWatcher =
+      environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
+        "false" || !dependencies.startPiTranscriptWatcher
+        ? null
+        : dependencies.startPiTranscriptWatcher(apiClient, environment);
     const executor = dependencies.createExecutor(apiClient, environment, {
       lcmSummaryService,
       curatedMemoryReviewService
@@ -340,7 +350,8 @@ export const startDefaultLocalAiRuntimeServices = async (
         curatedMemoryReviewService?.stop();
         await Promise.all([
           codexTranscriptWatcher?.stop(),
-          claudeTranscriptWatcher?.stop()
+          claudeTranscriptWatcher?.stop(),
+          piTranscriptWatcher?.stop()
         ]);
       }
     };
@@ -350,7 +361,8 @@ export const startDefaultLocalAiRuntimeServices = async (
     curatedMemoryReviewService?.stop();
     await Promise.all([
       codexTranscriptWatcher?.stop(),
-      claudeTranscriptWatcher?.stop()
+      claudeTranscriptWatcher?.stop(),
+      piTranscriptWatcher?.stop()
     ]);
     throw error;
   }

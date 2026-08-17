@@ -172,7 +172,14 @@ export const environmentForLocalAiClientInstance = (input: {
                 ? { CLAUDE_CONFIG_DIR: input.instance.configHome }
                 : {})
             }
-          : {}
+          : input.driverId === "pi"
+            ? {
+                KOED_PI_EXECUTABLE: input.instance.executablePath,
+                ...(input.instance.configHome
+                  ? { PI_CODING_AGENT_DIR: input.instance.configHome }
+                  : {})
+              }
+            : {}
       : {})
   };
 };

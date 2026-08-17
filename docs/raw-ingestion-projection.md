@@ -80,6 +80,19 @@ deliberately opts them in. After a policy change, the authenticated session
 rebuild operation invalidates prior display, Memory Event, embedding, and LCM
 derivations and reprojects retained canonical items under the new policy.
 
+## Pi Session Adapter
+
+Pi persistent sessions use `sourceKind=pi`, `sourceRuntime=pi`,
+`artifactFormat=pi_session_jsonl`, and `sourceAdapterVersion=pi-session-v1`.
+Watcher journals complete LF-terminated records and advances independent durable
+live cursor only after raw ingestion and Projection succeed. User, AI Client
+text, tool calls/results, and direct bash records may project. Compaction and
+branch summaries, thinking, custom/unsupported records, model changes, and
+other controls remain raw provenance. Entry ID, parent ID, append position,
+provider/model identity, parent-session lineage, and cwd Project context remain
+in metadata. Activation baseline and explicit historical import use separate
+frontiers.
+
 ## Current Codex Adapters
 
 The Codex Transcript Watcher, managed transcript ingestion, and historical

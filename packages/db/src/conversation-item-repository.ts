@@ -494,11 +494,16 @@ const conversationSourceRuntime = (
   if (
     explicit === "codex" ||
     explicit === "codex-cli" ||
-    explicit === "claude-code"
+    explicit === "claude-code" ||
+    explicit === "pi"
   ) {
     return explicit;
   }
-  if (sourceKind === "codex-cli" || sourceKind === "claude-code") {
+  if (
+    sourceKind === "codex-cli" ||
+    sourceKind === "claude-code" ||
+    sourceKind === "pi"
+  ) {
     return sourceKind;
   }
   return "codex";
