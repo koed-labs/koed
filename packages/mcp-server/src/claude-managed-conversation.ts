@@ -116,10 +116,32 @@ const assertNonEmpty = (value: string, label: string): string => {
   return normalized;
 };
 
-const claudeManagedHome = (env: NodeJS.ProcessEnv): string =>
-  path.resolve(
+const claudeManagedHome = (env: NodeJS.ProcessEnv): string => {
+  const configured = path.resolve(
     env.CLAUDE_CONFIG_DIR ?? path.join(env.HOME ?? os.homedir(), ".claude")
   );
+  let canonical: string;
+  try {
+    canonical = fs.realpathSync(configured);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `Claude config home does not exist: ${configured}. Create it or set CLAUDE_CONFIG_DIR to an existing directory.`,
+        { cause: error }
+      );
+    }
+    throw new Error(
+      `Claude config home could not be canonicalized: ${configured}`,
+      {
+        cause: error
+      }
+    );
+  }
+  if (!fs.statSync(canonical).isDirectory()) {
+    throw new Error(`Claude config home is not a directory: ${canonical}`);
+  }
+  return canonical;
+};
 
 const claudeSessionStoreHome = (env: NodeJS.ProcessEnv): string =>
   path.resolve(env.KOED_CLAUDE_SESSION_STORE_DIR ?? claudeManagedHome(env));

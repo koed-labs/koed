@@ -244,8 +244,12 @@ describe("ClaudeManagedConversationSession", () => {
     const { config, cwd, managedHome } = fixture();
     const sourceSessionId = randomUUID();
     const forkSessionId = randomUUID();
-    const claudeHome = path.join(cwd, "exact-claude-home");
-    fs.mkdirSync(claudeHome);
+    const canonicalClaudeHome = path.join(cwd, "exact-claude-home");
+    const claudeHome = path.join(cwd, "exact-claude-home-alias");
+    fs.mkdirSync(canonicalClaudeHome);
+    // macOS commonly exposes a configured home through a symlink such as
+    // /var -> /private/var; the SDK must receive the canonical exact home.
+    fs.symlinkSync(canonicalClaudeHome, claudeHome);
     const projectHome = path.join(managedHome, "projects", "exact-project");
     fs.mkdirSync(projectHome, { recursive: true });
     fs.writeFileSync(
@@ -323,6 +327,21 @@ describe("ClaudeManagedConversationSession", () => {
     expect(queryOptions(1).sessionId).toBeUndefined();
   });
 
+  it("fails clearly when the configured Claude home is missing", () => {
+    const { config, cwd } = fixture();
+
+    expect(
+      () =>
+        new ClaudeManagedConversationSession({
+          ...config,
+          env: {
+            ...config.env,
+            CLAUDE_CONFIG_DIR: path.join(cwd, "missing-claude-home")
+          }
+        })
+    ).toThrow("Claude config home does not exist:");
+  });
+
   it("starts with an exact caller-owned session identity without treating it as a resume", async () => {
     const { config } = fixture();
     const sessionId = randomUUID();
@@ -377,7 +396,7 @@ describe("ClaudeManagedConversationSession", () => {
     expect(queryOptions(1).resume).toBe(sessionId);
     expect(queryOptions(1).sessionStore).toBe(queryOptions(0).sessionStore);
     expect(queryOptions(1).env?.CLAUDE_CONFIG_DIR).toBe(
-      path.join(cwd, ".claude")
+      fs.realpathSync(path.join(cwd, ".claude"))
     );
     expect(
       resolveClaudeManagedConversationSource(sessionId, {
