@@ -27,6 +27,7 @@ import type {
   PersonalMemoryInspectorEvent,
   PersonalMemoryRoute
 } from "./views/personal/index.js";
+import { SharesStatusView } from "./views/personal/index.js";
 import {
   ActionGrantStatus,
   CollaborationAnnouncementToast
@@ -113,6 +114,81 @@ const initialEntry = (onboardingComplete: boolean): NavigationEntry => ({
     ? { kind: "personal-memory-projects" }
     : { kind: "onboarding" }
 });
+
+type SharesRouteStatus =
+  | { state: "ready" }
+  | { state: "loading" }
+  | {
+      action: "connect" | "reconnect" | "retry" | "review" | null;
+      actionLabel: string | null;
+      message: string;
+      state: "unavailable";
+    };
+
+const sharesRouteStatus = (
+  snapshot: CollaborationSnapshot | null,
+  loadState: "loading" | "ready" | "failed"
+): SharesRouteStatus => {
+  if (loadState === "failed") {
+    return {
+      action: "retry",
+      actionLabel: "Retry",
+      message: "Koed could not load your Shares.",
+      state: "unavailable"
+    };
+  }
+  if (!snapshot) {
+    return loadState === "loading"
+      ? { state: "loading" }
+      : {
+          action: "retry",
+          actionLabel: "Retry",
+          message: "Koed could not load your Shares.",
+          state: "unavailable"
+        };
+  }
+  switch (snapshot.connection.state) {
+    case "live":
+      return { state: "ready" };
+    case "connecting":
+      return { state: "loading" };
+    case "reconnecting":
+      return {
+        action: null,
+        actionLabel: null,
+        message: "Koed is reconnecting to your Team.",
+        state: "unavailable"
+      };
+    case "access_revoked":
+      return {
+        action: "review",
+        actionLabel: "Review Access",
+        message: "Your Team access was revoked.",
+        state: "unavailable"
+      };
+    case "unavailable":
+      return {
+        action: "reconnect",
+        actionLabel: "Retry",
+        message: "Koed could not reach your Team.",
+        state: "unavailable"
+      };
+    case "disconnected":
+      return snapshot.connection.backendId
+        ? {
+            action: "reconnect",
+            actionLabel: "Reconnect",
+            message: "Reconnect to your Team to view your Shares.",
+            state: "unavailable"
+          }
+        : {
+            action: "connect",
+            actionLabel: "Connect",
+            message: "Connect to a Team to view your Shares.",
+            state: "unavailable"
+          };
+  }
+};
 
 const selectionRoute = (selection: CollaborationSelection): DesktopRoute => {
   switch (selection.kind) {
@@ -319,6 +395,7 @@ export function App({
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [pendingDevicePairingLink, setPendingDevicePairingLink] = useState("");
   const [commandOpen, setCommandOpen] = useState(false);
+  const [sharesLoadUnavailable, setSharesLoadUnavailable] = useState(false);
   const [managedConversationRevision, setManagedConversationRevision] =
     useState(0);
   const initialSelectionApplied = useRef(
@@ -568,6 +645,12 @@ export function App({
         name: item.name,
         unreadCount: item.unreadCount
       })) ?? [];
+  const currentSharesStatus = sharesRouteStatus(
+    snapshot,
+    collaboration.loadState
+  );
+  const sharesUnavailable =
+    currentSharesStatus.state === "unavailable" || sharesLoadUnavailable;
 
   const contextNavigation =
     team && snapshot ? (
@@ -711,6 +794,7 @@ export function App({
           route.kind !== "personal-memory-shares"
         }
         sharesSelected={route.kind === "personal-memory-shares"}
+        sharesUnavailable={sharesUnavailable}
       />
     );
 
@@ -906,50 +990,88 @@ export function App({
         snapshot={snapshot}
       />
     );
-  } else if (route.kind === "personal-memory-shares" && snapshot) {
-    content = (
-      <Suspense
-        fallback={
-          <EmptyRoute
-            description="Loading owner-authorized share activity."
-            icon={<LoaderCircle aria-hidden="true" />}
-            title="Opening Shares"
-          />
+  } else if (route.kind === "personal-memory-shares") {
+    if (currentSharesStatus.state !== "ready") {
+      let onAction: (() => void) | undefined;
+      if (currentSharesStatus.state === "unavailable") {
+        switch (currentSharesStatus.action) {
+          case "retry":
+            onAction = collaboration.retry;
+            break;
+          case "connect":
+          case "review":
+            onAction = () => openPreferences("team-connection");
+            break;
+          case "reconnect":
+            onAction = () => void client.reconnect().catch(() => undefined);
+            break;
+          case null:
+            break;
         }
-      >
-        <PersonalMemorySharesView
-          client={client}
-          initialSection="shares"
-          initialShareKey={route.shareKey}
-          markdownAdapters={collaboration.markdownAdapters}
-          onOpenProjects={() =>
-            navigate({
-              authority: {
-                backendId: null,
-                principalId: snapshot.navigation.personalOwner.id
-              },
-              route: { kind: "personal-memory-projects" }
-            })
+      }
+      content = (
+        <SharesStatusView
+          actionLabel={
+            currentSharesStatus.state === "unavailable"
+              ? (currentSharesStatus.actionLabel ?? undefined)
+              : undefined
           }
-          onShare={(sessionId) =>
-            collaboration.setModal({
-              kind: "share_personal_memory",
-              sessionId
-            })
+          message={
+            currentSharesStatus.state === "unavailable"
+              ? currentSharesStatus.message
+              : undefined
           }
-          onSelectShare={(shareKey) =>
-            navigate({
-              authority: {
-                backendId: null,
-                principalId: snapshot.navigation.personalOwner.id
-              },
-              route: { kind: "personal-memory-shares", shareKey }
-            })
-          }
-          snapshot={snapshot}
+          onAction={onAction}
+          state={currentSharesStatus.state}
         />
-      </Suspense>
-    );
+      );
+    } else if (snapshot) {
+      content = (
+        <Suspense fallback={<SharesStatusView state="loading" />}>
+          <PersonalMemorySharesView
+            client={client}
+            initialSection="shares"
+            initialShareKey={route.shareKey}
+            markdownAdapters={collaboration.markdownAdapters}
+            onAvailabilityChange={setSharesLoadUnavailable}
+            onOpenProjects={() =>
+              navigate({
+                authority: {
+                  backendId: null,
+                  principalId: snapshot.navigation.personalOwner.id
+                },
+                route: { kind: "personal-memory-projects" }
+              })
+            }
+            onShare={(sessionId) =>
+              collaboration.setModal({
+                kind: "share_personal_memory",
+                sessionId
+              })
+            }
+            onSelectShare={(shareKey) =>
+              navigate({
+                authority: {
+                  backendId: null,
+                  principalId: snapshot.navigation.personalOwner.id
+                },
+                route: { kind: "personal-memory-shares", shareKey }
+              })
+            }
+            snapshot={snapshot}
+          />
+        </Suspense>
+      );
+    } else {
+      content = (
+        <SharesStatusView
+          actionLabel="Retry"
+          message="Koed could not load your Shares."
+          onAction={collaboration.retry}
+          state="unavailable"
+        />
+      );
+    }
   } else if (route.kind.startsWith("personal-memory")) {
     content =
       personalMemoryStore && personalMemoryApi ? (

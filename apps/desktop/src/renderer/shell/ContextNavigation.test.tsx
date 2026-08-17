@@ -63,6 +63,35 @@ describe("context navigation", () => {
     ).toContain("Projects");
   });
 
+  it("mutes unavailable Shares without disabling navigation", async () => {
+    const onOpenShares = vi.fn();
+    await act(async () =>
+      root.render(
+        <PersonalContextNavigation
+          channels={[]}
+          notesSelected={false}
+          onCreateChannel={vi.fn()}
+          onOpenNotes={vi.fn()}
+          onOpenProjects={vi.fn()}
+          onOpenShares={onOpenShares}
+          onSelectChannel={vi.fn()}
+          projectsSelected={false}
+          sharesSelected
+          sharesUnavailable
+        />
+      )
+    );
+
+    const shares = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Shares"
+    ) as HTMLButtonElement;
+    expect(shares.dataset.unavailable).toBe("true");
+    expect(shares.disabled).toBe(false);
+
+    await act(async () => shares.click());
+    expect(onOpenShares).toHaveBeenCalledOnce();
+  });
+
   it("renders Team, Workspace, channel, DM, People, and Shared Memory hierarchy", async () => {
     const onSelectChannel = vi.fn();
     const onCreateChannel = vi.fn();

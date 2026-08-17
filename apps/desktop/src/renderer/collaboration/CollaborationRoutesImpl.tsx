@@ -78,6 +78,7 @@ import {
   ConversationTimeline
 } from "../../NativeConversationSurface.js";
 import { teamDiscIndex, teamInitials } from "../shell/AppShell.js";
+import { SharesStatusView } from "../views/personal/SharesStatusView.js";
 import {
   MessageComposer as RouteMessageComposer,
   ThreadRoute,
@@ -651,12 +652,14 @@ function OwnedSharesWorkspace({
   client,
   initialShareKey,
   markdownAdapters,
+  onAvailabilityChange,
   onSelectShare,
   snapshot
 }: {
   client: CollaborationRendererClient;
   initialShareKey?: string;
   markdownAdapters: MarkdownPlatformAdapters;
+  onAvailabilityChange?: (unavailable: boolean) => void;
   onSelectShare?: (shareKey: string) => void;
   snapshot: CollaborationSnapshot;
 }) {
@@ -664,6 +667,10 @@ function OwnedSharesWorkspace({
   const [sharesState, setSharesState] = useState<
     "loading" | "ready" | "failed"
   >("loading");
+
+  useEffect(() => {
+    onAvailabilityChange?.(sharesState === "failed");
+  }, [onAvailabilityChange, sharesState]);
   const [selectedShareKey, setSelectedShareKey] = useState<string | null>(
     initialShareKey ?? null
   );
@@ -1175,6 +1182,23 @@ function OwnedSharesWorkspace({
     (selectedShare.kind === "grant" ||
       selectedShare.pendingShare.workspaceAccessState === "active");
 
+  if (sharesState === "loading") {
+    return <SharesStatusView state="loading" />;
+  }
+  if (sharesState === "failed") {
+    return (
+      <SharesStatusView
+        actionLabel="Retry"
+        message="Koed could not load your Shares."
+        onAction={() => {
+          setSharesState("loading");
+          setShareEventRevision((revision) => revision + 1);
+        }}
+        state="unavailable"
+      />
+    );
+  }
+
   return (
     <section
       className="collab-route-root collab-shares-workspace"
@@ -1205,22 +1229,7 @@ function OwnedSharesWorkspace({
           {shareAnnouncement}
         </span>
         <div className="collab-shares-scroll">
-          {sharesState === "loading" ? (
-            <div className="collab-shares-narrow-state">
-              <StateView
-                icon={<LoaderCircle className="collab-spin" />}
-                title="Loading Shares"
-              />
-            </div>
-          ) : sharesState === "failed" ? (
-            <div className="collab-shares-narrow-state">
-              <StateView
-                icon={<CircleAlert />}
-                role="alert"
-                title="Shares unavailable"
-              />
-            </div>
-          ) : ownedShares.length === 0 ? (
+          {ownedShares.length === 0 ? (
             <StateView icon={<Library />} title="No shares yet" />
           ) : visibleShares.length === 0 ? (
             <div className="collab-shares-empty" role="status">
@@ -1300,22 +1309,7 @@ function OwnedSharesWorkspace({
         </div>
       </aside>
 
-      {sharesState === "loading" ? (
-        <section className="collab-share-empty-detail">
-          <StateView
-            icon={<LoaderCircle className="collab-spin" />}
-            title="Loading Shares"
-          />
-        </section>
-      ) : sharesState === "failed" ? (
-        <section className="collab-share-empty-detail">
-          <StateView
-            icon={<CircleAlert />}
-            role="alert"
-            title="Shares unavailable"
-          />
-        </section>
-      ) : selectedShare ? (
+      {selectedShare ? (
         <article
           className="collab-share-detail-workspace"
           aria-label={`Share details for ${selectedShare.summary.sourceTitle}`}
@@ -1801,6 +1795,7 @@ export function PersonalMemoryView({
   initialSection = "projects",
   initialShareKey,
   markdownAdapters,
+  onAvailabilityChange,
   onSelectShare,
   onShare,
   snapshot
@@ -1809,6 +1804,7 @@ export function PersonalMemoryView({
   initialSection?: "projects" | "shares" | "history";
   initialShareKey?: string;
   markdownAdapters?: MarkdownPlatformAdapters;
+  onAvailabilityChange?: (unavailable: boolean) => void;
   onOpenProjects?: () => void;
   onSelectShare?: (shareKey: string) => void;
   onShare: (sessionId: string) => void;
@@ -1820,6 +1816,7 @@ export function PersonalMemoryView({
         client={client}
         initialShareKey={initialShareKey}
         markdownAdapters={markdownAdapters}
+        onAvailabilityChange={onAvailabilityChange}
         onSelectShare={onSelectShare}
         snapshot={snapshot}
       />

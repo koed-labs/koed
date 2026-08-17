@@ -1840,7 +1840,7 @@ describe("CollaborationApp", () => {
     );
   });
 
-  it("places initial Shares loading feedback in both responsive panes", async () => {
+  it("keeps the Shares pane while the responsive status view loads", async () => {
     const snapshot = baseSnapshot();
     const client = createClient(snapshot);
     vi.mocked(client.listOwnedShares).mockImplementation(
@@ -1859,17 +1859,191 @@ describe("CollaborationApp", () => {
     await click(container, "Shares");
     await vi.waitFor(() =>
       expect(
-        document.body.querySelector(".collab-shares-workspace")
+        document.body.querySelector(".personal-shares-status")
       ).not.toBeNull()
     );
 
     expect(
-      document.body.querySelector(".collab-shares-narrow-state")?.textContent
-    ).toContain("Loading Shares");
+      document.body.querySelectorAll(".personal-shares-status")
+    ).toHaveLength(1);
     expect(
-      document.body.querySelector(".collab-share-empty-detail")?.textContent
-    ).toContain("Loading Shares");
-    expect(document.body.querySelectorAll(".collab-spin")).toHaveLength(2);
+      document.body.querySelector(".personal-shares-status")?.textContent
+    ).not.toContain("Loading Shares");
+    expect(
+      document.body.querySelectorAll('[aria-label="Loading Shares"]')
+    ).toHaveLength(2);
+    expect(
+      document.body.querySelectorAll(
+        ".personal-shares-status .personal-loading-icon"
+      )
+    ).toHaveLength(2);
+    expect(
+      document.body.querySelector(
+        ".personal-shares-status > .collab-shares-pane"
+      )
+    ).not.toBeNull();
+    expect(
+      document.body.querySelector(
+        ".personal-shares-status > .collab-share-empty-detail"
+      )
+    ).not.toBeNull();
+  });
+
+  it("shows one retryable Shares error and mutes the clickable sidebar item", async () => {
+    const client = createClient();
+    vi.mocked(client.listOwnedShares).mockRejectedValue(
+      new Error("Team Backend unavailable")
+    );
+
+    await render(client);
+    await click(container, "Shares");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector(".personal-shares-status")?.textContent
+      ).toContain("Shares unavailable")
+    );
+
+    const status = document.body.querySelector<HTMLElement>(
+      ".personal-shares-status"
+    )!;
+    const sharesNav = [
+      ...document.body.querySelectorAll<HTMLButtonElement>(
+        ".desktop-sidebar-nav-item"
+      )
+    ].find((button) =>
+      button.textContent?.replace(/\s+/g, " ").trim().includes("Shares")
+    )!;
+    expect(
+      document.body.querySelectorAll(".personal-shares-status")
+    ).toHaveLength(1);
+    expect(status.textContent).toContain("Koed could not load your Shares.");
+    expect(status.textContent).toContain("Retry");
+    expect(status.querySelector(".collab-shares-pane")).not.toBeNull();
+    expect(status.querySelector(".collab-share-empty-detail")).not.toBeNull();
+    expect(
+      status.querySelector(".personal-projects-narrow-state")?.textContent
+    ).toContain("Shares unavailable");
+    expect(sharesNav.dataset.unavailable).toBe("true");
+    expect(sharesNav.disabled).toBe(false);
+
+    const initialCalls = vi.mocked(client.listOwnedShares).mock.calls.length;
+    await click(status, "Retry");
+    await vi.waitFor(() =>
+      expect(
+        vi.mocked(client.listOwnedShares).mock.calls.length
+      ).toBeGreaterThan(initialCalls)
+    );
+  });
+
+  it.each([
+    {
+      action: "Connect",
+      backendId: null,
+      message: "Connect to a Team to view your Shares.",
+      state: "disconnected" as const
+    },
+    {
+      action: "Reconnect",
+      backendId: "up_team_example",
+      message: "Reconnect to your Team to view your Shares.",
+      state: "disconnected" as const
+    },
+    {
+      action: "Retry",
+      backendId: "up_team_example",
+      message: "Koed could not reach your Team.",
+      state: "unavailable" as const
+    },
+    {
+      action: null,
+      backendId: "up_team_example",
+      message: "Koed is reconnecting to your Team.",
+      state: "reconnecting" as const
+    },
+    {
+      action: "Review Access",
+      backendId: "up_team_example",
+      message: "Your Team access was revoked.",
+      state: "access_revoked" as const
+    }
+  ])(
+    "shows the $state Shares unavailable case",
+    async ({ action, backendId, message, state }) => {
+      const current = baseSnapshot();
+      const snapshot = collaborationSnapshotSchema.parse({
+        ...current,
+        connection: {
+          ...current.connection,
+          backendId,
+          connectedAt: null,
+          state
+        }
+      });
+      await render(createClient(snapshot));
+      await click(container, "Shares");
+
+      const status = document.body.querySelector(".personal-shares-status")!;
+      expect(status.textContent).toContain("Shares unavailable");
+      expect(status.textContent).toContain(message);
+      expect(
+        status.querySelector<HTMLButtonElement>("button")?.textContent ?? null
+      ).toBe(action);
+    }
+  );
+
+  it("opens Team Connection from the Connect action", async () => {
+    const current = baseSnapshot();
+    const client = createClient(
+      collaborationSnapshotSchema.parse({
+        ...current,
+        connection: {
+          ...current.connection,
+          backendId: null,
+          connectedAt: null,
+          state: "disconnected"
+        }
+      })
+    );
+    await render(client);
+    await click(container, "Shares");
+    await click(container, "Connect");
+
+    expect(document.body.textContent).toContain("Team Connection");
+    expect(client.reconnect).not.toHaveBeenCalled();
+  });
+
+  it("runs the saved Team reconnect action", async () => {
+    const current = baseSnapshot();
+    const client = createClient(
+      collaborationSnapshotSchema.parse({
+        ...current,
+        connection: {
+          ...current.connection,
+          connectedAt: null,
+          state: "disconnected"
+        }
+      })
+    );
+    await render(client);
+    await click(container, "Shares");
+    await click(container, "Reconnect");
+
+    expect(client.reconnect).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the Shares route when collaboration state cannot load", async () => {
+    const client = createClient();
+    client.current = () => null;
+    vi.mocked(client.load).mockRejectedValue(new Error("Bridge unavailable"));
+
+    await render(client);
+    await vi.waitFor(() => expect(client.load).toHaveBeenCalled());
+    await click(container, "Shares");
+
+    const status = document.body.querySelector(".personal-shares-status")!;
+    expect(status.textContent).toContain("Shares unavailable");
+    expect(status.textContent).toContain("Koed could not load your Shares.");
+    expect(status.textContent).not.toContain("Projects unavailable");
   });
 
   it("reopens source review for an advanced failed share outside the navigation snapshot", async () => {

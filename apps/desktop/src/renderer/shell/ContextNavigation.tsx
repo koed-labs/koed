@@ -20,6 +20,7 @@ export type ContextNavItem = {
   id: string;
   label: string;
   selected: boolean;
+  unavailable?: boolean;
   unreadCount?: number;
 };
 
@@ -114,6 +115,7 @@ function NavItem({
       aria-current={item.selected ? "page" : undefined}
       className="desktop-sidebar-nav-item"
       data-selected={item.selected || undefined}
+      data-unavailable={item.unavailable || undefined}
       onClick={() => onSelect(item.id)}
       type="button"
     >
@@ -155,7 +157,8 @@ export function PersonalContextNavigation({
   onOpenShares,
   onSelectChannel,
   projectsSelected,
-  sharesSelected
+  sharesSelected,
+  sharesUnavailable = false
 }: {
   channels: readonly ContextNavItem[];
   notesSelected: boolean;
@@ -166,6 +169,7 @@ export function PersonalContextNavigation({
   onSelectChannel: (threadId: string) => void;
   projectsSelected: boolean;
   sharesSelected: boolean;
+  sharesUnavailable?: boolean;
 }) {
   const activeChannels = channels.filter((item) => !item.archived);
   const archivedChannels = channels.filter((item) => item.archived);
@@ -187,7 +191,8 @@ export function PersonalContextNavigation({
           item={{
             id: "shares",
             label: "Shares",
-            selected: sharesSelected
+            selected: sharesSelected,
+            unavailable: sharesUnavailable
           }}
           onSelect={onOpenShares}
         />

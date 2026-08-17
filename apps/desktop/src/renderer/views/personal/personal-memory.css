@@ -219,6 +219,12 @@
   text-align: center;
 }
 
+.personal-shares-status {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
 .personal-memory-empty-detail > div {
   align-items: center;
   display: flex;
