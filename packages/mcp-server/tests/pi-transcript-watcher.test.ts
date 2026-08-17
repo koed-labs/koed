@@ -137,7 +137,9 @@ describe("Pi transcript watcher", () => {
 
     await processPiTranscriptSignal(client, state, signal, env);
     const firstBoundary = fs.statSync(transcriptPath).size;
-    expect(cursor?.sourceOffset).toBe(firstBoundary);
+    expect((cursor as { sourceOffset?: unknown } | null)?.sourceOffset).toBe(
+      firstBoundary
+    );
     expect(createdExternalItemIds).toEqual([
       `${sourceSessionId}:0`,
       "user-1:0"
@@ -164,7 +166,9 @@ describe("Pi transcript watcher", () => {
       "user-1:0",
       "assistant-1:0"
     ]);
-    expect(cursor?.sourceOffset).toBe(fs.statSync(transcriptPath).size);
+    expect((cursor as { sourceOffset?: unknown } | null)?.sourceOffset).toBe(
+      fs.statSync(transcriptPath).size
+    );
 
     fs.truncateSync(transcriptPath, firstBoundary);
     await expect(

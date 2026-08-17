@@ -4601,7 +4601,7 @@ const createFakeRepository = () => {
             id: string;
             name: string;
             sessionId: string | null;
-            sourceAiClient: "codex" | "codex-cli" | "claude-code" | null;
+            sourceAiClient: CapturedSessionRecord["sourceRuntime"] | null;
             projectId: string;
             projectName: string;
             projectPath: string | null;
@@ -4623,7 +4623,7 @@ const createFakeRepository = () => {
           id: string;
           name: string;
           sessionId: string | null;
-          sourceAiClient: "codex" | "codex-cli" | "claude-code" | null;
+          sourceAiClient: CapturedSessionRecord["sourceRuntime"] | null;
           projectId: string;
           projectName: string;
           projectPath: string | null;
