@@ -454,6 +454,9 @@ function AdvancedSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingPiCommand, setPendingPiCommand] = useState<
+    "setup_pi" | "repair_pi" | null
+  >(null);
   const status = snapshot.status;
 
   useEffect(() => {
@@ -461,7 +464,13 @@ function AdvancedSection({
   }, [status, statusStore]);
 
   const run = async (
-    action: "doctor" | "repair_codex" | "open_logs" | "status"
+    action:
+      | "doctor"
+      | "repair_codex"
+      | "setup_pi"
+      | "repair_pi"
+      | "open_logs"
+      | "status"
   ) => {
     setActionError(null);
     try {
@@ -483,6 +492,7 @@ function AdvancedSection({
           ["MCP Server", status.mcpServer],
           ["Capture Hook", status.captureHook],
           ["Codex", status.codex],
+          ["Pi", status.pi],
           ["LCM Summary Service", status.lcmSummaryService],
           ["Personal Device Sync", status.personalDeviceSync]
         ] as const
@@ -540,7 +550,22 @@ function AdvancedSection({
           onClick={() => void run("repair_codex")}
           variant="outline"
         >
-          Repair AI Client integration
+          Repair Codex integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() =>
+            setPendingPiCommand(
+              status?.pi?.state === "not_configured" || !status?.pi
+                ? "setup_pi"
+                : "repair_pi"
+            )
+          }
+          variant="outline"
+        >
+          {status?.pi?.state === "not_configured" || !status?.pi
+            ? "Set up Pi integration"
+            : "Repair Pi integration"}
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
@@ -550,6 +575,41 @@ function AdvancedSection({
           <ExternalLink aria-hidden="true" /> Open logs
         </Button>
       </div>
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setPendingPiCommand(null);
+        }}
+        open={pendingPiCommand !== null}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingPiCommand === "repair_pi"
+                ? "Repair the Pi integration?"
+                : "Set up the Pi integration?"}
+            </DialogTitle>
+            <DialogDescription>
+              Koed will register its local package in your active global Pi
+              profile. It preserves unrelated Pi settings and packages, and does
+              not receive your Pi or provider credentials.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              Cancel
+            </DialogClose>
+            <Button
+              onClick={() => {
+                const command = pendingPiCommand;
+                setPendingPiCommand(null);
+                if (command) void run(command);
+              }}
+            >
+              {pendingPiCommand === "repair_pi" ? "Repair Pi" : "Set up Pi"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 }

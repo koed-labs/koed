@@ -99,4 +99,20 @@ describe("DesktopStatusStore", () => {
       status: status()
     });
   });
+
+  it("refreshes Pi profile status after setup", async () => {
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce(status());
+    window.koedDesktop = { invoke } as DesktopApi;
+    const store = new DesktopStatusStore();
+
+    await store.run("setup_pi");
+
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "setup_pi",
+      "status"
+    ]);
+  });
 });

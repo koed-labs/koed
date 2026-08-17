@@ -223,6 +223,7 @@ const diagnosticStatus = ({
     mcpServer: component("Run setup"),
     captureHook: component("Run setup"),
     codex: { ...component("Run setup"), configured: false },
+    pi: { ...component("Set up Pi integration"), configured: false },
     lcmSummaryService: component(),
     personalDeviceSync: personalDeviceSyncComponent(process.env),
     upstreamBackends: {
@@ -2879,6 +2880,8 @@ export const createKoedServerManager = ({
       stop,
       setup_codex: () => runJson(["setup", "codex"], 120_000),
       repair_codex: () => runJson(["repair", "codex"], 120_000),
+      setup_pi: () => runJson(["setup", "pi"], 120_000),
+      repair_pi: () => runJson(["setup", "pi"], 120_000),
       runtime_status: () => runRuntimeStatusJson(),
       runtime_install: (args) => runRuntimeInstallJson(args),
       models_status: () => runModelJson(),

@@ -19,6 +19,7 @@ import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
+import { isSupportedPiVersion, MINIMUM_PI_VERSION } from "./pi-setup.js";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -126,6 +127,84 @@ const readJsonFile = <T>(
   } catch {
     return null;
   }
+};
+
+export const inspectPi = (
+  environment: NodeJS.ProcessEnv,
+  paths: KoedServerPaths,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerStatus["pi"] => {
+  const executable = environment.KOED_PI_EXECUTABLE?.trim() || "pi";
+  const packagePath = resolve(paths.koedHome, "integrations/pi");
+  const extensionPath = resolve(packagePath, "extensions/koed.mjs");
+  const version = deps.spawnSync(executable, ["--version"], {
+    encoding: "utf8",
+    env: environment,
+    timeout: 5_000
+  });
+  const versionText = version.stdout?.trim() ?? "";
+  if (version.error || version.status !== 0) {
+    return {
+      ...notConfigured(
+        "Pi is not installed or could not be started.",
+        `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`
+      ),
+      configured: false
+    };
+  }
+  if (!isSupportedPiVersion(versionText)) {
+    return {
+      ...needsAttention(
+        `Pi ${versionText || "version"} is unsupported.`,
+        `Install Pi ${MINIMUM_PI_VERSION} or newer, then repair Pi integration.`,
+        { executable, version: versionText }
+      ),
+      configured: false
+    };
+  }
+  if (!deps.existsSync(extensionPath)) {
+    return {
+      ...notConfigured(
+        "Koed's Pi package is not installed.",
+        "Set up Pi integration from Koed Desktop.",
+        { executable, version: versionText, packagePath }
+      ),
+      configured: false
+    };
+  }
+  const listed = deps.spawnSync(executable, ["list"], {
+    encoding: "utf8",
+    env: { ...environment, KOED_HOME: paths.koedHome },
+    timeout: 5_000
+  });
+  if (listed.error || listed.status !== 0) {
+    return {
+      ...needsAttention(
+        "Koed could not inspect the active Pi profile.",
+        "Repair Pi integration from Koed Desktop.",
+        { executable, version: versionText, packagePath }
+      ),
+      configured: false
+    };
+  }
+  if (!listed.stdout.includes(packagePath)) {
+    return {
+      ...notConfigured(
+        "Koed's package is not registered in the active Pi profile.",
+        "Set up Pi integration from Koed Desktop.",
+        { executable, version: versionText, packagePath }
+      ),
+      configured: false
+    };
+  }
+  return {
+    ...healthy("Pi is configured for Koed capture and recall.", {
+      executable,
+      version: versionText,
+      packagePath
+    }),
+    configured: true
+  };
 };
 
 const fetchJson = async <T>(
@@ -843,6 +922,7 @@ export const collectKoedServerStatus = async (
     serverConfig.dependencyMode === "bundled-local";
   const apiToken = inspectApiToken(paths, runtimeEnvironment, repoEnv);
   const codex = inspectCodex(runtimeEnvironment, paths, deps);
+  const pi = inspectPi(runtimeEnvironment, paths, deps);
   const captureHook = inspectCaptureHook(runtimeEnvironment, paths, deps);
   const codexTranscriptWatcher = inspectCodexTranscriptWatcher(
     serverConfig.codexTranscriptWatcherEnabled,
@@ -956,6 +1036,7 @@ export const collectKoedServerStatus = async (
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
     codex,
+    pi,
     lcmSummaryService,
     deviceIdentity,
     upstreamBackends,
@@ -1003,6 +1084,7 @@ export const collectKoedServerDoctor = async (
       status.claudeTranscriptWatcher
     ],
     ["codex", "Codex configuration", status.codex],
+    ["pi", "Pi configuration", status.pi],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
     ["deviceIdentity", "Device identity", status.deviceIdentity],
     ["upstreamBackends", "Upstream Backends", status.upstreamBackends],
@@ -1018,7 +1100,8 @@ export const collectKoedServerDoctor = async (
       check.id !== "upstreamBackends" &&
       check.id !== "deviceIdentity" &&
       check.id !== "codexTranscriptWatcher" &&
-      check.id !== "claudeTranscriptWatcher"
+      check.id !== "claudeTranscriptWatcher" &&
+      check.id !== "pi"
   );
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"

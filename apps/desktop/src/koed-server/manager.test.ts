@@ -84,6 +84,37 @@ describe("Koed server desktop manager", () => {
     expect(timeout).toBe(120_000);
   });
 
+  it("routes Pi setup and repair through the idempotent Koed Server setup command", async () => {
+    const invocations: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => {
+        invocations.push(args);
+        return {
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        };
+      },
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(null, JSON.stringify({ ok: true, state: "healthy" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.setup_pi!();
+    await manager.handlers.repair_pi!();
+
+    expect(invocations).toEqual([
+      ["setup", "pi", "--json"],
+      ["setup", "pi", "--json"]
+    ]);
+  });
+
   it("treats local services as ready before later setup stages finish", () => {
     expect(
       setupServicesHealthy({

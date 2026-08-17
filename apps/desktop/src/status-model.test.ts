@@ -23,6 +23,29 @@ describe("Desktop status model", () => {
     );
   });
 
+  it("offers setup and repair for the optional Pi integration", () => {
+    const card = statusCards.find((entry) => entry.id === "piIntegration");
+
+    expect(statusComponentKeys).toContain("pi");
+    expect(componentDefinitions.pi.label).toBe("Pi configuration");
+    expect(card).toMatchObject({
+      componentKeys: ["pi"],
+      primaryAction: { command: "repair_pi" }
+    });
+    expect(
+      recoveryActionForStatusComponent("pi", "not_configured")
+    ).toMatchObject({
+      label: "Set up Pi integration",
+      command: "setup_pi"
+    });
+    expect(
+      recoveryActionForStatusComponent("pi", "needs_attention")
+    ).toMatchObject({
+      label: "Repair Pi integration",
+      command: "repair_pi"
+    });
+  });
+
   it("presents local readiness as User outcomes", () => {
     expect(statusGroups.map((group) => group.title)).toEqual([
       "Capture",

@@ -3,6 +3,22 @@ import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolveKoedServerPaths } from "./paths.js";
 
+export const MINIMUM_PI_VERSION = "0.84.2";
+
+export const isSupportedPiVersion = (value: string): boolean => {
+  const parsed = value
+    .trim()
+    .match(/^(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1)
+    .map(Number);
+  return Boolean(
+    parsed &&
+    (parsed[0]! > 0 ||
+      (parsed[0] === 0 &&
+        (parsed[1]! > 84 || (parsed[1] === 84 && parsed[2]! >= 2))))
+  );
+};
+
 export interface KoedServerSetupPiResult {
   ok: boolean;
   state: "healthy" | "needs_attention";
@@ -46,20 +62,12 @@ export const setupPi = (
       env: environment,
       encoding: "utf8"
     });
-    const parsed = version.stdout
-      ?.trim()
-      .match(/^(\d+)\.(\d+)\.(\d+)/)
-      ?.slice(1)
-      .map(Number);
     if (
       version.status !== 0 ||
-      !parsed ||
-      parsed[0]! < 0 ||
-      (parsed[0] === 0 &&
-        (parsed[1]! < 84 || (parsed[1] === 84 && parsed[2]! < 2)))
+      !isSupportedPiVersion(version.stdout?.trim() ?? "")
     ) {
       throw new Error(
-        `Pi ${version.stdout?.trim() || "version"} is unsupported. Koed requires Pi 0.84.2 or newer.`
+        `Pi ${version.stdout?.trim() || "version"} is unsupported. Koed requires Pi ${MINIMUM_PI_VERSION} or newer.`
       );
     }
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });

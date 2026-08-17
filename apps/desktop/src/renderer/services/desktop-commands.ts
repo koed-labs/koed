@@ -5,6 +5,8 @@ export type DesktopCommand =
   | "doctor"
   | "setup_codex"
   | "repair_codex"
+  | "setup_pi"
+  | "repair_pi"
   | "runtime_status"
   | "runtime_install"
   | "models_status"
@@ -23,6 +25,8 @@ const defaultTimeoutMs: Record<DesktopCommand, number> = {
   doctor: 90_000,
   setup_codex: 120_000,
   repair_codex: 120_000,
+  setup_pi: 120_000,
+  repair_pi: 120_000,
   runtime_status: 60_000,
   runtime_install: 600_000,
   models_status: 60_000,

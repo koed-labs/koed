@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
+import type { DesktopApi, KoedServerStatus } from "../../../types.js";
 import { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { PreferencesView } from "./PreferencesView.js";
 
@@ -135,5 +136,51 @@ describe("PreferencesView", () => {
       "do not expose API Token values or remote credentials"
     );
     expect(container.textContent).not.toContain("sk-");
+  });
+
+  it("confirms the global profile change before setting up Pi", async () => {
+    const component = { state: "healthy" as const };
+    const status = {
+      ok: true,
+      state: "healthy",
+      serverPackage: component,
+      api: { ...component, url: "http://127.0.0.1:3300" },
+      database: component,
+      workerQueues: component,
+      embeddingService: component,
+      mcpServer: component,
+      captureHook: component,
+      codex: { ...component, configured: true },
+      pi: { state: "not_configured", configured: false },
+      lcmSummaryService: component
+    } as KoedServerStatus;
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        ...status,
+        pi: { ...component, configured: true }
+      });
+    window.koedDesktop = { invoke } as DesktopApi;
+    const statusStore = new DesktopStatusStore();
+    await statusStore.refresh();
+    await renderPreferences({ initialSection: "advanced", statusStore });
+
+    await clickButton(container, "Set up Pi integration");
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain(
+      "register its local package in your active global Pi profile"
+    );
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    await clickButton(dialog!, "Set up Pi");
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+        "status",
+        "setup_pi",
+        "status"
+      ])
+    );
   });
 });

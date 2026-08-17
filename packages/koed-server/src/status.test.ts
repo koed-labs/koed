@@ -13,10 +13,12 @@ import {
   collectKoedServerDoctor,
   collectKoedServerStatus,
   healthy,
+  inspectPi,
   needsAttention,
   notConfigured,
   statusFromApiReady
 } from "./status.js";
+import { resolveKoedServerPaths } from "./paths.js";
 const temps: string[] = [];
 const tempDir = () => {
   const path = mkdtempSync(resolve(tmpdir(), "koed-server-status-"));
@@ -78,6 +80,47 @@ describe("status state aggregation", () => {
     expect(
       aggregateState([{ state: "starting" }, needsAttention("broken")])
     ).toBe("needs_attention");
+  });
+});
+
+describe("Pi integration status", () => {
+  it("reports a registered Koed package in the active Pi profile", () => {
+    const root = tempDir();
+    const packagePath = resolve(root, "integrations/pi");
+    mkdirSync(resolve(packagePath, "extensions"), { recursive: true });
+    writeFileSync(resolve(packagePath, "extensions/koed.mjs"), "export {};\n");
+    const environment = { KOED_HOME: root, KOED_PI_EXECUTABLE: "/opt/pi" };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: (path: PathLike) =>
+        path === resolve(packagePath, "extensions/koed.mjs"),
+      spawnSync: (_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.84.2\n")
+          : spawnResult(`${packagePath}\n`)
+    } as never);
+
+    expect(status).toMatchObject({ state: "healthy", configured: true });
+    expect(status.details).toMatchObject({
+      executable: "/opt/pi",
+      packagePath,
+      version: "0.84.2"
+    });
+  });
+
+  it("keeps missing Pi optional but actionable", () => {
+    const root = tempDir();
+    const environment = { KOED_HOME: root };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      spawnSync: () => spawnResult("", 1)
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false
+    });
+    expect(status.action).toContain("Install Pi");
   });
 });
 

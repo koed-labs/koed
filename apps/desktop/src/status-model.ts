@@ -18,6 +18,7 @@ export const statusComponentKeys = [
   "mcpServer",
   "captureHook",
   "codex",
+  "pi",
   "lcmSummaryService",
   "upstreamBackends",
   "lastVerification"
@@ -74,6 +75,11 @@ export const componentDefinitions = {
     label: "Codex configuration",
     description: "Supported AI Client settings for Koed capture and recall."
   },
+  pi: {
+    label: "Pi configuration",
+    description:
+      "Koed-owned local package registered in the active global Pi profile."
+  },
   lcmSummaryService: {
     label: "LCM Summary Service",
     description: "Local background summarization service for memory nodes."
@@ -103,6 +109,8 @@ export type StatusCardActionCommand =
   | "package_install"
   | "setup_codex"
   | "repair_codex"
+  | "setup_pi"
+  | "repair_pi"
   | "runtime_install"
   | "models_install"
   | "doctor"
@@ -291,6 +299,29 @@ export const statusCards = [
     ]
   },
   {
+    id: "piIntegration",
+    title: "Pi Integration",
+    role: "Registers Koed's local package in the active Pi profile for capture and recall.",
+    impact:
+      "Ordinary Pi sessions cannot use Koed memory tools until this package is configured.",
+    componentKeys: ["pi"],
+    primaryAction: {
+      label: "Repair Pi integration",
+      command: "repair_pi",
+      timeoutMs: 120_000,
+      primary: true
+    },
+    secondaryActions: [
+      {
+        label: "Set up Pi integration",
+        command: "setup_pi",
+        timeoutMs: 120_000
+      },
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Copy diagnostics", command: "copy_diagnostics" }
+    ]
+  },
+  {
     id: "teamBackend",
     title: "Team Backend",
     role: "Remote Team Backend connection used for Team Workspace memory.",
@@ -350,6 +381,7 @@ const recoveryCardIdByComponent = {
   mcpServer: "aiClientIntegration",
   captureHook: "capturePath",
   codex: "aiClientIntegration",
+  pi: "piIntegration",
   lcmSummaryService: "memoryProcessing",
   upstreamBackends: "teamBackend",
   lastVerification: "memoryProcessing"
@@ -365,6 +397,12 @@ export const recoveryActionForStatusComponent = (
     throw new Error(`Missing Desktop recovery card: ${cardId}`);
   }
   if (state === "not_configured") {
+    if (componentKey === "pi") {
+      const setupAction = card.secondaryActions.find(
+        (action) => action.command === "setup_pi"
+      );
+      if (setupAction) return setupAction;
+    }
     const installCommand =
       componentKey === "embeddingService"
         ? "models_install"

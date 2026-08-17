@@ -4,6 +4,8 @@ export const desktopCommandNames = [
   "stop",
   "setup_codex",
   "repair_codex",
+  "setup_pi",
+  "repair_pi",
   "runtime_status",
   "runtime_install",
   "models_status",
