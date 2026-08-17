@@ -6,6 +6,238 @@ standard Terminal-Bench leaderboard run: the relevant condition deliberately
 receives a sanitized, pre-verifier trajectory from an earlier attempt on the
 same task.
 
+## Start Here
+
+Choose the smallest workflow that answers the question you are testing:
+
+| Goal                                           | Workflow                              | Model work                                         | Corpus                            |
+| ---------------------------------------------- | ------------------------------------- | -------------------------------------------------- | --------------------------------- |
+| Verify orchestration without model calls       | Deterministic smoke                   | None                                               | Generated fixture                 |
+| Verify real Codex, Harbor and Koed integration | Product-path proof                    | Luna low, six top-level attempts                   | Generated during the run          |
+| Verify one successful experience can be reused | One-task oracle campaign              | Luna high qualification, then one Luna high replay | Private and reusable              |
+| Measure stochastic behavior on one task        | Repeated study                        | Runtime-selected 1-100 matched repeats             | Reuses an existing private corpus |
+| Measure a fixed subset                         | Oracle campaign shard                 | One Luna high replay per selected task             | One qualified entry per task      |
+| Run the complete benchmark protocol            | `quick`, `standard` or `full` profile | Profile-defined four-condition runs                | Generated source trajectories     |
+
+For a first checkout, run the deterministic smoke. For the smallest meaningful
+model-backed test, qualify one task and run a one-task oracle campaign. Do not
+start with all 74 tasks.
+
+## Private Data And Cache
+
+Keep the configuration, qualification manifest, campaign definition, oracle
+material, corpus collection, prepared database cache and run output outside the
+repository. They may contain credentials, local paths, source trajectories or
+other private data. The benchmark rejects in-repository corpus and campaign
+paths and requires private manifests to use mode `0600`; corpus directories use
+mode `0700`.
+
+The repository contains only the harness, pinned public task metadata and
+deterministic test fixtures. A new operator generates their own corpus once.
+Subsequent runs reuse the content-addressed corpus and prepared database cache
+when their attested inputs are unchanged.
+
+## First-Time Setup
+
+From a clean checkout of the exact commit being evaluated:
+
+```bash
+pnpm install
+pnpm --filter @koed/evals eval:experience-replay:harbor:test
+pnpm --filter @koed/evals build
+```
+
+Recorded runs additionally require:
+
+- Docker with enough free disk for the selected task images and run artifacts.
+- `uv`, used with the locked Harbor `0.21.0` environment in
+  `packages/evals/src/experience-replay/harbor`.
+- PostgreSQL 17 with pgvector. The harness creates and removes isolated
+  databases; never point it at a database containing valuable data.
+- A private OCI registry reachable by the local Docker daemon.
+- A healthy Koed Embedding Service whose Qwen model identity and artifact hash
+  match the resolved configuration.
+- The exact `codex` and `codex-code-mode-host` binaries recorded in the
+  configuration.
+- Either an OpenAI API key or a local Codex subscription login. Subscription
+  mode is the cheapest normal local path and does not issue paid API requests.
+
+The deterministic smoke needs only PostgreSQL/pgvector; it does not need
+Docker task execution, Codex authentication, the registry or the live
+Embedding Service.
+
+Set the common database environment once:
+
+```bash
+export KOED_EXPERIENCE_REPLAY_POSTGRES_ADMIN_URL=postgresql://127.0.0.1:5432/postgres
+export KOED_EXPERIENCE_REPLAY_POSTGRES_USER=koed
+export KOED_EXPERIENCE_REPLAY_POSTGRES_PASSWORD='<local test password>'
+```
+
+For a subscription-backed recorded run, configure the exact local toolchain
+and private authentication source:
+
+```bash
+export MEMORY_CODEX_APP_SERVER_BINARY="$(command -v codex)"
+export KOED_EXPERIENCE_REPLAY_HARBOR_UV_BINARY="$(command -v uv)"
+export KOED_EXPERIENCE_REPLAY_DOCKER_BINARY="$(command -v docker)"
+export KOED_EXPERIENCE_REPLAY_OCI_REGISTRY='127.0.0.1:5000/koed-benchmarks'
+export KOED_EXPERIENCE_REPLAY_HOST_CODEX_BINARY="$(readlink -f "$(command -v codex)")"
+export KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_BINARY="$KOED_EXPERIENCE_REPLAY_HOST_CODEX_BINARY"
+export KOED_EXPERIENCE_REPLAY_CODEX_AUTH_JSON_PATH="$HOME/.codex/auth.json"
+export KOED_EXPERIENCE_REPLAY_EMBEDDING_URL='http://127.0.0.1:3801'
+export KOED_EXPERIENCE_REPLAY_EMBEDDING_TOKEN='<local benchmark token>'
+```
+
+Locate `codex-code-mode-host` from the same standalone Codex release as the
+configured `codex` binary. Hash both binaries and the embedding GGUF with
+`sha256sum`; record those exact values in the resolved configuration. Do not
+copy hashes from another machine or an older run.
+
+## Resolved Configuration
+
+Every command receives one private resolved configuration. Use
+`packages/evals/src/experience-replay/fixtures/smoke.config.json` as the field
+shape and `packages/evals/src/experience-replay/core/config.ts` as the
+authoritative schema.
+
+For the smallest real one-task campaign, the configuration must use:
+
+- profile `full` with explicit concurrency;
+- GPT-5.6 Luna high for the coding agent, Memory Answer, LCM summary and
+  session-title workers;
+- GPT-5.6 Luna medium for the trajectory judge;
+- the production prompt and output-schema versions currently declared by the
+  respective Koed workers;
+- the exact Codex version and binary hashes from this machine;
+- the healthy Embedding Service's model, tokenizer, transform, dimensions and
+  artifact hash;
+- an immutable price-table version and digest, even in subscription mode, so
+  API-equivalent cost remains comparable;
+- explicit timeouts, token/call limits, disk estimates, concurrency and cost
+  admission limits; and
+- an absolute output directory outside the repository.
+
+Run `preflight` after any configuration change. It is the authoritative check
+for model policy, binary identity, task pins, image provenance, disk capacity,
+credentials, provider limits and service health. Do not weaken the
+configuration merely to bypass a preflight failure.
+
+## Smallest Real Luna Run
+
+The following path proves corpus generation, normal Koed ingestion,
+Projection, LCM, Qwen embedding, `memory_answer` and replay with one task.
+
+1. Select a task and read its pinned digest:
+
+```bash
+task_name='terminal-bench/<task-name>'
+task_digest="$(jq -r --arg name "$task_name" \
+  '.tasks[] | select(.name == $name) | .task_digest' \
+  packages/evals/src/experience-replay/fixtures/tb3-v3.0.0.json)"
+test -n "$task_digest" && test "$task_digest" != null
+```
+
+2. Create private working paths outside the checkout:
+
+```bash
+private_root="$(mktemp -d "$HOME/koed-experience-replay-XXXXXX")"
+chmod 700 "$private_root"
+corpus_dir="$private_root/corpus"
+mkdir -m 700 "$corpus_dir"
+qualification_manifest="$private_root/qualification.json"
+campaign_manifest="$private_root/campaign.json"
+config="$private_root/luna-high.json"
+```
+
+3. Write the resolved full-profile configuration described above to `$config`.
+   Give it a new absolute `output_dir` for each qualification or campaign run.
+
+4. Create a qualification manifest containing concise implementation guidance.
+   The guidance may use a pinned public reference implementation, but must not
+   contain hidden tests, verifier output or private verifier/cache paths:
+
+```bash
+jq -n --arg digest "$task_digest" --arg brief '<implementation guidance>' '{
+  schema_version: "koed-oracle-qualification-manifest-v1",
+  tasks: [{
+    task_digest: $digest,
+    oracle_brief: $brief,
+    maximum_attempts: 3
+  }]
+}' > "$qualification_manifest"
+chmod 600 "$qualification_manifest"
+```
+
+5. Qualify and cache one successful source experience:
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  preflight --config "$config" --codex-subscription \
+  --oracle-qualify \
+  --oracle-qualification-manifest "$qualification_manifest" \
+  --oracle-corpus "$corpus_dir"
+pnpm --filter @koed/evals eval:experience-replay -- \
+  run --config "$config" --codex-subscription \
+  --oracle-qualify \
+  --oracle-qualification-manifest "$qualification_manifest" \
+  --oracle-corpus "$corpus_dir"
+```
+
+6. Create a one-task campaign definition:
+
+```bash
+jq -n --arg digest "$task_digest" '{
+  schema_version: "koed-oracle-campaign-definition-v1",
+  campaign_id: "one-task-luna-high",
+  task_universe_digests: [$digest],
+  shard_id: "one-task",
+  shard_task_digests: [$digest],
+  reference_score: 0
+}' > "$campaign_manifest"
+chmod 600 "$campaign_manifest"
+```
+
+7. Change only the configuration's `output_dir`, then preflight and run the
+   replay. Do not change the frozen model, prompt, corpus or task policy between
+   preflight and run:
+
+```bash
+pnpm --filter @koed/evals eval:experience-replay -- \
+  preflight --config "$config" --codex-subscription \
+  --oracle-campaign \
+  --oracle-campaign-manifest "$campaign_manifest" \
+  --oracle-corpus "$corpus_dir"
+pnpm --filter @koed/evals eval:experience-replay -- \
+  run --config "$config" --codex-subscription \
+  --oracle-campaign \
+  --oracle-campaign-manifest "$campaign_manifest" \
+  --oracle-corpus "$corpus_dir"
+```
+
+The first campaign run prepares and caches the complete one-task database. A
+later run with the same materialization identity reuses that cache. Changing
+only coding-agent or Memory Answer settings does not force LCM or embedding
+preparation to run again, but creates a different recorded protocol where
+required.
+
+## Scale Up
+
+To move from one task to a subset:
+
+1. Add each selected task and its digest to the private qualification manifest.
+2. Qualify until every selected task has one passing corpus entry.
+3. Put the same complete digest list in `task_universe_digests`.
+4. Put the tasks for the current execution block in `shard_task_digests`.
+5. Run each shard against the same complete corpus and frozen protocol.
+6. Merge non-overlapping shards with `campaign-merge`.
+
+The full campaign uses all 74 tasks from `tb3-v3.0.0.json`. Generate the
+complete corpus before measured replay so every shard searches an identically
+sized Memory. Qualification may run different tasks concurrently, but attempts
+for one task remain serial. Campaign replay may use the explicitly configured
+concurrency after the shared prepared database exists.
+
 ## Boundaries
 
 - Harbor `0.21.0` is a locked benchmark-only Python dependency. It is not a
@@ -31,7 +263,7 @@ same task.
 - Raw trajectories, databases, MCP configuration and logs are sensitive local
   artifacts. The harness never uploads them.
 
-## Profiles
+## Four-Condition Profiles
 
 - `smoke`: deterministic two-task orchestration check; no paid credentials or
   external network calls.
@@ -289,15 +521,10 @@ visible.
 
 ## Deterministic Smoke
 
-Prerequisites are Node/pnpm and a PostgreSQL 17 server with pgvector. Use a
-non-credentialed admin URL plus separate credentials; the harness creates and
-deletes isolated databases itself.
+After completing the common PostgreSQL setup above, create a disposable output
+directory and run the free orchestration check:
 
 ```bash
-export KOED_EXPERIENCE_REPLAY_POSTGRES_ADMIN_URL=postgresql://127.0.0.1:5432/postgres
-export KOED_EXPERIENCE_REPLAY_POSTGRES_USER=koed
-export KOED_EXPERIENCE_REPLAY_POSTGRES_PASSWORD='<local test password>'
-
 run_root="$(mktemp -d /tmp/koed-experience-replay-XXXXXX)"
 jq --arg output "$run_root/run" '.output_dir = $output' \
   packages/evals/src/experience-replay/fixtures/smoke.config.json \
@@ -328,37 +555,17 @@ teardown allowances. The configured agent and verifier timeouts are explicit
 short ceilings for deterministic smoke runs, while the agent timeout also bounds
 the Memory Answer worker.
 
-Recorded preflight additionally requires:
+Use the common toolchain environment from First-Time Setup. API-key
+authentication is the default mode; set `OPENAI_API_KEY` and distinct
+`KOED_EXPERIENCE_REPLAY_HOST_CODEX_HOME` and
+`KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_HOME` directories, then use
+`--confirm-paid-run`. For local subscription execution, omit those three
+variables, provide `KOED_EXPERIENCE_REPLAY_CODEX_AUTH_JSON_PATH`, and add
+`--codex-subscription` to both preflight and run. Never combine the two modes.
 
-```bash
-export OPENAI_API_KEY='<paid provider credential>'
-export MEMORY_CODEX_APP_SERVER_BINARY='/absolute/path/to/codex-app-server'
-export KOED_EXPERIENCE_REPLAY_HARBOR_UV_BINARY='/absolute/path/to/uv'
-export KOED_EXPERIENCE_REPLAY_DOCKER_BINARY='/absolute/path/to/docker'
-export KOED_EXPERIENCE_REPLAY_OCI_REGISTRY='registry.example/koed-benchmarks'
-export KOED_EXPERIENCE_REPLAY_HOST_CODEX_BINARY='/absolute/path/to/host/codex'
-export KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_BINARY='/absolute/path/to/container/codex'
-export KOED_EXPERIENCE_REPLAY_HOST_CODEX_HOME='/isolated/host-codex-home'
-export KOED_EXPERIENCE_REPLAY_CONTAINER_CODEX_HOME='/isolated/container-codex-home'
-export KOED_EXPERIENCE_REPLAY_EMBEDDING_URL='http://127.0.0.1:<port>'
-export KOED_EXPERIENCE_REPLAY_EMBEDDING_TOKEN='<benchmark embedding credential>'
-```
-
-API-key authentication is the default recorded-run mode. The two Codex homes
-must be distinct authenticated contexts. The OCI registry
-must support pushes and digest-qualified pulls from the Docker host. The
-Embedding Service model, dimensions and artifact hash must match the resolved
-configuration.
-
-For an explicitly local subscription-backed run, omit `OPENAI_API_KEY` and the
-two Codex-home variables, then provide the private auth file created by the
-host Codex login:
-
-```bash
-export KOED_EXPERIENCE_REPLAY_CODEX_AUTH_JSON_PATH="$HOME/.codex/auth.json"
-```
-
-Add `--codex-subscription` to both preflight and run. The locked Harbor Codex
+The OCI registry must support pushes and digest-qualified pulls from the Docker
+host. The Embedding Service model, dimensions and artifact hash must match the
+resolved configuration. The locked Harbor Codex
 adapter uploads the credential and the exact attested `codex` and
 `codex-code-mode-host` binary pair into each ephemeral task container, while
 each host-side worker gets a private credential copy in its disposable Codex
