@@ -74,14 +74,42 @@ export const listWorkspaceSharedMemoryQuerySchema = z
   })
   .strict();
 
-export const listOwnedSharesQuerySchema =
-  listWorkspaceSharedMemoryQuerySchema.extend({
+export const listOwnedSharesQuerySchema = listWorkspaceSharedMemoryQuerySchema
+  .omit({ offset: true })
+  .extend({
     history: z
       .enum(["true", "false"])
       .transform((value) => value === "true")
       .default(false),
-    snapshotAt: z.iso.datetime().optional()
-  });
+    snapshotAt: z.iso.datetime().optional(),
+    afterCreatedAt: z.iso.datetime().optional(),
+    afterKind: z.enum(["grant", "pending"]).optional(),
+    afterId: uuidSchema.optional()
+  })
+  .superRefine((input, context) => {
+    const keyset = [input.afterCreatedAt, input.afterKind, input.afterId];
+    if (
+      keyset.some((value) => value !== undefined) &&
+      keyset.some((value) => value === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Owned-share keyset fields must be supplied together"
+      });
+    }
+  })
+  .transform(({ afterCreatedAt, afterKind, afterId, ...input }) => ({
+    ...input,
+    ...(afterCreatedAt && afterKind && afterId
+      ? {
+          after: {
+            createdAt: afterCreatedAt,
+            recordKind: afterKind,
+            id: afterId
+          }
+        }
+      : {})
+  }));
 
 export const ownedShareParamsSchema = z
   .object({ kind: z.enum(["pending", "grant"]), id: uuidSchema })
@@ -130,6 +158,13 @@ export const createSharedMemoryCandidatePreviewSchema = z
     candidateHash: sha256Schema,
     sourceRevision: nonNegativeVersionSchema,
     itemCount: z.number().int().safe().positive().max(100),
+    excludedItemCount: z.number().int().safe().nonnegative(),
+    manifest: z
+      .array(
+        z.object({ sourceId: uuidSchema, revisionHash: sha256Schema }).strict()
+      )
+      .min(1)
+      .max(100),
     byteCount: z
       .number()
       .int()

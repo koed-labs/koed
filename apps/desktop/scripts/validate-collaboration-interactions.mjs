@@ -39,8 +39,12 @@ const waitFor = async (window, source, label) => {
     window,
     `document.body?.innerText?.slice(0, 2000) ?? ""`
   );
+  const activeElement = await evaluate(
+    window,
+    `document.activeElement?.outerHTML?.slice(0, 1000) ?? ""`
+  );
   throw new Error(
-    `Timed out waiting for ${label}; observed=${JSON.stringify(observed)} body=${JSON.stringify(body)}`
+    `Timed out waiting for ${label}; observed=${JSON.stringify(observed)} active=${JSON.stringify(activeElement)} body=${JSON.stringify(body)}`
   );
 };
 
@@ -695,7 +699,7 @@ const run = async () => {
       `document.activeElement?.textContent?.includes('Packaged revocation fixture') &&
         document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture') &&
         [...document.querySelectorAll('[role="status"][aria-live="polite"]')]
-          .some((item) => item.textContent?.includes('Packaged asynchronous sharing: needs attention'))`,
+          .some((item) => item.textContent?.includes('Packaged asynchronous sharing: Update needs attention'))`,
       "stable selection and live announcement after background update"
     );
     await setReducedMotion(alice);
@@ -715,21 +719,17 @@ const run = async () => {
       `Expected reduced transition duration, received ${reducedMotion.transitionDuration}`
     );
 
-    await evaluate(
+    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await waitFor(
       alice,
-      `(() => {
-        window.__koedConfirmPrompts = [];
-        window.confirm = (message) => {
-          window.__koedConfirmPrompts.push(message);
-          return false;
-        };
-      })()`
+      bodyIncludes("Your Personal Memory will not be deleted."),
+      "Share revocation confirmation"
     );
-    await trustedClick(alice, `${byText("button", "Modify")}`);
-    await trustedClick(alice, `${byText("button", "Revoke Workspace access")}`);
-    assert.match(
-      await evaluate(alice, `window.__koedConfirmPrompts.at(-1) ?? ''`),
-      /Personal Memory will not be deleted/
+    await trustedClick(alice, `${byText("button", "Cancel")}`);
+    await waitFor(
+      alice,
+      bodyExcludes("Your Personal Memory will not be deleted."),
+      "canceled Share revocation confirmation"
     );
     assert.equal(
       (await commands(alice)).filter(
@@ -738,8 +738,8 @@ const run = async () => {
       0,
       "Canceling destructive confirmation must preserve access"
     );
-    await evaluate(alice, `window.confirm = () => true; true`);
-    await trustedClick(alice, `${byText("button", "Revoke Workspace access")}`);
+    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await trustedClick(alice, `${byText("button", "Revoke Share")}`);
     await waitFor(
       alice,
       `[...document.querySelectorAll('[aria-labelledby="collab-revoked-shares"] .collab-share-row')]

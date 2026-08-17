@@ -218,6 +218,13 @@
       "when": 1786721261391,
       "tag": "0030_fresh_kitty_pryde",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1786880923838,
+      "tag": "0031_thin_celestials",
+      "breakpoints": true
     }
   ]
 }

@@ -2107,6 +2107,7 @@ describe("local-edge collaboration command route", () => {
                 candidateHash: "a".repeat(64),
                 itemCount: 0,
                 excludedItemCount: 0,
+                manifest: [],
                 byteCount: 0,
                 items: []
               }

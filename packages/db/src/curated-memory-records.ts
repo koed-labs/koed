@@ -2,7 +2,8 @@ import { codexIdePromptUserText } from "@koed/core";
 import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
 import {
   approvalConversationItemSql,
-  semanticMemoryEventEligibleSql
+  semanticMemoryEventEligibleSql,
+  sessionExactCuratedAssertionSql
 } from "./approval-activity-sql.js";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
@@ -866,14 +867,19 @@ export const createCuratedMemoryRecordMethods = ({
           and cma.visibility = 'personal'
           and ($2::text is null or cma.status = $2::curated_memory_assertion_status)
           and ($3::uuid is null or cma.topic_id = $3)
-        order by cma.updated_at desc, cma.id desc
+          and ($5::uuid is null or ${sessionExactCuratedAssertionSql("$1", "$5")})
+        order by
+          case when $5::uuid is not null then cma.observed_at end asc,
+          case when $5::uuid is not null then cma.id end asc,
+          cma.updated_at desc,cma.id desc
         limit $4
       `,
       [
         actor.userId,
         input.status ?? null,
         input.topicId ?? null,
-        positiveLimit(input.limit)
+        positiveLimit(input.limit),
+        input.sessionId ?? null
       ]
     );
     const sourceMap = input.includeSources

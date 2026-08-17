@@ -46,7 +46,10 @@ import {
 } from "../local-edge/collaboration-action-grant-control.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import { createLocalSharedMemoryCandidatePreparation } from "../local-edge/shared-memory-candidate-preparation.js";
-import { createPostgresCollaborationSharedMemoryAuthorityStore } from "../local-edge/collaboration-shared-memory-authority-store.js";
+import {
+  createPostgresCollaborationSharedMemoryAuthorityStore,
+  type PostgresCollaborationSharedMemoryAuthorityStore
+} from "../local-edge/collaboration-shared-memory-authority-store.js";
 import {
   createCollaborationSharedMemoryControl,
   type CollaborationSharedMemoryControl
@@ -173,6 +176,8 @@ export interface BuildServerOptions {
   teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   collaborationSharedMemoryControl?: CollaborationSharedMemoryControl;
+  /** Test-only durable authority-store injection. */
+  collaborationSharedMemoryAuthorityStore?: PostgresCollaborationSharedMemoryAuthorityStore;
   collaborationActionGrantControl?: CollaborationActionGrantControl;
   /** Test-only injection. Production obtains PDS signer only from secret config. */
   pdsAuthoritySigner?: PdsAuthoritySigner | null;
@@ -454,7 +459,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     : null;
   relayCleanupTimer?.unref();
   if (relayCleanup) void relayCleanup().catch(() => undefined);
-  const pendingShareWorker = repository?.processPendingShares;
+  const pendingShareWorker = config.teamCollaborationEnabled
+    ? repository?.processPendingShares
+    : undefined;
   const ensurePendingShareCompanion = collaborationRepository
     ? async (input: {
         actor: { userId: string };
@@ -477,7 +484,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               teamId: input.grant.teamId,
               teamWorkspaceId: input.grant.teamWorkspaceId,
               sharedLogicalMemoryId: input.grant.logicalMemoryId,
-              shareGrantId: input.grant.id
+              shareGrantId: input.grant.id,
+              pendingShareActivation: true
             }
           );
           const matchesGrant = Boolean(
@@ -702,11 +710,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         backendId
       ));
   const sharedMemoryAuthorityRepository =
-    pool && envelopeEncryptionProvider
+    options.collaborationSharedMemoryAuthorityStore ??
+    (pool && envelopeEncryptionProvider
       ? createPostgresCollaborationSharedMemoryAuthorityStore(pool, {
           envelopeEncryptionProvider
         })
-      : null;
+      : null);
   const resolveVerifiedDeploymentId = (): string | null => {
     const identity = (
       options.inspectDeploymentIdentity ??
@@ -781,7 +790,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             })
         })
       : undefined);
-  if (sharedMemoryAuthorityRepository) {
+  if (config.teamCollaborationEnabled && sharedMemoryAuthorityRepository) {
     let sourceWorkerRunning = false;
     const drainPendingShareSourceWork = () => {
       if (sourceWorkerRunning) return;

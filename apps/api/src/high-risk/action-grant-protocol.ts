@@ -225,6 +225,9 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       sourceRevision:
         createSharedMemoryCandidatePreviewSchema.shape.sourceRevision,
       itemCount: createSharedMemoryCandidatePreviewSchema.shape.itemCount,
+      excludedItemCount:
+        createSharedMemoryCandidatePreviewSchema.shape.excludedItemCount,
+      manifest: createSharedMemoryCandidatePreviewSchema.shape.manifest,
       byteCount: createSharedMemoryCandidatePreviewSchema.shape.byteCount,
       teamId: createSharedMemoryCandidatePreviewSchema.shape.teamId,
       teamWorkspaceId:
@@ -654,6 +657,8 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             candidateHash: intent.candidate.candidateHash,
             sourceRevision: intent.candidate.sourceRevision,
             itemCount: intent.candidate.itemCount,
+            excludedItemCount: intent.candidate.excludedItemCount,
+            manifest: intent.candidate.manifest,
             byteCount: intent.candidate.byteCount,
             teamId: intent.teamId,
             teamWorkspaceId: intent.workspaceId,

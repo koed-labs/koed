@@ -161,6 +161,104 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
         }
       ]
     });
+    expect(
+      candidateRepository.listCuratedMemoryAssertions
+    ).toHaveBeenCalledWith(
+      { userId: "owner-1" },
+      {
+        status: "current",
+        sessionId: "session-1",
+        includeSources: true,
+        limit: 101
+      }
+    );
+  });
+
+  it("fails closed instead of truncating a candidate above the consent boundary", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listLcmGraphEvents.mockResolvedValue(
+      Array.from({ length: 101 }, (_, index) => ({
+        id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        eventType: "message",
+        actor: "user",
+        content: `candidate item ${index + 1}`,
+        metadata: {},
+        timestamp: "2026-08-14T10:00:00.000Z"
+      }))
+    );
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+
+    await expect(
+      preparation.loadCandidatePreview({
+        localOwnerUserId: "owner-1",
+        sessionId: "session-1",
+        representation: "memory_events"
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("prepares the largest accepted candidate within the bounded work budget", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listLcmGraphEvents.mockResolvedValue(
+      Array.from({ length: 100 }, (_, index) => ({
+        id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        eventType: "message",
+        actor: "user",
+        content: `bounded candidate item ${index + 1}`,
+        metadata: {},
+        timestamp: "2026-08-14T10:00:00.000Z"
+      }))
+    );
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+
+    const startedAt = performance.now();
+    const candidate = await preparation.loadCandidatePreview({
+      localOwnerUserId: "owner-1",
+      sessionId: "session-1",
+      representation: "memory_events"
+    });
+
+    expect(candidate).toMatchObject({
+      itemCount: 100,
+      excludedItemCount: 0
+    });
+    expect(performance.now() - startedAt).toBeLessThan(30_000);
+    expect(candidateRepository.listLcmGraphEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed before returning a candidate above the byte boundary", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listLcmGraphEvents.mockResolvedValue([
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        eventType: "message",
+        actor: "user",
+        content: "x".repeat(256 * 1_024),
+        metadata: {},
+        timestamp: "2026-08-14T10:00:00.000Z"
+      }
+    ]);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+
+    await expect(
+      preparation.loadCandidatePreview({
+        localOwnerUserId: "owner-1",
+        sessionId: "session-1",
+        representation: "memory_events"
+      })
+    ).resolves.toBeNull();
   });
 
   it("preserves structured lexical anchors in LCM candidates", async () => {

@@ -221,6 +221,36 @@ const createFixture = () => {
     representation: input.representation,
     previewRevision: 1,
     binding: binding(),
+    manifest: [
+      {
+        sourceId: ids.source,
+        sourceTable:
+          input.representation === "memory_events"
+            ? "memory_events"
+            : input.representation === "curated_assertions"
+              ? "curated_memory_assertions"
+              : "memory_nodes",
+        itemType:
+          input.representation === "lcm_leaves"
+            ? "lcm_leaf"
+            : input.representation === "lcm_rollups"
+              ? "lcm_rollup"
+              : input.representation === "curated_assertions"
+                ? "curated_assertion"
+                : "user_message",
+        sourceCursor: 1,
+        revisionHash: hash,
+        occurredAt: iso,
+        sourceEventId:
+          input.representation === "memory_events" ? ids.source : null,
+        sourceNodeId:
+          input.representation === "lcm_leaves" ||
+          input.representation === "lcm_rollups"
+            ? ids.source
+            : null
+      }
+    ],
+    manifestHash: hash,
     items: [
       {
         itemType:
@@ -372,9 +402,9 @@ const createFixture = () => {
       return {
         entries: [],
         limit: input.limit,
-        offset: input.offset,
         hasMore: false,
-        snapshotAt: iso
+        snapshotAt: iso,
+        next: null
       };
     },
     async getOwnerShare() {

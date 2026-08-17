@@ -114,6 +114,16 @@ Conversation reconciliation use the same classifier and exclusion reason.
 Exact Conversation Source Access remains byte-exact and does not apply this
 semantic filter.
 
+Operator correction reuses this same complete Approval Activity predicate,
+including helper Conversations and every supported approval tool-event kind.
+It compares snapshot consent with `sync_semantic_changes` upsert cursors, never
+with transcript source-sequence values. In one transaction it excludes the raw
+semantic candidate, invalidates derived Memory, revokes contaminated snapshots,
+and quarantines continuous Team representations by making them unreadable and
+deleting their semantic index rows. It then queues idempotent clean
+synchronization. Separately authorized Conversation Source artifacts and access
+grants are unchanged.
+
 The Supported Capture Hook never supplies conversation content or provider item
 identity. It writes a private wake timestamp and, for Stop events, a matched
 boundary under hashed source-routing identities containing only the observation

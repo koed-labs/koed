@@ -84,6 +84,7 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     const items: SharedMemorySourceItem[] = [];
     let excludedItemCount = 0;
     let byteCount = 0;
+    let consentBoundaryExceeded = false;
     const sourceRevision =
       await options.repository.prepareCapturedSessionSyncCandidateRevision(
         { userId: input.localOwnerUserId },
@@ -92,9 +93,10 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     if (sourceRevision === null) return null;
 
     const append = (item: SharedMemorySourceItem) => {
+      if (consentBoundaryExceeded) return;
       const bytes = Buffer.byteLength(JSON.stringify(item), "utf8");
       if (items.length >= maximumItems || byteCount + bytes > maximumBytes) {
-        excludedItemCount += 1;
+        consentBoundaryExceeded = true;
         return;
       }
       items.push(item);
@@ -165,9 +167,14 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     } else if (input.representation === "curated_assertions") {
       const assertions = await options.repository.listCuratedMemoryAssertions(
         { userId: input.localOwnerUserId },
-        { status: "current", includeSources: true, limit: 500 }
+        {
+          status: "current",
+          sessionId: input.sessionId,
+          includeSources: true,
+          limit: 101
+        }
       );
-      for (const [index, assertion] of assertions.reverse().entries()) {
+      for (const [index, assertion] of assertions.entries()) {
         const sourceCount = assertion.sources.filter((source) =>
           [
             "primary_evidence",
@@ -223,12 +230,27 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       }
     }
 
+    if (consentBoundaryExceeded) return null;
+
+    const manifest = items.map((item) => ({
+      sourceId: item.id,
+      revisionHash: crossIdentitySyncDigest({
+        version: 1,
+        sourceId: item.id,
+        representation: input.representation,
+        sourceRevision
+      })
+    }));
     const candidateHash = crossIdentitySyncDigest({
       version: 1,
       sessionId: input.sessionId,
       logicalMemoryId,
       representation: input.representation,
       sourceRevision,
+      itemCount: items.length,
+      byteCount,
+      excludedItemCount,
+      manifest,
       items
     });
     return {
@@ -239,6 +261,7 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       candidateHash,
       itemCount: items.length,
       excludedItemCount,
+      manifest,
       byteCount,
       items
     };

@@ -310,19 +310,30 @@ export const smokePackagedRendererFaults = async ({
       "owner-wide Shares surface"
     );
     await evaluate(
+      `(() => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Modify'); button?.focus(); button?.click(); })()`
+    );
+    await waitFor(
+      evaluate,
+      `[...document.querySelectorAll('button')].some((item) => item.textContent?.trim() === 'Pause updates')`,
+      "Shares Modify controls"
+    );
+    await evaluate(
       `(() => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Pause updates'); button?.focus(); button?.click(); })()`
     );
     await waitFor(
       evaluate,
-      `document.activeElement?.textContent?.trim() === 'Resume updates' && document.querySelector('.collab-share-detail')?.textContent?.includes('Packaged asynchronous sharing')`,
+      `document.activeElement?.textContent?.trim() === 'Resume updates' && document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged asynchronous sharing')`,
       "stable Shares focus"
     );
     await evaluate(
-      `(() => { const card = [...document.querySelectorAll('.collab-shares-list .collab-memory-card')].find((item) => item.textContent?.includes('Packaged revocation fixture')); card?.focus(); card?.click(); window.__koedCollaborationInteractions.emitPendingShareNeedsAttention(); })()`
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Done')?.click()`
+    );
+    await evaluate(
+      `(() => { const card = [...document.querySelectorAll('.collab-share-row')].find((item) => item.textContent?.includes('Packaged revocation fixture')); card?.focus(); card?.click(); window.__koedCollaborationInteractions.emitPendingShareNeedsAttention(); })()`
     );
     await waitFor(
       evaluate,
-      `document.activeElement?.textContent?.includes('Packaged revocation fixture') && document.querySelector('.collab-share-detail')?.textContent?.includes('Packaged revocation fixture') && [...document.querySelectorAll('[role="status"][aria-live="polite"]')].some((item) => item.textContent?.includes('Packaged asynchronous sharing: needs attention'))`,
+      `document.activeElement?.textContent?.includes('Packaged revocation fixture') && document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture') && [...document.querySelectorAll('[role="status"][aria-live="polite"]')].some((item) => item.textContent?.includes('Packaged asynchronous sharing: Update needs attention'))`,
       "packaged Shares live announcement"
     );
     await cdp.call("Emulation.setEmulatedMedia", {
@@ -331,36 +342,35 @@ export const smokePackagedRendererFaults = async ({
     });
     await waitFor(
       evaluate,
-      `matchMedia('(prefers-reduced-motion: reduce)').matches && Number.parseFloat(getComputedStyle(document.querySelector('.collab-memory-card')).transitionDuration) <= 0.001`,
+      `matchMedia('(prefers-reduced-motion: reduce)').matches && Number.parseFloat(getComputedStyle(document.querySelector('.collab-share-row')).transitionDuration) <= 0.001`,
       "packaged Shares reduced motion"
     );
     await evaluate(
-      `window.__koedConfirmPrompts = []; window.confirm = (message) => { window.__koedConfirmPrompts.push(message); return false; }; true`
-    );
-    await evaluate(
-      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Revoke Workspace access')?.click()`
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Revoke')?.click()`
     );
     await waitFor(
       evaluate,
-      `window.__koedConfirmPrompts.at(-1)?.includes('Personal Memory will not be deleted') && !window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.revoke_shared_memory')`,
+      `document.body.innerText.includes('Your Personal Memory will not be deleted.')`,
+      "packaged Shares destructive confirmation"
+    );
+    await evaluate(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Cancel')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `!document.body.innerText.includes('Your Personal Memory will not be deleted.') && !window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.revoke_shared_memory')`,
       "packaged Shares canceled destructive confirmation"
     );
-    await evaluate(`window.confirm = () => true; true`);
     await evaluate(
-      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Revoke Workspace access')?.click()`
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Revoke')?.click()`
+    );
+    await evaluate(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Revoke Share')?.click()`
     );
     await waitFor(
       evaluate,
-      `![...document.querySelectorAll('.collab-shares-list .collab-memory-card')].some((item) => item.textContent?.includes('Packaged revocation fixture')) && window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.revoke_shared_memory')`,
+      `[...document.querySelectorAll('.collab-share-section')].some((item) => item.querySelector('h2')?.textContent?.trim() === 'Revoked' && item.textContent?.includes('Packaged revocation fixture')) && window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.revoke_shared_memory')`,
       "packaged Shares confirmed revocation"
-    );
-    await evaluate(
-      `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'History')?.click()`
-    );
-    await waitFor(
-      evaluate,
-      `document.body.innerText.includes('Packaged revocation fixture')`,
-      "packaged Shares history"
     );
     await openProductChannel(" after Shares validation");
 

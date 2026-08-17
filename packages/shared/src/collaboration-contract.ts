@@ -1553,6 +1553,10 @@ const actionGrantIntent = <const TName extends string, T extends z.ZodRawShape>(
     })
     .strict();
 
+export const sharedMemoryCandidateManifestEntrySchema = z
+  .object({ sourceId: z.uuid(), revisionHash: sha256Schema })
+  .strict();
+
 export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
   "intent",
   [
@@ -1628,6 +1632,11 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
           candidateHash: sha256Schema,
           sourceRevision: nonNegativeSequenceSchema,
           itemCount: z.number().int().safe().positive(),
+          excludedItemCount: z.number().int().safe().nonnegative(),
+          manifest: z
+            .array(sharedMemoryCandidateManifestEntrySchema)
+            .min(1)
+            .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
           byteCount: z
             .number()
             .int()
@@ -2007,6 +2016,9 @@ export const sharedMemoryCandidatePreviewSchema = z
     candidateHash: sha256Schema,
     itemCount: z.number().int().safe().nonnegative(),
     excludedItemCount: z.number().int().safe().nonnegative(),
+    manifest: z
+      .array(sharedMemoryCandidateManifestEntrySchema)
+      .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
     byteCount: z
       .number()
       .int()
@@ -2028,6 +2040,16 @@ export const sharedMemoryCandidatePreviewSchema = z
         code: "custom",
         path: ["items"],
         message: "Candidate items must match the selected representation"
+      });
+    }
+    if (
+      candidate.itemCount !== candidate.items.length ||
+      candidate.itemCount !== candidate.manifest.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["manifest"],
+        message: "Candidate counts must match the complete reviewed manifest"
       });
     }
   });
@@ -2148,6 +2170,7 @@ export const pendingShareSchema = z
 export const ownedShareSummarySchema = z
   .object({
     sourceSessionId: z.uuid().nullable(),
+    companionThreadId: z.uuid().nullable().optional(),
     sourceTitle: z.string().min(1).max(500),
     teamName: z.string().min(1).max(80),
     workspaceName: z.string().min(1).max(80),
@@ -2487,6 +2510,11 @@ export const collaborationRendererCommandSchema = z
           candidateHash: sha256Schema,
           sourceRevision: nonNegativeSequenceSchema,
           itemCount: z.number().int().safe().positive(),
+          excludedItemCount: z.number().int().safe().nonnegative(),
+          manifest: z
+            .array(sharedMemoryCandidateManifestEntrySchema)
+            .min(1)
+            .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
           byteCount: z
             .number()
             .int()

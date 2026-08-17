@@ -412,6 +412,10 @@ const sourceItem = (
           sourceRevision: revision
         };
 
+const candidateManifestFor = (representation: SharedMemoryRepresentation) => [
+  { sourceId: sourceItem(representation).id, revisionHash: "d".repeat(64) }
+];
+
 const sharedSession = (
   id: string,
   title: string,
@@ -1007,6 +1011,7 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       candidateHash: "c".repeat(64),
       itemCount: 1,
       excludedItemCount: 0,
+      manifest: candidateManifestFor(input.representation),
       byteCount: 128,
       items: [sourceItem(input.representation)]
     })),
@@ -3654,6 +3659,7 @@ pnpm test
       candidateHash: "c".repeat(64),
       itemCount: 1,
       excludedItemCount: 0,
+      manifest: candidateManifestFor("memory_events"),
       byteCount: 128,
       items: [sourceItem("memory_events")]
     });
@@ -3715,6 +3721,7 @@ pnpm test
       candidateHash: "c".repeat(64),
       itemCount: 0,
       excludedItemCount: 0,
+      manifest: [],
       byteCount: 0,
       items: []
     });
@@ -3781,6 +3788,7 @@ pnpm test
       candidateHash: "c".repeat(64),
       itemCount: 1,
       excludedItemCount: 0,
+      manifest: candidateManifestFor("memory_events"),
       byteCount: 128,
       items: [sourceItem("memory_events")]
     });

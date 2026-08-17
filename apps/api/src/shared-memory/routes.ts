@@ -1430,9 +1430,8 @@ export const registerSharedMemoryRoutes = (
         shares: page.entries.map(ownedShareDto),
         pagination: {
           limit: page.limit,
-          offset: page.offset,
           hasMore: page.hasMore,
-          nextOffset: page.hasMore ? page.offset + page.entries.length : null,
+          next: page.next,
           snapshotAt: page.snapshotAt
         }
       };

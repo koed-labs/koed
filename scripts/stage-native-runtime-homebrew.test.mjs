@@ -5,8 +5,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,6 +74,9 @@ const makeFakeHomebrew = () => {
     resolve(llama, "bin", "llama-server"),
     "#!/bin/sh\necho 'llama-server 1.0'\n"
   );
+  mkdirSync(resolve(llama, "lib"), { recursive: true });
+  writeFileSync(resolve(llama, "lib", "libllama.1.dylib"), "llama library\n");
+  symlinkSync("libllama.1.dylib", resolve(llama, "lib", "libllama.dylib"));
   mkdirSync(pgvector, { recursive: true });
 
   writeExecutable(
@@ -138,6 +143,10 @@ test("stages Homebrew runtime assets into KOED_NATIVE_RUNTIME_SOURCE_DIR layout"
     existsSync(resolve(out, "postgres", "lib", "postgresql", "vector.so"))
   );
   assert.ok(existsSync(resolve(out, "llama.cpp", "llama-server")));
+  assert.equal(
+    readlinkSync(resolve(out, "llama.cpp", "lib", "libllama.dylib")),
+    "libllama.1.dylib"
+  );
   assert.equal(existsSync(resolve(out, "embedding-service", ".venv")), false);
   assert.match(
     readFileSync(resolve(out, "README.koed-native-runtime.txt"), "utf8"),

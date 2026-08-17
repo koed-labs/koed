@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
+import {
+  COLLABORATION_CONTRACT_VERSION,
+  crossIdentitySyncDigest
+} from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -317,6 +320,18 @@ const createFixture = (
   const consents = new Map<string, CollaborationPersistedSharedMemoryConsent>();
   const grants = new Map<string, CollaborationPersistedSharedMemoryGrant>();
   const previewItems = overrides.previewItems ?? [sourceItem()];
+  const resolvePreviewTargets = vi.fn(
+    async (_identity: unknown, inputs: Array<Record<string, unknown>>) =>
+      inputs.map(() => ({
+        remoteReplicaId: ids.remoteReplica,
+        syncRelationshipId: ids.syncRelationship,
+        localSessionId: ids.localSession
+      }))
+  );
+  const readAuthoritativeGrants = vi.fn(
+    async (_identity: unknown, shareGrantIds: string[]) =>
+      shareGrantIds.map((shareGrantId) => grants.get(shareGrantId) ?? null)
+  );
   const initialPreview: CollaborationPersistedSharedMemoryPreview = {
     ...previewResponse(previewItems),
     backendId: "team-backend",
@@ -341,6 +356,7 @@ const createFixture = (
             localSessionId: ids.localSession
           };
     },
+    resolvePreviewTargets,
     async persistAuthoritativePreview(input) {
       if (overrides.persistPreview === false) return null;
       const persisted: CollaborationPersistedSharedMemoryPreview = {
@@ -422,6 +438,7 @@ const createFixture = (
     async readAuthoritativeGrant(input) {
       return grants.get(input.shareGrantId) ?? null;
     },
+    readAuthoritativeGrants,
     async listAuthoritativeGrants(input) {
       return [...grants.values()].filter(
         (grant) => grant.grant.logicalMemoryId === input.logicalMemoryId
@@ -497,8 +514,11 @@ const createFixture = (
             mode: "continuous",
             expiresAt: null,
             previewExpiresAt: "2099-01-01T00:10:00.000Z",
-            itemCount: 1,
-            byteCount: 128,
+            itemCount: recorded.body?.itemCount,
+            excludedItemCount: recorded.body?.excludedItemCount,
+            manifest: recorded.body?.manifest,
+            manifestHash: crossIdentitySyncDigest(recorded.body?.manifest),
+            byteCount: recorded.body?.byteCount,
             createdAt: iso
           }
         };
@@ -614,9 +634,8 @@ const createFixture = (
           shares: overrides.remoteOwnedShares ?? [],
           pagination: {
             limit: Number(url.searchParams.get("limit") ?? 100),
-            offset: Number(url.searchParams.get("offset") ?? 0),
             hasMore: false,
-            nextOffset: null,
+            next: null,
             snapshotAt: iso
           }
         };
@@ -819,7 +838,9 @@ const createFixture = (
     store,
     enrollmentBindings,
     grantPersistenceModes,
-    pendingSourceWork
+    pendingSourceWork,
+    resolvePreviewTargets,
+    readAuthoritativeGrants
   };
 };
 
@@ -842,6 +863,7 @@ describe("collaboration Shared Memory control", () => {
       candidateHash: hash,
       itemCount: 0,
       excludedItemCount: 1,
+      manifest: [],
       byteCount: 0,
       items: []
     }));
@@ -881,6 +903,7 @@ describe("collaboration Shared Memory control", () => {
       candidateHash: hash,
       itemCount: 1,
       excludedItemCount: 1,
+      manifest: [{ sourceId: ids.source, revisionHash: hashB }],
       byteCount: 128,
       items: [
         {
@@ -924,6 +947,8 @@ describe("collaboration Shared Memory control", () => {
           candidateHash: hash,
           sourceRevision: 4,
           itemCount: 1,
+          excludedItemCount: 1,
+          manifest: [{ sourceId: ids.source, revisionHash: hashB }],
           byteCount: 128,
           mode: "continuous" as const,
           expiresAt: null
@@ -1159,7 +1184,133 @@ describe("collaboration Shared Memory control", () => {
             `/${inaccessibleLogicalMemoryId}/discussion`
           )
       )
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it("lists 100 owned shares with one remote read and bounded authority-store batches", async () => {
+    const remoteOwnedShares = Array.from({ length: 100 }, (_, index) => {
+      const shareGrantId = uuidFor(1_000 + index);
+      const logicalMemoryId = uuidFor(1_200 + index);
+      const remoteGrant = {
+        ...grantResponse(),
+        id: shareGrantId,
+        logicalGrantId: uuidFor(1_400 + index),
+        logicalMemoryId,
+        companionScope: {
+          ...grantResponse().companionScope,
+          logicalMemoryId,
+          shareGrantId
+        }
+      };
+      return {
+        kind: "grant" as const,
+        grant: remoteGrant,
+        sourceAccess: null,
+        summary: {
+          sourceSessionId: ids.localSession,
+          companionThreadId: ids.companion,
+          sourceTitle: `Shared source ${index + 1}`,
+          teamName: "Atlas Research",
+          workspaceName: "Launch Plans",
+          mode: "continuous" as const,
+          authorizedPreview: null,
+          lastReadyRevision: 4,
+          lastSuccessfulUpdateAt: iso
+        }
+      };
+    });
+    const fixture = createFixture({ remoteOwnedShares });
+    for (const entry of remoteOwnedShares) {
+      fixture.grants.set(entry.grant.id, {
+        ...collaborationGrant(),
+        grant: {
+          ...collaborationGrant().grant,
+          id: entry.grant.id,
+          logicalGrantId: entry.grant.logicalGrantId,
+          logicalMemoryId: entry.grant.logicalMemoryId
+        }
+      });
+    }
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shares"),
+        input: { cursor: null, limit: 100, history: false }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result?.ok || result.command !== "collaboration.list_owned_shares") {
+      throw new Error("Expected a batched owned-share page");
+    }
+    expect(result.data.shares).toHaveLength(100);
+    expect(fixture.resolvePreviewTargets).toHaveBeenCalledTimes(1);
+    expect(fixture.readAuthoritativeGrants).toHaveBeenCalledTimes(1);
+    expect(fixture.requests.map((request) => request.pathname)).toEqual([
+      expect.stringMatching(/device-credentials\/status$/),
+      "/v1/shared-memory/owned-shares"
+    ]);
+  });
+
+  it("binds owned-share cursors to immutable pagination context", async () => {
+    const fixture = createFixture({
+      mutateResponse: (request, response) =>
+        request.pathname.endsWith("/v1/shared-memory/owned-shares")
+          ? {
+              ...response,
+              pagination: {
+                limit: 10,
+                hasMore: true,
+                next: {
+                  createdAt: iso,
+                  recordKind: "pending",
+                  id: uuidFor(899)
+                },
+                snapshotAt: iso
+              }
+            }
+          : response
+    });
+    const first = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shares"),
+        input: { cursor: null, limit: 10, history: false }
+      },
+      context()
+    );
+    expect(first).toMatchObject({ ok: true });
+    if (!first?.ok || first.command !== "collaboration.list_owned_shares") {
+      throw new Error("Expected an owned-share page");
+    }
+    const cursor = first.data.nextCursor;
+    expect(cursor).toMatch(/^csms1\./);
+    const tampered = `${cursor!.slice(0, -1)}${cursor!.endsWith("A") ? "B" : "A"}`;
+
+    await expect(
+      fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shares"),
+          input: { cursor: tampered, limit: 10, history: false }
+        },
+        context()
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "history_expired" }
+    });
+    await expect(
+      fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shares"),
+          input: { cursor, limit: 10, history: true }
+        },
+        context()
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "history_expired" }
+    });
   });
 
   it("returns the retained owner-authorized preview with owned Share detail", async () => {

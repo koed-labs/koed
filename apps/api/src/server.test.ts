@@ -5746,6 +5746,53 @@ describe("api health", () => {
     }
   });
 
+  it("keeps both Pending Share worker families idle behind the Team feature gate", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-worker-gate-"));
+    process.env.KOED_HOME = koedHome;
+    vi.useFakeTimers();
+    const processPendingShares = vi.fn(async () => ({
+      claimed: 0,
+      activated: 0,
+      failed: 0,
+      deferred: 0
+    }));
+    const claimPendingShareSourceWork = vi.fn(async () => []);
+    const authorityStore = {
+      claimPendingShareSourceWork,
+      finishPendingShareSourceWork: vi.fn(async () => true)
+    } as unknown as NonNullable<
+      BuildServerOptions["collaborationSharedMemoryAuthorityStore"]
+    >;
+    const repository = Object.assign(createFakeRepository(), {
+      processPendingShares
+    });
+
+    process.env.KOED_TEAM_COLLABORATION_ENABLED = "false";
+    const disabled = await buildServer({
+      repository,
+      collaborationSharedMemoryAuthorityStore: authorityStore
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(processPendingShares).not.toHaveBeenCalled();
+    expect(claimPendingShareSourceWork).not.toHaveBeenCalled();
+    await disabled.close();
+
+    process.env.KOED_TEAM_COLLABORATION_ENABLED = "true";
+    const enabled = await buildServer({
+      repository,
+      collaborationSharedMemoryAuthorityStore: authorityStore
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(processPendingShares).toHaveBeenCalledTimes(1);
+    expect(claimPendingShareSourceWork).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(processPendingShares).toHaveBeenCalledTimes(2);
+    expect(claimPendingShareSourceWork).toHaveBeenCalledTimes(2);
+    await enabled.close();
+    vi.useRealTimers();
+    rmSync(koedHome, { recursive: true, force: true });
+  });
+
   it("advertises KMS-backed application-layer encryption when configured", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
     process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "managed_kms";

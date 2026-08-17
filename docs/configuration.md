@@ -68,7 +68,11 @@ Supported mode fields:
   may validate and decrypt the signed cursor only to reject a Team scope.
   Personal Memory capture, recall, graph, API Token, session APIs, Personal
   notes and channels, Personal realtime, and the local Personal broker remain
-  available. The Worker continues Personal Projection, embedding, LCM, and
+  available. Neither Pending Share worker family is constructed, drained, or
+  scheduled while this switch is false: accepted work remains durable and
+  unavailable until the Operator re-enables Team collaboration and restarts the
+  service. Shutdown is valid when those worker timers were never created. The
+  Worker continues Personal Projection, embedding, LCM, and
   deletion reembedding, but does not start Cross-Identity Sync, retention purge,
   collaboration replay pruning, or other Team collaboration jobs. Restart both
   API and Worker after changing the value.

@@ -338,6 +338,8 @@ export interface CollaborationRendererClient {
       candidateHash: string;
       sourceRevision: number;
       itemCount: number;
+      excludedItemCount: number;
+      manifest: Array<{ sourceId: string; revisionHash: string }>;
       byteCount: number;
       mode: "snapshot" | "continuous";
       expiresAt: string | null;

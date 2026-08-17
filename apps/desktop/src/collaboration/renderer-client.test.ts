@@ -548,6 +548,10 @@ const success = (
           candidateHash: candidate.previewHash,
           itemCount: candidate.itemCount,
           excludedItemCount: 0,
+          manifest: candidate.items.map((item) => ({
+            sourceId: item.id,
+            revisionHash: candidate.previewHash
+          })),
           byteCount: 512,
           items: candidate.items
         }

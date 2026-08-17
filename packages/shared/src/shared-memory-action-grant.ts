@@ -101,6 +101,8 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   sourceRevision: number;
   itemCount: number;
   byteCount: number;
+  excludedItemCount: number;
+  manifest: Array<{ sourceId: string; revisionHash: string }>;
   teamId: string;
   teamWorkspaceId: string;
   representation: SharedMemoryRepresentation;
@@ -121,6 +123,8 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
       sourceRevision: input.sourceRevision,
       itemCount: input.itemCount,
       byteCount: input.byteCount,
+      excludedItemCount: input.excludedItemCount,
+      manifest: input.manifest,
       teamId: input.teamId,
       teamWorkspaceId: input.teamWorkspaceId,
       representation: input.representation,

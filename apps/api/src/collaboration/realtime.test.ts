@@ -1788,6 +1788,7 @@ describe("collaboration realtime protocol", () => {
         sourceAccess: null,
         summary: {
           sourceSessionId: randomUUID(),
+          companionThreadId: null,
           sourceTitle: "Owner conversation",
           teamName: "Team",
           workspaceName: "Workspace",

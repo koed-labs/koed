@@ -149,6 +149,21 @@ export interface CollaborationSharedMemoryAuthorityStore {
     syncRelationshipId: string;
     localSessionId: string;
   } | null>;
+  resolvePreviewTargets(
+    identity: CollaborationSharedMemoryAuthorityIdentity,
+    inputs: Array<{
+      logicalMemoryId: string;
+      teamId: string;
+      workspaceId: string;
+      representation: SharedMemoryRepresentation;
+    }>
+  ): Promise<
+    Array<{
+      remoteReplicaId: string;
+      syncRelationshipId: string;
+      localSessionId: string;
+    } | null>
+  >;
   persistAuthoritativePreview(input: {
     identity: CollaborationSharedMemoryAuthorityIdentity;
     allowedRepresentations: SharedMemoryRepresentation[];
@@ -184,6 +199,10 @@ export interface CollaborationSharedMemoryAuthorityStore {
   readAuthoritativeGrant(
     input: CollaborationSharedMemoryAuthorityIdentity & { shareGrantId: string }
   ): Promise<CollaborationPersistedSharedMemoryGrant | null>;
+  readAuthoritativeGrants(
+    identity: CollaborationSharedMemoryAuthorityIdentity,
+    shareGrantIds: string[]
+  ): Promise<Array<CollaborationPersistedSharedMemoryGrant | null>>;
   listAuthoritativeGrants(
     input: CollaborationSharedMemoryAuthorityIdentity & {
       logicalMemoryId: string;
@@ -1108,6 +1127,81 @@ export const createCollaborationSharedMemoryAuthorityStore = (
       });
     },
 
+    async resolvePreviewTargets(identity, inputs) {
+      if (
+        !validIdentity(identity) ||
+        inputs.length > 100 ||
+        inputs.some(
+          (input) =>
+            !isUuid(input.logicalMemoryId) ||
+            !isUuid(input.teamId) ||
+            !isUuid(input.workspaceId) ||
+            !isRepresentation(input.representation)
+        )
+      ) {
+        return inputs.map(() => null);
+      }
+      if (inputs.length === 0) return [];
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(client, identity, "share");
+        if (!enrollment) return inputs.map(() => null);
+        const result = await client.query<
+          CanonicalPreviewTargetRow & { logical_memory_id: string }
+        >(
+          `with requested(logical_memory_id) as (
+             select distinct unnest($2::uuid[])
+           )
+           select requested.logical_memory_id,
+                  relationship.id as relationship_id,
+                  relationship.remote_replica_id,
+                  replica.local_session_id
+             from requested
+             join collaboration_shared_memory_enrollments enrollment
+               on enrollment.id=$1 and enrollment.revoked_at is null
+             join deployment_identities deployment
+               on deployment.upstream_backend_id=enrollment.backend_id
+              and deployment.locality='remote' and deployment.disabled_at is null
+             join sync_external_user_identities remote_user
+               on remote_user.deployment_identity_id=deployment.id
+              and remote_user.external_subject_id=enrollment.upstream_user_id::text
+              and remote_user.status='active' and remote_user.revoked_at is null
+             join sync_principal_links principal_link
+               on principal_link.local_user_id=enrollment.local_owner_user_id
+              and principal_link.external_user_identity_id=remote_user.id
+              and principal_link.revoked_at is null
+             join cross_identity_sync_relationships relationship
+               on relationship.local_user_id=enrollment.local_owner_user_id
+              and relationship.remote_deployment_identity_id=deployment.id
+              and relationship.remote_user_identity_id=remote_user.id
+              and relationship.logical_memory_id=requested.logical_memory_id
+              and relationship.side='source'
+              and relationship.remote_replica_id is not null
+              and relationship.revoked_at is null
+              and relationship.state in
+                ('uploading','uploaded','verified','processing','partially_available',
+                 'ready','stale','paused')
+             join memory_replicas replica
+               on replica.id=relationship.local_replica_id
+              and replica.owner_user_id=enrollment.local_owner_user_id
+              and replica.local_session_id is not null`,
+          [enrollment.id, inputs.map((input) => input.logicalMemoryId)]
+        );
+        const byLogicalMemoryId = new Map(
+          result.rows.map((row) => [row.logical_memory_id, row])
+        );
+        return inputs.map((input) => {
+          const target = byLogicalMemoryId.get(input.logicalMemoryId);
+          return target
+            ? {
+                remoteReplicaId: target.remote_replica_id,
+                syncRelationshipId: target.relationship_id,
+                localSessionId: target.local_session_id
+              }
+            : null;
+        });
+      });
+    },
+
     async persistAuthoritativeCandidatePreview(input) {
       const { identity, allowedRepresentations, preview } = input;
       if (
@@ -1662,6 +1756,41 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           [enrollment.id, input.shareGrantId]
         );
         return result.rows[0] ? decodeGrant(result.rows[0], input) : null;
+      });
+    },
+
+    async readAuthoritativeGrants(identity, shareGrantIds) {
+      if (
+        !validIdentity(identity) ||
+        shareGrantIds.length > 100 ||
+        shareGrantIds.some((id) => !isUuid(id))
+      ) {
+        return shareGrantIds.map(() => null);
+      }
+      if (shareGrantIds.length === 0) return [];
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(client, identity, "share");
+        if (!enrollment) return shareGrantIds.map(() => null);
+        const result = await client.query<GrantRow>(
+          `select distinct on (share_grant_id)
+                  share_grant_id, logical_grant_id, logical_memory_id,
+                  consent_id, team_id, team_workspace_id,
+                  active_representation, source_revision, grant_version,
+                  lifecycle, protected_dto_hash, protected_dto
+             from collaboration_shared_memory_grants
+            where enrollment_id=$1 and share_grant_id=any($2::uuid[])
+            order by share_grant_id,grant_version desc`,
+          [enrollment.id, shareGrantIds]
+        );
+        const decoded = await Promise.all(
+          result.rows.map((row) => decodeGrant(row, identity))
+        );
+        const byId = new Map(
+          decoded.flatMap((grant) =>
+            grant ? [[grant.grant.id, grant] as const] : []
+          )
+        );
+        return shareGrantIds.map((id) => byId.get(id) ?? null);
       });
     },
 

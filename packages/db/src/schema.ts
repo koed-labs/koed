@@ -5302,6 +5302,9 @@ export const sharedMemoryCandidatePreviews = pgTable(
     sourceHash: text("source_hash").notNull(),
     redactedContentHash: text("redacted_content_hash").notNull(),
     itemCount: integer("item_count").notNull(),
+    excludedItemCount: integer("excluded_item_count").notNull().default(0),
+    candidateManifest: jsonb("candidate_manifest").notNull(),
+    candidateManifestHash: text("candidate_manifest_hash").notNull(),
     byteCount: integer("byte_count").notNull(),
     representationPolicyRevision: integer(
       "representation_policy_revision"
@@ -5348,6 +5351,9 @@ export const sharedMemoryCandidatePreviews = pgTable(
         and ${table.authoritySource} in ('browser_session','device_action_grant')
         and ${table.sourceRevision} >= 0
         and ${table.itemCount} between 1 and 100
+        and ${table.excludedItemCount} >= 0
+        and jsonb_typeof(${table.candidateManifest}) = 'array'
+        and jsonb_array_length(${table.candidateManifest}) = ${table.itemCount}
         and ${table.byteCount} between 1 and 262144
         and ${table.representationPolicyRevision} > 0
         and ${table.contentPolicyVersion} > 0
@@ -5357,6 +5363,7 @@ export const sharedMemoryCandidatePreviews = pgTable(
     check(
       "shared_memory_candidate_previews_hashes_check",
       sql`length(${table.previewHash}) = 64
+        and length(${table.candidateManifestHash}) = 64
         and length(${table.sourceHash}) = 64
         and length(${table.redactedContentHash}) = 64
         and length(${table.representationPolicyHash}) = 64

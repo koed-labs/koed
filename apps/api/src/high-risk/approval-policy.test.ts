@@ -176,6 +176,8 @@ const matrixCases: Array<{
       candidateHash: "a".repeat(64),
       sourceRevision: 1,
       itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: uuid(4), revisionHash: "b".repeat(64) }],
       byteCount: 128,
       teamId: uuid(1),
       teamWorkspaceId: uuid(2),

@@ -310,6 +310,8 @@ export type CreateCollaborationThreadInput =
       teamWorkspaceId: string;
       sharedLogicalMemoryId: string;
       shareGrantId: string;
+      /** Internal worker authority; never accepted from public route schemas. */
+      pendingShareActivation?: boolean;
     };
 
 export interface CollaborationRepository {
@@ -914,6 +916,39 @@ const activeShareGrant = async (
   return result.rows[0]?.allowed === true;
 };
 
+const pendingShareGrant = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  input: {
+    teamId: string;
+    teamWorkspaceId: string;
+    shareGrantId: string;
+    sharedLogicalMemoryId: string;
+  }
+): Promise<boolean> => {
+  const result = await client.query<{ allowed: boolean }>(
+    `select exists (
+       select 1
+         from team_session_share_grants g
+         join pending_share_operations p on p.grant_id=g.id
+        where g.id=$1 and g.team_id=$2 and g.team_workspace_id=$3
+          and g.logical_memory_id=$4 and g.owner_user_id=$5
+          and g.lifecycle='unavailable' and g.revoked_at is null
+          and p.owner_user_id=$5 and p.state in ('preparing','needs_attention')
+          and p.stage='activating' and p.workspace_access_state='none'
+          and p.revoked_at is null
+     ) as allowed`,
+    [
+      input.shareGrantId,
+      input.teamId,
+      input.teamWorkspaceId,
+      input.sharedLogicalMemoryId,
+      actor.userId
+    ]
+  );
+  return result.rows[0]?.allowed === true;
+};
+
 const authorizedThreadJoinsSql = `
   join users actor_user
     on actor_user.id = $1
@@ -1052,6 +1087,7 @@ const getAuthorizedThreadRow = async (
     required: "read" | "write";
     includeArchived: boolean;
     forUpdate?: boolean;
+    pendingShareActivation?: boolean;
   }
 ): Promise<AuthorizedThreadRow | null> => {
   const result = await client.query<AuthorizedThreadRow>(
@@ -1063,7 +1099,34 @@ const getAuthorizedThreadRow = async (
         and ct.lifecycle ${
           options.includeArchived ? "in ('active', 'archived')" : "= 'active'"
         }
-        and ${authorizedThreadPredicate(options.required)}
+        and (
+          ${authorizedThreadPredicate(options.required)}
+          ${
+            options.pendingShareActivation
+              ? `or (
+                  ct.kind = 'shared_session_discussion'
+                  and exists (
+                    select 1
+                      from team_session_share_grants pending_grant
+                      join pending_share_operations pending_share
+                        on pending_share.grant_id = pending_grant.id
+                     where pending_grant.id = ct.share_grant_id
+                       and pending_grant.team_id = ct.team_id
+                       and pending_grant.team_workspace_id = ct.team_workspace_id
+                       and pending_grant.logical_memory_id = ct.shared_logical_memory_id
+                       and pending_grant.owner_user_id = $1
+                       and pending_grant.lifecycle = 'unavailable'
+                       and pending_grant.revoked_at is null
+                       and pending_share.owner_user_id = $1
+                       and pending_share.state in ('preparing', 'needs_attention')
+                       and pending_share.stage = 'activating'
+                       and pending_share.workspace_access_state = 'none'
+                       and pending_share.revoked_at is null
+                  )
+                )`
+              : ""
+          }
+        )
       limit 1
       ${options.forUpdate ? "for update of ct" : ""}
     `,
@@ -2349,6 +2412,7 @@ type PreparedThreadCreation = {
   normalizedNameHash: string | null;
   participantKey: string | null;
   participantUserIds: string[];
+  pendingShareActivation: boolean;
 };
 
 const prepareThreadCreation = async (
@@ -2455,14 +2519,17 @@ const prepareThreadCreation = async (
       } else {
         sharedLogicalMemoryId = input.sharedLogicalMemoryId;
         shareGrantId = input.shareGrantId;
-        if (
-          !(await activeShareGrant(client, {
-            teamId: input.teamId,
-            teamWorkspaceId: input.teamWorkspaceId,
-            shareGrantId: input.shareGrantId,
-            sharedLogicalMemoryId: input.sharedLogicalMemoryId
-          }))
-        ) {
+        const shareScope = {
+          teamId: input.teamId,
+          teamWorkspaceId: input.teamWorkspaceId,
+          shareGrantId: input.shareGrantId,
+          sharedLogicalMemoryId: input.sharedLogicalMemoryId
+        };
+        const grantAuthorized =
+          (await activeShareGrant(client, shareScope)) ||
+          (input.pendingShareActivation === true &&
+            (await pendingShareGrant(client, actor, shareScope)));
+        if (!grantAuthorized) {
           return null;
         }
       }
@@ -2513,7 +2580,10 @@ const prepareThreadCreation = async (
     topic,
     normalizedNameHash,
     participantKey: participantSetKey,
-    participantUserIds: participants
+    participantUserIds: participants,
+    pendingShareActivation:
+      input.kind === "shared_session_discussion" &&
+      input.pendingShareActivation === true
   };
 };
 
@@ -2665,7 +2735,8 @@ const insertThread = async (
       required:
         prepared.kind === "shared_session_discussion" ? "read" : "write",
       includeArchived: true,
-      forUpdate: true
+      forUpdate: true,
+      pendingShareActivation: prepared.pendingShareActivation
     });
     if (!existing) return null;
     if (
@@ -2712,7 +2783,8 @@ const insertThread = async (
   const row = await getAuthorizedThreadRow(client, actor, prepared.id, {
     required: prepared.kind === "shared_session_discussion" ? "read" : "write",
     includeArchived: false,
-    forUpdate: true
+    forUpdate: true,
+    pendingShareActivation: prepared.pendingShareActivation
   });
   if (!row) throw new Error("Inserted collaboration thread is unauthorized");
   if (prepared.name !== null) {

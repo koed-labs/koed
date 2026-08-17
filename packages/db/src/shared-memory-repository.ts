@@ -26,16 +26,16 @@ import {
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
 import {
-  decryptAuthorizedEncryptedFieldPayloadWithClient,
+  decryptAuthorizedEncryptedFieldPayloadsWithClient,
   decryptOwnerPrivateEncryptedFieldWithClient,
+  encryptedFieldReferenceKey,
   upsertEncryptedFieldPayloadWithClient
 } from "./encrypted-payload-repository.js";
 import {
   assertionSelect,
-  hydrateAssertionRow,
-  loadSources,
   type AssertionRow
 } from "./curated-memory-support.js";
+import { sessionExactCuratedAssertionSql } from "./approval-activity-sql.js";
 import {
   buildCapturedSessionSyncContributor,
   buildCapturedSessionSyncEvent,
@@ -155,6 +155,9 @@ export interface SharedMemoryCandidatePreviewRecord {
   expiresAt: string | null;
   previewExpiresAt: string;
   itemCount: number;
+  excludedItemCount: number;
+  manifest: Array<{ sourceId: string; revisionHash: string }>;
+  manifestHash: string;
   byteCount: number;
   createdAt: string;
 }
@@ -208,6 +211,7 @@ export type OwnedShareRecord =
 
 export interface OwnedShareSummary {
   sourceSessionId: string | null;
+  companionThreadId: string | null;
   sourceTitle: string;
   teamName: string;
   workspaceName: string;
@@ -334,6 +338,8 @@ export interface SharedMemoryPersistedPreviewRecord extends SharedSourcePreviewR
   previewRevision: number;
   binding: SharedMemorySourceBindingDto;
   items: SharedMemoryRedactedSourceItemDto[];
+  manifest: SharedSourceArtifactV1["manifest"];
+  manifestHash: string;
   redactedContentHash: string;
   sourceRevision: number;
   sourceHash: string;
@@ -689,6 +695,8 @@ export interface SharedMemoryRepository {
       candidateHash: string;
       sourceRevision: number;
       itemCount: number;
+      excludedItemCount: number;
+      manifest: Array<{ sourceId: string; revisionHash: string }>;
       byteCount: number;
       teamId: string;
       teamWorkspaceId: string;
@@ -975,16 +983,24 @@ export interface SharedMemoryRepository {
     actor: ActorContext,
     input: {
       limit: number;
-      offset: number;
       history?: boolean;
       snapshotAt?: string;
+      after?: {
+        createdAt: string;
+        recordKind: "grant" | "pending";
+        id: string;
+      };
     }
   ): Promise<{
     entries: OwnedShareRecord[];
     limit: number;
-    offset: number;
     hasMore: boolean;
     snapshotAt: string;
+    next: {
+      createdAt: string;
+      recordKind: "grant" | "pending";
+      id: string;
+    } | null;
   }>;
   getOwnerShare(
     actor: ActorContext,
@@ -2025,7 +2041,8 @@ const mapArtifact = (row: Row): SharedMemorySourceArtifactRecord => ({
 const mapPersistedPreview = (
   row: Row,
   artifact: SharedMemorySourceArtifactRecord,
-  preview: SharedSourcePreviewV1
+  preview: SharedSourcePreviewV1,
+  artifactBody: SharedSourceArtifactV1
 ): SharedMemoryPersistedPreviewRecord => ({
   previewId: stringValue(row.id),
   previewHash: stringValue(row.preview_hash),
@@ -2041,6 +2058,8 @@ const mapPersistedPreview = (
   previewRevision: numberValue(row.preview_revision),
   binding: preview.binding,
   items: preview.items,
+  manifest: artifactBody.manifest,
+  manifestHash: artifactBody.manifestHash,
   redactedContentHash: stringValue(row.redacted_content_hash),
   sourceRevision: numberValue(row.source_revision),
   sourceHash: stringValue(row.source_hash),
@@ -2503,7 +2522,7 @@ const cascadeParentShareRevocation = async (
             redacted_failure_code=null,updated_at=now(),
             operation_version=operation_version+1
       where grant_id=$1 and state<>'revoked'
-      returning id,owner_user_id`,
+      returning id,owner_user_id,operation_version`,
     [input.shareGrantId, input.revokedAt]
   );
   for (const row of pending.rows) {
@@ -2519,6 +2538,7 @@ const cascadeParentShareRevocation = async (
         kind: "pending_share_lifecycle",
         pendingShareId,
         state: "revoked",
+        operationVersion: numberValue(row.operation_version),
         parentMutationId: input.mutationId
       }),
       ownerUserId: stringValue(row.owner_user_id),
@@ -4453,21 +4473,180 @@ export const createSharedMemoryRepository = (
           and cma.status='current'
           and cma.suppressed_at is null
           and (cma.expires_at is null or cma.expires_at>now())
-          and exists (
-            select 1 from curated_memory_sources cms
-             where cms.assertion_id=cma.id
-               and cms.source_role in ('primary_evidence','supporting_evidence','superseding_evidence','conflicting_evidence')
-          )
-        order by cma.observed_at asc,cma.id asc`,
-      [input.ownerUserId]
+          and ${sessionExactCuratedAssertionSql("$1", "$2")}
+        order by cma.observed_at asc,cma.id asc
+        limit $3`,
+      [input.ownerUserId, input.localSessionId, MAX_SOURCE_ITEMS + 1]
     );
     const items: SharedMemoryRedactedSourceItemDto[] = [];
     const manifest: SharedSourceArtifactV1["manifest"] = [];
+    if (result.rows.length > MAX_SOURCE_ITEMS) {
+      throw new SharedMemoryConflictError(
+        "Curated Shared Memory candidate exceeds the item consent boundary"
+      );
+    }
+    const sourceRows = await client.query<{
+      assertion_id: string;
+      source_role: string;
+      conversation_item_id: string | null;
+      memory_event_id: string | null;
+      lcm_node_id: string | null;
+    }>(
+      `select assertion_id,source_role,conversation_item_id,memory_event_id,lcm_node_id
+         from curated_memory_sources
+        where assertion_id=any($1::uuid[])
+        order by created_at asc,id asc`,
+      [result.rows.map((row) => row.id)]
+    );
+    const sourceMap = new Map<
+      string,
+      Array<{
+        sourceRole: string;
+        conversationItemId: string | null;
+        memoryEventId: string | null;
+        lcmNodeId: string | null;
+      }>
+    >();
+    for (const row of sourceRows.rows) {
+      sourceMap.set(row.assertion_id, [
+        ...(sourceMap.get(row.assertion_id) ?? []),
+        {
+          sourceRole: row.source_role,
+          conversationItemId: row.conversation_item_id,
+          memoryEventId: row.memory_event_id,
+          lcmNodeId: row.lcm_node_id
+        }
+      ]);
+    }
+    const directSources = [...sourceMap.values()]
+      .flat()
+      .filter((source) =>
+        [
+          "primary_evidence",
+          "supporting_evidence",
+          "superseding_evidence",
+          "conflicting_evidence"
+        ].includes(source.sourceRole)
+      );
+    const conversationItemIds = directSources
+      .map((source) => source.conversationItemId)
+      .filter((id): id is string => id !== null);
+    const memoryEventIds = directSources
+      .map((source) => source.memoryEventId)
+      .filter((id): id is string => id !== null);
+    const lcmNodeIds = directSources
+      .map((source) => source.lcmNodeId)
+      .filter((id): id is string => id !== null);
+    const [conversationRows, eventRows, nodeRows] = await Promise.all([
+      client.query<{ id: string }>(
+        `select id from conversation_items
+          where id=any($1::uuid[]) and owner_user_id=$2
+            and visibility='personal' and session_id=$3
+            and personal_deleted_at is null and memory_excluded_at is null`,
+        [conversationItemIds, input.ownerUserId, input.localSessionId]
+      ),
+      client.query<{ id: string }>(
+        `select id from memory_events
+          where id=any($1::uuid[]) and owner_user_id=$2
+            and visibility='personal' and session_id=$3
+            and invalidated_at is null and personal_deleted_at is null`,
+        [memoryEventIds, input.ownerUserId, input.localSessionId]
+      ),
+      client.query<{
+        root_id: string;
+        expected_count: number;
+        active_count: string;
+        exact_count: string;
+        invalid_node_count: string;
+        root_kind: "leaf" | "rollup";
+        source_ids: string[];
+      }>(
+        `with recursive descendants(root_id,id) as (
+           select id,id from memory_nodes where id=any($1::uuid[])
+           union
+           select parent.root_id,child.child_memory_node_id
+             from memory_node_children child
+             join descendants parent on parent.id=child.parent_memory_node_id
+         ), underlying as (
+           select distinct d.root_id,mns.memory_event_id
+             from descendants d
+             join memory_node_sources mns on mns.memory_node_id=d.id
+         )
+         select root.id as root_id,root.source_event_count as expected_count,
+                root.kind as root_kind,
+                array_agg(distinct me.id) filter (where me.id is not null) as source_ids,
+                count(distinct me.id)::text as active_count,
+                count(distinct me.id) filter (where me.session_id=$3)::text as exact_count,
+                count(distinct d.id) filter (where node.id is null)::text as invalid_node_count
+           from memory_nodes root
+           join descendants d on d.root_id=root.id
+           left join memory_nodes node on node.id=d.id
+            and node.owner_user_id=$2 and node.visibility='personal'
+            and node.invalidated_at is null and node.personal_deleted_at is null
+            and node.session_id=$3
+           left join underlying u on u.root_id=root.id
+           left join memory_events me on me.id=u.memory_event_id
+            and me.owner_user_id=$2 and me.visibility='personal'
+            and me.invalidated_at is null and me.personal_deleted_at is null
+          where root.id=any($1::uuid[]) and root.owner_user_id=$2
+          group by root.id,root.source_event_count,root.kind`,
+        [lcmNodeIds, input.ownerUserId, input.localSessionId]
+      )
+    ]);
+    const conversationIds = new Set(conversationRows.rows.map((row) => row.id));
+    const eventIds = new Set(eventRows.rows.map((row) => row.id));
+    const nodesById = new Map(nodeRows.rows.map((row) => [row.root_id, row]));
+    const encryptedPayloads =
+      await decryptAuthorizedEncryptedFieldPayloadsWithClient(
+        client,
+        actor,
+        personalProvider,
+        [
+          ...conversationItemIds.map((sourceId) => ({
+            sourceTable: "conversation_items" as const,
+            sourceId,
+            sourceColumn: "raw_text"
+          })),
+          ...memoryEventIds.map((sourceId) => ({
+            sourceTable: "memory_events" as const,
+            sourceId,
+            sourceColumn: "payload"
+          })),
+          ...lcmNodeIds.map((sourceId) => ({
+            sourceTable: "memory_nodes" as const,
+            sourceId,
+            sourceColumn: "summary_text"
+          })),
+          ...result.rows.map((row) => ({
+            sourceTable: "curated_memory_assertions" as const,
+            sourceId: row.id,
+            sourceColumn: "payload"
+          })),
+          ...result.rows
+            .map((row) => row.topic_id)
+            .filter((sourceId): sourceId is string => sourceId !== null)
+            .map((sourceId) => ({
+              sourceTable: "curated_memory_topics" as const,
+              sourceId,
+              sourceColumn: "payload"
+            }))
+        ]
+      );
+    const decryptedValue = (
+      sourceTable:
+        | "conversation_items"
+        | "memory_events"
+        | "memory_nodes"
+        | "curated_memory_assertions"
+        | "curated_memory_topics",
+      sourceId: string,
+      sourceColumn: string
+    ): unknown =>
+      encryptedPayloads.get(
+        encryptedFieldReferenceKey({ sourceTable, sourceId, sourceColumn })
+      )?.plaintext;
     for (const assertionRow of result.rows) {
-      const sources =
-        (
-          await loadSources(client, actor, personalProvider, [assertionRow.id])
-        ).get(assertionRow.id) ?? [];
+      const sources = sourceMap.get(assertionRow.id) ?? [];
       const direct = sources.filter((source) =>
         [
           "primary_evidence",
@@ -4492,31 +4671,17 @@ export const createSharedMemoryRepository = (
         const sourceId = identifiers[0]!;
         sourceIds.push(sourceId);
         if (source.conversationItemId) {
-          const found = await client.query<{ raw_text: string | null }>(
-            `select raw_text from conversation_items
-              where id=$1 and owner_user_id=$2 and visibility='personal'
-                and session_id=$3 and personal_deleted_at is null
-                and memory_excluded_at is null`,
-            [sourceId, input.ownerUserId, input.localSessionId]
+          const plaintext = decryptedValue(
+            "conversation_items",
+            sourceId,
+            "raw_text"
           );
-          const decrypted = found.rows[0]
-            ? await decryptAuthorizedEncryptedFieldPayloadWithClient(
-                client,
-                actor,
-                personalProvider,
-                {
-                  sourceTable: "conversation_items",
-                  sourceId,
-                  sourceColumn: "raw_text"
-                }
-              )
-            : null;
-          eligible = Boolean(found.rows[0] && decrypted);
-          if (eligible && decrypted) {
+          eligible = conversationIds.has(sourceId) && plaintext !== undefined;
+          if (eligible) {
             const text =
-              typeof decrypted.plaintext === "string"
-                ? decrypted.plaintext
-                : JSON.stringify(decrypted.plaintext);
+              typeof plaintext === "string"
+                ? plaintext
+                : JSON.stringify(plaintext);
             expansionItems.push(
               strictAuthoritativeSourceItem({
                 representation: "memory_events",
@@ -4530,30 +4695,14 @@ export const createSharedMemoryRepository = (
             );
           }
         } else if (source.memoryEventId) {
-          const found = await client.query<{ payload: unknown }>(
-            `select payload from memory_events
-              where id=$1 and owner_user_id=$2 and visibility='personal'
-                and session_id=$3 and invalidated_at is null
-                and personal_deleted_at is null`,
-            [sourceId, input.ownerUserId, input.localSessionId]
+          const plaintext = decryptedValue(
+            "memory_events",
+            sourceId,
+            "payload"
           );
-          const decrypted = found.rows[0]
-            ? await decryptAuthorizedEncryptedFieldPayloadWithClient(
-                client,
-                actor,
-                personalProvider,
-                {
-                  sourceTable: "memory_events",
-                  sourceId,
-                  sourceColumn: "payload"
-                }
-              )
-            : null;
-          eligible = Boolean(found.rows[0] && decrypted);
-          if (eligible && decrypted) {
-            const payload = isPlainObject(decrypted.plaintext)
-              ? decrypted.plaintext
-              : {};
+          eligible = eventIds.has(sourceId) && plaintext !== undefined;
+          if (eligible) {
+            const payload = isPlainObject(plaintext) ? plaintext : {};
             expansionItems.push(
               strictAuthoritativeSourceItem({
                 representation: "memory_events",
@@ -4569,51 +4718,13 @@ export const createSharedMemoryRepository = (
                   text:
                     typeof payload.content === "string"
                       ? payload.content
-                      : JSON.stringify(decrypted.plaintext)
+                      : JSON.stringify(plaintext)
                 }
               })
             );
           }
         } else {
-          const found = await client.query<{
-            expected_count: number;
-            active_count: string;
-            exact_count: string;
-            invalid_node_count: string;
-            root_kind: "leaf" | "rollup";
-            source_ids: string[];
-          }>(
-            `with recursive descendants(id) as (
-               select $1::uuid
-               union
-               select child.child_memory_node_id
-                 from memory_node_children child
-                 join descendants parent on parent.id=child.parent_memory_node_id
-             ), underlying as (
-               select distinct mns.memory_event_id
-                 from descendants d
-                 join memory_node_sources mns on mns.memory_node_id=d.id
-             )
-             select root.source_event_count as expected_count,
-                    root.kind as root_kind,
-                    array_agg(distinct me.id) filter (where me.id is not null) as source_ids,
-                    count(distinct me.id)::text as active_count,
-                    count(distinct me.id) filter (where me.session_id=$3)::text as exact_count,
-                    (select count(*)::text from descendants d
-                      left join memory_nodes n on n.id=d.id
-                       and n.owner_user_id=$2 and n.visibility='personal'
-                       and n.invalidated_at is null and n.personal_deleted_at is null
-                     where n.id is null or n.session_id<>$3) as invalid_node_count
-               from memory_nodes root
-               left join underlying u on true
-               left join memory_events me on me.id=u.memory_event_id
-                and me.owner_user_id=$2 and me.visibility='personal'
-                and me.invalidated_at is null and me.personal_deleted_at is null
-              where root.id=$1 and root.owner_user_id=$2
-              group by root.source_event_count,root.kind`,
-            [sourceId, input.ownerUserId, input.localSessionId]
-          );
-          const row = found.rows[0];
+          const row = nodesById.get(sourceId);
           eligible = Boolean(
             row &&
             Number(row.active_count) > 0 &&
@@ -4622,19 +4733,13 @@ export const createSharedMemoryRepository = (
             Number(row.invalid_node_count) === 0
           );
           if (eligible) {
-            const decrypted =
-              await decryptAuthorizedEncryptedFieldPayloadWithClient(
-                client,
-                actor,
-                personalProvider,
-                {
-                  sourceTable: "memory_nodes",
-                  sourceId,
-                  sourceColumn: "summary_text"
-                }
-              );
-            eligible = Boolean(decrypted);
-            if (eligible && decrypted && row) {
+            const plaintext = decryptedValue(
+              "memory_nodes",
+              sourceId,
+              "summary_text"
+            );
+            eligible = plaintext !== undefined;
+            if (eligible && row) {
               expansionItems.push(
                 strictAuthoritativeSourceItem({
                   representation:
@@ -4647,9 +4752,9 @@ export const createSharedMemoryRepository = (
                   occurredAt: null,
                   content: {
                     summaryText:
-                      typeof decrypted.plaintext === "string"
-                        ? decrypted.plaintext
-                        : JSON.stringify(decrypted.plaintext),
+                      typeof plaintext === "string"
+                        ? plaintext
+                        : JSON.stringify(plaintext),
                     lexicalAnchors: [],
                     sourceIds: row.source_ids
                   }
@@ -4661,49 +4766,47 @@ export const createSharedMemoryRepository = (
         if (!eligible) break;
       }
       if (!eligible) continue;
-      const hydrated = await hydrateAssertionRow(
-        client,
-        actor,
-        personalProvider,
-        assertionRow
+      const protectedValue = decryptedValue(
+        "curated_memory_assertions",
+        assertionRow.id,
+        "payload"
       );
-      const protectedPayload =
-        await decryptAuthorizedEncryptedFieldPayloadWithClient(
-          client,
-          actor,
-          personalProvider,
-          {
-            sourceTable: "curated_memory_assertions",
-            sourceId: assertionRow.id,
-            sourceColumn: "payload"
-          }
-        );
-      const protectedRecord = isPlainObject(protectedPayload?.plaintext)
-        ? protectedPayload.plaintext
+      const protectedRecord = isPlainObject(protectedValue)
+        ? protectedValue
         : null;
+      const topicValue = assertionRow.topic_id
+        ? decryptedValue(
+            "curated_memory_topics",
+            assertionRow.topic_id,
+            "payload"
+          )
+        : null;
+      const topicRecord = isPlainObject(topicValue) ? topicValue : null;
       const assertionText = protectedRecord
         ? requireHydratedValue(
             nullableString(protectedRecord.assertionText),
             "Curated assertion text decryption is required for Shared Memory"
           )
-        : hydrated.assertion_text;
+        : assertionRow.assertion_text;
       const topicTitle = protectedRecord
-        ? (nullableString(protectedRecord.topicTitle) ?? hydrated.topic_title)
-        : hydrated.topic_title;
+        ? (nullableString(protectedRecord.topicTitle) ??
+          nullableString(topicRecord?.title) ??
+          assertionRow.topic_title)
+        : (nullableString(topicRecord?.title) ?? assertionRow.topic_title);
       const tags = protectedRecord
         ? Array.isArray(protectedRecord.tags)
           ? protectedRecord.tags.filter(
               (tag): tag is string => typeof tag === "string"
             )
           : []
-        : hydrated.tags;
+        : assertionRow.tags;
       const item = strictAuthoritativeSourceItem({
         representation: "curated_assertions",
         logicalMemoryId: input.logicalMemoryId,
         sourceRevision: input.sourceRevision,
         itemType: "curated_assertion",
-        sourceId: hydrated.id,
-        occurredAt: iso(hydrated.observed_at),
+        sourceId: assertionRow.id,
+        occurredAt: iso(assertionRow.observed_at),
         content: {
           assertionText,
           topicTitle,
@@ -4714,7 +4817,7 @@ export const createSharedMemoryRepository = (
       });
       items.push(item);
       manifest.push({
-        sourceId: hydrated.id,
+        sourceId: assertionRow.id,
         sourceTable: "curated_memory_assertions",
         itemType: "curated_assertion",
         sourceCursor: input.sourceRevision,
@@ -5038,7 +5141,8 @@ export const createSharedMemoryRepository = (
       preview: mapPersistedPreview(
         previewResult.rows[0]!,
         mapArtifact(artifactRow),
-        input.previewBody
+        input.previewBody,
+        input.artifactBody
       ),
       artifactBody: input.artifactBody,
       previewBody: input.previewBody
@@ -5289,6 +5393,10 @@ export const createSharedMemoryRepository = (
       {
         ...previewBody,
         items: validatedPreviewItems
+      },
+      {
+        ...artifactBody,
+        items: validatedArtifactItems
       }
     );
     return {
@@ -5480,7 +5588,16 @@ export const createSharedMemoryRepository = (
               and g.team_id=$6
               and g.team_workspace_id=$7
               and g.active_representation=$8
-              and g.lifecycle='active'
+              and (
+                g.lifecycle='active'
+                or (g.lifecycle='unavailable' and exists (
+                  select 1 from pending_share_operations pending
+                   where pending.grant_id=g.id
+                     and pending.state='needs_attention'
+                     and pending.redacted_failure_code='approval_content_remediation'
+                     and pending.revoked_at is null
+                ))
+              )
               and g.revoked_at is null
               and $8=any(consent.allowed_representations)
          ) as allowed`,
@@ -6292,6 +6409,19 @@ export const createSharedMemoryRepository = (
       assertUuid(input.teamId, "teamId");
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       assertHash(input.candidateHash, "candidateHash");
+      if (
+        input.manifest.length !== input.itemCount ||
+        new Set(input.manifest.map((entry) => entry.sourceId)).size !==
+          input.manifest.length
+      ) {
+        throw new SharedMemoryConflictError(
+          "Candidate manifest must exactly match the reviewed item count"
+        );
+      }
+      for (const entry of input.manifest) {
+        assertUuid(entry.sourceId, "candidateManifest.sourceId");
+        assertHash(entry.revisionHash, "candidateManifest.revisionHash");
+      }
       const allowed = normalizedRepresentations(input.allowedRepresentations);
       return withTransaction(pool, async (client) => {
         await requireWorkspaceSharePermission(
@@ -6306,6 +6436,8 @@ export const createSharedMemoryRepository = (
           candidateHash: input.candidateHash,
           sourceRevision: input.sourceRevision,
           itemCount: input.itemCount,
+          excludedItemCount: input.excludedItemCount,
+          manifest: input.manifest,
           byteCount: input.byteCount,
           teamId: input.teamId,
           teamWorkspaceId: input.teamWorkspaceId,
@@ -6347,17 +6479,33 @@ export const createSharedMemoryRepository = (
           expiresAt: nullableIso(row.share_expires_at),
           previewExpiresAt: iso(row.expires_at),
           itemCount: numberValue(row.item_count),
+          excludedItemCount: numberValue(row.excluded_item_count),
+          manifest: row.candidate_manifest as Array<{
+            sourceId: string;
+            revisionHash: string;
+          }>,
+          manifestHash: stringValue(row.candidate_manifest_hash),
           byteCount: numberValue(row.byte_count),
           createdAt: iso(row.created_at)
         });
         for (const row of existing.rows) {
           const candidate = mapCandidate(row);
+          if (
+            crossIdentitySyncDigest(candidate.manifest) !==
+            candidate.manifestHash
+          ) {
+            throw new SharedMemoryConflictError(
+              "Persisted candidate manifest hash is invalid"
+            );
+          }
           const existingHash = crossIdentitySyncDigest({
             version: 1,
             logicalMemoryId: candidate.logicalMemoryId,
             candidateHash: candidate.sourceHash,
             sourceRevision: candidate.sourceRevision,
             itemCount: candidate.itemCount,
+            excludedItemCount: candidate.excludedItemCount,
+            manifest: candidate.manifest,
             byteCount: candidate.byteCount,
             teamId: candidate.teamId,
             teamWorkspaceId: candidate.teamWorkspaceId,
@@ -6455,11 +6603,12 @@ export const createSharedMemoryRepository = (
               owner_user_id,logical_memory_id,team_id,team_workspace_id,
               representation,allowed_representations,mode,source_revision,
               source_hash,redacted_content_hash,item_count,byte_count,
+              excluded_item_count,candidate_manifest,candidate_manifest_hash,
               representation_policy_revision,representation_policy_hash,
               content_policy_version,content_policy_hash,classifier_version,
               classifier_hash,share_expires_at,expires_at,created_at)
            values ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15,
-                   $16,$17,$18,$19,$20,$21,$22,$23,$24)
+                   $16,$17::jsonb,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
            returning *`,
           [
             previewId,
@@ -6477,6 +6626,9 @@ export const createSharedMemoryRepository = (
             input.candidateHash,
             input.itemCount,
             input.byteCount,
+            input.excludedItemCount,
+            JSON.stringify(input.manifest),
+            crossIdentitySyncDigest(input.manifest),
             representationPolicyRevision,
             representationPolicyHash,
             contentPolicyVersion,
@@ -6750,7 +6902,7 @@ export const createSharedMemoryRepository = (
               and allowed_representations=$9::shared_memory_representation[]
               and mode=$10
               and share_expires_at is not distinct from $11::timestamptz
-              and authority_source=$12 and authority_reference_id=$13
+              and authority_source=$12
               and invalidated_at is null and expires_at>now()
             for update`,
           [
@@ -6765,8 +6917,7 @@ export const createSharedMemoryRepository = (
             allowed,
             input.mode,
             input.expiresAt ?? null,
-            input.authority.source,
-            input.authority.referenceId
+            input.authority.source
           ]
         );
         const preview = previewResult.rows[0];
@@ -6845,7 +6996,8 @@ export const createSharedMemoryRepository = (
             kind: "pending_share_replacement_lifecycle",
             pendingShareId: stringValue(pending.id),
             replacementMutationId: input.mutationId,
-            state: "preparing"
+            state: "preparing",
+            operationVersion: numberValue(pending.operation_version)
           }),
           ownerUserId: actor.userId,
           pendingShareId: stringValue(pending.id)
@@ -6892,14 +7044,26 @@ export const createSharedMemoryRepository = (
         failed: 0
       };
       for (const pendingShareId of claimed) {
+        let workerExpected: { state: string; operationVersion: number } | null =
+          null;
         try {
           const pendingResult = await pool.query<Row>(
             `select p.*,lm.local_session_id,lm.latest_source_revision,
+                    candidate.candidate_manifest,candidate.candidate_manifest_hash,
+                    candidate.item_count as candidate_item_count,
+                    candidate.byte_count as candidate_byte_count,
+                    candidate.excluded_item_count as candidate_excluded_item_count,
                     mr.id as remote_replica_id,mr.latest_revision,
                     sr.target_processing_cursor,sr.state as sync_state
                from pending_share_operations p
                join logical_memories lm
                  on lm.id=p.logical_memory_id and lm.owner_user_id=p.owner_user_id
+               join shared_memory_candidate_previews candidate
+                 on candidate.id=coalesce(p.replacement_preview_id,p.preview_id)
+                and candidate.preview_hash=coalesce(p.replacement_preview_hash,p.preview_hash)
+                and candidate.source_revision=coalesce(
+                  p.replacement_source_revision,p.source_revision
+                )
                left join memory_replicas mr
                  on mr.logical_memory_id=p.logical_memory_id
                 and mr.owner_user_id=p.owner_user_id
@@ -6926,6 +7090,10 @@ export const createSharedMemoryRepository = (
             );
             continue;
           }
+          workerExpected = {
+            state: stringValue(pending.state),
+            operationVersion: numberValue(pending.operation_version)
+          };
           const replacement = pending.replacement_mutation_id !== null;
           const wantedRevision = numberValue(
             pending.replacement_source_revision ?? pending.source_revision
@@ -6949,15 +7117,22 @@ export const createSharedMemoryRepository = (
               logicalRevision > wantedRevision;
             if (candidateStale) {
               await withTransaction(pool, async (client) => {
-                await client.query(
+                const failed = await client.query<Row>(
                   `update pending_share_operations
                     set state='failed',source_update_state='failed',
                         redacted_failure_code='candidate_source_advanced',
                         attempt_count=attempt_count+1,updated_at=now(),
                         operation_version=operation_version+1
-                  where id=$1`,
-                  [pendingShareId]
+                  where id=$1 and state=$2 and operation_version=$3
+                    and revoked_at is null
+                  returning operation_version`,
+                  [
+                    pendingShareId,
+                    workerExpected!.state,
+                    workerExpected!.operationVersion
+                  ]
                 );
+                if (!failed.rows[0]) return;
                 await client.query(
                   `update pending_share_outbox
                     set state='failed',locked_at=null,
@@ -6970,7 +7145,10 @@ export const createSharedMemoryRepository = (
                     kind: "pending_share_lifecycle",
                     pendingShareId,
                     state: "failed",
-                    reason: "candidate_source_advanced"
+                    reason: "candidate_source_advanced",
+                    operationVersion: numberValue(
+                      failed.rows[0].operation_version
+                    )
                   }),
                   ownerUserId: stringValue(pending.owner_user_id),
                   pendingShareId
@@ -6985,19 +7163,31 @@ export const createSharedMemoryRepository = (
               stallThresholdMs;
             const stage = remoteReplicaId ? "processing" : "syncing";
             await withTransaction(pool, async (client) => {
-              await client.query(
+              const nextState = stalled ? "needs_attention" : "preparing";
+              const nextFailure = stalled ? "source_preparation_stalled" : null;
+              const visibleTransition =
+                workerExpected!.state !== nextState ||
+                stringValue(pending.stage) !== stage ||
+                nullableString(pending.redacted_failure_code) !== nextFailure;
+              const updated = await client.query<Row>(
                 `update pending_share_operations
                   set state=$2,stage=$3,attempt_count=attempt_count+1,
                       redacted_failure_code=$4,updated_at=now(),
-                      operation_version=operation_version+1
-                where id=$1`,
+                      operation_version=operation_version+$5
+                where id=$1 and state=$6 and operation_version=$7
+                  and revoked_at is null
+                returning operation_version`,
                 [
                   pendingShareId,
-                  stalled ? "needs_attention" : "preparing",
+                  nextState,
                   stage,
-                  stalled ? "source_preparation_stalled" : null
+                  nextFailure,
+                  visibleTransition ? 1 : 0,
+                  workerExpected!.state,
+                  workerExpected!.operationVersion
                 ]
               );
+              if (!updated.rows[0]) return;
               await client.query(
                 `update pending_share_outbox
                   set state='pending',locked_at=null,
@@ -7005,13 +7195,17 @@ export const createSharedMemoryRepository = (
                 where pending_share_id=$1`,
                 [pendingShareId]
               );
-              if (stalled) {
+              if (visibleTransition) {
                 await appendPendingShareOwnerEvent(client, {
                   mutationId: crossIdentitySyncDeterministicUuid({
                     kind: "pending_share_lifecycle",
                     pendingShareId,
-                    state: "needs_attention",
-                    reason: "source_preparation_stalled"
+                    state: nextState,
+                    stage,
+                    reason: nextFailure,
+                    operationVersion: numberValue(
+                      updated.rows[0].operation_version
+                    )
                   }),
                   ownerUserId: stringValue(pending.owner_user_id),
                   pendingShareId
@@ -7021,14 +7215,43 @@ export const createSharedMemoryRepository = (
             totals.waiting += 1;
             continue;
           }
-          await pool.query(
-            `update pending_share_operations
+          const activating = await withTransaction(pool, async (client) => {
+            const updated = await client.query<Row>(
+              `update pending_share_operations
                 set state='preparing',stage='activating',
                     redacted_failure_code=null,last_progress_at=now(),updated_at=now(),
                     operation_version=operation_version+1
-              where id=$1`,
-            [pendingShareId]
-          );
+               where id=$1 and state=$2 and operation_version=$3
+                 and revoked_at is null
+               returning operation_version`,
+              [
+                pendingShareId,
+                workerExpected!.state,
+                workerExpected!.operationVersion
+              ]
+            );
+            if (!updated.rows[0]) return null;
+            const operationVersion = numberValue(
+              updated.rows[0].operation_version
+            );
+            await appendPendingShareOwnerEvent(client, {
+              mutationId: crossIdentitySyncDeterministicUuid({
+                kind: "pending_share_lifecycle",
+                pendingShareId,
+                state: "preparing",
+                stage: "activating",
+                operationVersion
+              }),
+              ownerUserId: stringValue(pending.owner_user_id),
+              pendingShareId
+            });
+            return operationVersion;
+          });
+          if (activating === null) continue;
+          workerExpected = {
+            state: "preparing",
+            operationVersion: activating
+          };
           const actor = { userId: stringValue(pending.owner_user_id) };
           const authority: SharedMemoryAuthorityContext = {
             action: SHARED_MEMORY_AUTHORITY,
@@ -7067,6 +7290,75 @@ export const createSharedMemoryRepository = (
             throw new SharedMemoryConflictError(
               "Pending Share source revision changed"
             );
+          }
+          const acceptedManifest = pending.candidate_manifest as Array<{
+            sourceId: string;
+            revisionHash: string;
+          }>;
+          const authoritativeSourceIds =
+            representation === "memory_events"
+              ? [
+                  ...new Set(
+                    preview.manifest.map((entry) => entry.sourceEventId)
+                  )
+                ].filter((id): id is string => id !== null)
+              : preview.manifest.map((entry) => entry.sourceId);
+          const reproducedManifest = authoritativeSourceIds.map((sourceId) => ({
+            sourceId,
+            revisionHash: crossIdentitySyncDigest({
+              version: 1,
+              sourceId,
+              representation,
+              sourceRevision: wantedRevision
+            })
+          }));
+          if (
+            authoritativeSourceIds.length !==
+              numberValue(pending.candidate_item_count) ||
+            crossIdentitySyncDigest(acceptedManifest) !==
+              stringValue(pending.candidate_manifest_hash) ||
+            crossIdentitySyncDigest(reproducedManifest) !==
+              stringValue(pending.candidate_manifest_hash)
+          ) {
+            await withTransaction(pool, async (client) => {
+              const failed = await client.query<Row>(
+                `update pending_share_operations
+                    set state='failed',source_update_state='failed',
+                        redacted_failure_code='candidate_manifest_changed',
+                        updated_at=now(),operation_version=operation_version+1
+                  where id=$1 and state=$2 and operation_version=$3
+                    and revoked_at is null
+                  returning owner_user_id,operation_version`,
+                [
+                  pendingShareId,
+                  workerExpected!.state,
+                  workerExpected!.operationVersion
+                ]
+              );
+              if (!failed.rows[0]) return;
+              await client.query(
+                `update pending_share_outbox
+                    set state='failed',locked_at=null,
+                        available_at=now()+interval '1 hour',updated_at=now()
+                  where pending_share_id=$1`,
+                [pendingShareId]
+              );
+              await appendPendingShareOwnerEvent(client, {
+                mutationId: crossIdentitySyncDeterministicUuid({
+                  kind: "pending_share_lifecycle",
+                  pendingShareId,
+                  state: "failed",
+                  reason: "candidate_manifest_changed",
+                  operationVersion: numberValue(
+                    failed.rows[0].operation_version
+                  )
+                }),
+                ownerUserId: stringValue(failed.rows[0].owner_user_id),
+                pendingShareId
+              });
+            });
+            totals.failed += 1;
+            continue;
           }
           const bundle = replacement
             ? await repository.changeRepresentationBundle(actor, {
@@ -7144,17 +7436,20 @@ export const createSharedMemoryRepository = (
               "Pending Share binding changed during activation"
             );
           }
+          let stagedRepresentation: SharedMemoryRepresentationRecord | null =
+            null;
           if (!replacement) {
-            await repository.materializeGrantRepresentation(actor, {
-              mutationId: crossIdentitySyncDeterministicUuid({
-                kind: "pending_share_materialization",
-                pendingShareId
-              }),
-              shareGrantId: bundle.grant.id,
-              consentId: bundle.consent.id,
-              expectedGrantVersion: bundle.grant.grantVersion,
-              preview
-            });
+            stagedRepresentation =
+              await repository.materializeGrantRepresentation(actor, {
+                mutationId: crossIdentitySyncDeterministicUuid({
+                  kind: "pending_share_materialization",
+                  pendingShareId
+                }),
+                shareGrantId: bundle.grant.id,
+                consentId: bundle.consent.id,
+                expectedGrantVersion: bundle.grant.grantVersion,
+                preview
+              });
             if (
               input.ensureCompanion &&
               !(await input.ensureCompanion({ actor, grant: bundle.grant }))
@@ -7164,21 +7459,94 @@ export const createSharedMemoryRepository = (
               );
             }
           }
-          await withTransaction(pool, async (client) => {
-            await client.query(
+          const published = await withTransaction(pool, async (client) => {
+            if (stagedRepresentation) {
+              const companion = await client.query<{ id: string }>(
+                `select id from collaboration_threads
+                  where kind='shared_session_discussion' and lifecycle='active'
+                    and share_grant_id=$1 and team_id=$2
+                    and team_workspace_id=$3 and shared_logical_memory_id=$4
+                  limit 1 for update`,
+                [
+                  bundle.grant.id,
+                  bundle.grant.teamId,
+                  bundle.grant.teamWorkspaceId,
+                  bundle.grant.logicalMemoryId
+                ]
+              );
+              if (!companion.rows[0]) return false;
+              const representationPublished = await client.query<Row>(
+                `update team_memory_representations
+                    set state=(case when stale_at is null then 'available' else 'stale' end)::memory_representation_state,
+                        available_at=coalesce(available_at,now()),updated_at=now()
+                  where id=$1 and share_grant_id=$2 and consent_id=$3
+                    and state='pending' and invalidated_at is null
+                  returning representation,logical_memory_id`,
+                [stagedRepresentation.id, bundle.grant.id, bundle.consent.id]
+              );
+              if (!representationPublished.rows[0]) return false;
+              const grantPublished = await client.query<Row>(
+                `update team_session_share_grants
+                    set lifecycle='active',grant_version=grant_version+1,
+                        updated_at=now()
+                  where id=$1 and consent_id=$2 and lifecycle='unavailable'
+                    and revoked_at is null
+                  returning *`,
+                [bundle.grant.id, bundle.consent.id]
+              );
+              if (!grantPublished.rows[0]) return false;
+              await appendOutbox(client, {
+                mutationId: crossIdentitySyncDeterministicUuid({
+                  kind: "pending_share_representation_published",
+                  pendingShareId,
+                  representationId: stagedRepresentation.id
+                }),
+                family: representationAvailableFamily(representation),
+                teamId: bundle.grant.teamId,
+                teamWorkspaceId: bundle.grant.teamWorkspaceId,
+                shareGrantId: bundle.grant.id,
+                logicalMemoryId: bundle.grant.logicalMemoryId,
+                resourceType: "team_memory_representation",
+                resourceId: stagedRepresentation.id,
+                actorPrincipalId: actor.userId
+              });
+              await appendOutbox(client, {
+                mutationId: crossIdentitySyncDeterministicUuid({
+                  kind: "pending_share_grant_published",
+                  pendingShareId,
+                  grantVersion: numberValue(
+                    grantPublished.rows[0].grant_version
+                  )
+                }),
+                family: "share_grant_lifecycle",
+                teamId: bundle.grant.teamId,
+                teamWorkspaceId: bundle.grant.teamWorkspaceId,
+                shareGrantId: bundle.grant.id,
+                logicalMemoryId: bundle.grant.logicalMemoryId,
+                resourceType: "team_session_share_grant",
+                resourceId: bundle.grant.id,
+                actorPrincipalId: actor.userId
+              });
+            }
+            const activated = await client.query<Row>(
               `update pending_share_operations
                   set state='activated',stage='complete',
                       workspace_access_state='active',source_update_state=$2,
                       grant_id=$3,activated_at=now(),last_progress_at=now(),
                       redacted_failure_code=null,updated_at=now(),
                       operation_version=operation_version+1
-                where id=$1 and state='preparing'`,
+                where id=$1 and state=$4 and operation_version=$5
+                  and revoked_at is null
+                returning operation_version`,
               [
                 pendingShareId,
                 mode === "continuous" ? "active" : "stopped",
-                bundle.grant.id
+                bundle.grant.id,
+                workerExpected!.state,
+                workerExpected!.operationVersion
               ]
             );
+            if (!activated.rows[0]) return false;
             await client.query(
               `update pending_share_outbox
                   set state='completed',locked_at=null,updated_at=now()
@@ -7202,12 +7570,17 @@ export const createSharedMemoryRepository = (
                 pendingShareId,
                 state: "activated",
                 grantId: bundle.grant.id,
-                grantVersion: bundle.grant.grantVersion
+                grantVersion: bundle.grant.grantVersion,
+                operationVersion: numberValue(
+                  activated.rows[0].operation_version
+                )
               }),
               ownerUserId: actor.userId,
               pendingShareId
             });
+            return true;
           });
+          if (!published) continue;
           totals.activated += 1;
         } catch {
           await withTransaction(pool, async (client) => {
@@ -7217,42 +7590,53 @@ export const createSharedMemoryRepository = (
                     redacted_failure_code='activation_failed',
                     attempt_count=attempt_count+1,updated_at=now(),
                     operation_version=operation_version+1
-              where id=$1 and state not in ('activated','revoked')`,
-              [pendingShareId]
+              where id=$1 and state=$2 and operation_version=$3
+                and revoked_at is null
+              returning owner_user_id,operation_version`,
+              [
+                pendingShareId,
+                workerExpected?.state ?? "",
+                workerExpected?.operationVersion ?? -1
+              ]
             );
+            if (!failed.rows[0]) return;
             await client.query(
               `update pending_share_outbox
                 set state='completed',locked_at=null,updated_at=now()
               where pending_share_id=$1`,
               [pendingShareId]
             );
-            const owner = await client.query<Row>(
-              `select owner_user_id from pending_share_operations where id=$1`,
-              [pendingShareId]
-            );
-            if ((failed.rowCount ?? 0) > 0 && owner.rows[0]) {
-              await appendPendingShareOwnerEvent(client, {
-                mutationId: crossIdentitySyncDeterministicUuid({
-                  kind: "pending_share_lifecycle",
-                  pendingShareId,
-                  state: "needs_attention",
-                  reason: "activation_failed"
-                }),
-                ownerUserId: stringValue(owner.rows[0].owner_user_id),
-                pendingShareId
-              });
-            }
+            await appendPendingShareOwnerEvent(client, {
+              mutationId: crossIdentitySyncDeterministicUuid({
+                kind: "pending_share_lifecycle",
+                pendingShareId,
+                state: "needs_attention",
+                reason: "activation_failed",
+                operationVersion: numberValue(failed.rows[0].operation_version)
+              }),
+              ownerUserId: stringValue(failed.rows[0].owner_user_id),
+              pendingShareId
+            });
           });
           totals.failed += 1;
         }
       }
       if (input.ensureCompanion) {
         const repairs = await pool.query<Row>(
-          `select g.*,p.owner_user_id as pending_owner_user_id
+          `select g.*,p.id as pending_share_id,
+                  p.owner_user_id as pending_owner_user_id,
+                  p.operation_version as pending_operation_version
              from pending_share_operations p
              join team_session_share_grants g on g.id=p.grant_id
-            where p.state='activated' and p.revoked_at is null
-              and g.lifecycle='active' and g.revoked_at is null
+            where p.state='needs_attention' and p.stage='activating'
+              and p.redacted_failure_code='activation_failed'
+              and p.revoked_at is null
+              and g.lifecycle='unavailable' and g.revoked_at is null
+              and exists (
+                select 1 from team_memory_representations r
+                 where r.share_grant_id=g.id and r.consent_id=g.consent_id
+                   and r.state='pending' and r.invalidated_at is null
+              )
               and not exists (
                 select 1 from collaboration_threads t
                  where t.kind='shared_session_discussion'
@@ -7267,9 +7651,40 @@ export const createSharedMemoryRepository = (
           [limit]
         );
         for (const row of repairs.rows) {
-          await input.ensureCompanion({
+          const repaired = await input.ensureCompanion({
             actor: { userId: stringValue(row.pending_owner_user_id) },
             grant: mapGrant(row)
+          });
+          if (!repaired) continue;
+          await withTransaction(pool, async (client) => {
+            const pendingShareId = stringValue(row.pending_share_id);
+            const resumed = await client.query<Row>(
+              `update pending_share_operations
+                  set state='preparing',source_update_state='preparing',
+                      redacted_failure_code=null,next_attempt_at=now(),
+                      updated_at=now(),operation_version=operation_version+1
+                where id=$1 and state='needs_attention'
+                  and operation_version=$2 and revoked_at is null
+                returning owner_user_id,operation_version`,
+              [pendingShareId, numberValue(row.pending_operation_version)]
+            );
+            if (!resumed.rows[0]) return;
+            await client.query(
+              `update pending_share_outbox
+                  set state='pending',available_at=now(),locked_at=null,
+                      updated_at=now()
+                where pending_share_id=$1`,
+              [pendingShareId]
+            );
+            await appendPendingShareOwnerEvent(client, {
+              mutationId: crossIdentitySyncDeterministicUuid({
+                kind: "pending_share_companion_repaired",
+                pendingShareId,
+                operationVersion: numberValue(resumed.rows[0].operation_version)
+              }),
+              ownerUserId: stringValue(resumed.rows[0].owner_user_id),
+              pendingShareId
+            });
           });
         }
       }
@@ -7347,7 +7762,6 @@ export const createSharedMemoryRepository = (
           );
         } else {
           if (
-            stringValue(pending.mode) !== "continuous" ||
             stringValue(pending.state) !== "activated" ||
             pending.grant_id === null
           ) {
@@ -7355,8 +7769,26 @@ export const createSharedMemoryRepository = (
               "Update controls require an active continuous share"
             );
           }
+          const activeAuthority = await client.query<Row>(
+            `select g.consent_id,c.mode,c.state as consent_state
+               from team_session_share_grants g
+               join source_owner_representation_consents c on c.id=g.consent_id
+              where g.id=$1 and g.owner_user_id=$2 and g.lifecycle='active'
+                and g.revoked_at is null and c.revoked_at is null
+              for update of g,c`,
+            [pending.grant_id, actor.userId]
+          );
+          const activeConsent = activeAuthority.rows[0];
+          if (
+            !activeConsent ||
+            stringValue(activeConsent.mode) !== "continuous"
+          ) {
+            throw new SharedMemoryConflictError(
+              "Update controls require the active Share Grant consent to be continuous"
+            );
+          }
           const expectedState = input.action === "pause" ? "active" : "paused";
-          if (stringValue(pending.source_update_state) !== expectedState) {
+          if (stringValue(activeConsent.consent_state) !== expectedState) {
             throw new SharedMemoryConflictError(
               `Continuous share updates are not ${expectedState}`
             );
@@ -7371,7 +7803,7 @@ export const createSharedMemoryRepository = (
                     set state='active',paused_at=null,updated_at=now(),
                         state_reason_code=null
                   where id=$1 and state='paused' and revoked_at is null`,
-            [pending.consent_id]
+            [activeConsent.consent_id]
           );
           if ((consentControl.rowCount ?? 0) !== 1) {
             throw new SharedMemoryConflictError(
@@ -7417,7 +7849,14 @@ export const createSharedMemoryRepository = (
           ]
         );
         await appendPendingShareOwnerEvent(client, {
-          mutationId: input.mutationId,
+          mutationId: crossIdentitySyncDeterministicUuid({
+            kind: "pending_share_lifecycle",
+            pendingShareId: input.pendingShareId,
+            parentMutationId: input.mutationId,
+            action: input.action,
+            state: stringValue(updated.rows[0]!.state),
+            operationVersion: numberValue(updated.rows[0]!.operation_version)
+          }),
           ownerUserId: actor.userId,
           pendingShareId: input.pendingShareId
         });
@@ -8600,7 +9039,7 @@ export const createSharedMemoryRepository = (
           await client.query(
             `update pending_share_operations
                 set grant_id=$2,stage='activating',last_progress_at=now(),
-                    updated_at=now(),operation_version=operation_version+1
+                    updated_at=now()
               where id=$1 and state='preparing'`,
             [input.internalPendingShareId, row.id]
           );
@@ -8995,12 +9434,26 @@ export const createSharedMemoryRepository = (
                 [input.shareGrantId, actor.userId]
               )
             : null;
+        const remediationRecovery =
+          stringValue(grantRow.lifecycle) === "unavailable"
+            ? await client.query<Row>(
+                `select id,operation_version
+                   from pending_share_operations
+                  where grant_id=$1 and owner_user_id=$2
+                    and state='needs_attention'
+                    and redacted_failure_code='approval_content_remediation'
+                    and revoked_at is null
+                  for update`,
+                [input.shareGrantId, actor.userId]
+              )
+            : null;
         if (
           !["active", "unavailable"].includes(
             stringValue(grantRow.lifecycle)
           ) ||
           (stringValue(grantRow.lifecycle) === "unavailable" &&
-            !pendingActivation?.rows[0]) ||
+            !pendingActivation?.rows[0] &&
+            !remediationRecovery?.rows[0]) ||
           grantRow.revoked_at !== null
         ) {
           throw new SharedMemoryConflictError(
@@ -9582,29 +10035,26 @@ export const createSharedMemoryRepository = (
             preview.sourceRevision < replicaState.sourceCursor);
         const finalized = await client.query<Row>(
           `update team_memory_representations
-            set state=$2,
+            set state=$2::memory_representation_state,
                 chunk_count=$3,
                 freshness_evaluated_at=now(),
-                available_at=coalesce(available_at, now()),
+                available_at=case when $2::memory_representation_state='pending' then null
+                  else coalesce(available_at, now()) end,
                 stale_at=$4,
                 updated_at=now()
           where id=$1
           returning *`,
           [
             representationId,
-            staleState ? "stale" : "available",
+            pendingActivation?.rows[0]
+              ? "pending"
+              : staleState
+                ? "stale"
+                : "available",
             chunks.length,
             staleState ? new Date() : null
           ]
         );
-        if (pendingActivation?.rows[0]) {
-          await client.query(
-            `update team_session_share_grants
-                set lifecycle='active',updated_at=now()
-              where id=$1 and lifecycle='unavailable'`,
-            [grant.id]
-          );
-        }
         if (
           consent.mode === "continuous" &&
           preview.sourceRevision > grant.sourceRevision
@@ -9616,17 +10066,73 @@ export const createSharedMemoryRepository = (
             [grant.id, preview.sourceRevision]
           );
         }
-        await appendOutbox(client, {
-          mutationId: input.mutationId,
-          family: representationAvailableFamily(preview.representation),
-          teamId: grant.teamId,
-          teamWorkspaceId: grant.teamWorkspaceId,
-          shareGrantId: grant.id,
-          logicalMemoryId: grant.logicalMemoryId,
-          resourceType: "team_memory_representation",
-          resourceId: representationId,
-          actorPrincipalId: actor.userId
-        });
+        if (!pendingActivation?.rows[0]) {
+          await appendOutbox(client, {
+            mutationId: input.mutationId,
+            family: representationAvailableFamily(preview.representation),
+            teamId: grant.teamId,
+            teamWorkspaceId: grant.teamWorkspaceId,
+            shareGrantId: grant.id,
+            logicalMemoryId: grant.logicalMemoryId,
+            resourceType: "team_memory_representation",
+            resourceId: representationId,
+            actorPrincipalId: actor.userId
+          });
+        }
+        if (remediationRecovery?.rows[0]) {
+          await client.query(
+            `update team_session_share_grants
+                set lifecycle='active',grant_version=grant_version+1,
+                    updated_at=now()
+              where id=$1 and lifecycle='unavailable' and revoked_at is null`,
+            [grant.id]
+          );
+          const resumed = await client.query<Row>(
+            `update pending_share_operations
+                set state='activated',stage='complete',
+                    workspace_access_state='active',source_update_state='active',
+                    redacted_failure_code=null,last_progress_at=now(),updated_at=now(),
+                    operation_version=operation_version+1
+              where id=$1 and state='needs_attention'
+                and operation_version=$2 and revoked_at is null
+              returning operation_version`,
+            [
+              remediationRecovery.rows[0].id,
+              remediationRecovery.rows[0].operation_version
+            ]
+          );
+          if (!resumed.rows[0]) {
+            throw new SharedMemoryConflictError(
+              "Approval Activity remediation recovery changed concurrently"
+            );
+          }
+          await appendOutbox(client, {
+            mutationId: crossIdentitySyncDeterministicUuid({
+              kind: "approval_activity_continuous_rebuilt",
+              shareGrantId: grant.id,
+              sourceRevision: preview.sourceRevision
+            }),
+            family: "share_grant_lifecycle",
+            teamId: grant.teamId,
+            teamWorkspaceId: grant.teamWorkspaceId,
+            shareGrantId: grant.id,
+            logicalMemoryId: grant.logicalMemoryId,
+            resourceType: "team_session_share_grant",
+            resourceId: grant.id,
+            actorPrincipalId: actor.userId
+          });
+          await appendPendingShareOwnerEvent(client, {
+            mutationId: crossIdentitySyncDeterministicUuid({
+              kind: "pending_share_lifecycle",
+              pendingShareId: stringValue(remediationRecovery.rows[0].id),
+              state: "activated",
+              reason: "approval_content_remediation_rebuilt",
+              operationVersion: numberValue(resumed.rows[0].operation_version)
+            }),
+            ownerUserId: actor.userId,
+            pendingShareId: stringValue(remediationRecovery.rows[0].id)
+          });
+        }
         return mapRepresentation(finalized.rows[0] as Row);
       };
       return transactionClient
@@ -9655,7 +10161,16 @@ export const createSharedMemoryRepository = (
             and consent.revoked_at is null
             and (consent.expires_at is null or consent.expires_at>now())
           where g.remote_replica_id=$1
-            and g.lifecycle='active'
+            and (
+              g.lifecycle='active'
+              or (g.lifecycle='unavailable' and exists (
+                select 1 from pending_share_operations pending
+                 where pending.grant_id=g.id
+                   and pending.state='needs_attention'
+                   and pending.redacted_failure_code='approval_content_remediation'
+                   and pending.revoked_at is null
+              ))
+            )
             and g.revoked_at is null
             and g.source_revision<$2
             and g.active_representation=any(consent.allowed_representations)
@@ -9852,8 +10367,6 @@ export const createSharedMemoryRepository = (
              and mr.disabled_at is null
            join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
-             and sr.revoked_at is null
-             and sr.state in ('processing','partially_available','ready','stale')
            join lateral (
              select r0.state,r0.source_revision,r0.updated_at
                from team_memory_representations r0
@@ -9957,15 +10470,6 @@ export const createSharedMemoryRepository = (
           `limit must be between 1 and ${MAX_WORKSPACE_INDEX_LIMIT}`
         );
       }
-      if (
-        !Number.isSafeInteger(input.offset) ||
-        input.offset < 0 ||
-        input.offset > MAX_WORKSPACE_INDEX_OFFSET
-      ) {
-        throw new TypeError(
-          `offset must be between 0 and ${MAX_WORKSPACE_INDEX_OFFSET}`
-        );
-      }
       const history = input.history ?? false;
       return withTransaction(pool, async (client) => {
         await client.query(
@@ -9981,10 +10485,20 @@ export const createSharedMemoryRepository = (
         if (Number.isNaN(snapshotAt.getTime())) {
           throw new TypeError("snapshotAt must be a timestamp");
         }
+        const afterCreatedAt = input.after
+          ? new Date(input.after.createdAt)
+          : null;
+        if (afterCreatedAt && Number.isNaN(afterCreatedAt.getTime())) {
+          throw new TypeError("Owned-share keyset timestamp is invalid");
+        }
+        if (input.after) {
+          assertUuid(input.after.id, "ownedShareCursorId");
+        }
         const result = await client.query<Row>(
           `select owned.record_kind,owned.payload,owned.source_access,
                   jsonb_build_object(
                     'sourceSessionId',s.id,
+                    'companionThreadId',companion.id,
                     'sourceTitle',coalesce(nullif(btrim(owned.display_title),''),
                                            nullif(btrim(s.metadata ->> 'threadName'),''),
                                            s.external_session_id,'Untitled conversation'),
@@ -9999,7 +10513,8 @@ export const createSharedMemoryRepository = (
                     'lastReadyRevision',ready.source_revision,
                     'lastSuccessfulUpdateAt',ready.available_at
                   ) as summary,
-                  sort_updated_at,sort_id
+                  owned.created_at as sort_created_at,owned.record_kind as sort_record_kind,
+                  owned.sort_id
              from (
                select 'pending'::text as record_kind,to_jsonb(p) as payload,
                       case when source.id is null then null else
@@ -10011,7 +10526,7 @@ export const createSharedMemoryRepository = (
                         else p.consent_id end as consent_id,
                       p.mode as share_mode,
                       p.preview_id,p.preview_hash,p.preview_revision,p.source_revision,
-                      p.grant_id,p.created_at,p.updated_at as sort_updated_at,p.id as sort_id
+                      p.grant_id,p.created_at,p.id as sort_id
                  from pending_share_operations p
                  left join lateral (
                    select s.id,s.mode,s.lifecycle,s.version
@@ -10020,7 +10535,7 @@ export const createSharedMemoryRepository = (
                     order by s.updated_at desc,s.id desc limit 1
                  ) source on true
                 where p.owner_user_id=$1
-                  and p.created_at<=$5
+                  and p.created_at<=$4
                   and (($2::boolean and p.state='revoked')
                     or (not $2::boolean and
                         p.state in ('preparing','needs_attention','failed','activated')))
@@ -10033,7 +10548,7 @@ export const createSharedMemoryRepository = (
                       null::shared_memory_consent_mode as share_mode,
                       null::uuid as preview_id,null::text as preview_hash,
                       null::integer as preview_revision,null::bigint as source_revision,
-                      g.id as grant_id,g.created_at,g.updated_at as sort_updated_at,g.id as sort_id
+                      g.id as grant_id,g.created_at,g.id as sort_id
                  from team_session_share_grants g
                  left join lateral (
                    select s.id,s.mode,s.lifecycle,s.version
@@ -10042,7 +10557,7 @@ export const createSharedMemoryRepository = (
                     order by s.updated_at desc,s.id desc limit 1
                  ) source on true
                 where g.owner_user_id=$1
-                  and g.created_at<=$5
+                  and g.created_at<=$4
                   and not exists (
                     select 1 from pending_share_operations p
                      where p.grant_id=g.id
@@ -10058,23 +10573,51 @@ export const createSharedMemoryRepository = (
              join team_workspaces w on w.id=owned.team_workspace_id and w.team_id=owned.team_id
              left join source_owner_representation_consents c on c.id=owned.consent_id
              left join lateral (
+               select ct.id
+                 from collaboration_threads ct
+                where ct.kind='shared_session_discussion'
+                  and ct.share_grant_id=owned.grant_id
+                  and ct.team_id=owned.team_id
+                  and ct.team_workspace_id=owned.team_workspace_id
+                  and ct.shared_logical_memory_id=owned.logical_memory_id
+                  and ct.lifecycle='active'
+                order by ct.created_at,ct.id limit 1
+             ) companion on true
+             left join lateral (
                select r.source_revision,r.available_at
                  from team_memory_representations r
                 where r.share_grant_id=owned.grant_id and r.state='available'
                 order by r.source_revision desc,r.updated_at desc limit 1
              ) ready on true
-            order by sort_updated_at desc,sort_id desc
-            limit $3 offset $4`,
-          [actor.userId, history, input.limit + 1, input.offset, snapshotAt]
+            where ($5::timestamptz is null or
+                   owned.created_at < $5::timestamptz or
+                   (owned.created_at = $5::timestamptz and owned.record_kind > $6::text) or
+                   (owned.created_at = $5::timestamptz and owned.record_kind = $6::text
+                    and owned.sort_id < $7::uuid))
+            order by owned.created_at desc,owned.record_kind asc,owned.sort_id desc
+            limit $3`,
+          [
+            actor.userId,
+            history,
+            input.limit + 1,
+            snapshotAt,
+            afterCreatedAt,
+            input.after?.recordKind ?? null,
+            input.after?.id ?? null
+          ]
         );
+        const pageRows = result.rows.slice(0, input.limit);
+        const last = pageRows.at(-1);
+        const hasMore = result.rows.length > input.limit;
         return {
-          entries: result.rows.slice(0, input.limit).map((row) => {
+          entries: pageRows.map((row) => {
             const payload = row.payload as Row;
             const source = row.source_access as Row | null;
             const rawSummary = row.summary as Row;
             const rawPreview = rawSummary.authorizedPreview as Row | null;
             const summary: OwnedShareSummary = {
               sourceSessionId: nullableString(rawSummary.sourceSessionId),
+              companionThreadId: nullableString(rawSummary.companionThreadId),
               sourceTitle: stringValue(rawSummary.sourceTitle),
               teamName: stringValue(rawSummary.teamName),
               workspaceName: stringValue(rawSummary.workspaceName),
@@ -10114,9 +10657,18 @@ export const createSharedMemoryRepository = (
                 } as const);
           }),
           limit: input.limit,
-          offset: input.offset,
-          hasMore: result.rows.length > input.limit,
-          snapshotAt: snapshotAt.toISOString()
+          hasMore,
+          snapshotAt: snapshotAt.toISOString(),
+          next:
+            hasMore && last
+              ? {
+                  createdAt: iso(last.sort_created_at),
+                  recordKind: stringValue(last.sort_record_kind) as
+                    | "grant"
+                    | "pending",
+                  id: stringValue(last.sort_id)
+                }
+              : null
         };
       });
     },
@@ -10124,14 +10676,16 @@ export const createSharedMemoryRepository = (
     async getOwnerShare(actor, input) {
       assertUuid(input.id, "ownedShareId");
       for (const history of [false, true]) {
-        let offset = 0;
+        let after:
+          | { createdAt: string; recordKind: "grant" | "pending"; id: string }
+          | undefined;
         let snapshotAt: string | undefined;
-        while (offset <= MAX_WORKSPACE_INDEX_OFFSET) {
+        for (;;) {
           const page = await repository.listOwnerShares(actor, {
             limit: MAX_WORKSPACE_INDEX_LIMIT,
-            offset,
             history,
-            snapshotAt
+            snapshotAt,
+            after
           });
           snapshotAt = page.snapshotAt;
           const match = page.entries.find(
@@ -10142,8 +10696,8 @@ export const createSharedMemoryRepository = (
                 : entry.grant.id === input.id)
           );
           if (match) return match;
-          if (!page.hasMore) break;
-          offset += page.entries.length;
+          if (!page.hasMore || !page.next) break;
+          after = page.next;
         }
       }
       return null;
@@ -10191,7 +10745,7 @@ export const createSharedMemoryRepository = (
                 set display_title=$3,updated_at=now(),
                     operation_version=operation_version+1
               where id=$1 and owner_user_id=$2 and state<>'purged'
-          returning grant_id`,
+          returning grant_id,operation_version,state`,
             [input.id, actor.userId, title]
           );
           if (!result.rows[0]) return false;
@@ -10223,6 +10777,17 @@ export const createSharedMemoryRepository = (
               });
             }
           }
+          await appendPendingShareOwnerEvent(client, {
+            mutationId: crossIdentitySyncDeterministicUuid({
+              kind: "pending_share_lifecycle",
+              pendingShareId: input.id,
+              state: stringValue(result.rows[0].state),
+              operationVersion: numberValue(result.rows[0].operation_version),
+              action: "renamed"
+            }),
+            ownerUserId: actor.userId,
+            pendingShareId: input.id
+          });
           await client.query(
             `insert into audit_events
                (actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
@@ -10240,13 +10805,28 @@ export const createSharedMemoryRepository = (
         );
         if (!result.rows[0]) return false;
         const row = result.rows[0];
-        await client.query(
+        const pending = await client.query<Row>(
           `update pending_share_operations
               set display_title=$3,updated_at=now(),
                   operation_version=operation_version+1
-            where grant_id=$1 and owner_user_id=$2 and state<>'purged'`,
+            where grant_id=$1 and owner_user_id=$2 and state<>'purged'
+          returning id,state,operation_version`,
           [input.id, actor.userId, title]
         );
+        for (const pendingRow of pending.rows) {
+          const pendingShareId = stringValue(pendingRow.id);
+          await appendPendingShareOwnerEvent(client, {
+            mutationId: crossIdentitySyncDeterministicUuid({
+              kind: "pending_share_lifecycle",
+              pendingShareId,
+              state: stringValue(pendingRow.state),
+              operationVersion: numberValue(pendingRow.operation_version),
+              action: "renamed"
+            }),
+            ownerUserId: actor.userId,
+            pendingShareId
+          });
+        }
         await appendOutbox(client, {
           mutationId: crossIdentitySyncDeterministicUuid({
             kind: "owner_share_rename",
