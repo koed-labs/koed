@@ -660,6 +660,10 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/historical-import-sources", input);
   }
 
+  async historicalImportAdmission(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/v1/historical-import-admission");
+  }
+
   async transitionHistoricalImportRun(
     runId: string,
     input: Record<string, unknown>

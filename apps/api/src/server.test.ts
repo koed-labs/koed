@@ -1098,6 +1098,7 @@ const createFakeRepository = () => {
     return {
       ...source,
       sourceKind: artifact.sourceKind,
+      sourceAdapterVersion: artifact.sourceAdapterVersion,
       sourceSessionId: artifact.externalSessionId,
       sourceFingerprint: artifact.sourceFingerprint,
       sessionId: artifact.sessionId,
@@ -1106,6 +1107,7 @@ const createFakeRepository = () => {
       historicalCursorOffset,
       historicalCursorLine: cursor?.sourceLine ?? artifact.journalStartLine,
       historicalCursorDigest: cursor?.lastVerifiedDigest ?? null,
+      historicalCursorParserState: cursor?.parserState ?? {},
       ...(historicalCursorCurrentTurnId
         ? { historicalCursorCurrentTurnId }
         : {}),
@@ -3279,6 +3281,7 @@ const createFakeRepository = () => {
         historicalCursorOffset: artifact.journalStartOffset,
         historicalCursorLine: artifact.journalStartLine,
         historicalCursorDigest: null,
+        historicalCursorParserState: {},
         providerCursorOffset: artifact.providerCursorOffset,
         providerCursorLine: artifact.providerCursorLine,
         sourceSizeBytes: artifact.currentSourceLength,
@@ -3432,7 +3435,7 @@ const createFakeRepository = () => {
           ...item,
           sessionId: source.sessionId,
           sourceKind: source.sourceKind,
-          sourceAdapterVersion: "codex-transcript-v1",
+          sourceAdapterVersion: source.sourceAdapterVersion,
           sourceTransport: "historical_import",
           externalSessionId: source.sourceSessionId,
           sourceFingerprint: source.sourceFingerprint,
@@ -12986,6 +12989,10 @@ describe("account and access flows", () => {
     const app = await buildServer({
       repository,
       runMemoryJobsInlineForTests: true,
+      historicalImportAdmission: async () => ({
+        admitted: false,
+        reason: "live_projection_pressure"
+      }),
       conversationSourceSignerFactory: (input) => ({
         deploymentId: "00000000-0000-4000-8000-000000000001",
         deviceInstanceId: "00000000-0000-4000-8000-000000000002",
@@ -13010,6 +13017,21 @@ describe("account and access flows", () => {
     const ownerHeaders = {
       authorization: `Bearer ${jsonBody<TokenResponse>(ownerToken).token}`
     };
+    const admission = await app.inject({
+      method: "GET",
+      url: "/v1/historical-import-admission",
+      headers: ownerHeaders
+    });
+    const unauthenticatedAdmission = await app.inject({
+      method: "GET",
+      url: "/v1/historical-import-admission"
+    });
+    expect(admission.statusCode, admission.body).toBe(200);
+    expect(admission.json()).toEqual({
+      admitted: false,
+      reason: "live_projection_pressure"
+    });
+    expect(unauthenticatedAdmission.statusCode).toBe(401);
     const runResponse = await app.inject({
       method: "POST",
       url: "/v1/historical-imports",
@@ -13646,11 +13668,16 @@ describe("account and access flows", () => {
     expect(exactGeneration.statusCode).toBe(200);
     expect(resumedLookup.statusCode).toBe(200);
     expect(resumedLookup.body).not.toContain("must-not-be-presented");
-    expect(
-      jsonBody<{
-        source: { historicalCursorCurrentTurnId?: string };
-      }>(resumedLookup).source.historicalCursorCurrentTurnId
-    ).toBe("turn-1");
+    const resumedSource = jsonBody<{
+      source: {
+        historicalCursorCurrentTurnId?: string;
+        historicalCursorParserState?: Record<string, unknown>;
+      };
+    }>(resumedLookup).source;
+    expect(resumedSource.historicalCursorCurrentTurnId).toBe("turn-1");
+    expect(resumedSource.historicalCursorParserState).toEqual({
+      currentTurnId: "turn-1"
+    });
     expect(
       jsonBody<{ artifact: { sourceGenerationId: string } }>(exactGeneration)
         .artifact.sourceGenerationId
@@ -13684,6 +13711,11 @@ describe("account and access flows", () => {
     const lookup = await app.inject({
       method: "GET",
       url: "/v1/historical-import-sources/lookup?artifactId=11111111-1111-4111-8111-111111111111",
+      headers
+    });
+    const admission = await app.inject({
+      method: "GET",
+      url: "/v1/historical-import-admission",
       headers
     });
     const liveCursor = await app.inject({
@@ -13722,6 +13754,7 @@ describe("account and access flows", () => {
 
     expect(control.statusCode).toBe(404);
     expect(lookup.statusCode).toBe(404);
+    expect(admission.statusCode).toBe(404);
     expect(liveCursor.statusCode).toBe(404);
     expect(rawPath.statusCode, rawPath.body).toBe(400);
     expect(rawPath.body).not.toContain("/Users/alice");

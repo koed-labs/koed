@@ -4,6 +4,14 @@ import { createHash } from "node:crypto";
 export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
 
 export {
+  decideHistoricalAdmission,
+  type HistoricalAdmissionDecision,
+  type HistoricalAdmissionInput,
+  type HistoricalAdmissionPauseReason,
+  type HistoricalImportBatchConfig
+} from "./historical-admission.js";
+
+export {
   aiClientSourceAdapterRegistry,
   assertSupportedAiClientSourceAdapter,
   isSupportedAiClientSourceAdapter,

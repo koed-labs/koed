@@ -92,6 +92,7 @@ import {
   readLocalEdgeUpstreamEnrollmentBinding,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
+import { createHistoricalRawAdmission } from "../memory/historical-raw-admission.js";
 import {
   createSecureUpstreamFetch,
   registeredPrivateNetworkPolicy
@@ -157,6 +158,7 @@ export interface BuildServerOptions {
   collaborationRepository?: CollaborationRepository;
   retentionRepository?: RetentionLifecycleRepository;
   embeddingCapacityRepository?: EmbeddingCapacityRepository;
+  historicalImportAdmission?: ApiRouteContext["historicalImport"]["admission"];
   /** Test-only queue factory injection. Production uses createMemoryJobQueue. */
   memoryJobQueueFactory?: typeof createMemoryJobQueue;
   runMemoryJobsInlineForTests?: boolean;
@@ -642,6 +644,34 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const embeddingModelConfig = resolveSupportedEmbeddingModelConfig(
     config.embeddingModel
   );
+  const embeddingCapacityRepository =
+    options.embeddingCapacityRepository ??
+    (pool ? createEmbeddingCapacityRepository(pool) : null);
+  const configuredLiveBacklogMaximum = Number.parseInt(
+    process.env.MEMORY_HISTORICAL_IMPORT_LIVE_BACKLOG_MAX ?? "0",
+    10
+  );
+  const historicalImportAdmission =
+    options.historicalImportAdmission ??
+    (repository && embeddingCapacityRepository && embeddingQueue
+      ? createHistoricalRawAdmission({
+          repository,
+          embeddingCapacityRepository,
+          embeddingQueue,
+          embeddingModel: embeddingModelConfig.key,
+          embeddingDimensions: embeddingModelConfig.dimensions,
+          maxLiveProjectionRows:
+            Number.isInteger(configuredLiveBacklogMaximum) &&
+            configuredLiveBacklogMaximum >= 0 &&
+            configuredLiveBacklogMaximum <= 10_000
+              ? configuredLiveBacklogMaximum
+              : 0
+        })
+      : () =>
+          Promise.resolve({
+            admitted: false,
+            reason: "api_degraded" as const
+          }));
   const {
     runCompactionInline,
     enqueueEmbedding,
@@ -874,6 +904,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     jobs: {
       enqueueEmbedding
     },
+    historicalImport: {
+      admission: historicalImportAdmission
+    },
     graph: {
       cacheProvider,
       graphCacheTtlSeconds: config.cache.graphCacheTtlSeconds,
@@ -1097,9 +1130,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     embeddingQueue,
     lcmEmbeddingQueue,
     compactionQueue,
-    embeddingCapacityRepository:
-      options.embeddingCapacityRepository ??
-      (pool ? createEmbeddingCapacityRepository(pool) : null),
+    embeddingCapacityRepository,
     envelopeEncryptionProvider,
     alertFetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     runCompactionInline,

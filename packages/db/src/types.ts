@@ -735,6 +735,8 @@ export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
   historicalCursorOffset: number;
   historicalCursorLine: number;
   historicalCursorDigest: string | null;
+  /** Bounded adapter-owned state used only to resume canonical historical parsing. */
+  historicalCursorParserState: Record<string, unknown>;
   historicalCursorCurrentTurnId?: string;
   providerCursorOffset: number;
   providerCursorLine: number;

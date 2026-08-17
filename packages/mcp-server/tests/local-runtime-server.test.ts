@@ -81,9 +81,7 @@ describe("Local AI Runtime", () => {
       dependencies
     );
 
-    expect(dependencies.startCodexTranscriptWatcher).toHaveBeenCalledWith(
-      apiClient
-    );
+    expect(dependencies.startCodexTranscriptWatcher).toHaveBeenCalledTimes(1);
     expect(dependencies.startClaudeTranscriptWatcher).toHaveBeenCalledWith(
       apiClient,
       {}

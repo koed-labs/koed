@@ -669,6 +669,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/historical-import-admission",
+    "session_or_api_token",
+    "capture",
+    "Read the content-free local admission decision for one raw historical batch.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/historical-imports",
     "session_or_api_token",
     "capture",

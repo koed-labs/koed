@@ -136,6 +136,7 @@ type SourceRow = {
   historical_cursor_offset: string | number;
   historical_cursor_line: number;
   historical_cursor_digest: string | null;
+  historical_cursor_parser_state: Record<string, unknown> | null;
   historical_cursor_current_turn_id: string | null;
   provider_cursor_offset: string | number;
   provider_cursor_line: number;
@@ -195,6 +196,7 @@ const sourceSelect = (): string => {
   coalesce(historical_cursor.source_line, artifact.journal_start_line)
     as historical_cursor_line,
   historical_cursor.last_verified_digest as historical_cursor_digest,
+  historical_cursor.parser_state as historical_cursor_parser_state,
   case
     when jsonb_typeof(historical_cursor.parser_state -> 'currentTurnId') = 'string'
      and length(historical_cursor.parser_state ->> 'currentTurnId') between 1 and 512
@@ -413,6 +415,7 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
     historicalCursorOffset: cursorOffset,
     historicalCursorLine: row.historical_cursor_line,
     historicalCursorDigest: row.historical_cursor_digest,
+    historicalCursorParserState: row.historical_cursor_parser_state ?? {},
     ...(row.historical_cursor_current_turn_id
       ? {
           historicalCursorCurrentTurnId: row.historical_cursor_current_turn_id
