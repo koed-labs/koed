@@ -277,40 +277,48 @@ const ready = true;
   it("renders approval-review transcript segments through the normal message and tool presentation", async () => {
     const source =
       "The following is the Codex agent history whose request action you are assessing. TRANSCRIPT START ... TRANSCRIPT END";
+    const transcriptDisplay: NonNullable<
+      DesktopConversationEvent["transcriptDisplay"]
+    > = {
+      kind: "approval_review",
+      version: 1,
+      truncated: false,
+      segments: [
+        {
+          kind: "message",
+          sequence: 1,
+          actor: "user",
+          content: "## Requested change\n\n- Keep the formatting"
+        },
+        {
+          kind: "message",
+          sequence: 2,
+          actor: "agent",
+          content: "I will inspect the renderer."
+        },
+        {
+          kind: "tool_call",
+          sequence: 3,
+          toolName: "exec",
+          content: "pnpm test"
+        },
+        {
+          kind: "tool_result",
+          sequence: 4,
+          toolName: "exec",
+          content: "Tests passed"
+        }
+      ]
+    };
     const approvalEvent: DesktopConversationEvent = {
       ...event("approval-review", source),
       actor: "user",
-      transcriptDisplay: {
+      activityDisplay: {
         kind: "approval_review",
-        version: 1,
-        truncated: false,
-        segments: [
-          {
-            kind: "message",
-            sequence: 1,
-            actor: "user",
-            content: "## Requested change\n\n- Keep the formatting"
-          },
-          {
-            kind: "message",
-            sequence: 2,
-            actor: "agent",
-            content: "I will inspect the renderer."
-          },
-          {
-            kind: "tool_call",
-            sequence: 3,
-            toolName: "exec",
-            content: "pnpm test"
-          },
-          {
-            kind: "tool_result",
-            sequence: 4,
-            toolName: "exec",
-            content: "Tests passed"
-          }
-        ]
-      }
+        label: "Approval activity",
+        transcript: transcriptDisplay
+      },
+      transcriptDisplay
     };
 
     await renderSurface(vi.fn().mockResolvedValue([approvalEvent]));
@@ -323,7 +331,72 @@ const ready = true;
       container.querySelector(".native-tool-group")?.textContent
     ).toContain("2 activity items");
     expect(container.textContent).not.toContain("Approval review transcript");
+    expect(container.textContent).not.toContain("Approval activity");
+    expect(container.textContent).toContain("You");
+    expect(container.textContent).toContain("AI Client");
     expect(container.textContent).not.toContain(source);
+  });
+
+  it("shows canonical messages once and hides internal approval activity", async () => {
+    const canonical: DesktopConversationEvent = {
+      ...event(
+        "canonical",
+        "The canonical request",
+        "2026-07-13T10:59:00.000Z"
+      ),
+      actor: "user"
+    };
+    const approvalTranscript: DesktopConversationEvent = {
+      ...event(
+        "approval-transcript",
+        "Approval activity",
+        "2026-07-13T11:00:00.000Z"
+      ),
+      actor: null,
+      eventType: "approval_activity",
+      transcriptDisplay: {
+        kind: "approval_review",
+        version: 1,
+        truncated: false,
+        segments: [
+          {
+            kind: "message",
+            sequence: 1,
+            actor: "user",
+            content: "The canonical request"
+          }
+        ]
+      }
+    };
+    const helper: DesktopConversationEvent = {
+      ...event(
+        "approval-helper",
+        "Approval activity",
+        "2026-07-13T11:01:00.000Z"
+      ),
+      actor: null,
+      eventType: "approval_activity",
+      activityDisplay: {
+        kind: "approval_status",
+        label: "Approval activity",
+        status: "helper_conversation"
+      }
+    };
+
+    await renderSurface(
+      vi.fn().mockResolvedValue([canonical, approvalTranscript, helper])
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("The canonical request")
+    );
+
+    expect(
+      container.textContent?.match(/The canonical request/gu)
+    ).toHaveLength(1);
+    expect(container.textContent).not.toContain("Approval activity");
+    expect(
+      container.querySelectorAll(".native-conversation-event")
+    ).toHaveLength(1);
   });
 
   it("supports focus and interaction with a labelled tool activity disclosure", async () => {

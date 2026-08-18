@@ -331,7 +331,7 @@ describe("PersonalMemoryWorkspace", () => {
     ).toBe("");
   });
 
-  it("uses a Captured Session icon for the empty Project selection state", async () => {
+  it("places the empty Projects guidance in the detail pane", async () => {
     const store = new PersonalMemoryStore(api());
 
     await act(async () => {
@@ -344,8 +344,14 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("Select a Project")
+      expect(container.textContent).toContain("No Projects yet")
     );
+    const detail = container.querySelector(".personal-memory-detail-pane");
+    const list = container.querySelector(".personal-project-list");
+    expect(detail?.textContent).toContain(
+      "Projects appear after the Supported Capture Hook records a Captured Session."
+    );
+    expect(list?.textContent).not.toContain("No Projects yet");
     expect(
       container.querySelector(".personal-memory-empty-detail .lucide-book-text")
     ).not.toBeNull();
@@ -375,7 +381,7 @@ describe("PersonalMemoryWorkspace", () => {
     expect(
       container.querySelector(".personal-memory-detail-pane")?.textContent
     ).toContain("Projects unavailable");
-    expect(container.textContent).not.toContain("Select a Project");
+    expect(container.textContent).not.toContain("No Projects yet");
     expect(container.textContent).not.toContain("internal transport detail");
     expect(
       container.querySelector(
@@ -461,6 +467,51 @@ describe("PersonalMemoryWorkspace", () => {
       limit: 500,
       cursor: { sourceSequence: 1 }
     });
+  });
+
+  it("keeps the composer in the final Conversation row after a load failure", async () => {
+    const selected = thread(1);
+    const source = project([selected]);
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [source]),
+        loadEventPage: vi.fn(async () => {
+          throw new Error(
+            "Local Personal Memory returned an invalid response."
+          );
+        })
+      })
+    );
+
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          managedConversations={managedApi()}
+          onNavigate={vi.fn()}
+          route={{
+            kind: "session",
+            projectId: source.id,
+            sessionId
+          }}
+          store={store}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(
+        container
+          .querySelector('[data-testid="conversation"]')
+          ?.getAttribute("data-status")
+      ).toBe("error")
+    );
+
+    const shell = container.querySelector(".personal-conversation-shell");
+    expect(shell?.firstElementChild?.classList).toContain(
+      "personal-conversation-timeline"
+    );
+    expect(shell?.lastElementChild?.classList).toContain(
+      "personal-managed-composer"
+    );
   });
 
   it("renames a Captured Session from the preview header", async () => {

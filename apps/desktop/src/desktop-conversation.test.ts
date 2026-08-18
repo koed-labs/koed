@@ -61,28 +61,36 @@ describe("native Desktop conversation contract", () => {
   });
 
   it("expands approval-review fallback data into the standard timeline shape", () => {
+    const transcriptDisplay: NonNullable<
+      DesktopConversationEvent["transcriptDisplay"]
+    > = {
+      kind: "approval_review",
+      version: 1,
+      truncated: false,
+      segments: [
+        { kind: "message", sequence: 1, actor: "user", content: "Request" },
+        {
+          kind: "tool_call",
+          sequence: 2,
+          toolName: "exec",
+          content: "pnpm test"
+        },
+        {
+          kind: "tool_result",
+          sequence: 3,
+          toolName: "exec",
+          content: "Tests passed"
+        }
+      ]
+    };
     const source = event("approval", "2026-07-13T11:00:00.000Z", {
       actor: "user",
-      transcriptDisplay: {
+      activityDisplay: {
         kind: "approval_review",
-        version: 1,
-        truncated: false,
-        segments: [
-          { kind: "message", sequence: 1, actor: "user", content: "Request" },
-          {
-            kind: "tool_call",
-            sequence: 2,
-            toolName: "exec",
-            content: "pnpm test"
-          },
-          {
-            kind: "tool_result",
-            sequence: 3,
-            toolName: "exec",
-            content: "Tests passed"
-          }
-        ]
-      }
+        label: "Approval activity",
+        transcript: transcriptDisplay
+      },
+      transcriptDisplay
     });
 
     const expanded = expandConversationDisplayEvents([source]);
@@ -96,7 +104,49 @@ describe("native Desktop conversation contract", () => {
       "event",
       "tool-group"
     ]);
+    expect(expanded.every(({ activityDisplay }) => !activityDisplay)).toBe(
+      true
+    );
     expect(approvalReviewSourceEventId(expanded[0]!.id)).toBe(source.id);
+  });
+
+  it("prefers canonical messages and omits internal approval activity", () => {
+    const canonical = event("canonical", "2026-07-13T10:59:00.000Z", {
+      actor: "user",
+      content: "Original request"
+    });
+    const transcript = event("approval", "2026-07-13T11:00:00.000Z", {
+      actor: null,
+      eventType: "approval_activity",
+      transcriptDisplay: {
+        kind: "approval_review",
+        version: 1,
+        truncated: false,
+        segments: [
+          {
+            kind: "message",
+            sequence: 1,
+            actor: "user",
+            content: "Original request"
+          }
+        ]
+      }
+    });
+    const helper = event("helper", "2026-07-13T11:01:00.000Z", {
+      actor: null,
+      eventType: "approval_activity",
+      activityDisplay: {
+        kind: "approval_status",
+        label: "Approval activity",
+        status: "helper_conversation"
+      }
+    });
+
+    expect(
+      expandConversationDisplayEvents([canonical, transcript, helper]).map(
+        ({ id }) => id
+      )
+    ).toEqual([canonical.id]);
   });
 
   it("uses display-safe semantic tool summaries and categorizes a group", () => {

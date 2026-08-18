@@ -629,7 +629,7 @@ describe("Koed server desktop manager", () => {
     ).toMatchObject({ apiToken: "fresh_token" });
   });
 
-  it("suppresses an approval-review guardian session when its parent Conversation is present", async () => {
+  it("suppresses a nested subagent session when its parent Conversation is present", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });
     writeFileSync(
@@ -695,10 +695,10 @@ describe("Koed server desktop manager", () => {
                     thread({}),
                     thread({
                       id: "019fd173-d3cd-7753-84a4-421d8010f356",
-                      name: "The following is the Codex agent history added since your last approval assessment",
+                      name: "019fd173-d3cd-7753-84a4-421d8010f356",
                       sessionId: "00000000-0000-4000-8000-000000000002",
                       eventCount: 4,
-                      sample: "Latest guardian assessment response.",
+                      sample: "Development activity captured in koed.",
                       threadKind: "subagent",
                       parentThreadId
                     })
@@ -814,6 +814,39 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
                   contentPreview: autoApprovalContent,
                   invalidatedAt: null,
                   metadata: { approvalReview: true }
+                },
+                {
+                  id: "00000000-0000-4000-8000-000000000004",
+                  actor: null,
+                  eventType: "approval_activity",
+                  timestamp: "2026-08-05T12:03:00.000Z",
+                  sourceEventTime: "2026-08-05T12:03:00.000Z",
+                  sourceSequence: 4,
+                  contentPreview: "Approval requested",
+                  invalidatedAt: null,
+                  metadata: {
+                    approvalActivity: {
+                      kind: "approval_request",
+                      exclusionReason: "approval_activity:request",
+                      display: {
+                        kind: "approval_status",
+                        label: "Approval activity",
+                        status: "request"
+                      }
+                    }
+                  }
+                },
+                {
+                  id: "00000000-0000-4000-8000-000000000005",
+                  actor: "tool",
+                  eventType: "tool_result",
+                  timestamp: "2026-08-05T12:04:00.000Z",
+                  sourceEventTime: "2026-08-05T12:04:00.000Z",
+                  sourceSequence: null,
+                  content: "x".repeat(1_048_577),
+                  contentPreview: "Large tool result",
+                  invalidatedAt: null,
+                  metadata: { toolName: "exec_command" }
                 }
               ]
             }),
@@ -822,13 +855,13 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       )
     });
 
-    await expect(
-      manager.personalMemory({
-        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-        operation: "personal.events.load_page",
-        input: { projectId: "project-1", threadId: "thread-1", limit: 50 }
-      })
-    ).resolves.toMatchObject({
+    const result = await manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.events.load_page",
+      input: { projectId: "project-1", threadId: "thread-1", limit: 50 }
+    });
+
+    expect(result).toMatchObject({
       ok: true,
       data: {
         events: [
@@ -869,10 +902,28 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
               outcome: "allow",
               rationale: "The requested command is bounded and local."
             }
+          },
+          {
+            activityDisplay: {
+              kind: "approval_status",
+              label: "Approval activity",
+              status: "request"
+            }
+          },
+          {
+            contentPreview: "Large tool result",
+            toolDisplay: {
+              kind: "command",
+              toolName: "exec_command"
+            }
           }
         ]
       }
     });
+    if (!result.ok || result.operation !== "personal.events.load_page") {
+      throw new Error("Expected a successful Personal Memory event page");
+    }
+    expect(result.data.events[4]).not.toHaveProperty("content");
   });
 
   it("streams authenticated Personal Memory changes until the window aborts", async () => {

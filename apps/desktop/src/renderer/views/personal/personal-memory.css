@@ -16,6 +16,11 @@
   width: 1px;
 }
 
+[data-personal-route-focus]:focus,
+.personal-route-heading:focus {
+  outline: none;
+}
+
 .personal-projects-pane,
 .personal-memory-detail-pane,
 .personal-project-detail,
@@ -1074,6 +1079,16 @@
     display: block;
   }
 
+  .personal-memory-workspace > .personal-projects-pane,
+  .personal-memory-workspace > .personal-memory-detail-pane {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .personal-memory-workspace.route-session > .personal-memory-detail-pane {
+    overflow: hidden;
+  }
+
   .personal-memory-workspace.route-project .personal-projects-pane,
   .personal-memory-workspace.route-session .personal-projects-pane,
   .personal-memory-workspace.route-projects .personal-memory-detail-pane {
@@ -1127,19 +1142,25 @@
 }
 
 .personal-notes-workspace {
+  background: var(--background);
+  color: var(--foreground);
   display: grid;
-  grid-template-columns: minmax(15rem, 21rem) minmax(0, 1fr);
-  min-height: 100%;
+  grid-template-columns: minmax(16rem, 19rem) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .personal-notes-list {
-  border-right: 1px solid var(--desktop-border, #272a31);
-  padding: 1rem;
-  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .personal-notes-list > header,
-.personal-notes-list > header > div,
 .personal-notes-search,
 .personal-note-items button,
 .personal-notes-back {
@@ -1148,35 +1169,38 @@
 }
 
 .personal-notes-list > header {
+  gap: 0.75rem;
   justify-content: space-between;
-  margin-bottom: 0.8rem;
+  padding: 1rem;
 }
 
 .personal-notes-list > header h1 {
   margin: 0;
-  font-size: 1.25rem;
-}
-
-.personal-notes-list > header > div {
-  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.5rem;
 }
 
 .personal-notes-list > header span {
-  color: var(--desktop-muted, #969aa6);
-  font-size: 0.8rem;
+  color: inherit;
+  font-size: inherit;
 }
 
-.personal-notes-list > header button,
 .personal-note-detail form > button {
-  border: 0;
-  border-radius: 0.5rem;
-  padding: 0.5rem 0.7rem;
-  color: white;
-  background: var(--desktop-accent, #7664d8);
+  align-items: center;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  color: var(--primary-foreground);
   cursor: pointer;
+  display: inline-flex;
+  gap: 0.35rem;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.8rem;
 }
 
-.personal-notes-list > header svg,
 .personal-notes-search svg,
 .personal-note-items svg,
 .personal-notes-back svg {
@@ -1185,15 +1209,28 @@
 }
 
 .personal-notes-search {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   gap: 0.5rem;
-  border: 1px solid var(--desktop-border, #272a31);
-  border-radius: 0.5rem;
-  padding: 0.5rem 0.65rem;
-  margin-bottom: 0.75rem;
+  margin: 0 0.75rem 0.75rem;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.65rem;
+  position: relative;
+}
+
+.personal-notes-search::after {
+  border-bottom: 1px solid var(--border);
+  bottom: -0.75rem;
+  content: "";
+  left: -0.25rem;
+  position: absolute;
+  right: -0.25rem;
 }
 
 .personal-notes-search:focus-within {
-  border-color: var(--desktop-accent, #7664d8);
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 22%, transparent);
 }
 
 .personal-notes-search input {
@@ -1205,21 +1242,37 @@
   background: transparent;
 }
 
+.personal-note-items {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.5rem 0.5rem 1rem;
+}
+
 .personal-note-items button {
-  width: 100%;
-  gap: 0.65rem;
-  border: 0;
-  border-radius: 0.5rem;
-  padding: 0.65rem;
-  color: inherit;
   background: transparent;
-  text-align: left;
+  border: 0;
+  border-radius: var(--radius);
+  color: inherit;
   cursor: pointer;
+  gap: 0.75rem;
+  padding: 0.625rem;
+  text-align: left;
+  width: 100%;
 }
 
 .personal-note-items button:hover,
 .personal-note-items button[aria-current="page"] {
-  background: var(--desktop-hover, #202229);
+  background: var(--accent);
+}
+
+.personal-note-items button > svg {
+  background: color-mix(in oklab, var(--memory) 14%, transparent);
+  border-radius: 0.45rem;
+  box-sizing: content-box;
+  color: var(--memory);
+  flex: 0 0 auto;
+  padding: 0.5rem;
 }
 
 .personal-note-items button > span {
@@ -1236,13 +1289,22 @@
 
 .personal-note-items small {
   margin-top: 0.25rem;
-  color: var(--desktop-muted, #969aa6);
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
+.personal-note-items > p {
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  margin: 0.75rem 0.625rem;
 }
 
 .personal-note-detail {
+  background: var(--background);
+  min-height: 0;
   min-width: 0;
-  padding: clamp(1.25rem, 4vw, 3.5rem);
   overflow-y: auto;
+  padding: clamp(1.25rem, 4vw, 3.5rem);
 }
 
 .personal-notes-back {
@@ -1250,7 +1312,7 @@
   gap: 0.4rem;
   border: 0;
   padding: 0;
-  color: var(--desktop-muted, #969aa6);
+  color: var(--muted-foreground);
   background: transparent;
 }
 
@@ -1268,52 +1330,81 @@
 .personal-note-detail time {
   display: block;
   margin-bottom: 1.5rem;
-  color: var(--desktop-muted, #969aa6);
-  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
 }
 
 .personal-note-detail textarea {
-  width: 100%;
-  min-height: 18rem;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   box-sizing: border-box;
-  border: 1px solid var(--desktop-border, #272a31);
-  border-radius: 0.75rem;
-  padding: 1rem;
-  margin-bottom: 0.75rem;
   color: inherit;
-  background: var(--desktop-panel, #15171b);
   font: inherit;
+  margin-bottom: 0.75rem;
+  min-height: 18rem;
+  padding: 1rem;
   resize: vertical;
+  width: 100%;
+}
+
+.personal-note-detail textarea:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 22%, transparent);
+  outline: none;
+}
+
+.personal-note-detail form > button:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .personal-note-empty {
-  min-height: 60%;
-  display: grid;
-  place-items: center;
-  align-content: center;
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  height: 100%;
+  justify-content: center;
+  min-height: 0;
   text-align: center;
-  color: var(--desktop-muted, #969aa6);
+}
+
+.personal-note-empty h1,
+.personal-note-empty p {
+  margin: 0;
+}
+
+.personal-note-empty p,
+.personal-note-empty svg {
+  color: var(--muted-foreground);
 }
 
 .personal-note-empty svg {
-  width: 2rem;
-  height: 2rem;
+  height: 1.5rem;
+  margin-bottom: 0.2rem;
+  width: 1.5rem;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1040px) {
   .personal-notes-workspace {
     display: block;
   }
+
   .personal-notes-list,
   .personal-note-detail {
     border: 0;
+    height: 100%;
   }
-  .personal-notes-list[data-detail-open="true"] {
+
+  .personal-notes-workspace[data-narrow-view="detail"] .personal-notes-list {
     display: none;
   }
-  .personal-note-detail:not([data-detail-open="true"]) {
+
+  .personal-notes-workspace[data-narrow-view="list"] .personal-note-detail {
     display: none;
   }
+
   .personal-notes-back {
     display: inline-flex;
     margin-bottom: 1rem;
@@ -1390,9 +1481,14 @@
 }
 
 .personal-ask-composer textarea {
-  width: 100%;
+  box-sizing: border-box;
+  height: 5rem;
+  max-height: 5rem;
   min-height: 5rem;
-  resize: vertical;
+  overflow-y: auto;
+  resize: none;
+  scrollbar-gutter: stable;
+  width: 100%;
   border: 0;
   outline: 0;
   padding: 1.1rem;
@@ -1481,7 +1577,7 @@
 }
 
 .personal-ask-pending svg,
-.personal-ask-composer-footer button:disabled svg {
+.personal-ask-spinner {
   animation: personal-ask-spin 1s linear infinite;
 }
 
@@ -1504,7 +1600,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .personal-ask-pending svg,
-  .personal-ask-composer-footer button:disabled svg {
+  .personal-ask-spinner {
     animation: none;
   }
 }

@@ -94,6 +94,12 @@ describe("Personal Ask", () => {
     );
     expect(container.querySelector(".personal-ask-recents")).toBeNull();
 
+    const submitButton = container.querySelector(
+      'button[aria-label="Submit question"]'
+    );
+    expect(submitButton?.querySelector(".lucide-arrow-up")).not.toBeNull();
+    expect(submitButton?.querySelector(".personal-ask-spinner")).toBeNull();
+
     const textarea = container.querySelector(
       'textarea[aria-label="Ask Personal Memory"]'
     ) as HTMLTextAreaElement;
@@ -102,6 +108,11 @@ describe("Personal Ask", () => {
       container.querySelector('button[aria-label="Submit question"]')
     );
     expect(container.textContent).toContain("Searching Personal Memory");
+    expect(
+      container
+        .querySelector('button[aria-label="Submit question"]')
+        ?.querySelector(".personal-ask-spinner")
+    ).not.toBeNull();
 
     await act(async () => {
       finish({
@@ -150,6 +161,7 @@ describe("Personal Notes", () => {
       failure: null
     };
     const onSave = vi.fn(async () => undefined);
+    const onNew = vi.fn();
     await act(async () => {
       root.render(
         <PersonalNotesView
@@ -157,13 +169,42 @@ describe("Personal Notes", () => {
           messages={[message]}
           newNote={false}
           onBack={vi.fn()}
-          onNew={vi.fn()}
+          onNew={onNew}
           onSave={onSave}
           onSelect={vi.fn()}
           selectedNoteId={message.id}
         />
       );
     });
+    expect(
+      container
+        .querySelector(".personal-notes-workspace")
+        ?.getAttribute("data-narrow-view")
+    ).toBe("detail");
+    expect(
+      container.querySelector(".personal-notes-list > header > h1")?.textContent
+    ).toBe("Notes");
+    expect(
+      container
+        .querySelector(".personal-notes-list > header > span")
+        ?.getAttribute("aria-label")
+    ).toBe("1 Notes");
+    expect(
+      container.querySelector(
+        '.personal-note-items > button[aria-label="New Note"]'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.personal-notes-list > header button[aria-label="New Note"]'
+      )
+    ).toBeNull();
+    await click(
+      container.querySelector(
+        '.personal-note-items > button[aria-label="New Note"]'
+      )
+    );
+    expect(onNew).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Keep the Ask page focused.");
     expect(container.textContent).not.toContain("Delete");
     expect(container.textContent).not.toContain("Edit");
@@ -187,5 +228,25 @@ describe("Personal Notes", () => {
     await enterText(textarea, "A new durable Note");
     await click(container.querySelector('button[type="submit"]'));
     expect(onSave).toHaveBeenCalledWith("A new durable Note");
+
+    await act(async () => {
+      root.render(
+        <PersonalNotesView
+          markdownAdapters={adapters}
+          messages={[message]}
+          newNote={false}
+          onBack={vi.fn()}
+          onNew={vi.fn()}
+          onSave={onSave}
+          onSelect={vi.fn()}
+        />
+      );
+    });
+    expect(
+      container
+        .querySelector(".personal-notes-workspace")
+        ?.getAttribute("data-narrow-view")
+    ).toBe("list");
+    expect(document.activeElement?.textContent).toBe("Notes");
   });
 });

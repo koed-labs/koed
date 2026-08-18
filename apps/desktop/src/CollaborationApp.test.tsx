@@ -4143,7 +4143,7 @@ pnpm test
 
   it("requires the explicit Save Note action after IME composition", async () => {
     const client = await render();
-    await click(container, "New");
+    await click(container, "New Note");
     const textarea = document.body.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Note content"]'
     )!;
@@ -4190,7 +4190,7 @@ pnpm test
 
   it("does not carry an unsaved Note draft across navigation", async () => {
     const client = await render();
-    await click(container, "New");
+    await click(container, "New Note");
     const notesComposer = document.body.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Note content"]'
     )!;
@@ -4202,7 +4202,7 @@ pnpm test
     )!;
     await act(async () => setValue(researchComposer, "Research draft"));
     await click(container, "Notes");
-    await click(container, "New");
+    await click(container, "New Note");
     expect(
       document.body.querySelector<HTMLTextAreaElement>(
         'textarea[aria-label="Note content"]'
@@ -4244,7 +4244,7 @@ pnpm test
 
     expect(
       container.querySelectorAll(".personal-note-items button")
-    ).toHaveLength(100);
+    ).toHaveLength(101);
     expect(document.body.textContent).toContain("Long thread message 100");
   });
 
@@ -4285,7 +4285,7 @@ pnpm test
 
     expect(
       container.querySelectorAll(".personal-note-items button")
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     expect(document.querySelectorAll('[aria-label="Sent"]')).toHaveLength(0);
     expect(
       document.querySelectorAll('[aria-label="Delivered to everyone"]')

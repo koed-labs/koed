@@ -279,6 +279,16 @@
 
 .collab-share-search {
   padding: 0 12px 12px;
+  position: relative;
+}
+
+.collab-share-search::after {
+  border-bottom: 1px solid var(--collab-border);
+  bottom: 0;
+  content: "";
+  left: 8px;
+  position: absolute;
+  right: 8px;
 }
 
 .collab-share-search input {
@@ -325,6 +335,10 @@
 
 .collab-share-section {
   border-top: 1px solid var(--collab-border);
+}
+
+.collab-share-section:first-child {
+  border-top: 0;
 }
 
 .collab-share-section[data-empty="true"] {

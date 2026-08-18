@@ -27,7 +27,8 @@ export function PersonalNotesView({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  const listHeadingRef = useRef<HTMLHeadingElement>(null);
+  const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const ordered = useMemo(
     () => [...messages].sort((left, right) => right.sequence - left.sequence),
     [messages]
@@ -36,10 +37,13 @@ export function PersonalNotesView({
     message.body.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
   );
   const selected = ordered.find((message) => message.id === selectedNoteId);
+  const detailOpen = newNote || Boolean(selected);
 
   useEffect(() => {
-    headingRef.current?.focus();
-  }, [newNote, selectedNoteId]);
+    (detailOpen ? detailHeadingRef : listHeadingRef).current?.focus({
+      preventScroll: true
+    });
+  }, [detailOpen, newNote, selectedNoteId]);
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -58,19 +62,21 @@ export function PersonalNotesView({
   };
 
   return (
-    <div className="personal-notes-workspace">
-      <aside
-        className="personal-notes-list"
-        data-detail-open={newNote || Boolean(selected)}
-      >
+    <div
+      className="personal-notes-workspace"
+      data-narrow-view={detailOpen ? "detail" : "list"}
+      data-responsive="master-detail-to-drilldown"
+    >
+      <aside className="personal-notes-list">
         <header>
-          <div>
-            <h1>Notes</h1>
-            <span>{messages.length}</span>
-          </div>
-          <button aria-label="New Note" onClick={onNew} type="button">
-            <Plus aria-hidden="true" /> New
-          </button>
+          <h1
+            className="personal-route-heading"
+            ref={listHeadingRef}
+            tabIndex={-1}
+          >
+            Notes
+          </h1>
+          <span aria-label={`${messages.length} Notes`}>{messages.length}</span>
         </header>
         <label className="personal-notes-search">
           <Search aria-hidden="true" />
@@ -83,6 +89,18 @@ export function PersonalNotesView({
           />
         </label>
         <div className="personal-note-items">
+          <button
+            aria-current={newNote ? "page" : undefined}
+            aria-label="New Note"
+            className="personal-note-new"
+            onClick={onNew}
+            type="button"
+          >
+            <Plus aria-hidden="true" />
+            <span>
+              <strong>New Note</strong>
+            </span>
+          </button>
           {filtered.map((message) => (
             <button
               aria-current={message.id === selectedNoteId ? "page" : undefined}
@@ -102,10 +120,7 @@ export function PersonalNotesView({
           {filtered.length === 0 ? <p>No Notes found.</p> : null}
         </div>
       </aside>
-      <section
-        className="personal-note-detail"
-        data-detail-open={newNote || Boolean(selected)}
-      >
+      <section className="personal-note-detail">
         <button className="personal-notes-back" onClick={onBack} type="button">
           <ArrowLeft aria-hidden="true" /> Back to Notes
         </button>
@@ -115,7 +130,11 @@ export function PersonalNotesView({
               void save(event);
             }}
           >
-            <h1 ref={headingRef} tabIndex={-1}>
+            <h1
+              className="personal-route-heading"
+              ref={detailHeadingRef}
+              tabIndex={-1}
+            >
               New Note
             </h1>
             <textarea
@@ -133,7 +152,11 @@ export function PersonalNotesView({
           </form>
         ) : selected ? (
           <article>
-            <h1 ref={headingRef} tabIndex={-1}>
+            <h1
+              className="personal-route-heading"
+              ref={detailHeadingRef}
+              tabIndex={-1}
+            >
               Note
             </h1>
             <time dateTime={selected.createdAt}>
@@ -148,7 +171,11 @@ export function PersonalNotesView({
         ) : (
           <div className="personal-note-empty">
             <NotebookPen aria-hidden="true" />
-            <h1 ref={headingRef} tabIndex={-1}>
+            <h1
+              className="personal-route-heading"
+              ref={detailHeadingRef}
+              tabIndex={-1}
+            >
               Select a Note
             </h1>
             <p>Choose a Note from the list or create a new one.</p>

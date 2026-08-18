@@ -151,7 +151,7 @@ export function PersonalAskView({
           type="submit"
         >
           {busy ? (
-            <LoaderCircle aria-hidden="true" />
+            <LoaderCircle aria-hidden="true" className="personal-ask-spinner" />
           ) : (
             <ArrowUp aria-hidden="true" />
           )}
@@ -165,7 +165,11 @@ export function PersonalAskView({
       <section className="personal-ask-main">
         {turns.length === 0 ? (
           <div className="personal-ask-welcome">
-            <h1 ref={headingRef} tabIndex={-1}>
+            <h1
+              className="personal-route-heading"
+              ref={headingRef}
+              tabIndex={-1}
+            >
               What would you like to do?
             </h1>
             {composer}
@@ -173,7 +177,11 @@ export function PersonalAskView({
         ) : (
           <div className="personal-ask-conversation">
             <div className="personal-ask-conversation-heading">
-              <h1 ref={headingRef} tabIndex={-1}>
+              <h1
+                className="personal-route-heading"
+                ref={headingRef}
+                tabIndex={-1}
+              >
                 Ask
               </h1>
               <button onClick={onNew} type="button">

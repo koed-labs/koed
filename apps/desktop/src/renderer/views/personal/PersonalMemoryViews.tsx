@@ -249,15 +249,7 @@ function ProjectsPane({
               Retry
             </button>
           </div>
-        ) : projects.length === 0 ? (
-          <div className="personal-memory-state" role="status">
-            <strong>No Projects yet</strong>
-            <p>
-              Projects appear after the Supported Capture Hook records a
-              Captured Session.
-            </p>
-          </div>
-        ) : filtered.length === 0 ? (
+        ) : projects.length === 0 ? null : filtered.length === 0 ? (
           <div className="personal-memory-state" role="status">
             No Projects match “{query}”.
           </div>
@@ -351,6 +343,7 @@ function SessionRow({
 
 function ProjectDetail({
   error,
+  hasProjects,
   loading,
   managedConversationRevision,
   managedConversations,
@@ -360,6 +353,7 @@ function ProjectDetail({
   project
 }: {
   error: string | null;
+  hasProjects: boolean;
   loading: boolean;
   managedConversationRevision: number;
   managedConversations?: ManagedConversationDesktopApi | null;
@@ -464,9 +458,13 @@ function ProjectDetail({
         <div>
           <BookText aria-hidden="true" className="personal-empty-icon" />
           <h2 data-personal-route-focus="project" tabIndex={-1}>
-            Select a Project
+            {hasProjects ? "Select a Project" : "No Projects yet"}
           </h2>
-          <p>Choose a Project to inspect its Captured Sessions.</p>
+          <p>
+            {hasProjects
+              ? "Choose a Project to inspect its Captured Sessions."
+              : "Projects appear after the Supported Capture Hook records a Captured Session."}
+          </p>
         </div>
       </section>
     );
@@ -1558,6 +1556,7 @@ export function PersonalMemoryWorkspace({
         ) : (
           <ProjectDetail
             error={projects.length === 0 ? snapshot.error : null}
+            hasProjects={projects.length > 0}
             loading={snapshot.loading && projects.length === 0}
             managedConversationRevision={managedConversationRevision}
             managedConversations={managedConversations}

@@ -23,6 +23,7 @@ import { Profiler, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 
 import { createCollaborationRendererClient } from "./collaboration/renderer-client.js";
+import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import { App } from "./renderer/App.js";
 import "./renderer/index.css";
 
@@ -133,7 +134,8 @@ const parityEvents: PersonalDesktopConversationEvent[] = [
     }
   }),
   personalEvent(490, {
-    actor: "user",
+    actor: null,
+    eventType: "approval_activity",
     content:
       "The following is the Codex agent history whose request action you are assessing. TRANSCRIPT START ... TRANSCRIPT END",
     contentPreview: "Approval review transcript formatting fixture",
@@ -286,6 +288,20 @@ const personalMemoryApi: PersonalDesktopApi = {
   subscribe: () => () => undefined
 };
 
+const managedConversations = {
+  resume: async (input) => ({
+    operation: "resume",
+    status: "read_only",
+    conversation: {
+      executionId: null,
+      projectId: input.projectId,
+      capturedSessionId: input.capturedSessionId,
+      threadId: input.threadId
+    },
+    message: "This browser fixture is read-only."
+  })
+} as ManagedConversationDesktopApi;
+
 const ValidationApp = () => {
   const client = useMemo(
     () =>
@@ -302,6 +318,7 @@ const ValidationApp = () => {
   return (
     <App
       collaborationClient={client}
+      managedConversations={managedConversations}
       onboardingComplete
       personalMemoryApi={personalMemoryApi}
       statusReadyOverride

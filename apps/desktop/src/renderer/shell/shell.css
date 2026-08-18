@@ -456,6 +456,11 @@
   outline: none;
 }
 
+.desktop-main:focus,
+.desktop-main:focus-visible {
+  outline: none;
+}
+
 .desktop-main-bar {
   display: flex;
   min-inline-size: 0;

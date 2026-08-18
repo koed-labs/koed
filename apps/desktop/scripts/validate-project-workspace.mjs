@@ -18,6 +18,11 @@ const inspectWorkspace = async (window) =>
     const preview = document.querySelector('.personal-session-copy > small');
     const row = document.querySelector('[data-session-id]');
     const list = document.querySelector('.personal-sessions');
+    const timeline = document.querySelector('.native-timeline-scroll');
+    const session = document.querySelector('.personal-session-detail');
+    const composer = document.querySelector('.personal-managed-composer');
+    const detailRect = detail?.getBoundingClientRect();
+    const composerRect = composer?.getBoundingClientRect();
     return {
       body: document.body?.innerText?.slice(0, 1000) ?? '',
       ready: document.documentElement.dataset.browserValidationReady === 'true',
@@ -31,6 +36,13 @@ const inspectWorkspace = async (window) =>
       previewTextOverflow: preview && getComputedStyle(preview).textOverflow,
       sourceAiClient: row?.textContent.includes('Codex CLI') ?? false,
       rawMetadataExposed: document.body.textContent.includes('untrusted metadata'),
+      timelineScrollable: Boolean(timeline && timeline.scrollHeight > timeline.clientHeight),
+      timelineOverflowY: timeline && getComputedStyle(timeline).overflowY,
+      sessionHeight: session?.getBoundingClientRect().height ?? 0,
+      detailHeight: detailRect?.height ?? 0,
+      composerBottomGap: detailRect && composerRect
+        ? detailRect.bottom - composerRect.bottom
+        : null,
       foreground: row && getComputedStyle(row).color,
       background: getComputedStyle(document.body).backgroundColor
     };
@@ -64,8 +76,6 @@ const inspectPersonalFormatting = async (window) =>
       approvalWrapperCount: document.querySelectorAll('.native-approval-review-transcript').length,
       approvalParityMessageCount: [...document.querySelectorAll('.native-conversation-event')]
         .filter((candidate) => /Review request|validate the Captured Session/u.test(candidate.textContent)).length,
-      approvalParityToolGroupCount: [...document.querySelectorAll('.native-tool-group')]
-        .filter((candidate) => candidate.textContent.includes('pnpm --filter @koed/desktop test') && !candidate.textContent.includes('Format inspector')).length,
       approvalRawSourceVisible: document.body.textContent.includes('Original captured approval request'),
       autoApprovalCount: document.querySelectorAll('.native-approval-decision.allow').length,
       autoApprovalStatus: document.querySelector('.native-event-avatar.approval')?.getAttribute('aria-label') ?? '',
@@ -315,6 +325,32 @@ const run = async () => {
       `document.querySelectorAll('.native-event-wrap').length > 0`,
       "long Captured Session timeline"
     );
+    await setEmulatedViewport(window, 620, 900);
+    const narrowConversation = await inspectWorkspace(window);
+    assert.equal(narrowConversation.viewportWidth, 620);
+    assert.equal(narrowConversation.workspaceDisplay, "block");
+    assert.equal(narrowConversation.masterDisplay, "none");
+    assert.equal(
+      narrowConversation.timelineScrollable,
+      true,
+      JSON.stringify(narrowConversation)
+    );
+    assert.ok(
+      narrowConversation.sessionHeight > 0,
+      JSON.stringify(narrowConversation)
+    );
+    assert.equal(
+      narrowConversation.sessionHeight,
+      narrowConversation.detailHeight,
+      JSON.stringify(narrowConversation)
+    );
+    assert.ok(
+      narrowConversation.composerBottomGap !== null &&
+        Math.abs(narrowConversation.composerBottomGap) <= 1,
+      JSON.stringify(narrowConversation)
+    );
+    await setEmulatedViewport(window, 1440, 900);
+    if (process.env.KOED_PROJECT_NARROW_ONLY === "1") return;
     await waitFor(
       window,
       `Boolean(document.querySelector('.native-event-content.memory-markdown h1'))`,
@@ -409,17 +445,9 @@ const run = async () => {
       false,
       JSON.stringify(personalFormatting)
     );
-
-    await seekTimelineText(
-      window,
-      "Review request",
-      "approval-review parity rows"
-    );
-    const approvalFormatting = await inspectPersonalFormatting(window);
-    assert.equal(approvalFormatting.approvalWrapperCount, 0);
-    assert.equal(approvalFormatting.approvalParityMessageCount, 2);
-    assert.equal(approvalFormatting.approvalParityToolGroupCount, 1);
-    assert.equal(approvalFormatting.approvalRawSourceVisible, false);
+    assert.equal(personalFormatting.approvalWrapperCount, 0);
+    assert.equal(personalFormatting.approvalParityMessageCount, 0);
+    assert.equal(personalFormatting.approvalRawSourceVisible, false);
 
     await seekTimelineText(window, "Auto approval", "Auto Approval decision");
     const autoApprovalFormatting = await inspectPersonalFormatting(window);
@@ -639,6 +667,13 @@ const run = async () => {
     assert.equal(narrow.viewportWidth, 620);
     assert.equal(narrow.workspaceDisplay, "block");
     assert.equal(narrow.masterDisplay, "none");
+    assert.equal(narrow.timelineScrollable, true, JSON.stringify(narrow));
+    assert.ok(narrow.sessionHeight > 0, JSON.stringify(narrow));
+    assert.equal(
+      narrow.sessionHeight,
+      narrow.detailHeight,
+      JSON.stringify(narrow)
+    );
 
     await window.webContents.executeJavaScript(
       `document.querySelector('.desktop-breadcrumb button')?.click()`

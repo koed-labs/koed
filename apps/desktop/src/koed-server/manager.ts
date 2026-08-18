@@ -444,16 +444,7 @@ const personalProjectsData = (payload: Record<string, unknown>) => {
             : null;
         const hasVisibleParent =
           parentThreadId !== null && threadIds.has(parentThreadId);
-        const approvalReviewEnvelope = [thread.name, thread.sample].some(
-          (value) =>
-            typeof value === "string" &&
-            isApprovalReviewTranscriptEnvelopeText(value)
-        );
-        return !(
-          thread.threadKind === "subagent" &&
-          hasVisibleParent &&
-          approvalReviewEnvelope
-        );
+        return !(thread.threadKind === "subagent" && hasVisibleParent);
       });
       return {
         id: project.id,
@@ -470,6 +461,8 @@ const personalProjectsData = (payload: Record<string, unknown>) => {
     })
   });
 };
+
+const personalDesktopEventContentMaxLength = 1_048_576;
 
 const personalEventsData = (payload: Record<string, unknown>) => {
   const events = Array.isArray(payload.events) ? payload.events : null;
@@ -529,7 +522,8 @@ const personalEventsData = (payload: Record<string, unknown>) => {
         timestamp: event.timestamp,
         sourceEventTime: event.sourceEventTime,
         sourceSequence: event.sourceSequence,
-        ...(typeof event.content === "string"
+        ...(typeof event.content === "string" &&
+        event.content.length <= personalDesktopEventContentMaxLength
           ? { content: event.content }
           : {}),
         contentPreview: event.contentPreview,

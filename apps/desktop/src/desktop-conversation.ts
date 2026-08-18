@@ -25,9 +25,24 @@ export function approvalReviewSourceEventId(eventId: string): string | null {
 export function expandConversationDisplayEvents(
   events: readonly DesktopConversationEvent[]
 ): DesktopConversationEvent[] {
+  const hasCanonicalMessages = events.some(
+    (event) =>
+      !event.transcriptDisplay &&
+      !event.activityDisplay &&
+      !event.approvalDecisionDisplay &&
+      event.eventType !== "approval_activity" &&
+      ["user", "assistant", "agent", "subagent"].includes(event.actor ?? "")
+  );
   return events.flatMap((event) => {
+    if (
+      event.eventType === "approval_activity" ||
+      event.activityDisplay?.kind === "approval_status"
+    ) {
+      return [];
+    }
     const display = event.transcriptDisplay;
     if (!display) return [event];
+    if (hasCanonicalMessages) return [];
     return display.segments.map((segment, index) => ({
       id: `${event.id}${approvalReviewDisplayIdMarker}${segment.sequence}:${index}`,
       actor: segment.kind === "message" ? segment.actor : "tool",
@@ -38,9 +53,6 @@ export function expandConversationDisplayEvents(
       content: segment.content,
       contentPreview: segment.content.slice(0, 16_384),
       invalidatedAt: event.invalidatedAt,
-      ...(event.activityDisplay
-        ? { activityDisplay: event.activityDisplay }
-        : {}),
       metadata: segment.kind === "message" ? {} : { toolName: segment.toolName }
     }));
   });
